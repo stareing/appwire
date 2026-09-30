@@ -1,0 +1,3 @@
+# 原生模块构建产物（由 pnpm build:native 生成）
+native/
+dist/

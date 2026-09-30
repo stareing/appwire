@@ -1,0 +1,2 @@
+工具 orders.export 的 /properties/filter：不支持一般形式的 `oneOf`，降级为原始 JSON
+工具 orders.export 的 /properties/template：不支持 `$ref`，降级为原始 JSON

@@ -1,0 +1,50 @@
+[package]
+name = "app-mcp-hub"
+description = "Agent 端 Hub 库：把本机 App 的工具接入厂商自有 Agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "app_mcp_hub"
+path = "src/lib.rs"
+
+[dependencies]
+app-mcp-protocol.workspace = true
+app-mcp-manifest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures.workspace = true
+rand.workspace = true
+rmcp = { workspace = true, features = [
+  "server",
+  "client",
+  "transport-io",
+  "transport-child-process",
+  "transport-streamable-http-server",
+] }
+# Streamable HTTP：用 hyper 直接提供 HTTP 服务（rmcp 的 StreamableHttpService 是 tower 服务）。
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+http = "1"
+# 不启用默认特性：不需要按 $ref 远程拉取 schema（resolve-http 会引入 reqwest / aws-lc-rs，
+# 也不希望 App 提供的 schema 触发网络或本地文件访问）。
+jsonschema = { version = "0.58", default-features = false }
+# App 总览版本号（spec/protocol.md 第 7 节）、导出名哈希后缀。
+sha2 = "0.10"
+# 审批 / 配对回调（spec/hub-api.md 3.3）：dyn 兼容的 async trait。
+async-trait = "0.1"
+
+[dev-dependencies]
+app-mcp-native.workspace = true
+tokio-tungstenite.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-io"] }

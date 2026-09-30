@@ -1,0 +1,18 @@
+{
+  "name": "@app-mcp/hub",
+  "version": "0.1.0",
+  "description": "app-mcp Hub SDK（napi-rs 原生模块）：把本机所有 App 的工具接入 Node 端 Agent（Electron 助手、LangChain.js、Vercel AI SDK、OpenAI / Anthropic SDK）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "files": ["dist", "native"],
+  "scripts": {
+    "build:native": "node scripts/build-native.mjs",
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

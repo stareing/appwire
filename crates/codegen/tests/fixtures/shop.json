@@ -1,0 +1,156 @@
+{
+  "manifestVersion": 1,
+  "appId": "shop",
+  "name": "示例商城",
+  "version": "1.2.0",
+  "description": "一个用于演示的购物商城",
+  "overview": {
+    "summary": "演示用购物商城，可管理待办、浏览商品、操作购物车并结算",
+    "body": "## 能力范围\n- 待办的增删改查\n- 商品搜索、购物车管理、结算",
+    "locale": "zh-CN"
+  },
+  "launch": {
+    "web": [{ "type": "url", "href": "http://localhost:5173/" }],
+    "windows": [{ "type": "uri", "scheme": "shop-app" }]
+  },
+  "tools": [
+    {
+      "name": "catalog.search",
+      "title": "搜索商品",
+      "description": "按关键词搜索商品，返回商品 ID、名称、价格",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "keyword": { "type": "string", "description": "商品名或分类，如“耳机”" },
+          "category": { "type": "string", "enum": ["electronics", "home-goods", "food"], "description": "商品分类" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20, "description": "最多返回条数" },
+          "inStock": { "type": "boolean", "description": "只看有货" },
+          "maxPrice": { "type": "number", "exclusiveMinimum": 0, "description": "价格上限（元）" }
+        }
+      },
+      "risk": "read",
+      "activation": "headless"
+    },
+    {
+      "name": "cart.add",
+      "title": "加入购物车",
+      "description": "把商品加入购物车",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "productId": { "type": "string", "description": "商品 ID" },
+          "qty": { "type": "integer", "minimum": 1, "description": "数量" },
+          "note": { "type": ["string", "null"], "description": "备注，可为 null" }
+        },
+        "required": ["productId", "qty"]
+      },
+      "risk": "write",
+      "activation": "background"
+    },
+    {
+      "name": "cart.removeItem",
+      "title": "移除购物车条目",
+      "description": "从购物车移除一个条目",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "itemId": { "type": "string" } },
+        "required": ["itemId"]
+      },
+      "risk": "destructive"
+    },
+    {
+      "name": "cart.checkout",
+      "title": "结算",
+      "description": "提交订单并支付",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "addressId": { "type": "string", "description": "收货地址 ID" },
+          "coupon": { "type": "string", "description": "优惠码" },
+          "shipping": {
+            "type": "object",
+            "description": "配送选项",
+            "properties": {
+              "method": { "enum": ["standard", "express"], "description": "配送方式" },
+              "deliverAfter": { "type": "string", "format": "date-time", "description": "最早送达时间" }
+            },
+            "required": ["method"]
+          },
+          "items": {
+            "type": "array",
+            "description": "只结算这些条目；省略时结算全部",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "itemId": { "type": "string" },
+                "qty": { "type": "integer", "minimum": 1 }
+              },
+              "required": ["itemId"]
+            }
+          },
+          "giftWrap": { "type": "boolean", "default": false }
+        },
+        "required": ["addressId"]
+      },
+      "risk": "payment",
+      "activation": "foreground"
+    },
+    {
+      "name": "todos.add",
+      "title": "新增待办",
+      "description": "新增一条待办",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 200, "description": "待办内容" },
+          "priority": { "type": "integer", "enum": [1, 2, 3], "description": "优先级" },
+          "tags": { "type": "array", "items": { "type": "string" }, "description": "标签" },
+          "dueDate": { "type": "string", "format": "date", "description": "截止日期" },
+          "class": { "type": "string", "description": "分类（属性名是保留字）" },
+          "is-urgent": { "type": "boolean", "description": "属性名含连字符" }
+        },
+        "required": ["title"]
+      },
+      "risk": "write"
+    },
+    {
+      "name": "todos.clear",
+      "title": "清空待办",
+      "description": "删除全部已完成的待办",
+      "inputSchema": { "type": "object", "properties": {} },
+      "risk": "destructive"
+    },
+    {
+      "name": "orders.export",
+      "title": "导出订单",
+      "description": "按条件导出订单",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filter": {
+            "description": "筛选条件（任意形式）",
+            "oneOf": [{ "type": "string" }, { "type": "object", "properties": { "status": { "type": "string" } } }]
+          },
+          "labels": { "type": "object", "additionalProperties": { "type": "string" }, "description": "附加标签" },
+          "extra": { "description": "透传给导出器的任意 JSON" },
+          "template": { "$ref": "#/$defs/template" }
+        }
+      },
+      "risk": "write"
+    },
+    {
+      "name": "stats.summary",
+      "title": "销售概览",
+      "description": "查看销售概览",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "period": { "enum": ["day", "week", "month", null], "description": "统计周期" }
+        }
+      },
+      "risk": "read"
+    }
+  ],
+  "resources": [{ "name": "cart.state", "description": "当前购物车内容与总价" }]
+}

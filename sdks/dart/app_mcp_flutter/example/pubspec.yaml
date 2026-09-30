@@ -1,0 +1,23 @@
+name: app_mcp_flutter_example
+description: app-mcp Flutter 示例：购物车。
+publish_to: none
+
+environment:
+  sdk: ^3.4.0
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  app_mcp_flutter:
+    path: ..
+
+dev_dependencies:
+  flutter_lints: ^5.0.0
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

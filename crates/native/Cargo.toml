@@ -1,0 +1,27 @@
+[package]
+name = "app-mcp-native"
+description = "原生 App 共用运行时：后台线程驱动核心、连接 Host、分发回调"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+app-mcp-core.workspace = true
+app-mcp-protocol.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
+# wss:// 的 TLS 加密实现（ring，避免 aws-lc-rs 对 cmake 的依赖）。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+futures.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde.workspace = true
+
+[[example]]
+name = "fake_host"
+test = true

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows 唤醒端到端测试用的无窗口 App（见 tests/windows/README.md）。
+    AppMcp 目标为 net9.0；本机只有 .NET 8/10 运行时时靠 RollForward=Major 运行（由协议激活启动时无法传环境变量）。
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>AppMcpWakeApp</AssemblyName>
+    <AppMcpNativeDir Condition="'$(AppMcpNativeDir)' == '' and '$(CARGO_TARGET_DIR)' != ''">$(CARGO_TARGET_DIR)/debug</AppMcpNativeDir>
+    <AppMcpNativeDir Condition="'$(AppMcpNativeDir)' == ''">$(MSBuildThisFileDirectory)../../../target/win/debug</AppMcpNativeDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../sdks/dotnet/src/AppMcp/AppMcp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(AppMcpNativeDir)/app_mcp.dll" Condition="Exists('$(AppMcpNativeDir)/app_mcp.dll')" Link="app_mcp.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

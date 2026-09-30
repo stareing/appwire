@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "..",
+    "types": ["node"],
+    // @app-mcp/web 按工作区包正常解析（其 exports 指向源码）。
+    // @app-mcp/node 的包入口是 dist（供 Node 直接加载），这里用源码，避免依赖其 dist 是否已构建。打包时两者均为 external。
+    "paths": {
+      "@app-mcp/node": ["../node/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}

@@ -1,0 +1,17 @@
+# uniffi 生成物：由 bindings/uniffi/scripts/generate.sh 从 Rust 源码生成，不纳入版本控制，
+# 避免与原生库版本不一致（uniffi 会在加载时校验 checksum）。
+src/app_mcp/app_mcp_uniffi.py
+src/app_mcp/*.so
+src/app_mcp/*.dylib
+src/app_mcp/*.dll
+src/app_mcp_hub/app_mcp_hub_uniffi.py
+src/app_mcp_hub/*.so
+src/app_mcp_hub/*.dylib
+src/app_mcp_hub/*.dll
+
+__pycache__/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/

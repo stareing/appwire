@@ -1,0 +1,20 @@
+name: app_mcp_flutter
+description: app-mcp 的 Flutter 适配：AppMcpScope、McpTool / McpResource widget、生命周期可见性。
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.4.0
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  app_mcp:
+    path: ../app_mcp
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  ffi: ^2.1.0

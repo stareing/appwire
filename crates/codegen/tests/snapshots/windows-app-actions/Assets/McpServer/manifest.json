@@ -1,0 +1,344 @@
+{
+  "_meta": {
+    "com.microsoft.windows": {
+      "static_responses": {
+        "initialize": {
+          "capabilities": {
+            "tools": {
+              "listChanged": true
+            }
+          },
+          "protocolVersion": "2025-06-18",
+          "serverInfo": {
+            "name": "app-mcp-host",
+            "version": "0.1.0"
+          }
+        },
+        "tools/list": {
+          "tools": [
+            {
+              "description": "按关键词搜索商品，返回商品 ID、名称、价格",
+              "inputSchema": {
+                "properties": {
+                  "category": {
+                    "description": "商品分类",
+                    "enum": [
+                      "electronics",
+                      "home-goods",
+                      "food"
+                    ],
+                    "type": "string"
+                  },
+                  "inStock": {
+                    "description": "只看有货",
+                    "type": "boolean"
+                  },
+                  "keyword": {
+                    "description": "商品名或分类，如“耳机”",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 20,
+                    "description": "最多返回条数",
+                    "maximum": 100,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "maxPrice": {
+                    "description": "价格上限（元）",
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "shop.catalog.search",
+              "title": "搜索商品"
+            },
+            {
+              "description": "把商品加入购物车",
+              "inputSchema": {
+                "properties": {
+                  "note": {
+                    "description": "备注，可为 null",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "productId": {
+                    "description": "商品 ID",
+                    "type": "string"
+                  },
+                  "qty": {
+                    "description": "数量",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "productId",
+                  "qty"
+                ],
+                "type": "object"
+              },
+              "name": "shop.cart.add",
+              "title": "加入购物车"
+            },
+            {
+              "description": "从购物车移除一个条目",
+              "inputSchema": {
+                "properties": {
+                  "itemId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "itemId"
+                ],
+                "type": "object"
+              },
+              "name": "shop.cart.removeItem",
+              "title": "移除购物车条目"
+            },
+            {
+              "description": "提交订单并支付",
+              "inputSchema": {
+                "properties": {
+                  "addressId": {
+                    "description": "收货地址 ID",
+                    "type": "string"
+                  },
+                  "coupon": {
+                    "description": "优惠码",
+                    "type": "string"
+                  },
+                  "giftWrap": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "items": {
+                    "description": "只结算这些条目；省略时结算全部",
+                    "items": {
+                      "properties": {
+                        "itemId": {
+                          "type": "string"
+                        },
+                        "qty": {
+                          "minimum": 1,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "itemId"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "shipping": {
+                    "description": "配送选项",
+                    "properties": {
+                      "deliverAfter": {
+                        "description": "最早送达时间",
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "method": {
+                        "description": "配送方式",
+                        "enum": [
+                          "standard",
+                          "express"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "method"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "addressId"
+                ],
+                "type": "object"
+              },
+              "name": "shop.cart.checkout",
+              "title": "结算"
+            },
+            {
+              "description": "新增一条待办",
+              "inputSchema": {
+                "properties": {
+                  "class": {
+                    "description": "分类（属性名是保留字）",
+                    "type": "string"
+                  },
+                  "dueDate": {
+                    "description": "截止日期",
+                    "format": "date",
+                    "type": "string"
+                  },
+                  "is-urgent": {
+                    "description": "属性名含连字符",
+                    "type": "boolean"
+                  },
+                  "priority": {
+                    "description": "优先级",
+                    "enum": [
+                      1,
+                      2,
+                      3
+                    ],
+                    "type": "integer"
+                  },
+                  "tags": {
+                    "description": "标签",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "title": {
+                    "description": "待办内容",
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ],
+                "type": "object"
+              },
+              "name": "shop.todos.add",
+              "title": "新增待办"
+            },
+            {
+              "description": "删除全部已完成的待办",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "shop.todos.clear",
+              "title": "清空待办"
+            },
+            {
+              "description": "按条件导出订单",
+              "inputSchema": {
+                "properties": {
+                  "extra": {
+                    "description": "透传给导出器的任意 JSON"
+                  },
+                  "filter": {
+                    "description": "筛选条件（任意形式）",
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "labels": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "附加标签",
+                    "type": "object"
+                  },
+                  "template": {
+                    "$ref": "#/$defs/template"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "shop.orders.export",
+              "title": "导出订单"
+            },
+            {
+              "description": "查看销售概览",
+              "inputSchema": {
+                "properties": {
+                  "period": {
+                    "description": "统计周期",
+                    "enum": [
+                      "day",
+                      "week",
+                      "month",
+                      null
+                    ]
+                  }
+                },
+                "type": "object"
+              },
+              "name": "shop.stats.summary",
+              "title": "销售概览"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "author": {
+    "name": "示例商城"
+  },
+  "description": "演示用购物商城，可管理待办、浏览商品、操作购物车并结算",
+  "display_name": "示例商城",
+  "manifest_version": "0.1",
+  "name": "shop",
+  "server": {
+    "entry_point": "app-mcp-host.exe",
+    "mcp_config": {
+      "args": [
+        "--manifest",
+        "app-mcp.json"
+      ],
+      "command": "app-mcp-host.exe"
+    },
+    "type": "binary"
+  },
+  "tools": [
+    {
+      "description": "按关键词搜索商品，返回商品 ID、名称、价格",
+      "name": "shop.catalog.search"
+    },
+    {
+      "description": "把商品加入购物车",
+      "name": "shop.cart.add"
+    },
+    {
+      "description": "从购物车移除一个条目",
+      "name": "shop.cart.removeItem"
+    },
+    {
+      "description": "提交订单并支付",
+      "name": "shop.cart.checkout"
+    },
+    {
+      "description": "新增一条待办",
+      "name": "shop.todos.add"
+    },
+    {
+      "description": "删除全部已完成的待办",
+      "name": "shop.todos.clear"
+    },
+    {
+      "description": "按条件导出订单",
+      "name": "shop.orders.export"
+    },
+    {
+      "description": "查看销售概览",
+      "name": "shop.stats.summary"
+    }
+  ],
+  "tools_generated": false,
+  "version": "0.1.0"
+}

@@ -1,0 +1,65 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/protocol",
+  "crates/core",
+  "crates/manifest",
+  "crates/hub",
+  "crates/host",
+  "crates/native",
+  "crates/codegen",
+  "bindings/wasm",
+  "bindings/c",
+  "bindings/uniffi",
+  "bindings/node",
+  "bindings/hub-c",
+  "bindings/hub-uniffi",
+  "bindings/hub-node",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://example.invalid/app-mcp"
+
+[workspace.dependencies]
+app-mcp-protocol = { path = "crates/protocol" }
+app-mcp-core = { path = "crates/core" }
+app-mcp-manifest = { path = "crates/manifest" }
+app-mcp-native = { path = "crates/native" }
+app-mcp-hub = { path = "crates/hub" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.30"
+futures = "0.3"
+rmcp = "3.5"
+jsonschema = "0.58"
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+rand = "0.9"
+wasm-bindgen = "=0.2.129"
+serde-wasm-bindgen = "0.6"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+uniffi = "0.32"
+napi = { version = "3", default-features = false }
+napi-derive = "3"
+napi-build = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+panic = "abort"

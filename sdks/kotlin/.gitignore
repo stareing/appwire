@@ -1,0 +1,12 @@
+# uniffi 生成物与本机原生库：由 bindings/uniffi/scripts/generate.sh 生成，不纳入版本控制，
+# 避免与 Rust 源码 / 原生库版本不一致（uniffi 在加载时校验 checksum）。
+app-mcp/src/generated/
+app-mcp-hub/src/generated/
+app-mcp-android/src/main/jniLibs/
+
+.gradle/
+.kotlin/
+build/
+local.properties
+*.iml
+.idea/

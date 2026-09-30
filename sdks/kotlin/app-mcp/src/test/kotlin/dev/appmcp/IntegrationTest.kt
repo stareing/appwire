@@ -1,0 +1,112 @@
+package dev.appmcp
+
+import kotlinx.coroutines.delay
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import java.io.File
+import java.util.concurrent.TimeUnit
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.test.fail
+import org.junit.jupiter.api.Assumptions.assumeTrue
+
+@Serializable
+data class Greeting(val name: String)
+
+@Serializable
+data class GreetingReply(val text: String)
+
+/** 启动 crates/native 的 fake_host，经真实 WebSocket 驱动工具调用。需要 cargo。 */
+class IntegrationTest {
+    private val repoRoot = File(System.getProperty("appmcp.repoRoot") ?: "../../..")
+    private val targetDir = File(System.getenv("CARGO_TARGET_DIR") ?: File("../../../target").canonicalPath)
+
+    private fun fakeHost(): File {
+        System.getenv("APP_MCP_FAKE_HOST")?.let { return File(it) }
+        val build = runCatching {
+            ProcessBuilder("cargo", "build", "-q", "-p", "app-mcp-native", "--example", "fake_host")
+                .directory(repoRoot)
+                .redirectErrorStream(true)
+                .start()
+        }.getOrNull()
+        assumeTrue(build != null, "没有 cargo，跳过集成测试")
+        val log = build!!.inputStream.bufferedReader().readText()
+        assumeTrue(build.waitFor() == 0, "fake_host 构建失败：$log")
+        return File(targetDir, "debug/examples/fake_host")
+    }
+
+    @Test
+    fun invokeToolsViaFakeHost() {
+        val host = ProcessBuilder(
+            fakeHost().path,
+            "--invoke", "math.add", "--args", """{"a":2,"b":40}""",
+            "--invoke", "greet", "--args", """{"name":"世界"}""",
+            "--invoke", "cart.checkout",
+            "--invoke", "boom",
+            "--read", "cart",
+            "--timeout-ms", "15000",
+        ).redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        val out = host.inputStream.bufferedReader()
+        val first = out.readLine() ?: fail("fake_host 没有输出")
+        assertTrue(first.startsWith("LISTENING "), first)
+        val addr = first.removePrefix("LISTENING ").trim()
+
+        val client = AppMcp.create(AppMcpConfig("kotlin-it", "Kotlin 集成测试", hostUrl = "ws://$addr"))
+        val threads = mutableListOf<String>()
+        client.tool("math.add", "两数相加", risk = Risk.READ) { args, ctx ->
+            threads += Thread.currentThread().name
+            ctx.addStateHint("cart")
+            delay(5)
+            mapOf("sum" to args["a"]!!.jsonPrimitive.int + args["b"]!!.jsonPrimitive.int)
+        }
+        client.typedTool<Greeting, GreetingReply>("greet", "问候") { g, _ -> GreetingReply("你好，${g.name}") }
+        client.tool("cart.checkout", "结账", risk = Risk.PAYMENT) { _, _ ->
+            throw ToolCallException(ErrorKind.USER_REJECTED, "用户取消了结账")
+        }
+        client.tool("boom", "抛异常") { _, _ -> error("炸了") }
+        client.resource("cart", "购物车") { mapOf("items" to listOf("A")) }
+
+        val lines = try {
+            client.start()
+            val text = out.readText()
+            assertTrue(host.waitFor(30, TimeUnit.SECONDS), "fake_host 未退出")
+            assertEquals(0, host.exitValue(), "fake_host 退出码非 0，输出：\n$text")
+            text.lines().filter { it.isNotBlank() }.map { Json.parseToJsonElement(it).jsonObject }
+        } finally {
+            client.close()
+            host.destroy()
+        }
+
+        assertEquals("tools", lines[0]["type"]!!.jsonPrimitive.content)
+        val tools = lines[0]["tools"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
+        assertTrue(tools.containsAll(listOf("math.add", "greet", "cart.checkout", "boom")), tools.toString())
+
+        val results = lines.drop(1).associateBy { it["name"]!!.jsonPrimitive.content }
+        val add = results["math.add"]!!["result"]!!.jsonObject
+        assertEquals(42, add["data"]!!.jsonObject["sum"]!!.jsonPrimitive.int)
+        assertEquals(listOf("cart"), add["stateHints"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(
+            "你好，世界",
+            results["greet"]!!["result"]!!.jsonObject["data"]!!.jsonObject["text"]!!.jsonPrimitive.content,
+        )
+        val rejected = results["cart.checkout"]!!["error"]!!.jsonObject
+        assertEquals("USER_REJECTED", rejected["data"]!!.jsonObject["kind"]!!.jsonPrimitive.content)
+        assertEquals("用户取消了结账", rejected["message"]!!.jsonPrimitive.content)
+        assertEquals(
+            "HANDLER_ERROR",
+            results["boom"]!!["error"]!!.jsonObject["data"]!!.jsonObject["kind"]!!.jsonPrimitive.content,
+        )
+        assertEquals(
+            JsonObject(mapOf("items" to kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("A"))))),
+            results["cart"]!!["result"]!!.jsonObject["contents"],
+        )
+        assertTrue(threads.isNotEmpty() && threads[0].startsWith("DefaultDispatcher"), threads.toString())
+    }
+}

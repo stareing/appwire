@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Rust 构建出的原生库所在目录（libapp_mcp.so / app_mcp.dll / libapp_mcp.dylib），会复制到输出目录。 -->
+    <AppMcpNativeDir Condition="'$(AppMcpNativeDir)' == '' and '$(CARGO_TARGET_DIR)' != ''">$(CARGO_TARGET_DIR)/debug</AppMcpNativeDir>
+    <AppMcpNativeDir Condition="'$(AppMcpNativeDir)' == ''">$(MSBuildThisFileDirectory)../../target/debug</AppMcpNativeDir>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,18 @@
+# uniffi 生成配置（library 模式下按 crate 目录读取本文件）。
+# 名称均与 App 端绑定（bindings/uniffi）区分，两者可在同一进程加载。
+
+[bindings.kotlin]
+# 生成代码放在 dev.appmcp.hub.ffi；惯用封装在 dev.appmcp.hub。
+package_name = "dev.appmcp.hub.ffi"
+cdylib_name = "app_mcp_hub_uniffi"
+
+[bindings.python]
+# 生成的 app_mcp_hub_uniffi.py 放在 Python 包 app_mcp_hub 内。
+cdylib_name = "app_mcp_hub_uniffi"
+
+[bindings.swift]
+# 生成的 Swift 代码单独成一个模块（AppMcpHubBindings），惯用封装模块 AppMcpHub 依赖它。
+module_name = "AppMcpHubBindings"
+ffi_module_name = "app_mcp_hub_uniffiFFI"
+ffi_module_filename = "app_mcp_hub_uniffiFFI"
+generate_module_map = true

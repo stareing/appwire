@@ -1,0 +1,32 @@
+{
+  "name": "@app-mcp/store",
+  "version": "0.1.0",
+  "description": "把状态库（Zustand、Redux、Pinia）的 action 暴露为工具、state 暴露为资源",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./zustand": { "types": "./dist/zustand.d.ts", "import": "./dist/zustand.js" },
+    "./redux": { "types": "./dist/redux.d.ts", "import": "./dist/redux.js" },
+    "./pinia": { "types": "./dist/pinia.d.ts", "import": "./dist/pinia.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@app-mcp/web": "workspace:*"
+  },
+  "devDependencies": {
+    "zustand": "^5.0.0",
+    "@reduxjs/toolkit": "^2.0.0",
+    "pinia": "^3.0.0",
+    "vue": "^3.5.0",
+    "zod": "^4.6.5",
+    "happy-dom": "^20.14.5"
+  }
+}

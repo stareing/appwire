@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <ProjectReference Include="../../src/AppMcp.Hub/AppMcp.Hub.csproj" />
+    <!-- 集成测试用 App 端 SDK 连接嵌入式 Hub -->
+    <ProjectReference Include="../../src/AppMcp/AppMcp.csproj" />
+  </ItemGroup>
+
+  <!-- 原生库复制到输出目录（cargo build -p app-mcp-hub-c -p app-mcp-c） -->
+  <ItemGroup>
+    <None Include="$(AppMcpNativeDir)/libapp_mcp_hub.so" Condition="Exists('$(AppMcpNativeDir)/libapp_mcp_hub.so')" Link="libapp_mcp_hub.so" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(AppMcpNativeDir)/libapp_mcp_hub.dylib" Condition="Exists('$(AppMcpNativeDir)/libapp_mcp_hub.dylib')" Link="libapp_mcp_hub.dylib" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(AppMcpNativeDir)/app_mcp_hub.dll" Condition="Exists('$(AppMcpNativeDir)/app_mcp_hub.dll')" Link="app_mcp_hub.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(AppMcpNativeDir)/libapp_mcp.so" Condition="Exists('$(AppMcpNativeDir)/libapp_mcp.so')" Link="libapp_mcp.so" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(AppMcpNativeDir)/libapp_mcp.dylib" Condition="Exists('$(AppMcpNativeDir)/libapp_mcp.dylib')" Link="libapp_mcp.dylib" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(AppMcpNativeDir)/app_mcp.dll" Condition="Exists('$(AppMcpNativeDir)/app_mcp.dll')" Link="app_mcp.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

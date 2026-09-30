@@ -1,0 +1,13 @@
+[package]
+name = "app-mcp-core"
+description = "sans-IO 客户端核心：注册表、scope、调用队列、连接状态机"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+app-mcp-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

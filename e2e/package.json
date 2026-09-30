@@ -1,0 +1,11 @@
+{
+  "name": "e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "端到端测试：MCP 客户端（HTTP）→ app-mcp-host serve → examples/shop（无头 Chromium，经 CDP 驱动）",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

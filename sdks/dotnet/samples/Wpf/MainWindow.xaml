@@ -1,0 +1,17 @@
+<Window x:Class="AppMcp.Samples.Wpf.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="app-mcp WPF 示例" Width="420" Height="260"
+        Loaded="OnLoaded" Closing="OnClosing" Activated="OnActivated" Deactivated="OnDeactivated"
+        StateChanged="OnWindowStateChanged">
+    <StackPanel Margin="16">
+        <TextBlock x:Name="StatusText" Text="未连接" Margin="0,0,0,12" />
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+            <TextBlock Text="计数：" VerticalAlignment="Center" />
+            <TextBlock x:Name="CounterText" Text="0" FontSize="24" Margin="8,0" />
+            <Button Content="+1" Width="48" Click="OnIncrementClick" />
+        </StackPanel>
+        <TextBlock Text="备注（模型可通过 note.set 修改）：" />
+        <TextBox x:Name="NoteBox" Height="60" TextWrapping="Wrap" AcceptsReturn="True" />
+    </StackPanel>
+</Window>

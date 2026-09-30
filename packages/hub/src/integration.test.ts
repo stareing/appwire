@@ -1,0 +1,397 @@
+/**
+ * 集成测试：真实原生模块（native/*.node）起嵌入式 Hub（WebSocket 随机端口），
+ * 同进程用 @app-mcp/node（App 端 Node SDK）注册工具并连上。
+ *
+ * 前置条件：`pnpm --filter @app-mcp/hub build:native` 与 `pnpm --filter @app-mcp/node build:native`
+ * （或环境变量 APP_MCP_HUB_NATIVE / APP_MCP_NODE_NATIVE 指定路径）。缺少任一时跳过。
+ *
+ * @app-mcp/node 未链接进本包的 node_modules（并行开发期间不运行 pnpm install），这里用相对路径导入其源码。
+ */
+import { existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { afterEach, describe, expect, it } from 'vitest'
+import { createAppMcp, type AppMcp } from '../../node/src/index.js'
+import { nativeFileName as appNativeFileName } from '../../node/src/native.js'
+import {
+  handleAnthropicToolUses,
+  handleOpenAiToolCalls,
+  Hub,
+  HubError,
+  HubToolCallError,
+  toAnthropicTools,
+  toOpenAiTools,
+  toVercelAiTools,
+  type ApprovalRequest,
+  type HubEvent,
+  type HubStartOptions,
+  type PairingRequest,
+  type WakeRequest,
+} from './index.js'
+import { nativeFileName } from './native.js'
+
+const pkgDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const hubNative = process.env.APP_MCP_HUB_NATIVE ?? join(pkgDir, 'native', nativeFileName())
+const appNative = process.env.APP_MCP_NODE_NATIVE ?? join(pkgDir, '..', 'node', 'native', appNativeFileName())
+const ready = existsSync(hubNative) && existsSync(appNative)
+
+const hubs: Hub[] = []
+const apps: AppMcp[] = []
+
+afterEach(async () => {
+  for (const app of apps.splice(0)) app.dispose()
+  for (const hub of hubs.splice(0)) await hub.shutdown()
+})
+
+async function until<T>(f: () => T | undefined | null | false, what: string, timeoutMs = 10_000): Promise<T> {
+  const start = Date.now()
+  for (;;) {
+    const v = f()
+    if (v) return v
+    if (Date.now() - start > timeoutMs) throw new Error(`等待超时：${what}`)
+    await new Promise((r) => setTimeout(r, 20))
+  }
+}
+
+async function startHub(options: HubStartOptions = {}): Promise<{ hub: Hub; events: HubEvent[] }> {
+  const hub = await Hub.start({ wsAddr: '127.0.0.1:0', keepAlive: false, listChangedDebounceMs: 20, ...options })
+  hubs.push(hub)
+  const events: HubEvent[] = []
+  hub.onEvent((e) => events.push(e))
+  return { hub, events }
+}
+
+interface ShopLog {
+  calls: string[]
+}
+
+/** 同进程 App：shop（cart.add / cart.clear / order.pay + 资源 cart）。 */
+async function startShop(hub: Hub): Promise<ShopLog> {
+  const log: ShopLog = { calls: [] }
+  const app = createAppMcp({
+    appId: 'shop',
+    appName: '测试商店',
+    hostUrl: hub.wsUrl!,
+    autoStart: false,
+    keepAlive: false,
+    overview: { summary: '测试用商店 App', body: '加购物车用 cart.add。' },
+  })
+  apps.push(app)
+  let count = 0
+  app.tool('cart.add', {
+    description: '加入购物车',
+    risk: 'write',
+    input: {
+      type: 'object',
+      properties: { sku: { type: 'string' }, qty: { type: 'number' } },
+      required: ['sku', 'qty'],
+    },
+    handler: async ({ sku, qty }: { sku: string; qty: number }) => {
+      log.calls.push(`cart.add:${sku}`)
+      count += qty
+      return { data: { count }, stateHints: ['cart'] }
+    },
+  })
+  app.tool('cart.clear', {
+    description: '清空购物车',
+    risk: 'destructive',
+    handler: () => {
+      log.calls.push('cart.clear')
+      count = 0
+      return { cleared: true }
+    },
+  })
+  app.tool('order.pay', {
+    description: '付款',
+    risk: 'payment',
+    handler: () => {
+      log.calls.push('order.pay')
+      return { paid: true }
+    },
+  })
+  app.resource('cart', { description: '购物车', read: () => ({ count }) })
+  app.start()
+  await until(
+    () => hub.tools({ onlyAvailable: true }).some((t) => t.name === 'shop.order.pay'),
+    'shop 工具登记',
+  )
+  return log
+}
+
+describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
+  it('列工具、App、资源与事件', async () => {
+    const { hub, events } = await startHub()
+    expect(hub.wsAddr).toMatch(/^127\.0\.0\.1:\d+$/)
+    await startShop(hub)
+
+    const tools = hub.tools()
+    const add = tools.find((t) => t.name === 'shop.cart.add')
+    expect(add).toMatchObject({
+      appId: 'shop',
+      tool: 'cart.add',
+      description: '加入购物车',
+      risk: 'write',
+      availability: 'available',
+    })
+    expect(add?.inputSchema).toMatchObject({ type: 'object', required: ['sku', 'qty'] })
+    expect(tools.some((t) => t.name === 'apps.list')).toBe(true)
+
+    const filtered = hub.tools({ maxRisk: 'write', includeBuiltin: false }).map((t) => t.name)
+    expect(filtered).toEqual(['shop.cart.add'])
+
+    const shop = hub.apps().find((a) => a.appId === 'shop')
+    expect(shop).toMatchObject({ kind: 'app', connected: true, name: '测试商店', summary: '测试用商店 App' })
+    expect(shop?.instances[0]).toMatchObject({ clientKind: 'native', visibility: 'visible' })
+
+    await until(() => hub.resources().length > 0, '资源登记')
+    expect(hub.resources()).toEqual([
+      expect.objectContaining({ uri: 'app-mcp://shop/cart', name: 'shop.cart', available: true }),
+    ])
+    expect(hub.overview('shop')).toMatchObject({ appId: 'shop', summary: '测试用商店 App', source: 'runtime' })
+    expect(hub.overview('nope')).toBeNull()
+
+    await until(() => events.some((e) => e.type === 'toolsChanged'), 'toolsChanged 事件')
+    expect(events).toContainEqual({ type: 'appConnected', appId: 'shop', instanceId: shop!.instances[0]!.instanceId })
+
+    // 断开 → appDisconnected
+    apps.splice(0).forEach((a) => a.dispose())
+    await until(() => events.some((e) => e.type === 'appDisconnected' && e.appId === 'shop'), 'appDisconnected 事件')
+  })
+
+  it('callTool：结果、stateHints、按会话首次附带总览、错误', async () => {
+    const { hub } = await startHub()
+    const log = await startShop(hub)
+
+    const first = await hub.callTool({ name: 'shop.cart.add', arguments: { sku: 'A1', qty: 2 }, session: 's1' })
+    expect(first.result).toEqual({ ok: { count: 2 } })
+    expect(first.stateHints).toEqual(['cart'])
+    expect(first.instanceId).toBeTruthy()
+    expect(first.overview?.text).toContain('测试用商店 App')
+
+    const second = await hub.callTool({ name: 'shop.cart.add', arguments: { sku: 'B', qty: 1 }, session: 's1' })
+    expect(second.result.ok).toEqual({ count: 3 })
+    expect(second.overview).toBeNull()
+    const otherSession = await hub.callTool({ name: 'shop.cart.add', arguments: { sku: 'C', qty: 1 }, session: 's2' })
+    expect(otherSession.overview).not.toBeNull()
+
+    const invalid = await hub.callTool({ name: 'shop.cart.add', arguments: { sku: 1 } })
+    expect(invalid.result.error?.kind).toBe('INVALID_INPUT')
+
+    await expect(hub.callTool({ name: 'nope.tool' })).rejects.toSatisfy(
+      (e: unknown) => e instanceof HubError && e.kind === 'TOOL_NOT_FOUND' && e.code === 'TOOL_NOT_FOUND',
+    )
+
+    const content = await hub.readResource('app-mcp://shop/cart')
+    expect(content.uri).toBe('app-mcp://shop/cart')
+    expect(JSON.parse(content.text!)).toEqual({ count: 4 })
+    await expect(hub.readResource('app-mcp://nope/x')).rejects.toBeInstanceOf(HubError)
+    expect(log.calls).toEqual(['cart.add:A1', 'cart.add:B', 'cart.add:C'])
+  })
+
+  it('exportTools + dispatch：openai-chat', async () => {
+    const { hub } = await startHub()
+    await startShop(hub)
+
+    const tools = toOpenAiTools(hub, { includeBuiltin: false })
+    expect(tools).toEqual(hub.exportTools('openai-chat', { includeBuiltin: false }))
+    const add = tools.find((t) => t.function.name === 'shop__cart__add')
+    expect(add).toMatchObject({ type: 'function', function: { description: '加入购物车' } })
+    expect(tools.find((t) => t.function.name === 'shop__order__pay')?.function.description).toContain('payment')
+
+    const msg = await hub.dispatch('openai-chat', {
+      id: 'call_1',
+      type: 'function',
+      function: { name: 'shop__cart__add', arguments: JSON.stringify({ sku: 'A', qty: 1 }) },
+    })
+    expect(msg).toMatchObject({ role: 'tool', tool_call_id: 'call_1' })
+    expect(msg.content).toContain('"count":1')
+
+    const results = await handleOpenAiToolCalls(hub, [
+      { id: 'c2', type: 'function', function: { name: 'shop__cart__add', arguments: '{"sku":"B","qty":2}' } },
+      { id: 'c3', type: 'function', function: { name: 'shop__cart__add', arguments: '{}' } },
+    ])
+    expect(results.map((r) => r.tool_call_id)).toEqual(['c2', 'c3'])
+    expect(results[0]?.content).toContain('"count":3')
+    expect(results[1]?.content).toMatch(/^INVALID_INPUT: /)
+    expect(await handleOpenAiToolCalls(hub, undefined)).toEqual([])
+  })
+
+  it('exportTools + dispatch：anthropic 与 Vercel AI 适配', async () => {
+    const { hub } = await startHub()
+    await startShop(hub)
+
+    const tools = toAnthropicTools(hub, { apps: ['shop'], maxRisk: 'write', includeBuiltin: false })
+    expect(tools).toEqual([
+      expect.objectContaining({ name: 'shop__cart__add', input_schema: expect.objectContaining({ type: 'object' }) }),
+    ])
+
+    const results = await handleAnthropicToolUses(
+      hub,
+      [
+        { type: 'text', text: '好的，我来加购物车' },
+        { type: 'tool_use', id: 'toolu_1', name: 'shop__cart__add', input: { sku: 'A', qty: 5 } },
+        { type: 'tool_use', id: 'toolu_2', name: 'shop.nope', input: {} },
+      ],
+      { session: 'conv-1', sequential: true },
+    )
+    expect(results).toHaveLength(2)
+    expect(results[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'toolu_1' })
+    expect(results[0]?.is_error).toBeUndefined()
+    expect(results[0]?.content).toContain('"count":5')
+    expect(results[0]?.content).toContain('app-overview') // 该会话首次接触 shop
+    expect(results[1]).toMatchObject({ tool_use_id: 'toolu_2', is_error: true })
+
+    // Vercel AI：jsonSchema 包装 + execute
+    const wrapped: unknown[] = []
+    const vtools = toVercelAiTools(hub, { includeBuiltin: false }, {
+      session: 'conv-1',
+      jsonSchema: (s) => {
+        wrapped.push(s)
+        return { wrapped: s }
+      },
+    })
+    expect(Object.keys(vtools).sort()).toEqual(['shop__cart__add', 'shop__cart__clear', 'shop__order__pay'])
+    expect(wrapped).toHaveLength(3)
+    const text = await vtools.shop__cart__add!.execute({ sku: 'Z', qty: 1 }, { toolCallId: 'v1' })
+    expect(text).toContain('"count":6')
+    await expect(vtools.shop__cart__add!.execute({ sku: 'Z' })).rejects.toBeInstanceOf(HubToolCallError)
+  })
+
+  it('审批：拒绝 → USER_REJECTED；JS 回调返回 Promise；抛错视为拒绝；低于阈值不询问', async () => {
+    const { hub } = await startHub({ approval: { requireAtOrAbove: 'destructive' } })
+    const log = await startShop(hub)
+
+    // 未设置回调 → 拒绝
+    const noHandler = await hub.callTool({ name: 'shop.cart.clear' })
+    expect(noHandler.result.error?.kind).toBe('USER_REJECTED')
+
+    const asked: ApprovalRequest[] = []
+    let answer: 'yes' | 'no' | 'throw' | 'reject' = 'no'
+    hub.setApprovalHandler(async (req) => {
+      asked.push(req)
+      await new Promise((r) => setTimeout(r, 30)) // 真正异步：Rust 侧须等待 Promise
+      if (answer === 'throw') throw new Error('UI 崩了')
+      if (answer === 'reject') return Promise.reject(new Error('reject'))
+      return answer === 'yes'
+    })
+
+    const rejected = await hub.callTool({ name: 'shop.cart.clear', arguments: {}, session: 'conv-9' })
+    expect(rejected.result.error?.kind).toBe('USER_REJECTED')
+    expect(asked[0]).toMatchObject({
+      appId: 'shop',
+      appName: '测试商店',
+      tool: 'cart.clear',
+      description: '清空购物车',
+      risk: 'destructive',
+      session: 'conv-9',
+      callId: rejected.callId,
+    })
+
+    answer = 'yes'
+    const approved = await hub.callTool({ name: 'shop.order.pay' })
+    expect(approved.result).toEqual({ ok: { paid: true } })
+
+    answer = 'throw'
+    expect((await hub.callTool({ name: 'shop.order.pay' })).result.error?.kind).toBe('USER_REJECTED')
+    answer = 'reject'
+    const viaDispatch = await hub.dispatch('anthropic', { type: 'tool_use', id: 't9', name: 'shop__cart__clear', input: {} })
+    expect(viaDispatch.is_error).toBe(true)
+    expect(viaDispatch.content).toMatch(/^USER_REJECTED: /)
+
+    // 同步返回 true 也可以
+    hub.setApprovalHandler(() => true)
+    expect((await hub.callTool({ name: 'shop.cart.clear' })).result.ok).toEqual({ cleared: true })
+
+    const before = asked.length
+    await hub.callTool({ name: 'shop.cart.add', arguments: { sku: 'x', qty: 1 } }) // write < destructive
+    expect(asked.length).toBe(before)
+    expect(log.calls).toEqual(['order.pay', 'cart.clear', 'cart.add:x'])
+  })
+
+  it('配对回调：返回 Promise<true> 后 App 连上', async () => {
+    const { hub } = await startHub()
+    const asked: PairingRequest[] = []
+    hub.setPairingHandler(async (req) => {
+      asked.push(req)
+      await new Promise((r) => setTimeout(r, 20))
+      return true
+    })
+    await startShop(hub)
+    expect(asked).toEqual([expect.objectContaining({ appId: 'shop', appName: '测试商店', clientKind: 'native' })])
+  })
+
+  it('休眠：列出 dormant → 调用触发自定义 Waker → App handleWake 后调用成功', async () => {
+    const { hub, events } = await startHub({ leaseTtlMs: 0, wakeTimeoutMs: 10_000 })
+    const app = createAppMcp({
+      appId: 'sleepy',
+      appName: '会睡觉的 App',
+      instanceId: 's1',
+      hostUrl: hub.wsUrl!,
+      autoStart: false,
+      keepAlive: false,
+      lifecycle: {
+        mode: 'idle',
+        idleTimeoutMs: 300,
+        wake: { kind: 'android-intent', target: 'dev.example/.WakeReceiver', background: true },
+      },
+    })
+    apps.push(app)
+    app.tool('ping', { description: '回显', handler: (args: unknown) => ({ echo: args }) })
+    const wakes: WakeRequest[] = []
+    hub.setWaker(async (req) => {
+      wakes.push(req)
+      // 厂商在这里发送广播 / 打开 URI；测试中直接让同进程 App 处理激活参数。
+      if (!app.handleWake(req.activationArg)) throw new HubError('LAUNCH_FAILED', '不认识的激活参数')
+    })
+    app.start()
+
+    const dormant = await hub.waitForEvent((e) => e.type === 'appDormant' && e.appId === 'sleepy')
+    expect(dormant).toEqual({ type: 'appDormant', appId: 'sleepy', instanceId: 's1' })
+    const info = hub.apps().find((a) => a.appId === 'sleepy')!
+    expect(info.connected).toBe(false)
+    expect(info.dormantInstances.map((i) => i.instanceId)).toEqual(['s1'])
+    expect(hub.tools({ apps: ['sleepy'], includeBuiltin: false })).toEqual([
+      expect.objectContaining({ name: 'sleepy.ping', availability: 'dormant' }),
+    ])
+    expect(hub.tools({ apps: ['sleepy'], includeBuiltin: false, onlyAvailable: true })).toEqual([])
+
+    const out = await hub.callTool({ name: 'sleepy.ping', arguments: { x: 1 } })
+    expect(out.result.ok).toEqual({ echo: { x: 1 } })
+    expect(out.instanceId).toBe('s1')
+    expect(wakes).toHaveLength(1)
+    expect(wakes[0]).toMatchObject({
+      appId: 'sleepy',
+      instanceId: 's1',
+      descriptor: { kind: 'android-intent', target: 'dev.example/.WakeReceiver', background: true },
+    })
+    expect(wakes[0]!.activationArg).toBe(`app-mcp-wake:${wakes[0]!.token}`)
+    expect(events).toContainEqual({ type: 'appWaking', appId: 'sleepy', instanceId: 's1' })
+
+    // Waker 失败：协议类别透传
+    await hub.waitForEvent((e) => e.type === 'appDormant' && e.appId === 'sleepy')
+    hub.setWaker(() => Promise.reject(new HubError('APP_NOT_INSTALLED', '没装')))
+    const failed = await hub.callTool({ name: 'sleepy.ping' })
+    expect(failed.result.error).toMatchObject({ kind: 'APP_NOT_INSTALLED' })
+    hub.setWaker(null)
+  })
+
+  it('shutdown 后调用抛 SHUTDOWN', async () => {
+    const { hub } = await startHub({ wsAddr: null })
+    expect(hub.wsAddr).toBeNull()
+    expect(hub.wsUrl).toBeNull()
+    await hub.shutdown()
+    await hub.shutdown()
+    expect(hub.isShutdown).toBe(true)
+    expect(() => hub.tools()).toThrow(expect.objectContaining({ kind: 'SHUTDOWN' }))
+    await expect(hub.callTool({ name: 'a.b' })).rejects.toMatchObject({ kind: 'SHUTDOWN' })
+  })
+
+  it('配置不合法 → INVALID_ARG', async () => {
+    await expect(Hub.start({ keepAlive: false, bogus: 1 } as HubStartOptions)).rejects.toMatchObject({
+      kind: 'INVALID_ARG',
+    })
+    await expect(Hub.start({ keepAlive: false, wsAddr: 'not-an-addr' })).rejects.toMatchObject({
+      kind: 'START_FAILED',
+    })
+  })
+})

@@ -1,0 +1,30 @@
+[package]
+name = "app-mcp-uniffi"
+description = "app-mcp 原生 SDK 的 uniffi 绑定（Kotlin、Swift、Python）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "app_mcp_uniffi"
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+# `cli` 只给 uniffi-bindgen 用；交叉编译移动端库时用 --no-default-features 省掉 bindgen 依赖。
+default = ["cli"]
+cli = ["uniffi/cli"]
+
+[dependencies]
+app-mcp-native.workspace = true
+uniffi = { workspace = true }
+thiserror.workspace = true
+
+[build-dependencies]
+uniffi = { workspace = true, features = ["build"] }

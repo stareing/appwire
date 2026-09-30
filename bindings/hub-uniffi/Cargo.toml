@@ -1,0 +1,40 @@
+[package]
+name = "app-mcp-hub-uniffi"
+description = "Hub SDK 的 uniffi 绑定（Kotlin、Swift、Python）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "app_mcp_hub_uniffi"
+# 不产出 staticlib 以节省磁盘；打包 iOS XCFramework 时加上 "staticlib"。
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+# 与 App 端绑定的 `uniffi-bindgen` 区分，避免同一 target 目录下产物重名。
+name = "hub-uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+# `cli` 只给 hub-uniffi-bindgen 用；交叉编译移动端库时用 --no-default-features 省掉 bindgen 依赖。
+default = ["cli"]
+cli = ["uniffi/cli"]
+
+[dependencies]
+app-mcp-hub.workspace = true
+app-mcp-manifest.workspace = true
+uniffi = { workspace = true }
+thiserror.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# uniffi 的 async 回调接口（ApprovalHandler / PairingHandler）需要。
+async-trait = "0.1"
+
+[dev-dependencies]
+app-mcp-native.workspace = true

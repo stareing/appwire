@@ -1,0 +1,152 @@
+package dev.appmcp.android
+
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
+import dev.appmcp.AppMcp
+import dev.appmcp.AppMcpConfig
+import dev.appmcp.LifecycleMode
+import dev.appmcp.LifecyclePolicy
+import dev.appmcp.Residency
+import dev.appmcp.Visibility
+import dev.appmcp.WakeDescriptor
+import dev.appmcp.WakeKind
+import dev.appmcp.WakeOutcome
+import dev.appmcp.WakeReason
+import kotlinx.coroutines.Dispatchers
+
+/**
+ * 由 `Application` 实现：进程因唤醒广播冷启动、且还没有客户端时，[WakeWorker] 通过它取得客户端。
+ *
+ * ```kotlin
+ * class App : Application(), AppMcpProvider {
+ *     val mcp by lazy { AppMcpAndroid.create(this, AppMcpConfig("shop", "Shop")).start() }
+ *     override fun appMcp() = mcp
+ * }
+ * ```
+ */
+fun interface AppMcpProvider {
+    fun appMcp(): AppMcp
+}
+
+/**
+ * 唤醒的接收方。默认由 [AppMcpAndroid.create] 注册为包装 [AppMcp] 的实现；测试或自定义宿主可替换。
+ */
+interface WakeTarget {
+    /** 立即处理唤醒参数（App 在前台时由 [WakeReceiver] 直接调用）。 */
+    fun handleWake(args: String): Boolean
+
+    /** 处理唤醒参数并挂起到任务完成、再次休眠（由 [WakeWorker] 调用）。不是唤醒参数时返回 false。 */
+    suspend fun handleWakeAndAwaitSleep(args: String, timeoutMillis: Long): Boolean
+}
+
+/** 把 [AppMcp] 适配为 [WakeTarget]。 */
+class AppMcpWakeTarget(val client: AppMcp) : WakeTarget {
+    override fun handleWake(args: String) = client.handleWake(args)
+    override suspend fun handleWakeAndAwaitSleep(args: String, timeoutMillis: Long) =
+        client.handleWakeAndAwaitSleep(args, timeoutMillis) != WakeOutcome.NOT_A_WAKE
+}
+
+/**
+ * Android 接入辅助。
+ *
+ * - handler 默认在 `Dispatchers.Main` 上执行（可在配置中覆盖）；
+ * - 未设置 `instanceTitle` 时使用应用名；
+ * - 生命周期默认 `IDLE` + `KEEP`（spec/lifecycle.md 第 3 节「移动端封装默认 idle」），唤醒描述自动填为
+ *   `android-intent` → `<package>/dev.appmcp.android.WakeReceiver`（可后台唤醒）；
+ * - 跟随进程前后台切换上报可见性（`ProcessLifecycleOwner`）；回到前台时以 `visible` 原因回连；
+ * - 注册为进程级 [wakeTarget]，供 [WakeReceiver] / [WakeWorker] 使用。
+ *
+ * 不申请前台服务或 WakeLock：休眠后进程交给系统回收；Host 需要时通过显式广播唤醒（见 [WakeReceiver]）。
+ */
+object AppMcpAndroid {
+    /** 唤醒广播的 action。 */
+    const val ACTION_WAKE = "dev.appmcp.action.WAKE"
+
+    /** 唤醒令牌所在的 extra。 */
+    const val EXTRA_TOKEN = "token"
+
+    /** [WakeReceiver] 的类名（WakeDescriptor.target 的组件部分）。 */
+    const val RECEIVER_CLASS = "dev.appmcp.android.WakeReceiver"
+
+    /** [WakeWorker] 等待再次休眠的最长时间。 */
+    @JvmStatic
+    @Volatile
+    var wakeWorkTimeoutMillis: Long = 120_000
+
+    /** 进程级唤醒接收方；[AppMcpAndroid.create] 自动设置。 */
+    @JvmStatic
+    @Volatile
+    var wakeTarget: WakeTarget? = null
+
+    /** 最近一次 [create] 创建的客户端（已关闭时为 null）。 */
+    @JvmStatic
+    val client: AppMcp?
+        get() = (wakeTarget as? AppMcpWakeTarget)?.client?.takeUnless { it.isClosed }
+
+    /** 本 App 的唤醒描述：显式广播到 [WakeReceiver]，可在后台唤醒。 */
+    @JvmStatic
+    fun wakeDescriptor(context: Context): WakeDescriptor =
+        WakeDescriptor(WakeKind.ANDROID_INTENT, "${context.packageName}/$RECEIVER_CLASS", true)
+
+    /** Android 默认生命周期策略：`IDLE`、`KEEP`、自动唤醒描述。 */
+    @JvmStatic
+    fun defaultLifecycle(context: Context): LifecyclePolicy =
+        LifecyclePolicy(mode = LifecycleMode.IDLE, residency = Residency.KEEP, wake = wakeDescriptor(context))
+
+    @JvmStatic
+    @JvmOverloads
+    fun create(context: Context, config: AppMcpConfig, trackVisibility: Boolean = true): AppMcp {
+        val app = context.applicationContext
+        val title = config.instanceTitle ?: app.applicationInfo.loadLabel(app.packageManager).toString()
+        val lifecycle = config.lifecycle
+            ?.let { if (it.wake == null) it.copy(wake = wakeDescriptor(app)) else it }
+            ?: defaultLifecycle(app)
+        val client = AppMcp.create(
+            config.copy(
+                instanceTitle = title,
+                dispatcher = config.dispatcher ?: Dispatchers.Main,
+                lifecycle = lifecycle,
+            ),
+        )
+        wakeTarget = AppMcpWakeTarget(client)
+        if (trackVisibility) {
+            val observer = object : DefaultLifecycleObserver {
+                override fun onStart(owner: LifecycleOwner) {
+                    if (client.isClosed) return
+                    client.setVisibility(Visibility.VISIBLE, true)
+                    // 休眠中回到前台：回连（未休眠时无效果）。
+                    if (lifecycle.mode != LifecycleMode.PERSISTENT) client.wake(WakeReason.VISIBLE)
+                }
+
+                override fun onStop(owner: LifecycleOwner) {
+                    if (!client.isClosed) client.setVisibility(Visibility.HIDDEN, false)
+                }
+            }
+            onMain { ProcessLifecycleOwner.get().lifecycle.addObserver(observer) }
+        }
+        return client
+    }
+
+    /** 进程是否在前台（至少一个 Activity 处于 started）。只能在主线程调用。 */
+    internal fun isForeground(): Boolean = runCatching {
+        ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+    }.getOrDefault(false)
+
+    /** 取得唤醒接收方：已注册的 [wakeTarget]，否则由 `Application`（[AppMcpProvider]）创建。 */
+    internal fun resolveTarget(context: Context): WakeTarget? {
+        wakeTarget?.let { t -> if (t !is AppMcpWakeTarget || !t.client.isClosed) return t }
+        val provider = context.applicationContext as? AppMcpProvider ?: return null
+        val c = runCatching { provider.appMcp() }.getOrNull() ?: return null
+        if (c.isClosed) return null
+        return (wakeTarget as? AppMcpWakeTarget)?.takeIf { it.client === c } ?: AppMcpWakeTarget(c).also { wakeTarget = it }
+    }
+
+    private fun onMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) block() else Handler(Looper.getMainLooper()).post(block)
+    }
+}

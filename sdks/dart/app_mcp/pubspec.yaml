@@ -1,0 +1,14 @@
+name: app_mcp
+description: app-mcp 的 Dart SDK：通过 dart:ffi 调用 C ABI（libapp_mcp），把 App 内的业务动作以 MCP 工具暴露给模型。
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.4.0
+
+dependencies:
+  ffi: ^2.1.0
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0

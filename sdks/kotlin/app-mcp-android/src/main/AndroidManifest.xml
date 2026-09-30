@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+          Host 的唤醒广播（spec/lifecycle.md 第 5 节）：
+            am broadcast，action dev.appmcp.action.WAKE，组件 <包名>/dev.appmcp.android.WakeReceiver，字符串 extra token
+
+          exported=true：Host 从 App 进程之外（adb shell / 桌面伴侣）发显式广播。安全依赖 Host 签发的一次性令牌
+          （≥128 位、60 秒有效；回连时 Host 校验 launchToken），伪造广播最多引起一次无效回连。
+
+          需要限制调用方时，在 App 的 manifest 里声明同名 receiver 并加权限（清单合并会把属性并入）：
+            <permission android:name="<包名>.permission.APP_MCP_WAKE"
+                        android:protectionLevel="signature" />
+            <receiver android:name="dev.appmcp.android.WakeReceiver"
+                      android:permission="<包名>.permission.APP_MCP_WAKE" />
+          注意：signature 级权限会拒绝 `adb shell am broadcast`（shell 不持有该签名），只适合由同签名伴侣 App 唤醒。
+        -->
+        <receiver
+            android:name="dev.appmcp.android.WakeReceiver"
+            android:exported="true" />
+    </application>
+</manifest>

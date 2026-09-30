@@ -1,0 +1,16 @@
+[package]
+name = "app-mcp-c"
+description = "app-mcp 原生 SDK 的 C ABI（契约见 include/app_mcp.h）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "app_mcp"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+app-mcp-native.workspace = true
+serde_json.workspace = true

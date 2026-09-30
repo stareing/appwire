@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WPF 示例：只能在 Windows 上构建运行（dotnet build / Visual Studio）。
+    不在 AppMcp.sln 中，避免在 Linux / WSL 上构建解决方案失败。
+    原生库：先在 Windows 上 cargo build -p app-mcp-c，得到 target/debug/app_mcp.dll（会复制到输出目录），
+    或设置环境变量 APP_MCP_NATIVE_PATH 指向 app_mcp.dll。
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>AppMcp.Samples.Wpf</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/AppMcp/AppMcp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(AppMcpNativeDir)/app_mcp.dll" Condition="Exists('$(AppMcpNativeDir)/app_mcp.dll')" Link="app_mcp.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

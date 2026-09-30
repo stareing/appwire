@@ -1,0 +1,54 @@
+{
+  "name": "@app-mcp/web",
+  "version": "0.1.0",
+  "description": "app-mcp 浏览器 SDK：把网页中的业务动作以 MCP 工具暴露给模型",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./webmcp": {
+      "types": "./src/webmcp/index.ts",
+      "import": "./src/webmcp/index.ts"
+    }
+  },
+  "publishConfig": {
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./webmcp": {
+        "types": "./dist/webmcp/index.d.ts",
+        "import": "./dist/webmcp/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "zod": "^4.6.5",
+    "happy-dom": "^20.14.5"
+  }
+}

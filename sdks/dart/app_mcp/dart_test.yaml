@@ -1,0 +1,4 @@
+tags:
+  # 需要真实原生库与 fake_host；找不到时自动跳过。
+  integration:
+    timeout: 2x

@@ -1,0 +1,11 @@
+# uniffi 生成物与原生库：由 bindings/uniffi/scripts/generate.sh 生成，不纳入版本控制，
+# 避免与 Rust 源码 / 原生库版本不一致（uniffi 在加载时校验 checksum）。
+Sources/AppMcpBindings/
+Sources/app_mcp_uniffiFFI/include/
+Sources/AppMcpHubBindings/
+Sources/app_mcp_hub_uniffiFFI/include/
+lib/
+
+.build/
+.swiftpm/
+Package.resolved

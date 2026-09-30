@@ -1,0 +1,30 @@
+[package]
+name = "app-mcp-wasm"
+description = "app-mcp-core 的浏览器 WASM 绑定（供 @app-mcp/web 使用）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+app-mcp-core.workspace = true
+app-mcp-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen.workspace = true
+serde-wasm-bindgen.workspace = true
+js-sys.workspace = true
+console_error_panic_hook = { workspace = true, optional = true }
+
+[features]
+default = []
+debug = ["dep:console_error_panic_hook"]
+
+# 仅为缩小 WASM 体积：统一打开 sha2 的紧凑软件实现（toolsHash 用，性能不敏感）。
+# 不直接使用，借 Cargo 特性合并作用到 app-mcp-protocol 依赖的 sha2。
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }

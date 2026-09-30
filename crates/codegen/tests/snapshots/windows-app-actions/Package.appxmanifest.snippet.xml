@@ -1,0 +1,30 @@
+<!--
+  由 app-mcp-codegen 生成（target: windows-app-actions），请勿手动修改。
+  App：示例商城（shop）
+  总览：演示用购物商城，可管理待办、浏览商品、操作购物车并结算
+  把以下扩展合并进 Package.appxmanifest 的 <Application><Extensions>。
+  App Actions 需要包标识（MSIX）与 mediumIL；目标 SDK 10.0.26100.0+。
+  MCP agent connector 需要 Windows 26220.7262+（预发布功能）。
+-->
+<Extensions>
+  <!-- App Actions：Action 定义 -->
+  <uap3:Extension Category="windows.appExtension">
+    <uap3:AppExtension Name="com.microsoft.windows.ai.actions" DisplayName="示例商城" Id="ShopActions" PublicFolder="Assets">
+      <uap3:Properties><Registration>ShopActions.json</Registration></uap3:Properties>
+    </uap3:AppExtension>
+  </uap3:Extension>
+  <!-- App Actions：COM 激活 IActionProvider -->
+  <com2:Extension Category="windows.comServer">
+    <com2:ComServer>
+      <com3:ExeServer Executable="Shop.exe" DisplayName="示例商城">
+        <com:Class Id="20417D48-159C-4152-A8B8-65C4BCB02557" DisplayName="ShopActionProvider" />
+      </com3:ExeServer>
+    </com2:ComServer>
+  </com2:Extension>
+  <!-- MCP agent connector（On-Device Registry） -->
+  <uap3:Extension Category="windows.appExtension">
+    <uap3:AppExtension Name="com.microsoft.windows.ai.mcpServer" DisplayName="示例商城" Id="ShopMcpServer" PublicFolder="Assets\McpServer">
+      <uap3:Properties><Registration>manifest.json</Registration></uap3:Properties>
+    </uap3:AppExtension>
+  </uap3:Extension>
+</Extensions>

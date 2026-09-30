@@ -1,0 +1,217 @@
+using System.Text.Json;
+using AppMcp.Native;
+
+namespace AppMcp.Internal;
+
+/// <summary>工具 handler 的原始形式：参数 JSON → 结果 JSON（null 表示 JSON null）。</summary>
+internal delegate Task<string?> RawToolHandler(string argumentsJson, ToolContext context);
+
+/// <summary>资源读取的原始形式：返回内容 JSON。</summary>
+internal delegate Task<string> RawResourceReader(CancellationToken cancellationToken);
+
+/// <summary>一次调用的原始 AmCall*，保证恰好完成一次。</summary>
+internal sealed unsafe class PendingCall
+{
+    private readonly object _gate = new();
+    private nint _call;
+    private readonly CancellationTokenSource _cts = new();
+    private readonly SynchronizationContext? _dispatcher;
+
+    public PendingCall(nint call, SynchronizationContext? dispatcher)
+    {
+        _call = call;
+        _dispatcher = dispatcher;
+    }
+
+    public CancellationToken Token => _cts.Token;
+    public CancelReason? CancelReason { get; private set; }
+
+    /// <summary>在分发线程上被调用：切到调度器 / 线程池后再触发令牌，避免在分发线程上执行用户回调。</summary>
+    public void OnCancelled(CancelReason reason)
+    {
+        CancelReason = reason;
+        Dispatch.Run(_dispatcher, () =>
+        {
+            try { _cts.Cancel(); } catch { }
+        });
+    }
+
+    /// <summary>取走原始指针（只能成功一次）。与 <see cref="Hold"/> 互斥，保证 hold 不会用到已被消费的指针。</summary>
+    private nint Take()
+    {
+        lock (_gate)
+        {
+            var call = _call;
+            _call = 0;
+            return call;
+        }
+    }
+
+    /// <summary>延长持有（v3）：调用完成后仍阻止自动休眠，直到返回的对象被释放。</summary>
+    public IDisposable Hold()
+    {
+        lock (_gate)
+        {
+            if (_call == 0) throw new AppMcpException(AppMcpStatus.AlreadyCompleted, "调用已完成");
+            NativeMethods.Check(NativeMethods.am_call_hold(_call, out var raw));
+            return new HoldRelease(new HoldSafeHandle(raw));
+        }
+    }
+
+    public void Complete(string? dataJson, IReadOnlyList<string> stateHints)
+    {
+        var call = Take();
+        if (call == 0) return;
+        using var strings = new Utf8Strings();
+        var data = strings.AddPtr(dataJson ?? "null");
+        var hints = new nint[stateHints.Count];
+        for (var i = 0; i < hints.Length; i++) hints[i] = strings.Add(stateHints[i]);
+        AmStatus status;
+        fixed (nint* p = hints)
+        {
+            status = NativeMethods.am_call_complete(call, data, hints.Length == 0 ? null : (byte**)p, (nuint)hints.Length);
+        }
+        if (status == AmStatus.InvalidJson)
+        {
+            // 未被消费：改为失败完成。
+            FailRaw(call, "HANDLER_ERROR", "handler 返回的结果不是合法的 JSON：" + NativeMethods.LastError());
+        }
+    }
+
+    public void Fail(string kind, string message)
+    {
+        var call = Take();
+        if (call == 0) return;
+        FailRaw(call, kind, message);
+    }
+
+    /// <summary>失败完成并附带结构化详情（JSON 文本）。详情非法时退化为不带详情的失败。</summary>
+    public void FailWithDetails(string kind, string message, string? detailsJson)
+    {
+        var call = Take();
+        if (call == 0) return;
+        using var strings = new Utf8Strings();
+        var status = NativeMethods.am_call_fail_with_details(call, strings.AddPtr(kind), strings.AddPtr(message), strings.AddPtr(detailsJson));
+        if (status == AmStatus.InvalidJson) FailRaw(call, kind, message);
+    }
+
+    internal static void FailRaw(nint call, string kind, string message)
+    {
+        using var strings = new Utf8Strings();
+        NativeMethods.am_call_fail(call, strings.AddPtr(kind), strings.AddPtr(message));
+    }
+}
+
+internal sealed unsafe class PendingRead
+{
+    private nint _read;
+    private int _done;
+
+    public PendingRead(nint read) => _read = read;
+
+    public void Complete(string contentsJson)
+    {
+        if (Interlocked.Exchange(ref _done, 1) != 0) return;
+        var read = _read;
+        _read = 0;
+        using var strings = new Utf8Strings();
+        var status = NativeMethods.am_read_complete(read, strings.AddPtr(contentsJson));
+        if (status == AmStatus.InvalidJson)
+        {
+            FailRaw(read, "HANDLER_ERROR", "reader 返回的内容不是合法的 JSON：" + NativeMethods.LastError());
+        }
+    }
+
+    public void Fail(string kind, string message)
+    {
+        if (Interlocked.Exchange(ref _done, 1) != 0) return;
+        var read = _read;
+        _read = 0;
+        FailRaw(read, kind, message);
+    }
+
+    internal static void FailRaw(nint read, string kind, string message)
+    {
+        using var strings = new Utf8Strings();
+        NativeMethods.am_read_fail(read, strings.AddPtr(kind), strings.AddPtr(message));
+    }
+}
+
+/// <summary>工具 handler 的 user_data 目标。</summary>
+internal sealed class ToolInvoker(RawToolHandler handler, SynchronizationContext? dispatcher, JsonSerializerOptions? json = null)
+{
+    /// <summary>在分发线程上被调用：读取调用信息、设置取消回调，然后把 handler 投递到调度器。</summary>
+    public void Invoke(nint call)
+    {
+        var pending = new PendingCall(call, dispatcher);
+        var id = NativeMethods.PtrToString(NativeMethods.am_call_id(call)) ?? string.Empty;
+        var name = NativeMethods.PtrToString(NativeMethods.am_call_tool_name(call)) ?? string.Empty;
+        var args = NativeMethods.PtrToString(NativeMethods.am_call_arguments_json(call)) ?? "{}";
+
+        // user_data 的所有权交给库（失败时库会立即调用 FreeGCHandle）。
+        NativeMethods.am_call_set_cancel_callback(call, Callbacks.CancelPtr, Callbacks.Alloc(pending), Callbacks.FreeGCHandlePtr);
+
+        var context = new ToolContext(id, name, pending);
+        Dispatch.Run(dispatcher, () => RunAsync(pending, args, context));
+    }
+
+    private async Task RunAsync(PendingCall pending, string args, ToolContext context)
+    {
+        try
+        {
+            var result = await handler(args, context).ConfigureAwait(false);
+            pending.Complete(result, context.StateHints);
+        }
+        catch (ToolCallException e) when (e.Details is not null)
+        {
+            string? details;
+            try { details = JsonSerializer.Serialize(e.Details, e.Details.GetType(), json ?? JsonSerializerOptions.Web); }
+            catch (Exception) { details = null; }
+            pending.FailWithDetails(e.Kind.ToProtocolString(), e.Message, details);
+        }
+        catch (ToolCallException e)
+        {
+            pending.Fail(e.Kind.ToProtocolString(), e.Message);
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            pending.Fail("CANCELLED", "调用已取消");
+        }
+        catch (Exception e)
+        {
+            pending.Fail("HANDLER_ERROR", e.Message);
+        }
+    }
+}
+
+internal sealed class ResourceInvoker(RawResourceReader reader, SynchronizationContext? dispatcher)
+{
+    public void Invoke(nint read)
+    {
+        var pending = new PendingRead(read);
+        Dispatch.Run(dispatcher, () => RunAsync(pending));
+    }
+
+    private async Task RunAsync(PendingRead pending)
+    {
+        try
+        {
+            var contents = await reader(CancellationToken.None).ConfigureAwait(false);
+            pending.Complete(contents);
+        }
+        catch (ToolCallException e)
+        {
+            pending.Fail(e.Kind.ToProtocolString(), e.Message);
+        }
+        catch (Exception e)
+        {
+            pending.Fail("HANDLER_ERROR", e.Message);
+        }
+    }
+}
+
+/// <summary>持有的释放句柄（<see cref="AppMcpClient.Hold"/>、<see cref="ToolContext.Hold"/> 返回）。Dispose 幂等。</summary>
+internal sealed class HoldRelease(HoldSafeHandle handle) : IDisposable
+{
+    public void Dispose() => handle.Dispose();
+}

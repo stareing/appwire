@@ -1,0 +1,56 @@
+[package]
+name = "app-mcp-host"
+description = "本地 MCP Host：聚合各 App 的工具并以 MCP 暴露给模型（app-mcp-hub 之上的命令行薄壳）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "app_mcp_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "app-mcp-host"
+path = "src/main.rs"
+test = false
+
+# Windows 上的无控制台窗口版本（GUI 子系统），供登录启动项运行 `serve`；其他平台与 app-mcp-host 相同。
+[[bin]]
+name = "app-mcp-hostw"
+path = "src/bin/app-mcp-hostw.rs"
+test = false
+doc = false
+
+# 仅供集成测试使用的最小上游 MCP 服务器（集成测试通过 CARGO_BIN_EXE_app-mcp-test-upstream 启动）。
+[[bin]]
+name = "app-mcp-test-upstream"
+path = "tests/support/test_upstream.rs"
+test = false
+doc = false
+
+[dependencies]
+app-mcp-hub.workspace = true
+app-mcp-protocol.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+clap.workspace = true
+dirs.workspace = true
+serde.workspace = true
+rand.workspace = true
+# 以下仅 test_upstream 可执行程序使用。
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# 登录启动项：HKCU\Software\Microsoft\Windows\CurrentVersion\Run（无需管理员）。
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
+
+[dev-dependencies]
+app-mcp-manifest.workspace = true
+app-mcp-native.workspace = true
+futures.workspace = true
+tokio-tungstenite.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-io", "transport-streamable-http-client-reqwest"] }

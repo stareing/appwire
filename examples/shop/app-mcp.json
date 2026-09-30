@@ -1,0 +1,79 @@
+{
+  "manifestVersion": 1,
+  "appId": "shop",
+  "name": "示例商城",
+  "version": "0.1.0",
+  "description": "app-mcp 演示页面：待办与购物车",
+  "overview": {
+    "summary": "演示用购物商城：管理待办、搜索商品、操作购物车并结算",
+    "body": "## 适用场景\n- 演示 app-mcp：让模型像用户一样操作网页中的待办与购物车。\n\n## 能力范围\n- 待办（「待办」页签）：新增、勾选/取消勾选、删除；资源 `todos.list` 给出全部待办。\n- 商品：`catalog.search` 按名称或分类搜索，任何页签下都可用。\n- 店铺：`shop.info` 营业信息、`shop.deliveryEstimate` 配送时效估算，任何页签下都可用。\n- 购物车（「购物车」页签）：加入商品、移除条目、结算；资源 `cart.state` 给出条目、总价与可用收货地址。\n\n## 典型流程\n- 添加待办：`todos.add` → 需要时 `todos.toggle`。\n- 购物：`catalog.search` → `cart.add({ productId, qty })`。\n- 删除最贵的商品：读取 `cart.state` → `cart.removeItem({ itemId })`。\n- 结算：读取 `cart.state` 取得 `addressId` → `cart.checkout`。\n\n## 前置条件\n- 待办与购物车工具只在对应页签打开时出现；不可用时请提示用户切换页签。\n- 购物车为空时不能结算（`cart.checkout` 不可用）。\n\n## 不支持的操作\n- 退款、修改订单、修改收货地址、登录与账户管理。\n\n## 风险说明\n- `cart.checkout` 是支付操作，执行前应向用户确认商品、金额与地址。\n- `todos.remove` 会永久删除待办。",
+    "locale": "zh-CN"
+  },
+  "launch": {
+    "web": [
+      {
+        "type": "url",
+        "href": "http://localhost:5173/"
+      }
+    ]
+  },
+  "wake": {
+    "web": [
+      {
+        "kind": "web-url",
+        "target": "http://localhost:5173/"
+      }
+    ]
+  },
+  "tools": [
+    {
+      "name": "catalog.search",
+      "description": "按关键词（商品名或分类）搜索商品，返回商品 ID、名称、价格；关键词为空时返回全部商品",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "keyword": {
+            "description": "商品名或分类，如“耳机”“家居”",
+            "type": "string"
+          }
+        }
+      },
+      "title": "搜索商品",
+      "risk": "read",
+      "activation": "headless"
+    },
+    {
+      "name": "shop.info",
+      "description": "获取店铺营业信息（名称、营业时间、当前是否营业、客服电话）",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "risk": "read",
+      "activation": "headless"
+    },
+    {
+      "name": "shop.deliveryEstimate",
+      "description": "估算配送到指定城市所需的天数",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "description": "收货城市，如“上海”"
+          },
+          "express": {
+            "type": "boolean",
+            "description": "是否加急配送"
+          }
+        },
+        "required": [
+          "city"
+        ]
+      },
+      "risk": "read",
+      "activation": "headless"
+    }
+  ]
+}

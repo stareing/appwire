@@ -1,0 +1,159 @@
+/**
+ * 真实 WASM 核心的冒烟测试：驱动层 + WasmClient + 模拟 Host 的 WebSocket。
+ * 需要先运行 `pnpm --filter @app-mcp/web build:wasm`，否则跳过。
+ */
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { describe, expect, it } from 'vitest'
+import type { CoreClient, CoreConfig, CoreFactory } from '../src/core'
+import { AppMcpDriver } from '../src/driver'
+import { ToolCallError } from '../src/types'
+import { FakeSocket, settle, silentLogger } from './fakes'
+
+// 测试从包目录运行（pnpm --filter / vitest 默认 root）
+const glue = resolve(process.cwd(), 'src/wasm/app_mcp_wasm.js')
+const wasm = resolve(process.cwd(), 'src/wasm/app_mcp_wasm_bg.wasm')
+const available = existsSync(glue) && existsSync(wasm)
+
+async function loadRealCore(): Promise<CoreFactory> {
+  const mod = (await import(/* @vite-ignore */ pathToFileURL(glue).href)) as {
+    default: (init: { module_or_path: BufferSource }) => Promise<unknown>
+    WasmClient: new (c: CoreConfig) => CoreClient
+  }
+  await mod.default({ module_or_path: readFileSync(wasm) })
+  return (config) => new mod.WasmClient(config)
+}
+
+type Json = { id?: number | string; method?: string; params?: any; result?: any; error?: any }
+
+describe.skipIf(!available)('真实 WASM 核心', () => {
+  it('握手、同步、调用、资源读取、错误处理', async () => {
+    const sockets: FakeSocket[] = []
+    const clock = { now: 10_000 }
+    const logger = silentLogger()
+    const app = new AppMcpDriver(
+      {
+        appId: 'shop',
+        appName: '示例商城',
+        logger,
+        overview: { summary: '演示商城' },
+      },
+      {
+        loadCore: loadRealCore,
+        createWebSocket: (url) => {
+          const s = new FakeSocket(url)
+          sockets.push(s)
+          return s
+        },
+        now: () => clock.now,
+      },
+    )
+    const sent = (): Json[] => (sockets[0]?.sent ?? []).map((t) => JSON.parse(t) as Json)
+
+    app.tool('cart.add', {
+      description: '加入购物车',
+      input: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+      risk: 'write',
+      handler: ({ id }: { id: string }) => ({ data: { added: id }, stateHints: ['cart.state'] }),
+    })
+    app.tool('cart.fail', {
+      description: '总是失败',
+      handler: () => {
+        throw new ToolCallError('USER_REJECTED', '用户拒绝')
+      },
+    })
+    app.resource('cart.state', { description: '购物车', read: () => ({ items: 1 }) })
+
+    for (let i = 0; i < 50 && sockets.length === 0; i++) await new Promise((r) => setTimeout(r, 10))
+    expect(sockets).toHaveLength(1)
+    expect(app.state.status).toBe('connecting')
+    const ws = sockets[0] as FakeSocket
+    ws.open()
+    expect(app.state.status).toBe('handshaking')
+
+    const hello = sent()[0] as Json
+    expect(hello.method).toBe('app/hello')
+    expect(hello.params).toMatchObject({
+      appId: 'shop',
+      clientKind: 'web',
+      instanceId: app.instanceId,
+      overview: { summary: '演示商城' },
+    })
+
+    ws.receive(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: hello.id,
+        result: { status: 'paired', token: 'tk', protocolVersion: '1', hostVersion: '0.1.0' },
+      }),
+    )
+    expect(app.state.status).toBe('connected')
+    const methods = sent().map((m) => m.method)
+    expect(methods).toEqual(['app/hello', 'tools/sync', 'resources/sync', 'app/visibility', 'app/ready'])
+    const sync = sent()[1] as Json
+    expect(sync.params.tools.map((t: { name: string }) => t.name).sort()).toEqual(['cart.add', 'cart.fail'])
+    expect(localStorage.getItem('app-mcp:shop:token')).toBe('tk')
+
+    // 调用成功
+    ws.receive(JSON.stringify({ jsonrpc: '2.0', id: 'h1', method: 'tools/invoke', params: { callId: 'c1', name: 'cart.add', arguments: { id: 'p1' } } }))
+    await settle()
+    const r1 = sent().find((m) => m.id === 'h1') as Json
+    expect(r1.result).toEqual({ data: { added: 'p1' }, stateHints: ['cart.state'] })
+
+    // ToolCallError
+    ws.receive(JSON.stringify({ jsonrpc: '2.0', id: 'h2', method: 'tools/invoke', params: { callId: 'c2', name: 'cart.fail', arguments: {} } }))
+    await settle()
+    const r2 = sent().find((m) => m.id === 'h2') as Json
+    expect(r2.error).toMatchObject({ code: -32004, message: '用户拒绝', data: { kind: 'USER_REJECTED' } })
+
+    // 资源读取
+    ws.receive(JSON.stringify({ jsonrpc: '2.0', id: 'h3', method: 'resources/read', params: { name: 'cart.state' } }))
+    await settle()
+    const r3 = sent().find((m) => m.id === 'h3') as Json
+    expect(r3.result).toMatchObject({ contents: { items: 1 } })
+
+    // 注册变更 → tools/changed
+    const t = app.tool('cart.clear', { description: '清空', handler: () => null })
+    expect(sent().at(-1)).toMatchObject({ method: 'tools/changed', params: { upserted: [{ name: 'cart.clear' }] } })
+    t.dispose()
+    expect(sent().at(-1)).toMatchObject({ method: 'tools/changed', params: { removed: ['cart.clear'] } })
+
+    // 断开 → backoff，定时器到期后重连
+    ws.fail()
+    expect(app.state.status).toBe('backoff')
+
+    // 核心错误以 JS Error 抛出，由驱动层记录
+    expect(logger.error).not.toHaveBeenCalled()
+    app.dispose()
+    expect(app.state.status).toBe('stopped')
+  })
+
+  it('WasmClient 直接使用：错误转为 JS Error，事件为 tagged 对象', async () => {
+    const factory = await loadRealCore()
+    const core = factory({ appId: 'shop', appName: 's', instanceId: 'i' })
+    expect(core.state()).toEqual({ status: 'idle' })
+    expect(core.pollEvent()).toBeUndefined()
+    expect(core.pollTimeout()).toBeUndefined()
+    const id = core.registerTool({ name: 'a', description: '', inputSchema: { type: 'object' } })
+    expect(typeof id).toBe('number')
+    expect(() => core.registerTool({ name: 'a', description: '', inputSchema: { type: 'object' } })).toThrow(Error)
+    expect(() => core.registerTool({ name: 'bad name', description: '', inputSchema: { type: 'object' } })).toThrow(/invalid name/)
+    expect(() => core.unregisterTool(9999)).toThrow(/unknown tool/)
+    expect(() => core.setVisibility('gone' as never, true, 0)).toThrow(/可见性/)
+    const drain = (): unknown[] => {
+      const out: unknown[] = []
+      for (let e = core.pollEvent(); e; e = core.pollEvent()) out.push(e)
+      return out
+    }
+    core.start(0)
+    expect(drain()).toEqual(
+      expect.arrayContaining([{ type: 'connect' }, { type: 'stateChanged', state: { status: 'connecting' } }]),
+    )
+    core.handleDisconnected(0)
+    const events = drain()
+    expect(events).toContainEqual({ type: 'stateChanged', state: { status: 'backoff', retryAt: 500 } })
+    expect(core.pollTimeout()).toBe(500)
+    core.free?.()
+  })
+})

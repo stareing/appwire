@@ -1,0 +1,47 @@
+/**
+ * @app-mcp/web：浏览器 SDK。
+ *
+ * ```ts
+ * import { createAppMcp } from '@app-mcp/web'
+ * export const appMcp = createAppMcp({ appId: 'shop', appName: '示例商城' })
+ * appMcp.tool('cart.clear', { description: '清空购物车', handler: () => cart.clear() })
+ * ```
+ */
+
+import { createDriver } from './driver'
+import { createBridgeAppMcp, findElectronBridge } from './electron-bridge'
+import { globalBroadcastChannel } from './instance-guard'
+import { createDisabledAppMcp } from './noop'
+import type { AppMcp, AppMcpOptions } from './types'
+import { loadWasmCore } from './wasm-loader'
+
+export * from './types'
+export { DEFAULT_HOST_URL, SDK_VERSION } from './driver'
+export {
+  BRIDGE_VERSION,
+  createBridgeAppMcp,
+  DEFAULT_BRIDGE_KEY,
+  findElectronBridge,
+  type AppMcpBridge,
+  type HelloReply,
+  type MainEvent,
+  type OpReply,
+  type Outcome,
+  type RendererOp,
+  type ToolSpecMessage,
+} from './electron-bridge'
+
+/**
+ * 创建 SDK 实例（同步返回）。WASM 核心在后台按需加载，加载前的注册缓存在 JS 侧。
+ * `enabled: false` 时返回空操作实现，不加载 WASM、不连接。
+ *
+ * 在 Electron 渲染进程中（preload 用 `@app-mcp/electron/preload` 暴露了桥接对象）自动改走主进程：
+ * 经 IPC 登记工具，不加载 WASM、不连接 Host（见 electron-bridge.ts）。
+ */
+export function createAppMcp(options: AppMcpOptions): AppMcp {
+  if (options.enabled === false) return createDisabledAppMcp(options)
+  const bridge = findElectronBridge()
+  if (bridge) return createBridgeAppMcp(options, bridge)
+  const createBroadcastChannel = globalBroadcastChannel()
+  return createDriver(options, { loadCore: loadWasmCore, ...(createBroadcastChannel && { createBroadcastChannel }) })
+}

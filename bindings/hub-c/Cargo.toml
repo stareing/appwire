@@ -1,0 +1,23 @@
+[package]
+name = "app-mcp-hub-c"
+description = "Hub SDK 的 C ABI（契约见 include/app_mcp_hub.h）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "app_mcp_hub"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+# 依赖重命名为 hub：本库名也是 app_mcp_hub（任务约定），避免与 crates/hub 的库名冲突。
+hub = { package = "app-mcp-hub", path = "../../crates/hub" }
+app-mcp-manifest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+app-mcp-native.workspace = true

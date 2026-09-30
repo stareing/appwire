@@ -1,0 +1,13 @@
+[package]
+name = "app-mcp-manifest"
+description = "静态能力清单 app-mcp.json 的类型、解析与校验（规范见 spec/manifest.md）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+app-mcp-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

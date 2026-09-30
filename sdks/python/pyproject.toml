@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "app-mcp"
+version = "0.1.0"
+description = "app-mcp Python SDK：把 App 内的业务动作以 MCP 工具暴露给模型"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+dependencies = []
+
+[project.optional-dependencies]
+pydantic = ["pydantic>=2"]
+# Linux D-Bus 唤醒服务（app_mcp.linux.serve_dbus_wake）
+dbus = ["jeepney>=0.8"]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# 由 bindings/uniffi/scripts/generate.sh 放入包目录的原生库
+app_mcp = ["*.so", "*.dylib", "*.dll"]
+# 由 bindings/hub-uniffi/scripts/generate.sh 放入包目录（Hub SDK，app_mcp.hub 使用）
+app_mcp_hub = ["*.so", "*.dylib", "*.dll"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "integration: 需要 cargo 与 fake_host 的集成测试",
+    "hub: 需要 hub-uniffi 生成物（app_mcp_hub）的 Hub SDK 测试",
+]

@@ -1,0 +1,20 @@
+[package]
+name = "app-mcp-codegen"
+description = "从 app-mcp.json 清单生成各平台原生意图声明与各语言类型化接口"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "app-mcp-codegen"
+path = "src/main.rs"
+
+[dependencies]
+app-mcp-protocol.workspace = true
+app-mcp-manifest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+clap.workspace = true

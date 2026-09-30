@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    // 工作区包经 package.json 的 "@app-mcp/source" 导出条件（tsconfig.base.json 的 customConditions）直接取源码做类型检查。
+    "types": ["vite/client"]
+  },
+  "include": ["src", "vite.config.ts"]
+}

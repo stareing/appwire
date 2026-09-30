@@ -1,0 +1,27 @@
+{
+  "name": "@app-mcp/electron",
+  "version": "0.1.0",
+  "description": "app-mcp 的 Electron 适配：主进程连接 Host，渲染进程页面经 IPC 桥接",
+  "type": "module",
+  "exports": {
+    "./main": { "types": "./dist/main.d.ts", "import": "./dist/main.js" },
+    "./preload": { "types": "./dist/preload.d.ts", "import": "./dist/preload.js" },
+    "./renderer": { "types": "./dist/renderer.d.ts", "import": "./dist/renderer.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@app-mcp/node": "workspace:*",
+    "@app-mcp/web": "workspace:*"
+  },
+  "peerDependencies": {
+    "electron": ">=30"
+  },
+  "peerDependenciesMeta": {
+    "electron": { "optional": true }
+  }
+}

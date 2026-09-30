@@ -1,0 +1,53 @@
+{
+  "name": "@app-mcp/build",
+  "version": "0.1.0",
+  "description": "app-mcp 构建插件：从静态工具定义生成 app-mcp.json 清单",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "@app-mcp/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./define": {
+      "@app-mcp/source": "./src/define.ts",
+      "types": "./dist/define.d.ts",
+      "import": "./dist/define.js"
+    },
+    "./annotations": {
+      "@app-mcp/source": "./src/annotations.ts",
+      "types": "./dist/annotations.d.ts",
+      "import": "./dist/annotations.js"
+    },
+    "./client": {
+      "types": "./client.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "client.d.ts"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@app-mcp/web": "workspace:*"
+  },
+  "peerDependencies": {
+    "vite": "^7.0.0 || ^8.0.0",
+    "typescript": ">=5.0.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.1",
+    "zod": "^4.6.5"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
+  }
+}

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>便签示例 · app-mcp</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <!--
+      本页没有为 MCP 编写任何 JS：工具与资源全部用 data-mcp-* 属性声明，由 attachDom 自动登记。
+      页面自身的交互逻辑（src/notes.ts）只是普通的 DOM 事件处理。
+    -->
+    <main>
+      <header>
+        <h1>便签</h1>
+        <span id="status" class="status">未连接</span>
+      </header>
+
+      <!-- 表单工具：参数 schema 由字段推导（title 必填、color 为枚举、pinned 为布尔）。
+           页面处理完提交后派发 note-created 事件，其 detail 作为工具结果。 -->
+      <form
+        id="new-note"
+        class="card"
+        data-mcp-tool="notes.create"
+        data-mcp-desc="新建一条便签"
+        data-mcp-result="note-created"
+        data-mcp-hints="notes.list"
+      >
+        <label>
+          标题
+          <input name="title" required maxlength="40" placeholder="写点什么…" data-mcp-desc="便签标题，最多 40 字" />
+        </label>
+        <label>
+          颜色
+          <select name="color">
+            <option value="yellow">黄色</option>
+            <option value="green">绿色</option>
+            <option value="blue">蓝色</option>
+            <option value="pink">粉色</option>
+          </select>
+        </label>
+        <label class="inline"><input type="checkbox" name="pinned" data-mcp-desc="是否置顶" /> 置顶</label>
+        <button type="submit">添加</button>
+      </form>
+
+      <div class="toolbar">
+        <span id="count">共 0 条</span>
+        <!-- 按钮工具：便签为空时页面把它设为 disabled，工具随之变为不可用。 -->
+        <button
+          id="clear-all"
+          class="danger"
+          data-mcp-tool="notes.clear"
+          data-mcp-desc="删除全部便签"
+          data-mcp-risk="destructive"
+          data-mcp-hints="notes.list"
+          disabled
+        >
+          清空全部
+        </button>
+      </div>
+
+      <!-- 资源：页面把便签数组序列化到 data-mcp-json。
+           每条便签里的删除按钮带 data-mcp-key，合并成一个带 key 参数的 notes.remove 工具。 -->
+      <ul id="notes" class="notes" data-mcp-resource="notes.list" data-mcp-desc="当前全部便签（JSON 数组）" data-mcp-json="[]"></ul>
+      <p id="empty" class="empty">还没有便签</p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

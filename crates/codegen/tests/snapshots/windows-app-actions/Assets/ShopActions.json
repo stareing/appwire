@@ -1,0 +1,228 @@
+{
+  "actions": [
+    {
+      "allowedAppInvokers": [
+        "*"
+      ],
+      "description": "按关键词搜索商品，返回商品 ID、名称、价格",
+      "displaysUI": false,
+      "icon": "ms-resource://Files/Assets/StoreLogo.png",
+      "id": "Shop.CatalogSearch",
+      "inputCombinations": [
+        {
+          "description": "搜索商品",
+          "inputs": []
+        },
+        {
+          "description": "搜索商品：${keyword.Text}，${category.Text}，${limit.Text}，${inStock.Text}，${maxPrice.Text}",
+          "inputs": [
+            "keyword",
+            "category",
+            "limit",
+            "inStock",
+            "maxPrice"
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "Text",
+          "name": "keyword",
+          "required": false
+        },
+        {
+          "kind": "Text",
+          "name": "category",
+          "required": false
+        },
+        {
+          "kind": "Text",
+          "name": "limit",
+          "required": false
+        },
+        {
+          "kind": "Text",
+          "name": "inStock",
+          "required": false
+        },
+        {
+          "kind": "Text",
+          "name": "maxPrice",
+          "required": false
+        }
+      ],
+      "invocation": {
+        "clsid": "{20417D48-159C-4152-A8B8-65C4BCB02557}",
+        "type": "COM"
+      },
+      "isAvailable": true,
+      "outputs": [
+        {
+          "kind": "Text",
+          "name": "response"
+        }
+      ],
+      "usesGenerativeAI": false
+    },
+    {
+      "allowedAppInvokers": [
+        "*"
+      ],
+      "description": "把商品加入购物车",
+      "displaysUI": false,
+      "icon": "ms-resource://Files/Assets/StoreLogo.png",
+      "id": "Shop.CartAdd",
+      "inputCombinations": [
+        {
+          "description": "加入购物车：${productId.Text}，${qty.Text}",
+          "inputs": [
+            "productId",
+            "qty"
+          ]
+        },
+        {
+          "description": "加入购物车：${productId.Text}，${qty.Text}，${note.Text}",
+          "inputs": [
+            "productId",
+            "qty",
+            "note"
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "Text",
+          "name": "productId",
+          "required": true
+        },
+        {
+          "kind": "Text",
+          "name": "qty",
+          "required": true
+        },
+        {
+          "kind": "Text",
+          "name": "note",
+          "required": false
+        }
+      ],
+      "invocation": {
+        "clsid": "{20417D48-159C-4152-A8B8-65C4BCB02557}",
+        "type": "COM"
+      },
+      "isAvailable": true,
+      "outputs": [
+        {
+          "kind": "Text",
+          "name": "response"
+        }
+      ],
+      "usesGenerativeAI": false
+    },
+    {
+      "allowedAppInvokers": [
+        "*"
+      ],
+      "description": "从购物车移除一个条目",
+      "displaysUI": false,
+      "icon": "ms-resource://Files/Assets/StoreLogo.png",
+      "id": "Shop.CartRemoveItem",
+      "inputCombinations": [
+        {
+          "description": "移除购物车条目：${itemId.Text}",
+          "inputs": [
+            "itemId"
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "Text",
+          "name": "itemId",
+          "required": true
+        }
+      ],
+      "invocation": {
+        "clsid": "{20417D48-159C-4152-A8B8-65C4BCB02557}",
+        "type": "COM"
+      },
+      "isAvailable": true,
+      "outputs": [
+        {
+          "kind": "Text",
+          "name": "response"
+        }
+      ],
+      "usesGenerativeAI": false
+    },
+    {
+      "allowedAppInvokers": [
+        "*"
+      ],
+      "description": "删除全部已完成的待办",
+      "displaysUI": false,
+      "icon": "ms-resource://Files/Assets/StoreLogo.png",
+      "id": "Shop.TodosClear",
+      "inputCombinations": [
+        {
+          "description": "清空待办",
+          "inputs": []
+        }
+      ],
+      "inputs": [],
+      "invocation": {
+        "clsid": "{20417D48-159C-4152-A8B8-65C4BCB02557}",
+        "type": "COM"
+      },
+      "isAvailable": true,
+      "outputs": [
+        {
+          "kind": "Text",
+          "name": "response"
+        }
+      ],
+      "usesGenerativeAI": false
+    },
+    {
+      "allowedAppInvokers": [
+        "*"
+      ],
+      "description": "查看销售概览",
+      "displaysUI": false,
+      "icon": "ms-resource://Files/Assets/StoreLogo.png",
+      "id": "Shop.StatsSummary",
+      "inputCombinations": [
+        {
+          "description": "销售概览",
+          "inputs": []
+        },
+        {
+          "description": "销售概览：${period.Text}",
+          "inputs": [
+            "period"
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "Text",
+          "name": "period",
+          "required": false
+        }
+      ],
+      "invocation": {
+        "clsid": "{20417D48-159C-4152-A8B8-65C4BCB02557}",
+        "type": "COM"
+      },
+      "isAvailable": true,
+      "outputs": [
+        {
+          "kind": "Text",
+          "name": "response"
+        }
+      ],
+      "usesGenerativeAI": false
+    }
+  ],
+  "version": 3
+}

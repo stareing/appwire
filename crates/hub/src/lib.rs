@@ -1,0 +1,51 @@
+//! app-mcp-hub：Agent 端 Hub 库（spec/hub-api.md）。
+//!
+//! 把“连接本机所有 App”的能力嵌进厂商自己的 Agent / 助手：列工具、调用、读资源、事件、
+//! 审批与配对回调、按 LLM 厂商格式导出工具并分派调用；也可同时以 MCP（stdio / Streamable HTTP）对外提供。
+//!
+//! - [`Hub`]：入口（[`Hub::start`]）。
+//! - [`format`]：工具格式导出与分派（[`ToolFormat`]、[`format::NameCodec`]）。
+//! - [`McpSession`]：MCP 出口（rmcp `ServerHandler`），与 [`Hub::call_tool`] 共用一份调用逻辑。
+//! - 其余模块（注册表、路由、App 连接服务、上游聚合、总览）为内部实现，公开以便测试与高级用法。
+//!
+//! 可执行程序 `app-mcp-host` 是本库之上的命令行薄壳。
+
+pub mod app_server;
+pub mod call;
+pub mod connection;
+pub mod format;
+pub mod http_server;
+pub mod hub;
+mod lifecycle;
+pub mod mcp;
+pub mod origin;
+pub mod overview;
+pub mod registry;
+pub mod routing;
+pub mod schema;
+pub mod types;
+pub mod upstream;
+pub mod wake;
+
+pub use app_mcp_protocol::{Activation, ErrorKind, Risk, ToolError, Visibility};
+pub use format::ToolFormat;
+pub use http_server::{Health, HttpOptions};
+pub use hub::{
+    Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME, load_manifests, parse_resource_uri,
+    resource_uri,
+};
+pub use mcp::McpSession;
+pub use types::{
+    AppInfo, AppKind, AppOverviewInfo, ApprovalHandler, ApprovalPolicy, ApprovalRequest,
+    Availability, CallOutcome, CallRequest, HubError, HubEvent, HubResource, HubTool,
+    InstanceInfo, PairingHandler, PairingRequest, ResourceContent, ToolFilter, risk_rank,
+};
+pub use upstream::UpstreamConfig;
+pub use wake::{Platform, SystemWaker, WakeDescriptor, WakeKind, WakeRequest, Waker};
+
+/// Windows `CREATE_NO_WINDOW`：Hub 启动的子进程（唤醒命令、上游）不创建控制台窗口。
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// 供实现 [`ApprovalHandler`] / [`PairingHandler`] 使用（`#[app_mcp_hub::async_trait]`）。
+pub use async_trait::async_trait;

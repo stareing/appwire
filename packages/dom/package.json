@@ -1,0 +1,28 @@
+{
+  "name": "@app-mcp/dom",
+  "version": "0.1.0",
+  "description": "用 HTML 属性（data-mcp-*）声明工具与资源，无需编写 JS；并提供精简页面快照",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "@app-mcp/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@app-mcp/web": "workspace:*"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.14.5"
+  }
+}

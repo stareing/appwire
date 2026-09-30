@@ -1,0 +1,1448 @@
+//! 注册表：appId → 静态清单 + 已连接实例（工具、资源、可见性、订阅）。
+//!
+//! 注册表是纯数据结构（不做 I/O），由 `HubShared` 用互斥锁保护；
+//! 持锁期间不 `await`。
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use app_mcp_manifest::Manifest;
+use app_mcp_protocol::{
+    AppOverview, ClientKind, ErrorKind, ResourceInfo, ResourcesSyncParams, ToolError, ToolInfo,
+    ToolsSyncParams, Visibility, WakeDescriptor, WakeKind, is_valid_name,
+};
+use serde_json::{Value, json};
+
+use crate::connection::Connection;
+use crate::overview::{AppSummary, Overview, OverviewSource};
+use crate::routing::{self, Candidate};
+use crate::types::{AppInfo, AppKind, InstanceInfo};
+
+/// 握手成功后登记的新实例。
+#[derive(Debug, Clone)]
+pub struct NewInstance {
+    pub instance_id: String,
+    pub app_name: String,
+    pub client_kind: ClientKind,
+    pub app_version: Option<String>,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    /// `app/hello` 中携带的总览。
+    pub overview: Option<AppOverview>,
+    pub conn: Arc<Connection>,
+}
+
+/// 一个已连接的实例（标签页 / 进程）。
+#[derive(Debug)]
+pub struct Instance {
+    pub instance_id: String,
+    pub app_name: String,
+    pub client_kind: ClientKind,
+    pub app_version: Option<String>,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub overview: Option<AppOverview>,
+    pub conn: Arc<Connection>,
+    /// 尚未收到 `app/visibility` 时为 `None`。
+    pub visibility: Option<Visibility>,
+    pub focused: bool,
+    pub ready: bool,
+    pub connected_at: SystemTime,
+    pub connected_seq: u64,
+    pub last_active_at: Option<SystemTime>,
+    pub last_active_seq: Option<u64>,
+    pub tools: BTreeMap<String, ToolInfo>,
+    pub resources: BTreeMap<String, ResourceInfo>,
+    /// Host 已向该实例订阅的资源名。
+    pub subscriptions: HashSet<String>,
+}
+
+impl Instance {
+    fn candidate(&self) -> Candidate<'_> {
+        Candidate {
+            instance_id: &self.instance_id,
+            focused: self.focused,
+            last_active: self.last_active_seq,
+            connected: self.connected_seq,
+        }
+    }
+}
+
+/// 休眠中的实例（spec/lifecycle.md §9）：`app/sleep` 被接受后的工具 / 资源快照与恢复信息。
+#[derive(Debug, Clone)]
+pub struct DormantInstance {
+    pub instance_id: String,
+    pub app_name: String,
+    pub client_kind: ClientKind,
+    pub app_version: Option<String>,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub overview: Option<AppOverview>,
+    pub visibility: Option<Visibility>,
+    pub tools: BTreeMap<String, ToolInfo>,
+    pub resources: BTreeMap<String, ResourceInfo>,
+    /// 本 Hub 发给 SDK 的恢复令牌（一次性）。
+    pub resume_token: String,
+    /// SDK 休眠时上报的 `toolsHash`。
+    pub tools_hash: String,
+    /// SDK 休眠时上报的唤醒描述。
+    pub wake: Option<WakeDescriptor>,
+    pub slept_at: SystemTime,
+    pub connected_at: SystemTime,
+    pub last_active_at: Option<SystemTime>,
+    /// 路由优先级用：休眠前最近活跃（或连接）的序号。
+    pub recency: u64,
+}
+
+impl DormantInstance {
+    /// 按快照重算的 `toolsHash`（spec/protocol.md 8.4）。
+    pub fn snapshot_hash(&self) -> String {
+        app_mcp_protocol::tools_hash(
+            &ToolsSyncParams {
+                tools: self.tools.values().cloned().collect(),
+            },
+            &ResourcesSyncParams {
+                resources: self.resources.values().cloned().collect(),
+            },
+        )
+    }
+
+    /// 可用的唤醒描述（`none` 视为未上报）。
+    pub fn wake_descriptor(&self) -> Option<&WakeDescriptor> {
+        self.wake.as_ref().filter(|w| w.kind != WakeKind::None)
+    }
+}
+
+/// 需要先唤醒才能派发的调用目标。
+#[derive(Debug, Clone)]
+pub struct WakePlan {
+    pub app_id: String,
+    /// 被唤醒的休眠实例；`None` = App 未运行，按清单冷启动。
+    pub instance_id: Option<String>,
+    /// 休眠实例上报的唤醒描述（`None` 时由调用方按清单解析）。
+    pub descriptor: Option<WakeDescriptor>,
+    /// 快照（或清单）中的定义，用于唤醒前的 schema 校验与审批。
+    pub tool: Option<ToolInfo>,
+}
+
+#[derive(Debug, Default)]
+struct AppEntry {
+    manifest: Option<Manifest>,
+    /// 按连接顺序排列。
+    instances: Vec<Instance>,
+    /// 按休眠顺序排列。
+    dormant: Vec<DormantInstance>,
+}
+
+impl AppEntry {
+    fn display_name(&self) -> Option<&str> {
+        self.manifest
+            .as_ref()
+            .map(|m| m.name.as_str())
+            .or_else(|| self.instances.last().map(|i| i.app_name.as_str()))
+            .or_else(|| self.dormant.last().map(|i| i.app_name.as_str()))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.instances.is_empty() && self.manifest.is_none() && self.dormant.is_empty()
+    }
+
+    /// 休眠实例按优先级排列：选定的优先，其次最近活跃。
+    fn dormant_ordered(&self, selected: Option<&str>, filter: impl Fn(&DormantInstance) -> bool) -> Vec<&DormantInstance> {
+        let mut v: Vec<&DormantInstance> = self.dormant.iter().filter(|d| filter(d)).collect();
+        v.sort_by_key(|d| (Some(d.instance_id.as_str()) != selected, std::cmp::Reverse(d.recency)));
+        v
+    }
+
+    /// 按默认路由优先级排列的实例（`filter` 为真的才参与）。
+    fn ordered<'a>(
+        &'a self,
+        selected: Option<&str>,
+        filter: impl Fn(&Instance) -> bool,
+    ) -> Vec<&'a Instance> {
+        let cands: Vec<Candidate<'_>> = self
+            .instances
+            .iter()
+            .filter(|i| filter(i))
+            .map(Instance::candidate)
+            .collect();
+        routing::order(&cands, selected)
+            .into_iter()
+            .filter_map(|id| self.instances.iter().find(|i| i.instance_id == id))
+            .collect()
+    }
+}
+
+pub use crate::types::Availability;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListedTool {
+    pub app_id: String,
+    pub info: ToolInfo,
+    pub availability: Availability,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListedResource {
+    pub app_id: String,
+    pub info: ResourceInfo,
+    pub available: bool,
+}
+
+/// 工具调用的目标。
+#[derive(Debug, Clone)]
+pub struct ToolTarget {
+    pub instance_id: String,
+    pub conn: Arc<Connection>,
+    pub tool: ToolInfo,
+}
+
+/// 资源读取的目标。
+#[derive(Debug, Clone)]
+pub struct ResourceTarget {
+    pub instance_id: String,
+    pub conn: Arc<Connection>,
+    pub resource: ResourceInfo,
+}
+
+#[derive(Debug, Default)]
+pub struct Registry {
+    apps: BTreeMap<String, AppEntry>,
+    seq: u64,
+}
+
+fn unix_ms(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub(crate) fn client_kind_str(k: ClientKind) -> &'static str {
+    match k {
+        ClientKind::Web => "web",
+        ClientKind::Native => "native",
+        ClientKind::Hybrid => "hybrid",
+    }
+}
+
+fn visibility_str(v: Option<Visibility>) -> Value {
+    match v {
+        Some(Visibility::Visible) => json!("visible"),
+        Some(Visibility::Hidden) => json!("hidden"),
+        Some(Visibility::Frozen) => json!("frozen"),
+        None => Value::Null,
+    }
+}
+
+/// 过滤 SDK 发来的非法工具条目。
+fn sanitize_tools(app_id: &str, tools: Vec<ToolInfo>) -> Vec<ToolInfo> {
+    tools
+        .into_iter()
+        .filter(|t| {
+            let ok = is_valid_name(&t.name)
+                && t.input_schema.get("type").and_then(Value::as_str) == Some("object");
+            if !ok {
+                tracing::warn!(app_id, tool = %t.name, "忽略非法的工具定义（名称不合法或 inputSchema.type 不是 object）");
+            }
+            ok
+        })
+        .collect()
+}
+
+fn sanitize_resources(app_id: &str, resources: Vec<ResourceInfo>) -> Vec<ResourceInfo> {
+    resources
+        .into_iter()
+        .filter(|r| {
+            let ok = is_valid_name(&r.name);
+            if !ok {
+                tracing::warn!(app_id, resource = %r.name, "忽略名称不合法的资源");
+            }
+            ok
+        })
+        .collect()
+}
+
+impl Registry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 登记静态清单；同一 appId 已有清单时替换并返回旧清单。
+    pub fn set_manifest(&mut self, manifest: Manifest) -> Option<Manifest> {
+        let entry = self.apps.entry(manifest.app_id.clone()).or_default();
+        entry.manifest.replace(manifest)
+    }
+
+    pub fn manifest(&self, app_id: &str) -> Option<&Manifest> {
+        self.apps.get(app_id)?.manifest.as_ref()
+    }
+
+    fn next_seq(&mut self) -> u64 {
+        self.seq += 1;
+        self.seq
+    }
+
+    /// 登记新实例。同一 instanceId 已存在时替换，返回被替换的旧连接（调用方负责关闭）。
+    pub fn add_instance(&mut self, app_id: &str, new: NewInstance) -> Option<Arc<Connection>> {
+        let seq = self.next_seq();
+        let entry = self.apps.entry(app_id.to_owned()).or_default();
+        let old = entry
+            .instances
+            .iter()
+            .position(|i| i.instance_id == new.instance_id)
+            .map(|pos| entry.instances.remove(pos).conn);
+        entry.instances.push(Instance {
+            instance_id: new.instance_id,
+            app_name: new.app_name,
+            client_kind: new.client_kind,
+            app_version: new.app_version,
+            title: new.title,
+            url: new.url,
+            overview: new.overview,
+            conn: new.conn,
+            visibility: None,
+            focused: false,
+            ready: false,
+            connected_at: SystemTime::now(),
+            connected_seq: seq,
+            last_active_at: None,
+            last_active_seq: None,
+            tools: BTreeMap::new(),
+            resources: BTreeMap::new(),
+            subscriptions: HashSet::new(),
+        });
+        old
+    }
+
+    /// 移除某连接对应的实例。连接已被替换时不做任何事，返回 `None`。
+    pub fn remove_instance(&mut self, app_id: &str, conn_id: u64) -> Option<Instance> {
+        let entry = self.apps.get_mut(app_id)?;
+        let pos = entry.instances.iter().position(|i| i.conn.id == conn_id)?;
+        let inst = entry.instances.remove(pos);
+        if entry.is_empty() {
+            self.apps.remove(app_id);
+        }
+        Some(inst)
+    }
+
+    // ------------------------------------------------------------------
+    // 休眠（spec/lifecycle.md §9）
+    // ------------------------------------------------------------------
+
+    /// 把某连接对应的实例转为休眠记录（同一 instanceId 的旧休眠记录被替换）。返回 instanceId。
+    pub fn make_dormant(
+        &mut self,
+        app_id: &str,
+        conn_id: u64,
+        resume_token: String,
+        tools_hash: String,
+        wake: Option<WakeDescriptor>,
+    ) -> Option<String> {
+        let entry = self.apps.get_mut(app_id)?;
+        let pos = entry.instances.iter().position(|i| i.conn.id == conn_id)?;
+        let inst = entry.instances.remove(pos);
+        entry.dormant.retain(|d| d.instance_id != inst.instance_id);
+        let id = inst.instance_id.clone();
+        entry.dormant.push(DormantInstance {
+            instance_id: inst.instance_id,
+            app_name: inst.app_name,
+            client_kind: inst.client_kind,
+            app_version: inst.app_version,
+            title: inst.title,
+            url: inst.url,
+            overview: inst.overview,
+            visibility: inst.visibility,
+            tools: inst.tools,
+            resources: inst.resources,
+            resume_token,
+            tools_hash,
+            wake,
+            slept_at: SystemTime::now(),
+            connected_at: inst.connected_at,
+            last_active_at: inst.last_active_at,
+            recency: inst.last_active_seq.unwrap_or(inst.connected_seq),
+        });
+        Some(id)
+    }
+
+    pub fn dormant(&self, app_id: &str, instance_id: &str) -> Option<&DormantInstance> {
+        self.apps
+            .get(app_id)?
+            .dormant
+            .iter()
+            .find(|d| d.instance_id == instance_id)
+    }
+
+    /// 取出（移除）某个休眠记录。
+    pub fn take_dormant(&mut self, app_id: &str, instance_id: &str) -> Option<DormantInstance> {
+        let entry = self.apps.get_mut(app_id)?;
+        let pos = entry.dormant.iter().position(|d| d.instance_id == instance_id)?;
+        Some(entry.dormant.remove(pos))
+    }
+
+    /// 移除某 App 的全部休眠记录（App 以新实例 ID 连接时），返回被移除的 instanceId。
+    pub fn clear_dormant(&mut self, app_id: &str) -> Vec<String> {
+        let Some(entry) = self.apps.get_mut(app_id) else {
+            return Vec::new();
+        };
+        entry.dormant.drain(..).map(|d| d.instance_id).collect()
+    }
+
+    /// 移除 `before` 之前休眠的记录，返回 `(appId, instanceId)`。
+    pub fn expire_dormant(&mut self, before: SystemTime) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for (app_id, entry) in self.apps.iter_mut() {
+            entry.dormant.retain(|d| {
+                let keep = d.slept_at >= before;
+                if !keep {
+                    out.push((app_id.clone(), d.instance_id.clone()));
+                }
+                keep
+            });
+        }
+        self.apps.retain(|_, e| !e.is_empty());
+        out
+    }
+
+    /// 快速恢复：把休眠快照作为新连接实例的工具 / 资源（SDK 跳过了 `tools/sync`）。
+    pub fn restore_snapshot(&mut self, app_id: &str, conn_id: u64, snapshot: &DormantInstance) {
+        if let Some(inst) = self.instance_mut(app_id, conn_id) {
+            inst.tools = snapshot.tools.clone();
+            inst.resources = snapshot.resources.clone();
+            if inst.visibility.is_none() {
+                inst.visibility = snapshot.visibility;
+            }
+        }
+    }
+
+    /// 调用工具前是否需要先唤醒：没有已连接实例注册该工具，而休眠实例的快照中有
+    /// （或 App 未运行、清单声明了该静态工具）时返回计划。
+    ///
+    /// `strict` 为真时 `selected` 是调用方严格指定的实例。
+    pub fn wake_plan_tool(
+        &self,
+        app_id: &str,
+        tool: &str,
+        selected: Option<&str>,
+        strict: bool,
+    ) -> Option<WakePlan> {
+        let entry = self.apps.get(app_id)?;
+        if strict {
+            let id = selected?;
+            if entry.instances.iter().any(|i| i.instance_id == id) {
+                return None;
+            }
+            let d = entry.dormant.iter().find(|d| d.instance_id == id)?;
+            let t = d.tools.get(tool)?;
+            return Some(self.plan_for(app_id, d, Some(t.clone())));
+        }
+        if entry.instances.iter().any(|i| i.tools.contains_key(tool)) {
+            return None;
+        }
+        if let Some(d) = entry.dormant_ordered(selected, |d| d.tools.contains_key(tool)).first() {
+            return Some(self.plan_for(app_id, d, d.tools.get(tool).cloned()));
+        }
+        // App 未运行：静态工具按清单冷启动。
+        if entry.instances.is_empty() {
+            let t = entry.manifest.as_ref()?.tool(tool)?;
+            return Some(WakePlan {
+                app_id: app_id.to_owned(),
+                instance_id: None,
+                descriptor: None,
+                tool: Some(t.clone()),
+            });
+        }
+        None
+    }
+
+    /// 读取资源前是否需要先唤醒（只考虑休眠实例的快照）。
+    pub fn wake_plan_resource(&self, app_id: &str, name: &str, selected: Option<&str>) -> Option<WakePlan> {
+        let entry = self.apps.get(app_id)?;
+        if entry.instances.iter().any(|i| i.resources.contains_key(name)) {
+            return None;
+        }
+        let d = *entry.dormant_ordered(selected, |d| d.resources.contains_key(name)).first()?;
+        Some(self.plan_for(app_id, d, None))
+    }
+
+    fn plan_for(&self, app_id: &str, d: &DormantInstance, tool: Option<ToolInfo>) -> WakePlan {
+        WakePlan {
+            app_id: app_id.to_owned(),
+            instance_id: Some(d.instance_id.clone()),
+            descriptor: d.wake_descriptor().cloned(),
+            tool,
+        }
+    }
+
+    fn instance_mut(&mut self, app_id: &str, conn_id: u64) -> Option<&mut Instance> {
+        self.apps
+            .get_mut(app_id)?
+            .instances
+            .iter_mut()
+            .find(|i| i.conn.id == conn_id)
+    }
+
+    /// 某连接对应实例最近上报的可见性。
+    pub fn visibility_of(&self, app_id: &str, conn_id: u64) -> Option<Visibility> {
+        self.apps
+            .get(app_id)?
+            .instances
+            .iter()
+            .find(|i| i.conn.id == conn_id)?
+            .visibility
+    }
+
+    pub fn instance(&self, app_id: &str, instance_id: &str) -> Option<&Instance> {
+        self.apps
+            .get(app_id)?
+            .instances
+            .iter()
+            .find(|i| i.instance_id == instance_id)
+    }
+
+    pub fn has_app(&self, app_id: &str) -> bool {
+        self.apps.contains_key(app_id)
+    }
+
+    /// 全量替换工具列表。返回列表是否变化。
+    pub fn sync_tools(&mut self, app_id: &str, conn_id: u64, tools: Vec<ToolInfo>) -> bool {
+        let tools = sanitize_tools(app_id, tools);
+        let Some(inst) = self.instance_mut(app_id, conn_id) else {
+            return false;
+        };
+        let new: BTreeMap<String, ToolInfo> =
+            tools.into_iter().map(|t| (t.name.clone(), t)).collect();
+        let changed = inst.tools != new;
+        inst.tools = new;
+        changed
+    }
+
+    /// 增量变更工具列表。返回列表是否变化。
+    pub fn change_tools(
+        &mut self,
+        app_id: &str,
+        conn_id: u64,
+        upserted: Vec<ToolInfo>,
+        removed: Vec<String>,
+    ) -> bool {
+        let upserted = sanitize_tools(app_id, upserted);
+        let Some(inst) = self.instance_mut(app_id, conn_id) else {
+            return false;
+        };
+        let mut changed = false;
+        for name in removed {
+            changed |= inst.tools.remove(&name).is_some();
+        }
+        for t in upserted {
+            changed |= inst.tools.get(&t.name) != Some(&t);
+            inst.tools.insert(t.name.clone(), t);
+        }
+        changed
+    }
+
+    /// 全量替换资源列表。返回列表是否变化。
+    pub fn sync_resources(
+        &mut self,
+        app_id: &str,
+        conn_id: u64,
+        resources: Vec<ResourceInfo>,
+    ) -> bool {
+        let resources = sanitize_resources(app_id, resources);
+        let Some(inst) = self.instance_mut(app_id, conn_id) else {
+            return false;
+        };
+        let new: BTreeMap<String, ResourceInfo> =
+            resources.into_iter().map(|r| (r.name.clone(), r)).collect();
+        let changed = inst.resources != new;
+        inst.resources = new;
+        let resources = &inst.resources;
+        inst.subscriptions.retain(|n| resources.contains_key(n));
+        changed
+    }
+
+    /// 增量变更资源列表。返回列表是否变化。
+    pub fn change_resources(
+        &mut self,
+        app_id: &str,
+        conn_id: u64,
+        upserted: Vec<ResourceInfo>,
+        removed: Vec<String>,
+    ) -> bool {
+        let upserted = sanitize_resources(app_id, upserted);
+        let Some(inst) = self.instance_mut(app_id, conn_id) else {
+            return false;
+        };
+        let mut changed = false;
+        for name in removed {
+            changed |= inst.resources.remove(&name).is_some();
+            inst.subscriptions.remove(&name);
+        }
+        for r in upserted {
+            changed |= inst.resources.get(&r.name) != Some(&r);
+            inst.resources.insert(r.name.clone(), r);
+        }
+        changed
+    }
+
+    /// 更新可见性。变为 visible 或获得焦点时记为一次“活跃”。
+    pub fn set_visibility(
+        &mut self,
+        app_id: &str,
+        conn_id: u64,
+        visibility: Visibility,
+        focused: bool,
+    ) {
+        let seq = self.next_seq();
+        let Some(inst) = self.instance_mut(app_id, conn_id) else {
+            return;
+        };
+        let became_visible =
+            visibility == Visibility::Visible && inst.visibility != Some(Visibility::Visible);
+        let became_focused = focused && !inst.focused;
+        inst.visibility = Some(visibility);
+        inst.focused = focused;
+        if became_visible || became_focused {
+            inst.last_active_seq = Some(seq);
+            inst.last_active_at = Some(SystemTime::now());
+        }
+    }
+
+    pub fn set_ready(&mut self, app_id: &str, conn_id: u64) {
+        if let Some(inst) = self.instance_mut(app_id, conn_id) {
+            inst.ready = true;
+        }
+    }
+
+    /// 记一次活跃（完成一次调用后）。
+    pub fn touch(&mut self, app_id: &str, instance_id: &str) {
+        let seq = self.next_seq();
+        if let Some(inst) = self.apps.get_mut(app_id).and_then(|e| {
+            e.instances
+                .iter_mut()
+                .find(|i| i.instance_id == instance_id)
+        }) {
+            inst.last_active_seq = Some(seq);
+            inst.last_active_at = Some(SystemTime::now());
+        }
+    }
+
+    fn app_label(&self, app_id: &str) -> String {
+        match self.apps.get(app_id).and_then(AppEntry::display_name) {
+            Some(name) if name != app_id => format!("「{name}」（{app_id}）"),
+            _ => format!("「{app_id}」"),
+        }
+    }
+
+    fn disconnected_error(&self, app_id: &str) -> ToolError {
+        let manifest = self.manifest(app_id);
+        let url = manifest.and_then(Manifest::web_url);
+        let label = self.app_label(app_id);
+        let message = match url {
+            Some(url) => {
+                format!("App{label}当前未连接。请让用户在浏览器中打开 {url}，待 App 连接后重试。")
+            }
+            None => format!("App{label}当前未连接。请让用户先启动该 App，待其连接后重试。"),
+        };
+        let mut details = json!({ "appId": app_id });
+        if let Some(url) = url {
+            details["launchUrl"] = json!(url);
+        }
+        ToolError::new(ErrorKind::AppDisconnected, message).with_details(details)
+    }
+
+    /// 按路由规则选出调用 `tool_name` 的目标实例。
+    pub fn route_tool(
+        &self,
+        app_id: &str,
+        tool_name: &str,
+        selected: Option<&str>,
+    ) -> Result<ToolTarget, ToolError> {
+        let Some(entry) = self.apps.get(app_id) else {
+            return Err(ToolError::new(
+                ErrorKind::ToolNotFound,
+                format!("没有 appId 为「{app_id}」的 App。可调用 apps.list 查看可用的 App。"),
+            ));
+        };
+        let static_tool = entry.manifest.as_ref().and_then(|m| m.tool(tool_name));
+        let label = self.app_label(app_id);
+        if entry.instances.is_empty() {
+            return Err(if static_tool.is_some() {
+                self.disconnected_error(app_id)
+            } else {
+                ToolError::new(
+                    ErrorKind::ToolNotFound,
+                    format!("App{label}没有名为「{tool_name}」的工具。"),
+                )
+            });
+        }
+        let Some(inst) = entry
+            .ordered(selected, |i| i.tools.contains_key(tool_name))
+            .into_iter()
+            .next()
+        else {
+            let message = if static_tool.is_some() {
+                format!(
+                    "工具「{tool_name}」当前不可用：App{label}已连接，但没有实例注册该工具，\
+                     通常需要先在 App 中打开对应界面后再调用。"
+                )
+            } else {
+                format!(
+                    "App{label}没有名为「{tool_name}」的工具。可调用 apps.list 查看各实例注册的工具。"
+                )
+            };
+            return Err(ToolError::new(ErrorKind::ToolNotFound, message));
+        };
+        if inst.visibility == Some(Visibility::Frozen) {
+            let title = inst.title.as_deref().unwrap_or(&inst.instance_id);
+            return Err(ToolError::new(
+                ErrorKind::InstanceFrozen,
+                format!(
+                    "目标实例「{title}」的页面已被浏览器冻结（后台标签页）。请让用户切换到该页面后重试，\
+                     或用 apps.select 选择其他实例。"
+                ),
+            )
+            .with_details(json!({ "appId": app_id, "instanceId": inst.instance_id })));
+        }
+        let tool = inst.tools.get(tool_name).cloned().ok_or_else(|| {
+            ToolError::new(
+                ErrorKind::ToolNotFound,
+                format!("工具「{tool_name}」不存在"),
+            )
+        })?;
+        Ok(ToolTarget {
+            instance_id: inst.instance_id.clone(),
+            conn: inst.conn.clone(),
+            tool,
+        })
+    }
+
+    /// 按路由规则选出读取资源 `name` 的目标实例。
+    pub fn route_resource(
+        &self,
+        app_id: &str,
+        name: &str,
+        selected: Option<&str>,
+    ) -> Result<ResourceTarget, ToolError> {
+        let Some(entry) = self.apps.get(app_id) else {
+            return Err(ToolError::new(
+                ErrorKind::ResourceNotFound,
+                format!("没有 appId 为「{app_id}」的 App。"),
+            ));
+        };
+        if entry.instances.is_empty() {
+            return Err(self.disconnected_error(app_id));
+        }
+        let Some(inst) = entry
+            .ordered(selected, |i| i.resources.contains_key(name))
+            .into_iter()
+            .next()
+        else {
+            return Err(ToolError::new(
+                ErrorKind::ResourceNotFound,
+                format!(
+                    "App{}当前没有实例提供资源「{name}」。",
+                    self.app_label(app_id)
+                ),
+            ));
+        };
+        let resource = inst.resources.get(name).cloned().ok_or_else(|| {
+            ToolError::new(ErrorKind::ResourceNotFound, format!("资源「{name}」不存在"))
+        })?;
+        Ok(ResourceTarget {
+            instance_id: inst.instance_id.clone(),
+            conn: inst.conn.clone(),
+            resource,
+        })
+    }
+
+    /// MCP 工具列表（不含内置工具）。
+    ///
+    /// 已连接的 App：所有实例工具的并集（同名工具取默认路由优先级最高的实例的定义），
+    /// 再加上未注册的静态工具（标记为 [`Availability::NotRegistered`]）。
+    /// 未连接的 App：静态工具（[`Availability::Disconnected`]）。
+    pub fn tools(&self) -> Vec<ListedTool> {
+        let mut out = Vec::new();
+        for (app_id, entry) in &self.apps {
+            let mut seen: HashSet<&str> = HashSet::new();
+            if !entry.instances.is_empty() {
+                for inst in entry.ordered(None, |_| true) {
+                    for (name, info) in &inst.tools {
+                        if seen.insert(name) {
+                            out.push(ListedTool {
+                                app_id: app_id.clone(),
+                                info: info.clone(),
+                                availability: Availability::Available,
+                            });
+                        }
+                    }
+                }
+            }
+            for d in entry.dormant_ordered(None, |_| true) {
+                for (name, info) in &d.tools {
+                    if seen.insert(name) {
+                        out.push(ListedTool {
+                            app_id: app_id.clone(),
+                            info: info.clone(),
+                            availability: Availability::Dormant,
+                        });
+                    }
+                }
+            }
+            if let Some(m) = &entry.manifest {
+                let availability = if entry.instances.is_empty() {
+                    Availability::Disconnected
+                } else {
+                    Availability::NotRegistered
+                };
+                for t in &m.tools {
+                    if !seen.contains(t.name.as_str()) {
+                        out.push(ListedTool {
+                            app_id: app_id.clone(),
+                            info: t.clone(),
+                            availability,
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// MCP 资源列表：已连接 App 的资源并集；未连接 App 的静态资源（`available = false`）。
+    pub fn resources(&self) -> Vec<ListedResource> {
+        let mut out = Vec::new();
+        for (app_id, entry) in &self.apps {
+            let mut seen: HashSet<&str> = HashSet::new();
+            for inst in entry.ordered(None, |_| true) {
+                for (name, info) in &inst.resources {
+                    if seen.insert(name) {
+                        out.push(ListedResource {
+                            app_id: app_id.clone(),
+                            info: info.clone(),
+                            available: true,
+                        });
+                    }
+                }
+            }
+            // 休眠实例的资源：读取时按需唤醒，视为可用。
+            for d in entry.dormant_ordered(None, |_| true) {
+                for (name, info) in &d.resources {
+                    if seen.insert(name) {
+                        out.push(ListedResource {
+                            app_id: app_id.clone(),
+                            info: info.clone(),
+                            available: true,
+                        });
+                    }
+                }
+            }
+            if entry.instances.is_empty()
+                && let Some(m) = &entry.manifest
+            {
+                for r in m.resources.iter().filter(|r| !seen.contains(r.name.as_str())) {
+                    out.push(ListedResource {
+                        app_id: app_id.clone(),
+                        info: r.clone(),
+                        available: false,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// 提供资源 `name` 的所有实例：`(连接, 是否已订阅)`。
+    pub fn resource_holders(&self, app_id: &str, name: &str) -> Vec<(Arc<Connection>, bool)> {
+        self.apps
+            .get(app_id)
+            .map(|e| {
+                e.instances
+                    .iter()
+                    .filter(|i| i.resources.contains_key(name))
+                    .map(|i| (i.conn.clone(), i.subscriptions.contains(name)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 记录 Host 对某实例的订阅状态。
+    pub fn mark_subscribed(&mut self, app_id: &str, conn_id: u64, name: &str, subscribed: bool) {
+        if let Some(inst) = self.instance_mut(app_id, conn_id) {
+            if subscribed {
+                inst.subscriptions.insert(name.to_owned());
+            } else {
+                inst.subscriptions.remove(name);
+            }
+        }
+    }
+
+    /// App 的显示名（清单名优先，其次最近连接实例上报的名称）。
+    pub fn display_name(&self, app_id: &str) -> Option<String> {
+        self.apps
+            .get(app_id)
+            .and_then(AppEntry::display_name)
+            .map(str::to_owned)
+    }
+
+    pub fn has_manifest(&self, app_id: &str) -> bool {
+        self.manifest(app_id).is_some()
+    }
+
+    /// 所有实例的连接（关闭 Hub 时使用）。
+    pub fn all_connections(&self) -> Vec<Arc<Connection>> {
+        self.apps
+            .values()
+            .flat_map(|e| e.instances.iter().map(|i| i.conn.clone()))
+            .collect()
+    }
+
+    /// [`crate::Hub::apps`] 的 App 部分。`selected` 为 appId → instanceId 选择。
+    pub fn app_infos(&self, selected: &HashMap<String, String>) -> Vec<AppInfo> {
+        self.apps
+            .iter()
+            .map(|(app_id, entry)| AppInfo {
+                app_id: app_id.clone(),
+                name: entry.display_name().unwrap_or(app_id).to_owned(),
+                kind: AppKind::App,
+                summary: self.overview(app_id).map(|o| o.summary),
+                connected: !entry.instances.is_empty(),
+                instances: entry
+                    .instances
+                    .iter()
+                    .map(|i| InstanceInfo {
+                        instance_id: i.instance_id.clone(),
+                        client_kind: client_kind_str(i.client_kind).to_owned(),
+                        visibility: i.visibility.unwrap_or_default(),
+                        focused: i.focused,
+                        last_active_ms: unix_ms(i.last_active_at.unwrap_or(i.connected_at)),
+                        title: i.title.clone(),
+                    })
+                    .collect(),
+                selected_instance: selected
+                    .get(app_id)
+                    .filter(|id| entry.instances.iter().any(|i| &i.instance_id == *id))
+                    .cloned(),
+                dormant_instances: entry
+                    .dormant
+                    .iter()
+                    .map(|d| InstanceInfo {
+                        instance_id: d.instance_id.clone(),
+                        client_kind: client_kind_str(d.client_kind).to_owned(),
+                        visibility: d.visibility.unwrap_or_default(),
+                        focused: false,
+                        last_active_ms: unix_ms(d.last_active_at.unwrap_or(d.connected_at)),
+                        title: d.title.clone(),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// App 当前生效的总览：运行时（按默认路由优先级第一个带总览的实例）优先，其次静态清单。
+    pub fn overview(&self, app_id: &str) -> Option<Overview> {
+        let entry = self.apps.get(app_id)?;
+        let name = entry.display_name().unwrap_or(app_id);
+        let runtime = entry
+            .ordered(None, |i| i.overview.is_some())
+            .into_iter()
+            .find_map(|i| {
+                Overview::new(app_id, name, i.overview.as_ref()?, OverviewSource::Runtime)
+            });
+        let dormant = || {
+            entry
+                .dormant_ordered(None, |d| d.overview.is_some())
+                .into_iter()
+                .find_map(|d| Overview::new(app_id, name, d.overview.as_ref()?, OverviewSource::Runtime))
+        };
+        runtime.or_else(dormant).or_else(|| {
+            let m = entry.manifest.as_ref()?;
+            Overview::new(app_id, name, m.overview.as_ref()?, OverviewSource::Manifest)
+        })
+    }
+
+    /// 所有已知 App 的一句话简介（用于 MCP `instructions`）。
+    pub fn summaries(&self) -> Vec<AppSummary> {
+        self.apps
+            .iter()
+            .map(|(app_id, entry)| AppSummary {
+                app_id: app_id.clone(),
+                name: entry.display_name().unwrap_or(app_id).to_owned(),
+                summary: self.overview(app_id).map(|o| o.summary),
+            })
+            .collect()
+    }
+
+    /// `apps.list` 的结果。`selected` 为当前会话的 appId → instanceId 选择。
+    pub fn apps_json(&self, selected: &HashMap<String, String>) -> Value {
+        let apps: Vec<Value> = self
+            .apps
+            .iter()
+            .map(|(app_id, entry)| {
+                let sel = selected
+                    .get(app_id)
+                    .filter(|id| entry.instances.iter().any(|i| &i.instance_id == *id))
+                    .cloned();
+                let default_target = entry
+                    .ordered(sel.as_deref(), |_| true)
+                    .first()
+                    .map(|i| i.instance_id.clone());
+                let instances: Vec<Value> = entry
+                    .instances
+                    .iter()
+                    .map(|i| {
+                        json!({
+                            "instanceId": i.instance_id,
+                            "clientKind": i.client_kind,
+                            "title": i.title,
+                            "url": i.url,
+                            "appVersion": i.app_version,
+                            "visibility": visibility_str(i.visibility),
+                            "focused": i.focused,
+                            "ready": i.ready,
+                            "connectedAt": unix_ms(i.connected_at),
+                            "lastActiveAt": i.last_active_at.map(unix_ms),
+                            "tools": i.tools.keys().collect::<Vec<_>>(),
+                            "resources": i.resources.keys().collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                let dormant: Vec<Value> = entry
+                    .dormant
+                    .iter()
+                    .map(|d| {
+                        json!({
+                            "instanceId": d.instance_id,
+                            "clientKind": d.client_kind,
+                            "title": d.title,
+                            "url": d.url,
+                            "appVersion": d.app_version,
+                            "sleptAt": unix_ms(d.slept_at),
+                            "lastActiveAt": d.last_active_at.map(unix_ms),
+                            "wake": d.wake_descriptor().map(|w| crate::wake::kind_str(w.kind)),
+                            "tools": d.tools.keys().collect::<Vec<_>>(),
+                            "resources": d.resources.keys().collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                let m = entry.manifest.as_ref();
+                json!({
+                    "appId": app_id,
+                    "kind": "app",
+                    "name": entry.display_name().unwrap_or(app_id),
+                    "description": m.and_then(|m| m.description.clone()),
+                    "summary": self.overview(app_id).map(|o| o.summary),
+                    "connected": !entry.instances.is_empty(),
+                    "dormant": entry.instances.is_empty() && !entry.dormant.is_empty(),
+                    "instances": instances,
+                    "dormantInstances": dormant,
+                    "selectedInstanceId": sel,
+                    "defaultInstanceId": default_target,
+                    "staticToolCount": m.map(|m| m.tools.len()).unwrap_or(0),
+                    "launchUrl": m.and_then(Manifest::web_url),
+                })
+            })
+            .collect();
+        json!({ "apps": apps })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection::Connection;
+
+    fn tool(name: &str) -> ToolInfo {
+        serde_json::from_value(json!({"name": name, "description": format!("{name} 工具"), "inputSchema": {"type": "object"}}))
+            .unwrap()
+    }
+
+    fn res(name: &str) -> ResourceInfo {
+        ResourceInfo {
+            name: name.into(),
+            description: "r".into(),
+            mime_type: None,
+        }
+    }
+
+    fn manifest() -> Manifest {
+        app_mcp_manifest::parse(
+            &json!({
+                "manifestVersion": 1, "appId": "shop", "name": "示例商城",
+                "launch": {"web": [{"type": "url", "href": "http://localhost:5173/"}]},
+                "tools": [
+                    {"name": "orders.search", "description": "搜索", "inputSchema": {"type": "object"}},
+                    {"name": "cart.add", "description": "加购（静态）", "inputSchema": {"type": "object"}}
+                ],
+                "resources": [{"name": "cart.state", "description": "购物车"}]
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    fn add(
+        reg: &mut Registry,
+        app: &str,
+        id: &str,
+        conn_id: u64,
+    ) -> (Arc<Connection>, Option<Arc<Connection>>) {
+        let (conn, rx) = Connection::new(conn_id);
+        std::mem::forget(rx); // 保持通道打开
+        let old = reg.add_instance(
+            app,
+            NewInstance {
+                instance_id: id.into(),
+                app_name: "Shop".into(),
+                client_kind: ClientKind::Web,
+                app_version: None,
+                title: Some(format!("tab {id}")),
+                url: None,
+                overview: None,
+                conn: conn.clone(),
+            },
+        );
+        (conn, old)
+    }
+
+    #[test]
+    fn overview_runtime_beats_manifest() {
+        let mut reg = Registry::new();
+        let mut m = manifest();
+        m.overview = Some(AppOverview {
+            summary: "静态简介".into(),
+            body: None,
+            locale: None,
+        });
+        reg.set_manifest(m);
+        let o = reg.overview("shop").unwrap();
+        assert_eq!(
+            (o.summary.as_str(), o.source),
+            ("静态简介", OverviewSource::Manifest)
+        );
+        assert_eq!(reg.summaries()[0].summary.as_deref(), Some("静态简介"));
+
+        let (conn, rx) = Connection::new(9);
+        std::mem::forget(rx);
+        reg.add_instance(
+            "shop",
+            NewInstance {
+                instance_id: "a".into(),
+                app_name: "Shop".into(),
+                client_kind: ClientKind::Web,
+                app_version: None,
+                title: None,
+                url: None,
+                overview: Some(AppOverview {
+                    summary: "运行时简介".into(),
+                    body: Some("正文".into()),
+                    locale: None,
+                }),
+                conn: conn.clone(),
+            },
+        );
+        let o = reg.overview("shop").unwrap();
+        assert_eq!(
+            (o.summary.as_str(), o.source),
+            ("运行时简介", OverviewSource::Runtime)
+        );
+        assert_eq!(o.app_name, "示例商城");
+        assert_eq!(
+            reg.apps_json(&HashMap::new())["apps"][0]["summary"],
+            "运行时简介"
+        );
+        reg.remove_instance("shop", conn.id);
+        assert_eq!(
+            reg.overview("shop").unwrap().source,
+            OverviewSource::Manifest
+        );
+        assert!(reg.overview("nope").is_none());
+    }
+
+    #[test]
+    fn static_tools_when_disconnected() {
+        let mut reg = Registry::new();
+        reg.set_manifest(manifest());
+        let tools = reg.tools();
+        assert_eq!(tools.len(), 2);
+        assert!(
+            tools
+                .iter()
+                .all(|t| t.availability == Availability::Disconnected)
+        );
+        let err = reg.route_tool("shop", "orders.search", None).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::AppDisconnected);
+        assert!(err.message.contains("http://localhost:5173/"));
+        assert_eq!(
+            reg.route_tool("shop", "nope", None).unwrap_err().kind,
+            ErrorKind::ToolNotFound
+        );
+        assert_eq!(
+            reg.route_tool("other", "x", None).unwrap_err().kind,
+            ErrorKind::ToolNotFound
+        );
+        let resources = reg.resources();
+        assert_eq!(resources.len(), 1);
+        assert!(!resources[0].available);
+    }
+
+    #[test]
+    fn connected_union_and_not_registered() {
+        let mut reg = Registry::new();
+        reg.set_manifest(manifest());
+        let (a, _) = add(&mut reg, "shop", "a", 1);
+        let (b, _) = add(&mut reg, "shop", "b", 2);
+        assert!(reg.sync_tools("shop", a.id, vec![tool("orders.search"), tool("x")]));
+        assert!(!reg.sync_tools("shop", a.id, vec![tool("orders.search"), tool("x")]));
+        assert!(reg.sync_tools("shop", b.id, vec![tool("x"), tool("y")]));
+        let tools = reg.tools();
+        let names: Vec<_> = tools
+            .iter()
+            .map(|t| (t.info.name.as_str(), t.availability))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("orders.search", Availability::Available),
+                ("x", Availability::Available),
+                ("y", Availability::Available),
+                ("cart.add", Availability::NotRegistered),
+            ]
+        );
+        let err = reg.route_tool("shop", "cart.add", None).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::ToolNotFound);
+        assert!(err.message.contains("打开对应界面"));
+        // 只在注册了工具的实例中选择
+        assert_eq!(
+            reg.route_tool("shop", "y", Some("a")).unwrap().instance_id,
+            "b"
+        );
+        assert_eq!(
+            reg.route_tool("shop", "orders.search", Some("b"))
+                .unwrap()
+                .instance_id,
+            "a"
+        );
+    }
+
+    #[test]
+    fn invalid_tools_are_dropped() {
+        let mut reg = Registry::new();
+        let (a, _) = add(&mut reg, "app", "a", 1);
+        let mut bad = tool("ok");
+        bad.input_schema = json!({"type": "array"});
+        bad.name = "bad".into();
+        reg.sync_tools("app", a.id, vec![tool("ok"), bad, tool("has space")]);
+        assert_eq!(reg.tools().len(), 1);
+    }
+
+    #[test]
+    fn change_tools_incremental() {
+        let mut reg = Registry::new();
+        let (a, _) = add(&mut reg, "app", "a", 1);
+        reg.sync_tools("app", a.id, vec![tool("x")]);
+        assert!(reg.change_tools("app", a.id, vec![tool("y")], vec!["x".into()]));
+        assert!(!reg.change_tools("app", a.id, vec![], vec!["zzz".into()]));
+        let names: Vec<_> = reg.tools().into_iter().map(|t| t.info.name).collect();
+        assert_eq!(names, vec!["y"]);
+    }
+
+    #[test]
+    fn routing_focus_recency_and_connect_order() {
+        let mut reg = Registry::new();
+        let (a, _) = add(&mut reg, "app", "a", 1);
+        let (b, _) = add(&mut reg, "app", "b", 2);
+        for c in [&a, &b] {
+            reg.sync_tools("app", c.id, vec![tool("t")]);
+        }
+        // 都没有活跃记录：最早连接
+        assert_eq!(reg.route_tool("app", "t", None).unwrap().instance_id, "a");
+        // b 变为可见：最近活跃
+        reg.set_visibility("app", b.id, Visibility::Visible, false);
+        assert_eq!(reg.route_tool("app", "t", None).unwrap().instance_id, "b");
+        // a 变为可见：a 更近
+        reg.set_visibility("app", a.id, Visibility::Visible, false);
+        assert_eq!(reg.route_tool("app", "t", None).unwrap().instance_id, "a");
+        // b 聚焦
+        reg.set_visibility("app", b.id, Visibility::Visible, true);
+        assert_eq!(reg.route_tool("app", "t", None).unwrap().instance_id, "b");
+        // b 失焦，a 完成一次调用后最近活跃
+        reg.set_visibility("app", b.id, Visibility::Hidden, false);
+        reg.touch("app", "a");
+        assert_eq!(reg.route_tool("app", "t", None).unwrap().instance_id, "a");
+        // 选择优先
+        assert_eq!(
+            reg.route_tool("app", "t", Some("b")).unwrap().instance_id,
+            "b"
+        );
+    }
+
+    #[test]
+    fn repeated_visible_does_not_bump() {
+        let mut reg = Registry::new();
+        let (a, _) = add(&mut reg, "app", "a", 1);
+        let (b, _) = add(&mut reg, "app", "b", 2);
+        for c in [&a, &b] {
+            reg.sync_tools("app", c.id, vec![tool("t")]);
+        }
+        reg.set_visibility("app", a.id, Visibility::Visible, false);
+        reg.set_visibility("app", b.id, Visibility::Visible, false);
+        reg.set_visibility("app", a.id, Visibility::Visible, false);
+        assert_eq!(reg.route_tool("app", "t", None).unwrap().instance_id, "b");
+    }
+
+    #[test]
+    fn frozen_target_errors() {
+        let mut reg = Registry::new();
+        let (a, _) = add(&mut reg, "app", "a", 1);
+        reg.sync_tools("app", a.id, vec![tool("t")]);
+        reg.set_visibility("app", a.id, Visibility::Frozen, false);
+        assert_eq!(
+            reg.route_tool("app", "t", None).unwrap_err().kind,
+            ErrorKind::InstanceFrozen
+        );
+    }
+
+    #[test]
+    fn replace_same_instance_id() {
+        let mut reg = Registry::new();
+        let (a1, _) = add(&mut reg, "app", "a", 1);
+        reg.sync_tools("app", a1.id, vec![tool("t")]);
+        let (a2, old) = add(&mut reg, "app", "a", 2);
+        assert_eq!(old.map(|c| c.id), Some(1));
+        // 旧连接断开不影响新实例
+        assert!(reg.remove_instance("app", a1.id).is_none());
+        assert!(reg.instance("app", "a").is_some());
+        assert!(reg.tools().is_empty());
+        assert!(reg.remove_instance("app", a2.id).is_some());
+        assert!(!reg.has_app("app"));
+    }
+
+    #[test]
+    fn remove_keeps_manifest_entry() {
+        let mut reg = Registry::new();
+        reg.set_manifest(manifest());
+        let (a, _) = add(&mut reg, "shop", "a", 1);
+        reg.remove_instance("shop", a.id);
+        assert!(reg.has_app("shop"));
+        assert_eq!(reg.tools()[0].availability, Availability::Disconnected);
+    }
+
+    #[test]
+    fn resources_and_subscriptions() {
+        let mut reg = Registry::new();
+        reg.set_manifest(manifest());
+        let (a, _) = add(&mut reg, "shop", "a", 1);
+        assert!(reg.sync_resources("shop", a.id, vec![res("cart.state")]));
+        assert_eq!(reg.resources().len(), 1);
+        assert!(reg.resources()[0].available);
+        assert_eq!(
+            reg.route_resource("shop", "cart.state", None)
+                .unwrap()
+                .instance_id,
+            "a"
+        );
+        assert_eq!(
+            reg.route_resource("shop", "x", None).unwrap_err().kind,
+            ErrorKind::ResourceNotFound
+        );
+        reg.mark_subscribed("shop", a.id, "cart.state", true);
+        assert!(reg.resource_holders("shop", "cart.state")[0].1);
+        assert!(reg.change_resources("shop", a.id, vec![], vec!["cart.state".into()]));
+        assert!(reg.resource_holders("shop", "cart.state").is_empty());
+        assert!(reg.instance("shop", "a").unwrap().subscriptions.is_empty());
+    }
+
+    #[test]
+    fn apps_json_shape() {
+        let mut reg = Registry::new();
+        reg.set_manifest(manifest());
+        let (a, _) = add(&mut reg, "shop", "a", 1);
+        let (_b, _) = add(&mut reg, "shop", "b", 2);
+        reg.sync_tools("shop", a.id, vec![tool("x")]);
+        let mut sel = HashMap::new();
+        sel.insert("shop".to_string(), "b".to_string());
+        let v = reg.apps_json(&sel);
+        let app = &v["apps"][0];
+        assert_eq!(app["appId"], "shop");
+        assert_eq!(app["name"], "示例商城");
+        assert_eq!(app["connected"], true);
+        assert_eq!(app["staticToolCount"], 2);
+        assert_eq!(app["selectedInstanceId"], "b");
+        assert_eq!(app["defaultInstanceId"], "b");
+        assert_eq!(app["instances"].as_array().unwrap().len(), 2);
+        assert_eq!(app["instances"][0]["tools"], json!(["x"]));
+        sel.insert("shop".to_string(), "gone".to_string());
+        assert_eq!(
+            reg.apps_json(&sel)["apps"][0]["selectedInstanceId"],
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn dormant_snapshot_listing_and_plans() {
+        let mut reg = Registry::new();
+        reg.set_manifest(manifest());
+        let (a, _) = add(&mut reg, "shop", "a", 1);
+        reg.sync_tools("shop", a.id, vec![tool("x"), tool("orders.search")]);
+        reg.sync_resources("shop", a.id, vec![res("cart.state")]);
+        let hash = app_mcp_protocol::tools_hash(
+            &ToolsSyncParams { tools: vec![tool("x"), tool("orders.search")] },
+            &ResourcesSyncParams { resources: vec![res("cart.state")] },
+        );
+        let wake = WakeDescriptor { kind: WakeKind::Uri, target: Some("shop".into()), background: true };
+        assert_eq!(
+            reg.make_dormant("shop", a.id, "rt".into(), hash.clone(), Some(wake.clone())).as_deref(),
+            Some("a")
+        );
+        assert!(reg.make_dormant("shop", a.id, "rt".into(), hash.clone(), None).is_none());
+        let d = reg.dormant("shop", "a").unwrap();
+        assert_eq!(d.snapshot_hash(), hash);
+        // 工具仍列出，标记 Dormant；未注册的静态工具仍为 Disconnected
+        let listed: Vec<_> = reg.tools().into_iter().map(|t| (t.info.name, t.availability)).collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("orders.search".to_string(), Availability::Dormant),
+                ("x".to_string(), Availability::Dormant),
+                ("cart.add".to_string(), Availability::Disconnected),
+            ]
+        );
+        assert!(reg.resources().iter().all(|r| r.available));
+        let info = &reg.app_infos(&HashMap::new())[0];
+        assert!(!info.connected);
+        assert_eq!(info.dormant_instances[0].instance_id, "a");
+        assert_eq!(reg.apps_json(&HashMap::new())["apps"][0]["dormant"], true);
+
+        let p = reg.wake_plan_tool("shop", "x", None, false).unwrap();
+        assert_eq!((p.instance_id.as_deref(), p.descriptor.as_ref()), (Some("a"), Some(&wake)));
+        // 只在清单中的工具：冷启动计划（实例为 None）
+        let p = reg.wake_plan_tool("shop", "cart.add", None, false).unwrap();
+        assert!(p.instance_id.is_none());
+        assert!(reg.wake_plan_tool("shop", "nope", None, false).is_none());
+        assert!(reg.wake_plan_tool("shop", "x", Some("zzz"), true).is_none());
+        assert!(reg.wake_plan_resource("shop", "cart.state", None).is_some());
+
+        // 回连：已连接实例注册了工具时不需要唤醒
+        let snap = reg.take_dormant("shop", "a").unwrap();
+        let (a2, _) = add(&mut reg, "shop", "a", 2);
+        reg.restore_snapshot("shop", a2.id, &snap);
+        assert!(reg.wake_plan_tool("shop", "x", None, false).is_none());
+        assert_eq!(reg.route_tool("shop", "x", None).unwrap().instance_id, "a");
+    }
+
+    #[test]
+    fn dormant_expiry_and_clear() {
+        let mut reg = Registry::new();
+        let (a, _) = add(&mut reg, "app", "a", 1);
+        reg.make_dormant("app", a.id, "r".into(), String::new(), None);
+        assert!(reg.has_app("app"));
+        assert!(reg.expire_dormant(SystemTime::UNIX_EPOCH).is_empty());
+        let later = SystemTime::now() + std::time::Duration::from_secs(1);
+        assert_eq!(reg.expire_dormant(later), vec![("app".to_string(), "a".to_string())]);
+        assert!(!reg.has_app("app"));
+        let (b, _) = add(&mut reg, "app", "b", 2);
+        reg.make_dormant("app", b.id, "r".into(), String::new(), None);
+        assert_eq!(reg.clear_dormant("app"), vec!["b".to_string()]);
+    }
+}

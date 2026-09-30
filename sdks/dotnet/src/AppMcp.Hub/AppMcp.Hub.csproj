@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>AppMcp.Hub</RootNamespace>
+    <AssemblyName>AppMcp.Hub</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- 公开成员缺少 XML 注释时不报错 -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Description>app-mcp Hub SDK（Agent 端）的 C# 封装（基于 app_mcp_hub.h 的 P/Invoke）</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AppMcp.Hub.Tests" />
+  </ItemGroup>
+
+</Project>
