@@ -39,17 +39,22 @@ app-mcp 说"**万物皆工具**"：按钮、表单、菜单命令、状态库动
 
 ## 工作方式
 
-```
- MCP 客户端 / 自有大模型循环 / 厂商 Agent
-                 │  MCP（stdio · Streamable HTTP）· 工具格式导出 + dispatch · 嵌入式 API
-                 ▼
-             app-mcp Hub  ── 路由 · 总览 · 审批 · 生命周期（休眠 / 唤醒 / 租约）
-                 │  WebSocket（本机）                        │  子进程
-      ┌──────────┼───────────────┬───────────────┐           ▼
-   Web SDK    桌面 SDK        移动端 SDK      Node/Electron    已有的 MCP 服务器
-  （WASM 核心）（Rust · C/C++ · （Kotlin · Swift ·
-               C# · Python）   Dart/Flutter）
-                 └──── 所有语言共用一个 Rust sans-IO 核心 ────┘
+```mermaid
+flowchart TD
+  clients["MCP 客户端 · 自有大模型循环 · 厂商 Agent"]
+  hub["app-mcp Hub<br/>路由 · 总览 · 审批<br/>生命周期：休眠 / 唤醒 / 租约"]
+  clients -- "MCP（stdio · Streamable HTTP）<br/>工具格式导出 + dispatch · 嵌入式 API" --> hub
+  hub -- "WebSocket（本机）" --> web["Web SDK<br/>（WASM 核心）"]
+  hub -- "WebSocket（本机）" --> desktop["桌面 SDK<br/>Rust · C/C++ · C# · Python"]
+  hub -- "WebSocket（本机）" --> mobile["移动端 SDK<br/>Kotlin · Swift · Dart/Flutter"]
+  hub -- "WebSocket（本机）" --> node["Node / Electron"]
+  hub -- "子进程" --> upstream["已有的 MCP 服务器"]
+  subgraph core["所有语言共用一个 Rust sans-IO 核心"]
+    web
+    desktop
+    mobile
+    node
+  end
 ```
 
 - **App 端 SDK** 注册工具与资源；协议由同一个 Rust 核心（`crates/core`）实现，各语言行为一致。

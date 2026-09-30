@@ -22,11 +22,16 @@
 | `dormant` | 已与 Host 完成 `app/sleep` 握手后主动断开；不重连、无定时器（原生：运行时线程已停止或挂起）。等待唤醒或 App 主动 `wake()` |
 | `waking` | 收到唤醒（OS 激活参数、`wake()`、页面重新可见）后正在回连；之后进入 `handshaking` |
 
-```
-connected ──(空闲判定成立)──► sleeping(发送 app/sleep) ──accepted──► dormant
-    ▲                                   └─rejected──► connected（重置空闲计时）
-    │                                                    │
-    └──── handshaking ◄── connecting ◄── waking ◄────────┘ 唤醒
+```mermaid
+stateDiagram-v2
+  direction LR
+  connected --> sleeping: 空闲判定成立（发送 app/sleep）
+  sleeping --> dormant: accepted
+  sleeping --> connected: rejected（重置空闲计时）
+  dormant --> waking: 唤醒
+  waking --> connecting
+  connecting --> handshaking
+  handshaking --> connected
 ```
 
 `sleeping` 为内部过渡态，对外仍报告 `connected`。`dormant` 与 `stopped` 的区别：`dormant` 的工具注册表保留、可随时唤醒。

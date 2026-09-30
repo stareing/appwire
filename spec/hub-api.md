@@ -8,13 +8,14 @@ App 端 SDK（`crates/core` 等）让 **App** 暴露工具；Hub SDK 让 **Agent
 （手机厂商语音助手、车机、PC 助手、IDE、自研 Agent 框架）把"连接本机所有 App"的能力直接嵌进自己的产品，
 而不必运行独立的 `app-mcp-host` 进程、也不必走 MCP：
 
-```
-厂商 Agent（自有 LLM 循环 / 自有 UI）
-   │  Hub SDK：列工具、调用、读资源、事件、审批回调、工具格式导出
-   ▼
-Hub（嵌入厂商进程）── WebSocket / 进程内 ──► 各 App（App 端 SDK）
-   │                  └─ 子进程 ──► 上游 MCP 服务器
-   └─（可选）同时以 MCP stdio / Streamable HTTP 对外提供
+```mermaid
+flowchart TD
+  agent["厂商 Agent<br/>（自有 LLM 循环 / 自有 UI）"]
+  hub["Hub（嵌入厂商进程）"]
+  agent -- "Hub SDK：列工具、调用、读资源、事件、<br/>审批回调、工具格式导出" --> hub
+  hub -- "WebSocket / 进程内" --> apps["各 App（App 端 SDK）"]
+  hub -- "子进程" --> upstream["上游 MCP 服务器"]
+  hub -. "可选：MCP stdio / Streamable HTTP" .-> mcp["MCP 客户端"]
 ```
 
 `app-mcp-host` 可执行程序改为 Hub 之上的薄壳：命令行解析 + `Hub::serve_stdio` / `serve_http_with`。

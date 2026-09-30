@@ -8,13 +8,14 @@
 
 接口契约见 `spec/hub-api.md`（权威）。`app-mcp-host` 可执行程序就是本库之上的命令行薄壳。
 
-```
-你的 Agent（自有 LLM 循环 / 自有 UI）
-   │  Hub API：tools / call_tool / export_tools + dispatch / events / 审批回调
-   ▼
-Hub（嵌入你的进程）── WebSocket ──► 各 App（App 端 SDK）
-   │                └─ 子进程 ──► 上游 MCP 服务器
-   └─（可选）MCP stdio / Streamable HTTP
+```mermaid
+flowchart TD
+  agent["你的 Agent<br/>（自有 LLM 循环 / 自有 UI）"]
+  hub["Hub（嵌入你的进程）"]
+  agent -- "Hub API：tools / call_tool / export_tools + dispatch<br/>events / 审批回调" --> hub
+  hub -- "WebSocket" --> apps["各 App（App 端 SDK）"]
+  hub -- "子进程" --> upstream["上游 MCP 服务器"]
+  hub -. "可选：MCP stdio / Streamable HTTP" .-> mcp["MCP 客户端"]
 ```
 
 ## 三种接法

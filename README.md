@@ -47,17 +47,22 @@ declares what it can do, and the model orchestrates.
 
 ## How it works
 
-```
- MCP clients / your LLM loop / vendor agent
-                 │  MCP (stdio · Streamable HTTP) · tool-format export + dispatch · embedded API
-                 ▼
-             app-mcp Hub  ── routing · overview · approval · lifecycle (sleep / wake / lease)
-                 │  WebSocket (local)                       │  child process
-      ┌──────────┼───────────────┬───────────────┐          ▼
-    Web SDK   Desktop SDKs    Mobile SDKs     Node/Electron   existing MCP servers
-  (WASM core) (Rust · C/C++ · (Kotlin · Swift · 
-               C# · Python)    Dart/Flutter)
-                 └── one Rust sans-IO core shared by every language ──┘
+```mermaid
+flowchart TD
+  clients["MCP clients · your LLM loop · vendor agent"]
+  hub["app-mcp Hub<br/>routing · overview · approval<br/>lifecycle: sleep / wake / lease"]
+  clients -- "MCP (stdio · Streamable HTTP)<br/>tool-format export + dispatch · embedded API" --> hub
+  hub -- "WebSocket (local)" --> web["Web SDK<br/>(WASM core)"]
+  hub -- "WebSocket (local)" --> desktop["Desktop SDKs<br/>Rust · C/C++ · C# · Python"]
+  hub -- "WebSocket (local)" --> mobile["Mobile SDKs<br/>Kotlin · Swift · Dart/Flutter"]
+  hub -- "WebSocket (local)" --> node["Node / Electron"]
+  hub -- "child process" --> upstream["existing MCP servers"]
+  subgraph core["one Rust sans-IO core shared by every language"]
+    web
+    desktop
+    mobile
+    node
+  end
 ```
 
 - **App SDKs** register tools and resources; a single Rust core (`crates/core`) implements the

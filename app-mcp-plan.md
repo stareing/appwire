@@ -90,20 +90,20 @@ App 的开发者其实最清楚每个按钮背后的意图（"结算购物车""�
 
 ## 4. 整体架构
 
-```
-┌──────────── 模型 / MCP 客户端（Claude Desktop、Claude Code …）────────────┐
-                                   │ MCP（stdio / Streamable HTTP）
-┌──────────────────────── app-mcp host（本地常驻进程）───────────────────────┐
-│  ① 聚合路由：合并多个 App 的工具，加命名空间，如 shop.cart.checkout        │
-│  ② 策略层：风险分级、原生确认弹窗、审计日志、限流                          │
-│  ③ OS 能力（L2）：文件、剪贴板、窗口、进程、通知                           │
-│  ④ 降级通道（L3）：Windows UIA / macOS AX / Linux AT-SPI                   │
-└────────┬───────────────────────┬───────────────────────┬──────────────────┘
-         │ WebSocket (127.0.0.1) │ IPC                   │ WebMCP（浏览器支持时）
-   ┌─────┴──────┐          ┌─────┴───────┐          ┌─────┴──────┐
-   │ Web App    │          │ Electron /  │          │ 浏览器内置 │
-   │ + SDK      │          │ Tauri + SDK │          │ AI 直连    │
-   └────────────┘          └─────────────┘          └────────────┘
+```mermaid
+flowchart TD
+  client["模型 / MCP 客户端<br/>（Claude Desktop、Claude Code …）"]
+  subgraph host["app-mcp host（本地常驻进程）"]
+    direction TB
+    h1["① 聚合路由：合并多个 App 的工具，加命名空间，如 shop.cart.checkout"]
+    h2["② 策略层：风险分级、原生确认弹窗、审计日志、限流"]
+    h3["③ OS 能力（L2）：文件、剪贴板、窗口、进程、通知"]
+    h4["④ 降级通道（L3）：Windows UIA / macOS AX / Linux AT-SPI"]
+  end
+  client -- "MCP（stdio / Streamable HTTP）" --> host
+  host -- "WebSocket（127.0.0.1）" --> web["Web App + SDK"]
+  host -- "IPC" --> desk["Electron / Tauri + SDK"]
+  host -. "WebMCP（浏览器支持时）" .-> browser["浏览器内置 AI 直连"]
 ```
 
 **调用链路**（以 `shop.cart.checkout` 为例）：
@@ -618,20 +618,17 @@ L3 不把每个控件都暴露成工具，而是提供少量通用工具：
 
 唤醒只负责把 App 拉起来，调用与结果始终走 MCP 通道。对模型来说只有一个工具名，App 是否在运行由 Host 处理。
 
-```
-模型调用 shop.cart.checkout({ addressId })
-            │
-            ▼
-      Host 查询 shop 的状态
-   ┌────────┼──────────────────┐
- 已连接   已安装但未运行          未安装
-   │        │                    │
- 直接调用  ① 生成一次性 launchToken  返回 APP_NOT_INSTALLED
- (毫秒级)  ② 按清单中的平台方式唤醒     并附安装指引
-           ③ 调用进入等待队列
-           ④ SDK 启动后携带 launchToken 回连 Host
-           ⑤ SDK 注册动态工具，发送 app/ready
-           ⑥ Host 转发排队中的调用，返回结果
+```mermaid
+flowchart TD
+  call["模型调用 shop.cart.checkout({ addressId })"] --> q{"Host 查询 shop 的状态"}
+  q -- "已连接" --> direct["直接调用（毫秒级）"]
+  q -- "未安装" --> ni["返回 APP_NOT_INSTALLED<br/>并附安装指引"]
+  q -- "已安装但未运行" --> s1["① 生成一次性 launchToken"]
+  s1 --> s2["② 按清单中的平台方式唤醒"]
+  s2 --> s3["③ 调用进入等待队列"]
+  s3 --> s4["④ SDK 启动后携带 launchToken 回连 Host"]
+  s4 --> s5["⑤ SDK 注册动态工具，发送 app/ready"]
+  s5 --> s6["⑥ Host 转发排队中的调用，返回结果"]
 ```
 
 **时序与超时**：
@@ -756,12 +753,14 @@ Host 对每次调用按以下顺序选择路径：
 
 ### 10.7 一次定义，多端输出
 
-```
-            useTool / 工具定义文件（唯一来源）
-                          │  @app-mcp/build + app-mcp-codegen
-   ┌───────────┬─────────┼───────────┬──────────────┬───────────────────────┐
- app-mcp.json   MCP 工具   App Intents   AppFunctions   D-Bus 接口 / Windows App Actions
- (静态清单)               (Swift 代码)   (Kotlin 代码)  (XML / 清单)
+```mermaid
+flowchart TD
+  src["useTool / 工具定义文件（唯一来源）"]
+  src -- "@app-mcp/build + app-mcp-codegen" --> m["app-mcp.json<br/>（静态清单）"]
+  src --> mcp["MCP 工具"]
+  src --> ai["App Intents<br/>（Swift 代码）"]
+  src --> af["AppFunctions<br/>（Kotlin 代码）"]
+  src --> other["D-Bus 接口 / Windows App Actions<br/>（XML / 清单）"]
 ```
 
 同一个 App 由此可被 Claude（MCP）与系统级助手（Siri、Gemini、Copilot 等）调用，开发者无需分平台重复实现。此部分依赖各平台框架成熟度，放在 M5。
@@ -814,16 +813,13 @@ UI 框架有几十种（React、Vue、Svelte、Angular、Flutter、SwiftUI、Jet
 
 ### 11.3 分层结构
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ 框架适配：React Hook、Vue composable、SwiftUI 修饰符、WPF Behavior …     │ 可选，每个 50–100 行
-├────────────────────────────────────────────────────────────────────────┤
-│ 语言习惯封装：Promise / async-await / 协程 / Task / Future、UI 线程调度  │ 每种语言 200–500 行
-├────────────────────────────────────────────────────────────────────────┤
-│ 生成的绑定：wasm-bindgen / napi-rs / uniffi / flutter_rust_bridge / cbindgen │ 自动生成
-├────────────────────────────────────────────────────────────────────────┤
-│ Rust 核心：app-mcp-core + app-mcp-protocol + app-mcp-transport          │ 唯一实现
-└────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+  l4["框架适配：React Hook、Vue composable、SwiftUI 修饰符、WPF Behavior …<br/>可选，每个 50–100 行"]
+  l3["语言习惯封装：Promise / async-await / 协程 / Task / Future、UI 线程调度<br/>每种语言 200–500 行"]
+  l2["生成的绑定：wasm-bindgen / napi-rs / uniffi / flutter_rust_bridge / cbindgen<br/>自动生成"]
+  l1["Rust 核心：app-mcp-core + app-mcp-protocol + app-mcp-transport<br/>唯一实现"]
+  l4 --> l3 --> l2 --> l1
 ```
 
 ### 11.4 核心设计要点
@@ -921,15 +917,15 @@ Rust 侧定义统一错误枚举，错误码与协议一致（7.3），各语言
 
 跨 FFI 边界传递的是 JSON，类型安全由代码生成补上。`app-mcp-codegen` 读取清单中的 JSON Schema，为每种语言生成参数类型和 handler 接口：
 
-```
-app-mcp.json（工具名称 + JSON Schema，语言无关）
-        │  app-mcp-codegen
-        ├─ TypeScript：参数类型 + handler 类型
-        ├─ C#：record 类型 + 接口
-        ├─ Swift：Codable struct + protocol
-        ├─ Kotlin：data class + interface
-        ├─ Dart：class + 抽象 handler
-        └─ Python：TypedDict / dataclass + Protocol
+```mermaid
+flowchart LR
+  m["app-mcp.json<br/>（工具名称 + JSON Schema，语言无关）"]
+  m -- "app-mcp-codegen" --> ts["TypeScript：参数类型 + handler 类型"]
+  m --> cs["C#：record 类型 + 接口"]
+  m --> sw["Swift：Codable struct + protocol"]
+  m --> kt["Kotlin：data class + interface"]
+  m --> dt["Dart：class + 抽象 handler"]
+  m --> py["Python：TypedDict / dataclass + Protocol"]
 ```
 
 开发者实现生成的接口，编译器即可检查参数类型。这与 10.7 生成原生意图框架声明的机制是同一个 codegen。
@@ -978,11 +974,11 @@ app-mcp.json（工具名称 + JSON Schema，语言无关）
 
 **应对**：以浏览器扩展桥接作为网页端的推荐通道，WebSocket 直连作为未安装扩展时的备选。
 
-```
-网页 SDK ──window.postMessage──> 扩展 content script ──> 扩展 service worker
-                                                              │ Native Messaging（stdio）
-                                                              ▼
-                                                             Host
+```mermaid
+flowchart LR
+  page["网页 SDK"] -- "window.postMessage" --> cs["扩展 content script"]
+  cs --> sw["扩展 service worker"]
+  sw -- "Native Messaging（stdio）" --> host["Host"]
 ```
 
 | 收益 | 说明 |
@@ -1062,14 +1058,13 @@ handler 大多需要在 UI 线程执行（11.4）。UI 线程卡住时调用不�
 
 界面是网页、外壳是原生的应用，**由原生侧连接 Host**：
 
-```
-WebView 内页面（@app-mcp/web，IPC 桥接模式）
-     │  进程内 IPC：Electron ipcRenderer / Tauri invoke / WebView2 postMessage / WKScriptMessageHandler
-     ▼
-原生主进程（@app-mcp/node、Rust crate、原生 SDK）
-     │  命名管道 / Unix socket
-     ▼
-    Host
+```mermaid
+flowchart TD
+  page["WebView 内页面<br/>（@app-mcp/web，IPC 桥接模式）"]
+  native["原生主进程<br/>（@app-mcp/node、Rust crate、原生 SDK）"]
+  host["Host"]
+  page -- "进程内 IPC：Electron ipcRenderer / Tauri invoke /<br/>WebView2 postMessage / WKScriptMessageHandler" --> native
+  native -- "命名管道 / Unix socket" --> host
 ```
 
 - 页面中 `useTool` 用法不变，只是传输方式由 WebSocket 换成进程内 IPC。
