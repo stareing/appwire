@@ -37,6 +37,7 @@ fn upstreams(names: &[&str]) -> BTreeMap<String, UpstreamConfig> {
 fn config() -> HostConfig {
     HostConfig {
         ws_addr: Some("127.0.0.1:0".into()),
+        ipc_endpoint: None,
         ..Default::default()
     }
 }

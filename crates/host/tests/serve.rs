@@ -51,12 +51,26 @@ impl Drop for TempHome {
     }
 }
 
+/// 每个临时配置目录一个本地 IPC 端点（不占用本机常驻 Host 的默认端点）。
+fn ipc_endpoint(home: &Path) -> String {
+    #[cfg(unix)]
+    {
+        format!("unix:{}", home.join("run").join("hub.sock").display())
+    }
+    #[cfg(windows)]
+    {
+        let name = home.file_name().unwrap().to_string_lossy();
+        format!(r"pipe:\\.\pipe\{name}")
+    }
+}
+
 fn serve_cmd(home: &Path, ws: u16, http: u16, extra: &[&str]) -> Command {
     let mut c = Command::new(BIN);
     c.arg("serve")
         .arg("--home")
         .arg(home)
         .args(["--ws-addr", &format!("127.0.0.1:{ws}")])
+        .args(["--ipc-endpoint", &ipc_endpoint(home)])
         .args(["--http", &format!("127.0.0.1:{http}")])
         .args(extra)
         .env_remove("APP_MCP_HOME")
@@ -72,6 +86,7 @@ struct Serve {
     child: Child,
     http: SocketAddr,
     ws: SocketAddr,
+    ipc: String,
 }
 impl Drop for Serve {
     fn drop(&mut self) {
@@ -90,6 +105,7 @@ async fn start_serve(home: &Path, extra: &[&str]) -> Serve {
         child,
         http,
         ws: format!("127.0.0.1:{ws}").parse().unwrap(),
+        ipc: ipc_endpoint(home),
     };
     let deadline = Instant::now() + T;
     loop {
@@ -160,9 +176,10 @@ impl ToolHandler for Add {
     }
 }
 
-fn calc_app(ws: SocketAddr) -> NativeClient {
+/// `endpoint`：`ws://…` 或本地 IPC 端点。
+fn calc_app(endpoint: &str) -> NativeClient {
     let mut c = NativeConfig::new("calc", "计算器");
-    c.host_url = format!("ws://{ws}");
+    c.host_url = endpoint.to_owned();
     c.launch_token = Some(String::new());
     c.overview = Some(AppOverview {
         summary: "做加法的计算器".into(),
@@ -234,7 +251,8 @@ fn has_overview(r: &CallToolResult) -> bool {
 async fn two_http_sessions_share_one_app() {
     let home = TempHome::new("share");
     let serve = start_serve(&home.0, &[]).await;
-    let app = calc_app(serve.ws);
+    // 原生 App 经本地 IPC 连接常驻 Host。
+    let app = calc_app(&serve.ipc);
 
     let a = mcp(serve.http, None).await;
     let b = mcp(serve.http, None).await;
@@ -463,6 +481,7 @@ async fn config_file_is_read() {
         home.0.join("config.json"),
         json!({
             "wsAddr": format!("127.0.0.1:{ws}"),
+            "ipcEndpoint": ipc_endpoint(&home.0),
             "http": { "addr": format!("127.0.0.1:{http}"), "auth": "off" },
             "log": { "file": false }
         })
@@ -490,6 +509,8 @@ async fn config_file_is_read() {
     assert!(!health.token_required_for_browsers, "auth=off");
     assert!(!home.0.join("token").exists(), "auth=off 时不生成令牌");
     assert!(!home.0.join("logs").exists(), "log.file=false");
+    #[cfg(unix)]
+    assert!(home.0.join("run").join("hub.sock").exists(), "按配置文件监听本地 IPC");
     let _ = child.kill();
     let _ = child.wait();
 }

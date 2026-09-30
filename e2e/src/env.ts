@@ -4,7 +4,7 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { Browser } from './browser'
 import { McpClient } from './mcp-client'
 import { E2E_ROOT, SHOP_DIR, SHOP_MANIFEST } from './paths'
@@ -86,8 +86,8 @@ export interface WakeRequest {
 /**
  * 启动常驻 Host（`app-mcp-host serve`），再以 Streamable HTTP 建立一个 MCP 会话。
  *
- * 隔离：临时配置目录（`--home`，不读取 ~/.app-mcp 的配置、令牌、清单）、随机的 WebSocket 与 HTTP 端口，
- * 不会与本机可能在运行的 Host 实例冲突。只加载 shop 的清单（`--manifest-dir` 指向空目录）。
+ * 隔离：临时配置目录（`--home`，不读取 ~/.app-mcp 的配置、令牌、清单）、随机的 WebSocket 与 HTTP 端口、
+ * 临时目录中的本地 IPC 端点（`--ipc-endpoint`），不会与本机可能在运行的 Host 实例冲突。只加载 shop 的清单（`--manifest-dir` 指向空目录）。
  */
 export interface HostStartOptions {
   /**
@@ -119,6 +119,10 @@ export async function startHost(bin: string, extraArgs: string[] = [], options: 
       home,
       '--ws-addr',
       `127.0.0.1:${wsPort}`,
+      '--ipc-endpoint',
+      process.platform === 'win32'
+        ? `pipe:\\\\.\\pipe\\app-mcp-e2e-${basename(dir)}`
+        : `unix:${join(dir, 'run', 'hub.sock')}`,
       '--http',
       `127.0.0.1:${httpPort}`,
       '--manifest',

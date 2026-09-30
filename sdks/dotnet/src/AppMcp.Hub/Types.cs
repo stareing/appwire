@@ -98,6 +98,15 @@ public sealed class HubOptions
     /// <summary>为 true 时不开 App 连接服务（config 中 wsAddr = null），忽略 <see cref="WsAddress"/>。</summary>
     public bool DisableWebSocket { get; set; }
 
+    /// <summary>
+    /// 本地 IPC 端点（原生 App 默认连接这里，spec/protocol.md 1.2）："unix:&lt;绝对路径&gt;" 或
+    /// "pipe:\\.\pipe\&lt;名称&gt;"；null 时为平台默认端点（Windows 为 \\.\pipe\app-mcp-&lt;用户 SID&gt;）。
+    /// </summary>
+    public string? IpcEndpoint { get; set; }
+
+    /// <summary>为 true 时不开本地 IPC 服务（config 中 ipcEndpoint = null），忽略 <see cref="IpcEndpoint"/>。</summary>
+    public bool DisableIpc { get; set; }
+
     /// <summary>静态清单对象（spec/manifest.md）。</summary>
     public IList<JsonNode> Manifests { get; } = new List<JsonNode>();
     public IList<string> ManifestFiles { get; } = new List<string>();
@@ -169,6 +178,8 @@ public sealed class HubOptions
         var o = new JsonObject();
         if (DisableWebSocket) o["wsAddr"] = null;
         else if (WsAddress is not null) o["wsAddr"] = WsAddress;
+        if (DisableIpc) o["ipcEndpoint"] = null;
+        else if (IpcEndpoint is not null) o["ipcEndpoint"] = IpcEndpoint;
         if (Manifests.Count > 0) o["manifests"] = new JsonArray(Manifests.Select(m => m.DeepClone()).ToArray());
         if (ManifestFiles.Count > 0) o["manifestFiles"] = new JsonArray(ManifestFiles.Select(f => (JsonNode?)f).ToArray());
         if (ManifestDir is not null) o["manifestDir"] = ManifestDir;

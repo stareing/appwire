@@ -17,6 +17,9 @@ function fakeBinding() {
     get wsAddr() {
       return '127.0.0.1:1234'
     },
+    get ipcEndpoint() {
+      return 'unix:/run/x/hub.sock'
+    },
     get isShutdown() {
       return state.shutdown
     },
@@ -73,6 +76,7 @@ describe('Hub 封装', () => {
     const hub = await Hub.start({ binding, keepAlive: false, wsAddr: null, approval: { requireAtOrAbove: 'payment' } })
     expect(state.config).toEqual({ wsAddr: null, approval: { requireAtOrAbove: 'payment' } })
     expect(hub.wsUrl).toBe('ws://127.0.0.1:1234')
+    expect(hub.ipcEndpoint).toBe('unix:/run/x/hub.sock')
     expect(hub.tools({ maxRisk: 'read' })).toEqual([{ name: 'a.b', filter: { maxRisk: 'read' } }])
     expect(hub.overview('a')).toEqual({ appId: 'a' })
     expect(hub.overview('b')).toBeNull()

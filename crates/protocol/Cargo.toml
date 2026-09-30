@@ -11,3 +11,16 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 sha2 = "0.10"
+
+# 本地 IPC 身份辅助（endpoint 模块）：Unix 取有效用户 ID；Windows 取用户 SID、管道所有者、安全描述符。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }

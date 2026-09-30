@@ -197,6 +197,8 @@ async function main() {
 
   const mcp = new Mcp([
     '--ws-addr', `127.0.0.1:${WS_PORT}`,
+    // 不占用本机常驻 Host 的默认命名管道。
+    '--ipc-endpoint', 'none',
     '--manifest-dir', emptyDir,
     ...manifests.flatMap((m) => ['--manifest', m]),
     '--lease-ms', '1000',

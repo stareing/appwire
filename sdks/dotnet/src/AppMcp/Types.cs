@@ -152,7 +152,10 @@ public sealed class AppMcpClientOptions
     public required string AppName { get; init; }
     /// <summary>为 null 时自动生成。</summary>
     public string? InstanceId { get; init; }
-    /// <summary>为 null 时使用 ws://127.0.0.1:7717。</summary>
+    /// <summary>
+    /// Host 端点："unix:&lt;绝对路径&gt;"、"pipe:\\.\pipe\&lt;名称&gt;"、"ws://…" 或 "wss://…"（spec/protocol.md 第 1 节）。
+    /// 为 null 时：环境变量 APP_MCP_ENDPOINT → 平台默认本地 IPC 端点（Windows 为 \\.\pipe\app-mcp-&lt;用户 SID&gt;）→ ws://127.0.0.1:7717。
+    /// </summary>
     public string? HostUrl { get; init; }
     public string? AppVersion { get; init; }
     public string? InstanceTitle { get; init; }

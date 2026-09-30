@@ -26,6 +26,7 @@ const T: Duration = Duration::from_secs(10);
 fn config(lease_ms: u64) -> HubConfig {
     HubConfig {
         ws_addr: Some("127.0.0.1:0".into()),
+        ipc_endpoint: None,
         list_changed_debounce: Duration::from_millis(10),
         lease_ttl: Duration::from_millis(lease_ms),
         wake_timeout: Duration::from_secs(5),

@@ -1,4 +1,4 @@
-//! 运行时线程：驱动核心、维护 WebSocket 连接与计时。
+//! 运行时线程：驱动核心、维护与 Host 的连接（WebSocket over 回环 TCP / Unix 域套接字 / 命名管道）与计时。
 //!
 //! 每轮循环先持锁取出核心的全部事件（[`Shared::drain`]），释放锁后执行 I/O 动作、把用户回调
 //! 投递到分发线程；然后等待「唤醒 / 定时器到期 / 连接建立 / 收到消息」之一，再把结果交给核心。
@@ -16,15 +16,22 @@ use std::time::Duration;
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
+use app_mcp_protocol::Endpoint;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::{Action, Job, LogLevel, Shared, epoch, lock_ignore_poison, now_ms};
 
-type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+/// 底层字节流：TCP、Unix 域套接字或命名管道客户端。
+trait Io: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> Io for T {}
+
+type WsStream = WebSocketStream<MaybeTlsStream<Box<dyn Io>>>;
 type ConnectFuture = Pin<Box<dyn Future<Output = Result<WsStream, WsError>> + Send>>;
 
 /// 关闭连接时最多等待写端发送 Close 帧的时间。
@@ -80,7 +87,7 @@ fn deadline(at: u64) -> tokio::time::Instant {
 
 /// 连接目标。
 pub(crate) struct Target {
-    pub url: String,
+    pub endpoint: Endpoint,
     pub connect_timeout: Duration,
 }
 
@@ -179,7 +186,7 @@ async fn drive(
     target: &Target,
     initial: Vec<Action>,
 ) -> Exit {
-    let host_url = target.url.clone();
+    let host_url = target.endpoint.to_string();
     let mut conn: Option<Conn> = None;
     let mut connecting: Option<ConnectFuture> = None;
     let mut closing: Vec<JoinHandle<()>> = Vec::new();
@@ -197,7 +204,7 @@ async fn drive(
                     if let Some(old) = conn.take() {
                         closing.push(old.close());
                     }
-                    connecting = Some(connect(host_url.clone(), target.connect_timeout));
+                    connecting = Some(connect(target.endpoint.clone(), target.connect_timeout));
                 }
                 Action::Send(text) => {
                     if let Some(c) = &conn {
@@ -304,21 +311,109 @@ async fn drive(
     Exit::Shutdown
 }
 
-/// 建立连接（ws:// 或 wss://），超时按失败处理。
-fn connect(url: String, timeout: Duration) -> ConnectFuture {
+/// 建立连接并完成 WebSocket 握手，超时按失败处理。
+fn connect(endpoint: Endpoint, timeout: Duration) -> ConnectFuture {
     Box::pin(async move {
-        if url.len() >= 6 && url[..6].eq_ignore_ascii_case("wss://") {
-            // 进程内只需安装一次；已安装（包括其他库安装的）时忽略错误。
-            let _ = rustls::crypto::ring::default_provider().install_default();
-        }
-        match tokio::time::timeout(timeout, tokio_tungstenite::connect_async(url.as_str())).await {
-            Ok(result) => result.map(|(ws, _)| ws),
+        match tokio::time::timeout(timeout, open(&endpoint)).await {
+            Ok(result) => result,
             Err(_) => Err(WsError::Io(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!("{} ms 内未能建立连接", timeout.as_millis()),
             ))),
         }
     })
+}
+
+async fn open(endpoint: &Endpoint) -> Result<WsStream, WsError> {
+    let (io, url): (Box<dyn Io>, &str) = match endpoint {
+        Endpoint::WebSocket(url) => {
+            if url.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("wss://")) {
+                // 进程内只需安装一次；已安装（包括其他库安装的）时忽略错误。
+                let _ = rustls::crypto::ring::default_provider().install_default();
+            }
+            (Box::new(tcp_connect(url).await?), url.as_str())
+        }
+        Endpoint::Unix(path) => (Box::new(unix_connect(path).await?), app_mcp_protocol::endpoint::IPC_WS_URL),
+        Endpoint::Pipe(name) => (Box::new(pipe_connect(name).await?), app_mcp_protocol::endpoint::IPC_WS_URL),
+    };
+    // IPC 上的 URL 为 ws://，不做 TLS；wss:// 由 tokio-tungstenite 完成 TLS 握手。
+    tokio_tungstenite::client_async_tls(url, io)
+        .await
+        .map(|(ws, _)| ws)
+}
+
+async fn tcp_connect(url: &str) -> Result<TcpStream, WsError> {
+    let request = url.into_client_request()?;
+    let uri = request.uri();
+    let host = uri
+        .host()
+        .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_owned())
+        .ok_or(WsError::Url(tokio_tungstenite::tungstenite::error::UrlError::NoHostName))?;
+    let secure = url.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("wss://"));
+    let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
+    let socket = TcpStream::connect((host.as_str(), port)).await?;
+    socket.set_nodelay(true)?;
+    Ok(socket)
+}
+
+/// 连接 Unix 域套接字，并确认监听方与本进程是同一用户（防止他人抢占路径冒充 Host）。
+#[cfg(unix)]
+async fn unix_connect(path: &std::path::Path) -> Result<tokio::net::UnixStream, WsError> {
+    let stream = tokio::net::UnixStream::connect(path).await?;
+    let cred = stream.peer_cred()?;
+    let me = app_mcp_protocol::endpoint::current_uid();
+    if cred.uid() != me {
+        return Err(WsError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{} 的监听方属于其他用户（uid {}），拒绝连接", path.display(), cred.uid()),
+        )));
+    }
+    Ok(stream)
+}
+
+#[cfg(not(unix))]
+async fn unix_connect(path: &std::path::Path) -> Result<TcpStream, WsError> {
+    Err(WsError::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("本平台不支持 Unix 域套接字端点 unix:{}", path.display()),
+    )))
+}
+
+/// 连接命名管道，并确认管道所有者是当前用户（Hub 创建管道时把所有者设为自己；他人无法伪造）。
+#[cfg(windows)]
+async fn pipe_connect(
+    name: &str,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, WsError> {
+    use std::os::windows::io::AsRawHandle;
+    use app_mcp_protocol::endpoint::win;
+    /// 所有实例都在使用中（Hub 正在创建下一个实例）。
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let client = loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(name) {
+            Ok(c) => break c,
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
+    let owner = win::handle_owner_sid(client.as_raw_handle())?;
+    let me = win::current_user_sid()?;
+    if owner != me {
+        return Err(WsError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("命名管道 {name} 的所有者（{owner}）不是当前用户，拒绝连接"),
+        )));
+    }
+    Ok(client)
+}
+
+#[cfg(not(windows))]
+async fn pipe_connect(name: &str) -> Result<TcpStream, WsError> {
+    Err(WsError::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("本平台不支持命名管道端点 pipe:{name}"),
+    )))
 }
 
 fn log(shared: &Shared, jobs: &Sender<Job>, level: LogLevel, message: String) {

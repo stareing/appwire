@@ -8,7 +8,7 @@ fn config() -> NativeConfig {
 
 #[test]
 fn rejects_bad_host_url() {
-    for url in ["http://127.0.0.1:1", "127.0.0.1:1", "", "ws://"] {
+    for url in ["http://127.0.0.1:1", "127.0.0.1:1", "", "ws://", "unix:relative.sock", "pipe:x"] {
         let mut c = config();
         c.host_url = url.to_owned();
         assert!(
@@ -22,6 +22,28 @@ fn rejects_bad_host_url() {
     let mut c = config();
     c.host_url = "WSS://example.invalid".to_owned();
     assert!(NativeClient::new(c, None).is_ok());
+    // 本平台不支持的 IPC 形式在创建时报错（不换用其他传输）。
+    let foreign = if cfg!(windows) { "unix:/tmp/hub.sock" } else { r"pipe:\\.\pipe\app-mcp-x" };
+    let mut c = config();
+    c.host_url = foreign.to_owned();
+    assert!(matches!(NativeClient::new(c, None), Err(NativeError::InvalidConfig(_))));
+    let native = if cfg!(windows) { r"pipe:\\.\pipe\app-mcp-x" } else { "unix:/tmp/hub.sock" };
+    let mut c = config();
+    c.host_url = native.to_owned();
+    assert!(NativeClient::new(c, None).is_ok());
+}
+
+#[test]
+fn default_host_url_is_platform_endpoint() {
+    // 不依赖本进程的 APP_MCP_ENDPOINT：比较不看环境变量的默认值。
+    let expected = app_mcp_protocol::endpoint::default_endpoint_without_env();
+    if std::env::var_os(app_mcp_protocol::endpoint::ENDPOINT_ENV).is_none() {
+        assert_eq!(config().host_url, expected);
+    }
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+    assert!(expected.starts_with("unix:/"), "{expected}");
+    #[cfg(windows)]
+    assert!(expected.starts_with(r"pipe:\\.\pipe\app-mcp-"), "{expected}");
 }
 
 #[test]
@@ -55,9 +77,10 @@ fn instance_id_generated_once_per_process() {
 fn explicit_launch_token_is_used() {
     let mut c = config();
     c.launch_token = Some("lt".to_owned());
-    let (core, url) = build_core_config(c).unwrap();
+    c.host_url = "ws://127.0.0.1:7717".to_owned();
+    let (core, endpoint) = build_core_config(c).unwrap();
     assert_eq!(core.launch_token.as_deref(), Some("lt"));
-    assert_eq!(url, "ws://127.0.0.1:7717");
+    assert_eq!(endpoint.to_string(), "ws://127.0.0.1:7717");
     assert_eq!(core.max_concurrent_calls, 1);
 }
 

@@ -183,6 +183,7 @@ async fn connect(hub: &Hub, spec: Spec) -> Sdk {
 fn config() -> HubConfig {
     HubConfig {
         ws_addr: Some("127.0.0.1:0".into()),
+        ipc_endpoint: None,
         response_timeout: Duration::from_secs(3),
         ..Default::default()
     }
@@ -736,6 +737,7 @@ async fn pairing_handler_hook() {
 async fn no_ws_and_shutdown() {
     let hub = Hub::start(HubConfig {
         ws_addr: None,
+        ipc_endpoint: None,
         ..Default::default()
     })
     .await

@@ -29,6 +29,14 @@
  *     am_client_sleep / am_client_sleep_with_reason / am_client_hold（AmHold + am_hold_release）/
  *     am_client_tools_hash / am_parse_wake_token。
  *   · am_call_hold、am_call_fail_with_details。
+ * - v4（本地 IPC 传输，spec/protocol.md 第 1 节）：布局与签名不变，只扩展 host_url 的取值与缺省值。
+ *
+ * 端点（AmClientConfig.host_url）
+ *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
+ *   "ws://…" / "wss://…"。NULL 时：环境变量 APP_MCP_ENDPOINT（非空时原样使用）→ 平台默认本地 IPC 端点
+ *   （Linux $XDG_RUNTIME_DIR/app-mcp/hub.sock，否则 ~/.app-mcp/run/hub.sock；macOS ~/.app-mcp/run/hub.sock；
+ *   Windows \\.\pipe\app-mcp-<当前用户 SID>）→ "ws://127.0.0.1:7717"（Android / iOS）。
+ *   格式不合法或本平台不支持该形式时 am_client_new 返回 AM_ERR_INVALID_CONFIG；连不上时按退避重连同一端点。
  */
 #ifndef APP_MCP_H
 #define APP_MCP_H
@@ -188,7 +196,7 @@ typedef struct AmClientConfig {
     const char *app_id;            /* 必填 */
     const char *app_name;          /* 必填 */
     const char *instance_id;       /* 可为 NULL：自动生成 */
-    const char *host_url;          /* 可为 NULL：ws://127.0.0.1:7717 */
+    const char *host_url;          /* 可为 NULL：见下方“端点” */
     const char *app_version;       /* 可为 NULL */
     const char *instance_title;    /* 可为 NULL */
     const char *token;             /* 可为 NULL */

@@ -239,6 +239,9 @@ public final class Hub: @unchecked Sendable {
     /// App 连接服务的实际地址（端口 0 时为随机端口）；未开启时为 `nil`。
     public var wsAddr: String? { inner.wsAddr() }
 
+    /// 本地 IPC 连接服务的端点（`unix:…` / `pipe:…`，可直接作为 App 端 SDK 的 `hostURL`）；未开启时为 `nil`。
+    public var ipcEndpoint: String? { inner.ipcEndpoint() }
+
     // MARK: 查询
 
     public func apps() -> [AppInfo] { inner.apps() }

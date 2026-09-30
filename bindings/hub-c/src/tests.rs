@@ -83,8 +83,13 @@ fn ud<T>(v: &T) -> *mut c_void {
     v as *const T as *mut c_void
 }
 
+/// 启动 Hub。配置未写 `ipcEndpoint` 时关闭本地 IPC（不占用本机常驻 Host 的默认端点）。
 fn start_hub(config: &str) -> *mut AmHub {
-    let cfg = c(config);
+    let mut v: Value = serde_json::from_str(config).expect("测试配置");
+    if let Some(o) = v.as_object_mut() {
+        o.entry("ipcEndpoint").or_insert(Value::Null);
+    }
+    let cfg = c(&v.to_string());
     let mut hub = ptr::null_mut();
     // SAFETY: 有效参数。
     let st = unsafe { am_hub_start(cfg.as_ptr(), &mut hub) };
@@ -240,12 +245,52 @@ fn bind_failure_is_io_error() {
     let hub = start_hub(r#"{"wsAddr":"127.0.0.1:0"}"#);
     // SAFETY: 有效句柄。
     let addr = unsafe { take(am_hub_ws_addr(hub)) };
-    let cfg = c(&json!({ "wsAddr": addr }).to_string());
+    let cfg = c(&json!({ "wsAddr": addr, "ipcEndpoint": null }).to_string());
     let mut second = ptr::null_mut();
     // SAFETY: 有效参数。
     assert_eq!(unsafe { am_hub_start(cfg.as_ptr(), &mut second) }, AmHubStatus::Io);
     // SAFETY: 有效句柄。
     unsafe { am_hub_free(hub) };
+}
+
+#[test]
+fn ipc_endpoint_config_and_single_instance() {
+    #[cfg(unix)]
+    let (endpoint, dir) = {
+        let dir = std::env::temp_dir().join(format!("app-mcp-hub-c-ipc-{}", std::process::id()));
+        (format!("unix:{}", dir.join("hub.sock").display()), Some(dir))
+    };
+    #[cfg(windows)]
+    let (endpoint, dir) = (
+        format!(r"pipe:\\.\pipe\app-mcp-hub-c-test-{}", std::process::id()),
+        None::<std::path::PathBuf>,
+    );
+    let config = json!({ "wsAddr": null, "ipcEndpoint": endpoint }).to_string();
+    let hub = start_hub(&config);
+    // SAFETY: 有效句柄。
+    assert_eq!(unsafe { take(am_hub_ipc_endpoint(hub)) }, endpoint);
+    // 同一端点第二个 Hub：已有 Hub 在监听 → IO 错误。
+    let cfg = c(&config);
+    let mut second = ptr::null_mut();
+    // SAFETY: 有效参数。
+    assert_eq!(unsafe { am_hub_start(cfg.as_ptr(), &mut second) }, AmHubStatus::Io);
+    assert!(second.is_null());
+    // SAFETY: 有效句柄；停止后返回 NULL。
+    unsafe {
+        am_hub_shutdown(hub);
+        assert!(am_hub_ipc_endpoint(hub).is_null());
+        am_hub_free(hub);
+    }
+    // 关闭时的默认值：未开启 → NULL。
+    let off = start_hub(r#"{"wsAddr":null}"#);
+    // SAFETY: 有效句柄。
+    unsafe {
+        assert!(am_hub_ipc_endpoint(off).is_null());
+        am_hub_free(off);
+    }
+    if let Some(d) = dir {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }
 
 #[test]
@@ -609,7 +654,7 @@ fn header_matches_implementation() {
     }
     for f in [
         "am_hub_version", "am_hub_last_error_message", "am_hub_string_free", "am_hub_start",
-        "am_hub_shutdown", "am_hub_free", "am_hub_ws_addr", "am_hub_serve_http",
+        "am_hub_shutdown", "am_hub_free", "am_hub_ws_addr", "am_hub_ipc_endpoint", "am_hub_serve_http",
         "am_hub_apps_json", "am_hub_tools_json", "am_hub_resources_json", "am_hub_overview_json",
         "am_hub_call", "am_hub_cancel_call", "am_hub_read_resource", "am_hub_subscribe",
         "am_hub_unsubscribe", "am_hub_select_instance", "am_hub_reset_session",
@@ -621,7 +666,7 @@ fn header_matches_implementation() {
     }
     let src = include_str!("lib.rs");
     let exported = src.matches("#[unsafe(no_mangle)]").count();
-    assert_eq!(exported, 28, "导出函数数量与头文件清单一致");
+    assert_eq!(exported, 29, "导出函数数量与头文件清单一致");
 }
 
 #[test]

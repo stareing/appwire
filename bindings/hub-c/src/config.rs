@@ -18,6 +18,8 @@ const DEFAULT_WORKER_THREADS: usize = 2;
 pub(crate) struct ConfigJson {
     /// 缺省为默认地址；显式 `null` 表示不开 WebSocket 服务。
     pub ws_addr: Option<String>,
+    /// 本地 IPC 端点（`unix:…` / `pipe:…`）；缺省为平台默认端点；显式 `null` 表示不开。
+    pub ipc_endpoint: Option<String>,
     pub manifests: Vec<Value>,
     pub manifest_files: Vec<PathBuf>,
     pub manifest_dir: Option<PathBuf>,
@@ -49,6 +51,7 @@ impl Default for ConfigJson {
     fn default() -> Self {
         Self {
             ws_addr: HubConfig::default().ws_addr,
+            ipc_endpoint: HubConfig::default().ipc_endpoint,
             manifests: Vec::new(),
             manifest_files: Vec::new(),
             manifest_dir: None,
@@ -94,6 +97,7 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     };
     let mut hub = HubConfig {
         ws_addr: c.ws_addr,
+        ipc_endpoint: c.ipc_endpoint,
         allow_origins: c.allow_origins,
         upstreams: c.upstreams,
         approval: c.approval,
@@ -157,6 +161,11 @@ mod tests {
         assert_eq!(p.hub.ws_addr, None);
         assert_eq!(p.hub.response_timeout, Duration::from_millis(1500));
         assert_eq!(p.hub.approval.timeout, Some(Duration::from_millis(200)));
+        assert_eq!(p.hub.ipc_endpoint, HubConfig::default().ipc_endpoint);
+        let p = parse(Some(r#"{"ipcEndpoint": null}"#)).unwrap();
+        assert_eq!(p.hub.ipc_endpoint, None);
+        let p = parse(Some(r#"{"ipcEndpoint": "unix:/run/x/hub.sock"}"#)).unwrap();
+        assert_eq!(p.hub.ipc_endpoint.as_deref(), Some("unix:/run/x/hub.sock"));
     }
 
     #[test]

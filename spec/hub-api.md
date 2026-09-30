@@ -13,7 +13,7 @@ flowchart TD
   agent["厂商 Agent<br/>（自有 LLM 循环 / 自有 UI）"]
   hub["Hub（嵌入厂商进程）"]
   agent -- "Hub SDK：列工具、调用、读资源、事件、<br/>审批回调、工具格式导出" --> hub
-  hub -- "WebSocket / 进程内" --> apps["各 App（App 端 SDK）"]
+  hub -- "本地 IPC / WebSocket / 进程内" --> apps["各 App（App 端 SDK）"]
   hub -- "子进程" --> upstream["上游 MCP 服务器"]
   hub -. "可选：MCP stdio / Streamable HTTP" .-> mcp["MCP 客户端"]
 ```
@@ -40,12 +40,14 @@ Hub 自带 tokio 多线程运行时（绑定层创建），Rust 用户可在自�
 pub struct HubConfig {
     // 原 HostConfig 全部字段（ws_addr、manifests、allow_origins、各超时、upstreams）
     pub ws_addr: Option<String>,            // None = 不开 WebSocket 服务（仅进程内 / 上游）
+    pub ipc_endpoint: Option<String>,       // 本地 IPC 端点，默认平台默认端点；None = 不开（3.8）
     pub approval: ApprovalPolicy,           // 见 3.3
 }
 
 impl Hub {
     pub async fn start(config: HubConfig) -> io::Result<Hub>;
     pub fn ws_addr(&self) -> Option<SocketAddr>;
+    pub fn ipc_endpoint(&self) -> Option<&str>;               // 3.8
     pub async fn shutdown(self);
 
     // ---- 查询（同步，读快照）----
@@ -92,7 +94,8 @@ pub struct AppInfo {
     pub selected_instance: Option<String>,
 }
 pub struct InstanceInfo { pub instance_id: String, pub client_kind: String,
-    pub visibility: Visibility, pub focused: bool, pub last_active_ms: u64 }
+    pub visibility: Visibility, pub focused: bool, pub last_active_ms: u64,
+    pub pid: Option<u32> }   // pid：经本地 IPC 连接的实例进程号（3.8）
 
 pub struct HubTool {
     pub name: String,            // 全名 "<appId>.<tool>"，与 MCP 出口一致
@@ -347,6 +350,25 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
 `--tool-exposure-threshold <N>`；C / Node 配置 JSON `toolExposure`、`toolExposureThreshold`（同时新增 `waker`：`"system"` /
 `"none"` / `{"exec": [...]}`）；uniffi `HubConfig.tool_exposure: ToolExposure?`、`tool_exposure_threshold: u32?`、
 `waker: WakerConfig?`（`System` / `Disabled` / `Exec { argv }`，`Disabled` 即 `"none"`）、`ToolFilter.session`。
+
+### 3.8 本地 IPC 传输
+
+原生 App 默认经本地 IPC（Unix 域套接字 / Windows 命名管道）连接 Hub，网页只能用回环 TCP WebSocket。
+端点格式、默认位置、连接鉴权与单实例语义见 spec/protocol.md 第 1 节；两种传输上的消息完全相同。
+
+- `HubConfig.ipc_endpoint: Option<String>`：`unix:<绝对路径>` / `pipe:\\.\pipe\<名称>`，默认
+  `app_mcp_protocol::endpoint::default_ipc_endpoint()`（Android / iOS 为 `None`）；`None` = 不开。
+  不是 IPC 形式、或本平台不支持时 `Hub::start` 返回 `InvalidInput`；端点已有 Hub 监听时返回 `AddrInUse`。
+  与 `ws_addr` 一样，默认值会占用本机唯一的端点：同机器上的第二个 Hub（含测试）应改用其他端点或设为 `None`。
+- `Hub::ipc_endpoint()`：实际监听的端点字符串，可直接作为原生 SDK 的 `host_url`。
+- `InstanceInfo.pid: Option<u32>`：IPC 连接的对端进程号（操作系统提供）；TCP 连接与休眠实例为 `None`。
+  JSON 中为 `pid`，缺省时省略。
+
+绑定：C 配置 JSON `ipcEndpoint`（缺省 = 平台默认端点，`null` = 不开）+ `am_hub_ipc_endpoint`（头文件 v4）；
+Node 配置 `ipcEndpoint`（同上）+ `Hub.ipcEndpoint`；uniffi `HubConfig.ipc_endpoint: String?` + `enable_ipc: bool`（默认 `true`）+
+`AppMcpHub.ipc_endpoint()` + `InstanceInfo.pid: u32?`；C# `HubOptions.IpcEndpoint` / `DisableIpc` + `AppMcpHub.IpcEndpoint`；
+Kotlin `Hub.ipcEndpoint`、Swift `Hub.ipcEndpoint`、Python `Hub.ipc_endpoint`。
+`app-mcp-host`：配置文件 `ipcEndpoint`（`"none"` 关闭）、命令行 `--ipc-endpoint <ENDPOINT|none>`。`/healthz` 不变。
 
 ## 4. 进程内 App（可选，M2）
 

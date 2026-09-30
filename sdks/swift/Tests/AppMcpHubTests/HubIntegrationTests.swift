@@ -22,7 +22,8 @@ private actor Wakes {
     func record(_ r: WakeRequest) { requests.append(r) }
 }
 
-/// 嵌入式 Hub（随机端口）+ 同进程 App 端 SDK（AppMcpClient）经真实 WebSocket 连上。
+/// 嵌入式 Hub（随机端口）+ 同进程 App 端 SDK（AppMcpClient）经真实 WebSocket / 本地 IPC 连上。
+/// 测试关闭默认 IPC 端点（`enableIpc: false`），不占用本机常驻 Host 的端点；IPC 用临时端点单独测试。
 final class HubIntegrationTests: XCTestCase {
     private func next(
         _ it: inout AsyncStream<HubEvent>.Iterator,
@@ -46,7 +47,7 @@ final class HubIntegrationTests: XCTestCase {
     }
 
     func testEndToEnd() async throws {
-        let hub = try Hub(config: HubConfig(wsAddr: "127.0.0.1:0", approvalMinRisk: .destructive))
+        let hub = try Hub(config: HubConfig(wsAddr: "127.0.0.1:0", enableIpc: false, approvalMinRisk: .destructive))
         defer { hub.close() }
         let approvals = Approvals()
         hub.setApprovalHandler { req in
@@ -136,7 +137,7 @@ final class HubIntegrationTests: XCTestCase {
 
     func testDormantAppWokenByCustomWaker() async throws {
         let hub = try Hub(config: HubConfig(
-            wsAddr: "127.0.0.1:0", listChangedDebounceMs: 20, leaseTtlMs: 0, wakeTimeoutMs: 10_000
+            wsAddr: "127.0.0.1:0", enableIpc: false, listChangedDebounceMs: 20, leaseTtlMs: 0, wakeTimeoutMs: 10_000
         ))
         defer { hub.close() }
         var events = hub.events().makeAsyncIterator()
@@ -190,7 +191,7 @@ final class HubIntegrationTests: XCTestCase {
 
     func testProgressiveExposureConfig() throws {
         let hub = try Hub(config: HubConfig(
-            enableWs: false, waker: .exec(argv: ["true"]), toolExposure: .progressive, toolExposureThreshold: 5
+            enableWs: false, enableIpc: false, waker: .exec(argv: ["true"]), toolExposure: .progressive, toolExposureThreshold: 5
         ))
         // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
         XCTAssertEqual(hub.tools(ToolFilter(session: "c1")).map(\.name),
@@ -201,8 +202,9 @@ final class HubIntegrationTests: XCTestCase {
     func testFormatsAndShutdown() async throws {
         XCTAssertEqual(try ToolFormat.parse("anthropic"), .anthropic)
         XCTAssertThrowsError(try ToolFormat.parse("nope"))
-        let hub = try Hub(config: HubConfig(enableWs: false))
+        let hub = try Hub(config: HubConfig(enableWs: false, enableIpc: false))
         XCTAssertNil(hub.wsAddr)
+        XCTAssertNil(hub.ipcEndpoint)
         XCTAssertEqual(Set(hub.tools().map(\.name)), ["apps.list", "apps.select", "apps.overview"])
         hub.close()
         hub.close() // 幂等
@@ -210,5 +212,25 @@ final class HubIntegrationTests: XCTestCase {
             _ = try await hub.callTool("apps.list")
             XCTFail("关闭后应抛出 HubError")
         } catch is HubError {}
+    }
+
+    func testNativeAppOverIpc() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-mcp-swift-ipc-\(ProcessInfo.processInfo.processIdentifier)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let endpoint = "unix:\(dir.appendingPathComponent("run/hub.sock").path)"
+        let hub = try Hub(config: HubConfig(enableWs: false, ipcEndpoint: endpoint))
+        defer { hub.close() }
+        XCTAssertEqual(hub.ipcEndpoint, endpoint)
+        let app = try AppMcpClient(config: AppMcpConfig(appId: "notes", appName: "笔记", hostURL: endpoint))
+        let schema = #"{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}"#
+        try app.tool("add", description: "添加笔记", inputSchema: schema, risk: .write) { (args: NoteArgs, _) in
+            Saved(saved: args.text)
+        }
+        app.start()
+        defer { app.stop() }
+        try await waitTools(hub, 1)
+        let instance = hub.apps().first { $0.appId == "notes" }?.instances.first
+        XCTAssertEqual(instance?.pid, UInt32(ProcessInfo.processInfo.processIdentifier))
     }
 }

@@ -170,7 +170,7 @@ struct ClientConfig {
     std::string app_id;
     std::string app_name;
     std::optional<std::string> instance_id;
-    std::optional<std::string> host_url;  // 默认 ws://127.0.0.1:7717
+    std::optional<std::string> host_url;  // 默认：APP_MCP_ENDPOINT → 平台默认本地 IPC 端点（unix: / pipe:）→ ws://127.0.0.1:7717
     std::optional<std::string> app_version;
     std::optional<std::string> instance_title;
     std::optional<std::string> token;

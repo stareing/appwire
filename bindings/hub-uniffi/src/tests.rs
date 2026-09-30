@@ -88,6 +88,8 @@ fn wait_for(rx: &mpsc::Receiver<HubEvent>, pred: impl Fn(&HubEvent) -> bool) -> 
 fn start_hub(approval: Option<Risk>) -> Arc<AppMcpHub> {
     AppMcpHub::start(HubConfig {
         ws_addr: Some("127.0.0.1:0".into()),
+        // 测试不占用本机常驻 Host 的默认 IPC 端点。
+        enable_ipc: false,
         approval_min_risk: approval,
         ..Default::default()
     })
@@ -359,13 +361,56 @@ fn parse_formats_and_ws_disabled() {
 
     let hub = AppMcpHub::start(HubConfig {
         enable_ws: false,
+        enable_ipc: false,
         ..Default::default()
     })
     .unwrap();
     assert_eq!(hub.ws_addr(), None);
+    assert_eq!(hub.ipc_endpoint(), None);
     let tools = hub.tools(ToolFilter::default());
     assert!(tools.iter().any(|t| t.name == "apps.list"));
     hub.shutdown();
+}
+
+#[test]
+fn native_app_over_ipc_reports_pid() {
+    #[cfg(unix)]
+    let (endpoint, dir) = {
+        let dir = std::env::temp_dir().join(format!("app-mcp-hub-uniffi-ipc-{}", std::process::id()));
+        (format!("unix:{}", dir.join("hub.sock").display()), Some(dir))
+    };
+    #[cfg(windows)]
+    let (endpoint, dir) = (
+        format!(r"pipe:\\.\pipe\app-mcp-hub-uniffi-test-{}", std::process::id()),
+        None::<std::path::PathBuf>,
+    );
+    let hub = AppMcpHub::start(HubConfig {
+        enable_ws: false,
+        ipc_endpoint: Some(endpoint.clone()),
+        ..Default::default()
+    })
+    .expect("启动 Hub");
+    assert_eq!(hub.ipc_endpoint().as_deref(), Some(endpoint.as_str()));
+    let mut cfg = native::NativeConfig::new("notes", "笔记");
+    cfg.host_url = endpoint;
+    cfg.launch_token = Some(String::new());
+    let app = native::NativeClient::new(cfg, None).expect("客户端");
+    app.start();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let pid = loop {
+        let apps = hub.apps();
+        if let Some(i) = apps.iter().find(|a| a.app_id == "notes").and_then(|a| a.instances.first()) {
+            break i.pid;
+        }
+        assert!(Instant::now() < deadline, "App 未经 IPC 连上");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(pid, Some(std::process::id()));
+    app.stop();
+    hub.shutdown();
+    if let Some(d) = dir {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }
 
 #[test]
@@ -411,6 +456,7 @@ impl HubWaker for SilentWaker {
 fn dormant_app_woken_by_foreign_waker() {
     let hub = AppMcpHub::start(HubConfig {
         ws_addr: Some("127.0.0.1:0".into()),
+        enable_ipc: false,
         lease_ttl_ms: Some(0),
         wake_timeout_ms: Some(10_000),
         list_changed_debounce_ms: Some(20),

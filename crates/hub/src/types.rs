@@ -54,6 +54,10 @@ pub struct InstanceInfo {
     pub last_active_ms: u64,
     /// 实例标题（网页为 `document.title`）。spec 之外的补充字段。
     pub title: Option<String>,
+    /// 实例进程号：经本地 IPC（Unix 域套接字 / 命名管道）连接时由操作系统提供；
+    /// 回环 TCP 连接与休眠实例为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------

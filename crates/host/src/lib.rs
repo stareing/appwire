@@ -101,6 +101,7 @@ fn hub_config(s: &Settings) -> HubConfig {
     manifests.extend(load_manifests(&s.manifests, None, false));
     HubConfig {
         ws_addr: Some(s.ws_addr.clone()),
+        ipc_endpoint: s.ipc_endpoint.clone(),
         manifests,
         allow_origins: s.allow_origins.clone(),
         upstreams: s.upstreams.clone(),
@@ -129,7 +130,7 @@ async fn run_legacy(args: LegacyArgs) -> anyhow::Result<ExitCode> {
     })?;
     let hub = Hub::start(hub_config(&s))
         .await
-        .with_context(|| format!("启动 App 连接服务 {} 失败", s.ws_addr))?;
+        .with_context(|| format!("启动 App 连接服务 {} 失败", describe_app_endpoints(&s)))?;
     if let Some(addr) = &args.http {
         hub.serve_http(addr, args.http_allow_remote)
             .await
@@ -158,6 +159,14 @@ fn probe_addr(addr: &str) -> String {
             format!("{ip}:{}", a.port())
         }
         _ => addr.to_owned(),
+    }
+}
+
+/// App 连接服务的监听位置（日志 / 错误信息用）。
+fn describe_app_endpoints(s: &Settings) -> String {
+    match &s.ipc_endpoint {
+        Some(ipc) => format!("{}（本地 IPC {ipc}）", s.ws_addr),
+        None => s.ws_addr.clone(),
     }
 }
 
@@ -219,9 +228,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<ExitCode> {
     let hub = match Hub::start(hub_config(&s)).await {
         Ok(h) => h,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            return already_running_or(&s, format!("App 连接端口 {} 已被占用", s.ws_addr)).await;
+            let what = format!("App 连接端口 {} 已被占用：{e}", describe_app_endpoints(&s));
+            return already_running_or(&s, what).await;
         }
-        Err(e) => return Err(e).with_context(|| format!("启动 App 连接服务 {} 失败", s.ws_addr)),
+        Err(e) => {
+            return Err(e).with_context(|| format!("启动 App 连接服务 {} 失败", describe_app_endpoints(&s)));
+        }
     };
     let options = HttpOptions {
         allow_remote: s.http_allow_remote,
@@ -240,8 +252,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<ExitCode> {
         }
     };
     tracing::info!(
-        "app-mcp-host 已就绪：MCP http://{http}/mcp，App 连接 ws://{}，令牌策略 {:?}",
+        "app-mcp-host 已就绪：MCP http://{http}/mcp，App 连接 ws://{}，本地 IPC {}，令牌策略 {:?}",
         hub.ws_addr().map(|a| a.to_string()).unwrap_or_default(),
+        hub.ipc_endpoint().unwrap_or("未开启"),
         s.auth
     );
     shutdown_signal().await;

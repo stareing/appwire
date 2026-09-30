@@ -127,7 +127,7 @@ def make_model(use_claude: bool) -> Any:
 # ---------------------------------------------------------------------------
 
 async def run(user_input: str, use_claude: bool) -> None:
-    with Hub(ws_addr="127.0.0.1:0", approval_min_risk="destructive") as hub:
+    with Hub(ws_addr="127.0.0.1:0", enable_ipc=False, approval_min_risk="destructive") as hub:
         hub.set_approval_handler(approve_in_terminal)
         events = hub.events()
         app = start_demo_app(hub)

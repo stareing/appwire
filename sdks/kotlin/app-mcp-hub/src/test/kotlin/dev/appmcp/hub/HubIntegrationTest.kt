@@ -31,7 +31,10 @@ import dev.appmcp.LifecyclePolicy as AppLifecyclePolicy
 import dev.appmcp.WakeDescriptor as AppWakeDescriptor
 import dev.appmcp.WakeKind as AppWakeKind
 
-/** 嵌入式 Hub（随机端口）+ 同进程 App 端 SDK（dev.appmcp.AppMcp）经真实 WebSocket 连上。 */
+/**
+ * 嵌入式 Hub（随机端口）+ 同进程 App 端 SDK（dev.appmcp.AppMcp）经真实 WebSocket / 本地 IPC 连上。
+ * 测试关闭默认 IPC 端点（`enableIpc = false`），不占用本机常驻 Host 的端点；IPC 用临时端点单独测试。
+ */
 class HubIntegrationTest {
     private val textSchema = buildJsonObject {
         put("type", "object")
@@ -40,7 +43,7 @@ class HubIntegrationTest {
 
     @Test
     fun endToEnd() = runBlocking {
-        val hub = Hub.start(HubConfig(wsAddr = "127.0.0.1:0", approvalMinRisk = Risk.DESTRUCTIVE))
+        val hub = Hub.start(HubConfig(wsAddr = "127.0.0.1:0", enableIpc = false, approvalMinRisk = Risk.DESTRUCTIVE))
         val events = Channel<HubEvent>(Channel.UNLIMITED)
         val collector = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
             hub.events.collect { events.send(it) }
@@ -152,7 +155,7 @@ class HubIntegrationTest {
     @Test
     fun dormantAppWokenByCustomWaker() = runBlocking {
         val hub = Hub.start(
-            HubConfig(wsAddr = "127.0.0.1:0", leaseTtlMs = 0uL, wakeTimeoutMs = 10_000uL, listChangedDebounceMs = 20uL),
+            HubConfig(wsAddr = "127.0.0.1:0", enableIpc = false, leaseTtlMs = 0uL, wakeTimeoutMs = 10_000uL, listChangedDebounceMs = 20uL),
         )
         val events = Channel<HubEvent>(Channel.UNLIMITED)
         val collector = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
@@ -222,8 +225,9 @@ class HubIntegrationTest {
     fun parseFormatAndShutdown() {
         assertEquals(ToolFormat.ANTHROPIC, Hub.parseFormat("anthropic"))
         assertFailsWith<HubException> { Hub.parseFormat("nope") }
-        val hub = Hub.start(HubConfig(enableWs = false))
+        val hub = Hub.start(HubConfig(enableWs = false, enableIpc = false))
         assertEquals(null, hub.wsAddr)
+        assertEquals(null, hub.ipcEndpoint)
         assertEquals(setOf("apps.list", "apps.select", "apps.overview"), hub.tools().map { it.name }.toSet())
         hub.close()
         hub.close() // 幂等
@@ -234,6 +238,7 @@ class HubIntegrationTest {
         val hub = Hub.start(
             HubConfig(
                 enableWs = false,
+                enableIpc = false,
                 toolExposure = ToolExposure.PROGRESSIVE,
                 toolExposureThreshold = 5u,
                 waker = dev.appmcp.hub.ffi.WakerConfig.Disabled,
@@ -245,5 +250,35 @@ class HubIntegrationTest {
             hub.tools(ToolFilter(session = "c1")).map { it.name },
         )
         hub.close()
+    }
+
+    @Test
+    fun nativeAppOverIpc() = runBlocking {
+        val windows = System.getProperty("os.name").lowercase().contains("windows")
+        val pid = ProcessHandle.current().pid()
+        val dir = java.nio.file.Files.createTempDirectory("app-mcp-kt-ipc")
+        val endpoint = if (windows) "pipe:\\\\.\\pipe\\app-mcp-kt-test-$pid" else "unix:${dir.resolve("run/hub.sock")}"
+        val hub = Hub.start(HubConfig(enableWs = false, ipcEndpoint = endpoint))
+        assertEquals(endpoint, hub.ipcEndpoint)
+        val app = AppMcp.create(AppMcpConfig("notes", "笔记", hostUrl = hub.ipcEndpoint!!, dispatcher = Dispatchers.Default))
+        app.tool("add", "添加笔记", textSchema, risk = AppRisk.WRITE) { args, _ ->
+            mapOf("saved" to args["text"]!!.jsonPrimitive.content)
+        }
+        try {
+            app.start()
+            val instance = withTimeout(10.seconds) {
+                var found: InstanceInfo? = null
+                while (found == null) {
+                    found = hub.apps().firstOrNull { it.appId == "notes" }?.instances?.firstOrNull()
+                    if (found == null) delay(20)
+                }
+                found
+            }
+            assertEquals(pid.toUInt(), instance.pid)
+        } finally {
+            app.close()
+            hub.close()
+            dir.toFile().deleteRecursively()
+        }
     }
 }

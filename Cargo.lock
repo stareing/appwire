@@ -261,10 +261,12 @@ dependencies = [
 name = "app-mcp-protocol"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

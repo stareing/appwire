@@ -456,6 +456,12 @@ class Hub:
         """App 连接服务的实际地址（端口 0 时为随机端口）；未开启时为 ``None``。"""
         return self._inner.ws_addr()
 
+    @property
+    def ipc_endpoint(self) -> str | None:
+        """本地 IPC 连接服务的端点（``unix:…`` / ``pipe:…``，可直接作为 App 端 SDK 的 ``host_url``）；
+        未开启时为 ``None``。"""
+        return self._inner.ipc_endpoint()
+
     # -- 查询 -------------------------------------------------------------------
 
     def apps(self) -> list[AppInfo]:

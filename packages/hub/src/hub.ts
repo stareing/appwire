@@ -127,6 +127,11 @@ export class Hub {
     return a ? `ws://${a}` : null
   }
 
+  /** 本地 IPC 连接服务的端点（`unix:…` / `pipe:…`，可直接作为原生 App 端 SDK 的 `hostUrl`）；未开启时为 null。 */
+  get ipcEndpoint(): string | null {
+    return this.#native.ipcEndpoint
+  }
+
   get isShutdown(): boolean {
     return this.#native.isShutdown
   }

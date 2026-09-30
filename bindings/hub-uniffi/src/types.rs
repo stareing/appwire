@@ -269,6 +269,13 @@ pub struct HubConfig {
     /// `false` = 不开 WebSocket 服务（仅上游）。
     #[uniffi(default = true)]
     pub enable_ws: bool,
+    /// 本地 IPC 端点（`unix:<绝对路径>` / `pipe:\\.\pipe\<名称>`，spec/protocol.md 1.2）；
+    /// 为空时为平台默认端点（原生 App 默认连接这里）。
+    #[uniffi(default = None)]
+    pub ipc_endpoint: Option<String>,
+    /// `false` = 不开本地 IPC 服务。
+    #[uniffi(default = true)]
+    pub enable_ipc: bool,
     /// 静态清单文件路径。加载失败的清单记录日志后跳过。
     #[uniffi(default = [])]
     pub manifest_files: Vec<String>,
@@ -343,6 +350,8 @@ impl Default for HubConfig {
         HubConfig {
             ws_addr: None,
             enable_ws: true,
+            ipc_endpoint: None,
+            enable_ipc: true,
             manifest_files: Vec::new(),
             manifest_dir: None,
             manifests_json: Vec::new(),
@@ -377,6 +386,11 @@ impl HubConfig {
             c.ws_addr = None;
         } else if let Some(addr) = self.ws_addr {
             c.ws_addr = Some(addr);
+        }
+        if !self.enable_ipc {
+            c.ipc_endpoint = None;
+        } else if let Some(endpoint) = self.ipc_endpoint {
+            c.ipc_endpoint = Some(endpoint);
         }
         let files: Vec<PathBuf> = self.manifest_files.into_iter().map(PathBuf::from).collect();
         let dir = self.manifest_dir.map(PathBuf::from);
@@ -458,6 +472,8 @@ pub struct InstanceInfo {
     /// 最近活跃时间（Unix 毫秒）。
     pub last_active_ms: u64,
     pub title: Option<String>,
+    /// 实例进程号（经本地 IPC 连接时由操作系统提供；否则为空）。
+    pub pid: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -482,6 +498,7 @@ impl From<hub::InstanceInfo> for InstanceInfo {
             focused: i.focused,
             last_active_ms: i.last_active_ms,
             title: i.title,
+            pid: i.pid,
         }
     }
 }
@@ -975,6 +992,7 @@ mod tests {
         let c = HubConfig::default().into_hub().unwrap();
         let d = hub::HubConfig::default();
         assert_eq!(c.ws_addr, d.ws_addr);
+        assert_eq!(c.ipc_endpoint, d.ipc_endpoint);
         assert_eq!(c.response_timeout, d.response_timeout);
         assert_eq!(c.approval, d.approval);
         assert!(c.manifests.is_empty() && c.upstreams.is_empty());
@@ -1013,6 +1031,22 @@ mod tests {
         .into_hub()
         .unwrap();
         assert_eq!(off.ws_addr, None);
+
+        let ipc = HubConfig {
+            ipc_endpoint: Some("unix:/run/x/hub.sock".into()),
+            ..Default::default()
+        }
+        .into_hub()
+        .unwrap();
+        assert_eq!(ipc.ipc_endpoint.as_deref(), Some("unix:/run/x/hub.sock"));
+        let no_ipc = HubConfig {
+            enable_ipc: false,
+            ipc_endpoint: Some("unix:/run/x/hub.sock".into()),
+            ..Default::default()
+        }
+        .into_hub()
+        .unwrap();
+        assert_eq!(no_ipc.ipc_endpoint, None);
 
         let bad = HubConfig {
             manifests_json: vec!["{".into()],

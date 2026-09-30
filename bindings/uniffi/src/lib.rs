@@ -411,7 +411,8 @@ pub struct ClientConfig {
     /// 为空时为 `Native`。
     #[uniffi(default = None)]
     pub client_kind: Option<ClientKind>,
-    /// 为空时为 `ws://127.0.0.1:7717`。
+    /// Host 端点：`unix:<绝对路径>`、`pipe:\\.\pipe\<名称>`、`ws://…` 或 `wss://…`（spec/protocol.md 第 1 节）。
+    /// 为空时：环境变量 `APP_MCP_ENDPOINT` → 平台默认本地 IPC 端点 → `ws://127.0.0.1:7717`（Android / iOS）。
     #[uniffi(default = None)]
     pub host_url: Option<String>,
     #[uniffi(default = None)]

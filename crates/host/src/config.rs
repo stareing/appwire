@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 /// 默认的 App 连接服务（WebSocket）地址。
 pub const DEFAULT_WS_ADDR: &str = app_mcp_protocol::DEFAULT_WS_ADDR;
+/// 关闭本地 IPC 服务时 `ipcEndpoint` / `--ipc-endpoint` 的取值。
+pub const IPC_NONE: &str = "none";
 /// 默认的 MCP Streamable HTTP 监听地址。
 pub const DEFAULT_HTTP_ADDR: &str = "127.0.0.1:7718";
 /// 配置目录环境变量。
@@ -149,6 +151,9 @@ pub struct LogSection {
 pub struct FileConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ws_addr: Option<String>,
+    /// 本地 IPC 端点（`unix:<绝对路径>` / `pipe:\\.\pipe\<名称>`）；`"none"` 关闭；省略时为平台默认端点。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipc_endpoint: Option<String>,
     #[serde(skip_serializing_if = "is_default")]
     pub http: HttpSection,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -201,6 +206,7 @@ impl FileConfig {
 #[derive(Clone, Debug, Default)]
 pub struct Overrides {
     pub ws_addr: Option<String>,
+    pub ipc_endpoint: Option<String>,
     pub http_addr: Option<String>,
     pub http_allow_remote: Option<bool>,
     pub auth: Option<AuthMode>,
@@ -228,6 +234,7 @@ impl FileConfig {
             }
         }
         set(&mut self.ws_addr, &o.ws_addr);
+        set(&mut self.ipc_endpoint, &o.ipc_endpoint);
         set(&mut self.http.addr, &o.http_addr);
         set(&mut self.http.allow_remote, &o.http_allow_remote);
         set(&mut self.http.auth, &o.auth);
@@ -269,6 +276,8 @@ impl FileConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub ws_addr: String,
+    /// 本地 IPC 端点；`None` = 关闭（配置为 `"none"`，或本平台没有默认端点）。
+    pub ipc_endpoint: Option<String>,
     pub http_addr: String,
     pub http_allow_remote: bool,
     pub auth: AuthMode,
@@ -306,8 +315,21 @@ impl Settings {
             .iter()
             .map(|m| absolute(m))
             .collect::<anyhow::Result<_>>()?;
+        let ipc_endpoint = match c.ipc_endpoint.as_deref() {
+            Some(IPC_NONE) => None,
+            Some(text) => {
+                let e = app_mcp_protocol::Endpoint::parse(text).map_err(anyhow::Error::msg)?;
+                anyhow::ensure!(
+                    e.is_ipc(),
+                    "ipcEndpoint 必须是 unix:<绝对路径> 或 pipe:\\\\.\\pipe\\<名称>（或 none）：{text}"
+                );
+                Some(e.to_string())
+            }
+            None => app_mcp_protocol::endpoint::default_ipc_endpoint().map(|e| e.to_string()),
+        };
         Ok(Self {
             ws_addr: c.ws_addr.unwrap_or_else(|| DEFAULT_WS_ADDR.to_owned()),
+            ipc_endpoint,
             http_addr: c.http.addr.unwrap_or_else(|| DEFAULT_HTTP_ADDR.to_owned()),
             http_allow_remote: c.http.allow_remote.unwrap_or(false),
             auth: c.http.auth.unwrap_or_default(),
@@ -361,6 +383,34 @@ mod tests {
         assert_eq!(s.waker, WakerConfig::System);
         assert_eq!(s.tool_exposure, ToolExposure::Auto);
         assert_eq!(s.tool_exposure_threshold, 40);
+        assert_eq!(
+            s.ipc_endpoint,
+            app_mcp_protocol::endpoint::default_ipc_endpoint().map(|e| e.to_string())
+        );
+    }
+
+    #[test]
+    fn ipc_endpoint_config() {
+        let resolve = |file: &str, cli: Option<&str>| {
+            let f: FileConfig = serde_json::from_str(file).unwrap();
+            let o = Overrides {
+                ipc_endpoint: cli.map(str::to_owned),
+                ..Default::default()
+            };
+            Settings::resolve(&f, &o, &home()).map(|s| s.ipc_endpoint)
+        };
+        assert_eq!(
+            resolve(r#"{"ipcEndpoint": "unix:/run/x/hub.sock"}"#, None).unwrap().as_deref(),
+            Some("unix:/run/x/hub.sock")
+        );
+        assert_eq!(
+            resolve(r#"{"ipcEndpoint": "unix:/run/x/hub.sock"}"#, Some(r"pipe:\\.\pipe\p")).unwrap().as_deref(),
+            Some(r"pipe:\\.\pipe\p")
+        );
+        assert_eq!(resolve(r#"{"ipcEndpoint": "none"}"#, None).unwrap(), None);
+        assert_eq!(resolve("{}", Some("none")).unwrap(), None);
+        assert!(resolve(r#"{"ipcEndpoint": "ws://127.0.0.1:1"}"#, None).is_err());
+        assert!(resolve("{}", Some("hub.sock")).is_err());
     }
 
     #[test]

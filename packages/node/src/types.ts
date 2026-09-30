@@ -140,7 +140,10 @@ export interface NodeAppMcpOptions {
   appVersion?: string
   /** 为 false 时不加载原生模块、不连接，所有注册调用为空操作。默认 true。 */
   enabled?: boolean
-  /** Host 地址，默认 `ws://127.0.0.1:7717`。 */
+  /**
+   * Host 端点：`unix:<绝对路径>`、`pipe:\\.\pipe\<名称>`、`ws://…` 或 `wss://…`（spec/protocol.md 第 1 节）。
+   * 缺省：环境变量 `APP_MCP_ENDPOINT` → 平台默认本地 IPC 端点（Unix 域套接字 / Windows 命名管道）→ `ws://127.0.0.1:7717`。
+   */
   hostUrl?: string
   /** 同时执行的调用上限，默认 1。 */
   maxConcurrentCalls?: number

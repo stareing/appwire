@@ -20,6 +20,7 @@ internal static unsafe partial class HubNativeMethods
     [LibraryImport(Lib)] internal static partial void am_hub_shutdown(HubSafeHandle hub);
     [LibraryImport(Lib)] internal static partial void am_hub_free(nint hub);
     [LibraryImport(Lib)] internal static partial nint am_hub_ws_addr(HubSafeHandle hub);
+    [LibraryImport(Lib)] internal static partial nint am_hub_ipc_endpoint(HubSafeHandle hub);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_serve_http(HubSafeHandle hub, byte* addr, [MarshalAs(UnmanagedType.U1)] bool allowRemote, out nint outAddr);
 
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_apps_json(HubSafeHandle hub, out nint json);

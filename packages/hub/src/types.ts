@@ -68,6 +68,11 @@ export interface HubConfig {
    * App 连接服务（WebSocket）监听地址，缺省 `127.0.0.1:7717`；端口 0 = 随机；`null` = 不开。
    */
   wsAddr?: string | null
+  /**
+   * 本地 IPC 端点（原生 App 默认连接这里，spec/protocol.md 1.2）：`unix:<绝对路径>` 或 `pipe:\\.\pipe\<名称>`（JS 字符串中反斜杠需转义）；
+   * 缺省为平台默认端点（Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock` 等）；`null` = 不开。
+   */
+  ipcEndpoint?: string | null
   /** 静态清单文件（app-mcp.json）。 */
   manifestFiles?: string[]
   /** 静态清单目录（按文件名排序加载其中的 *.json）。 */
@@ -123,6 +128,8 @@ export interface InstanceInfo {
   /** 最近活跃时间（Unix 毫秒）。 */
   lastActiveMs: number
   title: string | null
+  /** 实例进程号：经本地 IPC 连接时由操作系统提供；否则缺省。 */
+  pid?: number
 }
 
 export interface AppInfo {

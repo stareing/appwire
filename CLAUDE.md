@@ -78,6 +78,7 @@ e2e/                    端到端测试（集成阶段）
 - TypeScript：`strict`；ESM；不引入未在 package.json 中声明的依赖。
 - 每个模块都要有测试。Rust 用内置测试；TS 用 vitest。
 - 日志：Host 的 stdout 专用于 MCP 协议，所有日志写 stderr。
+- 测试里启动 Hub / Host 时不要占用默认 IPC 端点（常驻 Host 可能正在用）：设 `ipc_endpoint: None`（各绑定 `ipcEndpoint: null` / `enable_ipc = false` / `DisableIpc`）或临时路径。
 
 ## 常用命令
 
@@ -99,7 +100,7 @@ pnpm --filter @app-mcp/example-shop dev
 
 ## 在 Claude Code 中使用
 
-仓库根 `.mcp.json` 以 HTTP 连接常驻 Host：`http://127.0.0.1:7718/mcp`（App 连接 WebSocket `127.0.0.1:7717`）。先让 Host 跑起来（二选一）：
+仓库根 `.mcp.json` 以 HTTP 连接常驻 Host：`http://127.0.0.1:7718/mcp`（网页 App 连接 WebSocket `127.0.0.1:7717`；原生 App 默认走本地 IPC：Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock` / Windows 命名管道，见 `spec/protocol.md` 第 1 节）。先让 Host 跑起来（二选一）：
 
 ```bash
 cargo build -p app-mcp-host

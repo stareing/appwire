@@ -169,6 +169,9 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
     /** App 连接服务的实际地址（端口 0 时为随机端口）；未开启时为 `null`。 */
     val wsAddr: String? get() = inner.wsAddr()
 
+    /** 本地 IPC 连接服务的端点（`unix:…` / `pipe:…`，可直接作为 App 端 SDK 的 `hostUrl`）；未开启时为 `null`。 */
+    val ipcEndpoint: String? get() = inner.ipcEndpoint()
+
     fun apps(): List<AppInfo> = inner.apps()
 
     fun tools(filter: ToolFilter = ToolFilter()): List<HubTool> = inner.tools(filter)

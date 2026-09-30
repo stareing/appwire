@@ -78,6 +78,12 @@ pub struct HubArgs {
     #[arg(long, value_name = "ADDR")]
     pub ws_addr: Option<String>,
 
+    /// 本地 IPC 端点（原生 App 默认连接这里）：unix:<绝对路径>（Linux / macOS）或 pipe:\\.\pipe\<名称>
+    /// （Windows）；none = 关闭。默认为平台默认端点（Linux $XDG_RUNTIME_DIR/app-mcp/hub.sock，
+    /// 其次 ~/.app-mcp/run/hub.sock；macOS ~/.app-mcp/run/hub.sock；Windows \\.\pipe\app-mcp-<用户 SID>）。
+    #[arg(long, value_name = "ENDPOINT|none")]
+    pub ipc_endpoint: Option<String>,
+
     /// 静态清单文件，可重复。后加载的覆盖同 appId 的先加载的。
     #[arg(long = "manifest", value_name = "FILE")]
     pub manifests: Vec<PathBuf>,
@@ -141,6 +147,7 @@ impl HubArgs {
         }
         Ok(Overrides {
             ws_addr: self.ws_addr.clone(),
+            ipc_endpoint: self.ipc_endpoint.clone(),
             manifests: self.manifests.clone(),
             manifest_dirs: self.manifest_dirs.clone(),
             allow_origins: self.allow_origins.clone(),

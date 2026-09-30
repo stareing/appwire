@@ -1,7 +1,7 @@
 //! app-mcp-native：原生 App 的共用运行时。
 //!
-//! 在后台线程上驱动 sans-IO 核心（`app-mcp-core`），负责连接 Host（M1：WebSocket；
-//! 之后加命名管道 / Unix socket）、计时与回调分发。所有语言绑定都建在它之上：
+//! 在后台线程上驱动 sans-IO 核心（`app-mcp-core`），负责连接 Host（默认走本地 IPC：Unix 域套接字 /
+//! Windows 命名管道；显式配置时也可用 `ws://` / `wss://`，见 [`NativeConfig::host_url`]）、计时与回调分发。所有语言绑定都建在它之上：
 //!
 //! - `bindings/c`（C ABI）→ C、C++、C#（P/Invoke）、Dart（dart:ffi）
 //! - `bindings/uniffi` → Kotlin、Swift、Python
@@ -45,7 +45,12 @@ pub struct NativeConfig {
     pub instance_id: Option<String>,
     /// 默认 [`ClientKind::Native`]；Electron / Tauri 主进程用 [`ClientKind::Hybrid`]。
     pub client_kind: ClientKind,
-    /// 默认 `ws://127.0.0.1:7717`。
+    /// Host 端点（spec/protocol.md 第 1 节）：`unix:<绝对路径>`、`pipe:\\.\pipe\<名称>`、`ws://…` 或 `wss://…`。
+    ///
+    /// [`NativeConfig::new`] 的默认值：环境变量 `APP_MCP_ENDPOINT`（非空时）→ 平台默认 IPC 端点
+    /// （Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock`，否则 `~/.app-mcp/run/hub.sock`；macOS
+    /// `~/.app-mcp/run/hub.sock`；Windows `\\.\pipe\app-mcp-<用户 SID>`）→ `ws://127.0.0.1:7717`
+    /// （Android / iOS 等没有默认 IPC 端点的平台）。连不上时按退避重连同一端点，不换用其他传输。
     pub host_url: String,
     pub app_version: Option<String>,
     pub instance_title: Option<String>,
@@ -70,7 +75,7 @@ impl NativeConfig {
             app_name: app_name.into(),
             instance_id: None,
             client_kind: ClientKind::Native,
-            host_url: format!("ws://{}", app_mcp_protocol::DEFAULT_WS_ADDR),
+            host_url: app_mcp_protocol::endpoint::default_endpoint(),
             app_version: None,
             instance_title: None,
             token: None,
@@ -564,7 +569,7 @@ impl NativeClient {
                     driver_shared,
                     job_tx,
                     runtime::Target {
-                        url: host_url,
+                        endpoint: host_url,
                         connect_timeout,
                     },
                 )
@@ -746,17 +751,29 @@ fn lock_ignore_poison<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// 校验配置并转换为核心配置；同时返回 Host 地址。
-fn build_core_config(config: NativeConfig) -> Result<(ClientConfig, String), NativeError> {
-    let lower = config.host_url.to_ascii_lowercase();
-    if !(lower.starts_with("ws://") || lower.starts_with("wss://"))
-        || config.host_url.len() <= "wss://".len()
-    {
+/// 校验端点：格式合法，且本平台支持该传输。
+fn parse_endpoint(text: &str) -> Result<app_mcp_protocol::Endpoint, NativeError> {
+    use app_mcp_protocol::Endpoint;
+    let endpoint =
+        Endpoint::parse(text).map_err(|e| NativeError::InvalidConfig(format!("host_url 无效：{e}")))?;
+    let supported = match &endpoint {
+        Endpoint::WebSocket(_) => true,
+        Endpoint::Unix(_) => cfg!(unix),
+        Endpoint::Pipe(_) => cfg!(windows),
+    };
+    if !supported {
         return Err(NativeError::InvalidConfig(format!(
-            "host_url 必须以 ws:// 或 wss:// 开头：{:?}",
-            config.host_url
+            "本平台不支持端点 {text:?}"
         )));
     }
+    Ok(endpoint)
+}
+
+/// 校验配置并转换为核心配置；同时返回 Host 端点。
+fn build_core_config(
+    config: NativeConfig,
+) -> Result<(ClientConfig, app_mcp_protocol::Endpoint), NativeError> {
+    let endpoint = parse_endpoint(&config.host_url)?;
     if !app_mcp_protocol::is_valid_app_id(&config.app_id) {
         return Err(NativeError::InvalidConfig(format!(
             "app_id 必须匹配 [a-z][a-z0-9-]{{0,62}}：{:?}",
@@ -795,7 +812,7 @@ fn build_core_config(config: NativeConfig) -> Result<(ClientConfig, String), Nat
     inner.overview = config.overview;
     inner.lifecycle = config.lifecycle;
     inner.max_concurrent_calls = usize::try_from(config.max_concurrent_calls).unwrap_or(usize::MAX);
-    Ok((inner, config.host_url))
+    Ok((inner, endpoint))
 }
 
 /// 核心错误 → 原生错误。未知句柄一律视为已注销，未知调用 / 读取视为已完成。

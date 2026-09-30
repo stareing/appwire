@@ -30,6 +30,8 @@ pub struct NewInstance {
     pub url: Option<String>,
     /// `app/hello` 中携带的总览。
     pub overview: Option<AppOverview>,
+    /// 对端进程号（本地 IPC 连接由操作系统提供；TCP 连接为 `None`）。
+    pub pid: Option<u32>,
     pub conn: Arc<Connection>,
 }
 
@@ -43,6 +45,8 @@ pub struct Instance {
     pub title: Option<String>,
     pub url: Option<String>,
     pub overview: Option<AppOverview>,
+    /// 对端进程号（本地 IPC 连接）。
+    pub pid: Option<u32>,
     pub conn: Arc<Connection>,
     /// 尚未收到 `app/visibility` 时为 `None`。
     pub visibility: Option<Visibility>,
@@ -300,6 +304,7 @@ impl Registry {
             title: new.title,
             url: new.url,
             overview: new.overview,
+            pid: new.pid,
             conn: new.conn,
             visibility: None,
             focused: false,
@@ -917,6 +922,7 @@ impl Registry {
                         focused: i.focused,
                         last_active_ms: unix_ms(i.last_active_at.unwrap_or(i.connected_at)),
                         title: i.title.clone(),
+                        pid: i.pid,
                     })
                     .collect(),
                 selected_instance: selected
@@ -933,6 +939,7 @@ impl Registry {
                         focused: false,
                         last_active_ms: unix_ms(d.last_active_at.unwrap_or(d.connected_at)),
                         title: d.title.clone(),
+                        pid: None,
                     })
                     .collect(),
             })
@@ -1099,6 +1106,7 @@ mod tests {
                 title: Some(format!("tab {id}")),
                 url: None,
                 overview: None,
+                pid: None,
                 conn: conn.clone(),
             },
         );
@@ -1138,6 +1146,7 @@ mod tests {
                     body: Some("正文".into()),
                     locale: None,
                 }),
+                pid: None,
                 conn: conn.clone(),
             },
         );

@@ -94,6 +94,7 @@ pub struct AmHub {
     /// 进行中的异步操作；停止时全部中止（结果回调以兜底结果触发）。
     ops: Mutex<JoinSet<()>>,
     ws_addr: Option<SocketAddr>,
+    ipc_endpoint: Option<String>,
     dispatcher: Dispatcher,
     events: Arc<Slot<AmHubEventFn>>,
     approval: Arc<Slot<AmHubApprovalFn>>,
@@ -492,6 +493,7 @@ fn start(config_json: Option<&str>) -> FfiResult<Box<AmHub>> {
         handle: rt.handle().clone(),
         rt: Mutex::new(Some(rt)),
         ws_addr: hub.ws_addr(),
+        ipc_endpoint: hub.ipc_endpoint().map(str::to_owned),
         hub: RwLock::new(Some(Arc::new(hub))),
         ops: Mutex::new(JoinSet::new()),
         dispatcher,
@@ -550,6 +552,16 @@ pub unsafe extern "C" fn am_hub_ws_addr(hub: *const AmHub) -> *mut c_char {
         let h = unsafe { hub_ref(hub) }?;
         h.hub()?;
         Ok(h.ws_addr.map_or(std::ptr::null_mut(), |a| into_raw_cstring(&a.to_string())))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_hub_ipc_endpoint(hub: *const AmHub) -> *mut c_char {
+    guard_value(std::ptr::null_mut(), || {
+        // SAFETY: 由调用方保证。
+        let h = unsafe { hub_ref(hub) }?;
+        h.hub()?;
+        Ok(h.ipc_endpoint.as_deref().map_or(std::ptr::null_mut(), into_raw_cstring))
     })
 }
 

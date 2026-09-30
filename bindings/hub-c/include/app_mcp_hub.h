@@ -35,6 +35,9 @@
  * - v3（渐进暴露，spec/hub-api.md 3.7）：只做新增。
  *   · am_hub_start 配置新增可选字段 toolExposure、toolExposureThreshold、waker。
  *   · ToolFilter 新增可选字段 session（渐进暴露按会话计算）；新内置工具 apps.tools。
+ * - v4（本地 IPC 传输，spec/protocol.md 1.2）：只做新增。
+ *   · am_hub_start 配置新增可选字段 ipcEndpoint（缺省监听平台默认 IPC 端点）；函数 am_hub_ipc_endpoint。
+ *   · JSON 中新增：InstanceInfo.pid（经本地 IPC 连接的实例进程号，缺省表示未知）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -134,6 +137,9 @@ void am_hub_string_free(char *s);
 
 /* 创建 tokio 运行时与分发线程并启动 Hub。config_json 可为 NULL（全部默认）。字段（均可省略）：
  *   wsAddr               App 连接服务监听地址，默认 "127.0.0.1:7717"；端口 0 随机；null = 不开
+ *   ipcEndpoint          v4：本地 IPC 端点（原生 App 默认连接这里，spec/protocol.md 1.2）："unix:<绝对路径>" /
+ *                        "pipe:\\\\.\\pipe\\<名称>"（JSON 转义）；缺省为平台默认端点；null = 不开。
+ *                        已有 Hub 在该端点监听时报 AM_HUB_ERR_IO
  *   manifests            静态清单对象数组（spec/manifest.md）
  *   manifestFiles        静态清单文件路径数组
  *   manifestDir          清单目录（不存在时忽略）
@@ -168,6 +174,10 @@ void am_hub_free(AmHub *hub);
 
 /* App 连接服务实际监听的地址（如 "127.0.0.1:52341"）；未开启或已停止时返回 NULL。需 am_hub_string_free。 */
 char *am_hub_ws_addr(const AmHub *hub);
+
+/* v4：本地 IPC 连接服务的端点（如 "unix:/run/user/1000/app-mcp/hub.sock"，可直接作为原生 SDK 的 host_url）；
+ * 未开启或已停止时返回 NULL。需 am_hub_string_free。 */
+char *am_hub_ipc_endpoint(const AmHub *hub);
 
 /* 额外启动 Streamable HTTP MCP 出口（路径 /mcp）。非回环地址需要 allow_remote。
  * out_addr 可为 NULL；否则写入实际监听地址（需 am_hub_string_free）。 */

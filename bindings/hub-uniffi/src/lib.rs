@@ -275,12 +275,14 @@ pub struct AppMcpHub {
     runtime: Mutex<Option<Runtime>>,
     events_task: Mutex<Option<JoinHandle<()>>>,
     ws_addr: Option<String>,
+    ipc_endpoint: Option<String>,
 }
 
 impl std::fmt::Debug for AppMcpHub {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppMcpHub")
             .field("ws_addr", &self.ws_addr)
+            .field("ipc_endpoint", &self.ipc_endpoint)
             .finish_non_exhaustive()
     }
 }
@@ -314,18 +316,25 @@ impl AppMcpHub {
         let handle = runtime.handle().clone();
         let hub = block_on(&handle, hub::Hub::start(cfg))?;
         let ws_addr = hub.ws_addr().map(|a| a.to_string());
+        let ipc_endpoint = hub.ipc_endpoint().map(str::to_owned);
         Ok(Arc::new(AppMcpHub {
             hub: Mutex::new(Some(Arc::new(hub))),
             handle,
             runtime: Mutex::new(Some(runtime)),
             events_task: Mutex::new(None),
             ws_addr,
+            ipc_endpoint,
         }))
     }
 
     /// App 连接服务实际监听的地址（`127.0.0.1:12345`）；未开启时为空。
     pub fn ws_addr(&self) -> Option<String> {
         self.ws_addr.clone()
+    }
+
+    /// 本地 IPC 连接服务的端点（可直接作为原生 SDK 的 `host_url`）；未开启时为空。
+    pub fn ipc_endpoint(&self) -> Option<String> {
+        self.ipc_endpoint.clone()
     }
 
     /// 停止：关闭所有 App 连接、中止后台任务（含上游子进程）与运行时。幂等；之后的操作返回 `Shutdown`。

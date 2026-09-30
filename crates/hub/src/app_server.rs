@@ -1,4 +1,7 @@
-//! App 连接服务：WebSocket 监听、握手、消息分发、心跳。
+//! App 连接服务：WebSocket 监听（回环 TCP 与本地 IPC）、握手、消息分发、心跳。
+//!
+//! 两种传输上跑的是同一套 WebSocket 帧与 JSON-RPC 消息（spec/protocol.md 第 1 节），只有鉴权不同：
+//! TCP 连接只接受回环地址；IPC 连接的对端用户已在 [`crate::ipc`] 中核对过。
 //!
 //! 每个连接一个任务：读循环在本任务中执行，写操作通过 [`Connection`] 的通道交给独立的写任务。
 
@@ -15,7 +18,8 @@ use app_mcp_protocol::{
 use futures::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::time::{Instant, interval_at, sleep_until};
 use tokio_tungstenite::tungstenite::handshake::server::{
@@ -31,15 +35,58 @@ use crate::types::{HubEvent, PairingRequest};
 
 const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// 接受连接，直到任务被中止。
+/// 连接的对端。
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Peer {
+    /// 回环 TCP（网页，或显式配置 `ws://` 的原生 App）。
+    Tcp(SocketAddr),
+    /// 本地 IPC（Unix 域套接字 / 命名管道），对端已确认是同一用户；`pid` 为对端进程号。
+    Ipc { pid: Option<u32> },
+}
+
+impl Peer {
+    fn pid(self) -> Option<u32> {
+        match self {
+            Peer::Tcp(_) => None,
+            Peer::Ipc { pid } => pid,
+        }
+    }
+}
+
+impl std::fmt::Display for Peer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Peer::Tcp(addr) => write!(f, "tcp {addr}"),
+            Peer::Ipc { pid: Some(pid) } => write!(f, "ipc pid {pid}"),
+            Peer::Ipc { pid: None } => f.write_str("ipc"),
+        }
+    }
+}
+
+/// 接受 TCP 连接，直到任务被中止。
 pub(crate) async fn accept_loop(shared: Arc<HubShared>, listener: TcpListener) {
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                tokio::spawn(handle_connection(shared.clone(), stream, addr));
+                tokio::spawn(handle_connection(shared.clone(), stream, Peer::Tcp(addr)));
             }
             Err(e) => {
                 tracing::warn!("接受连接失败：{e}");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
+/// 接受本地 IPC 连接，直到任务被中止（中止时监听器被丢弃，Unix 上删除套接字文件）。
+pub(crate) async fn accept_ipc_loop(shared: Arc<HubShared>, mut listener: crate::ipc::IpcListener) {
+    loop {
+        match listener.accept().await {
+            Ok(a) => {
+                tokio::spawn(handle_connection(shared.clone(), a.stream, Peer::Ipc { pid: a.pid }));
+            }
+            Err(e) => {
+                tracing::warn!("接受 IPC 连接失败：{e}");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
@@ -83,18 +130,21 @@ impl Callback for CaptureOrigin<'_> {
     }
 }
 
-async fn handle_connection(shared: Arc<HubShared>, stream: TcpStream, addr: SocketAddr) {
+async fn handle_connection<S>(shared: Arc<HubShared>, stream: S, peer: Peer)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let mut origin: Option<String> = None;
     let ws = match tokio_tungstenite::accept_hdr_async(stream, CaptureOrigin(&mut origin)).await {
         Ok(ws) => ws,
         Err(e) => {
-            tracing::debug!(%addr, "WebSocket 握手失败：{e}");
+            tracing::debug!(%peer, "WebSocket 握手失败：{e}");
             return;
         }
     };
     let (mut sink, mut stream) = ws.split();
     let (conn, mut rx) = Connection::new(shared.next_id());
-    tracing::debug!(%addr, conn = conn.id, ?origin, "新连接");
+    tracing::debug!(%peer, conn = conn.id, ?origin, "新连接");
 
     let writer = tokio::spawn(async move {
         while let Some(out) = rx.recv().await {
@@ -145,7 +195,7 @@ async fn handle_connection(shared: Arc<HubShared>, stream: TcpStream, addr: Sock
                 match msg {
                     WsMessage::Text(text) => {
                         let pending = pairing_rx.is_some();
-                        match handle_text(&shared, &conn, registered.as_ref(), pending, origin.as_deref(), addr, text.as_str()) {
+                        match handle_text(&shared, &conn, registered.as_ref(), pending, origin.as_deref(), peer, text.as_str()) {
                             Flow::Continue => {}
                             Flow::Close => break,
                             Flow::Paired(r) => registered = Some(r),
@@ -175,7 +225,7 @@ async fn handle_connection(shared: Arc<HubShared>, stream: TcpStream, addr: Sock
                 }
                 shared.remember_pairing(&hello.app_id, origin.as_deref(), &token, true);
                 send_pairing_result(&conn, PairingStatus::Paired, Some(token), None);
-                registered = Some(register_instance_with(&shared, &conn, hello, origin.as_deref(), None));
+                registered = Some(register_instance_with(&shared, &conn, hello, origin.as_deref(), peer, None));
                 last_rx = Instant::now();
             }
             // 等待配对确认期间 SDK 不发心跳，暂停空闲超时（配对本身有 pairing_timeout）。
@@ -235,7 +285,7 @@ fn handle_text(
     registered: Option<&Registered>,
     pending: bool,
     origin: Option<&str>,
-    addr: SocketAddr,
+    peer: Peer,
     text: &str,
 ) -> Flow {
     let msg = match Message::parse(text) {
@@ -257,7 +307,7 @@ fn handle_text(
                 }
                 Flow::Continue
             }
-            None => handle_handshake_request(shared, conn, origin, addr, req),
+            None => handle_handshake_request(shared, conn, origin, peer, req),
             Some(reg) => {
                 handle_request(shared, conn, reg, req);
                 Flow::Continue
@@ -307,7 +357,7 @@ fn handle_handshake_request(
     shared: &Arc<HubShared>,
     conn: &Arc<Connection>,
     origin: Option<&str>,
-    addr: SocketAddr,
+    peer: Peer,
     req: Request,
 ) -> Flow {
     match req.method.as_str() {
@@ -346,7 +396,9 @@ fn handle_handshake_request(
             ),
         );
     }
-    if !addr.ip().is_loopback() {
+    if let Peer::Tcp(addr) = peer
+        && !addr.ip().is_loopback()
+    {
         return reject(
             conn,
             &req,
@@ -449,7 +501,7 @@ fn handle_handshake_request(
         serde_json::to_value(result).unwrap_or(Value::Null),
     ));
     let snapshot = snapshot.filter(|_| tools_current);
-    Flow::Paired(register_instance_with(shared, conn, hello, origin, snapshot))
+    Flow::Paired(register_instance_with(shared, conn, hello, origin, peer, snapshot))
 }
 
 /// 实例（重新）连接：取出其休眠记录，并判断能否快速恢复。
@@ -501,6 +553,7 @@ fn register_instance_with(
     conn: &Arc<Connection>,
     hello: HelloParams,
     origin: Option<&str>,
+    peer: Peer,
     snapshot: Option<DormantInstance>,
 ) -> Registered {
     let replaced = shared.registry().add_instance(
@@ -513,6 +566,7 @@ fn register_instance_with(
             title: hello.instance_title.clone(),
             url: hello.instance_url.clone(),
             overview: hello.overview.clone(),
+            pid: peer.pid(),
             conn: conn.clone(),
         },
     );
@@ -524,7 +578,7 @@ fn register_instance_with(
         shared.registry().restore_snapshot(&hello.app_id, conn.id, snap);
         shared.ensure_subscriptions(&hello.app_id);
     }
-    tracing::info!(app_id = %hello.app_id, instance_id = %hello.instance_id, ?origin, "实例已配对");
+    tracing::info!(app_id = %hello.app_id, instance_id = %hello.instance_id, ?origin, %peer, "实例已配对");
     shared.emit(HubEvent::AppConnected {
         app_id: hello.app_id.clone(),
         instance_id: hello.instance_id.clone(),

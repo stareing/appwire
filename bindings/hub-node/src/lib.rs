@@ -107,6 +107,9 @@ struct ConfigJson {
     /// 缺省 `127.0.0.1:7717`；显式 `null` = 不开 WebSocket 服务；端口 0 = 随机。
     #[serde(deserialize_with = "present")]
     ws_addr: Option<Option<String>>,
+    /// 本地 IPC 端点（`unix:…` / `pipe:…`，spec/protocol.md 1.2）；缺省为平台默认端点；显式 `null` = 不开。
+    #[serde(deserialize_with = "present")]
+    ipc_endpoint: Option<Option<String>>,
     manifest_files: Vec<PathBuf>,
     manifest_dir: Option<PathBuf>,
     allow_origins: Vec<String>,
@@ -144,6 +147,9 @@ impl ConfigJson {
         let mut c = HubConfig::default();
         if let Some(addr) = self.ws_addr {
             c.ws_addr = addr;
+        }
+        if let Some(endpoint) = self.ipc_endpoint {
+            c.ipc_endpoint = endpoint;
         }
         if !self.manifest_files.is_empty() || self.manifest_dir.is_some() {
             c.manifests = load_manifests(&self.manifest_files, self.manifest_dir.as_deref(), false);
@@ -289,6 +295,7 @@ impl Waker for JsWaker {
 pub struct JsHub {
     hub: Mutex<Option<Arc<Hub>>>,
     ws_addr: Option<String>,
+    ipc_endpoint: Option<String>,
     /// 事件转发任务（`onEvent` 设置）。
     events: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -317,9 +324,11 @@ impl JsHub {
             .await
             .map_err(|e| err("START_FAILED", format!("Hub 启动失败：{e}")))?;
         let ws_addr = hub.ws_addr().map(|a| a.to_string());
+        let ipc_endpoint = hub.ipc_endpoint().map(str::to_owned);
         Ok(JsHub {
             hub: Mutex::new(Some(Arc::new(hub))),
             ws_addr,
+            ipc_endpoint,
             events: Mutex::new(None),
         })
     }
@@ -328,6 +337,12 @@ impl JsHub {
     #[napi(getter)]
     pub fn ws_addr(&self) -> Option<String> {
         self.ws_addr.clone()
+    }
+
+    /// 本地 IPC 连接服务的端点（可直接作为原生 SDK 的 `hostUrl`）；未开启时为 `null`。
+    #[napi(getter)]
+    pub fn ipc_endpoint(&self) -> Option<String> {
+        self.ipc_endpoint.clone()
     }
 
     /// 是否已关闭。

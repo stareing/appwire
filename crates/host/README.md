@@ -11,7 +11,10 @@ Windows 无窗口版 `src/bin/app-mcp-hostw.rs` 只是入口）与集成测试�
 
 一个常驻的 `app-mcp-host serve` 进程同时提供：
 
-- **App 连接服务**（WebSocket，默认 `ws://127.0.0.1:7717`）：各 App 的 SDK 连到这里；
+- **App 连接服务**：
+  - **本地 IPC**（原生 App 默认）：Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock`（未设置时 `~/.app-mcp/run/hub.sock`）、
+    macOS `~/.app-mcp/run/hub.sock`、Windows 命名管道 `\\.\pipe\app-mcp-<用户 SID>`；只接受同一用户的进程（见下方「本地 IPC」）；
+  - **WebSocket**（默认 `ws://127.0.0.1:7717`）：网页 SDK，以及显式配置 `ws://` 的 App；
 - **MCP Streamable HTTP**（默认 `http://127.0.0.1:7718/mcp`）：每个 MCP 客户端（Claude Code、Claude Desktop、IDE……）
   各自建立一个 HTTP 会话，**共享同一组 App 连接**；每个会话有独立的 `apps.select` 选择与“首次接触附带总览”状态。
 
@@ -46,9 +49,21 @@ app-mcp-host serve
 选 `Run` 项而不是计划任务：两者都无需管理员，但计划任务运行控制台程序会弹窗，且 `Run` 项最简单、可在“任务管理器 > 启动”中查看和禁用。
 Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）一律带 `CREATE_NO_WINDOW`，常驻进程不会间接弹出控制台。
 
+### 本地 IPC
+
+原生 App（C / C++ / C# / Dart / Kotlin JVM / Swift / Python / Node / Rust）默认连接本地 IPC 端点，不经 TCP；
+网页只能用 WebSocket。两者上的协议完全相同（IPC 上同样是 WebSocket 帧，spec/protocol.md 第 1 节）。
+
+- 端点：配置文件 `ipcEndpoint`（`"unix:<绝对路径>"` / `"pipe:\\\\.\\pipe\\<名称>"`，`"none"` 关闭）或 `--ipc-endpoint`；
+  缺省为上面的平台默认端点。改了端点或关闭 IPC 时，App 需设置环境变量 `APP_MCP_ENDPOINT`（或在代码中配置端点，
+  如 `APP_MCP_ENDPOINT=ws://127.0.0.1:7717` 改走 WebSocket）——SDK 不会在连不上时自动换用其他传输。
+- 鉴权：Unix 上套接字目录属于当前用户且为 0700、套接字 0600，并逐连接核对对端用户 ID（`SO_PEERCRED` / `getpeereid`）；
+  Windows 上管道的 DACL 只允许当前用户、所有者为当前用户，拒绝远程客户端；SDK 也核对监听方是同一用户（防抢占）。
+- Hub API 的 `InstanceInfo.pid` 为 IPC 连接的对端进程号。
+
 ### 单实例
 
-`serve` 绑定端口失败（`AddrInUse`）时探测 `GET http://<http 地址>/healthz`：
+`serve` 绑定端口或 IPC 端点失败（`AddrInUse`：WebSocket 端口被占用、IPC 套接字上已有 Hub 在监听、同名命名管道已存在）时探测 `GET http://<http 地址>/healthz`：
 返回 `{"service":"app-mcp", "version", "pid", "wsAddr", ...}` 则说明已有健康实例，打印信息后**退出码 0**；
 端口被其他程序占用则报错（退出码 1）。因此 `serve` 可以放心重复执行（登录脚本、多个终端）。
 
@@ -68,6 +83,7 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 ```json
 {
   "wsAddr": "127.0.0.1:7717",
+  "ipcEndpoint": "unix:/run/user/1000/app-mcp/hub.sock",
   "http": { "addr": "127.0.0.1:7718", "allowRemote": false, "auth": "browser" },
   "manifests": ["/path/to/app-mcp.json"],
   "manifestDirs": ["/path/to/manifests"],
@@ -93,7 +109,7 @@ Host 随即只向该 MCP 会话发 `notifications/tools/list_changed`。未列�
 
 旧的 `--config` 文件（只有 `upstreams`）是它的子集，仍然可用。
 
-命令行（`serve` 与 `service install` 相同）：`--ws-addr`、`--http`、`--http-allow-remote`、`--auth browser|all|off`、
+命令行（`serve` 与 `service install` 相同）：`--ws-addr`、`--ipc-endpoint <ENDPOINT|none>`、`--http`、`--http-allow-remote`、`--auth browser|all|off`、
 `--manifest <file>`（可重复）、`--manifest-dir <dir>`（可重复）、`--allow-origin <pattern>`（可重复）、
 `--upstream <name>=<命令行>`（可重复）、`--lease-ms`、`--wake-timeout-ms`、`--wake-from-launch`、
 `--waker system|none|'{"exec":[...]}'`、`--tool-exposure auto|progressive|all`、`--tool-exposure-threshold <N>`、`--log-level`、

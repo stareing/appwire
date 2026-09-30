@@ -7,10 +7,76 @@ Host 对模型一侧使用标准 MCP，不在本规范范围内。
 
 ## 1. 传输
 
-- 消息为 UTF-8 JSON 文本，一条消息对应一个 WebSocket 文本帧（或本地 socket 上的一行，M2）。
+### 1.1 消息与帧
+
+- 消息为 UTF-8 JSON 文本，一条消息对应一个 WebSocket 文本帧。所有传输（1.2）上的帧与消息完全相同。
 - 每条消息是一个 JSON-RPC 2.0 对象；不支持批量（数组）消息。
-- M1 只有 WebSocket，Host 默认监听 `ws://127.0.0.1:7717`。
 - 双方都可以发送请求、通知和响应。请求 ID 由发送方生成，只需在发送方内唯一。
+
+### 1.2 端点
+
+SDK 用一个**端点字符串**指定 Host（原生 SDK 的 `host_url` / `hostUrl`，网页 SDK 的 `hostUrl`）：
+
+| 形式 | 传输 | 使用者 |
+|---|---|---|
+| `ws://<host>:<port>` / `wss://…` | WebSocket over TCP | 网页（只能用这种）；原生 App 显式配置时 |
+| `unix:<绝对路径>` | WebSocket over Unix 域套接字 | Linux、macOS 原生 App（默认） |
+| `pipe:\\.\pipe\<名称>` | WebSocket over Windows 命名管道 | Windows 原生 App（默认） |
+
+- 本地 IPC（`unix:` / `pipe:`）上跑的仍是 RFC 6455 WebSocket：连接建立后客户端发送 HTTP Upgrade 握手，
+  请求 URL 固定为 `ws://localhost/`（Host 不检查路径与 `Host` 头），不使用 TLS；之后的帧、心跳（`ping`）、
+  Close 与 TCP 上逐字节相同。这样 SDK 核心、Host 的消息处理与超时逻辑对所有传输只有一份实现。
+- 格式不合法、或当前平台不支持该形式（如 Windows 上的 `unix:`）时，SDK 在创建客户端时报配置错误。
+- 实现：`app_mcp_protocol::endpoint`（解析、默认位置）。
+
+### 1.3 默认端点
+
+Host 默认同时监听：
+
+- WebSocket：`127.0.0.1:7717`（网页与显式配置 `ws://` 的 App）。
+- 本地 IPC（平台默认 IPC 端点）：
+  - Linux：`$XDG_RUNTIME_DIR/app-mcp/hub.sock`；未设置 `XDG_RUNTIME_DIR` 时 `~/.app-mcp/run/hub.sock`；
+  - macOS：`~/.app-mcp/run/hub.sock`（设置了 `XDG_RUNTIME_DIR` 时同 Linux）；
+  - Windows：`\\.\pipe\app-mcp-<当前用户 SID>`（如 `\\.\pipe\app-mcp-S-1-5-21-…-1001`）；
+  - Android / iOS：无（App 沙箱之间不能共享套接字，这些平台用 WebSocket，如 Android 经 `adb reverse tcp:7717`）。
+
+原生 SDK 未配置端点时按以下顺序**确定**端点：
+
+1. 环境变量 `APP_MCP_ENDPOINT`（非空时原样使用，不合法则报配置错误）；
+2. 平台默认 IPC 端点（同上）；
+3. `ws://127.0.0.1:7717`（平台没有默认 IPC 端点时）。
+
+这是配置的解析顺序，**不是连接失败后的回退**：选定的端点连不上时，SDK 按 5.6 退避重连同一个端点，
+不会自动换用其他传输。Host 关闭了 IPC 服务或改了 IPC 端点时，App 需设置 `APP_MCP_ENDPOINT` 或显式配置端点。
+网页 SDK 的默认端点始终是 `ws://127.0.0.1:7717`。
+
+### 1.4 连接鉴权
+
+在 `app/hello` 的配对与 `Origin` 规则（第 6 节）之前，Host 按传输做一层连接级校验：
+
+- **TCP**：只接受来自回环地址的连接。
+- **Unix 域套接字**：
+  - 套接字所在目录必须属于当前用户且组 / 其他用户不可写（Host 新建的目录为 `0700`），套接字文件为 `0600`；
+  - Host 对每个连接读取对端凭据（Linux `SO_PEERCRED`，macOS `getpeereid`），有效用户 ID 与 Host 不同则直接关闭；
+  - SDK 连接后同样核对监听方的有效用户 ID，不同则断开并按连接失败处理（防止他人抢占路径冒充 Host）。
+- **Windows 命名管道**：
+  - 管道的安全描述符为 `O:<用户 SID>D:P(A;;GA;;;<用户 SID>)`：所有者是当前用户，只有当前用户可以打开；
+    拒绝远程客户端（`PIPE_REJECT_REMOTE_CLIENTS`）；
+  - SDK 打开管道后核对管道所有者 SID 与自己的用户 SID 相同（其他用户无法把对象所有者设为别人的 SID），
+    不同则断开并按连接失败处理；客户端以 `SECURITY_IDENTIFICATION` 级别连接，Host 不能以 App 身份行事。
+- 本地 IPC 连接由操作系统提供对端进程号（`SO_PEERCRED` / `LOCAL_PEERPID` / `GetNamedPipeClientProcessId`），
+  Host 记录在实例信息中（Hub API 的 `InstanceInfo.pid`，spec/hub-api.md），不在协议消息中传递。
+- 通过连接级校验后，`app/hello` 的处理对所有传输相同（IPC 连接通常不带 `Origin`，按原生 App 处理）。
+
+### 1.5 单实例
+
+同一个端点只能有一个 Host 监听：
+
+- Unix：路径上已有套接字时 Host 先尝试连接——能连上说明另一个 Host 正在监听，启动失败（`AddrInUse`）；
+  连接被拒绝说明是异常退出留下的文件，删除后重新绑定；路径上是普通文件时拒绝覆盖。Host 停止时删除自己创建的套接字文件。
+- Windows：第一个管道实例以 `FILE_FLAG_FIRST_PIPE_INSTANCE` 创建，同名管道已存在时启动失败（`AddrInUse`）。
+- `app-mcp-host serve` 遇到 `AddrInUse`（WebSocket 端口或 IPC 端点）时探测 MCP HTTP 端口的 `/healthz`：
+  是健康的 app-mcp 则视为已在运行、以退出码 0 结束，否则报错。
 
 ## 2. 消息一览
 
@@ -239,7 +305,7 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 
 ## 6. Host 行为（M1）
 
-- 对每个连接执行握手；M1 对来自回环地址、`Origin` 在允许列表内（默认 `http://localhost:*`、
+- 对每个连接执行握手（先按 1.4 做连接级校验）；M1 对来自回环地址或本地 IPC、`Origin` 在允许列表内（默认 `http://localhost:*`、
   `http://127.0.0.1:*`）或无 `Origin` 的连接直接返回 `paired` 并分配随机 token。
   其他 `Origin` 返回 `rejected`。
 - `protocolVersion` 不为 `"1"` 时返回 `rejected`，`reason` 说明版本不兼容。
@@ -248,7 +314,7 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 - 每隔 15s 向 SDK 发送 `ping`；45s 内没有收到 SDK 的任何消息则关闭连接。
   实例处于 `hidden` / `frozen` 时（浏览器会限流后台页面的定时器），该超时放宽为 180s。
 - 返回 `rejected` 的握手结果发送后，Host 关闭连接。
-- 只接受来自回环地址的连接（且 `Origin` 满足上述规则）。
+- TCP 只接受来自回环地址的连接（且 `Origin` 满足上述规则）；本地 IPC 只接受同一用户的进程（1.4）。
 - `resources/read` 的 `contents` 转换为 MCP 资源内容时：字符串且 `mimeType` 不是 JSON 类型时按原文作为文本；
   其他情况序列化为 JSON 文本。二进制内容暂不支持。
 

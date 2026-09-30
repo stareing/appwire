@@ -1,4 +1,6 @@
-"""Hub SDK 集成测试：嵌入式 Hub（随机端口）+ 同进程 App 端 SDK（app_mcp.AppMcp）经真实 WebSocket 连上。
+"""Hub SDK 集成测试：嵌入式 Hub（随机端口）+ 同进程 App 端 SDK（app_mcp.AppMcp）经真实 WebSocket / 本地 IPC 连上。
+
+测试关闭默认 IPC 端点（``enable_ipc=False``），不占用本机常驻 Host 的端点；IPC 用临时端点单独测试。
 
 需要 ``bindings/hub-uniffi/scripts/generate.sh`` 与 ``bindings/uniffi/scripts/generate.sh`` 的生成物。
 """
@@ -49,7 +51,7 @@ def test_end_to_end_async() -> None:
             approvals.append((req, asyncio.get_running_loop()))
             return False
 
-        with Hub(ws_addr="127.0.0.1:0", approval_min_risk="destructive") as hub:
+        with Hub(ws_addr="127.0.0.1:0", enable_ipc=False, approval_min_risk="destructive") as hub:
             hub.set_approval_handler(approve)
             events = hub.events()
             app = start_notes_app(hub)
@@ -118,7 +120,7 @@ def test_sync_api_and_sync_approval() -> None:
     """非 asyncio 代码：*_sync 方法 + 同步审批回调（在线程池中执行，可阻塞）。"""
     seen: list[str] = []
     connected = threading.Event()
-    with Hub(ws_addr="127.0.0.1:0", approval_min_risk="write") as hub:
+    with Hub(ws_addr="127.0.0.1:0", enable_ipc=False, approval_min_risk="write") as hub:
         hub.on_event(lambda e: connected.set() if e.is_app_connected() else None)
         hub.set_approval_handler(lambda req: seen.append(req.tool) or req.tool.endswith("add"))
         app = start_notes_app(hub)
@@ -149,7 +151,7 @@ def test_async_handler_without_loop_and_no_monkeypatch() -> None:
         threads.append(threading.current_thread().name)
         return req.tool == "clear"
 
-    with Hub(ws_addr="127.0.0.1:0", approval_min_risk="write") as hub:
+    with Hub(ws_addr="127.0.0.1:0", enable_ipc=False, approval_min_risk="write") as hub:
         hub.set_approval_handler(approve)
         app = start_notes_app(hub)
         try:
@@ -173,8 +175,9 @@ def test_formats_and_shutdown() -> None:
     assert hub_mod.parse_format("gemini") == ToolFormat.GEMINI
     with pytest.raises(HubError):
         hub_mod.parse_format("nope")
-    hub = Hub(enable_ws=False)
+    hub = Hub(enable_ws=False, enable_ipc=False)
     assert hub.ws_addr is None
+    assert hub.ipc_endpoint is None
     assert {t.name for t in hub.tools()} == {"apps.list", "apps.select", "apps.overview"}
     gemini = hub.export_tools("gemini")
     assert "functionDeclarations" in gemini
@@ -188,7 +191,7 @@ def test_progressive_exposure() -> None:
     from app_mcp.hub import ToolExposure, WakerConfig
 
     with Hub(
-        ws_addr="127.0.0.1:0", tool_exposure=ToolExposure.PROGRESSIVE, waker=WakerConfig.DISABLED()
+        ws_addr="127.0.0.1:0", enable_ipc=False, tool_exposure=ToolExposure.PROGRESSIVE, waker=WakerConfig.DISABLED()
     ) as hub:
         app = start_notes_app(hub)
         try:
@@ -219,7 +222,7 @@ def test_dormant_app_woken_by_custom_waker() -> None:
     from app_mcp import LifecyclePolicy, WakeDescriptor
 
     async def main() -> None:
-        with Hub(ws_addr="127.0.0.1:0", lease_ttl_ms=0, wake_timeout_ms=10_000, list_changed_debounce_ms=20) as hub:
+        with Hub(ws_addr="127.0.0.1:0", enable_ipc=False, lease_ttl_ms=0, wake_timeout_ms=10_000, list_changed_debounce_ms=20) as hub:
             events = hub.events()
             app = AppMcp(
                 "sleepy",
@@ -280,3 +283,30 @@ def test_dormant_app_woken_by_custom_waker() -> None:
                 app.close()
 
     asyncio.run(main())
+
+
+def test_native_app_over_ipc(tmp_path) -> None:
+    import os
+    import sys
+
+    if sys.platform == "win32":
+        endpoint = rf"pipe:\\.\pipe\app-mcp-py-test-{os.getpid()}"
+    else:
+        endpoint = f"unix:{tmp_path / 'run' / 'hub.sock'}"
+    with Hub(enable_ws=False, ipc_endpoint=endpoint) as hub:
+        assert hub.ipc_endpoint == endpoint
+        app = AppMcp("notes", "笔记", host_url=hub.ipc_endpoint)
+
+        @app.tool("add", description="添加笔记", risk="write")
+        def add(text: str) -> dict:
+            return {"saved": text}
+
+        app.start()
+        try:
+            wait_tools(hub, 1)
+            r = hub.call_tool_sync("notes.add", {"text": "经 IPC"})
+            assert r.error is None and r.data == {"saved": "经 IPC"}
+            inst = next(a for a in hub.apps() if a.app_id == "notes").instances[0]
+            assert inst.pid == os.getpid()
+        finally:
+            app.stop()

@@ -31,6 +31,8 @@ async fn main() -> anyhow::Result<()> {
     // ---- 1. 启动 Hub ----
     let hub = Hub::start(HubConfig {
         ws_addr: Some("127.0.0.1:0".into()),
+        // 演示用随机端口；不占用默认 IPC 端点（常驻 Host 可能正在使用）。
+        ipc_endpoint: None,
         ..Default::default()
     })
     .await?;

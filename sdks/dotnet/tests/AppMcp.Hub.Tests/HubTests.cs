@@ -36,6 +36,7 @@ public class HubBasicTests
         var o = new HubOptions
         {
             WsAddress = "127.0.0.1:0",
+            IpcEndpoint = "unix:/run/x/hub.sock",
             RequireApprovalAtOrAbove = HubRisk.OsSensitive,
             ApprovalTimeout = TimeSpan.FromSeconds(3),
             ResponseTimeout = TimeSpan.FromMilliseconds(1500),
@@ -45,6 +46,7 @@ public class HubBasicTests
         o.Upstreams["fs"] = new UpstreamOptions { Command = "mcp-fs", Args = ["--root", "/tmp"] };
         var json = JsonNode.Parse(o.ToConfigJson())!.AsObject();
         Assert.Equal("127.0.0.1:0", (string?)json["wsAddr"]);
+        Assert.Equal("unix:/run/x/hub.sock", (string?)json["ipcEndpoint"]);
         Assert.Equal("os-sensitive", (string?)json["approval"]!["requireAtOrAbove"]);
         Assert.Equal(3000, (int?)json["approval"]!["timeout"]);
         Assert.Equal(1500, (int?)json["responseTimeoutMs"]);
@@ -53,6 +55,7 @@ public class HubBasicTests
 
         var life = JsonNode.Parse(new HubOptions
         {
+            DisableIpc = true,
             LeaseTtl = TimeSpan.Zero,
             WakeTimeout = TimeSpan.FromSeconds(2),
             WakeTokenTtl = TimeSpan.FromSeconds(3),
@@ -70,6 +73,7 @@ public class HubBasicTests
 
         var exposure = JsonNode.Parse(new HubOptions
         {
+            DisableIpc = true,
             WsAddress = "127.0.0.1:0",
             ToolExposure = ToolExposure.Progressive,
             ToolExposureThreshold = 5,
@@ -86,9 +90,12 @@ public class HubBasicTests
             Assert.Equal(["apps.list", "apps.select", "apps.overview", "apps.tools"], names);
         }
 
-        var disabled = JsonNode.Parse(new HubOptions { DisableWebSocket = true }.ToConfigJson())!.AsObject();
+        var disabled = JsonNode.Parse(new HubOptions { DisableWebSocket = true, DisableIpc = true }.ToConfigJson())!.AsObject();
         Assert.True(disabled.ContainsKey("wsAddr"));
         Assert.Null(disabled["wsAddr"]);
+        Assert.True(disabled.ContainsKey("ipcEndpoint"));
+        Assert.Null(disabled["ipcEndpoint"]);
+        Assert.False(JsonNode.Parse(new HubOptions().ToConfigJson())!.AsObject().ContainsKey("ipcEndpoint"));
     }
 
     [Fact]
@@ -98,7 +105,7 @@ public class HubBasicTests
         Assert.Equal(HubStatus.InvalidJson, e.Status);
         Assert.False(string.IsNullOrEmpty(e.Message));
 
-        var o = new HubOptions { DisableWebSocket = true, Dispatcher = null };
+        var o = new HubOptions { DisableWebSocket = true, DisableIpc = true, Dispatcher = null };
         o.Manifests.Add(JsonNode.Parse("""{"appId":""}""")!);
         Assert.Equal(HubStatus.InvalidConfig, Assert.Throws<HubException>(() => AppMcpHub.Start(o)).Status);
     }
@@ -106,8 +113,9 @@ public class HubBasicTests
     [Fact]
     public async Task QueriesWithoutApps()
     {
-        using var hub = AppMcpHub.Start(new HubOptions { DisableWebSocket = true, Dispatcher = null });
+        using var hub = AppMcpHub.Start(new HubOptions { DisableWebSocket = true, DisableIpc = true, Dispatcher = null });
         Assert.Null(hub.WsAddress);
+        Assert.Null(hub.IpcEndpoint);
         Assert.Equal(0, hub.GetApps().GetArrayLength());
         Assert.Equal(0, hub.GetResources().GetArrayLength());
         Assert.Null(hub.GetOverview("nope"));
@@ -138,7 +146,7 @@ public class HubBasicTests
     [Fact]
     public void UseAfterDisposeThrows()
     {
-        var hub = AppMcpHub.Start(new HubOptions { DisableWebSocket = true, Dispatcher = null });
+        var hub = AppMcpHub.Start(new HubOptions { DisableWebSocket = true, DisableIpc = true, Dispatcher = null });
         hub.Dispose();
         hub.Dispose();
         Assert.Throws<ObjectDisposedException>(() => hub.GetApps());
@@ -160,6 +168,7 @@ public class HubIntegrationTests
         using var ui = new SingleThreadSynchronizationContext();
         await using var hub = AppMcpHub.Start(new HubOptions
         {
+            DisableIpc = true,
             WsAddress = "127.0.0.1:0",
             RequireApprovalAtOrAbove = HubRisk.Destructive,
             ApprovalTimeout = TimeSpan.FromSeconds(10),
@@ -288,7 +297,7 @@ public class HubIntegrationTests
     [Fact]
     public async Task PairingHandlerAcceptsAndRejects()
     {
-        await using var hub = AppMcpHub.Start(new HubOptions { WsAddress = "127.0.0.1:0", Dispatcher = null });
+        await using var hub = AppMcpHub.Start(new HubOptions { WsAddress = "127.0.0.1:0", DisableIpc = true, Dispatcher = null });
         var requests = new ConcurrentQueue<PairingRequest>();
         hub.PairingHandler = (req, _) =>
         {
@@ -321,6 +330,7 @@ public class HubIntegrationTests
     {
         await using var hub = AppMcpHub.Start(new HubOptions
         {
+            DisableIpc = true,
             WsAddress = "127.0.0.1:0",
             ListChangedDebounce = TimeSpan.FromMilliseconds(20),
             WakeTimeout = TimeSpan.FromSeconds(10),
@@ -395,6 +405,38 @@ public class HubIntegrationTests
         hub.Waker = null;
         Assert.Null(hub.Waker);
         app.Stop();
+    }
+
+    [Fact]
+    public async Task NativeAppOverIpcReportsPid()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"app-mcp-cs-ipc-{Environment.ProcessId}");
+        var endpoint = OperatingSystem.IsWindows()
+            ? $@"pipe:\\.\pipe\app-mcp-cs-test-{Environment.ProcessId}"
+            : $"unix:{Path.Combine(dir, "run", "hub.sock")}";
+        try
+        {
+            await using var hub = AppMcpHub.Start(new HubOptions { DisableWebSocket = true, IpcEndpoint = endpoint, Dispatcher = null });
+            Assert.Equal(endpoint, hub.IpcEndpoint);
+            await using var app = AppMcp.AppMcpClient.Create(new AppMcp.AppMcpClientOptions
+            {
+                AppId = "notes",
+                AppName = "笔记",
+                HostUrl = hub.IpcEndpoint,
+                Dispatcher = null,
+            });
+            using var add = app.RegisterTool("add", "添加笔记", (_, _) => Task.FromResult<object?>(new { ok = true }));
+            app.Start();
+            await WaitUntil(() => hub.GetApps().EnumerateArray()
+                .Any(a => a.GetProperty("appId").GetString() == "notes" && a.GetProperty("connected").GetBoolean()), "App 未经 IPC 连上");
+            var instance = hub.GetApps().EnumerateArray().First(a => a.GetProperty("appId").GetString() == "notes")
+                .GetProperty("instances")[0];
+            Assert.Equal(Environment.ProcessId, instance.GetProperty("pid").GetInt32());
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
     }
 
     private static async Task WaitUntil(Func<bool> condition, string message)

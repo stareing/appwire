@@ -92,6 +92,9 @@ public sealed class AppMcpHub : IDisposable, IAsyncDisposable
     /// <summary>App 连接服务实际监听的地址（如 "127.0.0.1:52341"）；未开启或已停止时为 null。</summary>
     public string? WsAddress => HubNativeMethods.TakeString(HubNativeMethods.am_hub_ws_addr(_handle));
 
+    /// <summary>本地 IPC 连接服务的端点（"unix:…" / "pipe:…"，可直接作为 App 端 SDK 的 HostUrl）；未开启或已停止时为 null。</summary>
+    public string? IpcEndpoint => HubNativeMethods.TakeString(HubNativeMethods.am_hub_ipc_endpoint(_handle));
+
     /// <summary>额外启动 Streamable HTTP MCP 出口（路径 /mcp），返回实际监听地址。非回环地址需要 allowRemote。</summary>
     public unsafe string ServeHttp(string address, bool allowRemote = false)
     {

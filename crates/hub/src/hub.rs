@@ -64,7 +64,13 @@ pub fn parse_resource_uri(uri: &str) -> Option<(&str, &str)> {
 #[derive(Clone, Debug)]
 pub struct HubConfig {
     /// App 连接服务（WebSocket）监听地址；端口为 0 时随机分配。`None` = 不开 WebSocket 服务。
+    /// 网页只能经这里连接；原生 App 默认走 [`HubConfig::ipc_endpoint`]。
     pub ws_addr: Option<String>,
+    /// 本地 IPC 端点（spec/protocol.md 1.2）：`unix:<绝对路径>`（Linux / macOS）或
+    /// `pipe:\\.\pipe\<名称>`（Windows）。默认为平台默认端点
+    /// （[`app_mcp_protocol::endpoint::default_ipc_endpoint`]；Android / iOS 上为 `None`）。
+    /// `None` = 不开 IPC 服务。已有 Hub 在该端点监听时 [`Hub::start`] 返回 `AddrInUse`。
+    pub ipc_endpoint: Option<String>,
     /// 已加载并校验的静态清单（后面的覆盖前面的同 appId 清单）。
     pub manifests: Vec<Manifest>,
     /// 额外允许的 Origin 模式（默认已允许 localhost / 127.0.0.1 任意端口）。
@@ -116,6 +122,7 @@ impl Default for HubConfig {
     fn default() -> Self {
         Self {
             ws_addr: Some(DEFAULT_WS_ADDR.to_owned()),
+            ipc_endpoint: app_mcp_protocol::endpoint::default_ipc_endpoint().map(|e| e.to_string()),
             manifests: Vec::new(),
             allow_origins: Vec::new(),
             ping_interval: Duration::from_secs(15),
@@ -941,6 +948,7 @@ pub(crate) fn overview_info(ov: &Overview) -> AppOverviewInfo {
 pub struct Hub {
     shared: Arc<HubShared>,
     ws_addr: Option<SocketAddr>,
+    ipc_endpoint: Option<String>,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -952,6 +960,21 @@ impl Hub {
             None => None,
         };
         let ws_addr = listener.as_ref().map(TcpListener::local_addr).transpose()?;
+        let ipc = match &config.ipc_endpoint {
+            Some(text) => {
+                let endpoint = app_mcp_protocol::Endpoint::parse(text)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+                if !endpoint.is_ipc() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("ipc_endpoint 必须是本地 IPC 端点（unix: / pipe:）：{text}"),
+                    ));
+                }
+                let listener = crate::ipc::IpcListener::bind(&endpoint).await?;
+                Some((endpoint.to_string(), listener))
+            }
+            None => None,
+        };
         let waker = config
             .waker
             .build()
@@ -967,6 +990,17 @@ impl Hub {
                 listener,
             )));
         }
+        let ipc_endpoint = match ipc {
+            Some((endpoint, listener)) => {
+                tasks.push(tokio::spawn(crate::app_server::accept_ipc_loop(
+                    shared.clone(),
+                    listener,
+                )));
+                tracing::info!(%endpoint, "本地 IPC 连接服务已启动");
+                Some(endpoint)
+            }
+            None => None,
+        };
         let upstreams: Vec<(String, UpstreamConfig)> = lock(&shared.upstreams)
             .iter()
             .map(|(n, s)| (n.clone(), s.config.clone()))
@@ -985,6 +1019,7 @@ impl Hub {
         Ok(Hub {
             shared,
             ws_addr,
+            ipc_endpoint,
             tasks: Mutex::new(tasks),
         })
     }
@@ -992,6 +1027,12 @@ impl Hub {
     /// App 连接服务实际监听的地址；未开启时为 `None`。
     pub fn ws_addr(&self) -> Option<SocketAddr> {
         self.ws_addr
+    }
+
+    /// 本地 IPC 连接服务的端点字符串（`unix:…` / `pipe:…`，可直接作为原生 SDK 的 `host_url`）；
+    /// 未开启时为 `None`。
+    pub fn ipc_endpoint(&self) -> Option<&str> {
+        self.ipc_endpoint.as_deref()
     }
 
     /// 停止：中止后台任务（含上游子进程）、关闭所有 App 连接。

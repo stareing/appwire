@@ -8,6 +8,7 @@
  * @app-mcp/node 未链接进本包的 node_modules（并行开发期间不运行 pnpm install），这里用相对路径导入其源码。
  */
 import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -54,7 +55,14 @@ async function until<T>(f: () => T | undefined | null | false, what: string, tim
 }
 
 async function startHub(options: HubStartOptions = {}): Promise<{ hub: Hub; events: HubEvent[] }> {
-  const hub = await Hub.start({ wsAddr: '127.0.0.1:0', keepAlive: false, listChangedDebounceMs: 20, ...options })
+  // 不占用本机常驻 Host 的默认 IPC 端点；IPC 用临时端点单独测试。
+  const hub = await Hub.start({
+    wsAddr: '127.0.0.1:0',
+    ipcEndpoint: null,
+    keepAlive: false,
+    listChangedDebounceMs: 20,
+    ...options,
+  })
   hubs.push(hub)
   const events: HubEvent[] = []
   hub.onEvent((e) => events.push(e))
@@ -406,10 +414,34 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     hub.setWaker(null)
   })
 
+  it('原生 App 经本地 IPC 连接，实例带进程号', async () => {
+    const endpoint =
+      process.platform === 'win32'
+        ? `pipe:\\\\.\\pipe\\app-mcp-hub-ts-test-${process.pid}`
+        : `unix:${join(tmpdir(), `app-mcp-hub-ts-ipc-${process.pid}`, 'hub.sock')}`
+    const { hub } = await startHub({ wsAddr: null, ipcEndpoint: endpoint })
+    expect(hub.ipcEndpoint).toBe(endpoint)
+    const app = createAppMcp({
+      appId: 'notes',
+      appName: '笔记',
+      hostUrl: hub.ipcEndpoint!,
+      autoStart: false,
+      keepAlive: false,
+    })
+    apps.push(app)
+    app.tool('add', { description: '添加', handler: (args: unknown) => ({ saved: args }) })
+    app.start()
+    const inst = await until(() => hub.apps().find((a) => a.appId === 'notes')?.instances[0], 'App 经 IPC 连上')
+    expect(inst.pid).toBe(process.pid)
+    const out = await hub.callTool({ name: 'notes.add', arguments: { text: 'x' } })
+    expect(out.result.ok).toEqual({ saved: { text: 'x' } })
+  })
+
   it('shutdown 后调用抛 SHUTDOWN', async () => {
     const { hub } = await startHub({ wsAddr: null })
     expect(hub.wsAddr).toBeNull()
     expect(hub.wsUrl).toBeNull()
+    expect(hub.ipcEndpoint).toBeNull()
     await hub.shutdown()
     await hub.shutdown()
     expect(hub.isShutdown).toBe(true)
@@ -421,7 +453,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     await expect(Hub.start({ keepAlive: false, bogus: 1 } as HubStartOptions)).rejects.toMatchObject({
       kind: 'INVALID_ARG',
     })
-    await expect(Hub.start({ keepAlive: false, wsAddr: 'not-an-addr' })).rejects.toMatchObject({
+    await expect(Hub.start({ keepAlive: false, wsAddr: 'not-an-addr', ipcEndpoint: null })).rejects.toMatchObject({
       kind: 'START_FAILED',
     })
   })

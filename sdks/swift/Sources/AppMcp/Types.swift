@@ -181,7 +181,8 @@ public final class ToolContext: @unchecked Sendable {
 public struct AppMcpConfig {
     public var appId: String
     public var appName: String
-    /// 为空时为 `ws://127.0.0.1:7717`。
+    /// Host 端点：`unix:<绝对路径>` / `ws://…` / `wss://…`（spec/protocol.md 第 1 节）。为空时：环境变量
+    /// `APP_MCP_ENDPOINT` → 平台默认本地 IPC 端点（macOS / Linux 的 Unix 域套接字）→ `ws://127.0.0.1:7717`（iOS）。
     public var hostURL: String?
     public var instanceId: String?
     public var appVersion: String?
