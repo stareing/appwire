@@ -28,6 +28,7 @@ export {
 } from './define'
 export {
   APP_ID_PATTERN,
+  appIdPrefixMessage,
   generateManifest,
   ManifestError,
   NAME_PATTERN,

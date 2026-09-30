@@ -466,8 +466,17 @@ impl Client {
 
     /// 注册工具。已存在同名工具时返回 [`CoreError::DuplicateName`]（与是否启用无关）。
     /// 连接期间，变更在下一次 [`Client::poll_event`] 时合并为一条 `tools/changed`。
+    ///
+    /// 工具名是 App 内的局部名，Host 对外暴露为 `<appId>.<局部名>`（spec/protocol.md 3.1）。
+    /// 名称以 `<appId>.` 开头时仍按原样注册（协议语义不变），但产生 [`Event::Warning`]——
+    /// 这通常是误把全名写成了局部名，对外会变成 `<appId>.<appId>.…`。
     pub fn register_tool(&mut self, def: ToolDef) -> Result<ToolId, CoreError> {
-        self.registry.register_tool(def)
+        let prefixed = proto::has_app_id_prefix(&def.name, &self.config.app_id).then(|| def.name.clone());
+        let id = self.registry.register_tool(def)?;
+        if let Some(name) = prefixed {
+            self.warn(proto::app_id_prefix_warning(&name, &self.config.app_id));
+        }
+        Ok(id)
     }
 
     pub fn update_tool(&mut self, tool: ToolId, update: ToolUpdate) -> Result<(), CoreError> {

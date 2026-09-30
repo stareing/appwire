@@ -40,6 +40,110 @@ pub trait Waker: Send + Sync {
     async fn wake(&self, req: WakeRequest) -> Result<(), HubError>;
 }
 
+/// 唤醒器配置（`HubConfig::waker`，Host 配置 `lifecycle.waker`；spec/hub-api.md 3.5）。
+///
+/// JSON 形式：`"system"` / `"none"` / `{"exec": [program, ...args]}`。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WakerConfig {
+    /// 按平台执行系统激活命令（[`SystemWaker`]）。
+    #[default]
+    System,
+    /// 不唤醒：休眠实例 / 未运行 App 的调用直接返回 `APP_DISCONNECTED`（带清单的 `launchUrl`），
+    /// 不生成令牌、不发 `AppWaking`、不询问审批。
+    None,
+    /// 执行指定程序（[`ExecWaker`]）：参数逐个传递、不经 shell，[`WakeRequest`] 以一行 JSON 写入其 stdin。
+    Exec(Vec<String>),
+}
+
+impl WakerConfig {
+    /// 按配置构造唤醒器；`None` 表示不唤醒。`exec` 为空数组时返回错误。
+    pub fn build(&self) -> Result<Option<std::sync::Arc<dyn Waker>>, HubError> {
+        Ok(match self {
+            WakerConfig::System => Some(std::sync::Arc::new(SystemWaker::new())),
+            WakerConfig::None => None,
+            WakerConfig::Exec(argv) => Some(std::sync::Arc::new(ExecWaker::new(argv.clone())?)),
+        })
+    }
+}
+
+/// 执行外部程序完成唤醒（厂商脚本、测试替身、平台上没有内置实现的激活方式）。
+///
+/// - `argv[0]` 为程序，其余为参数，逐个传递、**不经 shell**；
+/// - [`WakeRequest`]（camelCase JSON，一行，末尾换行）写入子进程 stdin 后关闭 stdin；
+/// - stdout 丢弃（Host 的 stdout 专用于 MCP）；stderr 收集，失败时附在错误信息中；
+/// - 退出码 0 表示已发出激活（之后 Hub 等待 App 回连）；非 0 返回 `LAUNCH_FAILED`；
+///   超过 `command_timeout` 仍未退出视为已发出（不杀进程）。
+#[derive(Clone, Debug)]
+pub struct ExecWaker {
+    program: String,
+    args: Vec<String>,
+    pub command_timeout: Duration,
+}
+
+impl ExecWaker {
+    pub fn new(argv: Vec<String>) -> Result<Self, HubError> {
+        let mut it = argv.into_iter();
+        let program = it
+            .next()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| launch_failed("waker.exec 至少需要一个元素（要执行的程序）"))?;
+        Ok(Self {
+            program,
+            args: it.collect(),
+            command_timeout: Duration::from_secs(10),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Waker for ExecWaker {
+    async fn wake(&self, req: WakeRequest) -> Result<(), HubError> {
+        use std::process::Stdio;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut line = serde_json::to_vec(&req).map_err(|e| launch_failed(e.to_string()))?;
+        line.push(b'\n');
+        tracing::info!(program = %self.program, args = ?self.args, app_id = %req.app_id, "执行唤醒程序");
+        let mut command = tokio::process::Command::new(&self.program);
+        command
+            .args(&self.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        command.creation_flags(crate::CREATE_NO_WINDOW);
+        let mut child = command
+            .spawn()
+            .map_err(|e| launch_failed(format!("无法执行唤醒程序 {}：{e}", self.program)))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            // 程序不读 stdin 时写入可能失败（管道已关闭），不影响结果判定。
+            let _ = stdin.write_all(&line).await;
+        }
+        let mut stderr = child.stderr.take();
+        let wait = async {
+            let mut err = Vec::new();
+            if let Some(s) = stderr.as_mut() {
+                let _ = s.take(4096).read_to_end(&mut err).await;
+            }
+            (child.wait().await, err)
+        };
+        match tokio::time::timeout(self.command_timeout, wait).await {
+            Ok((Ok(status), _)) if status.success() => Ok(()),
+            Ok((Ok(status), err)) => {
+                let err = String::from_utf8_lossy(&err);
+                let err = err.trim();
+                Err(launch_failed(if err.is_empty() {
+                    format!("唤醒程序 {} 退出码 {status}", self.program)
+                } else {
+                    format!("唤醒程序 {} 退出码 {status}：{err}", self.program)
+                }))
+            }
+            Ok((Err(e), _)) => Err(launch_failed(format!("等待唤醒程序 {} 失败：{e}", self.program))),
+            Err(_) => Ok(()),
+        }
+    }
+}
+
 /// Hub 所在的平台（决定默认 [`SystemWaker`] 的动作与读取清单的哪个平台键）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {
@@ -86,8 +190,17 @@ impl Platform {
 pub struct WakeCommand {
     pub program: String,
     pub args: Vec<String>,
-    /// 为 `true` 时忽略退出码（`explorer.exe` 成功时也常返回 1）。
-    pub ignore_exit_code: bool,
+}
+
+/// [`SystemWaker`] 对一次唤醒采取的动作（[`SystemWaker::action`] 只生成、不执行）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WakeAction {
+    /// 执行系统命令。
+    Command(WakeCommand),
+    /// Windows 打包应用：`IApplicationActivationManager::ActivateApplication(aumid, arguments, AO_NONE)`。
+    /// `arguments` 为 `app-mcp-wake:<token>`，送达 App 的激活参数（UWP `LaunchActivatedEventArgs.Arguments`、
+    /// 打包桌面应用的命令行）；App 已在运行时由系统交给现有实例。
+    ActivateApplication { aumid: String, arguments: String },
 }
 
 /// 默认唤醒实现：按平台执行系统命令。
@@ -95,7 +208,7 @@ pub struct WakeCommand {
 /// | kind | Windows | macOS | Linux |
 /// |---|---|---|---|
 /// | `uri` | `cmd /c start "" <scheme>://app-mcp/wake?token=<t>` | `open -g <uri>` | `xdg-open <uri>` |
-/// | `aumid` | `explorer.exe shell:AppsFolder\<aumid>`（不能传参，App 激活后需自行 `wake()`）| — | — |
+/// | `aumid` | `IApplicationActivationManager::ActivateApplication(aumid, "app-mcp-wake:<t>", AO_NONE)` | — | — |
 /// | `apple-event` | — | `open -g -b <bundle> --args app-mcp-wake:<t>` | — |
 /// | `dbus` | — | — | `gdbus call --session … org.freedesktop.Application.ActivateAction app-mcp-wake [<'t'>] {}` |
 /// | `web-url` | `rundll32 url.dll,FileProtocolHandler <url>#app-mcp-wake=<t>` | `open <url>` | `xdg-open <url>` |
@@ -125,18 +238,23 @@ impl SystemWaker {
         }
     }
 
-    /// 生成要执行的命令（不执行）。参数不合法或平台不支持时返回 `LAUNCH_FAILED`。
-    pub fn command(&self, req: &WakeRequest) -> Result<WakeCommand, HubError> {
+    /// 生成要采取的动作（不执行）。参数不合法或平台不支持时返回 `LAUNCH_FAILED`。
+    pub fn action(&self, req: &WakeRequest) -> Result<WakeAction, HubError> {
+        self.plan(req)
+    }
+
+    fn plan(&self, req: &WakeRequest) -> Result<WakeAction, HubError> {
         let token = &req.token;
         if !is_valid_token(token) {
             return Err(launch_failed("唤醒令牌含非法字符"));
         }
         let target = req.descriptor.target.as_deref().unwrap_or_default();
         let p = self.platform;
-        let cmd = |program: &str, args: Vec<String>| WakeCommand {
-            program: program.to_owned(),
-            args,
-            ignore_exit_code: false,
+        let cmd = |program: &str, args: Vec<String>| {
+            WakeAction::Command(WakeCommand {
+                program: program.to_owned(),
+                args,
+            })
         };
         let open_url = |url: String, background: bool| match p {
             Platform::Windows => Ok(cmd(
@@ -171,10 +289,9 @@ impl SystemWaker {
                 if !is_valid_aumid(target) {
                     return Err(launch_failed(format!("AUMID「{target}」不合法")));
                 }
-                Ok(WakeCommand {
-                    program: "explorer.exe".into(),
-                    args: vec![format!("shell:AppsFolder\\{target}")],
-                    ignore_exit_code: true,
+                Ok(WakeAction::ActivateApplication {
+                    aumid: target.to_owned(),
+                    arguments: req.activation_arg.clone(),
                 })
             }
             WakeKind::AppleEvent => {
@@ -232,6 +349,20 @@ impl SystemWaker {
         }
     }
 
+    async fn perform(&self, action: WakeAction) -> Result<(), HubError> {
+        match action {
+            WakeAction::Command(c) => self.run(c).await,
+            WakeAction::ActivateApplication { aumid, arguments } => {
+                tracing::info!(%aumid, %arguments, "ActivateApplication 唤醒");
+                let pid = tokio::task::spawn_blocking(move || activate_application(&aumid, &arguments))
+                    .await
+                    .map_err(|e| launch_failed(format!("激活任务异常结束：{e}")))??;
+                tracing::info!(pid, "ActivateApplication 成功");
+                Ok(())
+            }
+        }
+    }
+
     async fn run(&self, c: WakeCommand) -> Result<(), HubError> {
         use std::process::Stdio;
         tracing::info!(program = %c.program, args = ?c.args, "执行唤醒命令");
@@ -248,7 +379,7 @@ impl SystemWaker {
             .spawn()
             .map_err(|e| launch_failed(format!("无法执行 {}：{e}", c.program)))?;
         match tokio::time::timeout(self.command_timeout, child.wait()).await {
-            Ok(Ok(status)) if status.success() || c.ignore_exit_code => Ok(()),
+            Ok(Ok(status)) if status.success() => Ok(()),
             Ok(Ok(status)) => Err(launch_failed(format!("{} 退出码 {status}", c.program))),
             Ok(Err(e)) => Err(launch_failed(format!("等待 {} 失败：{e}", c.program))),
             // 命令仍在运行（如 xdg-open 等待浏览器）：视为已发出激活。
@@ -260,9 +391,51 @@ impl SystemWaker {
 #[async_trait::async_trait]
 impl Waker for SystemWaker {
     async fn wake(&self, req: WakeRequest) -> Result<(), HubError> {
-        let c = self.command(&req)?;
-        self.run(c).await
+        let action = self.action(&req)?;
+        self.perform(action).await
     }
+}
+
+/// Windows：经 `IApplicationActivationManager` 激活打包应用并传入参数，返回被激活进程的 PID。
+///
+/// 在调用线程上初始化 COM（STA），结束时配对反初始化；线程已处于其他套间模式时沿用现有套间。
+#[cfg(windows)]
+fn activate_application(aumid: &str, arguments: &str) -> Result<u32, HubError> {
+    use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+    use windows::Win32::System::Com::{
+        CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+    };
+    use windows::Win32::UI::Shell::{AO_NONE, ApplicationActivationManager, IApplicationActivationManager};
+    use windows::core::HSTRING;
+
+    struct ComGuard(bool);
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                // SAFETY：与本线程上成功的 CoInitializeEx 配对。
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+    // SAFETY：COM 初始化 / 创建 / 调用均为标准用法；参数是有效的以 NUL 结尾的宽字符串（HSTRING）。
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        if hr.is_err() && hr != RPC_E_CHANGED_MODE {
+            return Err(launch_failed(format!("初始化 COM 失败：{hr:?}")));
+        }
+        let _guard = ComGuard(hr.is_ok());
+        let manager: IApplicationActivationManager =
+            CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)
+                .map_err(|e| launch_failed(format!("创建 ApplicationActivationManager 失败：{e}")))?;
+        manager
+            .ActivateApplication(&HSTRING::from(aumid), &HSTRING::from(arguments), AO_NONE)
+            .map_err(|e| launch_failed(format!("激活「{aumid}」失败：{e}")))
+    }
+}
+
+#[cfg(not(windows))]
+fn activate_application(_aumid: &str, _arguments: &str) -> Result<u32, HubError> {
+    Err(unsupported(WakeKind::Aumid))
 }
 
 fn launch_failed(msg: impl Into<String>) -> HubError {
@@ -419,7 +592,10 @@ mod tests {
     }
 
     fn cmd(p: Platform, kind: WakeKind, target: &str) -> Result<WakeCommand, HubError> {
-        SystemWaker::for_platform(p).command(&req(kind, target))
+        match SystemWaker::for_platform(p).action(&req(kind, target))? {
+            WakeAction::Command(c) => Ok(c),
+            other => panic!("期望命令，实际 {other:?}"),
+        }
     }
 
     #[test]
@@ -440,7 +616,7 @@ mod tests {
     fn bad_token_rejected() {
         let mut r = req(WakeKind::Uri, "shop");
         r.token = "a&b".into();
-        assert!(SystemWaker::for_platform(Platform::Linux).command(&r).is_err());
+        assert!(SystemWaker::for_platform(Platform::Linux).action(&r).is_err());
         assert!(is_valid_token("A-z_0.9~"));
         assert!(!is_valid_token(""));
         assert!(!is_valid_token("a b"));
@@ -448,12 +624,17 @@ mod tests {
 
     #[test]
     fn aumid_dbus_apple_web() {
-        let c = cmd(Platform::Windows, WakeKind::Aumid, "Co.Shop_8wekyb3d8bbwe!App").unwrap();
-        assert_eq!(c.program, "explorer.exe");
-        assert_eq!(c.args, vec!["shell:AppsFolder\\Co.Shop_8wekyb3d8bbwe!App"]);
-        assert!(c.ignore_exit_code);
-        assert!(cmd(Platform::Windows, WakeKind::Aumid, "x & calc!App").is_err());
-        assert!(cmd(Platform::Linux, WakeKind::Aumid, "Co.Shop!App").is_err());
+        // AUMID：经 ActivateApplication 把令牌作为激活参数传入
+        let win = SystemWaker::for_platform(Platform::Windows);
+        assert_eq!(
+            win.action(&req(WakeKind::Aumid, "Co.Shop_8wekyb3d8bbwe!App")).unwrap(),
+            WakeAction::ActivateApplication {
+                aumid: "Co.Shop_8wekyb3d8bbwe!App".into(),
+                arguments: "app-mcp-wake:abc123".into(),
+            }
+        );
+        assert!(win.action(&req(WakeKind::Aumid, "x & calc!App")).is_err());
+        assert!(SystemWaker::for_platform(Platform::Linux).action(&req(WakeKind::Aumid, "Co.Shop!App")).is_err());
 
         let c = cmd(Platform::Linux, WakeKind::Dbus, "com.example.My-Shop").unwrap();
         assert_eq!(c.program, "gdbus");
@@ -518,16 +699,35 @@ mod tests {
             .run(WakeCommand {
                 program: "definitely-not-a-program-app-mcp".into(),
                 args: vec![],
-                ignore_exit_code: false,
             })
             .await
             .unwrap_err();
         assert_eq!(e.kind(), ErrorKind::LaunchFailed);
         #[cfg(unix)]
         {
-            assert!(w.run(WakeCommand { program: "true".into(), args: vec![], ignore_exit_code: false }).await.is_ok());
-            assert!(w.run(WakeCommand { program: "false".into(), args: vec![], ignore_exit_code: false }).await.is_err());
-            assert!(w.run(WakeCommand { program: "false".into(), args: vec![], ignore_exit_code: true }).await.is_ok());
+            assert!(w.run(WakeCommand { program: "true".into(), args: vec![] }).await.is_ok());
+            assert!(w.run(WakeCommand { program: "false".into(), args: vec![] }).await.is_err());
         }
+    }
+
+    /// Windows 实机：以计算器的 AUMID 经 IApplicationActivationManager 激活，返回 PID 后结束该进程。
+    /// 会在桌面上短暂打开计算器，默认忽略：`cargo test -p app-mcp-hub -- --ignored activate_calculator`。
+    ///
+    /// 注：计算器自身不接受启动参数（带参数激活时由计算器返回 0x8004090x 并退出），因此这里用空参数验证
+    /// 激活链路；令牌参数的送达由接入 SDK 的打包 App 处理（`handleWake`）。
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn activate_calculator() {
+        let pid = activate_application("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", "")
+            .expect("ActivateApplication 应成功");
+        assert!(pid > 0);
+        let status = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .status()
+            .expect("taskkill");
+        assert!(status.success(), "结束计算器进程 {pid} 失败");
+        let e = activate_application("NoSuch.App_0000000000000!App", "app-mcp-wake:abc123").unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::LaunchFailed);
     }
 }

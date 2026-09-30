@@ -171,6 +171,21 @@ describe('generateManifest', () => {
     expect(warnings).toEqual([expect.stringContaining('"magic" 未知')])
   })
 
+  it('工具名以 appId. 开头时警告（局部名，spec/protocol.md 3.1）', () => {
+    const manifest = {
+      manifestVersion: 1,
+      appId: 'shop',
+      name: '商城',
+      tools: [
+        { name: 'shop.info', description: 'd', inputSchema: { type: 'object' } },
+        { name: 'shopping.list', description: 'd', inputSchema: { type: 'object' } },
+      ],
+    } as unknown as AppMcpManifest
+    const { errors, warnings } = validateManifest(manifest)
+    expect(errors).toEqual([])
+    expect(warnings).toEqual([expect.stringMatching(/tools\[0\]（shop\.info）.*请改为 "info"/)])
+  })
+
   it('toInputSchema 拒绝非对象输入', () => {
     expect(() => toInputSchema('x')).toThrow(/input 必须是/)
   })

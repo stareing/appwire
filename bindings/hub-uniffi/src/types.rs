@@ -186,44 +186,13 @@ impl From<std::io::Error> for HubError {
     }
 }
 
-/// 外部 `HubWaker` 抛出的唤醒失败。`kind` 为协议错误类别（如 `"LAUNCH_FAILED"`、`"APP_NOT_INSTALLED"`），
-/// 不认识的类别按 `LAUNCH_FAILED` 处理；未预期的异常同样按 `LAUNCH_FAILED`。
-#[derive(Clone, Debug, PartialEq, thiserror::Error, uniffi::Error)]
-pub enum WakeError {
-    #[error("{kind}: {reason}")]
-    Failed { kind: String, reason: String },
-}
-
-impl From<uniffi::UnexpectedUniFFICallbackError> for WakeError {
-    fn from(e: uniffi::UnexpectedUniFFICallbackError) -> Self {
-        WakeError::Failed {
-            kind: "LAUNCH_FAILED".into(),
-            reason: e.reason,
-        }
-    }
-}
-
-impl From<WakeError> for hub::HubError {
-    fn from(e: WakeError) -> Self {
-        let WakeError::Failed { kind, reason: message } = e;
-        let kind = serde_json::from_value::<hub::ErrorKind>(Value::String(kind))
-            .unwrap_or(hub::ErrorKind::LaunchFailed);
-        let message = if message.is_empty() { "唤醒失败。".to_owned() } else { message };
-        hub::HubError::new(kind, message)
-    }
-}
-
-/// 外部回调（审批 / 配对）抛出的异常。外部实现可主动抛出，效果等同于返回 `false`（拒绝）。
-#[derive(Clone, Debug, PartialEq, thiserror::Error, uniffi::Error)]
-pub enum CallbackError {
-    #[error("回调失败：{reason}")]
-    Failed { reason: String },
-}
-
-impl From<uniffi::UnexpectedUniFFICallbackError> for CallbackError {
-    fn from(e: uniffi::UnexpectedUniFFICallbackError) -> Self {
-        CallbackError::Failed { reason: e.reason }
-    }
+/// `WakeResponder::fail` 的错误：`kind` 为协议错误类别（如 `"LAUNCH_FAILED"`、`"APP_NOT_INSTALLED"`），
+/// 不认识的类别按 `LAUNCH_FAILED` 处理。
+pub(crate) fn wake_error(kind: &str, reason: String) -> hub::HubError {
+    let kind = serde_json::from_value::<hub::ErrorKind>(Value::String(kind.to_owned()))
+        .unwrap_or(hub::ErrorKind::LaunchFailed);
+    let message = if reason.is_empty() { "唤醒失败。".to_owned() } else { reason };
+    hub::HubError::new(kind, message)
 }
 
 pub(crate) fn parse_json(text: &str) -> Result<Value, HubError> {
@@ -1096,9 +1065,9 @@ mod tests {
             HubEvent::from(hub::HubEvent::AppWaking { app_id: "a".into(), instance_id: None }),
             HubEvent::AppWaking { app_id: "a".into(), instance_id: None }
         );
-        let e: hub::HubError = WakeError::Failed { kind: "APP_NOT_INSTALLED".into(), reason: "没装".into() }.into();
+        let e = wake_error("APP_NOT_INSTALLED", "没装".into());
         assert_eq!((e.kind(), e.message()), (hub::ErrorKind::AppNotInstalled, "没装"));
-        let e: hub::HubError = WakeError::Failed { kind: "NOPE".into(), reason: String::new() }.into();
+        let e = wake_error("NOPE", String::new());
         assert_eq!(e.kind(), hub::ErrorKind::LaunchFailed);
         let r = WakeRequest::from(hub::WakeRequest {
             app_id: "a".into(),

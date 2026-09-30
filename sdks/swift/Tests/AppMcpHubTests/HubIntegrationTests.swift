@@ -109,6 +109,17 @@ final class HubIntegrationTests: XCTestCase {
         XCTAssertEqual(seen.first?.appId, "notes")
         XCTAssertEqual(seen.first?.risk, .destructive)
 
+        // @MainActor handler（UI 确认）→ 同意 → 成功；抛出错误 → 拒绝
+        hub.setApprovalHandler { @MainActor _ in
+            dispatchPrecondition(condition: .onQueue(.main))
+            return true
+        }
+        let approved = try await hub.callTool("notes.clear", timeout: 5)
+        XCTAssertNil(approved.error)
+        hub.setApprovalHandler { _ in throw WakeFailed(message: "UI 崩溃") }
+        let failed = try await hub.callTool("notes.clear", timeout: 5)
+        XCTAssertEqual(failed.error?.kind, "USER_REJECTED")
+
         // 名称无法解析 → HubError
         do {
             _ = try await hub.callTool("nosuchapp.x")

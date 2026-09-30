@@ -39,6 +39,11 @@ impl HubShared {
         })
     }
 
+    /// 是否配置了唤醒器（`waker: none` 时为 `false`）。
+    pub(crate) fn wake_enabled(&self) -> bool {
+        lock(&self.waker).is_some()
+    }
+
     /// 执行唤醒并等待回连，返回就绪实例的 ID。
     ///
     /// 同一目标已有唤醒进行中时加入等待，不重复激活。
@@ -58,6 +63,10 @@ impl HubShared {
         cancel: std::pin::Pin<&mut (dyn std::future::Future<Output = ()> + Send + '_)>,
     ) -> WakeResult {
         let app_id = plan.app_id.clone();
+        // 不唤醒（`waker: none`）：按未连接处理，带清单的启动提示（launchUrl）。
+        let Some(waker) = lock(&self.waker).clone() else {
+            return Err(self.registry().disconnected_error(&app_id));
+        };
         let descriptor = self.resolve_wake_descriptor(plan);
         let now = Instant::now();
         let (tx, rx) = oneshot::channel();
@@ -103,7 +112,6 @@ impl HubShared {
                 activation_arg: format!("app-mcp-wake:{token}"),
                 token: token.clone(),
             };
-            let waker = lock(&self.waker).clone();
             let shared = self.clone();
             // 独立任务：调用方取消不影响已发出的激活。
             tokio::spawn(async move {

@@ -528,3 +528,98 @@ async fn static_tool_without_wake_returns_disconnected() {
     // 默认不从 launch 推导唤醒方式
     assert!(waker.requests.lock().unwrap().is_empty());
 }
+
+/// `waker: none`：休眠实例与未运行 App 的调用都直接返回 APP_DISCONNECTED（带 launchUrl），不尝试唤醒。
+#[tokio::test(flavor = "multi_thread")]
+async fn waker_none_returns_disconnected_without_waking() {
+    let manifest = app_mcp_manifest::parse(
+        &json!({
+            "manifestVersion": 1, "appId": "calc", "name": "计算器",
+            "launch": {"web": [{"type": "url", "href": "http://localhost:5173/"}]},
+            "wake": {"web": [{"kind": "web-url", "target": "http://localhost:5173/"}]},
+            "tools": [{"name": "math.add", "description": "加法", "inputSchema": {"type": "object"}}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut cfg = config(0);
+    cfg.manifests = vec![manifest];
+    cfg.waker = app_mcp_hub::WakerConfig::None;
+    let hub = Hub::start(cfg).await.unwrap();
+    let mut rx = hub.events();
+
+    // 未运行（清单声明了 wake）：不唤醒
+    let out = timeout(Duration::from_secs(3), hub.call_tool(CallRequest::new("calc.math.add", json!({}))))
+        .await
+        .expect("调用未在超时内返回")
+        .unwrap();
+    let e = out.result.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::AppDisconnected);
+    assert_eq!(e.details.unwrap()["launchUrl"], "http://localhost:5173/");
+
+    // 休眠实例：同样不唤醒，工具仍列为 Dormant
+    let client = native_client(&hub, "calc-1", 150);
+    client.start();
+    next_event(&mut rx, |e| matches!(e, HubEvent::AppDormant { .. })).await;
+    assert_eq!(availability(&hub, "calc.math.add"), Some(Availability::Dormant));
+    let out = timeout(Duration::from_secs(3), hub.call_tool(CallRequest::new("calc.math.add", json!({"a": 1, "b": 2}))))
+        .await
+        .expect("调用未在超时内返回")
+        .unwrap();
+    let e = out.result.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::AppDisconnected);
+    assert_eq!(e.details.unwrap()["launchUrl"], "http://localhost:5173/");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(client.state().status, StateStatus::Dormant);
+    while let Ok(ev) = rx.try_recv() {
+        assert!(!matches!(ev, HubEvent::AppWaking { .. }), "不应发出唤醒：{ev:?}");
+    }
+    client.stop();
+    hub.shutdown().await;
+}
+
+/// `waker: {"exec": [...]}` 经 Hub 配置生效：WakeRequest 以 JSON 写入程序 stdin，程序失败时返回 LAUNCH_FAILED。
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_waker_from_config() {
+    let dir = std::env::temp_dir().join(format!("app-mcp-exec-waker-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("wake.jsonl");
+    let manifest = app_mcp_manifest::parse(
+        &json!({
+            "manifestVersion": 1, "appId": "raw", "name": "Raw",
+            "wake": {"web": [{"kind": "web-url", "target": "http://localhost:5173/"}]},
+            "tools": [{"name": "echo", "description": "回显", "inputSchema": {"type": "object"}}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut cfg = config(0);
+    cfg.manifests = vec![manifest];
+    cfg.wake_timeout = Duration::from_millis(500);
+    // 测试程序：把 stdin 追加到文件，然后以退出码 3 失败（stderr 应出现在错误信息中）
+    cfg.waker = app_mcp_hub::WakerConfig::Exec(vec![
+        "sh".into(),
+        "-c".into(),
+        r#"cat >> "$0"; echo 激活失败 >&2; exit 3"#.into(),
+        log.to_string_lossy().into_owned(),
+    ]);
+    let hub = Hub::start(cfg).await.unwrap();
+    let out = hub.call_tool(CallRequest::new("raw.echo", json!({}))).await.unwrap();
+    let e = out.result.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::LaunchFailed, "{e:?}");
+    assert!(e.message.contains("激活失败"), "{}", e.message);
+    let line = std::fs::read_to_string(&log).unwrap();
+    let req: WakeRequest = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(req.app_id, "raw");
+    assert_eq!(req.instance_id, None);
+    assert_eq!(req.descriptor.kind, WakeKind::WebUrl);
+    assert_eq!(req.activation_arg, format!("app-mcp-wake:{}", req.token));
+    hub.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // 空 exec 在启动时报错
+    let mut cfg = config(0);
+    cfg.waker = app_mcp_hub::WakerConfig::Exec(vec![]);
+    assert!(Hub::start(cfg).await.is_err());
+}

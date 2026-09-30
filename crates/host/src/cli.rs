@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use app_mcp_hub::WakerConfig;
 use app_mcp_hub::upstream::parse_cli_spec;
 use clap::{Args, Parser, Subcommand};
 
@@ -105,6 +106,11 @@ pub struct HubArgs {
     #[arg(long)]
     pub wake_from_launch: bool,
 
+    /// 唤醒器：system（默认，按平台执行系统激活）/ none（不唤醒，调用返回 APP_DISCONNECTED 与启动地址）/
+    /// JSON 形式的 {"exec":["程序","参数",...]}（执行该程序，参数不经 shell，唤醒请求以一行 JSON 写入其 stdin）。
+    #[arg(long, value_name = "system|none|JSON", value_parser = parse_waker)]
+    pub waker: Option<WakerConfig>,
+
     /// 日志级别（trace / debug / info / warn / error），默认 info。设置 RUST_LOG 时以 RUST_LOG 为准。
     #[arg(long, value_name = "LEVEL")]
     pub log_level: Option<String>,
@@ -133,6 +139,7 @@ impl HubArgs {
             lease_ms: self.lease_ms,
             wake_timeout_ms: self.wake_timeout_ms,
             wake_from_launch: self.wake_from_launch.then_some(true),
+            waker: self.waker.clone(),
             log_level: self.log_level.clone(),
             ..Default::default()
         })
@@ -197,6 +204,23 @@ pub struct LegacyArgs {
     pub hub: HubArgs,
 }
 
+
+/// `--waker`：`system` / `none` 或 JSON（与配置文件 `lifecycle.waker` 相同的形式）。
+fn parse_waker(s: &str) -> Result<WakerConfig, String> {
+    let s = s.trim();
+    let json = if s.starts_with('{') || s.starts_with('"') {
+        s.to_owned()
+    } else {
+        format!("\"{s}\"")
+    };
+    let w: WakerConfig = serde_json::from_str(&json)
+        .map_err(|e| format!("应为 system、none 或 {{\"exec\":[\"程序\",...]}}：{e}"))?;
+    if matches!(&w, WakerConfig::Exec(argv) if argv.first().is_none_or(String::is_empty)) {
+        return Err("exec 至少需要一个元素（要执行的程序）".into());
+    }
+    Ok(w)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +229,23 @@ mod tests {
     #[test]
     fn cli_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn parses_waker() {
+        assert_eq!(parse_waker("system"), Ok(WakerConfig::System));
+        assert_eq!(parse_waker("none"), Ok(WakerConfig::None));
+        assert_eq!(
+            parse_waker(r#"{"exec":["node","/t/wake.mjs","--x"]}"#),
+            Ok(WakerConfig::Exec(vec!["node".into(), "/t/wake.mjs".into(), "--x".into()]))
+        );
+        assert!(parse_waker("shell").is_err());
+        assert!(parse_waker(r#"{"exec":[]}"#).is_err());
+        let cli = Cli::try_parse_from(["app-mcp-host", "serve", "--waker", "none"]).unwrap();
+        let Some(Command::Serve(s)) = cli.command else {
+            panic!()
+        };
+        assert_eq!(s.hub.overrides().unwrap().waker, Some(WakerConfig::None));
     }
 
     #[test]

@@ -169,7 +169,18 @@ pub struct PairingRequest { pub app_id: String, pub app_name: String,
     pub origin: Option<String>, pub client_kind: String }
 ```
 
-绑定层把 async trait 映射为"回调 + 完成句柄"（C：`am_hub_approval_cb` + `am_hub_approval_complete(handle, bool)`）。
+绑定层把 async trait 映射为"同步回调 + 完成句柄"：外部语言的回调在 Hub 线程上被同步调用、立即返回，
+结果稍后在任意线程经句柄回传；回调线程上不要求外部语言有事件循环 / 协程上下文。
+
+- C：`am_hub_approval_cb` + `am_hub_approval_complete(handle, bool)`（配对、唤醒同理）。
+- uniffi（Kotlin / Swift / Python）：
+  `ApprovalHandler.on_request(req, responder: ApprovalResponder)` → `responder.complete(bool)`；
+  `PairingHandler.on_request(req, responder: PairingResponder)` → `responder.complete(bool)`；
+  `HubWaker.wake(req, responder: WakeResponder)` → `responder.succeed()` / `responder.fail(kind, reason)`。
+  只有第一次完成生效（返回是否生效）；句柄未完成即被释放、回调抛出异常 → 拒绝（唤醒为 `LAUNCH_FAILED`）。
+  各语言封装把句柄适配为惯用 API：Kotlin `suspend` handler（在 Hub 的协程作用域、可指定 `CoroutineContext`
+  如 `Dispatchers.Main` 中执行）、Swift `async` handler（新 `Task`，需要主线程时标注 `@MainActor`）、
+  Python 同步函数（线程池 / `dispatcher`）或 `async def`（设置时的事件循环，无循环时 `asyncio.run`）。
 
 ### 3.4 实现补充（v0.1 实现，与上文并存）
 
@@ -264,25 +275,37 @@ pub struct WakeRequest {
 impl Hub { pub fn set_waker(&self, w: Arc<dyn Waker>); }
 ```
 
-默认实现 `SystemWaker`（`SystemWaker::command(&req)` 可只生成命令不执行）：用 `tokio::process` 执行固定程序、逐个传参，
+默认实现 `SystemWaker`（`SystemWaker::action(&req)` 只生成动作不执行：`WakeAction::Command` 或 Windows 的
+`WakeAction::ActivateApplication`）：命令用 `tokio::process` 执行固定程序、逐个传参，
 不经 shell 拼接；令牌、scheme、AUMID、bundle id、D-Bus 名称、URL 都先校验字符集；子进程 stdio 全部重定向到空设备。
 
 | kind | Windows | macOS | Linux |
 |---|---|---|---|
 | `uri` | `cmd.exe /d /c start "" <scheme>://app-mcp/wake?token=<t>` | `open -g <uri>` | `xdg-open <uri>` |
-| `aumid` | `explorer.exe shell:AppsFolder\<aumid>`（无法传参：App 被激活后应自行 `wake()`，Hub 接受同实例 ID 的回连） | — | — |
+| `aumid` | `IApplicationActivationManager::ActivateApplication(<aumid>, "app-mcp-wake:<t>", AO_NONE)`（COM，不启动子进程；参数经 UWP `LaunchActivatedEventArgs.Arguments` / 打包桌面应用的命令行送达，App 已运行时交给现有实例） | — | — |
 | `apple-event` | — | `open -g -b <bundle> --args app-mcp-wake:<t>`（参数仅在冷启动时送达） | — |
 | `dbus` | — | — | `gdbus call --session --dest <name> --object-path </name/路径> --method org.freedesktop.Application.ActivateAction app-mcp-wake "[<'<t>'>]" "{}"` |
 | `web-url` | `rundll32.exe url.dll,FileProtocolHandler <url>#app-mcp-wake=<t>` | `open <url>#…` | `xdg-open <url>#…` |
 | `android-intent` | 不支持（`LAUNCH_FAILED`）：Android 上的 Hub 由厂商实现 `Waker` 发送显式广播 | | |
 | `none` | `LAUNCH_FAILED` | | |
 
+**唤醒器配置**（`HubConfig.waker: WakerConfig`；`app-mcp-host` 配置 `lifecycle.waker` / 命令行 `--waker`）：
+
+| 值（JSON） | 行为 |
+|---|---|
+| `"system"`（默认） | `SystemWaker`（上表） |
+| `"none"` | 不唤醒：休眠实例 / 未运行 App 的调用与资源读取直接返回 `APP_DISCONNECTED`（`details.launchUrl` 为清单 `launch.web`），不生成令牌、不发 `AppWaking`、不询问审批。休眠仍被接受（工具保持列出） |
+| `{"exec": [program, ...args]}` | `ExecWaker`：执行 `program args…`（逐个传参，**不经 shell**）；`WakeRequest` 序列化为一行 camelCase JSON（`{"appId","instanceId","descriptor":{"kind","target","background"},"token","activationArg"}`）写入其 stdin 后关闭；stdout 丢弃，stderr 收集。退出码 0 = 已发出激活（随后等待回连），非 0 → `LAUNCH_FAILED`（附 stderr）；10 秒未退出视为已发出。`exec` 为空时 `Hub::start` 报错 |
+
+`Hub::set_waker` 设置的实现覆盖配置（包括 `none`）。`ExecWaker` 适合厂商脚本、测试替身和平台上没有内置实现的激活方式。
+
 **租约**：MCP 会话或 API 会话每次调用某实例（请求已送达）完成后，Hub 发送 `app/lease { ttlMs }`
 （`HubConfig.lease_ttl`，默认 60 秒；`0` 关闭）。MCP 会话关闭、`Hub::reset_session` 时向该会话租约过的实例发送
 `ttlMs: 0`；若其他会话对同一实例仍有未到期租约，随后补发剩余时长。
 
 **新增配置**（`HubConfig`）：`lease_ttl`、`wake_timeout`、`wake_token_ttl`、`dormant_ttl`、
-`dormant_replaced_by_new_instance`、`wake_from_launch`。`app-mcp-host` 对应命令行：`--lease-ms`、`--wake-timeout-ms`、`--wake-from-launch`。
+`dormant_replaced_by_new_instance`、`wake_from_launch`、`waker`。`app-mcp-host` 对应命令行：`--lease-ms`、`--wake-timeout-ms`、
+`--wake-from-launch`、`--waker system|none|<JSON>`。
 
 ## 4. 进程内 App（可选，M2）
 

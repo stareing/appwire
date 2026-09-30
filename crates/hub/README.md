@@ -178,9 +178,10 @@ App 端 SDK 在 `idle` / `on-demand` 模式下空闲后会发 `app/sleep` 并断
   让 App 在模型连续调用期间保持连接；MCP 会话关闭或 `reset_session` 时取消。
 - **清单冷启动**：App 未运行而清单显式声明了 `wake` 时也会唤醒；`wake_from_launch: true` 时还会由 `launch` 推导。
 
-默认 `SystemWaker` 按平台执行系统命令（`uri` → `cmd start` / `open -g` / `xdg-open`；`aumid` → `explorer.exe shell:AppsFolder\…`；
-`dbus` → `gdbus call … ActivateAction app-mcp-wake`；`web-url` → 打开 `url#app-mcp-wake=<令牌>`），参数不经 shell。
-平台上有更合适的激活方式（如 Android 显式广播、Windows `IApplicationActivationManager`）时自行实现：
+默认 `SystemWaker` 按平台激活（`uri` → `cmd start` / `open -g` / `xdg-open`；`aumid` →
+`IApplicationActivationManager::ActivateApplication(aumid, "app-mcp-wake:<令牌>")`；`dbus` → `gdbus call … ActivateAction app-mcp-wake`；
+`web-url` → 打开 `url#app-mcp-wake=<令牌>`），参数不经 shell。`HubConfig::waker` 可改为 `WakerConfig::None`（不唤醒）或
+`WakerConfig::Exec(argv)`（执行指定程序，`WakeRequest` 以 JSON 写入其 stdin）。平台上有更合适的激活方式（如 Android 显式广播）时自行实现：
 
 ```rust
 use std::sync::Arc;

@@ -1033,3 +1033,26 @@ fn messages_while_disconnected_are_ignored() {
     assert!(h.drain().is_empty());
     assert_eq!(h.c.state(), &ConnectionState::Idle);
 }
+
+#[test]
+fn tool_name_with_app_id_prefix_registers_but_warns() {
+    let mut h = Harness::new();
+    h.c.register_tool(tool("cart.add")).unwrap();
+    assert_eq!(warnings(&h.drain()), 0, "含 . 的局部名是正常的");
+    h.c.register_tool(tool("shop.info")).unwrap();
+    let ev = h.drain();
+    let msg = ev
+        .iter()
+        .find_map(|e| match e {
+            Event::Warning(w) => Some(w.clone()),
+            _ => None,
+        })
+        .expect("以 appId. 开头应产生警告");
+    assert!(msg.contains("shop.shop.info") && msg.contains("\"info\""), "{msg}");
+    // 协议语义不变：按原样注册，同步时名称不改写。
+    let ev = h.connect();
+    let sync = sends(&ev).into_iter().find(|m| m["method"] == "tools/sync").unwrap();
+    let names: Vec<&str> =
+        sync["params"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"shop.info"), "{names:?}");
+}

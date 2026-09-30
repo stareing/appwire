@@ -19,7 +19,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::time::{Instant, interval_at, sleep_until};
 use tokio_tungstenite::tungstenite::handshake::server::{
-    Request as HttpRequest, Response as HttpResponse,
+    Callback, ErrorResponse, Request as HttpRequest, Response as HttpResponse,
 };
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
@@ -70,17 +70,22 @@ enum Flow {
     Pending(Box<PendingPairing>),
 }
 
+/// 握手回调：只记录请求的 `Origin` 头，从不拒绝握手（来源校验在 `app/hello` 阶段进行）。
+///
+/// 回调签名由 tungstenite 的 [`Callback`] trait 固定（错误类型 `ErrorResponse` 是约 136 字节的
+/// `http::Response`）；以具名类型实现该 trait，签名归 trait 所有，本处从不构造错误值。
+struct CaptureOrigin<'a>(&'a mut Option<String>);
+
+impl Callback for CaptureOrigin<'_> {
+    fn on_request(self, req: &HttpRequest, resp: HttpResponse) -> Result<HttpResponse, ErrorResponse> {
+        *self.0 = req.headers().get("origin").and_then(|v| v.to_str().ok()).map(str::to_owned);
+        Ok(resp)
+    }
+}
+
 async fn handle_connection(shared: Arc<HubShared>, stream: TcpStream, addr: SocketAddr) {
     let mut origin: Option<String> = None;
-    let callback = |req: &HttpRequest, resp: HttpResponse| {
-        origin = req
-            .headers()
-            .get("origin")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-        Ok(resp)
-    };
-    let ws = match tokio_tungstenite::accept_hdr_async(stream, callback).await {
+    let ws = match tokio_tungstenite::accept_hdr_async(stream, CaptureOrigin(&mut origin)).await {
         Ok(ws) => ws,
         Err(e) => {
             tracing::debug!(%addr, "WebSocket 握手失败：{e}");
@@ -633,12 +638,14 @@ fn handle_notification(
     match n.method.as_str() {
         method::TOOLS_SYNC => {
             let p = params!(ToolsSyncParams);
+            warn_prefixed_names(conn, app_id, &p.tools);
             if shared.registry().sync_tools(app_id, conn.id, p.tools) {
                 shared.mark_tools_changed();
             }
         }
         method::TOOLS_CHANGED => {
             let p = params!(ToolsChangedParams);
+            warn_prefixed_names(conn, app_id, &p.upserted);
             if shared
                 .registry()
                 .change_tools(app_id, conn.id, p.upserted, p.removed)
@@ -686,5 +693,12 @@ fn handle_notification(
             shared.wake_arrived(app_id, &reg.instance_id, reg.launch_token.as_deref());
         }
         other => tracing::warn!(conn = conn.id, method = other, "未知通知，忽略"),
+    }
+}
+
+/// 局部名以 `<appId>.` 开头时记录警告（spec/protocol.md 3.1）：名称照常登记，不改写。
+fn warn_prefixed_names(conn: &Connection, app_id: &str, tools: &[app_mcp_protocol::ToolInfo]) {
+    for t in tools.iter().filter(|t| app_mcp_protocol::has_app_id_prefix(&t.name, app_id)) {
+        tracing::warn!(conn = conn.id, "{}", app_mcp_protocol::app_id_prefix_warning(&t.name, app_id));
     }
 }

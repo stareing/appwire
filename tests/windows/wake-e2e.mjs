@@ -2,7 +2,9 @@
 //   a) App 未运行 → 调用工具 → Host 的 SystemWaker 以 `cmd /c start "" appmcp-wintest://…` 冷启动 → 回连 → 成功
 //   b) App 运行中已休眠 → 调用 → 第二实例经单实例管道转交参数 → 快速恢复 → 成功 → 再休眠
 //   c) web-url：rundll32 url.dll,FileProtocolHandler 打开本地 http 地址（页面回报令牌后 window.close()）
-//   d) aumid：explorer.exe shell:AppsFolder\<计算器 AUMID>，确认启动后结束该进程
+//   d) aumid：IApplicationActivationManager::ActivateApplication(<计算器 AUMID>, "app-mcp-wake:<令牌>")，
+//      确认 Host 以令牌参数激活、计算器进程被拉起后结束该进程（计算器自身不接受启动参数，会以 0x8004090x
+//      拒绝本次激活并退出——这是计算器的行为，接入 SDK 的打包 App 由 handleWake 识别该参数）
 //
 // 用法：node tests\windows\wake-e2e.mjs [a b c d]（缺省全部）
 // 需要：target\win\debug\app-mcp-host.exe、target\win\dotnet\bin\WakeApp\debug\AppMcpWakeApp.exe（见 README）。
@@ -257,8 +259,18 @@ async function main() {
         const now = processes('CalculatorApp.exe').filter((p) => !before.has(p))
         return now.length ? now : null
       }, 10000, '计算器进程').catch(() => [])
-      const cmdLine = readHostLog().split(/\r?\n/).find((l) => l.includes('explorer.exe') && l.includes('shell:AppsFolder'))
-      record('d aumid(explorer shell:AppsFolder)', started.length > 0 && !!cmdLine, `新进程 ${started.join(',') || '无'}`)
+      const activation = readHostLog()
+        .split(/\r?\n/)
+        .find((l) => l.includes('ActivateApplication') && l.includes(CALC_AUMID) && /app-mcp-wake:[0-9a-f]{32}/.test(l))
+      // 计算器不接受启动参数：激活以 0x80040904/5 失败并自行退出（不一定来得及被看到）。这是计算器的行为；
+      // 判定只看 Host 是否以 `app-mcp-wake:<令牌>` 调用了 ActivateApplication，且结果为成功或计算器的拒绝码。
+      const text = JSON.stringify(r.content ?? '')
+      const calcRejected = r.isError && /LAUNCH_FAILED/.test(text) && /0x8004090[45]/.test(text)
+      record(
+        'd aumid(ActivateApplication 带令牌)',
+        !!activation && (!r.isError || calcRejected),
+        `新进程 ${started.join(',') || '无'}；${r.isError ? `计算器拒绝参数 ${text.match(/0x[0-9a-f]{8}/i)?.[0] ?? text.slice(0, 120)}` : '激活成功'}`,
+      )
       for (const pid of started) spawnSync('taskkill', ['/PID', String(pid), '/F'])
     }
   } finally {

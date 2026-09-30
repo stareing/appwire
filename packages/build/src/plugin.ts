@@ -134,7 +134,7 @@ export function appMcp(options: AppMcpPluginOptions): Plugin {
     if (!annotationOptions) return Promise.resolve({ tools: [], warnings: [], errors: [], dependencies: [] })
     if (!annotationScan) {
       annotationScan = loadAnnotationsModule().then((mod) => {
-        scanner ??= mod.createAnnotationScanner({ root: config.root, ...annotationOptions })
+        scanner ??= mod.createAnnotationScanner({ root: config.root, appId: options.appId, ...annotationOptions })
         const result = scanner.scan()
         for (const warning of result.warnings) config.logger.warn(`[app-mcp] ${warning}`)
         return result

@@ -71,13 +71,15 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
 按顺序一个完成再开下一个。**原则（用户 2026-10-01）：从源码处解决问题，不在外层套壳**（不加转发进程、包装脚本、PATH 替身、monkeypatch、兜底转换）。
 1. [x] Host 常驻服务：Hub 原生多会话（Streamable HTTP）+ 各平台用户级服务安装（systemd / launchd / Windows 登录任务），客户端直接连 HTTP；删除 `scripts/run-host.sh` 包装与 stdio 转发思路
    - 结果（2026-10-01）：`app-mcp-host serve` + `service install|uninstall|status|start|stop`（systemd --user / LaunchAgent / HKCU Run → 无窗口 `app-mcp-hostw.exe`）、`~/.app-mcp/config.json`、`/healthz` 单实例（已在运行退出码 0）、日志轮转、令牌（浏览器来源强制，`--auth all` 全部强制）；`.mcp.json` 改 HTTP；hub 单元 69 + host 单元 18 + serve 集成 5（另 systemd 实装 1，`--ignored`，已实跑并卸载）；e2e 12/12 改用 serve + HTTP 客户端；Windows 测试全过、Run 项实装/卸载与无窗口已验证
-1b. [ ] 去套壳清单（逐项源码修复）：Python hub 替换 `_uniffi_get_event_loop`（改为非 async 回调 + 完成句柄）；注释工具名 `shop.shop.info`（名称规则在 spec + build 插件源头统一为局部名）；e2e 的假 xdg-open 与去 wake 清单副本（Host 提供正式 Waker 配置）；隐藏态空闲休眠 reason 与 spec 一致；AUMID 传令牌改用 `IApplicationActivationManager`（并入第 7 项提前做）
+1b. [x] 去套壳清单（逐项源码修复）：Python hub 替换 `_uniffi_get_event_loop`（改为非 async 回调 + 完成句柄）；注释工具名 `shop.shop.info`（名称规则在 spec + build 插件源头统一为局部名）；e2e 的假 xdg-open 与去 wake 清单副本（Host 提供正式 Waker 配置）；隐藏态空闲休眠 reason 与 spec 一致；AUMID 传令牌改用 `IApplicationActivationManager`（并入第 7 项提前做）
+   - 结果（2026-10-01）：hub-uniffi 回调改为同步 + 完成句柄（`ApprovalResponder` / `PairingResponder` / `WakeResponder`，删除 `CallbackError` / `WakeError`），Kotlin `suspend`（可指定 `CoroutineContext`）/ Swift `Task` / Python 线程池·事件循环·`asyncio.run` 各自适配，删除 monkeypatch 与后台事件循环；spec/protocol.md 3.1 局部名规则，build 注释扫描对 `<appId>.` 前缀报错、核心注册 / Host 同步 / 清单校验警告，shop 改 `@mcp info`；Host `lifecycle.waker` / `--waker system|none|{"exec":[...]}`（`ExecWaker` 把 WakeRequest JSON 写 stdin），e2e M1 用 `none`、生命周期用 `exec` + `e2e/src/record-wake.mjs`，删除 PATH 替身与清单副本；空闲计时到期一律 `idle`（`background` 仅进入后台立即休眠）；clippy `result_large_err` 以具名 `Callback` 实现消除（无 allow/expect）。验证：cargo test 363（serve 端口竞争偶发失败 1 次，与本次无关）、clippy Linux/Windows 0 警告、pnpm test 440 + e2e 12/12、Python 39、Kotlin JVM 11 + Hub 3 + Robolectric 7、Swift 18 + Hub 3、ctest 5/5、dotnet 36 + 9、dart 55
 2. [ ] 工具渐进暴露：默认只 `apps.*` + `apps.tools(appId)`，已选/最近用过的 App 直接列出
 3. [ ] 原生本地 IPC 传输：Unix 域套接字 / Windows 命名管道 + 连接鉴权（回环 TCP 仅网页）
 4. [ ] Web：Chrome 本地网络访问 / CSP 拦截检测与提示；SharedWorker/主标签页单连接
 5. [ ] WASM 瘦身：核心注册表去 BTreeMap、绑定改 JSON 交换（目标 gzip < 100 KB）
 6. [ ] Android：绑定式 Service（Binder）传输与 bindService 唤醒；R8 规则、ABI 拆包
-7. [ ] Windows：`IApplicationActivationManager` 带参激活（AUMID 传令牌）
+7. [x] Windows：`IApplicationActivationManager` 带参激活（AUMID 传令牌）
+   - 结果（2026-10-01）：`SystemWaker` 的 aumid 改为 `ActivateApplication(aumid, "app-mcp-wake:<令牌>", AO_NONE)`（`windows` 0.62，COM STA，阻塞线程执行；`SystemWaker::action` 返回 `WakeAction`，去掉 explorer 与 `ignore_exit_code`）；Windows 实测：计算器空参数激活返回 PID 后结束（`--ignored activate_calculator`）；`wake-e2e.mjs` d 以令牌参数激活（计算器自身拒绝启动参数 0x80040904，判定为 Host 行为正确）；a/b 仍通过。打包 App 版的 d 需 MSIX 签名 + 开发者模式，本机未开启，未做
 8. [ ] 鸿蒙 HarmonyOS NEXT：ArkTS SDK（Node-API 兼容）+ 意图框架代码生成
 9. [ ] Tauri 插件（基于 crates/native，页面走 Tauri IPC）
 10. [ ] 核心热路径：参数免完整解析、进程内共享运行时、休眠重建基准
@@ -105,23 +107,25 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
 - [ ] Android 未测：进程被杀后广播冷启动、Android ≤11 回退、加急配额耗尽、前台直接处理分支
 - [ ] Python：dbus-daemon 拉起已退出进程、exit-when-idle 冷启动退出路径
 - [ ] 已决定：`wake_from_launch` 默认关闭，spec/manifest.md 已注明（可随时改）
-- [ ] 核心：隐藏状态下空闲休眠上报 reason=`background`（非 `idle`）——确认是否符合 spec 并写入
-- [ ] Python 事件循环替换依赖 uniffi 生成的 `_uniffi_get_event_loop`，升级 uniffi 时复查
-- [ ] App 端 SDK 工具名是局部名（注册 `add` → `notes.add`），文档写清
+- [x] 核心：隐藏状态下空闲休眠上报 reason=`background`（非 `idle`）——已改：计时到期一律 `idle`，`background` 只用于进入后台立即休眠（spec/protocol.md 8.5、spec/lifecycle.md 4.1）
+- [x] Python 事件循环替换依赖 uniffi 生成的 `_uniffi_get_event_loop`——已删除：hub-uniffi 回调改为同步 + 完成句柄
+- [x] App 端 SDK 工具名是局部名（注册 `add` → `notes.add`），文档写清——spec/protocol.md 3.1；以 `<appId>.` 开头时核心 / Host / 清单校验警告，build 注释扫描报错
 - [ ] Hub：API 会话无自动清理（需 `reset_session`）；导出名映射只增不删；`subscribe` 不区分厂商会话；MCP `serverInfo` 名仍为 app-mcp-host
 - [ ] Python `qt_dispatcher` 未测（本机无 Qt）
+- [ ] `crates/host/tests/serve.rs` `second_serve_exits_zero_when_healthy_instance_runs` 偶发失败（约 1/6；`free_port` 先绑后放的端口竞争，serve 启动即退出码 1）
+- [ ] hub-c / hub-node / hub-uniffi 的配置 JSON 尚未暴露 `waker`（`HubConfig::waker`；目前用 set_waker 回调替换）
 - [ ] Kotlin jar 发布前用 `--release` 生成（debug `.so` 约 100 MB）
 - [x] 全量验证：`cargo test --workspace`、`cargo clippy --workspace --all-targets`、`pnpm -r test/typecheck/build`、ctest、dotnet test、dart test（2026-09-30 全部通过，另含 Flutter / Python / Kotlin / Swift / codegen / e2e，见上方"全量验证"）
 - [ ] 在 Claude Code 中实际操作 Demo（已配置：`.mcp.json` → `http://127.0.0.1:7718/mcp`，先 `app-mcp-host service install` 或 `serve`；需重启会话并批准项目 MCP 服务器）
-- [ ] 工具名重复前缀：shop 的注释工具 `shop.info` 全名变成 `shop.shop.info`——注释工具名应为局部名，或 build 插件自动去掉 appId 前缀
+- [x] 工具名重复前缀：shop 的注释工具 `shop.info` 全名变成 `shop.shop.info`——注释改为局部名 `@mcp info`；写成带 appId 前缀的全名时构建报错（不自动去前缀）
 
 ### 需在 Windows / macOS 上验证
 - [x] SystemWaker Windows 实机（2026-10-01，Win11 25H2 build 26200，`tests/windows/wake-e2e.mjs` 7/7）：uri 冷启动 155ms、休眠实例经第二进程管道转交唤醒 145ms（`tools_current=true`，同 PID）、web-url(rundll32) 页面收到 `#app-mcp-wake=<token>`、aumid(explorer shell:AppsFolder) 拉起计算器
-- [ ] SystemWaker 其他平台实机：macOS open -g / apple-event、Linux 桌面 gdbus；aumid 无法传令牌→依赖同 instanceId 回连（真实打包 App 未测）
+- [ ] SystemWaker 其他平台实机：macOS open -g / apple-event、Linux 桌面 gdbus；aumid 已经 `ActivateApplication` 传令牌（同 instanceId 回连判定保留为协议语义），真实打包 App 未测
 - [x] C# 生命周期 Windows：真实 HKCU 注册表写入/删除（单元测试 `RealHkcuRegistrationOnWindows` + e2e）、未打包进程 `GetCurrentPackageFullName` 返回无包身份、跨进程 Mutex+命名管道（两个真实进程）、WPF 示例编译（0 警告）；dotnet test Windows 36 + Hub 9
 - [ ] C# MSIX/AUMID 包身份检测实测（需打包 + 开发者模式）
 - [ ] web-url 唤醒打开的浏览器标签页：页面脚本 `window.close()` 在 Chrome 中未能关闭外部打开的标签页——Web SDK 是否在回连后提示/自动关闭重复标签需设计
-- [ ] Rust 1.98 clippy（Windows 工具链较新）报 `result_large_err`：`crates/hub/src/app_server.rs:75`（tungstenite 回调签名固定，需 `#[allow]`），Linux 1.93 不报
+- [x] Rust 1.98 clippy（Windows 工具链较新）报 `result_large_err`：`crates/hub/src/app_server.rs:75`——握手回调改为具名类型实现 tungstenite `Callback` trait（签名归 trait 所有），无 allow / expect；Linux 1.93、Windows 1.98 均 0 警告
 - [ ] Flutter 移动端唤醒（Android WakeReceiver→MethodChannel、iOS URL/app_links）真机验证
 - [ ] codegen：App Intents 在 Xcode 实编；Windows App Actions 实际注册运行（Windows 上 `dotnet build` 生成的 provider 已通过，net9.0-windows10.0.26100.0；`Windows.AI.Actions` WinRT 类型本机可加载；注册需 MSIX + 开发者模式，本机未开）
 - [ ] Host 增加「只暴露某个 App」模式，使 codegen 生成的 agent connector `static_responses` 与实际一致（与 ODR 网关设计合并考虑）

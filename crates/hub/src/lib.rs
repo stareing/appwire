@@ -41,7 +41,10 @@ pub use types::{
     InstanceInfo, PairingHandler, PairingRequest, ResourceContent, ToolFilter, risk_rank,
 };
 pub use upstream::UpstreamConfig;
-pub use wake::{Platform, SystemWaker, WakeDescriptor, WakeKind, WakeRequest, Waker};
+pub use wake::{
+    ExecWaker, Platform, SystemWaker, WakeAction, WakeCommand, WakeDescriptor, WakeKind, WakeRequest,
+    Waker, WakerConfig,
+};
 
 /// Windows `CREATE_NO_WINDOW`：Hub 启动的子进程（唤醒命令、上游）不创建控制台窗口。
 #[cfg(windows)]

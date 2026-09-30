@@ -2,12 +2,12 @@
  * 测试环境：app-mcp-host serve（常驻，Streamable HTTP MCP；独立配置目录与端口）+ shop Demo（vite dev，独立端口）+ 无头 Chromium。
  */
 import { type ChildProcess, spawn } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Browser } from './browser'
 import { McpClient } from './mcp-client'
-import { SHOP_DIR, SHOP_MANIFEST } from './paths'
+import { E2E_ROOT, SHOP_DIR, SHOP_MANIFEST } from './paths'
 import { freePort, lineSplitter, waitFor } from './util'
 
 export interface ShopServer {
@@ -67,11 +67,20 @@ export interface HostHandle {
   wsUrl: string
   /** MCP 端点 `http://127.0.0.1:<port>/mcp`。 */
   mcpUrl: string
-  /** 替身 `xdg-open` 记录的唤醒 URL（Host 的 web-url 唤醒会执行 `xdg-open <url>#app-mcp-wake=<令牌>`）。 */
-  wakeUrls(): string[]
+  /** `waker: record` 时，Host 交给唤醒程序的 WakeRequest（按时间顺序）；`waker: none` 时恒为空。 */
+  wakeRequests(): WakeRequest[]
   /** 最近的 Host 日志（stderr）。 */
   log(lines?: number): string
   stop(): Promise<void>
+}
+
+/** Host 交给唤醒程序的请求（spec/hub-api.md 3.5 `WakeRequest`）。 */
+export interface WakeRequest {
+  appId: string
+  instanceId: string | null
+  descriptor: { kind: string; target?: string; background?: boolean }
+  token: string
+  activationArg: string
 }
 
 /**
@@ -79,11 +88,14 @@ export interface HostHandle {
  *
  * 隔离：临时配置目录（`--home`，不读取 ~/.app-mcp 的配置、令牌、清单）、随机的 WebSocket 与 HTTP 端口，
  * 不会与本机可能在运行的 Host 实例冲突。只加载 shop 的清单（`--manifest-dir` 指向空目录）。
- * PATH 前置一个替身 `xdg-open`：Host 执行唤醒命令时只把 URL 记到文件，由测试决定如何交给页面。
  */
 export interface HostStartOptions {
-  /** 去掉清单中的 `wake`（M1 行为：App 未运行时调用返回 APP_DISCONNECTED + 启动地址，不尝试唤醒）。 */
-  stripManifestWake?: boolean
+  /**
+   * 唤醒器（Host 的 `--waker`）：
+   * - `none`：不唤醒，App 未运行 / 休眠时调用返回 APP_DISCONNECTED + 启动地址（M1 行为）；
+   * - `record`（默认）：`{"exec": [node, src/record-wake.mjs, <日志>]}`，只记录 WakeRequest，由测试决定如何交给页面。
+   */
+  waker?: 'none' | 'record'
 }
 
 export async function startHost(bin: string, extraArgs: string[] = [], options: HostStartOptions = {}): Promise<HostHandle> {
@@ -92,20 +104,13 @@ export async function startHost(bin: string, extraArgs: string[] = [], options: 
   const dir = mkdtempSync(join(tmpdir(), 'app-mcp-e2e-host-'))
   const home = join(dir, 'home')
   const manifestDir = join(dir, 'manifests')
-  const binDir = join(dir, 'bin')
-  const wakeLog = join(dir, 'wake.log')
-  for (const d of [home, manifestDir, binDir]) mkdirSync(d, { recursive: true })
+  const wakeLog = join(dir, 'wake.jsonl')
+  for (const d of [home, manifestDir]) mkdirSync(d, { recursive: true })
   writeFileSync(wakeLog, '')
-  // 使用清单的副本：vite dev 会重写 examples/shop/app-mcp.json
-  const manifest = JSON.parse(readFileSync(SHOP_MANIFEST, 'utf8')) as Record<string, unknown>
-  if (options.stripManifestWake) delete manifest.wake
-  const manifestFile = join(dir, 'shop.json')
-  writeFileSync(manifestFile, JSON.stringify(manifest, null, 2))
-  for (const name of ['xdg-open', 'open']) {
-    const stub = join(binDir, name)
-    writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${wakeLog}"\n`)
-    chmodSync(stub, 0o755)
-  }
+  const waker =
+    options.waker === 'none'
+      ? 'none'
+      : JSON.stringify({ exec: [process.execPath, join(E2E_ROOT, 'src/record-wake.mjs'), wakeLog] })
   const child = spawn(
     bin,
     [
@@ -117,14 +122,16 @@ export async function startHost(bin: string, extraArgs: string[] = [], options: 
       '--http',
       `127.0.0.1:${httpPort}`,
       '--manifest',
-      manifestFile,
+      SHOP_MANIFEST,
       '--manifest-dir',
       manifestDir,
       '--no-log-file',
+      '--waker',
+      waker,
       ...extraArgs,
     ],
     {
-      env: { ...process.env, APP_MCP_HOME: home, PATH: `${binDir}:${process.env.PATH ?? ''}`, RUST_LOG: process.env.RUST_LOG ?? 'info' },
+      env: { ...process.env, APP_MCP_HOME: home, RUST_LOG: process.env.RUST_LOG ?? 'info' },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -158,10 +165,11 @@ export async function startHost(bin: string, extraArgs: string[] = [], options: 
     mcp,
     wsUrl: `ws://127.0.0.1:${wsPort}`,
     mcpUrl,
-    wakeUrls: () =>
+    wakeRequests: () =>
       readFileSync(wakeLog, 'utf8')
         .split('\n')
-        .filter((l) => l.trim()),
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l) as WakeRequest),
     log,
     async stop() {
       await mcp.close()

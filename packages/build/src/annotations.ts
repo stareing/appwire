@@ -6,7 +6,7 @@
  * ```ts
  * /**
  *  * 结算当前购物车            ← 正文作为描述
- *  * @mcp cart.checkout        ← 首个词符合名称规则且含 `.` 时为工具名，否则整段为描述
+ *  * @mcp checkout             ← 工具名（局部名，见下），其后可接描述
  *  * @risk payment
  *  * @activation foreground
  *  * @title 结算
@@ -15,13 +15,19 @@
  * export async function checkout(addressId: string, note?: string) { ... }
  * ```
  *
+ * `@mcp` 后首个词在以下情况作为工具名，否则整段为描述、工具名取 `<文件名>.<导出名>`：
+ * 词符合名称规则，且（含 `.`，或 JSDoc 正文已给出描述）。
+ *
+ * 工具名是 App 内的**局部名**（spec/protocol.md 3.1）：Host 对外暴露为 `<appId>.<局部名>`。
+ * 给出 `appId` 时，写成带 `<appId>.` 前缀的全名（如 App `shop` 中的 `@mcp shop.info`）会报错并提示改为局部名。
+ *
  * 本模块依赖 `typescript`（可选 peer 依赖），插件只在启用 `annotations` 时动态加载它。
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import ts from 'typescript'
 import type { Activation, Risk } from '@app-mcp/web'
-import { NAME_PATTERN } from './manifest'
+import { NAME_PATTERN, appIdPrefixMessage } from './manifest'
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -48,6 +54,8 @@ export interface AnnotationScanOptions {
   exclude?: string[]
   /** tsconfig 路径（相对 root）。缺省使用 root 下的 tsconfig.json，不存在时用内置默认选项。 */
   tsconfig?: string
+  /** App ID。给出时，工具名以 `<appId>.` 开头视为误写的全名并报错（工具名应为局部名）。 */
+  appId?: string
 }
 
 /** 调用方式：无参数、单个对象参数直接传入、多个位置参数按名称从输入对象中取出。 */
@@ -508,6 +516,8 @@ function analyzeCandidate(
   checker: ts.TypeChecker,
   exports: Map<ts.Node, string>,
   warnings: string[],
+  errors: string[],
+  appId: string | undefined,
 ): AnnotatedTool | null {
   const source = slash(relative(root, file))
   const doc = parseDoc(candidate.docNode)!
@@ -529,7 +539,7 @@ function analyzeCandidate(
   const [first = '', ...rest] = mcpText.split(/\s+/)
   let name: string
   let mcpDescription: string
-  if (NAME_PATTERN.test(first) && first.includes('.')) {
+  if (NAME_PATTERN.test(first) && (first.includes('.') || doc.body !== '')) {
     name = first
     mcpDescription = mcpText.slice(first.length).trim()
   } else {
@@ -538,6 +548,11 @@ function analyzeCandidate(
     mcpDescription = [first, ...rest].join(' ').trim()
   }
   if (!NAME_PATTERN.test(name)) return skip(`的工具名 "${name}" 不合法（应满足 [a-zA-Z0-9_.-]{1,64}）`)
+  const prefixed = appId === undefined ? null : appIdPrefixMessage(name, appId)
+  if (prefixed) {
+    errors.push(`注释工具：${where} 的 @mcp ${prefixed}`)
+    return null
+  }
   const description = doc.body || mcpDescription
   if (!description) return skip('缺少描述（写在 JSDoc 正文或 @mcp 名称之后）')
 
@@ -706,7 +721,7 @@ export function createAnnotationScanner(options: AnnotationScanOptions): Annotat
       if (candidates.length === 0) continue
       const exports = exportNames(checker, sourceFile)
       for (const candidate of candidates) {
-        const tool = analyzeCandidate(candidate, file, root, checker, exports, warnings)
+        const tool = analyzeCandidate(candidate, file, root, checker, exports, warnings, errors, options.appId)
         if (tool) tools.push(tool)
       }
     }

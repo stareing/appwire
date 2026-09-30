@@ -44,19 +44,32 @@ impl HubEventListener for Events {
     fn on_lagged(&self, _skipped: u64) {}
 }
 
-/// 记录请求并按 `answer` 回答；`answer = None` 时返回错误（模拟外部异常）。
+/// 记录请求并在另一个线程上稍后按 `answer` 回答；`answer = None` 时不回答、直接释放句柄（模拟外部异常 / 遗忘）。
 struct Approver {
     answer: Option<bool>,
     seen: Mutex<Vec<ApprovalRequest>>,
 }
 
-#[async_trait::async_trait]
 impl ApprovalHandler for Approver {
-    async fn approve(&self, request: ApprovalRequest) -> Result<bool, CallbackError> {
+    fn on_request(&self, request: ApprovalRequest, responder: Arc<ApprovalResponder>) {
         lock(&self.seen).push(request);
-        self.answer.ok_or(CallbackError::Failed {
-            reason: "UI 崩溃".into(),
-        })
+        let answer = self.answer;
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            if let Some(a) = answer {
+                assert!(responder.complete(a));
+                assert!(!responder.complete(!a), "只有第一次生效");
+            }
+        });
+    }
+}
+
+/// 回调本身 panic（外部未预期异常）→ 视为拒绝。
+struct PanickingApprover;
+
+impl ApprovalHandler for PanickingApprover {
+    fn on_request(&self, _request: ApprovalRequest, _responder: Arc<ApprovalResponder>) {
+        panic!("UI 崩溃");
     }
 }
 
@@ -217,11 +230,15 @@ fn end_to_end() {
         assert_eq!(seen[0].risk, Risk::Destructive);
     }
 
-    // 外部异常 → 视为拒绝
+    // 句柄未完成即释放 → 视为拒绝
     hub.set_approval_handler(Arc::new(Approver {
         answer: None,
         seen: Mutex::new(Vec::new()),
     }));
+    let rejected = wait(hub.call_tool(req("notes.notes.clear", json!({})))).unwrap();
+    assert_eq!(rejected.error.unwrap().kind, "USER_REJECTED");
+    // 回调异常 → 视为拒绝
+    hub.set_approval_handler(Arc::new(PanickingApprover));
     let rejected = wait(hub.call_tool(req("notes.notes.clear", json!({})))).unwrap();
     assert_eq!(rejected.error.unwrap().kind, "USER_REJECTED");
 
@@ -355,11 +372,9 @@ fn parse_formats_and_ws_disabled() {
 fn guards() {
     assert!(guarded(|| {}));
     assert!(!guarded(|| panic!("boom")));
-    assert!(!wait(guarded_bool(|| async { panic!("boom") })));
-    assert!(!wait(guarded_bool(|| async {
-        Err(CallbackError::Failed { reason: "x".into() })
-    })));
-    assert!(wait(guarded_bool(|| async { Ok(true) })));
+    let (once, rx) = Once::new();
+    drop(ApprovalResponder(once));
+    assert!(wait(rx).is_err(), "未完成即释放：接收方得到 Err");
 }
 
 /// 自定义唤醒：记录请求，让同进程 App 处理激活参数。
@@ -369,16 +384,27 @@ struct TestWaker {
     fail: Option<String>,
 }
 
-#[async_trait::async_trait]
 impl HubWaker for TestWaker {
-    async fn wake(&self, request: WakeRequest) -> Result<(), WakeError> {
+    fn wake(&self, request: WakeRequest, responder: Arc<WakeResponder>) {
         lock(&self.seen).push(request.clone());
         if let Some(kind) = &self.fail {
-            return Err(WakeError::Failed { kind: kind.clone(), reason: "没装".into() });
+            responder.fail(kind.clone(), "没装".into());
+            return;
         }
         let ok = lock(&self.app).as_ref().is_some_and(|a| a.handle_wake(&request.activation_arg));
-        if ok { Ok(()) } else { Err(WakeError::Failed { kind: "LAUNCH_FAILED".into(), reason: "?".into() }) }
+        if ok {
+            responder.succeed();
+        } else {
+            responder.fail("LAUNCH_FAILED".into(), "?".into());
+        }
     }
+}
+
+/// 不给结果就释放句柄 → LAUNCH_FAILED。
+struct SilentWaker;
+
+impl HubWaker for SilentWaker {
+    fn wake(&self, _request: WakeRequest, _responder: Arc<WakeResponder>) {}
 }
 
 #[test]
@@ -436,6 +462,9 @@ fn dormant_app_woken_by_foreign_waker() {
     hub.set_waker(Some(Arc::new(TestWaker { app: slot.clone(), seen: Mutex::new(vec![]), fail: Some("APP_NOT_INSTALLED".into()) })));
     let out = wait(hub.call_tool(req("sleepy.ping", json!({})))).expect("调用");
     assert_eq!(out.error.map(|e| e.kind).as_deref(), Some("APP_NOT_INSTALLED"));
+    hub.set_waker(Some(Arc::new(SilentWaker)));
+    let out = wait(hub.call_tool(req("sleepy.ping", json!({})))).expect("调用");
+    assert_eq!(out.error.map(|e| e.kind).as_deref(), Some("LAUNCH_FAILED"));
     hub.set_waker(None);
     if let Some(c) = lock(&slot).take() {
         c.stop();

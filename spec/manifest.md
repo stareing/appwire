@@ -124,6 +124,8 @@
 
 ## 5. 静态工具与运行时工具的关系
 
+- `tools[].name` / `resources[].name` 是局部名（spec/protocol.md 3.1），不写 appId 前缀；以 `<appId>.` 开头时
+  校验给出警告。
 - App 未连接时：静态工具出现在 MCP 工具列表中（名称 `<appId>.<name>`），调用返回 `APP_DISCONNECTED`，
   错误信息中给出 `launch.web` 的地址等唤醒提示（M2 起改为自动唤醒）。
 - App 已连接时：以运行中实例实际注册的工具为准；静态工具中未注册的，在列表中保留但描述前加

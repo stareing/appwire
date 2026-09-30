@@ -634,7 +634,7 @@ impl Registry {
         }
     }
 
-    fn disconnected_error(&self, app_id: &str) -> ToolError {
+    pub(crate) fn disconnected_error(&self, app_id: &str) -> ToolError {
         let manifest = self.manifest(app_id);
         let url = manifest.and_then(Manifest::web_url);
         let label = self.app_label(app_id);

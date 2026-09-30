@@ -398,6 +398,12 @@ impl Manifest {
                     format!("工具名 \"{}\" 重复", tool.name),
                 ));
             }
+            if app_mcp_protocol::has_app_id_prefix(&tool.name, &self.app_id) {
+                v.warnings.push(Issue::new(
+                    format!("{path}.name"),
+                    app_mcp_protocol::app_id_prefix_warning(&tool.name, &self.app_id),
+                ));
+            }
             if tool.description.is_empty() {
                 v.errors.push(Issue::new(
                     format!("{path}.description"),
@@ -812,6 +818,16 @@ mod tests {
     fn with(mut base: Value, pointer: &str, value: Value) -> Manifest {
         *base.pointer_mut(pointer).expect("pointer exists") = value;
         serde_json::from_value(base).expect("parses")
+    }
+
+    #[test]
+    fn tool_name_with_app_id_prefix_warns() {
+        let m = with(example(), "/tools/0/name", json!("shop.info"));
+        let v = m.validate();
+        assert!(v.is_ok(), "协议上仍合法：{:?}", v.errors);
+        assert_eq!(v.warnings.len(), 1, "{:?}", v.warnings);
+        assert_eq!(v.warnings[0].path, "tools[0].name");
+        assert!(v.warnings[0].message.contains("\"info\""));
     }
 
     #[test]

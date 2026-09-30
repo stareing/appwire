@@ -218,8 +218,8 @@ describe.skipIf(!available)('真实核心：休眠与唤醒', () => {
     await vi.advanceTimersByTimeAsync(499)
     expect(p.last('app/sleep')).toBeUndefined()
     await vi.advanceTimersByTimeAsync(1)
-    // 隐藏状态下的空闲休眠，原因为 background
-    expect(p.last('app/sleep')?.params).toMatchObject({ reason: 'background' })
+    // 隐藏只缩短空闲计时；计时到期的休眠原因仍为 idle（background 专指进入后台立即休眠，如 bfcache）
+    expect(p.last('app/sleep')?.params).toMatchObject({ reason: 'idle' })
     p.app.dispose()
   })
 

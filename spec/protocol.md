@@ -122,6 +122,15 @@ interface SleepResult { accepted: boolean; resumeToken?: string; retryAfterMs?: 
 interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 ```
 
+### 3.1 名称规则：局部名与全名
+
+- SDK 注册、`tools/sync`、`tools/invoke`、`resources/*` 以及清单 `tools[].name` / `resources[].name` 中的名称都是
+  **App 内的局部名**：`[a-zA-Z0-9_.-]{1,64}`，可以含 `.` 分组（如 `cart.checkout`），**不含 appId**。
+- Host 对模型暴露的**全名** = `<appId>.<局部名>`（如 App `shop` 的 `cart.checkout` → `shop.cart.checkout`）。
+  拼接只在 Host 一处进行；SDK、构建工具、清单都不写 appId 前缀。
+- 局部名以 `<appId>.` 开头在协议上仍合法（按原样拼接），但几乎总是误把全名当成局部名（全名会变成
+  `shop.shop.info`）。核心在注册时、Host 在收到同步 / 加载清单时给出警告；`@app-mcp/build` 的注释扫描直接报错。
+
 ## 4. 错误
 
 失败统一用 JSON-RPC 错误对象返回，`data.kind` 为错误类别：
@@ -341,7 +350,8 @@ SDK 取当前租约与新值中较晚的截止时刻。租约结束后重新开�
   隐藏 / 冻结时使用 `min(模式超时, hiddenIdleTimeoutMs)`。
 - 空闲条件（全部满足才开始计时，任一变化重置计时）：没有进行中或排队的调用、资源读取；没有有效租约；
   没有资源订阅；没有 App 的持有（`hold()`，含调用上的 `hold`）。可见性变化也重新计时。
-- 自动休眠的 `reason`：`on-demand` 为 `grace`；实例隐藏 / 冻结时为 `background`；否则 `idle`。
+- 自动休眠（空闲计时到期）的 `reason`：`on-demand` 为 `grace`，否则 `idle`——可见性只决定计时长短，不改变原因。
+  `background` 专指"进入后台立即休眠"（网页 bfcache `pagehide(persisted)`、移动端进入后台），由封装层显式发起。
   App 显式 `sleep()` 为 `app`（不看空闲条件与持有；被拒后按 `retryAfterMs`，缺省 5s 重试）。
 - `Dormant`：无连接、无定时器（`poll_timeout()` 为空）；收到的注册变更只更新本地注册表，不唤醒。
 - 唤醒：`handleWake(args)` 识别到令牌 → `Waking` 并连接（未 `start` 时记录，`start` 时连接；`Backoff` 时立即重连）；

@@ -340,6 +340,32 @@ describe('scanAnnotations', () => {
     expect(scanAnnotations({ root: dup }).errors[0]).toMatch(/注释工具重名：same\.name/)
   })
 
+  it('工具名是局部名：正文给出描述时 @mcp 后的单个词即工具名', async () => {
+    const proj = await makeProject({
+      'src/info.ts': '/**\n * 店铺信息\n * @mcp info\n */\nexport function shopInfo() { return 1 }\n',
+      'src/desc.ts': '/** @mcp 没有正文时整段为描述 */\nexport function plain() {}\n',
+    })
+    const result = scanAnnotations({ root: proj, appId: 'shop' })
+    expect(result.errors).toEqual([])
+    expect(result.tools.map((t) => [t.name, t.description]).sort()).toEqual([
+      ['desc.plain', '没有正文时整段为描述'],
+      ['info', '店铺信息'],
+    ])
+  })
+
+  it('工具名带 appId 前缀（误写全名）时报错并提示局部名', async () => {
+    const proj = await makeProject({
+      'src/a.ts': '/**\n * 店铺信息\n * @mcp shop.info\n */\nexport function shopInfo() {}\n',
+      'src/b.ts': '/** @mcp shopping.list 以 appId 为前缀但不是 appId. */\nexport function list() {}\n',
+    })
+    const result = scanAnnotations({ root: proj, appId: 'shop' })
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]).toMatch(/shop\.info.*appId 前缀 "shop\.".*shop\.shop\.info.*请改为 "info"/)
+    expect(result.tools.map((t) => t.name)).toEqual(['shopping.list'])
+    // 不给 appId 时不做该检查
+    expect(scanAnnotations({ root: proj }).errors).toEqual([])
+  })
+
   it('增量扫描：isRelevant 判断文件变化是否相关', async () => {
     const proj = await makeProject({
       'src/a.ts': "import type { Input } from './types'\n/** @mcp 甲 */\nexport function a(input: Input) { return input }\n",

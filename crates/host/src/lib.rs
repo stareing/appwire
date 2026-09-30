@@ -107,6 +107,7 @@ fn hub_config(s: &Settings) -> HubConfig {
         lease_ttl: Duration::from_millis(s.lease_ms),
         wake_timeout: Duration::from_millis(s.wake_timeout_ms),
         wake_from_launch: s.wake_from_launch,
+        waker: s.waker.clone(),
         ..Default::default()
     }
 }

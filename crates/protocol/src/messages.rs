@@ -289,12 +289,12 @@ pub enum WakeReason {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SleepReason {
-    /// `idle` 模式下空闲超时。
+    /// `idle` 模式下空闲计时到期（隐藏 / 冻结时计时更短，但原因不变）。
     #[default]
     Idle,
     /// `on-demand` 模式下任务完成后的保留时间已过。
     Grace,
-    /// 实例进入后台（隐藏 / 冻结 / bfcache）。
+    /// 进入后台时立即休眠（bfcache、移动端进后台），由 App / 封装层显式请求；不用于空闲计时到期。
     Background,
     /// App 主动请求。
     App,
@@ -503,6 +503,25 @@ pub fn is_valid_name(name: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
+/// 局部名（工具 / 资源名）是否以 `<appId>.` 开头（spec/protocol.md 3.1）。
+///
+/// 协议上仍合法，但通常是误把全名 `<appId>.<局部名>` 写成了局部名；核心、Host、清单校验据此给出警告。
+pub fn has_app_id_prefix(local_name: &str, app_id: &str) -> bool {
+    !app_id.is_empty()
+        && local_name.len() > app_id.len() + 1
+        && local_name.starts_with(app_id)
+        && local_name.as_bytes()[app_id.len()] == b'.'
+}
+
+/// [`has_app_id_prefix`] 成立时的统一警告文案。
+pub fn app_id_prefix_warning(local_name: &str, app_id: &str) -> String {
+    let suggested = local_name.get(app_id.len() + 1..).unwrap_or(local_name);
+    format!(
+        "名称 \"{local_name}\" 以 appId 前缀 \"{app_id}.\" 开头：名称是 App 内的局部名，Host 对外暴露为 \"{app_id}.{local_name}\"；\
+         如果本意是全名，请改为 \"{suggested}\"（spec/protocol.md 3.1）"
+    )
+}
+
 /// App ID 校验：`[a-z][a-z0-9-]{0,62}`。
 pub fn is_valid_app_id(id: &str) -> bool {
     let bytes = id.as_bytes();
@@ -515,6 +534,18 @@ pub fn is_valid_app_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_id_prefix_detection() {
+        assert!(has_app_id_prefix("shop.info", "shop"));
+        assert!(!has_app_id_prefix("shopping.info", "shop"));
+        assert!(!has_app_id_prefix("shop", "shop"));
+        assert!(!has_app_id_prefix("shop.", "shop"));
+        assert!(!has_app_id_prefix("cart.checkout", "shop"));
+        assert!(!has_app_id_prefix("info", ""));
+        let w = app_id_prefix_warning("shop.info", "shop");
+        assert!(w.contains("shop.shop.info") && w.contains("\"info\""), "{w}");
+    }
     use serde_json::json;
 
     #[test]

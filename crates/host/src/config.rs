@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use app_mcp_hub::UpstreamConfig;
+use app_mcp_hub::{UpstreamConfig, WakerConfig};
 use serde::{Deserialize, Serialize};
 
 /// 默认的 App 连接服务（WebSocket）地址。
@@ -110,6 +110,9 @@ pub struct LifecycleSection {
     pub wake_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wake_from_launch: Option<bool>,
+    /// `"system"`（默认）/ `"none"` / `{"exec": [program, ...args]}`（spec/hub-api.md 3.5）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waker: Option<WakerConfig>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +197,7 @@ pub struct Overrides {
     pub lease_ms: Option<u64>,
     pub wake_timeout_ms: Option<u64>,
     pub wake_from_launch: Option<bool>,
+    pub waker: Option<WakerConfig>,
     pub log_level: Option<String>,
     pub log_file: Option<bool>,
 }
@@ -214,6 +218,7 @@ impl FileConfig {
         set(&mut self.lifecycle.lease_ms, &o.lease_ms);
         set(&mut self.lifecycle.wake_timeout_ms, &o.wake_timeout_ms);
         set(&mut self.lifecycle.wake_from_launch, &o.wake_from_launch);
+        set(&mut self.lifecycle.waker, &o.waker);
         set(&mut self.log.level, &o.log_level);
         set(&mut self.log.file, &o.log_file);
         for m in &o.manifests {
@@ -257,6 +262,7 @@ pub struct Settings {
     pub lease_ms: u64,
     pub wake_timeout_ms: u64,
     pub wake_from_launch: bool,
+    pub waker: WakerConfig,
     pub log_level: String,
     pub log_file: bool,
     pub log_max_bytes: u64,
@@ -292,6 +298,7 @@ impl Settings {
             lease_ms: c.lifecycle.lease_ms.unwrap_or(60_000),
             wake_timeout_ms: c.lifecycle.wake_timeout_ms.unwrap_or(15_000),
             wake_from_launch: c.lifecycle.wake_from_launch.unwrap_or(false),
+            waker: c.lifecycle.waker.unwrap_or_default(),
             log_level: c.log.level.unwrap_or_else(|| "info".to_owned()),
             log_file: c.log.file.unwrap_or(true),
             log_max_bytes: c.log.max_bytes.unwrap_or(5 * 1024 * 1024),
@@ -326,6 +333,7 @@ mod tests {
         );
         assert!(s.log_file);
         assert_eq!(s.lease_ms, 60_000);
+        assert_eq!(s.waker, WakerConfig::System);
     }
 
     #[test]
@@ -338,7 +346,8 @@ mod tests {
               "manifestDirs": ["/m"],
               "allowOrigins": ["https://app.example.com"],
               "upstreams": { "files": { "command": "npx", "args": ["x"] } },
-              "lifecycle": { "leaseMs": 500, "wakeTimeoutMs": 2000, "wakeFromLaunch": true },
+              "lifecycle": { "leaseMs": 500, "wakeTimeoutMs": 2000, "wakeFromLaunch": true,
+                             "waker": { "exec": ["node", "wake.mjs"] } },
               "log": { "level": "debug", "file": false, "maxBytes": 1024, "keep": 1 }
             }"#,
         )
@@ -353,6 +362,10 @@ mod tests {
         assert_eq!(
             (s.lease_ms, s.wake_timeout_ms, s.wake_from_launch),
             (500, 2000, true)
+        );
+        assert_eq!(
+            s.waker,
+            WakerConfig::Exec(vec!["node".into(), "wake.mjs".into()])
         );
         assert_eq!(
             (

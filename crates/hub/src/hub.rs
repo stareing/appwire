@@ -34,7 +34,7 @@ use crate::types::{
     HubError, HubEvent, HubResource, HubTool, PairingHandler, ResourceContent, ToolFilter,
 };
 use crate::upstream::{UpstreamConfig, UpstreamState, encode_uri_component};
-use crate::wake::{SystemWaker, Waker};
+use crate::wake::{Waker, WakerConfig};
 
 /// 资源 URI 前缀：`app-mcp://<appId>/<resourceName>`。
 pub const RESOURCE_URI_SCHEME: &str = "app-mcp://";
@@ -99,6 +99,9 @@ pub struct HubConfig {
     /// App 未运行、清单没有显式声明 `wake` 时，是否由清单 `launch` 推导唤醒方式并冷启动
     /// （`launch.web` 的地址会被打开）。默认 `false`：只返回 `APP_DISCONNECTED` 与启动提示。
     pub wake_from_launch: bool,
+    /// 唤醒器：`System`（默认，按平台执行系统激活）/ `None`（不唤醒，返回 `APP_DISCONNECTED`）/
+    /// `Exec`（执行指定程序）。[`Hub::set_waker`] 可再替换为自定义实现。
+    pub waker: WakerConfig,
 }
 
 impl Default for HubConfig {
@@ -122,6 +125,7 @@ impl Default for HubConfig {
             dormant_ttl: Duration::from_secs(24 * 60 * 60),
             dormant_replaced_by_new_instance: true,
             wake_from_launch: false,
+            waker: WakerConfig::System,
         }
     }
 }
@@ -175,8 +179,8 @@ pub struct HubShared {
     paired_origins: Mutex<HashSet<(String, Option<String>)>>,
     /// 导出名 → 全名（历次导出的并集，后导出的覆盖）。
     export_names: Mutex<HashMap<String, String>>,
-    /// 当前唤醒实现（默认 [`SystemWaker`]）。
-    pub(crate) waker: Mutex<Arc<dyn Waker>>,
+    /// 当前唤醒实现（由 `HubConfig::waker` 构造，可被 [`Hub::set_waker`] 替换）；`None` = 不唤醒。
+    pub(crate) waker: Mutex<Option<Arc<dyn Waker>>>,
     /// 进行中的唤醒。
     pub(crate) wakes: Mutex<Vec<crate::lifecycle::PendingWake>>,
 }
@@ -186,7 +190,7 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl HubShared {
-    fn new(config: HubConfig) -> Self {
+    fn new(config: HubConfig, waker: Option<Arc<dyn Waker>>) -> Self {
         let mut registry = Registry::new();
         for m in &config.manifests {
             if registry.set_manifest(m.clone()).is_some() {
@@ -226,7 +230,7 @@ impl HubShared {
             paired_tokens: Mutex::new(HashMap::new()),
             paired_origins: Mutex::new(HashSet::new()),
             export_names: Mutex::new(HashMap::new()),
-            waker: Mutex::new(Arc::new(SystemWaker::new())),
+            waker: Mutex::new(waker),
             wakes: Mutex::new(Vec::new()),
         }
     }
@@ -856,7 +860,11 @@ impl Hub {
             None => None,
         };
         let ws_addr = listener.as_ref().map(TcpListener::local_addr).transpose()?;
-        let shared = Arc::new(HubShared::new(config));
+        let waker = config
+            .waker
+            .build()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.0.message))?;
+        let shared = Arc::new(HubShared::new(config, waker));
         let mut tasks = vec![
             tokio::spawn(shared.clone().notify_loop()),
             tokio::spawn(shared.clone().dormant_sweep_loop()),
@@ -1055,9 +1063,9 @@ impl Hub {
         *lock(&self.shared.pairing_handler) = Some(h);
     }
 
-    /// 替换唤醒实现（默认 [`SystemWaker`]，按平台执行系统命令）。spec/hub-api.md 3.5。
+    /// 替换唤醒实现（默认由 `HubConfig::waker` 决定，即 [`crate::SystemWaker`]）。spec/hub-api.md 3.5。
     pub fn set_waker(&self, w: Arc<dyn Waker>) {
-        *lock(&self.shared.waker) = w;
+        *lock(&self.shared.waker) = Some(w);
     }
 
     // ---- 对外出口 ----
@@ -1258,10 +1266,13 @@ mod tests {
         std::fs::write(&extra, r#"{"manifestVersion":1,"appId":"a","name":"A2"}"#).unwrap();
         let ms = load_manifests(&[extra], Some(&dir), false);
         assert_eq!(ms.len(), 2);
-        let shared = HubShared::new(HubConfig {
-            manifests: ms,
-            ..Default::default()
-        });
+        let shared = HubShared::new(
+            HubConfig {
+                manifests: ms,
+                ..Default::default()
+            },
+            None,
+        );
         assert_eq!(
             shared.registry().manifest("a").map(|m| m.name.clone()),
             Some("A2".into())
@@ -1272,7 +1283,7 @@ mod tests {
 
     #[test]
     fn session_selection_and_overview_delivery() {
-        let shared = HubShared::new(HubConfig::default());
+        let shared = HubShared::new(HubConfig::default(), None);
         lock(&shared.global_selected).insert("shop".into(), "g".into());
         assert_eq!(shared.selected_for("a", "shop").as_deref(), Some("g"));
         shared.select_in_session("a", "shop", "s");
@@ -1287,7 +1298,7 @@ mod tests {
 
     #[test]
     fn pairing_memory() {
-        let shared = HubShared::new(HubConfig::default());
+        let shared = HubShared::new(HubConfig::default(), None);
         assert!(!shared.is_paired("a", Some("o"), Some("t")));
         shared.remember_pairing("a", Some("o"), "t", false);
         assert!(shared.is_paired("a", None, Some("t")));

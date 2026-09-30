@@ -14,7 +14,7 @@ export interface ShopInfo {
 
 /**
  * 获取店铺营业信息（名称、营业时间、当前是否营业、客服电话）
- * @mcp shop.info
+ * @mcp info
  * @risk read
  * @activation headless
  */
@@ -25,7 +25,7 @@ export function shopInfo(): ShopInfo {
 
 /**
  * 估算配送到指定城市所需的天数
- * @mcp shop.deliveryEstimate
+ * @mcp deliveryEstimate
  * @risk read
  * @activation headless
  * @param city 收货城市，如“上海”

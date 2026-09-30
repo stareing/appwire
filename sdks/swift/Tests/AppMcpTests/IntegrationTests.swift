@@ -20,9 +20,8 @@ final class IntegrationTests: XCTestCase {
     }
 
     private var targetDir: String {
-        ProcessInfo.processInfo.environment["CARGO_TARGET_DIR"]
-            ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-                .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("target").path
+        // 仓库根目录下的 target/（与 cargo 默认一致）
+        ProcessInfo.processInfo.environment["CARGO_TARGET_DIR"] ?? repoRoot.appendingPathComponent("target").path
     }
 
     private func fakeHost() throws -> String {

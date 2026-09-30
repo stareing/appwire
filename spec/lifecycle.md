@@ -70,6 +70,9 @@ stateDiagram-v2
 → { "accepted": false, "retryAfterMs": 5000 }   // Host 有待派发给本实例的调用等
 ```
 
+`reason`：`idle` / `grace` 为空闲计时到期（`on-demand` 为 `grace`，其余为 `idle`；隐藏 / 冻结只缩短计时，
+不改变原因）；`background` 为进入后台时立即休眠（bfcache、移动端进后台，由封装层显式请求）；`app` 为 App 主动请求。
+
 `accepted` 后 SDK 关闭连接，进入 `dormant`；Host 把实例标记为休眠（保留工具快照，路由时视为可唤醒），
 **不按断开处理**：工具不从列表中消失、不发 `list_changed`。
 

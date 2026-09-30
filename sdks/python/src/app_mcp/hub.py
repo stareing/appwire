@@ -13,11 +13,12 @@
 线程模型：
 
 - async 方法（``call_tool``、``dispatch``、``read_resource``、``serve_http``）在调用方的事件循环上等待，
-  不阻塞；对应的 ``*_sync`` 版本供非 asyncio 代码使用（不要在事件循环线程上调用）。
+  不阻塞；对应的 ``*_sync`` 版本供非 asyncio 代码使用（以 ``asyncio.run`` 执行，不要在事件循环线程上调用）。
 - 事件回调在 Hub 的分发线程上同步执行（可传 ``dispatcher`` 切到 UI 线程，见 ``app_mcp.dispatchers``）；
   ``events()`` 提供 async 迭代器。
-- 审批 / 配对 / 唤醒回调：同步函数在线程池（或 ``dispatcher``）中执行，可以阻塞等待用户；
-  async 函数在设置回调时所在的事件循环（或 ``loop`` 参数）上执行。
+- 审批 / 配对 / 唤醒回调：原生层以同步回调 + 完成句柄交给本模块（不需要回调线程上有事件循环）。
+  同步函数在线程池（或 ``dispatcher``）中执行，可以阻塞等待用户；async 函数在设置回调时所在的事件循环
+  （或 ``loop`` 参数）上执行，没有循环时在线程池中以 ``asyncio.run`` 执行。
 
 休眠与唤醒（spec/hub-api.md 3.5）：App 休眠后其工具仍列出（``Availability.DORMANT``），
 ``AppInfo.dormant_instances`` 列出休眠实例，并收到 ``HubEvent.APP_DORMANT``；调用这些工具时 Hub 生成一次性令牌、
@@ -112,50 +113,21 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# 事件循环：Rust 线程上触发的 async 回调需要一个事件循环
+# 回调执行：原生层在自己的线程上同步调用适配器，适配器把用户回调交给线程池 / 事件循环 / dispatcher，
+# 完成后经句柄（``ApprovalResponder`` 等）回传结果。
 # ---------------------------------------------------------------------------
 
-_cb_loop: asyncio.AbstractEventLoop | None = None
-_cb_thread: threading.Thread | None = None
-_cb_lock = threading.Lock()
+_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_executor_lock = threading.Lock()
 
 
-def _callback_loop() -> asyncio.AbstractEventLoop:
-    """后台守护线程上的事件循环：执行 Rust 线程发起的 async 回调，以及 ``*_sync`` 方法。"""
-    global _cb_loop, _cb_thread
-    with _cb_lock:
-        if _cb_loop is None:
-            loop = asyncio.new_event_loop()
-            ready = threading.Event()
-
-            def run() -> None:
-                asyncio.set_event_loop(loop)
-                loop.call_soon(ready.set)
-                loop.run_forever()
-
-            _cb_thread = threading.Thread(target=run, name="app-mcp-hub-loop", daemon=True)
-            _cb_thread.start()
-            ready.wait()
-            _cb_loop = loop
-        return _cb_loop
-
-
-def _uniffi_event_loop() -> asyncio.AbstractEventLoop:
-    # 生成代码默认只认 uniffi_set_event_loop 设置的全局循环或当前运行中的循环；
-    # Rust 线程（无运行中的循环）触发的 async 回调改用后台循环，调用方的 await 仍在调用方循环上。
-    if ffi._UNIFFI_GLOBAL_EVENT_LOOP is not None:
-        return ffi._UNIFFI_GLOBAL_EVENT_LOOP
-    try:
-        return asyncio.get_running_loop()
-    except RuntimeError:
-        return _callback_loop()
-
-
-ffi._uniffi_get_event_loop = _uniffi_event_loop
-
-
-def _on_callback_thread() -> bool:
-    return _cb_thread is not None and threading.current_thread() is _cb_thread
+def _callback_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """执行同步回调（以及没有事件循环可用的 async 回调）的线程池。"""
+    global _executor
+    with _executor_lock:
+        if _executor is None:
+            _executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix="app-mcp-hub-cb")
+        return _executor
 
 
 # ---------------------------------------------------------------------------
@@ -245,78 +217,117 @@ class WakeFailed(Exception):
         self.message = message
 
 
-async def _invoke(
+async def _await(awaitable: Awaitable[Any]) -> Any:
+    return await awaitable
+
+
+def _schedule(
     fn: Callable[[Any], Any],
     arg: Any,
     loop: asyncio.AbstractEventLoop | None,
     dispatcher: Dispatcher | None,
-) -> Any:
-    """在合适的上下文执行用户回调（同步 / async），返回结果；异常原样抛出。"""
+    done: Callable[[BaseException | None, Any], None],
+) -> None:
+    """在合适的上下文执行用户回调（同步 / async），结束后调用 ``done(error, result)``。立即返回。
+
+    - async 函数：有 ``loop`` 时在该循环上执行，否则在线程池中以 ``asyncio.run`` 执行；
+    - 同步函数：有 ``dispatcher`` 时交给它（如切到 UI 线程），否则在线程池中执行；
+      返回值若是 awaitable，在线程池中以 ``asyncio.run`` 等待。
+    """
+
+    def finish(error: BaseException | None, result: Any) -> None:
+        try:
+            done(error, result)
+        except Exception:  # noqa: BLE001 - 句柄已失效等，不影响后续回调
+            _log.exception("回传回调结果失败")
+
+    def settle(result: Any) -> None:
+        if inspect.isawaitable(result):
+            _callback_executor().submit(run_awaitable, result)
+        else:
+            finish(None, result)
+
+    def run_awaitable(awaitable: Awaitable[Any]) -> None:
+        try:
+            result = asyncio.run(_await(awaitable))
+        except BaseException as e:  # noqa: BLE001 - 转交给句柄
+            finish(e, None)
+        else:
+            finish(None, result)
+
+    def run_sync() -> None:
+        try:
+            result = fn(arg)
+        except BaseException as e:  # noqa: BLE001 - 转交给句柄
+            finish(e, None)
+        else:
+            settle(result)
+
     if inspect.iscoroutinefunction(fn):
-        coro = fn(arg)
-        if loop is not None and loop is not asyncio.get_running_loop():
-            return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, loop))
-        return await coro
-    if dispatcher is not None:
-        fut: concurrent.futures.Future[Any] = concurrent.futures.Future()
+        if loop is not None and not loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(fn(arg), loop)
 
-        def run() -> None:
-            try:
-                fut.set_result(fn(arg))
-            except BaseException as e:  # noqa: BLE001 - 转交给等待方
-                fut.set_exception(e)
+            def on_done(f: concurrent.futures.Future[Any]) -> None:
+                if f.cancelled():
+                    finish(asyncio.CancelledError(), None)
+                elif f.exception() is not None:
+                    finish(f.exception(), None)
+                else:
+                    finish(None, f.result())
 
-        dispatcher(run)
-        result = await asyncio.wrap_future(fut)
+            future.add_done_callback(on_done)
+        else:
+            _callback_executor().submit(run_awaitable, fn(arg))
+    elif dispatcher is not None:
+        dispatcher(run_sync)
     else:
-        result = await asyncio.get_running_loop().run_in_executor(None, fn, arg)
-    if inspect.isawaitable(result):
-        result = await result
-    return result
+        _callback_executor().submit(run_sync)
 
 
-async def _invoke_bool(
-    fn: Callable[[Any], bool | Awaitable[bool]],
-    arg: Any,
-    loop: asyncio.AbstractEventLoop | None,
-    dispatcher: Dispatcher | None,
-) -> bool:
-    """在合适的上下文执行用户回调（同步 / async），异常视为 False。"""
-    try:
-        return bool(await _invoke(fn, arg, loop, dispatcher))
-    except Exception:
-        _log.exception("回调抛出异常，视为拒绝")
-        return False
+def _decide(responder: Any, what: str) -> Callable[[BaseException | None, Any], None]:
+    """审批 / 配对：异常视为拒绝。"""
+
+    def done(error: BaseException | None, result: Any) -> None:
+        if error is not None:
+            _log.error("%s回调抛出异常，视为拒绝", what, exc_info=error)
+            responder.complete(False)
+        else:
+            responder.complete(bool(result))
+
+    return done
 
 
 class _ApprovalAdapter(ffi.ApprovalHandler):
     def __init__(self, fn: Any, loop: Any, dispatcher: Any) -> None:
         self._fn, self._loop, self._dispatcher = fn, loop, dispatcher
 
-    async def approve(self, request: ApprovalRequest) -> bool:
-        return await _invoke_bool(self._fn, request, self._loop, self._dispatcher)
+    def on_request(self, request: ApprovalRequest, responder: ffi.ApprovalResponder) -> None:  # Hub 线程
+        _schedule(self._fn, request, self._loop, self._dispatcher, _decide(responder, "审批"))
 
 
 class _PairingAdapter(ffi.PairingHandler):
     def __init__(self, fn: Any, loop: Any, dispatcher: Any) -> None:
         self._fn, self._loop, self._dispatcher = fn, loop, dispatcher
 
-    async def pair(self, request: PairingRequest) -> bool:
-        return await _invoke_bool(self._fn, request, self._loop, self._dispatcher)
+    def on_request(self, request: PairingRequest, responder: ffi.PairingResponder) -> None:  # Hub 线程
+        _schedule(self._fn, request, self._loop, self._dispatcher, _decide(responder, "配对"))
 
 
 class _WakerAdapter(ffi.HubWaker):
     def __init__(self, fn: Any, loop: Any, dispatcher: Any) -> None:
         self._fn, self._loop, self._dispatcher = fn, loop, dispatcher
 
-    async def wake(self, request: WakeRequest) -> None:
-        try:
-            await _invoke(self._fn, request, self._loop, self._dispatcher)
-        except WakeFailed as e:
-            raise ffi.WakeError.Failed(kind=e.kind, reason=e.message) from None
-        except Exception as e:
-            _log.exception("唤醒回调抛出异常")
-            raise ffi.WakeError.Failed(kind="LAUNCH_FAILED", reason=str(e) or type(e).__name__) from None
+    def wake(self, request: WakeRequest, responder: ffi.WakeResponder) -> None:  # Hub 线程
+        def done(error: BaseException | None, _result: Any) -> None:
+            if error is None:
+                responder.succeed()
+            elif isinstance(error, WakeFailed):
+                responder.fail(error.kind, error.message)
+            else:
+                _log.error("唤醒回调抛出异常", exc_info=error)
+                responder.fail("LAUNCH_FAILED", str(error) or type(error).__name__)
+
+        _schedule(self._fn, request, self._loop, self._dispatcher, done)
 
 
 class _Listener(ffi.HubEventListener):
@@ -650,8 +661,6 @@ class Hub:
 
     @staticmethod
     def _run_sync(coro: Awaitable[Any]) -> Any:
-        if _on_callback_thread():
-            raise RuntimeError("不能在 Hub 回调循环上调用 *_sync 方法，请改用 async 版本")
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -660,7 +669,7 @@ class Hub:
             if inspect.iscoroutine(coro):
                 coro.close()
             raise RuntimeError("事件循环线程上请直接 await async 版本")
-        return asyncio.run_coroutine_threadsafe(coro, _callback_loop()).result()  # type: ignore[arg-type]
+        return asyncio.run(_await(coro))
 
 
 def _running_loop() -> asyncio.AbstractEventLoop | None:

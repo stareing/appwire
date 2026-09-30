@@ -367,7 +367,7 @@ fn visibility_change_restarts_timer_and_hidden_is_shorter() {
     let t = h.now;
     let (sleep, at) = h.wait_sleep(3 * IDLE).unwrap();
     assert_eq!(at, t + 15_000, "隐藏后使用 hiddenIdleTimeoutMs，并从变化时重新计时");
-    assert_eq!(sleep["params"]["reason"], "background");
+    assert_eq!(sleep["params"]["reason"], "idle", "空闲计时到期一律为 idle，隐藏只缩短计时");
 
     // 重新可见也重新计时
     let mut h = Harness::new(LifecycleMode::Idle);

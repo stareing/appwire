@@ -334,6 +334,10 @@ impl HubShared {
             plan.filter(|p| p.instance_id.is_some() || self.resolve_wake_descriptor(p).is_some());
         let mut woken = None;
         if let Some(plan) = plan {
+            // 不唤醒（`waker: none`）：不做审批，直接按未连接返回（带 launchUrl）。
+            if !self.wake_enabled() {
+                return (Err(self.registry().disconnected_error(app_id)), plan.instance_id.clone());
+            }
             if let Some(tool) = &plan.tool {
                 if let SchemaCheck::Invalid(msg) = schema::check(&tool.input_schema, &arguments) {
                     return (

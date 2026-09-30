@@ -75,16 +75,21 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
   "upstreams": {
     "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"], "env": {} }
   },
-  "lifecycle": { "leaseMs": 60000, "wakeTimeoutMs": 15000, "wakeFromLaunch": false },
+  "lifecycle": { "leaseMs": 60000, "wakeTimeoutMs": 15000, "wakeFromLaunch": false, "waker": "system" },
   "log": { "level": "info", "file": true, "maxBytes": 5242880, "keep": 3 }
 }
 ```
+
+`lifecycle.waker`：`"system"`（默认，按平台执行系统激活）/ `"none"`（不唤醒：休眠或未运行 App 的调用返回
+`APP_DISCONNECTED` 与启动地址）/ `{"exec": ["程序", "参数", …]}`（执行该程序，参数不经 shell，唤醒请求以一行 JSON
+写入其 stdin，退出码 0 表示已发出激活）。格式详见 spec/hub-api.md 3.5。
 
 旧的 `--config` 文件（只有 `upstreams`）是它的子集，仍然可用。
 
 命令行（`serve` 与 `service install` 相同）：`--ws-addr`、`--http`、`--http-allow-remote`、`--auth browser|all|off`、
 `--manifest <file>`（可重复）、`--manifest-dir <dir>`（可重复）、`--allow-origin <pattern>`（可重复）、
-`--upstream <name>=<命令行>`（可重复）、`--lease-ms`、`--wake-timeout-ms`、`--wake-from-launch`、`--log-level`、
+`--upstream <name>=<命令行>`（可重复）、`--lease-ms`、`--wake-timeout-ms`、`--wake-from-launch`、
+`--waker system|none|'{"exec":[...]}'`、`--log-level`、
 `--no-log-file`、`--config <file>`、`--home <dir>`。`app-mcp-host token` 打印令牌（`--regenerate` 重新生成）。
 
 ## 安全

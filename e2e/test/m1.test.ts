@@ -15,11 +15,11 @@ let browser: Browser
 let tabA: Page
 let tabB: Page | undefined
 
-const STATIC_TOOLS = ['shop.catalog.search', 'shop.shop.info', 'shop.shop.deliveryEstimate']
+const STATIC_TOOLS = ['shop.catalog.search', 'shop.info', 'shop.deliveryEstimate']
 
 beforeAll(async () => {
-  // M1 行为：清单不声明 wake，App 未打开时调用返回 APP_DISCONNECTED（自动唤醒见 lifecycle.test.ts）
-  host = await startHost(inject('hostBin'), [], { stripManifestWake: true })
+  // M1 行为：Host 不唤醒（--waker none），App 未打开时调用返回 APP_DISCONNECTED + 启动地址（自动唤醒见 lifecycle.test.ts）
+  host = await startHost(inject('hostBin'), [], { waker: 'none' })
   browser = await Browser.launch(inject('chromeBin'))
 })
 
@@ -69,7 +69,7 @@ describe('M1 验收', () => {
     expect(t.at(-1)).toContain('http://localhost:5173/')
 
     // 第二次不再附带总览
-    const again = texts(await mcp().callTool('shop.shop.info'))
+    const again = texts(await mcp().callTool('shop.info'))
     expect(again).toHaveLength(1)
     expect(again[0]).toMatch(/^APP_DISCONNECTED/)
 
@@ -233,7 +233,9 @@ describe('M1 验收', () => {
     const r = await mcp().callTool('shop.catalog.search', { keyword: '' })
     expect(r.isError).toBe(true)
     expect(texts(r).at(-1)).toMatch(/^APP_DISCONNECTED/)
+    expect(texts(r).join('\n')).toContain('http://localhost:5173/')
     expect((await shopApp()).connected).toBe(false)
-    expect(host.wakeUrls()).toEqual([])
+    // 清单声明了 wake，但 waker 为 none：不尝试唤醒
+    expect(host.log(500)).not.toMatch(/唤醒 App/)
   })
 })

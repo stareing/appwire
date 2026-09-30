@@ -4,6 +4,7 @@ import dev.appmcp.AppMcp
 import dev.appmcp.AppMcpConfig
 import dev.appmcp.hub.ffi.HubEvent as Ev
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -114,6 +115,25 @@ class HubIntegrationTest {
             assertEquals(Risk.DESTRUCTIVE, approvals[0].risk)
             // 低于阈值的 write 工具不询问
             assertTrue(approvals.none { it.tool.endsWith("add") })
+
+            // handler 在指定的协程上下文中执行（Android 上即 Dispatchers.Main）；挂起后同意 → 成功
+            val uiThread = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "fake-ui") }
+            val threads = Collections.synchronizedList(mutableListOf<String>())
+            try {
+                hub.setApprovalHandler(uiThread.asCoroutineDispatcher()) { _ ->
+                    delay(10)
+                    threads += Thread.currentThread().name
+                    true
+                }
+                val approved = hub.callTool("notes.clear", timeout = 5.seconds)
+                assertEquals(null, approved.error, approved.toString())
+                assertTrue(threads.size == 1 && threads[0].startsWith("fake-ui"), threads.toString())
+                // handler 抛出异常 → 拒绝
+                hub.setApprovalHandler { _ -> error("UI 崩溃") }
+                assertEquals("USER_REJECTED", hub.callTool("notes.clear", timeout = 5.seconds).error?.kind)
+            } finally {
+                uiThread.shutdown()
+            }
 
             // 名称无法解析 → HubException
             assertFailsWith<HubException> { hub.callTool("nosuchapp.x") }

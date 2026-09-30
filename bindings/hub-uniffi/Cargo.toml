@@ -33,7 +33,7 @@ tokio.workspace = true
 futures.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-# uniffi 的 async 回调接口（ApprovalHandler / PairingHandler）需要。
+# 适配 app-mcp-hub 的 async 回调 trait（ApprovalHandler / PairingHandler / Waker）。
 async-trait = "0.1"
 
 [dev-dependencies]

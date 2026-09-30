@@ -1,7 +1,14 @@
 package dev.appmcp.hub
 
 import dev.appmcp.hub.ffi.AppMcpHub as FfiHub
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -9,6 +16,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.time.Duration
 
 // 直接复用 uniffi 生成的数据类型。
@@ -106,7 +115,9 @@ val ToolErrorInfo.details: JsonElement? get() = parseJson(detailsJson)
  * ```
  *
  * 线程：所有方法线程安全；`suspend` 方法不阻塞调用线程。事件在原生分发线程上发出到 [events]，
- * 由收集方所在的调度器处理。
+ * 由收集方所在的调度器处理。审批 / 配对 / 唤醒 handler 是 `suspend` 函数：原生层以同步回调 + 完成句柄
+ * 交给本类，本类在自己的协程作用域（默认 `Dispatchers.Default`，可按 handler 指定 `context`，如
+ * `Dispatchers.Main`）里执行 handler，再经句柄回传结果；[close] 时取消未完成的 handler（视为拒绝）。
  */
 class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
     companion object {
@@ -121,6 +132,9 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
     }
 
     private val closed = AtomicBoolean(false)
+
+    /** 执行审批 / 配对 / 唤醒 handler 的作用域；[close] 时取消。 */
+    private val callbackScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("app-mcp-hub-callback"))
 
     private val _events = MutableSharedFlow<HubEvent>(
         extraBufferCapacity = 1024,
@@ -224,20 +238,34 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
 
     /**
      * 调用确认（风险不低于 `HubConfig.approvalMinRisk` 时询问）。返回 `false` 或抛出异常 →
-     * `USER_REJECTED`。handler 在原生回调上下文中执行，需要 UI 时自行 `withContext(Dispatchers.Main)`。
+     * `USER_REJECTED`。handler 在 [context]（缺省 `Dispatchers.Default`）中执行，可以挂起等待用户，
+     * 例如传 `Dispatchers.Main` 直接弹确认框。
      */
-    fun setApprovalHandler(handler: suspend (ApprovalRequest) -> Boolean) {
+    fun setApprovalHandler(
+        context: CoroutineContext = EmptyCoroutineContext,
+        handler: suspend (ApprovalRequest) -> Boolean,
+    ) {
         inner.setApprovalHandler(object : dev.appmcp.hub.ffi.ApprovalHandler {
-            override suspend fun approve(request: ApprovalRequest): Boolean =
-                runCatching { handler(request) }.getOrDefault(false)
+            override fun onRequest(request: ApprovalRequest, responder: dev.appmcp.hub.ffi.ApprovalResponder) {
+                // 原生线程上立即返回；结果经句柄回传。协程结束（含未启动即被取消）后释放句柄，未完成即视为拒绝。
+                callbackScope.launch(context) {
+                    responder.complete(runCatching { handler(request) }.getOrDefault(false))
+                }.invokeOnCompletion { responder.close() }
+            }
         })
     }
 
-    /** App 配对确认。返回 `false` 或抛出异常 → 拒绝。 */
-    fun setPairingHandler(handler: suspend (PairingRequest) -> Boolean) {
+    /** App 配对确认。返回 `false` 或抛出异常 → 拒绝。执行上下文同 [setApprovalHandler]。 */
+    fun setPairingHandler(
+        context: CoroutineContext = EmptyCoroutineContext,
+        handler: suspend (PairingRequest) -> Boolean,
+    ) {
         inner.setPairingHandler(object : dev.appmcp.hub.ffi.PairingHandler {
-            override suspend fun pair(request: PairingRequest): Boolean =
-                runCatching { handler(request) }.getOrDefault(false)
+            override fun onRequest(request: PairingRequest, responder: dev.appmcp.hub.ffi.PairingResponder) {
+                callbackScope.launch(context) {
+                    responder.complete(runCatching { handler(request) }.getOrDefault(false))
+                }.invokeOnCompletion { responder.close() }
+            }
         })
     }
 
@@ -247,24 +275,31 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
      * 把 `request.activationArg` 交给 App（App 端 `handleWake`）。
      *
      * 正常返回表示已发出激活，Hub 随后等待 App 回连（`HubConfig.wakeTimeoutMs`）；抛出 [WakeFailedException]
-     * 以指定类别结束调用，其他异常按 `LAUNCH_FAILED`。handler 在原生回调上下文中执行。
+     * 以指定类别结束调用，其他异常按 `LAUNCH_FAILED`。执行上下文同 [setApprovalHandler]。
      */
-    fun setWaker(handler: (suspend (WakeRequest) -> Unit)?) {
+    fun setWaker(handler: (suspend (WakeRequest) -> Unit)?) = setWaker(EmptyCoroutineContext, handler)
+
+    /** 同 [setWaker]，handler 在 [context] 中执行。 */
+    fun setWaker(context: CoroutineContext, handler: (suspend (WakeRequest) -> Unit)?) {
         if (handler == null) {
             inner.setWaker(null)
             return
         }
         inner.setWaker(object : dev.appmcp.hub.ffi.HubWaker {
-            override suspend fun wake(request: WakeRequest) {
-                try {
-                    handler(request)
-                } catch (e: WakeFailedException) {
-                    throw dev.appmcp.hub.ffi.WakeException.Failed(e.kind, e.message)
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    throw dev.appmcp.hub.ffi.WakeException.Failed("LAUNCH_FAILED", e.message ?: e.toString())
-                }
+            override fun wake(request: WakeRequest, responder: dev.appmcp.hub.ffi.WakeResponder) {
+                callbackScope.launch(context) {
+                    try {
+                        handler(request)
+                        responder.succeed()
+                    } catch (e: WakeFailedException) {
+                        responder.fail(e.kind, e.message)
+                    } catch (e: CancellationException) {
+                        responder.fail("LAUNCH_FAILED", "唤醒已取消")
+                        throw e
+                    } catch (e: Exception) {
+                        responder.fail("LAUNCH_FAILED", e.message ?: e.toString())
+                    }
+                }.invokeOnCompletion { responder.close() }
             }
         })
     }
@@ -272,6 +307,7 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
     /** 停止 Hub（断开所有 App、结束后台任务）。可重复调用。 */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        callbackScope.cancel()
         runCatching { inner.setEventListener(null) }
         runCatching { inner.shutdown() }
         inner.close()

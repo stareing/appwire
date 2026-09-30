@@ -317,14 +317,12 @@ impl Client {
         }
     }
 
+    /// 计时到期触发的自动休眠原因（spec/protocol.md 8.5）：`on-demand` 为 `grace`，其余一律 `idle`。
+    ///
+    /// 可见性只影响计时长度（`hiddenIdleTimeoutMs`），不改变原因：`background` 专指"进入后台立即休眠"
+    /// （bfcache、移动端进后台），由封装层以 `sleep_with_reason(Background)` 显式发起。
     fn auto_sleep_reason(&self) -> SleepReason {
-        if self.mode() == LifecycleMode::OnDemand {
-            SleepReason::Grace
-        } else if self.visibility != Visibility::Visible {
-            SleepReason::Background
-        } else {
-            SleepReason::Idle
-        }
+        if self.mode() == LifecycleMode::OnDemand { SleepReason::Grace } else { SleepReason::Idle }
     }
 
     pub(crate) fn on_idle_timeout(&mut self, now: Millis) {

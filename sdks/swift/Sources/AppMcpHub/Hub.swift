@@ -103,33 +103,43 @@ extension ToolFormat {
 }
 
 // MARK: - 回调桥接
+//
+// 原生层以同步回调 + 完成句柄（ApprovalResponder 等）交给桥接对象；桥接在新的 Task 中执行
+// 用户的 async handler（需要主线程时 handler 自身标注 @MainActor 即可），再经句柄回传结果。
+// 回调线程上不需要任何 Swift 并发上下文。句柄未完成即被释放 → 拒绝 / LAUNCH_FAILED。
 
 private final class ApprovalBridge: ApprovalHandler, @unchecked Sendable {
     let body: @Sendable (ApprovalRequest) async throws -> Bool
     init(_ body: @escaping @Sendable (ApprovalRequest) async throws -> Bool) { self.body = body }
-    func approve(request: ApprovalRequest) async throws -> Bool {
-        (try? await body(request)) ?? false
+    func onRequest(request: ApprovalRequest, responder: ApprovalResponder) {
+        let body = self.body
+        Task { _ = responder.complete(approved: (try? await body(request)) ?? false) }
     }
 }
 
 private final class PairingBridge: PairingHandler, @unchecked Sendable {
     let body: @Sendable (PairingRequest) async throws -> Bool
     init(_ body: @escaping @Sendable (PairingRequest) async throws -> Bool) { self.body = body }
-    func pair(request: PairingRequest) async throws -> Bool {
-        (try? await body(request)) ?? false
+    func onRequest(request: PairingRequest, responder: PairingResponder) {
+        let body = self.body
+        Task { _ = responder.complete(approved: (try? await body(request)) ?? false) }
     }
 }
 
 private final class WakerBridge: HubWaker, @unchecked Sendable {
     let body: @Sendable (WakeRequest) async throws -> Void
     init(_ body: @escaping @Sendable (WakeRequest) async throws -> Void) { self.body = body }
-    func wake(request: WakeRequest) async throws {
-        do {
-            try await body(request)
-        } catch let e as WakeFailed {
-            throw WakeError.Failed(kind: e.kind, reason: e.message)
-        } catch {
-            throw WakeError.Failed(kind: "LAUNCH_FAILED", reason: "\(error)")
+    func wake(request: WakeRequest, responder: WakeResponder) {
+        let body = self.body
+        Task {
+            do {
+                try await body(request)
+                _ = responder.succeed()
+            } catch let e as WakeFailed {
+                _ = responder.fail(kind: e.kind, reason: e.message)
+            } catch {
+                _ = responder.fail(kind: "LAUNCH_FAILED", reason: "\(error)")
+            }
         }
     }
 }

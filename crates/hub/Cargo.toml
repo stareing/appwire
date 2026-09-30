@@ -44,6 +44,10 @@ sha2 = "0.10"
 # 审批 / 配对回调（spec/hub-api.md 3.3）：dyn 兼容的 async trait。
 async-trait = "0.1"
 
+# Windows：AUMID 唤醒经 IApplicationActivationManager::ActivateApplication 传入令牌参数。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+
 [dev-dependencies]
 app-mcp-native.workspace = true
 tokio-tungstenite.workspace = true

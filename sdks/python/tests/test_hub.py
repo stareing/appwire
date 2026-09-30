@@ -139,6 +139,36 @@ def test_sync_api_and_sync_approval() -> None:
             app.close()
 
 
+def test_async_handler_without_loop_and_no_monkeypatch() -> None:
+    """设置 async 回调时没有运行中的循环：在线程池中以 asyncio.run 执行。生成代码不被替换。"""
+    assert hub_mod.ffi._uniffi_get_event_loop.__module__ == hub_mod.ffi.__name__
+    threads: list[str] = []
+
+    async def approve(req) -> bool:
+        await asyncio.sleep(0.01)
+        threads.append(threading.current_thread().name)
+        return req.tool == "clear"
+
+    with Hub(ws_addr="127.0.0.1:0", approval_min_risk="write") as hub:
+        hub.set_approval_handler(approve)
+        app = start_notes_app(hub)
+        try:
+            wait_tools(hub, 2)
+            assert hub.call_tool_sync("notes.clear", timeout=5).unwrap() == {"cleared": True}
+            no = hub.call_tool_sync("notes.add", {"text": "x"}, timeout=5)
+            assert no.error is not None and no.error.kind == "USER_REJECTED"
+            assert len(threads) == 2 and all(t.startswith("app-mcp-hub-cb") for t in threads)
+
+            def boom(req) -> bool:
+                raise RuntimeError("UI 崩溃")
+
+            hub.set_approval_handler(boom)
+            no = hub.call_tool_sync("notes.clear", timeout=5)
+            assert no.error is not None and no.error.kind == "USER_REJECTED"
+        finally:
+            app.close()
+
+
 def test_formats_and_shutdown() -> None:
     assert hub_mod.parse_format("gemini") == ToolFormat.GEMINI
     with pytest.raises(HubError):

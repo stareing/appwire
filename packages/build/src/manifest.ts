@@ -187,6 +187,16 @@ export interface ValidationResult {
   warnings: string[]
 }
 
+/**
+ * 工具 / 资源名是 App 内的局部名，Host 对外暴露为 `<appId>.<局部名>`（spec/protocol.md 3.1）。
+ * 名称以 `<appId>.` 开头时返回提示文案（多半是误把全名写成了局部名），否则返回 `null`。
+ */
+export function appIdPrefixMessage(name: string, appId: string): string | null {
+  if (appId === '' || !name.startsWith(`${appId}.`) || name.length <= appId.length + 1) return null
+  const local = name.slice(appId.length + 1)
+  return `名称 "${name}" 以 appId 前缀 "${appId}." 开头：名称是 App 内的局部名，Host 对外暴露为 "${appId}.${name}"；如果本意是全名，请改为 "${local}"（spec/protocol.md 3.1）`
+}
+
 /** 按 spec/manifest.md 第 3 节校验清单。 */
 export function validateManifest(manifest: AppMcpManifest): ValidationResult {
   const errors: string[] = []
@@ -256,6 +266,8 @@ export function validateManifest(manifest: AppMcpManifest): ValidationResult {
       errors.push(`${label} 名称重复`)
     } else {
       toolNames.add(tool.name)
+      const prefix = typeof manifest.appId === 'string' ? appIdPrefixMessage(tool.name, manifest.appId) : null
+      if (prefix) warnings.push(`${label} ${prefix}`)
     }
     if (typeof tool.description !== 'string' || tool.description.trim() === '') {
       errors.push(`${label} description 不能为空`)
