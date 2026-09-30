@@ -124,6 +124,24 @@ loop {
   开始新对话时 `reset_session(Some("conv-42"))`。
 - **取消**：OpenAI 的 `id` / `call_id`、Anthropic 的 `id` 同时作为 callId，可用 `hub.cancel_call(id)` 取消。
 - 工具列表变化（`HubEvent::ToolsChanged`）后重新 `export_tools`。
+- **工具很多时（渐进暴露）**：见下一节；多会话时导出与分派用同一个会话 ID
+  （`ToolFilter { session: Some("conv-42".into()), .. }` 与 `dispatch_in_session(.., Some("conv-42"))`），并且每轮重新导出。
+
+### 渐进暴露（工具很多时）
+
+`HubConfig.tool_exposure`（spec/hub-api.md 3.7）：
+
+| 值 | 行为 |
+|---|---|
+| `ToolExposure::Auto`（默认） | App 与上游工具总数超过 `tool_exposure_threshold`（默认 40）时按 `Progressive`，否则按 `All` |
+| `ToolExposure::Progressive` | 工具列表只含内置工具 `apps.list` / `apps.select` / `apps.overview` / `apps.tools`，以及**该会话**展开过（调用 `apps.tools`）、直接调用过、或选定了实例（`apps.select` / `select_instance`）的 App 的工具 |
+| `ToolExposure::All` | 全部列出（旧行为） |
+
+- 模型调用 `apps.tools {"appId": "shop"}` 得到该 App 的全部工具（`HubTool` 形态：全名、说明、`inputSchema`、风险、可用性），
+  之后这些工具出现在该会话的 `tools()` / `export_tools()` / MCP `tools/list` 中；MCP 出口只向该会话发 `tools/list_changed`。
+- 路由不变：未列出的工具按全名或导出名仍可直接调用，调用后该 App 也加入会话列表。导出名按全部工具计算，展开前后不变。
+- 给出 `ToolFilter.apps` 时列出这些 App 的全部工具（不受渐进暴露影响），适合你自己的 UI。
+- 会话状态随 `reset_session` / MCP 会话结束清除。`apps.tools` 在 `All` 模式下也可调用，但不出现在列表中。
 
 ### C. 对外开 MCP
 

@@ -108,6 +108,8 @@ fn hub_config(s: &Settings) -> HubConfig {
         wake_timeout: Duration::from_millis(s.wake_timeout_ms),
         wake_from_launch: s.wake_from_launch,
         waker: s.waker.clone(),
+        tool_exposure: s.tool_exposure,
+        tool_exposure_threshold: s.tool_exposure_threshold,
         ..Default::default()
     }
 }

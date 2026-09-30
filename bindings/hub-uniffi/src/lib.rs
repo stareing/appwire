@@ -497,13 +497,13 @@ impl AppMcpHub {
         }
     }
 
-    /// 设置自定义唤醒（替换之前的）；为空时恢复默认的系统唤醒实现（按平台执行系统命令；
+    /// 设置自定义唤醒（替换之前的）；为空时恢复配置 `waker` 决定的实现（默认系统唤醒，按平台执行系统命令；
     /// Android 上默认实现不支持 `android-intent`，厂商需要提供）。
     pub fn set_waker(&self, waker: Option<Arc<dyn HubWaker>>) {
         if let Ok(hub) = self.hub() {
             match waker {
                 Some(w) => hub.set_waker(Arc::new(WakerAdapter(w))),
-                None => hub.set_waker(Arc::new(hub::SystemWaker::new())),
+                None => hub.reset_waker(),
             }
         }
     }

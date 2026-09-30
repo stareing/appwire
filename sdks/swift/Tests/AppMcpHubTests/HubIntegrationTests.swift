@@ -188,6 +188,16 @@ final class HubIntegrationTests: XCTestCase {
         hub.setWaker(nil)
     }
 
+    func testProgressiveExposureConfig() throws {
+        let hub = try Hub(config: HubConfig(
+            enableWs: false, waker: .exec(argv: ["true"]), toolExposure: .progressive, toolExposureThreshold: 5
+        ))
+        // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
+        XCTAssertEqual(hub.tools(ToolFilter(session: "c1")).map(\.name),
+                       ["apps.list", "apps.select", "apps.overview", "apps.tools"])
+        hub.close()
+    }
+
     func testFormatsAndShutdown() async throws {
         XCTAssertEqual(try ToolFormat.parse("anthropic"), .anthropic)
         XCTAssertThrowsError(try ToolFormat.parse("nope"))

@@ -112,13 +112,44 @@ async function startShop(hub: Hub): Promise<ShopLog> {
   app.resource('cart', { description: '购物车', read: () => ({ count }) })
   app.start()
   await until(
-    () => hub.tools({ onlyAvailable: true }).some((t) => t.name === 'shop.order.pay'),
+    // 显式指定 App：不受渐进暴露影响
+    () => hub.tools({ apps: ['shop'], onlyAvailable: true }).some((t) => t.name === 'shop.order.pay'),
     'shop 工具登记',
   )
   return log
 }
 
 describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
+  it('渐进暴露：apps.tools 展开后按会话导出；waker / toolExposure 配置透传', async () => {
+    const { hub } = await startHub({ toolExposure: 'progressive', toolExposureThreshold: 1, waker: 'none' })
+    const log = await startShop(hub)
+    const builtins = ['apps.list', 'apps.select', 'apps.overview', 'apps.tools']
+    expect(hub.tools().map((t) => t.name)).toEqual(builtins)
+    expect(toAnthropicTools(hub, { session: 'c1' }).map((t) => t.name)).toHaveLength(4)
+
+    const [r] = await handleAnthropicToolUses(
+      hub,
+      [{ type: 'tool_use', id: 'tu1', name: 'apps__tools', input: { appId: 'shop' } }],
+      { session: 'c1' },
+    )
+    expect(r?.is_error).toBeFalsy()
+    const listed = JSON.parse(String(r?.content)) as { tools: { name: string; inputSchema: unknown }[] }
+    expect(listed.tools.find((t) => t.name === 'shop.cart.add')?.inputSchema).toMatchObject({ required: ['sku', 'qty'] })
+
+    // 会话 c1 的导出包含 shop；默认会话不包含
+    expect(toAnthropicTools(hub, { session: 'c1' }).length).toBe(7)
+    expect(hub.tools({ session: 'c1' }).map((t) => t.name)).toContain('shop.cart.add')
+    expect(hub.tools().map((t) => t.name)).toEqual(builtins)
+
+    // 未列出的工具按导出名仍可调用
+    const [r2] = await handleAnthropicToolUses(hub, [
+      { type: 'tool_use', id: 'tu2', name: toAnthropicTools(hub, { session: 'c1' }).find((t) => t.name.includes('cart') && t.name.endsWith('add'))!.name, input: { sku: 'a', qty: 1 } },
+    ])
+    expect(r2?.is_error).toBeFalsy()
+    expect(log.calls).toEqual(['cart.add:a'])
+    expect(hub.tools().map((t) => t.name)).toContain('shop.cart.add')
+  })
+
   it('列工具、App、资源与事件', async () => {
     const { hub, events } = await startHub()
     expect(hub.wsAddr).toMatch(/^127\.0\.0\.1:\d+$/)

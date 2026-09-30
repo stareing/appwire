@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use app_mcp_hub::WakerConfig;
+use app_mcp_hub::{ToolExposure, WakerConfig};
 use app_mcp_hub::upstream::parse_cli_spec;
 use clap::{Args, Parser, Subcommand};
 
@@ -111,6 +111,15 @@ pub struct HubArgs {
     #[arg(long, value_name = "system|none|JSON", value_parser = parse_waker)]
     pub waker: Option<WakerConfig>,
 
+    /// 工具暴露方式：auto（默认，App 工具总数超过阈值时渐进）/ progressive（工具列表只含 apps.* 与本会话
+    /// 展开过、调用过或选定了实例的 App，其余用 apps.tools 查看）/ all（全部列出）。
+    #[arg(long, value_name = "auto|progressive|all", value_parser = parse_exposure)]
+    pub tool_exposure: Option<ToolExposure>,
+
+    /// auto 模式的阈值：App 与上游工具总数超过此值时渐进暴露，默认 40。
+    #[arg(long, value_name = "N")]
+    pub tool_exposure_threshold: Option<usize>,
+
     /// 日志级别（trace / debug / info / warn / error），默认 info。设置 RUST_LOG 时以 RUST_LOG 为准。
     #[arg(long, value_name = "LEVEL")]
     pub log_level: Option<String>,
@@ -140,6 +149,8 @@ impl HubArgs {
             wake_timeout_ms: self.wake_timeout_ms,
             wake_from_launch: self.wake_from_launch.then_some(true),
             waker: self.waker.clone(),
+            tool_exposure: self.tool_exposure,
+            tool_exposure_threshold: self.tool_exposure_threshold,
             log_level: self.log_level.clone(),
             ..Default::default()
         })
@@ -206,6 +217,11 @@ pub struct LegacyArgs {
 
 
 /// `--waker`：`system` / `none` 或 JSON（与配置文件 `lifecycle.waker` 相同的形式）。
+fn parse_exposure(s: &str) -> Result<ToolExposure, String> {
+    serde_json::from_value(serde_json::Value::String(s.trim().to_owned()))
+        .map_err(|_| format!("应为 auto、progressive 或 all，而不是「{s}」"))
+}
+
 fn parse_waker(s: &str) -> Result<WakerConfig, String> {
     let s = s.trim();
     let json = if s.starts_with('{') || s.starts_with('"') {
@@ -246,6 +262,28 @@ mod tests {
             panic!()
         };
         assert_eq!(s.hub.overrides().unwrap().waker, Some(WakerConfig::None));
+    }
+
+    #[test]
+    fn parses_tool_exposure() {
+        assert_eq!(parse_exposure("progressive"), Ok(ToolExposure::Progressive));
+        assert_eq!(parse_exposure("all"), Ok(ToolExposure::All));
+        assert!(parse_exposure("some").is_err());
+        let cli = Cli::try_parse_from([
+            "app-mcp-host",
+            "serve",
+            "--tool-exposure",
+            "auto",
+            "--tool-exposure-threshold",
+            "5",
+        ])
+        .unwrap();
+        let Some(Command::Serve(s)) = cli.command else {
+            panic!()
+        };
+        let o = s.hub.overrides().unwrap();
+        assert_eq!(o.tool_exposure, Some(ToolExposure::Auto));
+        assert_eq!(o.tool_exposure_threshold, Some(5));
     }
 
     #[test]

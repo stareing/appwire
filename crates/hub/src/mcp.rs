@@ -1,7 +1,7 @@
 //! MCP 出口：手动实现 rmcp 的 [`ServerHandler`]。
 //!
-//! 每个 MCP 连接一个 [`McpSession`]：`apps.select` 的选择与“已附带的总览版本”按会话保存
-//! （会话键 `mcp:<id>`）。工具调用与资源读取都交给 [`crate::call`]，与 Hub API 共用一份逻辑。
+//! 每个 MCP 连接一个 [`McpSession`]：`apps.select` 的选择、“已附带的总览版本”与渐进暴露已展开的 App
+//! 按会话保存（会话键 `mcp:<id>`）。工具调用与资源读取都交给 [`crate::call`]，与 Hub API 共用一份逻辑。
 //!
 //! 注意：rmcp 3.5 在协议 2026-07-28 中去掉了 `initialize` 与 `resources/subscribe`，
 //! 改用每请求 `_meta` 与 `subscriptions/listen`。本 Hub 只声明支持到 2025-11-25，
@@ -19,8 +19,10 @@ use rmcp::service::{NotificationContext, RequestContext};
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use serde_json::Value;
 
-pub use crate::call::{TOOL_APPS_LIST, TOOL_APPS_OVERVIEW, TOOL_APPS_SELECT, UNAVAILABLE_PREFIX};
-use crate::call::{self, CallCtx, to_mcp_error, to_mcp_tool};
+pub use crate::call::{
+    TOOL_APPS_LIST, TOOL_APPS_OVERVIEW, TOOL_APPS_SELECT, TOOL_APPS_TOOLS, UNAVAILABLE_PREFIX,
+};
+use crate::call::{self, CallCtx, to_mcp_error};
 use crate::hub::{DEFAULT_MIME, HubShared, parse_resource_uri, resource_uri};
 use crate::overview;
 
@@ -66,7 +68,7 @@ impl ServerHandler for McpSession {
                 "app-mcp-host",
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions(overview::instructions(&summaries))
+            .with_instructions(overview::instructions(&summaries, self.shared.progressive()))
     }
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
@@ -85,16 +87,7 @@ impl ServerHandler for McpSession {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let mut tools = call::builtin_tools();
-        tools.extend(
-            self.shared
-                .registry()
-                .tools()
-                .iter()
-                .map(|t| to_mcp_tool(&t.app_id, &t.info, t.availability)),
-        );
-        tools.extend(self.shared.upstream_tools());
-        Ok(ListToolsResult::with_all_items(tools))
+        Ok(ListToolsResult::with_all_items(self.shared.mcp_tools(&self.key)))
     }
 
     async fn call_tool(
@@ -110,6 +103,7 @@ impl ServerHandler for McpSession {
             instance_id: None,
             timeout: None,
             call_id: None,
+            mcp_session: Some(self.id),
         };
         let ct = context.ct.clone();
         let inv = self

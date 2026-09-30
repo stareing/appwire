@@ -31,7 +31,8 @@ use crate::overview::{AppSummary, Overview, OverviewSource};
 use crate::registry::Registry;
 use crate::types::{
     AppInfo, AppKind, AppOverviewInfo, ApprovalHandler, ApprovalPolicy, CallOutcome, CallRequest,
-    HubError, HubEvent, HubResource, HubTool, PairingHandler, ResourceContent, ToolFilter,
+    HubError, HubEvent, HubResource, HubTool, PairingHandler, ResourceContent, ToolExposure,
+    ToolFilter,
 };
 use crate::upstream::{UpstreamConfig, UpstreamState, encode_uri_component};
 use crate::wake::{Waker, WakerConfig};
@@ -102,7 +103,14 @@ pub struct HubConfig {
     /// 唤醒器：`System`（默认，按平台执行系统激活）/ `None`（不唤醒，返回 `APP_DISCONNECTED`）/
     /// `Exec`（执行指定程序）。[`Hub::set_waker`] 可再替换为自定义实现。
     pub waker: WakerConfig,
+    /// 工具暴露方式（spec/hub-api.md 3.7）：`All` / `Progressive` / `Auto`（默认）。
+    pub tool_exposure: ToolExposure,
+    /// `Auto` 的阈值：App 与上游工具（不含内置工具）总数**超过**此值时按渐进暴露。默认 40。
+    pub tool_exposure_threshold: usize,
 }
+
+/// [`HubConfig::tool_exposure_threshold`] 的默认值。
+pub const DEFAULT_TOOL_EXPOSURE_THRESHOLD: usize = 40;
 
 impl Default for HubConfig {
     fn default() -> Self {
@@ -126,6 +134,8 @@ impl Default for HubConfig {
             dormant_replaced_by_new_instance: true,
             wake_from_launch: false,
             waker: WakerConfig::System,
+            tool_exposure: ToolExposure::Auto,
+            tool_exposure_threshold: DEFAULT_TOOL_EXPOSURE_THRESHOLD,
         }
     }
 }
@@ -139,6 +149,8 @@ pub(crate) struct SessionState {
     pub delivered: HashMap<String, String>,
     /// 本会话发出的租约：连接 ID → (连接, 到期时刻)。
     pub leases: HashMap<u64, (std::sync::Weak<crate::connection::Connection>, tokio::time::Instant)>,
+    /// 渐进暴露：本会话展开过（`apps.tools`）或调用过的 App（含上游）。
+    pub exposed: HashSet<String>,
 }
 
 /// API 调用的会话键。
@@ -366,6 +378,98 @@ impl HubShared {
         }
         s.delivered.insert(app_id.to_owned(), ov.version.clone());
         Some(ov)
+    }
+
+    // ------------------------------------------------------------------
+    // 渐进暴露（spec/hub-api.md 3.7）
+    // ------------------------------------------------------------------
+
+    /// App 与上游工具（不含内置工具）的总数。
+    fn tool_count(&self) -> usize {
+        let apps = self.registry().tools().len();
+        apps + lock(&self.upstreams).values().map(|s| s.tools.len()).sum::<usize>()
+    }
+
+    /// 当前是否按渐进暴露列出工具。
+    pub(crate) fn progressive(&self) -> bool {
+        match self.config.tool_exposure {
+            ToolExposure::All => false,
+            ToolExposure::Progressive => true,
+            ToolExposure::Auto => self.tool_count() > self.config.tool_exposure_threshold,
+        }
+    }
+
+    /// 会话中直接列出工具的 App：展开过 / 调用过的，以及选定了实例的（会话 `apps.select` 与全局选择）。
+    /// 渐进暴露未生效时返回 `None`（全部列出）。
+    pub(crate) fn exposed_apps(&self, key: &str) -> Option<HashSet<String>> {
+        if !self.progressive() {
+            return None;
+        }
+        let mut out: HashSet<String> = self.merged_selection(key).into_keys().collect();
+        if let Some(s) = lock(&self.session_state).get(key) {
+            out.extend(s.exposed.iter().cloned());
+        }
+        Some(out)
+    }
+
+    /// 把 App 记为本会话已展开。渐进暴露生效且此前未列出时返回 `true`（会话的工具列表因此变化）。
+    pub(crate) fn expose_app(&self, key: &str, app_id: &str) -> bool {
+        let selected = self.merged_selection(key).contains_key(app_id);
+        let inserted = lock(&self.session_state)
+            .entry(key.to_owned())
+            .or_default()
+            .exposed
+            .insert(app_id.to_owned());
+        inserted && !selected && self.progressive()
+    }
+
+    /// 只通知一个 MCP 会话工具列表已变化（渐进暴露下该会话展开了新的 App）。
+    pub(crate) fn notify_session_tools_changed(self: &Arc<Self>, session: u64) {
+        let Some(peer) = lock(&self.sessions).get(&session).cloned() else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let shared = self.clone();
+        rt.spawn(async move {
+            if peer.notify_tool_list_changed().await.is_err() {
+                tracing::debug!(session, "MCP 会话已关闭，移除");
+                shared.remove_session(session);
+            }
+        });
+    }
+
+    /// MCP `tools/list`：内置工具 + （渐进暴露时只含已展开 App 的）App 工具 + 上游工具。
+    pub(crate) fn mcp_tools(&self, key: &str) -> Vec<Tool> {
+        let exposed = self.exposed_apps(key);
+        let listed = |app_id: &str| exposed.as_ref().is_none_or(|e| e.contains(app_id));
+        let mut tools = call::builtin_tools(exposed.is_some());
+        tools.extend(
+            self.registry()
+                .tools()
+                .iter()
+                .filter(|t| listed(&t.app_id))
+                .map(|t| call::to_mcp_tool(&t.app_id, &t.info, t.availability)),
+        );
+        let ups = lock(&self.upstreams);
+        for (name, st) in ups.iter().filter(|(name, _)| listed(name)) {
+            for t in &st.tools {
+                let mut t = t.clone();
+                t.name = format!("{name}.{}", t.name).into();
+                tools.push(t);
+            }
+        }
+        tools
+    }
+
+    /// `apps.tools` 的结果：某个 App（或上游）的全部工具定义。
+    pub(crate) fn app_tools(&self, app_id: &str) -> Vec<HubTool> {
+        self.all_tools(false)
+            .into_iter()
+            .filter(|(t, builtin)| !builtin && t.app_id == app_id)
+            .map(|(t, _)| t)
+            .collect()
     }
 
     // ------------------------------------------------------------------
@@ -703,20 +807,6 @@ impl HubShared {
         self.mark_resources_changed();
     }
 
-    /// 已连接上游的工具，名称改为 `<name>.<tool>`。
-    pub(crate) fn upstream_tools(&self) -> Vec<Tool> {
-        let ups = lock(&self.upstreams);
-        let mut out = Vec::new();
-        for (name, st) in ups.iter() {
-            for t in &st.tools {
-                let mut t = t.clone();
-                t.name = format!("{name}.{}", t.name).into();
-                out.push(t);
-            }
-        }
-        out
-    }
-
     /// 已连接上游的资源，URI 改为 `app-mcp://<name>/<编码后的上游 URI>`。
     pub(crate) fn upstream_resources(&self) -> Vec<Resource> {
         let ups = lock(&self.upstreams);
@@ -757,8 +847,9 @@ impl HubShared {
     // ------------------------------------------------------------------
 
     /// 全部工具：`(工具, 是否内置)`，顺序为内置、App（按 appId）、上游。
-    pub(crate) fn all_tools(&self) -> Vec<(HubTool, bool)> {
-        let mut out: Vec<(HubTool, bool)> = call::builtin_hub_tools()
+    /// `with_apps_tools`：内置工具是否包含 `apps.tools`（渐进暴露生效时才列出）。
+    pub(crate) fn all_tools(&self, with_apps_tools: bool) -> Vec<(HubTool, bool)> {
+        let mut out: Vec<(HubTool, bool)> = call::builtin_hub_tools(with_apps_tools)
             .into_iter()
             .map(|t| (t, true))
             .collect();
@@ -779,7 +870,8 @@ impl HubShared {
 
     /// 按当前全部工具计算导出名，并并入历史映射。
     pub(crate) fn name_codec(&self) -> NameCodec {
-        let tools = self.all_tools();
+        // 导出名按全部工具（含 apps.tools）计算，与渐进暴露无关，保证名称稳定。
+        let tools = self.all_tools(true);
         let codec = NameCodec::new(tools.iter().map(|(t, _)| t.name.as_str()));
         lock(&self.export_names).extend(codec.pairs().map(|(full, export)| (export.to_owned(), full.to_owned())));
         codec
@@ -935,11 +1027,18 @@ impl Hub {
         out
     }
 
+    /// 工具列表。渐进暴露生效（spec/hub-api.md 3.7）且 `filter.apps` 为 `None` 时，只含内置工具
+    /// （此时另有 `apps.tools`）与 `filter.session` 会话已展开 / 调用过 / 选定了实例的 App 的工具；
+    /// 显式给出 `filter.apps` 时列出这些 App 的全部工具。
     pub fn tools(&self, filter: &ToolFilter) -> Vec<HubTool> {
+        let exposed = self.shared.exposed_apps(&api_session_key(filter.session.as_deref()));
+        let progressive = exposed.is_some();
+        let exposed = exposed.filter(|_| filter.apps.is_none());
         self.shared
-            .all_tools()
+            .all_tools(progressive)
             .into_iter()
             .filter(|(t, builtin)| filter.accepts(t, *builtin))
+            .filter(|(t, builtin)| *builtin || exposed.as_ref().is_none_or(|e| e.contains(&t.app_id)))
             .map(|(t, _)| t)
             .collect()
     }
@@ -1027,15 +1126,17 @@ impl Hub {
     }
 
     /// 指定某 App 的目标实例（所有会话共用；会话内 `apps.select` 的选择优先）。`None` 清除。
+    /// 渐进暴露生效时，选定实例的 App 在所有会话中直接列出，因此会触发一次工具列表变化。
     pub fn select_instance(&self, app_id: &str, instance_id: Option<&str>) {
-        let mut sel = lock(&self.shared.global_selected);
-        match instance_id {
-            Some(id) => {
-                sel.insert(app_id.to_owned(), id.to_owned());
+        let changed = {
+            let mut sel = lock(&self.shared.global_selected);
+            match instance_id {
+                Some(id) => sel.insert(app_id.to_owned(), id.to_owned()).is_none(),
+                None => sel.remove(app_id).is_some(),
             }
-            None => {
-                sel.remove(app_id);
-            }
+        };
+        if changed && self.shared.progressive() {
+            self.shared.mark_tools_changed();
         }
     }
 
@@ -1066,6 +1167,13 @@ impl Hub {
     /// 替换唤醒实现（默认由 `HubConfig::waker` 决定，即 [`crate::SystemWaker`]）。spec/hub-api.md 3.5。
     pub fn set_waker(&self, w: Arc<dyn Waker>) {
         *lock(&self.shared.waker) = Some(w);
+    }
+
+    /// 撤销 [`Hub::set_waker`]，恢复按 `HubConfig::waker` 构造的唤醒器（`none` 即不唤醒）。
+    /// 绑定层清除自定义唤醒回调时调用。spec 之外的补充方法。
+    pub fn reset_waker(&self) {
+        // 配置在 Hub::start 时已成功构造过一次，这里不会失败；万一失败按不唤醒处理。
+        *lock(&self.shared.waker) = self.shared.config.waker.build().ok().flatten();
     }
 
     // ---- 对外出口 ----
@@ -1160,6 +1268,7 @@ impl Hub {
             return format::render_result(format, &parsed, &r);
         }
         let ctx = CallCtx {
+            mcp_session: None,
             name: self.shared.resolve_export_name(&parsed.name),
             arguments: parsed.arguments.clone(),
             session_key: api_session_key(session),

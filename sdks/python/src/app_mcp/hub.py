@@ -73,6 +73,10 @@ WakeKind = ffi.WakeKind
 WakeDescriptor = ffi.WakeDescriptor
 #: 交给唤醒回调的请求（``app_id``、``instance_id``、``descriptor``、``token``、``activation_arg``）。
 WakeRequest = ffi.WakeRequest
+#: 工具暴露方式（``ToolExposure.AUTO`` / ``PROGRESSIVE`` / ``ALL``，spec/hub-api.md 3.7）。
+ToolExposure = ffi.ToolExposure
+#: 唤醒器配置（``WakerConfig.SYSTEM()`` / ``DISABLED()`` / ``EXEC(argv=[...])``）。
+WakerConfig = ffi.WakerConfig
 
 FormatLike = Union[ToolFormat, str]
 RiskLike = Union[Risk, str]
@@ -99,6 +103,7 @@ __all__ = [
     "Risk",
     "ToolError",
     "ToolErrorInfo",
+    "ToolExposure",
     "ToolFilter",
     "ToolFormat",
     "UpstreamSpec",
@@ -107,6 +112,7 @@ __all__ = [
     "WakeFailed",
     "WakeKind",
     "WakeRequest",
+    "WakerConfig",
     "init_logging",
     "parse_format",
 ]
@@ -166,9 +172,14 @@ def _filter(
     max_risk: RiskLike | None = None,
     only_available: bool = False,
     include_builtin: bool = True,
+    session: str | None = None,
 ) -> ToolFilter:
     return ToolFilter(
-        apps=apps, max_risk=_risk(max_risk), only_available=only_available, include_builtin=include_builtin
+        apps=apps,
+        max_risk=_risk(max_risk),
+        only_available=only_available,
+        include_builtin=include_builtin,
+        session=session,
     )
 
 
@@ -457,8 +468,11 @@ class Hub:
         max_risk: RiskLike | None = None,
         only_available: bool = False,
         include_builtin: bool = True,
+        session: str | None = None,
     ) -> list[HubTool]:
-        return self._inner.tools(_filter(apps, max_risk, only_available, include_builtin))
+        """工具列表。渐进暴露生效且未给 ``apps`` 时，只含内置工具与 ``session`` 会话已展开 / 调用过 /
+        选定了实例的 App 的工具（spec/hub-api.md 3.7）。"""
+        return self._inner.tools(_filter(apps, max_risk, only_available, include_builtin, session))
 
     def resources(self) -> list[HubResource]:
         return self._inner.resources()
@@ -531,10 +545,11 @@ class Hub:
         max_risk: RiskLike | None = None,
         only_available: bool = False,
         include_builtin: bool = True,
+        session: str | None = None,
     ) -> str:
-        """导出工具定义（JSON 文本）。"""
+        """导出工具定义（JSON 文本）。``session`` 与 :meth:`dispatch` 的会话对应（渐进暴露按会话计算）。"""
         return self._inner.export_tools(
-            parse_format(format), _filter(apps, max_risk, only_available, include_builtin)
+            parse_format(format), _filter(apps, max_risk, only_available, include_builtin, session)
         )
 
     def export_tools(self, format: FormatLike, **filter: Any) -> Any:

@@ -76,6 +76,7 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
     "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"], "env": {} }
   },
   "lifecycle": { "leaseMs": 60000, "wakeTimeoutMs": 15000, "wakeFromLaunch": false, "waker": "system" },
+  "tools": { "exposure": "auto", "threshold": 40 },
   "log": { "level": "info", "file": true, "maxBytes": 5242880, "keep": 3 }
 }
 ```
@@ -84,12 +85,18 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 `APP_DISCONNECTED` 与启动地址）/ `{"exec": ["程序", "参数", …]}`（执行该程序，参数不经 shell，唤醒请求以一行 JSON
 写入其 stdin，退出码 0 表示已发出激活）。格式详见 spec/hub-api.md 3.5。
 
+`tools.exposure`（工具渐进暴露，spec/hub-api.md 3.7）：`"auto"`（默认）/ `"progressive"` / `"all"`。
+渐进暴露时 `tools/list` 只含 `apps.list` / `apps.select` / `apps.overview` / `apps.tools`，以及本会话调用 `apps.tools`
+展开过、直接调用过或 `apps.select` 选定了实例的 App 的工具；模型调用 `apps.tools {appId}` 得到该 App 的工具与参数 schema，
+Host 随即只向该 MCP 会话发 `notifications/tools/list_changed`。未列出的工具按全名仍可直接调用。`auto` 在 App 与上游工具总数
+超过 `tools.threshold`（默认 40）时渐进，否则全部列出（与旧行为相同）。
+
 旧的 `--config` 文件（只有 `upstreams`）是它的子集，仍然可用。
 
 命令行（`serve` 与 `service install` 相同）：`--ws-addr`、`--http`、`--http-allow-remote`、`--auth browser|all|off`、
 `--manifest <file>`（可重复）、`--manifest-dir <dir>`（可重复）、`--allow-origin <pattern>`（可重复）、
 `--upstream <name>=<命令行>`（可重复）、`--lease-ms`、`--wake-timeout-ms`、`--wake-from-launch`、
-`--waker system|none|'{"exec":[...]}'`、`--log-level`、
+`--waker system|none|'{"exec":[...]}'`、`--tool-exposure auto|progressive|all`、`--tool-exposure-threshold <N>`、`--log-level`、
 `--no-log-file`、`--config <file>`、`--home <dir>`。`app-mcp-host token` 打印令牌（`--regenerate` 重新生成）。
 
 ## 安全

@@ -24,6 +24,49 @@ pub enum Risk {
     OsSensitive,
 }
 
+/// 工具暴露方式（spec/hub-api.md 3.7）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum ToolExposure {
+    /// 列出全部工具。
+    All,
+    /// 工具列表只含 `apps.*` 与本会话展开过（`apps.tools`）、调用过或选定了实例的 App 的工具。
+    Progressive,
+    /// App 与上游工具总数超过 `tool_exposure_threshold` 时按 `Progressive`，否则按 `All`（默认）。
+    Auto,
+}
+
+impl From<ToolExposure> for hub::ToolExposure {
+    fn from(v: ToolExposure) -> Self {
+        match v {
+            ToolExposure::All => hub::ToolExposure::All,
+            ToolExposure::Progressive => hub::ToolExposure::Progressive,
+            ToolExposure::Auto => hub::ToolExposure::Auto,
+        }
+    }
+}
+
+/// 唤醒器配置（spec/hub-api.md 3.5；对应 JSON 的 `"system"` / `"none"` / `{"exec": [...]}`）。
+/// `set_waker` 设置的实现优先。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum WakerConfig {
+    /// 按平台执行系统激活（默认）。
+    System,
+    /// 不唤醒：休眠实例 / 未运行 App 的调用直接返回 `APP_DISCONNECTED`（JSON 中为 `"none"`）。
+    Disabled,
+    /// 执行 `argv[0] argv[1..]`（不经 shell），唤醒请求以一行 JSON 写入其 stdin。
+    Exec { argv: Vec<String> },
+}
+
+impl From<WakerConfig> for hub::WakerConfig {
+    fn from(v: WakerConfig) -> Self {
+        match v {
+            WakerConfig::System => hub::WakerConfig::System,
+            WakerConfig::Disabled => hub::WakerConfig::None,
+            WakerConfig::Exec { argv } => hub::WakerConfig::Exec(argv),
+        }
+    }
+}
+
 /// 调用时 App 需要的激活方式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
 pub enum Activation {
@@ -283,6 +326,16 @@ pub struct HubConfig {
     /// App 未运行且清单无显式 `wake` 时，是否由清单 `launch` 推导唤醒方式（默认 `false`）。
     #[uniffi(default = None)]
     pub wake_from_launch: Option<bool>,
+    /// 唤醒器（默认 `System`）；`set_waker` 设置的实现优先，清除后恢复为此配置。
+    #[uniffi(default = None)]
+    pub waker: Option<WakerConfig>,
+    // ---- 渐进暴露（spec/hub-api.md 3.7）----
+    /// 工具暴露方式（默认 `Auto`）。
+    #[uniffi(default = None)]
+    pub tool_exposure: Option<ToolExposure>,
+    /// `Auto` 的阈值：App 与上游工具总数超过此值时渐进暴露（默认 40）。
+    #[uniffi(default = None)]
+    pub tool_exposure_threshold: Option<u32>,
 }
 
 impl Default for HubConfig {
@@ -310,6 +363,9 @@ impl Default for HubConfig {
             dormant_ttl_ms: None,
             dormant_replaced_by_new_instance: None,
             wake_from_launch: None,
+            waker: None,
+            tool_exposure: None,
+            tool_exposure_threshold: None,
         }
     }
 }
@@ -374,6 +430,15 @@ impl HubConfig {
         }
         if let Some(v) = self.wake_from_launch {
             c.wake_from_launch = v;
+        }
+        if let Some(w) = self.waker {
+            c.waker = w.into();
+        }
+        if let Some(v) = self.tool_exposure {
+            c.tool_exposure = v.into();
+        }
+        if let Some(v) = self.tool_exposure_threshold {
+            c.tool_exposure_threshold = v as usize;
         }
         Ok(c)
     }
@@ -483,9 +548,13 @@ pub struct ToolFilter {
     /// 只列出当前可调用的工具。
     #[uniffi(default = false)]
     pub only_available: bool,
-    /// 是否包含内置工具 `apps.list` / `apps.select` / `apps.overview`。
+    /// 是否包含内置工具 `apps.list` / `apps.select` / `apps.overview`（渐进暴露生效时另有 `apps.tools`）。
     #[uniffi(default = true)]
     pub include_builtin: bool,
+    /// 厂商会话 ID（`None` = 默认会话）。渐进暴露生效且 `apps` 为空时，只保留该会话已展开 / 调用过 /
+    /// 选定了实例的 App 的工具（spec/hub-api.md 3.7）。
+    #[uniffi(default = None)]
+    pub session: Option<String>,
 }
 
 impl Default for ToolFilter {
@@ -495,6 +564,7 @@ impl Default for ToolFilter {
             max_risk: None,
             only_available: false,
             include_builtin: true,
+            session: None,
         }
     }
 }
@@ -506,6 +576,7 @@ impl From<ToolFilter> for hub::ToolFilter {
             max_risk: f.max_risk.map(Into::into),
             only_available: f.only_available,
             include_builtin: f.include_builtin,
+            session: f.session,
         }
     }
 }
@@ -1017,6 +1088,9 @@ mod tests {
         .into();
         assert_eq!(f.max_risk, Some(hub::Risk::Write));
         assert!(f.include_builtin);
+        assert_eq!(f.session, None);
+        let f: hub::ToolFilter = ToolFilter { session: Some("s".into()), ..Default::default() }.into();
+        assert_eq!(f.session.as_deref(), Some("s"));
         let e: HubEvent = hub::HubEvent::VisibilityChanged {
             app_id: "a".into(),
             instance_id: "i".into(),
@@ -1055,6 +1129,27 @@ mod tests {
         let d = HubConfig::default().into_hub().unwrap();
         assert_eq!(d.lease_ttl, hub::HubConfig::default().lease_ttl);
         assert!(d.dormant_replaced_by_new_instance && !d.wake_from_launch);
+        assert_eq!(d.waker, hub::WakerConfig::System);
+        assert_eq!(d.tool_exposure, hub::ToolExposure::Auto);
+        assert_eq!(d.tool_exposure_threshold, hub::DEFAULT_TOOL_EXPOSURE_THRESHOLD);
+        let c = HubConfig {
+            waker: Some(WakerConfig::Disabled),
+            tool_exposure: Some(ToolExposure::Progressive),
+            tool_exposure_threshold: Some(5),
+            ..Default::default()
+        }
+        .into_hub()
+        .unwrap();
+        assert_eq!(c.waker, hub::WakerConfig::None);
+        assert_eq!(c.tool_exposure, hub::ToolExposure::Progressive);
+        assert_eq!(c.tool_exposure_threshold, 5);
+        let c = HubConfig {
+            waker: Some(WakerConfig::Exec { argv: vec!["node".into(), "w.mjs".into()] }),
+            ..Default::default()
+        }
+        .into_hub()
+        .unwrap();
+        assert_eq!(c.waker, hub::WakerConfig::Exec(vec!["node".into(), "w.mjs".into()]));
 
         assert_eq!(Availability::from(hub::Availability::Dormant), Availability::Dormant);
         assert_eq!(

@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use hub::{
     ApprovalHandler, ApprovalRequest, CallOutcome, CallRequest, ErrorKind, Hub, HubError,
-    PairingHandler, PairingRequest, SystemWaker, ToolError, ToolFilter, ToolFormat, WakeRequest,
+    PairingHandler, PairingRequest, ToolError, ToolFilter, ToolFormat, WakeRequest,
     Waker, async_trait, format,
 };
 use serde_json::{Value, json};
@@ -931,8 +931,8 @@ pub unsafe extern "C" fn am_hub_set_waker_cb(
                 dispatcher: h.dispatcher.clone(),
             }));
         } else {
-            // 清除：恢复默认的系统唤醒实现。
-            inner.set_waker(Arc::new(SystemWaker::new()));
+            // 清除：恢复配置 waker 决定的实现（默认系统唤醒）。
+            inner.reset_waker();
         }
         Ok(())
     })

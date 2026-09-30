@@ -68,6 +68,24 @@ public class HubBasicTests
         Assert.True((bool?)life["wakeFromLaunch"]);
         using (var h = AppMcpHub.Start(life.ToJsonString(), null)) { }
 
+        var exposure = JsonNode.Parse(new HubOptions
+        {
+            WsAddress = "127.0.0.1:0",
+            ToolExposure = ToolExposure.Progressive,
+            ToolExposureThreshold = 5,
+            Waker = WakerOptions.Exec("node", "wake.mjs"),
+        }.ToConfigJson())!.AsObject();
+        Assert.Equal("progressive", (string?)exposure["toolExposure"]);
+        Assert.Equal(5, (int?)exposure["toolExposureThreshold"]);
+        Assert.Equal("wake.mjs", (string?)exposure["waker"]!["exec"]![1]);
+        Assert.Equal("none", (string?)JsonNode.Parse(new HubOptions { Waker = WakerOptions.None }.ToConfigJson())!["waker"]);
+        using (var h = AppMcpHub.Start(exposure.ToJsonString(), null))
+        {
+            // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
+            var names = h.ListTools(new ToolFilter { Session = "c1" }).Select(t => t.Name).ToArray();
+            Assert.Equal(["apps.list", "apps.select", "apps.overview", "apps.tools"], names);
+        }
+
         var disabled = JsonNode.Parse(new HubOptions { DisableWebSocket = true }.ToConfigJson())!.AsObject();
         Assert.True(disabled.ContainsKey("wsAddr"));
         Assert.Null(disabled["wsAddr"]);

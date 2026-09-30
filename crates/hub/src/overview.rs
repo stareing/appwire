@@ -145,7 +145,8 @@ pub struct AppSummary {
 }
 
 /// MCP `initialize` 结果中的 `instructions`（7.2 节第 1 条）。
-pub fn instructions(apps: &[AppSummary]) -> String {
+/// `progressive`：渐进暴露生效时追加一句说明（spec/hub-api.md 3.7）。
+pub fn instructions(apps: &[AppSummary], progressive: bool) -> String {
     let mut s = String::from(
         "本机的 App 通过 app-mcp 提供工具，工具名格式为 <appId>.<工具名>。\n已知的 App：\n",
     );
@@ -166,6 +167,12 @@ pub fn instructions(apps: &[AppSummary]) -> String {
         s.push('\n');
     }
     s.push_str("首次调用某个 App 的工具时，结果中会附带该 App 的完整总览；也可以随时调用 apps.overview 查看。");
+    if progressive {
+        s.push_str(
+            "\n工具较多，工具列表只包含 apps.* 与本会话用过的 App 的工具：先调用 apps.tools 查看某个 App 的工具\
+             （含参数 schema），之后它们会加入工具列表；也可以直接按全名调用。",
+        );
+    }
     s
 }
 
@@ -246,7 +253,7 @@ mod tests {
 
     #[test]
     fn instructions_text() {
-        let s = instructions(&[
+        let apps = [
             AppSummary {
                 app_id: "shop".into(),
                 name: "示例商城".into(),
@@ -257,13 +264,18 @@ mod tests {
                 name: "notes".into(),
                 summary: None,
             },
-        ]);
+        ];
+        let s = instructions(&apps, false);
         assert_eq!(
             s,
             "本机的 App 通过 app-mcp 提供工具，工具名格式为 <appId>.<工具名>。\n已知的 App：\n\
              - shop（示例商城）：演示用购物商城\n- notes\n\
              首次调用某个 App 的工具时，结果中会附带该 App 的完整总览；也可以随时调用 apps.overview 查看。"
         );
-        assert!(instructions(&[]).contains("暂无"));
+        assert!(instructions(&[], false).contains("暂无"));
+        let p = instructions(&apps, true);
+        assert!(p.starts_with(&s), "{p}");
+        assert!(p.ends_with("也可以直接按全名调用。"), "{p}");
+        assert!(p.contains("apps.tools"));
     }
 }

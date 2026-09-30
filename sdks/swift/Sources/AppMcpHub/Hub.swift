@@ -31,6 +31,10 @@ public typealias ResourceContent = AppMcpHubBindings.ResourceContent
 public typealias ToolErrorInfo = AppMcpHubBindings.ToolErrorInfo
 public typealias ApprovalRequest = AppMcpHubBindings.ApprovalRequest
 public typealias PairingRequest = AppMcpHubBindings.PairingRequest
+/// 工具暴露方式（`.auto` / `.progressive` / `.all`，spec/hub-api.md 3.7）。
+public typealias ToolExposure = AppMcpHubBindings.ToolExposure
+/// 唤醒器配置（`.system` / `.disabled` / `.exec(argv:)`）。
+public typealias WakerConfig = AppMcpHubBindings.WakerConfig
 /// 交给 `Hub.setWaker` 的唤醒请求（`appId`、`instanceId`、`descriptor`、`token`、`activationArg`）。
 public typealias WakeRequest = AppMcpHubBindings.WakeRequest
 /// 唤醒描述（与 App 端模块 `AppMcp.WakeDescriptor` 同名，这里加前缀避免同时导入两个模块时歧义）。

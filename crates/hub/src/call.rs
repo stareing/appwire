@@ -37,6 +37,8 @@ use crate::upstream::decode_uri_component;
 pub const TOOL_APPS_LIST: &str = "apps.list";
 pub const TOOL_APPS_SELECT: &str = "apps.select";
 pub const TOOL_APPS_OVERVIEW: &str = "apps.overview";
+/// 渐进暴露（spec/hub-api.md 3.7）：查看某个 App 的工具并加入本会话的工具列表。
+pub const TOOL_APPS_TOOLS: &str = "apps.tools";
 
 /// 内置工具的 appId（保留名）。
 pub const BUILTIN_APP_ID: &str = "apps";
@@ -56,11 +58,14 @@ pub(crate) struct CallCtx {
     pub instance_id: Option<String>,
     pub timeout: Option<Duration>,
     pub call_id: Option<String>,
+    /// 发起调用的 MCP 会话（渐进暴露展开新 App 时只通知该会话）；Hub API 为 `None`。
+    pub mcp_session: Option<u64>,
 }
 
 impl CallCtx {
     pub(crate) fn from_request(req: CallRequest) -> Self {
         Self {
+            mcp_session: None,
             session_key: crate::hub::api_session_key(req.session.as_deref()),
             name: req.name,
             arguments: req.arguments,
@@ -223,11 +228,12 @@ impl HubShared {
             if !matches!(out.body, Body::Upstream(Err(_))) {
                 out.overview = self.attach_overview(&ctx.session_key, app_id);
             }
+            self.expose_in_session(&ctx, app_id);
             return out;
         }
 
         // 内置工具
-        if let Some(r) = self.call_builtin(&ctx.session_key, &name, &args) {
+        if let Some(r) = self.call_builtin(&ctx, &name, &args) {
             return inv(None, Body::Builtin(r));
         }
 
@@ -254,7 +260,17 @@ impl HubShared {
         let mut out = inv(Some(app_id), Body::App(result));
         out.instance_id = instance_id;
         out.overview = self.attach_overview(&ctx.session_key, app_id);
+        self.expose_in_session(&ctx, app_id);
         out
+    }
+
+    /// 渐进暴露：把 App 加入调用方会话的工具列表；列表因此变化时通知该 MCP 会话。
+    fn expose_in_session(self: &Arc<Self>, ctx: &CallCtx, app_id: &str) {
+        if self.expose_app(&ctx.session_key, app_id)
+            && let Some(id) = ctx.mcp_session
+        {
+            self.notify_session_tools_changed(id);
+        }
     }
 
     fn approval_request(&self, call_id: &str, t: &HubTool, args: &Value, ctx: &CallCtx) -> ApprovalRequest {
@@ -521,11 +537,12 @@ impl HubShared {
 
     /// 内置工具；不是内置工具时返回 `None`。
     fn call_builtin(
-        &self,
-        key: &str,
+        self: &Arc<Self>,
+        ctx: &CallCtx,
         name: &str,
         args: &Value,
     ) -> Option<Result<CallToolResult, ToolError>> {
+        let key = ctx.session_key.as_str();
         let schema = builtin_schema(name)?;
         if let SchemaCheck::Invalid(msg) = schema::check(&schema, args) {
             return Some(Err(ToolError::new(
@@ -551,7 +568,14 @@ impl HubShared {
                         ),
                     )));
                 }
+                // 选定前判断是否已列出，选定后该 App 在本会话直接列出。
+                let newly_listed = self
+                    .exposed_apps(key)
+                    .is_some_and(|e| !e.contains(&app_id));
                 self.select_in_session(key, &app_id, &instance_id);
+                if newly_listed && let Some(id) = ctx.mcp_session {
+                    self.notify_session_tools_changed(id);
+                }
                 Ok(json_result(json!({
                     "appId": app_id,
                     "instanceId": instance_id,
@@ -580,6 +604,36 @@ impl HubShared {
                         Ok(r)
                     }
                 }
+            }
+            TOOL_APPS_TOOLS => {
+                let app_id = arg("appId");
+                let known = self.is_upstream(&app_id) || self.registry().has_app(&app_id);
+                if !known {
+                    return Some(Err(ToolError::new(
+                        ErrorKind::ToolNotFound,
+                        format!(
+                            "没有 appId 为「{app_id}」的 App。可调用 apps.list 查看可用的 App。"
+                        ),
+                    )));
+                }
+                let tools = self.app_tools(&app_id);
+                let progressive = self.progressive();
+                self.expose_in_session(ctx, &app_id);
+                let message = if tools.is_empty() {
+                    format!("App「{app_id}」当前没有工具。")
+                } else if progressive {
+                    format!(
+                        "App「{app_id}」的 {} 个工具已加入本会话的工具列表（客户端刷新列表后可见）；在此之前也可以直接按全名调用。",
+                        tools.len()
+                    )
+                } else {
+                    format!("App「{app_id}」的工具都已在工具列表中，可直接按全名调用。")
+                };
+                Ok(json_result(json!({
+                    "appId": app_id,
+                    "tools": tools,
+                    "message": message,
+                })))
             }
             _ => return None,
         })
@@ -716,8 +770,16 @@ fn obj(v: Value) -> Map<String, Value> {
     }
 }
 
-/// 内置工具（MCP 形式）。
-pub(crate) fn builtin_tools() -> Vec<Tool> {
+/// 内置工具（MCP 形式）。`with_apps_tools`：是否包含 `apps.tools`（只在渐进暴露生效时列出；任何时候都可调用）。
+pub(crate) fn builtin_tools(with_apps_tools: bool) -> Vec<Tool> {
+    let mut tools = all_builtin_tools();
+    if !with_apps_tools {
+        tools.retain(|t| t.name != TOOL_APPS_TOOLS);
+    }
+    tools
+}
+
+fn all_builtin_tools() -> Vec<Tool> {
     vec![
         Tool::new(
             TOOL_APPS_LIST,
@@ -752,18 +814,31 @@ pub(crate) fn builtin_tools() -> Vec<Tool> {
             })),
         )
         .with_annotations(ToolAnnotations::new().read_only(true)),
+        Tool::new(
+            TOOL_APPS_TOOLS,
+            "列出某个 App 的全部工具（全名、说明、参数 inputSchema、风险、可用性）。工具较多时工具列表只含 apps.* 与本会话\
+             用过的 App；调用本工具后该 App 的工具会加入本会话的工具列表，也可以直接按全名 <appId>.<工具名> 调用。\
+             appId 可从 apps.list 获取。",
+            obj(json!({
+                "type": "object",
+                "properties": { "appId": { "type": "string", "description": "App 标识" } },
+                "required": ["appId"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(ToolAnnotations::new().read_only(true)),
     ]
 }
 
 fn builtin_schema(name: &str) -> Option<Value> {
-    builtin_tools()
+    all_builtin_tools()
         .into_iter()
         .find(|t| t.name == name)
         .map(|t| Value::Object((*t.input_schema).clone()))
 }
 
-pub(crate) fn builtin_hub_tools() -> Vec<HubTool> {
-    builtin_tools()
+pub(crate) fn builtin_hub_tools(with_apps_tools: bool) -> Vec<HubTool> {
+    builtin_tools(with_apps_tools)
         .into_iter()
         .map(|t| {
             let name = t.name.to_string();
@@ -1092,11 +1167,16 @@ mod tests {
 
     #[test]
     fn builtins_and_upstream_risk() {
-        let b = builtin_hub_tools();
+        let b = builtin_hub_tools(false);
         assert_eq!(b.len(), 3);
         assert_eq!(b[0].name, "apps.list");
         assert_eq!(b[0].tool, "list");
+        let b = builtin_hub_tools(true);
+        assert_eq!(b.len(), 4);
+        assert_eq!(b[3].name, "apps.tools");
         assert!(builtin_schema("apps.select").is_some());
+        // 未列出时 apps.tools 仍可调用
+        assert!(builtin_schema("apps.tools").is_some());
         assert!(builtin_schema("apps.nope").is_none());
         let t = Tool::new("rm", "删除", obj(json!({"type": "object"})))
             .with_annotations(ToolAnnotations::new().destructive(true));

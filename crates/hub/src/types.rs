@@ -98,8 +98,11 @@ pub struct ToolFilter {
     pub max_risk: Option<Risk>,
     /// 只列出 [`Availability::Available`] 的工具。默认 `false`。
     pub only_available: bool,
-    /// 是否包含内置工具 `apps.list` / `apps.select` / `apps.overview`。默认 `true`。
+    /// 是否包含内置工具 `apps.list` / `apps.select` / `apps.overview`（渐进暴露生效时另有 `apps.tools`）。默认 `true`。
     pub include_builtin: bool,
+    /// 厂商会话 ID（与 [`CallRequest::session`] 相同；`None` = 默认会话）。渐进暴露生效且 `apps` 为 `None` 时，
+    /// 只保留该会话已展开 / 选定的 App 的工具（spec/hub-api.md 3.7）。
+    pub session: Option<String>,
 }
 
 impl Default for ToolFilter {
@@ -109,6 +112,7 @@ impl Default for ToolFilter {
             max_risk: None,
             only_available: false,
             include_builtin: true,
+            session: None,
         }
     }
 }
@@ -130,6 +134,19 @@ impl ToolFilter {
         }
         !self.only_available || tool.availability == Availability::Available
     }
+}
+
+/// 工具暴露方式（spec/hub-api.md 3.7）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolExposure {
+    /// 列出全部工具（旧行为）。
+    All,
+    /// 渐进暴露：工具列表只含 `apps.*` 内置工具，以及本会话展开过（`apps.tools`）、调用过或选定了实例的 App 的工具。
+    Progressive,
+    /// 默认：App 与上游工具总数超过 [`crate::HubConfig::tool_exposure_threshold`] 时按 `Progressive`，否则按 `All`。
+    #[default]
+    Auto,
 }
 
 /// 风险等级的顺序：read < write < destructive < payment < os-sensitive（与协议中的列举顺序一致）。
@@ -489,6 +506,12 @@ mod tests {
         let f: ToolFilter = serde_json::from_value(json!({"maxRisk": "write"})).unwrap();
         assert!(f.include_builtin);
         assert_eq!(f.max_risk, Some(Risk::Write));
+        assert_eq!(f.session, None);
+        let f: ToolFilter = serde_json::from_value(json!({"session": "s"})).unwrap();
+        assert_eq!(f.session.as_deref(), Some("s"));
+        assert_eq!(serde_json::to_value(ToolExposure::Progressive).unwrap(), json!("progressive"));
+        assert_eq!(serde_json::from_value::<ToolExposure>(json!("all")).unwrap(), ToolExposure::All);
+        assert_eq!(ToolExposure::default(), ToolExposure::Auto);
         let o = CallOutcome {
             call_id: "c".into(),
             result: Err(ToolError::new(ErrorKind::UserRejected, "不")),

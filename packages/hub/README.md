@@ -127,12 +127,27 @@ hub.setWaker(async (req) => {
   await launchMyApp(req.descriptor.target!, [req.activationArg])   // App 端把参数交给 handleWake()
 })
 // resolve = 已发出激活；抛错 / reject → LAUNCH_FAILED；抛 HubError('APP_NOT_INSTALLED', …) 等协议类别则按该类别结束调用
-hub.setWaker(null)                                                 // 恢复默认实现
+hub.setWaker(null)                                                 // 恢复配置 waker 决定的实现
 ```
 
 相关配置（毫秒）：`leaseTtlMs`（调用后给实例的租约，默认 60000，0 关闭）、`wakeTimeoutMs`（默认 15000）、
 `wakeTokenTtlMs`（默认 60000）、`dormantTtlMs`（休眠记录保留，默认 24 小时）、`dormantReplacedByNewInstance`（默认 true）、
-`wakeFromLaunch`（App 未运行且清单无显式 `wake` 时由 `launch` 推导唤醒方式，默认 false）。
+`wakeFromLaunch`（App 未运行且清单无显式 `wake` 时由 `launch` 推导唤醒方式，默认 false）、
+`waker`（`'system'` 默认 / `'none'` 不唤醒 / `{ exec: ['node', 'wake.mjs'] }`）。
+
+## 渐进暴露（工具很多时）
+
+`toolExposure: 'auto'`（默认）下，App 与上游工具总数超过 `toolExposureThreshold`（默认 40）时，`tools()` / `exportTools()`
+只返回内置工具 `apps.list` / `apps.select` / `apps.overview` / `apps.tools`，以及该会话展开过、调用过或选定了实例的 App 的工具。
+模型调用 `apps.tools({ appId })` 得到该 App 的工具（含 schema），之后这些工具出现在同一会话的导出里；未列出的工具按全名 / 导出名
+仍可直接调用。会话由 `ToolFilter.session` 与 `dispatch(format, call, session)` 的会话对应：
+
+```ts
+const tools = toAnthropicTools(hub, { session: convId })      // 每轮重新导出
+const results = await handleAnthropicToolUses(hub, content, { session: convId })
+```
+
+`toolExposure: 'all'` 恢复全部列出；`'progressive'` 始终渐进。给出 `ToolFilter.apps` 时列出这些 App 的全部工具。
 
 ## 自有 LLM 循环示例（Anthropic HTTP，无 SDK）
 

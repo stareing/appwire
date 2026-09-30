@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use app_mcp_hub::{
     ApprovalHandler, ApprovalPolicy, ApprovalRequest, CallRequest, ErrorKind, Hub, HubConfig,
-    HubEvent, PairingHandler, PairingRequest, Risk, ToolFilter, ToolFormat, async_trait,
+    HubEvent, PairingHandler, PairingRequest, Risk, ToolExposure, ToolFilter, ToolFormat,
+    async_trait,
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -188,9 +189,14 @@ fn config() -> HubConfig {
 }
 
 async fn wait_tool(hub: &Hub, name: &str) {
+    // 显式指定 App：不受渐进暴露影响
+    let filter = ToolFilter {
+        apps: name.split_once('.').map(|(a, _)| vec![a.to_owned()]),
+        ..Default::default()
+    };
     timeout(T, async {
         while !hub
-            .tools(&ToolFilter::default())
+            .tools(&filter)
             .iter()
             .any(|t| t.name == name && t.availability == app_mcp_hub::Availability::Available)
         {
@@ -821,4 +827,125 @@ async fn mcp_session_uses_same_call_path() {
     assert_eq!(a.asked.load(Ordering::SeqCst), 2);
     let req = a.last.lock().unwrap().clone().unwrap();
     assert!(req.session.unwrap().starts_with("mcp:"));
+}
+
+// ---------------------------------------------------------------------------
+// 渐进暴露（spec/hub-api.md 3.7）
+// ---------------------------------------------------------------------------
+
+fn names(tools: &[app_mcp_hub::HubTool]) -> Vec<String> {
+    tools.iter().map(|t| t.name.clone()).collect()
+}
+
+fn session(s: &str) -> ToolFilter {
+    ToolFilter {
+        session: Some(s.into()),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn progressive_exposure_api_and_export() {
+    let hub = Hub::start(HubConfig {
+        tool_exposure: ToolExposure::Progressive,
+        ..config()
+    })
+    .await
+    .unwrap();
+    let _a = connect(&hub, Spec::new("shop", "i1")).await;
+    let _b = connect(&hub, Spec::new("notes", "n1")).await;
+    wait_tool(&hub, "shop.echo").await;
+    wait_tool(&hub, "notes.echo").await;
+    let builtins = ["apps.list", "apps.select", "apps.overview", "apps.tools"];
+    assert_eq!(names(&hub.tools(&ToolFilter::default())), builtins);
+    assert_eq!(
+        exported_names(ToolFormat::Anthropic, &hub.export_tools(ToolFormat::Anthropic, &ToolFilter::default())),
+        ["apps__list", "apps__select", "apps__overview", "apps__tools"]
+    );
+    // 显式指定 apps 时不受渐进暴露影响
+    let explicit = ToolFilter { apps: Some(vec!["notes".into()]), include_builtin: false, ..Default::default() };
+    assert_eq!(hub.tools(&explicit).len(), 3);
+
+    // dispatch apps.tools（默认会话）→ 返回 schema，shop 加入默认会话的导出
+    let r = hub
+        .dispatch(ToolFormat::Anthropic, tool_call(ToolFormat::Anthropic, "apps__tools", json!({"appId": "shop"})))
+        .await;
+    let (text, is_error) = result_text(ToolFormat::Anthropic, &r);
+    assert!(!is_error, "{text}");
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["appId"], "shop");
+    let echo = v["tools"].as_array().unwrap().iter().find(|t| t["name"] == "shop.echo").unwrap();
+    assert_eq!(echo["inputSchema"]["required"], json!(["text"]));
+    let listed = names(&hub.tools(&ToolFilter::default()));
+    assert!(listed.contains(&"shop.echo".to_string()), "{listed:?}");
+    assert!(!listed.iter().any(|n| n.starts_with("notes.")), "{listed:?}");
+    let exported = exported_names(ToolFormat::OpenAiChat, &hub.export_tools(ToolFormat::OpenAiChat, &ToolFilter::default()));
+    assert!(exported.contains(&"shop__echo".to_string()), "{exported:?}");
+
+    // 其他会话不受影响；未列出的工具按全名仍可调用，调用后加入该会话
+    assert_eq!(names(&hub.tools(&session("c2"))), builtins);
+    let mut req = CallRequest::new("notes.echo", json!({"text": "hi"}));
+    req.session = Some("c2".into());
+    let out = hub.call_tool(req).await.unwrap();
+    assert!(out.result.is_ok(), "{:?}", out.result);
+    let listed = names(&hub.tools(&session("c2")));
+    assert!(listed.contains(&"notes.echo".to_string()), "{listed:?}");
+    assert!(!listed.iter().any(|n| n.starts_with("shop.")), "{listed:?}");
+    // 导出名按全部工具计算：未列出的工具经导出名分派也能调用
+    let r = hub
+        .dispatch_in_session(ToolFormat::Anthropic, tool_call(ToolFormat::Anthropic, "notes__echo", json!({"text": "x"})), Some("c3"))
+        .await;
+    assert!(!result_text(ToolFormat::Anthropic, &r).1);
+
+    // 未知 App
+    let out = hub.call_tool(CallRequest::new("apps.tools", json!({"appId": "nope"}))).await.unwrap();
+    assert_eq!(out.result.unwrap_err().kind, ErrorKind::ToolNotFound);
+
+    // 全局选定实例：所有会话都直接列出
+    hub.select_instance("notes", Some("n1"));
+    assert!(names(&hub.tools(&session("c4"))).contains(&"notes.echo".to_string()));
+    hub.select_instance("notes", None);
+    assert_eq!(names(&hub.tools(&session("c4"))), builtins);
+
+    // reset_session 清除已展开的 App
+    hub.reset_session(Some("c2"));
+    assert_eq!(names(&hub.tools(&session("c2"))), builtins);
+}
+
+#[tokio::test]
+async fn auto_exposure_switches_at_threshold() {
+    let hub = Hub::start(HubConfig {
+        tool_exposure_threshold: 3,
+        ..config()
+    })
+    .await
+    .unwrap();
+    // 默认 Auto：3 个工具不超过阈值 → 全部列出，且不列 apps.tools
+    let _a = connect(&hub, Spec::new("shop", "i1")).await;
+    wait_tool(&hub, "shop.echo").await;
+    let listed = names(&hub.tools(&ToolFilter::default()));
+    assert_eq!(listed.len(), 6, "{listed:?}");
+    assert!(!listed.contains(&"apps.tools".to_string()));
+    // apps.tools 任何时候都可调用
+    let out = hub.call_tool(CallRequest::new("apps.tools", json!({"appId": "shop"}))).await.unwrap();
+    assert_eq!(out.result.unwrap()["tools"].as_array().unwrap().len(), 3);
+    // 第二个 App 连接后超过阈值 → 渐进；默认会话已展开 shop（上面的 apps.tools）
+    let _b = connect(&hub, Spec::new("notes", "n1")).await;
+    wait_tool(&hub, "notes.echo").await;
+    let listed = names(&hub.tools(&ToolFilter::default()));
+    assert!(listed.contains(&"apps.tools".to_string()), "{listed:?}");
+    assert!(listed.contains(&"shop.echo".to_string()), "{listed:?}");
+    assert!(!listed.iter().any(|n| n.starts_with("notes.")), "{listed:?}");
+
+    // All：始终全部列出
+    let all = Hub::start(HubConfig {
+        tool_exposure: ToolExposure::All,
+        tool_exposure_threshold: 0,
+        ..config()
+    })
+    .await
+    .unwrap();
+    let _c = connect(&all, Spec::new("shop", "i1")).await;
+    wait_tool(&all, "shop.echo").await;
+    assert_eq!(all.tools(&ToolFilter::default()).len(), 6);
 }

@@ -34,7 +34,7 @@ export interface HubLike {
 }
 
 export interface DispatchOptions {
-  /** 厂商会话 ID（总览首次附带按会话计算）；缺省为默认会话。 */
+  /** 厂商会话 ID（总览首次附带、渐进暴露按会话计算；与导出时 `ToolFilter.session` 对应）；缺省为默认会话。 */
   session?: string | null
   /** 逐个执行（默认并发执行；同一 App 的调用本身按其并发上限排队）。 */
   sequential?: boolean

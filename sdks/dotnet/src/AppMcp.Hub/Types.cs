@@ -46,6 +46,40 @@ public static class HubRiskExtensions
     };
 }
 
+/// <summary>工具暴露方式（spec/hub-api.md 3.7）。</summary>
+public enum ToolExposure
+{
+    /// <summary>App 与上游工具总数超过阈值时渐进暴露，否则全部列出（默认）。</summary>
+    Auto,
+    /// <summary>工具列表只含 apps.* 与本会话展开过（apps.tools）、调用过或选定了实例的 App 的工具。</summary>
+    Progressive,
+    /// <summary>全部列出。</summary>
+    All,
+}
+
+/// <summary>唤醒器配置（spec/hub-api.md 3.5）；<see cref="AppMcpHub"/> 的自定义唤醒回调优先。</summary>
+public sealed class WakerOptions
+{
+    private readonly JsonNode _json;
+    private WakerOptions(JsonNode json) => _json = json;
+
+    /// <summary>按平台执行系统激活（默认）。</summary>
+    public static WakerOptions System { get; } = new(JsonValue.Create("system"));
+    /// <summary>不唤醒：休眠实例 / 未运行 App 的调用直接返回 APP_DISCONNECTED。</summary>
+    public static WakerOptions None { get; } = new(JsonValue.Create("none"));
+
+    /// <summary>执行 program args…（不经 shell），唤醒请求以一行 JSON 写入其 stdin。</summary>
+    public static WakerOptions Exec(string program, params string[] args)
+    {
+        if (string.IsNullOrEmpty(program)) throw new ArgumentException("program 不能为空", nameof(program));
+        var argv = new JsonArray((JsonNode?)program);
+        foreach (var a in args) argv.Add(a);
+        return new WakerOptions(new JsonObject { ["exec"] = argv });
+    }
+
+    internal JsonNode ToJson() => _json.DeepClone();
+}
+
 public class HubException : Exception
 {
     public HubException(HubStatus status, string message) : base(message) => Status = status;
@@ -92,6 +126,15 @@ public sealed class HubOptions
     public bool? DormantReplacedByNewInstance { get; set; }
     /// <summary>App 未运行且清单无显式 wake 时，是否由清单 launch 推导唤醒方式（默认 false）。</summary>
     public bool? WakeFromLaunch { get; set; }
+    /// <summary>唤醒器（默认 <see cref="WakerOptions.System"/>）。</summary>
+    public WakerOptions? Waker { get; set; }
+
+    // ---- 渐进暴露（spec/hub-api.md 3.7）----
+
+    /// <summary>工具暴露方式（默认 <see cref="AppMcp.Hub.ToolExposure.Auto"/>）。</summary>
+    public ToolExposure? ToolExposure { get; set; }
+    /// <summary>Auto 的阈值：App 与上游工具总数超过此值时渐进暴露（默认 40）。</summary>
+    public int? ToolExposureThreshold { get; set; }
 
     /// <summary>上游 MCP 服务器（名称 → 启动方式）。</summary>
     public IDictionary<string, UpstreamOptions> Upstreams { get; } = new Dictionary<string, UpstreamOptions>();
@@ -143,6 +186,13 @@ public sealed class HubOptions
         AddMs(o, "dormantTtlMs", DormantTtl);
         if (DormantReplacedByNewInstance is { } drn) o["dormantReplacedByNewInstance"] = drn;
         if (WakeFromLaunch is { } wfl) o["wakeFromLaunch"] = wfl;
+        if (Waker is { } wk) o["waker"] = wk.ToJson();
+        if (ToolExposure is { } te) o["toolExposure"] = te.ToString().ToLowerInvariant();
+        if (ToolExposureThreshold is { } tt)
+        {
+            if (tt < 0) throw new ArgumentOutOfRangeException(nameof(ToolExposureThreshold), "阈值不能为负数");
+            o["toolExposureThreshold"] = tt;
+        }
         if (Upstreams.Count > 0)
         {
             var ups = new JsonObject();
@@ -198,8 +248,11 @@ public sealed class ToolFilter
     public IReadOnlyList<string>? Apps { get; init; }
     public HubRisk? MaxRisk { get; init; }
     public bool OnlyAvailable { get; init; }
-    /// <summary>是否包含内置工具 apps.list / apps.select / apps.overview（默认 true）。</summary>
+    /// <summary>是否包含内置工具 apps.list / apps.select / apps.overview（渐进暴露生效时另有 apps.tools；默认 true）。</summary>
     public bool IncludeBuiltin { get; init; } = true;
+    /// <summary>厂商会话 ID（null = 默认会话）。渐进暴露生效且 <see cref="Apps"/> 为 null 时，
+    /// 只保留该会话已展开 / 调用过 / 选定了实例的 App 的工具。</summary>
+    public string? Session { get; init; }
 
     internal string ToJson()
     {
@@ -210,6 +263,7 @@ public sealed class ToolFilter
         };
         if (Apps is not null) o["apps"] = new JsonArray(Apps.Select(a => (JsonNode?)a).ToArray());
         if (MaxRisk is { } r) o["maxRisk"] = r.ToProtocolString();
+        if (Session is not null) o["session"] = Session;
         return o.ToJsonString();
     }
 }

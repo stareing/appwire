@@ -50,6 +50,18 @@ export interface ApprovalPolicy {
   timeout?: number | null
 }
 
+/**
+ * 唤醒器（spec/hub-api.md 3.5）：`system`（默认，按平台执行系统激活）/ `none`（不唤醒，返回 APP_DISCONNECTED）/
+ * `{ exec: [程序, ...参数] }`（不经 shell 执行，唤醒请求以一行 JSON 写入 stdin）。`setWaker` 设置的回调优先。
+ */
+export type WakerConfig = 'system' | 'none' | { exec: string[] }
+
+/**
+ * 工具暴露方式（spec/hub-api.md 3.7）：`auto`（默认，App 与上游工具总数超过阈值时渐进）/
+ * `progressive`（工具列表只含 `apps.*` 与本会话展开过、调用过或选定了实例的 App）/ `all`。
+ */
+export type ToolExposure = 'auto' | 'progressive' | 'all'
+
 /** `Hub.start` 的配置。时长均为毫秒。 */
 export interface HubConfig {
   /**
@@ -86,6 +98,13 @@ export interface HubConfig {
   dormantReplacedByNewInstance?: boolean
   /** App 未运行且清单无显式 wake 时，是否由清单 launch 推导唤醒方式并冷启动，缺省 false。 */
   wakeFromLaunch?: boolean
+  /** 唤醒器，缺省 `system`。 */
+  waker?: WakerConfig
+  // ---- 渐进暴露（spec/hub-api.md 3.7）----
+  /** 工具暴露方式，缺省 `auto`。 */
+  toolExposure?: ToolExposure
+  /** `auto` 的阈值，缺省 40。 */
+  toolExposureThreshold?: number
   /** 上游 MCP 服务器：名称（appId 规则）→ 启动方式。 */
   upstreams?: Record<string, UpstreamConfig>
   approval?: ApprovalPolicy
@@ -155,8 +174,13 @@ export interface ToolFilter {
   maxRisk?: Risk | null
   /** 只列出当前可调用（available）的工具。默认 false。 */
   onlyAvailable?: boolean
-  /** 是否包含内置工具 `apps.list` / `apps.select` / `apps.overview`。默认 true。 */
+  /** 是否包含内置工具 `apps.list` / `apps.select` / `apps.overview`（渐进暴露生效时另有 `apps.tools`）。默认 true。 */
   includeBuiltin?: boolean
+  /**
+   * 厂商会话 ID（与 `dispatch` / `callTool` 的会话相同；缺省 = 默认会话）。渐进暴露生效且未给 `apps` 时，
+   * 只保留该会话已展开 / 调用过 / 选定了实例的 App 的工具。
+   */
+  session?: string | null
 }
 
 export interface HubResource {

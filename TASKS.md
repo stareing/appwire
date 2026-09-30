@@ -73,7 +73,8 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - 结果（2026-10-01）：`app-mcp-host serve` + `service install|uninstall|status|start|stop`（systemd --user / LaunchAgent / HKCU Run → 无窗口 `app-mcp-hostw.exe`）、`~/.app-mcp/config.json`、`/healthz` 单实例（已在运行退出码 0）、日志轮转、令牌（浏览器来源强制，`--auth all` 全部强制）；`.mcp.json` 改 HTTP；hub 单元 69 + host 单元 18 + serve 集成 5（另 systemd 实装 1，`--ignored`，已实跑并卸载）；e2e 12/12 改用 serve + HTTP 客户端；Windows 测试全过、Run 项实装/卸载与无窗口已验证
 1b. [x] 去套壳清单（逐项源码修复）：Python hub 替换 `_uniffi_get_event_loop`（改为非 async 回调 + 完成句柄）；注释工具名 `shop.shop.info`（名称规则在 spec + build 插件源头统一为局部名）；e2e 的假 xdg-open 与去 wake 清单副本（Host 提供正式 Waker 配置）；隐藏态空闲休眠 reason 与 spec 一致；AUMID 传令牌改用 `IApplicationActivationManager`（并入第 7 项提前做）
    - 结果（2026-10-01）：hub-uniffi 回调改为同步 + 完成句柄（`ApprovalResponder` / `PairingResponder` / `WakeResponder`，删除 `CallbackError` / `WakeError`），Kotlin `suspend`（可指定 `CoroutineContext`）/ Swift `Task` / Python 线程池·事件循环·`asyncio.run` 各自适配，删除 monkeypatch 与后台事件循环；spec/protocol.md 3.1 局部名规则，build 注释扫描对 `<appId>.` 前缀报错、核心注册 / Host 同步 / 清单校验警告，shop 改 `@mcp info`；Host `lifecycle.waker` / `--waker system|none|{"exec":[...]}`（`ExecWaker` 把 WakeRequest JSON 写 stdin），e2e M1 用 `none`、生命周期用 `exec` + `e2e/src/record-wake.mjs`，删除 PATH 替身与清单副本；空闲计时到期一律 `idle`（`background` 仅进入后台立即休眠）；clippy `result_large_err` 以具名 `Callback` 实现消除（无 allow/expect）。验证：cargo test 363（serve 端口竞争偶发失败 1 次，与本次无关）、clippy Linux/Windows 0 警告、pnpm test 440 + e2e 12/12、Python 39、Kotlin JVM 11 + Hub 3 + Robolectric 7、Swift 18 + Hub 3、ctest 5/5、dotnet 36 + 9、dart 55
-2. [ ] 工具渐进暴露：默认只 `apps.*` + `apps.tools(appId)`，已选/最近用过的 App 直接列出
+2. [x] 工具渐进暴露：默认只 `apps.*` + `apps.tools(appId)`，已选/最近用过的 App 直接列出
+   - 结果（2026-10-01）：`HubConfig.tool_exposure: ToolExposure::{All, Progressive, Auto}`（默认 `Auto`，App + 上游工具数 > `tool_exposure_threshold` 默认 40 时渐进；工具少时行为不变）；新内置工具 `apps.tools {appId}`（任何模式可调用，渐进时才列出）；会话已列出的 App = `apps.tools` 展开 ∪ 调用过 ∪ `apps.select` / `select_instance` 选定；新增时 MCP 出口只向该会话发 `tools/list_changed`；路由与导出名不变（未列出的工具按全名 / 导出名仍可调用）；`ToolFilter.session`（`tools` / `export_tools` 按会话，显式 `apps` 不受影响）；`Hub::reset_waker`（绑定清除唤醒回调时恢复配置的 waker）；Host `tools: {exposure, threshold}` / `--tool-exposure` / `--tool-exposure-threshold`；hub-c / hub-node 配置 JSON 加 `toolExposure`、`toolExposureThreshold`、`waker`，hub-uniffi `HubConfig.tool_exposure / tool_exposure_threshold / waker`（`WakerConfig::{System, Disabled, Exec}`）与 `ToolFilter.session`，C# `HubOptions.ToolExposure / ToolExposureThreshold / Waker`、`ToolFilter.Session`，TS / Python / Kotlin / Swift 类型同步；spec/hub-api.md 3.7
 3. [ ] 原生本地 IPC 传输：Unix 域套接字 / Windows 命名管道 + 连接鉴权（回环 TCP 仅网页）
 4. [ ] Web：Chrome 本地网络访问 / CSP 拦截检测与提示；SharedWorker/主标签页单连接
 5. [ ] WASM 瘦身：核心注册表去 BTreeMap、绑定改 JSON 交换（目标 gzip < 100 KB）
@@ -113,7 +114,7 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
 - [ ] Hub：API 会话无自动清理（需 `reset_session`）；导出名映射只增不删；`subscribe` 不区分厂商会话；MCP `serverInfo` 名仍为 app-mcp-host
 - [ ] Python `qt_dispatcher` 未测（本机无 Qt）
 - [ ] `crates/host/tests/serve.rs` `second_serve_exits_zero_when_healthy_instance_runs` 偶发失败（约 1/6；`free_port` 先绑后放的端口竞争，serve 启动即退出码 1）
-- [ ] hub-c / hub-node / hub-uniffi 的配置 JSON 尚未暴露 `waker`（`HubConfig::waker`；目前用 set_waker 回调替换）
+- [x] hub-c / hub-node / hub-uniffi 的配置 JSON 尚未暴露 `waker`——已加（随优化队列第 2 项）；清除自定义回调时恢复配置的 waker（`Hub::reset_waker`）
 - [ ] Kotlin jar 发布前用 `--release` 生成（debug `.so` 约 100 MB）
 - [x] 全量验证：`cargo test --workspace`、`cargo clippy --workspace --all-targets`、`pnpm -r test/typecheck/build`、ctest、dotnet test、dart test（2026-09-30 全部通过，另含 Flutter / Python / Kotlin / Swift / codegen / e2e，见上方"全量验证"）
 - [ ] 在 Claude Code 中实际操作 Demo（已配置：`.mcp.json` → `http://127.0.0.1:7718/mcp`，先 `app-mcp-host service install` 或 `serve`；需重启会话并批准项目 MCP 服务器）

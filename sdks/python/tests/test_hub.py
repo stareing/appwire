@@ -184,6 +184,28 @@ def test_formats_and_shutdown() -> None:
         hub.call_tool_sync("apps.list")
 
 
+def test_progressive_exposure() -> None:
+    from app_mcp.hub import ToolExposure, WakerConfig
+
+    with Hub(
+        ws_addr="127.0.0.1:0", tool_exposure=ToolExposure.PROGRESSIVE, waker=WakerConfig.DISABLED()
+    ) as hub:
+        app = start_notes_app(hub)
+        try:
+            wait_tools(hub, 2)
+            builtins = ["apps.list", "apps.select", "apps.overview", "apps.tools"]
+            assert [t.name for t in hub.tools(session="c1")] == builtins
+            r = hub.call_tool_sync("apps.tools", {"appId": "notes"}, session="c1")
+            assert r.error is None
+            assert {t["name"] for t in r.data["tools"]} == {"notes.add", "notes.clear"}
+            assert "notes.add" in {t.name for t in hub.tools(session="c1")}
+            assert [t.name for t in hub.tools()] == builtins
+            names = [t["name"] for t in hub.export_tools("anthropic", session="c1")]
+            assert len(names) == 6
+        finally:
+            app.stop()
+
+
 def json_text(content: object) -> str:
     """Anthropic tool_result.content 可能是字符串或 [{type: text, text}]。"""
     if isinstance(content, str):

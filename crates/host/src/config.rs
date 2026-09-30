@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use app_mcp_hub::{UpstreamConfig, WakerConfig};
+use app_mcp_hub::{ToolExposure, UpstreamConfig, WakerConfig};
 use serde::{Deserialize, Serialize};
 
 /// 默认的 App 连接服务（WebSocket）地址。
@@ -115,6 +115,18 @@ pub struct LifecycleSection {
     pub waker: Option<WakerConfig>,
 }
 
+/// 工具列表（spec/hub-api.md 3.7）。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ToolsSection {
+    /// `"auto"`（默认）/ `"progressive"` / `"all"`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<ToolExposure>,
+    /// `auto` 的阈值（App 与上游工具总数超过它时渐进暴露），默认 40。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<usize>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LogSection {
@@ -150,6 +162,8 @@ pub struct FileConfig {
     pub upstreams: BTreeMap<String, UpstreamConfig>,
     #[serde(skip_serializing_if = "is_default")]
     pub lifecycle: LifecycleSection,
+    #[serde(skip_serializing_if = "is_default")]
+    pub tools: ToolsSection,
     #[serde(skip_serializing_if = "is_default")]
     pub log: LogSection,
 }
@@ -198,6 +212,8 @@ pub struct Overrides {
     pub wake_timeout_ms: Option<u64>,
     pub wake_from_launch: Option<bool>,
     pub waker: Option<WakerConfig>,
+    pub tool_exposure: Option<ToolExposure>,
+    pub tool_exposure_threshold: Option<usize>,
     pub log_level: Option<String>,
     pub log_file: Option<bool>,
 }
@@ -219,6 +235,8 @@ impl FileConfig {
         set(&mut self.lifecycle.wake_timeout_ms, &o.wake_timeout_ms);
         set(&mut self.lifecycle.wake_from_launch, &o.wake_from_launch);
         set(&mut self.lifecycle.waker, &o.waker);
+        set(&mut self.tools.exposure, &o.tool_exposure);
+        set(&mut self.tools.threshold, &o.tool_exposure_threshold);
         set(&mut self.log.level, &o.log_level);
         set(&mut self.log.file, &o.log_file);
         for m in &o.manifests {
@@ -263,6 +281,8 @@ pub struct Settings {
     pub wake_timeout_ms: u64,
     pub wake_from_launch: bool,
     pub waker: WakerConfig,
+    pub tool_exposure: ToolExposure,
+    pub tool_exposure_threshold: usize,
     pub log_level: String,
     pub log_file: bool,
     pub log_max_bytes: u64,
@@ -299,6 +319,11 @@ impl Settings {
             wake_timeout_ms: c.lifecycle.wake_timeout_ms.unwrap_or(15_000),
             wake_from_launch: c.lifecycle.wake_from_launch.unwrap_or(false),
             waker: c.lifecycle.waker.unwrap_or_default(),
+            tool_exposure: c.tools.exposure.unwrap_or_default(),
+            tool_exposure_threshold: c
+                .tools
+                .threshold
+                .unwrap_or(app_mcp_hub::DEFAULT_TOOL_EXPOSURE_THRESHOLD),
             log_level: c.log.level.unwrap_or_else(|| "info".to_owned()),
             log_file: c.log.file.unwrap_or(true),
             log_max_bytes: c.log.max_bytes.unwrap_or(5 * 1024 * 1024),
@@ -334,6 +359,8 @@ mod tests {
         assert!(s.log_file);
         assert_eq!(s.lease_ms, 60_000);
         assert_eq!(s.waker, WakerConfig::System);
+        assert_eq!(s.tool_exposure, ToolExposure::Auto);
+        assert_eq!(s.tool_exposure_threshold, 40);
     }
 
     #[test]
@@ -348,6 +375,7 @@ mod tests {
               "upstreams": { "files": { "command": "npx", "args": ["x"] } },
               "lifecycle": { "leaseMs": 500, "wakeTimeoutMs": 2000, "wakeFromLaunch": true,
                              "waker": { "exec": ["node", "wake.mjs"] } },
+              "tools": { "exposure": "progressive", "threshold": 10 },
               "log": { "level": "debug", "file": false, "maxBytes": 1024, "keep": 1 }
             }"#,
         )
@@ -366,6 +394,10 @@ mod tests {
         assert_eq!(
             s.waker,
             WakerConfig::Exec(vec!["node".into(), "wake.mjs".into()])
+        );
+        assert_eq!(
+            (s.tool_exposure, s.tool_exposure_threshold),
+            (ToolExposure::Progressive, 10)
         );
         assert_eq!(
             (

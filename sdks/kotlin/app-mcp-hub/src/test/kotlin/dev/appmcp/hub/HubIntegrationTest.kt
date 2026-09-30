@@ -228,4 +228,22 @@ class HubIntegrationTest {
         hub.close()
         hub.close() // 幂等
     }
+
+    @Test
+    fun progressiveExposureConfig() {
+        val hub = Hub.start(
+            HubConfig(
+                enableWs = false,
+                toolExposure = ToolExposure.PROGRESSIVE,
+                toolExposureThreshold = 5u,
+                waker = dev.appmcp.hub.ffi.WakerConfig.Disabled,
+            ),
+        )
+        // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
+        assertEquals(
+            listOf("apps.list", "apps.select", "apps.overview", "apps.tools"),
+            hub.tools(ToolFilter(session = "c1")).map { it.name },
+        )
+        hub.close()
+    }
 }

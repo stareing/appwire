@@ -31,14 +31,14 @@ pub use app_mcp_protocol::{Activation, ErrorKind, Risk, ToolError, Visibility};
 pub use format::ToolFormat;
 pub use http_server::{Health, HttpOptions};
 pub use hub::{
-    Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME, load_manifests, parse_resource_uri,
-    resource_uri,
+    DEFAULT_TOOL_EXPOSURE_THRESHOLD, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
+    load_manifests, parse_resource_uri, resource_uri,
 };
 pub use mcp::McpSession;
 pub use types::{
     AppInfo, AppKind, AppOverviewInfo, ApprovalHandler, ApprovalPolicy, ApprovalRequest,
     Availability, CallOutcome, CallRequest, HubError, HubEvent, HubResource, HubTool,
-    InstanceInfo, PairingHandler, PairingRequest, ResourceContent, ToolFilter, risk_rank,
+    InstanceInfo, PairingHandler, PairingRequest, ResourceContent, ToolExposure, ToolFilter, risk_rank,
 };
 pub use upstream::UpstreamConfig;
 pub use wake::{

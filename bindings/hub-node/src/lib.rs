@@ -29,8 +29,8 @@ use std::time::Duration;
 
 use app_mcp_hub::{
     ApprovalHandler, ApprovalPolicy, ApprovalRequest, CallRequest, ErrorKind, Hub, HubConfig,
-    HubError, PairingHandler, PairingRequest, SystemWaker, ToolFilter, ToolFormat, UpstreamConfig,
-    WakeRequest, Waker, async_trait, load_manifests,
+    HubError, PairingHandler, PairingRequest, ToolExposure, ToolFilter, ToolFormat,
+    UpstreamConfig, WakeRequest, Waker, WakerConfig, async_trait, load_manifests,
 };
 use napi::bindgen_prelude::{Promise, spawn};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -123,6 +123,11 @@ struct ConfigJson {
     dormant_ttl_ms: Option<u64>,
     dormant_replaced_by_new_instance: Option<bool>,
     wake_from_launch: Option<bool>,
+    /// `"system"` / `"none"` / `{"exec": [...]}`（spec/hub-api.md 3.5）。
+    waker: Option<WakerConfig>,
+    /// 渐进暴露（spec/hub-api.md 3.7）。
+    tool_exposure: Option<ToolExposure>,
+    tool_exposure_threshold: Option<usize>,
     upstreams: BTreeMap<String, UpstreamConfig>,
     approval: ApprovalPolicy,
 }
@@ -183,6 +188,15 @@ impl ConfigJson {
         }
         if let Some(v) = self.wake_from_launch {
             c.wake_from_launch = v;
+        }
+        if let Some(w) = self.waker {
+            c.waker = w;
+        }
+        if let Some(v) = self.tool_exposure {
+            c.tool_exposure = v;
+        }
+        if let Some(v) = self.tool_exposure_threshold {
+            c.tool_exposure_threshold = v;
         }
         c.upstreams = self.upstreams;
         c.approval = self.approval;
@@ -503,13 +517,13 @@ impl JsHub {
     }
 
     /// 设置唤醒回调：`handler(wakeRequestJson) => Promise<string | null>`（`null` = 已发出激活；
-    /// 字符串 = 失败 `{"kind","message"}`）。`null` 恢复默认的系统唤醒实现。
+    /// 字符串 = 失败 `{"kind","message"}`）。`null` 恢复配置 `waker` 决定的实现（默认系统唤醒）。
     #[napi]
     pub fn set_waker(&self, handler: Option<WakerTsfn>) -> Result<()> {
         let hub = self.hub()?;
         match handler {
             Some(h) => hub.set_waker(Arc::new(JsWaker(h))),
-            None => hub.set_waker(Arc::new(SystemWaker::new())),
+            None => hub.reset_waker(),
         }
         Ok(())
     }

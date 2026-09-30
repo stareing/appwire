@@ -32,6 +32,9 @@
  *     dormantReplacedByNewInstance、wakeFromLaunch。
  *   · JSON 中新增：HubTool.availability 取值 "dormant"；AppInfo.dormantInstances（InstanceInfo 数组）；
  *     事件 {"type":"appDormant","appId","instanceId"} 与 {"type":"appWaking","appId","instanceId"|null}。
+ * - v3（渐进暴露，spec/hub-api.md 3.7）：只做新增。
+ *   · am_hub_start 配置新增可选字段 toolExposure、toolExposureThreshold、waker。
+ *   · ToolFilter 新增可选字段 session（渐进暴露按会话计算）；新内置工具 apps.tools。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -146,6 +149,11 @@ void am_hub_string_free(char *s);
  *   dormantTtlMs         休眠记录保留时长，默认 86400000（24 小时）
  *   dormantReplacedByNewInstance  同一 appId 以新实例 ID 连接时移除其休眠记录，默认 true
  *   wakeFromLaunch       App 未运行且清单无显式 wake 时由 launch 推导唤醒方式，默认 false
+ *   waker                "system"（默认）/ "none"（不唤醒）/ {"exec": ["程序", "参数", …]}（spec/hub-api.md 3.5）；
+ *                        am_hub_set_waker_cb 设置的回调优先
+ *   —— v3 渐进暴露（spec/hub-api.md 3.7）——
+ *   toolExposure         "auto"（默认，App 工具总数超过阈值时渐进）/ "progressive" / "all"
+ *   toolExposureThreshold  auto 的阈值，默认 40
  *   workerThreads        tokio 工作线程数（默认 2）
  * 未知字段报 AM_HUB_ERR_INVALID_JSON。清单无效报 AM_HUB_ERR_INVALID_CONFIG；地址无法绑定报 AM_HUB_ERR_IO。 */
 AmHubStatus am_hub_start(const char *config_json, AmHub **out_hub);
@@ -171,7 +179,8 @@ AmHubStatus am_hub_serve_http(AmHub *hub, const char *addr, bool allow_remote, c
 
 /* AppInfo 数组（含上游，kind = "upstream"）。 */
 AmHubStatus am_hub_apps_json(const AmHub *hub, char **out_json);
-/* HubTool 数组。filter_json 可为 NULL：ToolFilter {apps, maxRisk, onlyAvailable, includeBuiltin}。 */
+/* HubTool 数组。filter_json 可为 NULL：ToolFilter {apps, maxRisk, onlyAvailable, includeBuiltin, session}。
+ * 渐进暴露生效且未给 apps 时，只含内置工具与 session 会话已展开 / 调用过 / 选定了实例的 App 的工具。 */
 AmHubStatus am_hub_tools_json(const AmHub *hub, const char *filter_json, char **out_json);
 /* HubResource 数组。 */
 AmHubStatus am_hub_resources_json(const AmHub *hub, char **out_json);
@@ -234,7 +243,7 @@ AmHubStatus am_hub_approval_complete(AmHubApproval *approval, bool approved);
 AmHubStatus am_hub_set_pairing_cb(AmHub *hub, AmHubPairingFn cb, void *user_data, AmHubFreeFn free_user_data);
 AmHubStatus am_hub_pairing_complete(AmHubPairing *pairing, bool approved);
 
-/* v2：自定义唤醒（替换默认的系统唤醒实现；cb = NULL 恢复默认实现）。调用休眠实例的工具、或 App 未运行
+/* v2：自定义唤醒（替换默认的系统唤醒实现；cb = NULL 恢复配置 waker 决定的实现，默认系统唤醒）。调用休眠实例的工具、或 App 未运行
  * 而清单声明了 wake 时，Hub 生成令牌、发 {"type":"appWaking"} 事件并调用 cb（见 AmHubWakerFn）。
  * 同一目标的并发调用共用一次唤醒。 */
 AmHubStatus am_hub_set_waker_cb(AmHub *hub, AmHubWakerFn cb, void *user_data, AmHubFreeFn free_user_data);

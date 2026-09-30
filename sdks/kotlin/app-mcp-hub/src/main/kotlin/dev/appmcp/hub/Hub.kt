@@ -42,6 +42,12 @@ typealias PairingRequest = dev.appmcp.hub.ffi.PairingRequest
 typealias WakeKind = dev.appmcp.hub.ffi.WakeKind
 typealias WakeDescriptor = dev.appmcp.hub.ffi.WakeDescriptor
 
+/** 工具暴露方式（`AUTO` / `PROGRESSIVE` / `ALL`，spec/hub-api.md 3.7）。 */
+typealias ToolExposure = dev.appmcp.hub.ffi.ToolExposure
+
+/** 唤醒器配置；变体需通过 `dev.appmcp.hub.ffi.WakerConfig.System` / `.Disabled` / `.Exec(argv)` 访问（typealias 不能访问嵌套类）。 */
+typealias WakerConfig = dev.appmcp.hub.ffi.WakerConfig
+
 /** 交给 [Hub.setWaker] 的唤醒请求（`appId`、`instanceId`、`descriptor`、`token`、`activationArg`）。 */
 typealias WakeRequest = dev.appmcp.hub.ffi.WakeRequest
 

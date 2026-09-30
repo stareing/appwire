@@ -1047,3 +1047,87 @@ async fn hidden_instances_get_relaxed_idle_timeout() {
         "后台实例应在 hidden_idle_timeout 后断开：{ids:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 渐进暴露（spec/hub-api.md 3.7）
+// ---------------------------------------------------------------------------
+
+/// 等到工具列表变化通知计数超过 `before`。
+async fn wait_tool_change(handler: &TestClient, before: usize) {
+    timeout(T, async {
+        while handler.tool_changes.load(Ordering::SeqCst) <= before {
+            handler.tool_changed.notified().await;
+        }
+    })
+    .await
+    .expect("没有收到 tools/list_changed");
+}
+
+#[tokio::test]
+async fn progressive_exposure_over_mcp() {
+    let host = start(HostConfig {
+        tool_exposure: app_mcp_hub::ToolExposure::Progressive,
+        ..config()
+    })
+    .await;
+    let _shop = connect_sdk(&host, SdkSpec::new("shop", "i1")).await;
+    let _notes = connect_sdk(&host, SdkSpec::new("notes", "n1")).await;
+    // 等两个 App 都注册完工具
+    timeout(T, async {
+        while host.tools(&app_mcp_hub::ToolFilter { apps: Some(vec!["shop".into(), "notes".into()]), ..Default::default() }).len() < 6 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("工具没有注册");
+
+    let (client, handler) = mcp_client(&host).await;
+    let info = client.peer_info().expect("server info");
+    assert!(info.instructions.as_deref().is_some_and(|s| s.contains("apps.tools")));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    // 默认只列出 apps.*
+    let names = tool_names(&client).await;
+    assert_eq!(names, ["apps.list", "apps.select", "apps.overview", "apps.tools"]);
+
+    // apps.tools 返回 schema，并把 shop 加入本会话的列表（通知 list_changed）
+    let before = handler.tool_changes.load(Ordering::SeqCst);
+    let r = call(&client, "apps.tools", json!({"appId": "shop"})).await;
+    assert_eq!(r.is_error, Some(false));
+    let v = r.structured_content.clone().unwrap();
+    let echo = v["tools"].as_array().unwrap().iter().find(|t| t["name"] == "shop.echo").unwrap();
+    assert_eq!(echo["inputSchema"]["required"], json!(["text"]));
+    wait_tool_change(&handler, before).await;
+    let names = tool_names(&client).await;
+    assert!(names.contains(&"shop.echo".to_string()), "{names:?}");
+    assert!(!names.iter().any(|n| n.starts_with("notes.")), "{names:?}");
+
+    // 再次展开同一个 App 不再通知
+    let before = handler.tool_changes.load(Ordering::SeqCst);
+    call(&client, "apps.tools", json!({"appId": "shop"})).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(handler.tool_changes.load(Ordering::SeqCst), before);
+
+    // 未列出的工具按全名仍可调用，调用后该 App 也加入列表
+    let r = call(&client, "notes.echo", json!({"text": "hi"})).await;
+    assert_eq!(r.is_error, Some(false), "{:?}", texts(&r));
+    wait_tool_change(&handler, before).await;
+    let names = tool_names(&client).await;
+    assert!(names.contains(&"notes.echo".to_string()), "{names:?}");
+
+    // 未知 App
+    let r = call(&client, "apps.tools", json!({"appId": "nope"})).await;
+    assert_eq!(r.is_error, Some(true));
+    assert!(texts(&r)[0].starts_with("TOOL_NOT_FOUND"));
+
+    // 另一个会话互不影响；apps.select 选定实例后该 App 直接列出
+    let (client2, handler2) = mcp_client(&host).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(tool_names(&client2).await.len(), 4);
+    let before = handler2.tool_changes.load(Ordering::SeqCst);
+    let r = call(&client2, "apps.select", json!({"appId": "notes", "instanceId": "n1"})).await;
+    assert_eq!(r.is_error, Some(false));
+    wait_tool_change(&handler2, before).await;
+    let names = tool_names(&client2).await;
+    assert!(names.contains(&"notes.echo".to_string()), "{names:?}");
+    assert!(!names.iter().any(|n| n.starts_with("shop.")), "{names:?}");
+}
