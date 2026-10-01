@@ -18,6 +18,8 @@ public enum HubStatus
     Stopped = 7,
     Internal = 8,
     Panic = 9,
+    /// <summary>请求的能力未编入本 Hub 库（cargo feature 关闭）；错误说明含缺少的 feature 名。此前同类错误为 <see cref="Io"/>。</summary>
+    Unsupported = 10,
 }
 
 /// <summary>工具导出格式（spec/hub-api.md 第 5 节），与 AmHubToolFormat 一致。</summary>

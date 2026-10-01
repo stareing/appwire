@@ -26,6 +26,8 @@ public class HubBasicTests
         Assert.Equal(3, (int)ToolFormat.Anthropic);
         Assert.Contains("AM_HUB_ERR_PANIC = 9", header);
         Assert.Equal(9, (int)HubStatus.Panic);
+        Assert.Contains("AM_HUB_ERR_UNSUPPORTED = 10", header);
+        Assert.Equal(10, (int)HubStatus.Unsupported);
     }
 
     private static string HeaderPath(string root) => Path.Combine(root, "bindings", "hub-c", "include", "app_mcp_hub.h");
