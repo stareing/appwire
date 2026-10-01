@@ -1,5 +1,7 @@
 # @app-mcp/inspect
 
+> Part of [AppWire](https://github.com/stareing/appwire): an opt-in fallback that lets AI agents operate web interfaces that declare no MCP tools, via a compact outline of interactive elements and short references (`e12`) for click, fill, key and submit.
+
 为**没有声明工具**的网页界面提供兜底的通用操作能力：读出一份精简的可交互元素大纲，再用短引用（`e12`）点击、填写、按键、提交。
 
 > **定位：能力超集中的最低一级，默认关闭。**

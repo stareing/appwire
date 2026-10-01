@@ -8,7 +8,8 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- 公开成员缺少 XML 注释时不报错 -->
     <NoWarn>$(NoWarn);CS1591</NoWarn>
-    <Description>app-mcp 的 C# SDK（基于 C ABI 的 P/Invoke 封装）</Description>
+    <Description>AppWire C# SDK: expose WPF, WinUI and .NET app actions as MCP (Model Context Protocol) tools for AI agents</Description>
+    <PackageTags>mcp;model-context-protocol;ai-agent;llm;tool-calling;wpf;winui;appwire</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

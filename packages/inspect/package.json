@@ -1,7 +1,12 @@
 {
   "name": "@app-mcp/inspect",
   "version": "0.1.0",
-  "description": "未声明界面的兜底操作：精简可交互大纲 + 短引用操作（默认关闭，开发或显式启用时使用）",
+  "description": "AppWire UI inspection fallback: compact interactive outline and short-reference actions for undeclared interfaces (opt-in)",
+  "keywords": ["accessibility", "ui-automation", "inspect", "mcp", "model-context-protocol", "mcp-server", "ai", "ai-agent", "llm", "tool-calling", "function-calling", "claude", "openai", "gemini", "appwire"],
+  "homepage": "https://github.com/stareing/appwire/tree/main/packages/inspect#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/stareing/appwire.git", "directory": "packages/inspect" },
+  "bugs": { "url": "https://github.com/stareing/appwire/issues" },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",

@@ -1,5 +1,7 @@
 # @app-mcp/web
 
+> Part of [AppWire](https://github.com/stareing/appwire): the browser SDK that exposes your web app's actions as MCP (Model Context Protocol) tools for AI agents such as Claude, ChatGPT and Gemini, with a WebMCP polyfill and bridge. Works with Claude Code, Claude Desktop and any MCP client through the local AppWire Host.
+
 浏览器 SDK：把网页中的业务动作以 MCP 工具暴露给模型（经本地 app-mcp Host 供 Claude Desktop / Claude Code 调用）。
 
 ```ts

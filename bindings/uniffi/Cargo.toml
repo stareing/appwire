@@ -1,10 +1,14 @@
 [package]
 name = "app-mcp-uniffi"
-description = "app-mcp 原生 SDK 的 uniffi 绑定（Kotlin、Swift、Python）"
+description = "AppWire bindings for Kotlin, Swift and Python apps (UniFFI)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 publish = false
 
 [lib]

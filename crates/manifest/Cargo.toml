@@ -1,10 +1,14 @@
 [package]
 name = "app-mcp-manifest"
-description = "静态能力清单 app-mcp.json 的类型、解析与校验（规范见 spec/manifest.md）"
+description = "AppWire static manifest (app-mcp.json): types, parsing and validation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 app-mcp-protocol.workspace = true

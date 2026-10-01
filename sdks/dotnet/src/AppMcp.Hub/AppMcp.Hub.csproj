@@ -8,7 +8,8 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- 公开成员缺少 XML 注释时不报错 -->
     <NoWarn>$(NoWarn);CS1591</NoWarn>
-    <Description>app-mcp Hub SDK（Agent 端）的 C# 封装（基于 app_mcp_hub.h 的 P/Invoke）</Description>
+    <Description>AppWire Hub for .NET: embed the hub in a C# agent to call the MCP tools of every app on the device</Description>
+    <PackageTags>mcp;model-context-protocol;ai-agent;llm;tool-calling;agent;appwire</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

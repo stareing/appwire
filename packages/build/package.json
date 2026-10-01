@@ -1,7 +1,12 @@
 {
   "name": "@app-mcp/build",
   "version": "0.1.0",
-  "description": "app-mcp 构建插件：从静态工具定义生成 app-mcp.json 清单",
+  "description": "AppWire build plugin (Vite): generate MCP tools and the app-mcp.json manifest from @mcp doc comments",
+  "keywords": ["vite", "vite-plugin", "codegen", "manifest", "mcp", "model-context-protocol", "mcp-server", "ai", "ai-agent", "llm", "tool-calling", "function-calling", "claude", "openai", "gemini", "appwire"],
+  "homepage": "https://github.com/stareing/appwire/tree/main/packages/build#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/stareing/appwire.git", "directory": "packages/build" },
+  "bugs": { "url": "https://github.com/stareing/appwire/issues" },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,21 +1,191 @@
-# app-mcp
+# AppWire — turn any app into MCP tools for AI agents
 
-**English** · [简体中文](docs/README.zh-CN.md)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![MCP](https://img.shields.io/badge/Model%20Context%20Protocol-compatible-8A2BE2)](https://modelcontextprotocol.io)
+[![GitHub stars](https://img.shields.io/github/stars/stareing/appwire?style=social)](https://github.com/stareing/appwire)
+
+**English** · [简体中文](docs/README.zh-CN.md) · [繁體中文](docs/README.zh-TW.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Español](docs/README.es.md) · [Português (Brasil)](docs/README.pt-BR.md) · [Français](docs/README.fr.md) · [Deutsch](docs/README.de.md) · [Русский](docs/README.ru.md) · [Italiano](docs/README.it.md)
+
+**AppWire is an open-source [Model Context Protocol (MCP)](https://modelcontextprotocol.io) SDK and
+local hub that exposes the real actions of web, desktop and mobile apps as tools for AI agents** —
+Claude, ChatGPT, Gemini, Claude Code or your own LLM loop. Declare a tool next to the code that
+already does the work (a React hook, an HTML attribute, a doc comment, a Kotlin or Swift function)
+and any MCP client can call it. No screen scraping, no computer use, no browser automation.
+
+- **One SDK per platform, one Rust core:** React, plain HTML, Node, Electron, Tauri, Rust, C/C++,
+  C# (WPF, WinUI), Kotlin/Android, Swift (iOS, macOS), Python (Qt, Tk), Dart/Flutter.
+- **One hub for every app on the device:** speaks MCP (stdio, Streamable HTTP) and exports OpenAI,
+  Anthropic and Gemini tool-calling / function-calling formats, or embeds into your own agent.
+- **Standards in, standards out:** consumes and generates WebMCP, Apple App Intents, Android
+  AppFunctions and Windows App Actions; aggregates existing MCP servers.
+- **Safe by default:** per-tool risk levels and human approval for payments and destructive actions.
 
 > **Everything is a Tool.**
 > Apps are capabilities. Interfaces are declarations. A call is a wake-up.
 
-app-mcp lets any app — web, desktop or mobile — expose its real actions to AI models as
-[MCP](https://modelcontextprotocol.io) tools, without changing how people use the app and without
-the model scraping screens. One Hub connects every app on the device to any agent: Claude Code and
-other MCP clients, your own LLM loop, or an assistant a device vendor embeds.
+> The project was developed under the working name **app-mcp**; package, crate and binary names
+> (`@app-mcp/*`, `app-mcp-*`, `app-mcp-host`) still use it.
+
+## Contents
+
+[Quick look](#a-quick-look) · [Install](#install) · [Try it](#try-it) ·
+[Platforms](#platforms-and-packages) · [How it works](#how-it-works) ·
+[Comparison](#how-appwire-compares) · [Philosophy](#philosophy) · [FAQ](#faq) ·
+[Docs](#documentation)
+
+## A quick look
+
+**React** — a tool that exists only while the component is mounted
+
+```tsx
+useTool('cart.checkout', {
+  description: 'Check out the current cart',
+  risk: 'payment',
+  input: z.object({ addressId: z.string() }),
+  handler: ({ addressId }) => checkout(addressId),
+})
+```
+
+**Plain HTML** — no JavaScript required
+
+```html
+<button data-mcp-tool="cart.clear" data-mcp-desc="Empty the cart">Clear</button>
+```
+
+**A doc comment** (with `@app-mcp/build`) — tools generated at compile time
+
+```ts
+/** Estimate delivery days for a city. @mcp */
+export function deliveryEstimate(city: string, express?: boolean) { … }
+```
+
+**Your own LLM loop** (embedded Hub, Node) — one call to export every app's tools
+
+```ts
+const hub = await Hub.start({})
+const tools = hub.exportTools('anthropic')            // or 'openai-chat', 'openai-responses', 'gemini', 'mcp'
+const results = await handleAnthropicToolUses(hub, response.content)
+```
+
+## Install
+
+Packages are published with the first release; until then, build from source as shown in
+[Try it](#try-it).
+
+```bash
+# Web
+npm install @app-mcp/web @app-mcp/react        # also: @app-mcp/dom, @app-mcp/store, @app-mcp/build
+# Node / Electron
+npm install @app-mcp/node @app-mcp/electron
+# Embed the hub in a Node agent (LangChain.js, Vercel AI SDK, OpenAI / Anthropic SDK)
+npm install @app-mcp/hub
+# Rust / Tauri v2
+cargo add app-mcp-native                       # Tauri: tauri-plugin-app-mcp + @app-mcp/tauri
+# The local hub (MCP server for Claude Code, Claude Desktop, Cursor and other MCP clients)
+cargo install app-mcp-host
+```
+
+Native SDKs for C/C++, C#, Kotlin, Swift, Python and Dart live under [`sdks/`](sdks) and
+[`bindings/`](bindings); each has its own build instructions.
+
+## Try it
+
+```bash
+# build the Host and run it as a resident service (one process serves every MCP client)
+cargo build -p app-mcp-host
+target/debug/app-mcp-host serve            # or: app-mcp-host service install  (start at login)
+target/debug/app-mcp-host status           # one-line summary
+target/debug/app-mcp-host doctor           # something wrong? each check gives a verdict and a fix
+
+# run the demo shop, then open it in a browser
+pnpm --filter @app-mcp/example-shop dev
+```
+
+The Host serves everything on one port, `127.0.0.1:7717`: web apps connect to `/app` (WebSocket),
+MCP clients use Streamable HTTP at `http://127.0.0.1:7717/mcp`, and `/healthz` reports the Host's
+identity. Native apps connect over a per-user local socket (Unix domain socket / Windows named
+pipe), which also serves MCP for agents that speak HTTP over local sockets. A lock file keeps one
+Host per user, and the actual endpoints are recorded in `~/.app-mcp/run/endpoints.json`.
+
+This repository's `.mcp.json` points Claude Code at that endpoint; restart the session, open the
+demo page, and ask Claude to operate the shop. Any other MCP client works the same way:
+
+```json
+{ "mcpServers": { "appwire": { "type": "http", "url": "http://127.0.0.1:7717/mcp" } } }
+```
+
+When something does not connect, `app-mcp-host doctor` checks the Host, lock, local socket
+permissions, which process holds the port, Windows excluded port ranges, the token mode,
+`adb reverse`, and each app's state and last error; SDK states carry machine-readable error codes
+(`spec/protocol.md` §10). See [`crates/host/README.md`](crates/host/README.md) for configuration,
+the access token and other MCP clients.
+
+## Platforms and packages
+
+| Where | Package | Notes |
+|---|---|---|
+| Web | `@app-mcp/web`, `@app-mcp/react`, `@app-mcp/dom`, `@app-mcp/store`, `@app-mcp/build` | WASM core; WebMCP polyfill/bridge; HTML attributes; Zustand / Redux / Pinia; compile-time `@mcp` |
+| Node / Electron | `@app-mcp/node`, `@app-mcp/electron` | main process + renderer bridge |
+| Rust (Tauri, egui…) | `crates/native` | direct dependency |
+| Tauri v2 | `crates/tauri-plugin`, `@app-mcp/tauri` | plugin: Rust tools + webview pages via Tauri IPC (`@app-mcp/web` unchanged) |
+| C / C++ | `bindings/c`, `sdks/cpp` | stable C ABI (`app_mcp.h`) |
+| C# (WPF, WinUI) | `sdks/dotnet` | P/Invoke; single-instance and protocol activation helpers |
+| Kotlin / Android | `sdks/kotlin` | coroutines; `WakeReceiver` + expedited WorkManager |
+| Swift (iOS, macOS) | `sdks/swift` | async/await; SwiftUI lifecycle modifier |
+| Python | `sdks/python` | sync or asyncio handlers; Qt / Tk dispatchers; D-Bus wake |
+| Dart / Flutter | `sdks/dart` | dart:ffi; `AppLifecycleListener` integration |
+| HarmonyOS NEXT (ArkTS) | `sdks/harmony` (`@app-mcp/harmony`), `bindings/harmony` | Node-API module (same binding source as `@app-mcp/node`); app foreground/background and `Want` wake |
+| Native intents | `crates/codegen` | generates App Intents, AppFunctions, Windows App Actions, HarmonyOS InsightIntent and typed interfaces |
+| Agents / vendors | `crates/hub`, `@app-mcp/hub`, `bindings/hub-c`, `bindings/hub-uniffi` | embeddable Hub for Rust, Node, C/C#, Kotlin, Swift, Python |
+
+## How it works
+
+```mermaid
+flowchart TD
+  clients["MCP clients · your LLM loop · vendor agent"]
+  hub["AppWire Hub<br/>routing · overview · approval<br/>lifecycle: sleep / wake / lease"]
+  clients -- "MCP (stdio · Streamable HTTP)<br/>tool-format export + dispatch · embedded API" --> hub
+  hub -- "WebSocket (local)" --> web["Web SDK<br/>(WASM core)"]
+  hub -- "WebSocket (local)" --> desktop["Desktop SDKs<br/>Rust · C/C++ · C# · Python"]
+  hub -- "WebSocket (local)" --> mobile["Mobile SDKs<br/>Kotlin · Swift · Dart/Flutter"]
+  hub -- "WebSocket (local)" --> node["Node / Electron"]
+  hub -- "child process" --> upstream["existing MCP servers"]
+  subgraph core["one Rust sans-IO core shared by every language"]
+    web
+    desktop
+    mobile
+    node
+  end
+```
+
+- **App SDKs** register tools and resources; a single Rust core (`crates/core`) implements the
+  protocol, so behavior is identical in every language.
+- **The Hub** (`crates/hub`) aggregates apps and upstream MCP servers, routes calls to the right
+  instance, attaches a short app overview on first contact, enforces approvals, and wakes sleeping
+  apps. `app-mcp-host` is its command-line front end.
+- **Static manifests** (`app-mcp.json`) let the Hub list an app's tools and wake it even when the app
+  is not running.
+
+## How AppWire compares
+
+| Approach | What the model sees | Works when the app is closed | Platforms | Approval |
+|---|---|---|---|---|
+| Computer use / screen agents | screenshots, pixels | no | desktop | none built in |
+| Browser automation (e.g. Playwright MCP) | DOM / accessibility tree | no | web | none built in |
+| A hand-written MCP server per app | tools, maintained separately from the app | depends | one per server | per server |
+| WebMCP | tools declared by the page | no | browser only | browser prompt |
+| App Intents / AppFunctions / App Actions | system intents | yes | one OS each | OS-level |
+| **AppWire** | **tools declared in the app's own code** | **yes (manifest + wake)** | **web, desktop, mobile** | **per-tool risk levels** |
+
+AppWire does not replace these standards: it reads and generates WebMCP, App Intents, AppFunctions
+and Windows App Actions, and it can aggregate existing MCP servers behind the same Hub.
 
 ## Philosophy
 
 Unix says *everything is a file*: devices, pipes and processes share one interface — `open`, `read`,
 `write`. Plugin systems say *everything is a plugin*: features are code loaded into a host.
 
-app-mcp says **everything is a tool**. A button, a form, a menu command, a store action, an OS
+AppWire says **everything is a tool**. A button, a form, a menu command, a store action, an OS
 capability, an existing MCP server — each is expressed the same way: a name, an input schema, a risk
 level and a handler. A model needs only three verbs: **list, call, read**.
 
@@ -45,109 +215,39 @@ declares what it can do, and the model orchestrates.
 8. **Fix it at the source.** Solve a problem in the layer where it originates. No forwarding
    processes, wrapper scripts, monkeypatches or fallback conversions to paper over it.
 
-## How it works
+## FAQ
 
-```mermaid
-flowchart TD
-  clients["MCP clients · your LLM loop · vendor agent"]
-  hub["app-mcp Hub<br/>routing · overview · approval<br/>lifecycle: sleep / wake / lease"]
-  clients -- "MCP (stdio · Streamable HTTP)<br/>tool-format export + dispatch · embedded API" --> hub
-  hub -- "WebSocket (local)" --> web["Web SDK<br/>(WASM core)"]
-  hub -- "WebSocket (local)" --> desktop["Desktop SDKs<br/>Rust · C/C++ · C# · Python"]
-  hub -- "WebSocket (local)" --> mobile["Mobile SDKs<br/>Kotlin · Swift · Dart/Flutter"]
-  hub -- "WebSocket (local)" --> node["Node / Electron"]
-  hub -- "child process" --> upstream["existing MCP servers"]
-  subgraph core["one Rust sans-IO core shared by every language"]
-    web
-    desktop
-    mobile
-    node
-  end
-```
+**How do I turn my React app into an MCP server?**
+Add `@app-mcp/react`, wrap the actions you want to expose in `useTool`, and run `app-mcp-host`.
+The page connects to the local Hub, and every MCP client connected to the Hub sees the tools while
+the component is mounted. Plain pages can use `data-mcp-*` attributes with `@app-mcp/dom` instead.
 
-- **App SDKs** register tools and resources; a single Rust core (`crates/core`) implements the
-  protocol, so behavior is identical in every language.
-- **The Hub** (`crates/hub`) aggregates apps and upstream MCP servers, routes calls to the right
-  instance, attaches a short app overview on first contact, enforces approvals, and wakes sleeping
-  apps. `app-mcp-host` is its command-line front end.
-- **Static manifests** (`app-mcp.json`) let the Hub list an app's tools and wake it even when the app
-  is not running.
+**How do I let Claude (or ChatGPT, Gemini, Cursor) control a desktop or mobile app?**
+Register tools with the SDK for your platform (Electron, Tauri, C#, Kotlin, Swift, Python,
+Flutter…) and point the MCP client at `http://127.0.0.1:7717/mcp`. Android apps reach the Hub via
+`adb reverse` during development.
 
-## A taste
+**Do I need to write a separate MCP server for each app?**
+No. Apps register with one local Hub, and the Hub is the single MCP server every client talks to.
+Existing MCP servers can be added behind the same Hub as upstreams.
 
-**React**
+**Can I use it without MCP, in my own agent?**
+Yes. Embed the Hub (Rust, Node, C/C#, Kotlin, Swift, Python), export tools in OpenAI, Anthropic or
+Gemini format, and dispatch the model's tool calls back through the Hub. See
+[`spec/hub-api.md`](spec/hub-api.md).
 
-```tsx
-useTool('cart.checkout', {
-  description: 'Check out the current cart',
-  risk: 'payment',
-  input: z.object({ addressId: z.string() }),
-  handler: ({ addressId }) => checkout(addressId),
-})
-```
+**How is this different from computer use or browser automation?**
+Those approaches make the model read the screen and guess where to click. AppWire has the app
+declare its actions with typed input schemas, so calls are precise, fast and work when the window is
+hidden — or when the app is not running at all (it is woken on demand).
 
-**Plain HTML**
+**Is it safe to let a model call app actions?**
+Every tool carries a risk level (`read`, `write`, `destructive`, `payment`, `os-sensitive`); risky calls require
+human approval in the Hub, and an app overview never grants permissions by itself.
 
-```html
-<button data-mcp-tool="cart.clear" data-mcp-desc="Empty the cart">Clear</button>
-```
-
-**A doc comment** (with `@app-mcp/build`)
-
-```ts
-/** Estimate delivery days for a city. @mcp */
-export function deliveryEstimate(city: string, express?: boolean) { … }
-```
-
-**Your own LLM loop** (embedded Hub, Node)
-
-```ts
-const hub = await Hub.start({})
-const tools = hub.exportTools('anthropic')            // pass to the model
-const results = await handleAnthropicToolUses(hub, response.content)
-```
-
-## Platforms and packages
-
-| Where | Package | Notes |
-|---|---|---|
-| Web | `@app-mcp/web`, `@app-mcp/react`, `@app-mcp/dom`, `@app-mcp/store`, `@app-mcp/build` | WASM core; WebMCP polyfill/bridge; HTML attributes; Zustand / Redux / Pinia; compile-time `@mcp` |
-| Node / Electron | `@app-mcp/node`, `@app-mcp/electron` | main process + renderer bridge |
-| Rust (Tauri, egui…) | `crates/native` | direct dependency |
-| Tauri v2 | `crates/tauri-plugin`, `@app-mcp/tauri` | plugin: Rust tools + webview pages via Tauri IPC (`@app-mcp/web` unchanged) |
-| C / C++ | `bindings/c`, `sdks/cpp` | stable C ABI (`app_mcp.h`) |
-| C# (WPF, WinUI) | `sdks/dotnet` | P/Invoke; single-instance and protocol activation helpers |
-| Kotlin / Android | `sdks/kotlin` | coroutines; `WakeReceiver` + expedited WorkManager |
-| Swift (iOS, macOS) | `sdks/swift` | async/await; SwiftUI lifecycle modifier |
-| Python | `sdks/python` | sync or asyncio handlers; Qt / Tk dispatchers; D-Bus wake |
-| Dart / Flutter | `sdks/dart` | dart:ffi; `AppLifecycleListener` integration |
-| Native intents | `crates/codegen` | generates App Intents, AppFunctions, Windows App Actions and typed interfaces |
-| Agents / vendors | `crates/hub`, `@app-mcp/hub`, `bindings/hub-c`, `bindings/hub-uniffi` | embeddable Hub for Rust, Node, C/C#, Kotlin, Swift, Python |
-
-## Try it
-
-```bash
-# build the Host and run it as a resident service (one process serves every MCP client)
-cargo build -p app-mcp-host
-target/debug/app-mcp-host serve            # or: app-mcp-host service install  (start at login)
-target/debug/app-mcp-host status           # one-line summary
-target/debug/app-mcp-host doctor           # something wrong? each check gives a verdict and a fix
-
-# run the demo shop, then open it in a browser
-pnpm --filter @app-mcp/example-shop dev
-```
-
-The Host serves everything on one port, `127.0.0.1:7717`: web apps connect to `/app` (WebSocket),
-MCP clients use Streamable HTTP at `http://127.0.0.1:7717/mcp`, and `/healthz` reports the Host's
-identity. Native apps connect over a per-user local socket (Unix domain socket / Windows named
-pipe), which also serves MCP for agents that speak HTTP over local sockets. A lock file keeps one Host per user, and the actual endpoints are recorded in
-`~/.app-mcp/run/endpoints.json`. This repository's `.mcp.json` points Claude Code at that endpoint;
-restart the session, open the demo page, and ask Claude to operate the shop. When something does not
-connect, `app-mcp-host doctor` checks the Host, lock, local socket permissions, which process holds
-the port, Windows excluded port ranges, the token mode, `adb reverse`, and each app's state and last
-error; SDK states carry machine-readable error codes (`spec/protocol.md` §10). See
-[`crates/host/README.md`](crates/host/README.md) for configuration, the access token and other MCP
-clients.
+**Does it work with WebMCP?**
+Yes. `@app-mcp/web/webmcp` implements the WebMCP `modelContext` API as a polyfill and bridges it,
+so pages written against the standard are exposed through the Hub too.
 
 ## Documentation
 
@@ -157,16 +257,18 @@ clients.
 | [`spec/manifest.md`](spec/manifest.md) | static manifest `app-mcp.json` |
 | [`spec/lifecycle.md`](spec/lifecycle.md) | app lifecycle: sleep, wake, lease, fast resume |
 | [`spec/hub-api.md`](spec/hub-api.md) | embeddable Hub API and bindings |
+| [`crates/host/README.md`](crates/host/README.md) | Host configuration, access token, MCP clients |
+| [`llms.txt`](llms.txt) | project summary for LLMs and AI search |
 | [`app-mcp-plan.md`](app-mcp-plan.md) | full design and roadmap (Chinese) |
 | [`TASKS.md`](TASKS.md) | current status (Chinese) |
 
-Other languages: [简体中文](docs/README.zh-CN.md)
+Other languages: [简体中文](docs/README.zh-CN.md) · [繁體中文](docs/README.zh-TW.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Español](docs/README.es.md) · [Português (Brasil)](docs/README.pt-BR.md) · [Français](docs/README.fr.md) · [Deutsch](docs/README.de.md) · [Русский](docs/README.ru.md) · [Italiano](docs/README.it.md)
 
 ## Status
 
 Prototype (milestones M1–M2). The protocol, core, Hub and all language SDKs are implemented and
 tested on Linux and Windows, with an Android device run; Apple platforms are verified on Linux only.
-APIs may still change.
+APIs may still change. Issues and pull requests are welcome.
 
 ## License
 

@@ -1,10 +1,14 @@
 [package]
 name = "app-mcp-native"
-description = "原生 App 共用运行时：后台线程驱动核心、连接 Host、分发回调"
+description = "AppWire native runtime: expose Rust app actions as MCP tools for AI agents"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 app-mcp-core.workspace = true

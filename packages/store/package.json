@@ -1,7 +1,12 @@
 {
   "name": "@app-mcp/store",
   "version": "0.1.0",
-  "description": "把状态库（Zustand、Redux、Pinia）的 action 暴露为工具、state 暴露为资源",
+  "description": "AppWire state store adapter: expose Zustand, Redux and Pinia actions as MCP tools and state as resources",
+  "keywords": ["zustand", "redux", "pinia", "state-management", "mcp", "model-context-protocol", "mcp-server", "ai", "ai-agent", "llm", "tool-calling", "function-calling", "claude", "openai", "gemini", "appwire"],
+  "homepage": "https://github.com/stareing/appwire/tree/main/packages/store#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/stareing/appwire.git", "directory": "packages/store" },
+  "bugs": { "url": "https://github.com/stareing/appwire/issues" },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",

@@ -1,7 +1,12 @@
 {
   "name": "@app-mcp/tauri",
   "version": "0.1.0",
-  "description": "app-mcp 的 Tauri 页面侧：经 tauri-plugin-app-mcp 注入的桥接把工具登记到 Rust 侧客户端",
+  "description": "AppWire for Tauri v2 webviews: register page tools with the Rust-side MCP client over Tauri IPC",
+  "keywords": ["tauri", "tauri-plugin", "desktop", "mcp", "model-context-protocol", "mcp-server", "ai", "ai-agent", "llm", "tool-calling", "function-calling", "claude", "openai", "gemini", "appwire"],
+  "homepage": "https://github.com/stareing/appwire/tree/main/packages/tauri#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/stareing/appwire.git", "directory": "packages/tauri" },
+  "bugs": { "url": "https://github.com/stareing/appwire/issues" },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }

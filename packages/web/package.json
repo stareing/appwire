@@ -1,7 +1,12 @@
 {
   "name": "@app-mcp/web",
   "version": "0.1.0",
-  "description": "app-mcp 浏览器 SDK：把网页中的业务动作以 MCP 工具暴露给模型",
+  "description": "AppWire browser SDK: expose your web app's actions as MCP tools for AI agents (Claude, ChatGPT, Gemini), with a WebMCP polyfill and bridge",
+  "keywords": ["webmcp", "browser", "wasm", "web", "mcp", "model-context-protocol", "mcp-server", "ai", "ai-agent", "llm", "tool-calling", "function-calling", "claude", "openai", "gemini", "appwire"],
+  "homepage": "https://github.com/stareing/appwire/tree/main/packages/web#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/stareing/appwire.git", "directory": "packages/web" },
+  "bugs": { "url": "https://github.com/stareing/appwire/issues" },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "main": "./src/index.ts",

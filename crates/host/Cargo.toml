@@ -1,10 +1,14 @@
 [package]
 name = "app-mcp-host"
-description = "本地 MCP Host：聚合各 App 的工具并以 MCP 暴露给模型（app-mcp-hub 之上的命令行薄壳）"
+description = "AppWire Host: local MCP server that exposes the tools of every app on the device to Claude, ChatGPT, Gemini and other MCP clients"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["mcp", "mcp-server", "model-context-protocol", "ai-agent", "claude"]
+categories.workspace = true
 
 [lib]
 name = "app_mcp_host"

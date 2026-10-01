@@ -4,6 +4,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PackageProjectUrl>https://github.com/stareing/appwire</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/stareing/appwire</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
     <!-- Rust 构建出的原生库所在目录（libapp_mcp.so / app_mcp.dll / libapp_mcp.dylib），会复制到输出目录。 -->
     <AppMcpNativeDir Condition="'$(AppMcpNativeDir)' == '' and '$(CARGO_TARGET_DIR)' != ''">$(CARGO_TARGET_DIR)/debug</AppMcpNativeDir>
     <AppMcpNativeDir Condition="'$(AppMcpNativeDir)' == ''">$(MSBuildThisFileDirectory)../../target/debug</AppMcpNativeDir>

@@ -1,5 +1,9 @@
 name: app_mcp
-description: app-mcp 的 Dart SDK：通过 dart:ffi 调用 C ABI（libapp_mcp），把 App 内的业务动作以 MCP 工具暴露给模型。
+description: "AppWire Dart SDK: expose app actions as MCP (Model Context Protocol) tools for AI agents via dart:ffi."
+homepage: https://github.com/stareing/appwire
+repository: https://github.com/stareing/appwire/tree/main/sdks/dart/app_mcp
+issue_tracker: https://github.com/stareing/appwire/issues
+topics: [mcp, ai, llm, agent, ffi]
 version: 0.1.0
 publish_to: none
 

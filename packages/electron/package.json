@@ -1,7 +1,12 @@
 {
   "name": "@app-mcp/electron",
   "version": "0.1.0",
-  "description": "app-mcp 的 Electron 适配：主进程连接 Host，渲染进程页面经 IPC 桥接",
+  "description": "AppWire for Electron: connect the main process to the MCP hub and bridge renderer tools over IPC",
+  "keywords": ["electron", "desktop", "ipc", "mcp", "model-context-protocol", "mcp-server", "ai", "ai-agent", "llm", "tool-calling", "function-calling", "claude", "openai", "gemini", "appwire"],
+  "homepage": "https://github.com/stareing/appwire/tree/main/packages/electron#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/stareing/appwire.git", "directory": "packages/electron" },
+  "bugs": { "url": "https://github.com/stareing/appwire/issues" },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "exports": {
     "./main": { "types": "./dist/main.d.ts", "import": "./dist/main.js" },

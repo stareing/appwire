@@ -1,10 +1,14 @@
 [package]
 name = "app-mcp-c"
-description = "app-mcp 原生 SDK 的 C ABI（契约见 include/app_mcp.h）"
+description = "AppWire C ABI: expose C, C++, C# and Dart app actions as MCP tools"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 publish = false
 
 [lib]

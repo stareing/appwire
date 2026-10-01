@@ -1,0 +1,47 @@
+# AppWire
+
+> AppWire is an open-source Model Context Protocol (MCP) SDK and local hub that exposes the real actions of web, desktop and mobile apps as tools for AI agents (Claude, ChatGPT, Gemini, Claude Code, or a custom LLM loop). Apps declare tools in their own code — React hooks, HTML attributes, doc comments, native functions — instead of the model scraping screens or automating a browser. Packages and binaries use the working name `app-mcp` (`@app-mcp/*`, `app-mcp-*`, `app-mcp-host`). License: MIT OR Apache-2.0.
+
+Key facts:
+
+- One Rust sans-IO core (`crates/core`) shared by every language SDK: Web (WASM), React, plain HTML (`data-mcp-*`), Zustand/Redux/Pinia, Node, Electron, Tauri v2, Rust, C/C++, C# (WPF, WinUI), Kotlin/Android, Swift (iOS, macOS), Python (Qt, Tk), Dart/Flutter.
+- One local Hub per user (`app-mcp-host`) on `127.0.0.1:7717`: MCP clients connect over Streamable HTTP at `/mcp` (or stdio); web apps connect over WebSocket at `/app`; native apps over a per-user Unix socket / Windows named pipe.
+- The Hub can be embedded in an agent (Rust, Node, C/C#, Kotlin, Swift, Python) and exports tools in MCP, OpenAI Chat, OpenAI Responses, Anthropic and Gemini formats, then dispatches the model's tool calls.
+- Tools live and die with the UI; idle apps sleep and are woken on call through platform activation; a static manifest (`app-mcp.json`) lists tools of apps that are not running.
+- Every tool has a risk level (read, write, destructive, payment, os-sensitive); risky calls require human approval.
+- Interoperates with WebMCP (polyfill and bridge), Apple App Intents, Android AppFunctions and Windows App Actions (consume and generate), and aggregates existing MCP servers.
+
+## Docs
+
+- [README](https://github.com/stareing/appwire/blob/main/README.md): overview, install, quick start, comparison, FAQ
+- [SDK ↔ Hub protocol](https://github.com/stareing/appwire/blob/main/spec/protocol.md): authoritative wire protocol and error codes
+- [Manifest](https://github.com/stareing/appwire/blob/main/spec/manifest.md): the static `app-mcp.json` format
+- [Lifecycle](https://github.com/stareing/appwire/blob/main/spec/lifecycle.md): sleep, wake, lease, fast resume
+- [Hub API](https://github.com/stareing/appwire/blob/main/spec/hub-api.md): embeddable Hub and language bindings
+- [Host](https://github.com/stareing/appwire/blob/main/crates/host/README.md): configuration, access token, connecting MCP clients
+
+## Packages
+
+- [@app-mcp/web](https://github.com/stareing/appwire/tree/main/packages/web): browser SDK with WebMCP bridge
+- [@app-mcp/react](https://github.com/stareing/appwire/tree/main/packages/react): `useTool`, `useResource`, `ToolScope`
+- [@app-mcp/dom](https://github.com/stareing/appwire/tree/main/packages/dom): declare tools with HTML attributes
+- [@app-mcp/store](https://github.com/stareing/appwire/tree/main/packages/store): Zustand, Redux, Pinia adapters
+- [@app-mcp/build](https://github.com/stareing/appwire/tree/main/packages/build): Vite plugin, `@mcp` doc comments, manifest generation
+- [@app-mcp/node](https://github.com/stareing/appwire/tree/main/packages/node) and [@app-mcp/electron](https://github.com/stareing/appwire/tree/main/packages/electron): Node and Electron
+- [@app-mcp/tauri](https://github.com/stareing/appwire/tree/main/packages/tauri) with [tauri-plugin-app-mcp](https://github.com/stareing/appwire/tree/main/crates/tauri-plugin): Tauri v2
+- [@app-mcp/hub](https://github.com/stareing/appwire/tree/main/packages/hub): embed the Hub in a Node agent
+- [Native SDKs](https://github.com/stareing/appwire/tree/main/sdks): C++, C#, Kotlin, Swift, Python, Dart/Flutter
+
+## Optional
+
+- [Design and roadmap (Chinese)](https://github.com/stareing/appwire/blob/main/app-mcp-plan.md)
+- [简体中文 README](https://github.com/stareing/appwire/blob/main/docs/README.zh-CN.md)
+- [繁體中文 README](https://github.com/stareing/appwire/blob/main/docs/README.zh-TW.md)
+- [日本語 README](https://github.com/stareing/appwire/blob/main/docs/README.ja.md)
+- [한국어 README](https://github.com/stareing/appwire/blob/main/docs/README.ko.md)
+- [Español README](https://github.com/stareing/appwire/blob/main/docs/README.es.md)
+- [Português (Brasil) README](https://github.com/stareing/appwire/blob/main/docs/README.pt-BR.md)
+- [Français README](https://github.com/stareing/appwire/blob/main/docs/README.fr.md)
+- [Deutsch README](https://github.com/stareing/appwire/blob/main/docs/README.de.md)
+- [Русский README](https://github.com/stareing/appwire/blob/main/docs/README.ru.md)
+- [Italiano README](https://github.com/stareing/appwire/blob/main/docs/README.it.md)

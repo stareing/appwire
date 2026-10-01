@@ -1,5 +1,9 @@
 name: app_mcp_flutter
-description: app-mcp 的 Flutter 适配：AppMcpScope、McpTool / McpResource widget、生命周期可见性。
+description: "AppWire for Flutter: expose widget actions as MCP tools for AI agents with AppMcpScope, McpTool and McpResource widgets."
+homepage: https://github.com/stareing/appwire
+repository: https://github.com/stareing/appwire/tree/main/sdks/dart/app_mcp_flutter
+issue_tracker: https://github.com/stareing/appwire/issues
+topics: [mcp, ai, llm, agent, flutter]
 version: 0.1.0
 publish_to: none
 

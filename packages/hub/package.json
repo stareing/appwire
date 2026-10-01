@@ -1,7 +1,12 @@
 {
   "name": "@app-mcp/hub",
   "version": "0.1.0",
-  "description": "app-mcp Hub SDK（napi-rs 原生模块）：把本机所有 App 的工具接入 Node 端 Agent（Electron 助手、LangChain.js、Vercel AI SDK、OpenAI / Anthropic SDK）",
+  "description": "AppWire Hub for Node: route AI agent tool calls to every local app; works with LangChain.js, Vercel AI SDK, OpenAI and Anthropic SDKs",
+  "keywords": ["agent", "langchain", "vercel-ai-sdk", "anthropic", "tool-use", "hub", "mcp", "model-context-protocol", "mcp-server", "ai", "ai-agent", "llm", "tool-calling", "function-calling", "claude", "openai", "gemini", "appwire"],
+  "homepage": "https://github.com/stareing/appwire/tree/main/packages/hub#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/stareing/appwire.git", "directory": "packages/hub" },
+  "bugs": { "url": "https://github.com/stareing/appwire/issues" },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

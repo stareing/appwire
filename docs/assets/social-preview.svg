@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e1b4b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <g font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="96" y="210" font-size="104" font-weight="800" fill="#ffffff">AppWire</text>
+    <text x="96" y="290" font-size="44" font-weight="600" fill="#c4b5fd">Turn any app into MCP tools for AI agents</text>
+    <text x="96" y="360" font-size="30" fill="#cbd5e1">Web · Desktop · Mobile — one Rust core, one local hub</text>
+    <text x="96" y="404" font-size="30" fill="#cbd5e1">Claude · ChatGPT · Gemini · any MCP client</text>
+    <g font-size="24" font-weight="600" fill="#e2e8f0">
+      <rect x="96" y="470" width="150" height="48" rx="24" fill="#334155"/><text x="171" y="502" text-anchor="middle">React</text>
+      <rect x="262" y="470" width="170" height="48" rx="24" fill="#334155"/><text x="347" y="502" text-anchor="middle">Electron</text>
+      <rect x="448" y="470" width="140" height="48" rx="24" fill="#334155"/><text x="518" y="502" text-anchor="middle">Tauri</text>
+      <rect x="604" y="470" width="160" height="48" rx="24" fill="#334155"/><text x="684" y="502" text-anchor="middle">Android</text>
+      <rect x="780" y="470" width="110" height="48" rx="24" fill="#334155"/><text x="835" y="502" text-anchor="middle">iOS</text>
+      <rect x="906" y="470" width="150" height="48" rx="24" fill="#334155"/><text x="981" y="502" text-anchor="middle">Flutter</text>
+      <rect x="1072" y="470" width="110" height="48" rx="24" fill="#334155"/><text x="1127" y="502" text-anchor="middle">.NET</text>
+    </g>
+    <text x="96" y="584" font-size="26" fill="#94a3b8">github.com/stareing/appwire  ·  Everything is a Tool.</text>
+  </g>
+</svg>

@@ -1,5 +1,7 @@
 # @app-mcp/hub
 
+> Part of [AppWire](https://github.com/stareing/appwire): embed the AppWire Hub in a Node.js agent (Electron assistant, LangChain.js, Vercel AI SDK, OpenAI / Anthropic SDK or your own loop) to list, call and approve the MCP tools of every app on the device, exported in MCP, OpenAI, Anthropic or Gemini tool-calling format.
+
 Hub SDK 的 Node 绑定：把“连接本机所有 App”的能力嵌进 Node 端 Agent —— Electron 助手、LangChain.js、
 Vercel AI SDK、OpenAI / Anthropic SDK 或自研循环。本机 App 通过 App 端 SDK（`@app-mcp/web`、`@app-mcp/node`、
 Kotlin / Swift / C# …）连上嵌入的 Hub，你的 Agent 列工具、调用、读资源、收事件，并用自己的 UI 接管审批与配对。
@@ -195,6 +197,7 @@ await hub.shutdown()
 | `Hub.start(config)` | 启动；`listenAddr` 为实际监听地址，`wsUrl`（`ws://<listenAddr>/app`）为 App 端点 |
 | `shutdown()` | 关闭 App 连接与后台任务；之后调用抛 `HubError('SHUTDOWN')` |
 | `apps()` / `tools(filter?)` / `resources()` / `overview(appId)` | 查询快照 |
+| `status()` | 运行状态（`HubStatus`：监听、令牌策略、各 App 状态与最近错误、SDK 诊断上报；与 `GET /status` 相同） |
 | `callTool(req)` / `cancelCall(callId)` | 调用与取消（`req.timeout` 毫秒） |
 | `readResource(uri)` / `subscribe(uri)` / `unsubscribe(uri)` | 资源（`app-mcp://<appId>/<name>`） |
 | `selectInstance(appId, instanceId?)` / `resetSession(session?)` | 路由与会话 |

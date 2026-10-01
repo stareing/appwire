@@ -1,10 +1,14 @@
 [package]
 name = "app-mcp-wasm"
-description = "app-mcp-core 的浏览器 WASM 绑定（供 @app-mcp/web 使用）"
+description = "AppWire core compiled to WebAssembly for the browser SDK"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 publish = false
 
 [lib]

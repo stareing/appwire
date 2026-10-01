@@ -1,5 +1,7 @@
 # @app-mcp/store
 
+> Part of [AppWire](https://github.com/stareing/appwire): expose Zustand, Redux (including RTK) and Pinia store actions as MCP tools and state slices as MCP resources for AI agents such as Claude, ChatGPT and Gemini.
+
 把状态库的 **action 暴露为 MCP 工具**、把 **state 切片暴露为资源**。支持 Zustand、Redux（含 RTK）、Pinia，
 也可以通过通用核心 `exposeStore` 接入任何"`getState` + `subscribe`"形状的 store。
 

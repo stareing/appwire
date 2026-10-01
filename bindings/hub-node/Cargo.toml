@@ -1,10 +1,14 @@
 [package]
 name = "app-mcp-hub-node"
-description = "Hub SDK 的 Node 绑定（napi-rs），供 @app-mcp/hub 使用"
+description = "AppWire Hub Node.js native module (napi-rs)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 publish = false
 
 [lib]

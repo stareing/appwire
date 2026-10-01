@@ -1,5 +1,7 @@
 # @app-mcp/dom
 
+> Part of [AppWire](https://github.com/stareing/appwire): declare MCP (Model Context Protocol) tools and resources with plain `data-mcp-*` HTML attributes — no JavaScript — so AI agents such as Claude, ChatGPT and Gemini can operate your page through declared actions instead of DOM scraping.
+
 只写 HTML 属性就能把按钮、表单、列表、状态区域声明为 MCP 工具与资源，不需要写 JS。
 
 与 chrome-devtools 这类"把整棵 DOM / 无障碍树交给模型"的方式不同：模型只看到页面**主动声明**的工具与资源，

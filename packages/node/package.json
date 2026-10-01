@@ -1,7 +1,12 @@
 {
   "name": "@app-mcp/node",
   "version": "0.1.0",
-  "description": "app-mcp Node SDK（napi-rs 原生模块）：Node 程序与 Electron 主进程",
+  "description": "AppWire Node SDK (napi-rs): expose Node.js and Electron main-process actions as MCP tools for AI agents",
+  "keywords": ["node", "nodejs", "electron", "napi", "mcp", "model-context-protocol", "mcp-server", "ai", "ai-agent", "llm", "tool-calling", "function-calling", "claude", "openai", "gemini", "appwire"],
+  "homepage": "https://github.com/stareing/appwire/tree/main/packages/node#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/stareing/appwire.git", "directory": "packages/node" },
+  "bugs": { "url": "https://github.com/stareing/appwire/issues" },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
