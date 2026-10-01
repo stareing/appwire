@@ -22,7 +22,8 @@
 | 调用频率、唤醒次数、数据大小 | **本库** | 限流、唤醒上限、大小上限（保护 App 与设备，B-07） |
 | 句柄的访问范围 | **本库**（句柄由本库签发） | 句柄绑定会话、有 TTL、不可猜（第 17 项） |
 | 调用记录 | **本库**（只有它看得到所有 Agent 的调用） | 调用日志用于排查，归第 11 项可观测，不作为安全审计 |
-| 嵌入式 Hub 的审批 | 厂商（厂商就是 Agent） | 保留现有 `ApprovalHandler` 回调，不扩展 |
+| 嵌入式 Hub 的审批 | 厂商（厂商就是 Agent） | 保留现有 `ApprovalHandler` 回调，作为第 16 项 P2 策略挂点在调用执行点上的回调形态 |
+| 用户 / 厂商写的规则（隐藏、拒绝） | 用户 / 厂商 | 只提供执行点并执行规则，不内置判断（第 16 项 P2，2026-10-02 决定） |
 
 ## 2. 已知的已知
 
@@ -39,7 +40,7 @@
 
 | # | 未知 | 处理 |
 |---|---|---|
-| U1 | Claude Code 等 Agent 是否读取 MCP 工具注解、对 MCP 工具是否默认逐次确认 | **验证**（临时 Host + Claude Code 实测）；结论只影响文档建议，不影响本库实现 |
+| U1 | Claude Code 等 Agent 是否读取 MCP 工具注解、对 MCP 工具是否默认逐次确认 | **已验证（2026-10-02，Claude Code 2.1.281，stdio 探针服务器 + `--permission-mode default` / `acceptEdits`）**：`readOnlyHint: true`、无注解、`destructiveHint: true` 三个工具同样被要求授权，注解**不会**自动放行（官方 issue anthropics/claude-code#87452 "auto-allow readOnlyHint" 以 not planned 关闭）；`readOnlyHint` 只影响计划模式能否调用与并行执行。结论：用户须在 Agent 中配置放行规则，本库照常如实声明注解（文档注明）。未测：经本库 HTTP Host 的路径、交互式界面的授权提示是否展示注解 |
 | U2 | 第 12 项若引入 `apps.call`，Agent 只看到一个工具名，按工具放行失效 | **约束**：尽量不引入；必须引入时 `apps.call` 本身声明为最高注解（非只读、`destructiveHint`、`openWorldHint`），由 Agent 对它整体确认；本库不在其内部另做分级 |
 
 ## 4. 未知的已知（可复用）

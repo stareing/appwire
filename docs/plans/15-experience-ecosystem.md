@@ -36,7 +36,7 @@
 | U2 | 一致性测试的驱动方式（各语言跑同一份 JSON 用例 vs 统一假 Hub 驱动各 SDK 示例进程） | **验证**：先用假 Hub + 用例表驱动 Python / Node 两个 SDK 试点，再推广 |
 | U3 | `undo` 语义：哪些工具可撤销、撤销窗口、与 App 自身撤销栈的关系 | **保守**：只由 handler 显式提供；Hub 只记录可撤销调用并转发，不推断 |
 | U4 | OS 层 L3 的权限要求（macOS 辅助功能授权、Linux AT-SPI 总线开启状态） | 各平台实测；macOS 无环境，记为待验证 |
-| U7 | 原生桌面是否已有成熟的无障碍树 MCP 方案（决定 Z2 是自研还是推荐外部工具） | **调研**后定；有成熟方案时 Z2 降为文档推荐 |
+| U7 | 原生桌面是否已有成熟的无障碍树 MCP 方案（决定 Z2 是自研还是推荐外部工具） | **已调研（2026-10-02，依据各仓库 README / 源码与 GitHub API）**：没有单一成熟方案满足"只经无障碍接口、不截图、不按坐标"。成熟者都混用截图 / 坐标（Windows-MCP 按坐标点击；Peekaboo 以截图为主但有 AX 动作）；较贴近者：Windows FlaUI-MCP（先 Invoke / Toggle / SelectionItem 模式，最后才鼠标，`ClickTool.cs`）、UIInspect.MCP（只用模式、不截图，2026-07 新建）；Linux computer-use-linux（AT-SPI 原生动作优先、坐标兜底）；macOS Peekaboo（`AXPress` 等）。**决定倾向**：Z2 先降为文档推荐（每平台一个），不自研；需要统一契约（注解、限流、子进程隔离）时再评估。未验证：未实际运行这些工具，目标 App 无响应时的表现 |
 | U5 | 远程 Agent 的鉴权与传输（TLS、设备配对、令牌轮换） | **单独设计文档**后再实施；默认关闭，不改变本机默认安全姿态 |
 | U6 | Chrome 扩展上架与 Native Messaging 主机清单在各平台的注册位置 | 以 Chrome 官方文档为准逐平台核实，由第 13 项 `setup` 写入 |
 

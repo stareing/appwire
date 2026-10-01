@@ -27,7 +27,7 @@ App → Hub 一段只能传 JSON：工具结果被序列化为一段文本交给
 
 | # | 未知 | 处理 |
 |---|---|---|
-| U1 | Claude Code 等 Agent 是否渲染工具结果中的 `image` / `audio` / `resource_link` | **验证**：临时 Host 返回各类内容块，在 Claude Code 实测；不支持的类型降级为文本描述 + 句柄 |
+| U1 | Claude Code 等 Agent 是否渲染工具结果中的 `image` / `audio` / `resource_link` | **已验证（2026-10-02，Claude Code 2.1.281，stdio 探针）**：`image` 作为图片交给模型（模型正确识别颜色）；`audio` 不交给模型，替换为"已保存到本地文件"的文本；`resource_link` 压平为一行文本（名称、URI、描述），不自动读取；内嵌文本资源为文本、内嵌图片 blob 为图片；内容 `annotations`（audience / priority）被去掉。结论：C1 照 MCP 规范输出，C3 对音频与链接附可读的文字说明；句柄以 `resource_link` 传递时模型能看到 URI。未测：经本库 HTTP Host 的路径 |
 | U2 | WebSocket / IPC 单帧大小上限与大块 base64 的内存开销 | **测量**后定阈值：小于阈值内联，超过走句柄分块传输；阈值配置化 |
 | U3 | Android `grantUriPermission` 的跨进程有效期、接收方被杀后的行为 | 真机验证（魅族 18 Pro）；并入批量真机测试 |
 | U4 | iOS 文件提供者 / 安全作用域书签在 App 间传递的可行形态 | 无环境，**记为待验证**；iOS 先只支持 App 内句柄 |
