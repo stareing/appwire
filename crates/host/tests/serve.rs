@@ -367,6 +367,28 @@ async fn registry_is_removed_on_sigterm() {
     drop(serve);
 }
 
+/// IPC 套接字路径超过 sun_path 上限：serve 以错误码与建议明确失败，不写登记文件。
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn too_long_ipc_path_is_explained() {
+    let home = TempHome::new("longipc");
+    let long = format!(
+        "unix:{}",
+        home.0.join("p".repeat(app_mcp_protocol::endpoint::MAX_UNIX_SOCKET_PATH_BYTES)).join("hub.sock").display()
+    );
+    let mut cmd = Command::new(BIN);
+    cmd.arg("serve")
+        .arg("--home")
+        .arg(&home.0)
+        .args(["--listen", "127.0.0.1:0", "--ipc-endpoint", &long, "--no-log-file"])
+        .env_remove("APP_MCP_HOME")
+        .stdin(Stdio::null());
+    let (code, _, stderr) = run_to_exit(cmd);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("IPC_PATH_TOO_LONG") && stderr.contains("--ipc-endpoint"), "{stderr}");
+    assert!(!home.registry().exists());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn port_taken_by_other_program_is_an_error() {
     let home = TempHome::new("taken");

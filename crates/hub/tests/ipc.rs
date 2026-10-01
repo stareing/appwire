@@ -119,6 +119,38 @@ async fn rejects_non_ipc_endpoint() {
     }
 }
 
+/// 套接字路径超过 `sun_path` 上限：启动失败，错误带 `IPC_PATH_TOO_LONG` 与建议，且不创建目录；
+/// 原生 SDK 连接同一路径时进入带同一错误码的 `backoff`。
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn rejects_too_long_unix_socket_path() {
+    use app_mcp_protocol::endpoint::MAX_UNIX_SOCKET_PATH_BYTES;
+    use app_mcp_protocol::{ConnectionErrorCode, ConnectionIssue};
+
+    let base = std::env::temp_dir().join(format!("app-mcp-ipc-{}-long", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let pad = MAX_UNIX_SOCKET_PATH_BYTES.saturating_sub(base.as_os_str().len()) + 1;
+    let dir = base.join("d".repeat(pad.min(200)));
+    let path = dir.join("hub.sock");
+    assert!(path.as_os_str().len() > MAX_UNIX_SOCKET_PATH_BYTES);
+    let ep = format!("unix:{}", path.display());
+
+    let err = Hub::start(config(&ep)).await.err().expect("超长路径应启动失败");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    let issue = err.get_ref().and_then(|e| e.downcast_ref::<ConnectionIssue>()).expect("错误内含 ConnectionIssue");
+    assert_eq!(issue.code, ConnectionErrorCode::IpcPathTooLong);
+    let text = err.to_string();
+    assert!(text.starts_with("[IPC_PATH_TOO_LONG]") && text.contains("--ipc-endpoint"), "{text}");
+    assert!(!base.exists(), "超长路径不应创建目录");
+
+    let mut c = NativeConfig::new("long-path", "超长路径");
+    c.host_url = ep;
+    let client = NativeClient::new(c, None).unwrap();
+    client.start();
+    eventually("backoff", || client.state().code.as_deref() == Some("IPC_PATH_TOO_LONG")).await;
+    client.stop();
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn unix_socket_file_lifecycle() {

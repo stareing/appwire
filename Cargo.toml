@@ -22,7 +22,10 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-repository = "https://example.invalid/app-mcp"
+repository = "https://github.com/stareing/appwire"
+homepage = "https://github.com/stareing/appwire"
+keywords = ["mcp", "model-context-protocol", "ai-agent", "llm", "tool-calling"]
+categories = ["development-tools", "api-bindings"]
 
 [workspace.dependencies]
 app-mcp-protocol = { path = "crates/protocol" }

@@ -1,15 +1,30 @@
 [package]
 name = "app-mcp-hub"
-description = "Agent 端 Hub 库：把本机 App 的工具接入厂商自有 Agent"
+description = "AppWire Hub: embeddable library that routes AI agent tool calls (MCP, OpenAI, Anthropic, Gemini) to local apps"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 publish = false
 
 [lib]
 name = "app_mcp_hub"
 path = "src/lib.rs"
+
+# 可选能力（spec/hub-api.md「cargo features」）。默认全开，与拆分前行为相同；移动端绑定按需关闭以缩小体积。
+# 关闭后公开配置字段与方法保持不变，请求被关闭的能力时返回 `ErrorKind::Unsupported`（见 src/features.rs）。
+[features]
+default = ["mcp-server", "upstream", "schema-validation"]
+# MCP 出口：`/mcp`（Streamable HTTP，`HubConfig::mcp_http`、`Hub::serve_http(_with)`）、`Hub::serve_stdio`、`McpSession`。
+mcp-server = ["rmcp/transport-io", "rmcp/transport-streamable-http-server"]
+# 上游聚合：以子进程启动其他 MCP 服务器并汇入工具（`HubConfig::upstreams`）。
+upstream = ["rmcp/transport-child-process"]
+# 调用前按工具的 inputSchema 校验参数（jsonschema 及其正则引擎）；关闭时参数原样交给 App。
+schema-validation = ["dep:jsonschema"]
 
 [dependencies]
 app-mcp-protocol.workspace = true
@@ -23,13 +38,8 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures.workspace = true
 rand.workspace = true
-rmcp = { workspace = true, features = [
-  "server",
-  "client",
-  "transport-io",
-  "transport-child-process",
-  "transport-streamable-http-server",
-] }
+# 模型类型与 Peer（MCP 会话通知、上游调用）总是需要；传输按 feature 引入（见 [features]）。
+rmcp = { workspace = true, features = ["server", "client"] }
 # Streamable HTTP：用 hyper 直接提供 HTTP 服务（rmcp 的 StreamableHttpService 是 tower 服务）。
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -38,7 +48,7 @@ bytes = "1"
 http = "1"
 # 不启用默认特性：不需要按 $ref 远程拉取 schema（resolve-http 会引入 reqwest / aws-lc-rs，
 # 也不希望 App 提供的 schema 触发网络或本地文件访问）。
-jsonschema = { version = "0.58", default-features = false }
+jsonschema = { version = "0.58", default-features = false, optional = true }
 # App 总览版本号（spec/protocol.md 第 7 节）、导出名哈希后缀。
 sha2 = "0.10"
 # 审批 / 配对回调（spec/hub-api.md 3.3）：dyn 兼容的 async trait。
@@ -64,3 +74,8 @@ hyper = { version = "1", features = ["client", "http1"] }
 # tests/mcp_ipc.rs：Unix 上用 rmcp 自带的 Unix 域套接字 HTTP 客户端连接 IPC 上的 /mcp。
 [target.'cfg(unix)'.dev-dependencies]
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-unix-socket"] }
+
+# 依赖 MCP 出口的集成测试（关闭 mcp-server 时跳过）。
+[[test]]
+name = "mcp_ipc"
+required-features = ["mcp-server"]

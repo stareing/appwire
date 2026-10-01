@@ -83,6 +83,19 @@ final class HubIntegrationTests: XCTestCase {
         XCTAssertEqual(tools.first { $0.name == "notes.add" }?.availability, .available)
         XCTAssertTrue(hub.apps().contains { $0.appId == "notes" && $0.connected })
 
+        // 运行状态：实例的连接 ID 与 App 端 SDK 看到的一致
+        let st = try hub.status()
+        XCTAssertEqual(st.service, "app-mcp")
+        XCTAssertEqual(st.listen, hub.listenAddr)
+        XCTAssertTrue(st.reports.isEmpty)
+        let notes = try XCTUnwrap(st.apps.first { $0.appId == "notes" })
+        XCTAssertEqual(notes.state, .connected)
+        XCTAssertEqual(notes.instances.first?.state, .connected)
+        let cid = notes.instances.first?.info.connectionId
+        XCTAssertNotNil(cid)
+        XCTAssertEqual(cid, app.connectionId)
+        XCTAssertEqual(hub.apps().first { $0.appId == "notes" }?.instances.first?.connectionId, cid)
+
         // callTool（Encodable 参数）
         let r = try await hub.callTool("notes.add", arguments: NoteArgs(text: "买牛奶"), timeout: 5)
         XCTAssertNil(r.error)
@@ -206,8 +219,12 @@ final class HubIntegrationTests: XCTestCase {
         XCTAssertNil(hub.listenAddr)
         XCTAssertNil(hub.ipcEndpoint)
         XCTAssertEqual(Set(hub.tools().map(\.name)), ["apps.list", "apps.select", "apps.overview"])
+        let st = try hub.status()
+        XCTAssertNil(st.listen)
+        XCTAssertTrue(st.apps.isEmpty && !st.mcpHttp && !st.auth.tokenConfigured)
         hub.close()
         hub.close() // 幂等
+        XCTAssertThrowsError(try hub.status()) { XCTAssertEqual($0 as? HubError, .Shutdown) }
         do {
             _ = try await hub.callTool("apps.list")
             XCTFail("关闭后应抛出 HubError")

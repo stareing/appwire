@@ -65,7 +65,8 @@ ResourceContent = ffi.ResourceContent
 ToolErrorInfo = ffi.ToolErrorInfo
 ApprovalRequest = ffi.ApprovalRequest
 PairingRequest = ffi.PairingRequest
-#: 事件（``HubEvent.APP_CONNECTED`` 等变体；未单独映射的新事件为 ``HubEvent.OTHER(kind, json)``）。
+#: 事件（``HubEvent.APP_CONNECTED`` 等变体；SDK 诊断上报为 ``HubEvent.APP_DIAGNOSTIC(app_id, instance_id,
+#: code, message, count)``，spec/protocol.md 10.2；未单独映射的新事件为 ``HubEvent.OTHER(kind, json)``）。
 HubEvent = ffi.HubEvent
 #: Hub 操作错误（``HubError.Tool``、``InvalidJson``、``InvalidConfig``、``Io``、``Shutdown``）。
 HubError = ffi.HubError
@@ -77,6 +78,15 @@ WakeRequest = ffi.WakeRequest
 ToolExposure = ffi.ToolExposure
 #: 唤醒器配置（``WakerConfig.SYSTEM()`` / ``DISABLED()`` / ``EXEC(argv=[...])``）。
 WakerConfig = ffi.WakerConfig
+# 运行状态（:meth:`Hub.status`，spec/hub-api.md 3.9）。
+HubStatus = ffi.HubStatus
+AuthStatus = ffi.AuthStatus
+AppStatus = ffi.AppStatus
+AppState = ffi.AppState
+InstanceStatus = ffi.InstanceStatus
+InstanceState = ffi.InstanceState
+LastError = ffi.LastError
+DiagnosticReport = ffi.DiagnosticReport
 
 FormatLike = Union[ToolFormat, str]
 RiskLike = Union[Risk, str]
@@ -87,17 +97,25 @@ __all__ = [
     "AppInfo",
     "AppKind",
     "AppOverviewInfo",
+    "AppState",
+    "AppStatus",
     "ApprovalRequest",
+    "AuthStatus",
     "Availability",
     "CallResult",
+    "DiagnosticReport",
     "EventStream",
     "Hub",
     "HubConfig",
     "HubError",
     "HubEvent",
     "HubResource",
+    "HubStatus",
     "HubTool",
     "InstanceInfo",
+    "InstanceState",
+    "InstanceStatus",
+    "LastError",
     "PairingRequest",
     "ResourceContent",
     "Risk",
@@ -485,6 +503,11 @@ class Hub:
 
     def overview(self, app_id: str) -> AppOverviewInfo | None:
         return self._inner.overview(app_id)
+
+    def status(self) -> HubStatus:
+        """运行状态（spec/hub-api.md 3.9，与 ``GET /status`` 相同）：身份、监听位置、令牌策略、各 App 与实例的状态
+        （实例带 ``info.connection_id``）、最近错误、最近的 SDK 诊断上报。已关闭时抛出 ``HubError.Shutdown``。"""
+        return self._inner.status()
 
     def select_instance(self, app_id: str, instance_id: str | None) -> None:
         """设置全局默认实例（``None`` 恢复按规则路由）。"""

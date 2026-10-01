@@ -517,3 +517,99 @@ fn dormant_app_woken_by_foreign_waker() {
     }
     hub.shutdown();
 }
+
+#[test]
+fn status_reports_instances_connection_ids_and_shutdown() {
+    let hub = start_hub(None);
+    let st = hub.status().expect("status");
+    assert_eq!(st.service, "app-mcp");
+    assert_eq!(st.listen, hub.listen_addr());
+    assert!(st.apps.is_empty() && st.reports.is_empty());
+    assert!(!st.mcp_http && !st.auth.token_configured);
+    assert!(st.started_at_ms > 0);
+
+    let app = start_app(&hub);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (status_cid, app_cid) = loop {
+        let st = hub.status().expect("status");
+        let inst = st
+            .apps
+            .iter()
+            .find(|a| a.app_id == "notes" && a.state == AppState::Connected)
+            .and_then(|a| a.instances.first().cloned());
+        if let (Some(i), Some(cid)) = (inst, app.connection_id()) {
+            assert_eq!(i.state, InstanceState::Connected);
+            break (i.info.connection_id, cid);
+        }
+        assert!(Instant::now() < deadline, "App 未连上");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status_cid.as_deref(), Some(app_cid.as_str()));
+    // apps() 中的 InstanceInfo 也带连接 ID
+    let apps = hub.apps();
+    let notes = apps.iter().find(|a| a.app_id == "notes").expect("notes");
+    assert_eq!(notes.instances[0].connection_id.as_deref(), Some(app_cid.as_str()));
+    app.stop();
+    hub.shutdown();
+    assert_eq!(hub.status().unwrap_err(), HubError::Shutdown);
+}
+
+/// SDK 的 `app/diagnostic` 上报 → `HubEvent::AppDiagnostic` 与 `status().reports`（原始 WebSocket 模拟网页 SDK）。
+#[test]
+fn diagnostic_report_event_and_status() {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
+
+    let hub = start_hub(None);
+    let (tx, rx) = mpsc::channel();
+    hub.set_event_listener(Some(Arc::new(Events(Mutex::new(tx)))));
+    let url = format!("ws://{}/app", hub.listen_addr().expect("监听地址"));
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("运行时");
+    let ws = rt.block_on(async {
+        let (mut ws, _) = tokio_tungstenite::connect_async(url).await.expect("ws");
+        let hello = json!({"jsonrpc": "2.0", "id": 1, "method": "app/hello", "params": {
+            "appId": "page", "appName": "页面", "protocolVersion": "1", "sdkVersion": "t",
+            "clientKind": "web", "instanceId": "page-1"
+        }});
+        ws.send(WsMessage::text(hello.to_string())).await.expect("send");
+        loop {
+            if let Some(Ok(WsMessage::Text(t))) = ws.next().await {
+                let v: Value = serde_json::from_str(t.as_str()).expect("json");
+                if v["id"] == 1 {
+                    assert_eq!(v["result"]["status"], "paired", "{v}");
+                    break;
+                }
+            }
+        }
+        let n = json!({"jsonrpc": "2.0", "method": "app/diagnostic", "params": {
+            "code": "BLOCKED_LOCAL_NETWORK_ACCESS", "message": "本地网络访问未授权", "count": 2
+        }});
+        ws.send(WsMessage::text(n.to_string())).await.expect("send");
+        ws
+    });
+    let e = wait_for(&rx, |e| matches!(e, HubEvent::AppDiagnostic { .. }));
+    assert_eq!(
+        e,
+        HubEvent::AppDiagnostic {
+            app_id: "page".into(),
+            instance_id: "page-1".into(),
+            code: "BLOCKED_LOCAL_NETWORK_ACCESS".into(),
+            message: "本地网络访问未授权".into(),
+            count: 2,
+        }
+    );
+    let st = hub.status().expect("status");
+    assert_eq!(st.reports.len(), 1);
+    let r = &st.reports[0];
+    assert_eq!((r.app_id.as_str(), r.code.as_str(), r.count), ("page", "BLOCKED_LOCAL_NETWORK_ACCESS", 2));
+    let cid = st
+        .apps
+        .iter()
+        .find(|a| a.app_id == "page")
+        .and_then(|a| a.instances.first())
+        .and_then(|i| i.info.connection_id.clone());
+    assert_eq!(cid.as_deref(), Some(r.connection_id.as_str()));
+    drop(ws);
+    drop(rt);
+    hub.shutdown();
+}

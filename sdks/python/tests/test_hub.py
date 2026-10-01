@@ -67,6 +67,16 @@ def test_end_to_end_async() -> None:
                 assert tools["notes.add"].availability == hub_mod.Availability.AVAILABLE
                 assert any(a.app_id == "notes" and a.connected for a in hub.apps())
 
+                # 运行状态：实例的连接 ID 与 App 端 SDK 看到的一致
+                st = hub.status()
+                assert st.service == "app-mcp" and st.listen == hub.listen_addr and st.reports == []
+                notes = next(a for a in st.apps if a.app_id == "notes")
+                assert notes.state == hub_mod.AppState.CONNECTED
+                assert notes.instances[0].state == hub_mod.InstanceState.CONNECTED
+                cid = notes.instances[0].info.connection_id
+                assert cid is not None and cid == app.connection_id
+                assert next(a for a in hub.apps() if a.app_id == "notes").instances[0].connection_id == cid
+
                 # call_tool
                 r = await hub.call_tool("notes.add", {"text": "买牛奶"}, timeout=5)
                 assert isinstance(r, CallResult) and r.ok, r
@@ -181,8 +191,12 @@ def test_formats_and_shutdown() -> None:
     assert {t.name for t in hub.tools()} == {"apps.list", "apps.select", "apps.overview"}
     gemini = hub.export_tools("gemini")
     assert "functionDeclarations" in gemini
+    st = hub.status()
+    assert st.listen is None and st.apps == [] and not st.mcp_http and not st.auth.token_configured
     hub.close()
     hub.close()  # 幂等
+    with pytest.raises(HubError.Shutdown):
+        hub.status()
     with pytest.raises(HubError):
         hub.call_tool_sync("apps.list")
 

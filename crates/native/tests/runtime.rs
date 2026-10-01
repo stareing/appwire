@@ -466,6 +466,9 @@ fn reconnects_after_host_disconnect() {
         .cloned()
         .unwrap();
     assert!(backoff.retry_in_ms.is_some_and(|ms| ms <= 500));
+    // 对端正常关闭：带 CONNECTION_CLOSED（spec/protocol.md 10.1）
+    assert_eq!(backoff.code.as_deref(), Some("CONNECTION_CLOSED"), "{backoff:?}");
+    assert!(backoff.reason.as_deref().is_some_and(|r| r.contains("关闭")), "{backoff:?}");
 
     // 重连：hello 带上第一次配对得到的 token，并重新全量同步
     assert_eq!(host.wait_connected(), 2);
@@ -486,6 +489,40 @@ fn reconnects_after_host_disconnect() {
         .complete(Some("1"), vec![])
         .unwrap();
     assert_eq!(host.wait_response(&id).unwrap(), json!({ "data": 1 }));
+}
+
+#[test]
+fn abrupt_drop_backs_off_with_connection_lost() {
+    let host = MockHost::start();
+    let rec = Arc::new(Recorder::default());
+    let client = NativeClient::new(config(&host), Some(rec.clone())).unwrap();
+    connect(&host, &client);
+
+    host.abort();
+    host.wait_closed();
+    eventually("Backoff", || rec.statuses().contains(&StateStatus::Backoff));
+    let backoff = rec
+        .states
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|s| s.status == StateStatus::Backoff)
+        .cloned()
+        .unwrap();
+    // 未经关闭握手的中断：CONNECTION_LOST
+    assert_eq!(backoff.code.as_deref(), Some("CONNECTION_LOST"), "{backoff:?}");
+    assert!(backoff.reason.as_deref().is_some_and(|r| r.contains("中断")), "{backoff:?}");
+    // 断开日志带断开前的连接 ID
+    assert!(
+        rec.logs.lock().unwrap().iter().any(|(_, m)| m.starts_with("[mock-1] [CONNECTION_LOST]")),
+        "{:?}",
+        rec.logs.lock().unwrap()
+    );
+
+    // 之后照常重连
+    assert_eq!(host.wait_connected(), 2);
+    host.wait_ready();
+    eventually("Connected", || client.state().status == StateStatus::Connected);
 }
 
 #[test]

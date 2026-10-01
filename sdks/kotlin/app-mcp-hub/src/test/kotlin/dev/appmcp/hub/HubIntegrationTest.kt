@@ -84,6 +84,18 @@ class HubIntegrationTest {
             assertEquals("object", add.inputSchema.jsonObject["type"]!!.jsonPrimitive.content)
             assertTrue(hub.apps().any { it.appId == "notes" && it.connected })
 
+            // 运行状态：实例的连接 ID 与 App 端 SDK 看到的一致
+            val st = hub.status()
+            assertEquals("app-mcp", st.service)
+            assertEquals(hub.listenAddr, st.listen)
+            assertTrue(st.reports.isEmpty())
+            val notes = st.apps.first { it.appId == "notes" }
+            assertEquals(AppState.CONNECTED, notes.state)
+            assertEquals(InstanceState.CONNECTED, notes.instances[0].state)
+            val cid = notes.instances[0].info.connectionId
+            assertTrue(cid != null && cid == app.connectionId, "$cid vs ${app.connectionId}")
+            assertEquals(cid, hub.apps().first { it.appId == "notes" }.instances[0].connectionId)
+
             // callTool
             val r = hub.callTool("notes.add", buildJsonObject { put("text", "买牛奶") }, timeout = 5.seconds)
             assertEquals(null, r.error)
@@ -229,6 +241,9 @@ class HubIntegrationTest {
         assertEquals(null, hub.listenAddr)
         assertEquals(null, hub.ipcEndpoint)
         assertEquals(setOf("apps.list", "apps.select", "apps.overview"), hub.tools().map { it.name }.toSet())
+        val st = hub.status()
+        assertEquals(null, st.listen)
+        assertTrue(st.apps.isEmpty() && !st.mcpHttp && !st.auth.tokenConfigured)
         hub.close()
         hub.close() // 幂等
     }

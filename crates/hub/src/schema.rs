@@ -3,6 +3,7 @@
 use serde_json::Value;
 
 /// 最多报告的错误条数。
+#[cfg(feature = "schema-validation")]
 const MAX_REPORTED: usize = 5;
 
 /// 校验结果。
@@ -13,9 +14,18 @@ pub enum SchemaCheck {
     Invalid(String),
     /// schema 本身无法编译（App 的问题）；Host 跳过校验，交给 SDK 处理。
     BadSchema(String),
+    /// 本构建未包含参数校验（feature `schema-validation` 关闭），参数原样交给 App。
+    Unchecked,
+}
+
+/// 本构建未包含参数校验：一律 [`SchemaCheck::Unchecked`]。
+#[cfg(not(feature = "schema-validation"))]
+pub fn check(_schema: &Value, _args: &Value) -> SchemaCheck {
+    SchemaCheck::Unchecked
 }
 
 /// 用 `schema` 校验 `args`。
+#[cfg(feature = "schema-validation")]
 pub fn check(schema: &Value, args: &Value) -> SchemaCheck {
     let validator = match jsonschema::validator_for(schema) {
         Ok(v) => v,
@@ -48,7 +58,21 @@ pub fn check(schema: &Value, args: &Value) -> SchemaCheck {
     SchemaCheck::Invalid(msg)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "schema-validation")))]
+mod unchecked_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn without_feature_everything_is_unchecked() {
+        assert_eq!(
+            check(&json!({"type": "string"}), &json!(1)),
+            SchemaCheck::Unchecked
+        );
+    }
+}
+
+#[cfg(all(test, feature = "schema-validation"))]
 mod tests {
     use super::*;
     use serde_json::json;

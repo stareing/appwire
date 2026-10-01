@@ -278,6 +278,49 @@ describe('Electron 桥接', () => {
     expect(page.state).toEqual({ status: 'connected' })
   })
 
+  it('连接 ID 随 hello 与状态事件转发给页面', async () => {
+    const { ipcMain, native } = setupMain()
+    // FakeNativeClient 未声明 connectionId（NativeClient 中为可选），在这里模拟原生客户端已握手。
+    Object.assign(native, { connectionId: '3f9a1c-7' })
+    const { page } = setupPage(ipcMain, new FakeWebContents(1))
+    page.tool('t', { description: 't', handler: () => 1 }) // 建立会话（状态事件只发给有登记的页面）
+    await flush()
+    expect(page.connectionId).toBe('3f9a1c-7')
+
+    const seen: (string | undefined)[] = []
+    page.onStateChange(() => seen.push(page.connectionId))
+    Object.assign(native, { connectionId: null })
+    native.emit({ type: 'state', state: { status: 'backoff', retryInMs: 1000 } })
+    await flush()
+    Object.assign(native, { connectionId: '3f9a1c-8' })
+    native.emit({ type: 'state', state: { status: 'connected' } })
+    await flush()
+    expect(seen).toEqual([undefined, '3f9a1c-8'])
+    expect(page.connectionId).toBe('3f9a1c-8')
+  })
+
+  it('旧主进程（消息不带 connectionId）时页面的连接 ID 为 undefined', async () => {
+    const listeners: ((event: unknown) => void)[] = []
+    const bridge = {
+      version: 1,
+      request: async (op: { op: string }) =>
+        op.op === 'hello'
+          ? { ok: true as const, value: { instanceId: 'old', state: { status: 'connected' } } }
+          : { ok: true as const },
+      onMessage: (listener: (event: unknown) => void) => {
+        listeners.push(listener)
+        return () => {}
+      },
+    }
+    const page = createRendererAppMcp({ appId: 'shop', appName: 'Shop', bridge: bridge as never })
+    cleanups.push(() => page.dispose())
+    await flush()
+    expect(page.state).toEqual({ status: 'connected' })
+    expect(page.connectionId).toBeUndefined()
+    for (const l of listeners) l({ type: 'state', state: { status: 'connected' } })
+    expect(page.connectionId).toBeUndefined()
+  })
+
   it('webContents 过滤：不允许的页面收到 FORBIDDEN', async () => {
     const allowed = new FakeWebContents(1)
     const { ipcMain, native } = setupMain({ webContents: allowed })

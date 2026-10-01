@@ -59,7 +59,7 @@ export interface IpcMainLike {
  * 生命周期方法可选：缺少时页面的 `wake()` / `sleep()` / `hold()` / `connectNow()` 为空操作。
  */
 export type MainAppMcp = Pick<AppMcp, 'scope' | 'instanceId' | 'state' | 'onStateChange'> &
-  Partial<Pick<AppMcp, 'wake' | 'sleep' | 'hold' | 'connectNow'>>
+  Partial<Pick<AppMcp, 'wake' | 'sleep' | 'hold' | 'connectNow' | 'connectionId'>>
 
 export interface AttachOptions {
   appMcp: MainAppMcp
@@ -299,8 +299,15 @@ class Attachment implements AppMcpAttachment {
     return Array.isArray(filter) ? filter.some((wc) => wc.id === sender.id) : filter.id === sender.id
   }
 
+  /** 主进程客户端当前的连接 ID（缺省时省略字段，与旧版本消息同形）。 */
+  private connectionIdField(): { connectionId?: string } {
+    const connectionId = this.options.appMcp.connectionId
+    return typeof connectionId === 'string' && connectionId !== '' ? { connectionId } : {}
+  }
+
   private broadcast(state: ConnectionState): void {
-    for (const session of this.sessions.values()) session.send({ type: 'state', state })
+    const event: MainEvent = { type: 'state', state, ...this.connectionIdField() }
+    for (const session of this.sessions.values()) session.send(event)
   }
 
   endSession(session: RendererSession): void {
@@ -323,6 +330,7 @@ class Attachment implements AppMcpAttachment {
         const reply: HelloReply = {
           instanceId: this.options.appMcp.instanceId,
           state: this.options.appMcp.state,
+          ...this.connectionIdField(),
         }
         return { ok: true, value: reply }
       }

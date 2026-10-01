@@ -43,6 +43,10 @@
  *     mcpHttp 时另有 /mcp），旧名报 AM_HUB_ERR_INVALID_JSON。
  *   · am_hub_start 配置新增可选字段 mcpHttp、runDir。
  *   · am_hub_serve_http 的额外监听器与主服务路由相同（/app、/mcp、/healthz）。
+ * - v6（诊断，spec/hub-api.md 3.9）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · 函数 am_hub_status_json（HubStatus，与 GET /status 相同）。
+ *   · JSON 中新增：InstanceInfo.connectionId（Hub 分配的连接 ID，与日志 cid 相同；休眠实例缺省）；
+ *     事件 {"type":"appDiagnostic","appId","instanceId","code","message","count"}（SDK 上报的连接问题）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -207,6 +211,14 @@ AmHubStatus am_hub_tools_json(const AmHub *hub, const char *filter_json, char **
 AmHubStatus am_hub_resources_json(const AmHub *hub, char **out_json);
 /* AppOverviewInfo；App 未知或没有总览时为 "null"。 */
 AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **out_json);
+/* HubStatus（v6，与 GET /status 相同）：
+ *   {service, version, user?, pid, listen?, ipcEndpoint?, startedAtMs, mcpHttp,
+ *    auth: {tokenConfigured, tokenRequiredWithoutOrigin}, mcpSessions,
+ *    apps: [{appId, name, kind, state: "connected"|"waking"|"dormant"|"disconnected",
+ *            instances: [InstanceInfo + state: "connected"|"dormant"|"waking"],
+ *            lastError?: {code?, message, atMs}}],          按 appId 排序，含上游
+ *    reports: [{appId, instanceId, connectionId, code, message, count, receivedAtMs}]}  最近的 SDK 上报，旧的在前 */
+AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------
  * 调用

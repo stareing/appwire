@@ -57,6 +57,9 @@ mod unix {
             if !path.is_absolute() {
                 return Err(invalid(format!("套接字路径必须是绝对路径：{}", path.display())));
             }
+            // @why 先于建目录检查：超长路径（IPC_PATH_TOO_LONG）不留下任何文件系统改动。
+            app_mcp_protocol::endpoint::check_unix_socket_path(path)
+                .map_err(|issue| io::Error::new(io::ErrorKind::InvalidInput, issue))?;
             let parent = path
                 .parent()
                 .ok_or_else(|| invalid(format!("套接字路径没有上级目录：{}", path.display())))?;

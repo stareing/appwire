@@ -147,7 +147,10 @@ struct Lifecycle {
 struct StateInfo {
     StateStatus status = AM_STATE_IDLE;
     uint64_t retry_in_ms = 0;
-    std::string reason;  // 仅 REJECTED / HOST_MISMATCH（对端不是 app-mcp 或属于其他用户）时非空
+    /// REJECTED / HOST_MISMATCH（对端不是 app-mcp 或属于其他用户）时非空；BACKOFF 在连接失败等情况下也非空。
+    std::string reason;
+    /// 与 reason 对应的错误码（spec/protocol.md 10.1，如 "HOST_NOT_RUNNING"）；没有时为 nullopt。
+    std::optional<std::string> code;
 };
 
 struct ToolOptions {
@@ -191,6 +194,30 @@ struct ClientCallbacks {
     /// 通知主线程 / 事件循环退出即可。
     std::function<void()> on_idle_exit;
 };
+
+namespace detail {
+
+/// 客户端回调的 user_data：用户回调 + 客户端句柄（状态回调里查询错误码用）。
+struct ClientCallbackHolder {
+    ClientCallbacks callbacks;
+    /// am_client_new_ex 成功后写入；句柄在 am_client_free 前一直有效（释放时先停掉回调线程）。
+    std::atomic<AmClient*> client{nullptr};
+};
+
+/// 当前状态的错误码（am_client_state_code）。
+inline std::optional<std::string> state_code(const AmClient* client) {
+    char* code = nullptr;
+    check(am_client_state_code(client, &code));
+    if (!code) return std::nullopt;
+    return take_string(code);
+}
+
+/// 只有 BACKOFF / REJECTED / HOST_MISMATCH 带错误码（spec/protocol.md 10.1）。
+constexpr bool status_has_code(AmStateStatus status) {
+    return status == AM_STATE_BACKOFF || status == AM_STATE_REJECTED || status == AM_STATE_HOST_MISMATCH;
+}
+
+}  // namespace detail
 
 // ---------------------------------------------------------------------------
 // HoldGuard
@@ -604,44 +631,50 @@ public:
         opts.connect_timeout_ms = config.connect_timeout_ms;
         if (callbacks.on_idle_exit) {
             opts.on_idle_exit = [](void* ud) {
-                auto* h = static_cast<ClientCallbacks*>(ud);
+                auto& h = static_cast<detail::ClientCallbackHolder*>(ud)->callbacks;
                 try {
-                    if (h->on_idle_exit) h->on_idle_exit();
+                    if (h.on_idle_exit) h.on_idle_exit();
                 } catch (...) {
                 }
             };
         }
 
-        auto* holder = new ClientCallbacks(std::move(callbacks));
+        auto* holder = new detail::ClientCallbackHolder{std::move(callbacks), {}};
         AmClientCallbacks cb{};
         // 回调中的字符串归回调方所有（AM_API_VERSION 2），先取走（释放）再调用用户函数。
+        // @why 状态回调签名没有 code（C ABI v6 只新增查询函数），回调时用 am_client_state_code 取当前状态的码；
+        //      回调异步分发，状态可能已再次变化，此时 code 反映的是更新后的状态（可能为 nullopt）。
         cb.on_state = [](void* ud, AmStateStatus status, uint64_t retry, char* reason) {
-            auto* h = static_cast<ClientCallbacks*>(ud);
+            auto* h = static_cast<detail::ClientCallbackHolder*>(ud);
             try {
-                StateInfo info{status, retry, detail::take_string(reason)};
-                if (h->on_state) h->on_state(info);
+                StateInfo info{status, retry, detail::take_string(reason), std::nullopt};
+                AmClient* client = h->client.load();
+                if (client && detail::status_has_code(status)) info.code = detail::state_code(client);
+                if (h->callbacks.on_state) h->callbacks.on_state(info);
             } catch (...) {
             }
         };
         cb.on_paired = [](void* ud, char* token) {
-            auto* h = static_cast<ClientCallbacks*>(ud);
+            auto& h = static_cast<detail::ClientCallbackHolder*>(ud)->callbacks;
             try {
                 std::string t = detail::take_string(token);
-                if (h->on_paired) h->on_paired(t);
+                if (h.on_paired) h.on_paired(t);
             } catch (...) {
             }
         };
         cb.on_log = [](void* ud, AmLogLevel level, char* message) {
-            auto* h = static_cast<ClientCallbacks*>(ud);
+            auto& h = static_cast<detail::ClientCallbackHolder*>(ud)->callbacks;
             try {
                 std::string m = detail::take_string(message);
-                if (h->on_log) h->on_log(level, m);
+                if (h.on_log) h.on_log(level, m);
             } catch (...) {
             }
         };
         cb.user_data = holder;
-        cb.free_user_data = &detail::delete_fn<ClientCallbacks>;
+        cb.free_user_data = &detail::delete_fn<detail::ClientCallbackHolder>;
+        // 失败时库已调用 free_user_data 释放 holder，不能再访问。
         detail::check(am_client_new_ex(&c, &cb, &opts, &h_));
+        holder->client.store(h_);
     }
     Client(Client&& o) noexcept : h_(std::exchange(o.h_, nullptr)) {}
     Client& operator=(Client&& o) noexcept {
@@ -669,6 +702,7 @@ public:
         char* reason = nullptr;
         detail::check(am_client_state(h_, &info.status, &info.retry_in_ms, &reason));
         info.reason = detail::take_string(reason);
+        info.code = detail::state_code(h_);
         return info;
     }
 
@@ -678,6 +712,14 @@ public:
         char* t = am_client_token(h_);
         if (!t) return std::nullopt;
         return detail::take_string(t);
+    }
+
+    /// Host 为当前连接分配的连接 ID（spec/protocol.md 10.3），与 Host 日志中的 cid 对应；未连接时为 nullopt。
+    std::optional<std::string> connection_id() const {
+        char* id = nullptr;
+        detail::check(am_client_connection_id(h_, &id));
+        if (!id) return std::nullopt;
+        return detail::take_string(id);
     }
 
     // ---- 生命周期（spec/lifecycle.md） ----

@@ -106,6 +106,61 @@ public class ClientTests
         Assert.Equal(ClientStatus.Idle, client.State.Status);
     }
 
+    /// <summary>不存在的本地 IPC 端点（连接被拒绝 / 不存在 → HOST_NOT_RUNNING）。
+    /// @why 不用 ws://127.0.0.1:1：WSL 等环境下回环连接未监听端口可能超时（CONNECT_TIMEOUT）。</summary>
+    private static string MissingEndpoint() => OperatingSystem.IsWindows()
+        ? @"pipe:\\.\pipe\app-mcp-dotnet-test-missing"
+        : "unix:/nonexistent-app-mcp-dotnet-test/hub.sock";
+
+    [Fact]
+    public async Task BackoffCarriesCode()
+    {
+        using var client = AppMcpClient.Create(Options(MissingEndpoint()));
+        Assert.Null(client.State.Code); // Idle 不带码
+        Assert.Null(client.ConnectionId);
+
+        var backoff = new TaskCompletionSource<ClientState>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var codeOutsideErrorStates = false;
+        client.StateChanged += (_, e) =>
+        {
+            if (e.State.Status == ClientStatus.Backoff) backoff.TrySetResult(e.State);
+            else if (!ClientState.StatusHasCode(e.State.Status) && e.State.Code is not null) codeOutsideErrorStates = true;
+        };
+        client.Start();
+
+        var state = await backoff.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("HOST_NOT_RUNNING", state.Code);
+        Assert.False(string.IsNullOrEmpty(state.Reason));
+        Assert.NotNull(state.RetryIn);
+        Assert.False(codeOutsideErrorStates);
+
+        var now = client.State;
+        if (now.Status == ClientStatus.Backoff) Assert.Equal("HOST_NOT_RUNNING", now.Code);
+        Assert.Null(client.ConnectionId); // 从未连上
+
+        client.Stop();
+        Assert.Equal(ClientStatus.Stopped, client.State.Status);
+        Assert.Null(client.State.Code);
+    }
+
+    [Fact]
+    public void StateCodeIsPartOfEquality()
+    {
+        var a = new ClientState(ClientStatus.Backoff, TimeSpan.FromSeconds(1), "r") { Code = "HOST_NOT_RUNNING" };
+        Assert.Equal(a, a with { });
+        Assert.NotEqual(a, a with { Code = null });
+        var (status, retryIn, reason) = a; // @compat 三元解构保持可用
+        Assert.Equal((ClientStatus.Backoff, TimeSpan.FromSeconds(1), "r"), (status, retryIn, reason));
+    }
+
+    [Fact]
+    public void QueriesThrowAfterDispose()
+    {
+        var client = AppMcpClient.Create(Options());
+        client.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => client.ConnectionId);
+    }
+
     [Fact]
     public void BasicLifecycle()
     {

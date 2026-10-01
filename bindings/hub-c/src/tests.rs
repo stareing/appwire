@@ -228,6 +228,8 @@ fn version_errors_and_null_arguments() {
         let mut out = ptr::null_mut();
         assert_eq!(am_hub_apps_json(ptr::null(), &mut out), AmHubStatus::InvalidArgument);
         assert!(out.is_null());
+        assert_eq!(am_hub_status_json(ptr::null(), &mut out), AmHubStatus::InvalidArgument);
+        assert!(out.is_null());
         assert_eq!(am_hub_approval_complete(ptr::null_mut(), true), AmHubStatus::InvalidArgument);
         am_hub_string_free(ptr::null_mut());
         am_hub_free(ptr::null_mut());
@@ -316,6 +318,23 @@ fn static_manifest_queries_export_and_errors() {
         assert_eq!(apps[0]["appId"], "shop");
         assert_eq!(apps[0]["connected"], false);
 
+        // 运行状态：身份、监听、令牌策略、静态清单 App 为 disconnected
+        let st = query_json(|o| am_hub_status_json(hub, o));
+        assert_eq!(st["service"], "app-mcp", "{st}");
+        assert_eq!(st["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(st["pid"], std::process::id());
+        assert!(st.get("listen").is_none() && st.get("ipcEndpoint").is_none(), "{st}");
+        assert!(st["startedAtMs"].as_u64().is_some_and(|t| t > 0));
+        assert!(st["mcpHttp"].is_boolean());
+        assert_eq!(st["auth"]["tokenConfigured"], false);
+        assert_eq!(st["auth"]["tokenRequiredWithoutOrigin"], false);
+        assert_eq!(st["mcpSessions"], 0);
+        assert_eq!(st["apps"][0]["appId"], "shop");
+        assert_eq!(st["apps"][0]["kind"], "app");
+        assert_eq!(st["apps"][0]["state"], "disconnected");
+        assert_eq!(st["apps"][0]["instances"], json!([]));
+        assert_eq!(st["reports"], json!([]));
+
         let filter = c(r#"{"includeBuiltin": false}"#);
         let tools = query_json(|o| am_hub_tools_json(hub, filter.as_ptr(), o));
         assert_eq!(tools.as_array().map(Vec::len), Some(1));
@@ -400,6 +419,8 @@ fn static_manifest_queries_export_and_errors() {
             AmHubStatus::Stopped
         );
         assert_eq!(am_hub_apps_json(hub, &mut out), AmHubStatus::Stopped);
+        assert_eq!(am_hub_status_json(hub, &mut out), AmHubStatus::Stopped);
+        assert!(out.is_null());
         am_hub_free(hub);
         assert!(rx.try_recv().is_err());
     }
@@ -524,6 +545,40 @@ fn app_round_trip_events_approval_and_shutdown() {
     // SAFETY: 有效句柄。
     unsafe { am_hub_free(hub) };
     assert_eq!(FREED.load(Ordering::SeqCst), freed_before + 1, "事件回调的 user_data 被释放");
+}
+
+/// 已连接的实例在 apps / status 中带同一连接 ID（spec/hub-api.md 3.9）。
+#[test]
+fn status_lists_connected_instance_with_connection_id() {
+    let hub = start_hub(r#"{"listen":"127.0.0.1:0"}"#);
+    let app = start_app(hub);
+    let deadline = Instant::now() + WAIT;
+    let st = loop {
+        // SAFETY: 有效参数。
+        let st = query_json(|o| unsafe { am_hub_status_json(hub, o) });
+        if st["apps"][0]["state"] == "connected" {
+            break st;
+        }
+        assert!(Instant::now() < deadline, "App 未连接：{st}");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // SAFETY: 有效句柄。
+    let addr = unsafe { take(am_hub_listen_addr(hub)) };
+    assert_eq!(st["listen"], addr.as_str());
+    let app_st = &st["apps"][0];
+    assert_eq!(app_st["appId"], "notes");
+    let inst = &app_st["instances"][0];
+    assert_eq!(inst["instanceId"], "n1");
+    assert_eq!(inst["state"], "connected");
+    let cid = inst["connectionId"].as_str().unwrap_or_default().to_owned();
+    assert!(cid.contains('-'), "连接 ID 形如 <标记>-<序号>：{inst}");
+    // SAFETY: 有效参数。
+    let apps = query_json(|o| unsafe { am_hub_apps_json(hub, o) });
+    assert_eq!(apps[0]["instances"][0]["connectionId"], cid.as_str());
+
+    app.client.stop();
+    // SAFETY: 有效句柄。
+    unsafe { am_hub_free(hub) };
 }
 
 #[test]
@@ -656,7 +711,7 @@ fn header_matches_implementation() {
         "am_hub_version", "am_hub_last_error_message", "am_hub_string_free", "am_hub_start",
         "am_hub_shutdown", "am_hub_free", "am_hub_listen_addr", "am_hub_ipc_endpoint", "am_hub_serve_http",
         "am_hub_apps_json", "am_hub_tools_json", "am_hub_resources_json", "am_hub_overview_json",
-        "am_hub_call", "am_hub_cancel_call", "am_hub_read_resource", "am_hub_subscribe",
+        "am_hub_status_json", "am_hub_call", "am_hub_cancel_call", "am_hub_read_resource", "am_hub_subscribe",
         "am_hub_unsubscribe", "am_hub_select_instance", "am_hub_reset_session",
         "am_hub_export_tools", "am_hub_dispatch", "am_hub_set_event_cb", "am_hub_set_approval_cb",
         "am_hub_approval_complete", "am_hub_set_pairing_cb", "am_hub_pairing_complete",
@@ -666,7 +721,7 @@ fn header_matches_implementation() {
     }
     let src = include_str!("lib.rs");
     let exported = src.matches("#[unsafe(no_mangle)]").count();
-    assert_eq!(exported, 29, "导出函数数量与头文件清单一致");
+    assert_eq!(exported, 30, "导出函数数量与头文件清单一致");
 }
 
 #[test]

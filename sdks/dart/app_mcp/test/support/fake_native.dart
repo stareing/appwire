@@ -39,6 +39,9 @@ final class FakeNative {
       .lookupFunction<Void Function(Pointer<Utf8>), void Function(Pointer<Utf8>)>('am_string_free');
   late final _emitState = lib.lookupFunction<Void Function(Int32, Uint64, Pointer<Utf8>),
       void Function(int, int, Pointer<Utf8>)>('fake_emit_state');
+  late final _emitStateCode = lib.lookupFunction<
+      Void Function(Int32, Uint64, Pointer<Utf8>, Pointer<Utf8>),
+      void Function(int, int, Pointer<Utf8>, Pointer<Utf8>)>('fake_emit_state_code');
   late final _pair =
       lib.lookupFunction<Void Function(Pointer<Utf8>), void Function(Pointer<Utf8>)>('fake_pair');
   late final freeCount = lib.lookupFunction<Int32 Function(), int Function()>('fake_free_count');
@@ -114,6 +117,13 @@ final class FakeNative {
 
   void emitState(int status, int retry, String? reason) => using(
       (a) => _emitState(status, retry, reason == null ? nullptr : reason.toNativeUtf8(allocator: a)));
+
+  /// 发出状态变化，并设置之后 am_client_state_code 返回的错误码。
+  void emitStateCode(int status, int retry, String? reason, String? code) => using((a) => _emitStateCode(
+      status,
+      retry,
+      reason == null ? nullptr : reason.toNativeUtf8(allocator: a),
+      code == null ? nullptr : code.toNativeUtf8(allocator: a)));
 
   void pair(String token) => using((a) => _pair(token.toNativeUtf8(allocator: a)));
 

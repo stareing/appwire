@@ -280,8 +280,8 @@ pub enum ConnectionState {
     /// 已配对并完成同步，可以接收调用。
     Connected,
     /// 连接断开，将在 `retry_at` 时重连。`reason` / `code`：本次断开或连接失败的原因与错误码
-    /// （spec/protocol.md 10.1；驱动层经 [`Client::handle_connect_failed`] 报告、握手 / 心跳超时）；
-    /// 普通断线时为 `None`。
+    /// （spec/protocol.md 10.1；驱动层经 [`Client::handle_connect_failed`] / [`Client::handle_disconnected_with`]
+    /// 报告、握手 / 心跳超时）；驱动层未给出原因的断线（[`Client::handle_disconnected`]）为 `None`。
     Backoff { retry_at: Millis, reason: Option<String>, code: Option<ConnectionErrorCode> },
     /// 被 Host 拒绝（配对拒绝或协议不兼容），不再自动重连。`code` 来自 Host 的 `HelloResult.code` /
     /// `PairingResultParams.code`，缺省或不认识时为 [`ConnectionErrorCode::Rejected`]。
@@ -636,6 +636,12 @@ impl Client {
     /// 建立连接失败，带驱动层归类的原因（如 `HOST_NOT_RUNNING`、`IPC_PERMISSION_DENIED`，spec/protocol.md 10.1）：
     /// 与 [`Client::handle_disconnected`] 相同，进入的 `Backoff` 状态带 `reason` / `code`。
     pub fn handle_connect_failed(&mut self, issue: ConnectionIssue, now: Millis) {
+        self.disconnected(Some(issue), now);
+    }
+
+    /// 已建立的连接断开，带驱动层归类的原因（`CONNECTION_CLOSED` / `CONNECTION_LOST`，spec/protocol.md 10.1）：
+    /// 与 [`Client::handle_disconnected`] 相同，进入的 `Backoff` 状态带 `reason` / `code`。
+    pub fn handle_disconnected_with(&mut self, issue: ConnectionIssue, now: Millis) {
         self.disconnected(Some(issue), now);
     }
 

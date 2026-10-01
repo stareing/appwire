@@ -89,6 +89,7 @@ void main() {
       '--invoke', 'cart.add', '--args', '{"id":"apple","qty":2}',
       '--invoke', 'cart.checkout', '--args', '{}',
       '--invoke', 'cart.fail',
+      '--invoke', 'cart.cid',
       '--read', 'cart',
       '--timeout-ms', '15000',
     ]);
@@ -129,6 +130,12 @@ void main() {
             ? throw ToolCallError(ErrorKind.toolDisabled, '购物车为空')
             : {'total': cart.values.fold<int>(0, (a, b) => a + b)});
     client.tool('cart.fail', description: '总是失败', handler: (args, ctx) => throw StateError('boom'));
+    // 连接期间（handler 内）可查 Host 分配的连接 ID（fake_host 返回 "fake-<pid>"，spec/protocol.md 10.3）。
+    String? cidInCall;
+    client.tool('cart.cid', description: '连接 ID', handler: (args, ctx) {
+      cidInCall = client.connectionId;
+      return cidInCall;
+    });
     cartRes = client.resource('cart', description: '购物车内容', read: () => {'items': cart});
     client.start();
 
@@ -150,6 +157,10 @@ void main() {
       final fail = await host.nextJson();
       expect(fail['error'], isNotNull);
       expect(jsonEncode(fail['error']), contains('HANDLER_ERROR'));
+
+      final cid = await host.nextJson();
+      expect(cid['name'], 'cart.cid');
+      expect(cidInCall, startsWith('fake-'));
 
       final read = await host.nextJson();
       expect(read['type'], 'read');
@@ -271,6 +282,35 @@ void main() {
       client.dispose();
     }
   }, skip: skip, timeout: const Timeout(Duration(seconds: 60)));
+
+  test('真实原生库：连不上的端点 → backoff 带 code（HOST_NOT_RUNNING），connectionId 为 null', () async {
+    // @why 不用 ws://127.0.0.1:1：WSL 等环境下回环连接未监听端口可能超时（CONNECT_TIMEOUT）而非被拒绝。
+    final client = AppMcp(
+      appId: 'dart-diag',
+      appName: 'Dart 诊断',
+      hostUrl: Platform.isWindows
+          ? r'pipe:\\.\pipe\app-mcp-dart-test-missing'
+          : 'unix:/nonexistent-app-mcp-dart-test/hub.sock',
+      libraryPath: nativePath,
+    );
+    try {
+      expect(client.state.code, isNull);
+      expect(client.connectionId, isNull);
+      final backoff = client.states.firstWhere((s) => s.status == ConnectionStatus.backoff);
+      client.start();
+      final s = await backoff.timeout(const Duration(seconds: 10));
+      expect(s.code, 'HOST_NOT_RUNNING');
+      expect(s.reason, isNotEmpty);
+      final now = client.state;
+      if (now.status == ConnectionStatus.backoff) expect(now.code, 'HOST_NOT_RUNNING');
+      expect(client.connectionId, isNull);
+      client.stop();
+      expect(client.state.code, isNull);
+    } finally {
+      client.dispose();
+    }
+    expect(() => client.connectionId, throwsA(isA<AppMcpException>()));
+  }, skip: nativePath == null ? '找不到原生库' : false);
 
   test('真实原生库：注册、作用域、错误码与释放（不连接）', () async {
     final client = AppMcp(

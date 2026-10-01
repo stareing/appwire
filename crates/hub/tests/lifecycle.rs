@@ -389,10 +389,13 @@ async fn wake_timeout_and_launch_failure() {
     let out = hub.call_tool(CallRequest::new("raw.echo", json!({}))).await.unwrap();
     assert_eq!(out.result.unwrap_err().kind, ErrorKind::AppNotResponding);
     assert_eq!(waker.requests.lock().unwrap().len(), 1);
-    // 参数不合法：唤醒前就拒绝，不激活
-    let out = hub.call_tool(CallRequest::new("raw.echo", json!("x"))).await;
-    assert!(out.is_ok());
-    assert_eq!(waker.requests.lock().unwrap().len(), 1);
+    // 参数不合法：唤醒前就拒绝，不激活（Hub 侧校验，feature schema-validation）
+    #[cfg(feature = "schema-validation")]
+    {
+        let out = hub.call_tool(CallRequest::new("raw.echo", json!("x"))).await;
+        assert!(out.is_ok());
+        assert_eq!(waker.requests.lock().unwrap().len(), 1);
+    }
 
     // Waker 报错 → 错误透传（LAUNCH_FAILED）
     let failing = Arc::new(FakeWaker { fail: true, ..Default::default() });
@@ -458,6 +461,7 @@ async fn cold_wake_from_manifest_with_launch_token() {
 }
 
 /// MCP 出口：调用后发送租约，会话关闭时 `ttlMs: 0`。
+#[cfg(feature = "mcp-server")]
 #[tokio::test(flavor = "multi_thread")]
 async fn lease_sent_after_call_and_cancelled_when_session_closes() {
     use rmcp::ServiceExt;

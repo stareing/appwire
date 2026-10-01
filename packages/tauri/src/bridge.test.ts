@@ -157,6 +157,24 @@ describe('createTauriAppMcp', () => {
     expect(states).toEqual(['connected', 'dormant', 'stopped'])
   })
 
+  it('连接 ID 经注入脚本从 hello 回复与 state 事件到达页面', async () => {
+    const fake = createFakeTauri()
+    fake.reply = (op) =>
+      op.op === 'hello'
+        ? { ok: true, value: { instanceId: 'inst-1', state: { status: 'connected' }, connectionId: '3f9a1c-1' } }
+        : { ok: true }
+    const appMcp = createTauriAppMcp({ appId: 'shop', appName: '示例商城', bridge: bridgeOf(fake.window), logger: quiet })
+    await fake.waitFor((op) => op.op === 'hello')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(appMcp.connectionId).toBe('3f9a1c-1')
+
+    fake.emit({ type: 'state', state: { status: 'backoff', retryAt: 1, code: 'CONNECT_FAILED' } })
+    expect(appMcp.connectionId).toBeUndefined()
+    fake.emit({ type: 'state', state: { status: 'connected' }, connectionId: '3f9a1c-2' })
+    expect(appMcp.connectionId).toBe('3f9a1c-2')
+    appMcp.dispose()
+  })
+
   it('找不到桥接时抛出说明性错误；enabled: false 时为空操作', () => {
     expect(() => createTauriAppMcp({ appId: 'shop', appName: '示例商城' })).toThrow(/不在 Tauri WebView 中/)
     const disabled = createTauriAppMcp({ appId: 'shop', appName: '示例商城', enabled: false })

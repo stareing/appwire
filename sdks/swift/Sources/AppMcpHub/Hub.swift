@@ -41,11 +41,21 @@ public typealias WakeRequest = AppMcpHubBindings.WakeRequest
 public typealias HubWakeDescriptor = AppMcpHubBindings.WakeDescriptor
 /// 唤醒方式（`.uri`、`.aumid`、`.appleEvent`、`.dbus`、`.androidIntent`、`.webUrl`、`.none`）。
 public typealias HubWakeKind = AppMcpHubBindings.WakeKind
-/// Hub 事件。休眠相关：`.appDormant(appId:instanceId:)`、`.appWaking(appId:instanceId:)`（`nil` = 冷启动）。
+/// Hub 事件。休眠相关：`.appDormant(appId:instanceId:)`、`.appWaking(appId:instanceId:)`（`nil` = 冷启动）；
+/// SDK 诊断上报：`.appDiagnostic(appId:instanceId:code:message:count:)`（spec/protocol.md 10.2）。
 /// 未单独映射的新事件以 `.other(kind:json:)` 送达。
 public typealias HubEvent = AppMcpHubBindings.HubEvent
 /// Hub 操作错误（`.Tool`、`.InvalidJson`、`.InvalidConfig`、`.Io`、`.Shutdown`）。
 public typealias HubError = AppMcpHubBindings.HubError
+// 运行状态（`Hub.status()`，spec/hub-api.md 3.9）。
+public typealias HubStatus = AppMcpHubBindings.HubStatus
+public typealias AuthStatus = AppMcpHubBindings.AuthStatus
+public typealias AppStatus = AppMcpHubBindings.AppStatus
+public typealias AppState = AppMcpHubBindings.AppState
+public typealias InstanceStatus = AppMcpHubBindings.InstanceStatus
+public typealias InstanceState = AppMcpHubBindings.InstanceState
+public typealias LastError = AppMcpHubBindings.LastError
+public typealias DiagnosticReport = AppMcpHubBindings.DiagnosticReport
 
 /// 工具调用以错误结束（`CallResult.decode` / `CallResult.get()`）。`kind` 为协议错误类别，如 `USER_REJECTED`。
 public struct ToolError: Error, Sendable, Equatable, CustomStringConvertible {
@@ -251,6 +261,10 @@ public final class Hub: @unchecked Sendable {
     public func resources() -> [HubResource] { inner.resources() }
 
     public func overview(appId: String) -> AppOverviewInfo? { inner.overview(appId: appId) }
+
+    /// 运行状态（spec/hub-api.md 3.9，与 `GET /status` 相同）：身份、监听位置、令牌策略、各 App 与实例的状态
+    /// （实例带 `info.connectionId`）、最近错误、最近的 SDK 诊断上报。已关闭时抛出 `HubError.Shutdown`。
+    public func status() throws -> HubStatus { try inner.status() }
 
     /// 设置全局默认实例（`nil` 恢复按规则路由）。
     public func selectInstance(appId: String, instanceId: String?) {

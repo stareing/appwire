@@ -10,6 +10,9 @@
 //! `reset`（页面卸载）、页面开始导航、窗口销毁或事件无法送达时整体注销，进行中的调用以 `APP_DISCONNECTED` 失败，
 //! 页面持有的 hold 一并释放。
 //!
+//! 连接 ID（spec/protocol.md 10.3）随 `hello` 回复与 `state` 事件的可选字段 `connectionId` 送到页面（协议版本不变，
+//! 见 electron-bridge.ts 的 `@compat`）。
+//!
 //! 本模块与 Tauri 无关（只依赖 [`PageSink`]），便于不启动 WebView 测试。
 
 use std::collections::HashMap;
@@ -285,6 +288,7 @@ impl Bridge {
         sessions: Arc<Sessions>,
         accept: Option<Arc<AcceptFn>>,
     ) -> Self {
+        sessions.attach_client(client.clone());
         Self {
             client,
             sessions,
@@ -320,10 +324,14 @@ impl Bridge {
         match op {
             PageOp::Hello => {
                 self.sessions.end(label);
-                reply_ok(Some(json!({
+                let mut hello = json!({
                     "instanceId": self.client.instance_id(),
                     "state": state_json(&self.client.state()),
-                })))
+                });
+                if let Some(cid) = self.client.connection_id() {
+                    hello["connectionId"] = Value::String(cid);
+                }
+                reply_ok(Some(hello))
             }
             PageOp::Reset => {
                 self.sessions.end(label);
@@ -351,10 +359,24 @@ impl Bridge {
     }
 }
 
+impl Drop for Bridge {
+    /// @invariant 断开 `Sessions` 持有的客户端克隆（见 [`Sessions::attach_client`]），
+    /// 使 `self.client` 成为最后一个所有者，客户端随插件状态一起停止。
+    fn drop(&mut self) {
+        self.sessions.detach_client();
+    }
+}
+
 /// 全部 WebView 会话（按 label）。
 #[derive(Default)]
 pub(crate) struct Sessions {
     map: Mutex<HashMap<String, Arc<Session>>>,
+    /// 广播状态时读取连接 ID 用。
+    /// @why 状态回调（`PluginListener`）在客户端创建之前就要构造，`StateInfo` 不带连接 ID，只能回头问客户端；
+    /// 客户端持有监听器、监听器持有本结构，因此这里是一个引用环，由 [`Bridge`] 的 `Drop` 断开。
+    /// @invariant 只在持锁期间使用，不把克隆带出锁外：否则最后一个克隆可能在分发线程上释放，
+    /// 而 `NativeClient` 的析构要等待分发线程结束。
+    client: Mutex<Option<NativeClient>>,
 }
 
 impl Sessions {
@@ -379,6 +401,20 @@ impl Sessions {
     /// 当前有登记的 WebView 数量。
     pub(crate) fn count(&self) -> usize {
         lock(&self.map).len()
+    }
+
+    pub(crate) fn attach_client(&self, client: NativeClient) {
+        *lock(&self.client) = Some(client);
+    }
+
+    pub(crate) fn detach_client(&self) {
+        let client = lock(&self.client).take();
+        drop(client);
+    }
+
+    /// 客户端当前的连接 ID；未连接、旧 Host 或未关联客户端时为 `None`。
+    fn connection_id(&self) -> Option<String> {
+        lock(&self.client).as_ref().and_then(NativeClient::connection_id)
     }
 
     /// 注销该 WebView 的全部登记。
@@ -429,8 +465,12 @@ impl Sessions {
     }
 
     /// 把连接状态转发给全部页面。
+    /// 连接 ID 在分发时读取：状态在此期间又变化时可能与 `state` 不一致，随后的状态事件会更正。
     pub(crate) fn broadcast_state(&self, state: &StateInfo) {
-        let event = json!({ "type": "state", "state": state_json(state) });
+        let mut event = json!({ "type": "state", "state": state_json(state) });
+        if let Some(cid) = self.connection_id() {
+            event["connectionId"] = Value::String(cid);
+        }
         let sessions: Vec<Arc<Session>> = lock(&self.map).values().cloned().collect();
         for session in sessions {
             session.send(&event);

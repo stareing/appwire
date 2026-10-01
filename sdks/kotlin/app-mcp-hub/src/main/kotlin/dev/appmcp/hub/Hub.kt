@@ -42,6 +42,16 @@ typealias PairingRequest = dev.appmcp.hub.ffi.PairingRequest
 typealias WakeKind = dev.appmcp.hub.ffi.WakeKind
 typealias WakeDescriptor = dev.appmcp.hub.ffi.WakeDescriptor
 
+// 运行状态（[Hub.status]，spec/hub-api.md 3.9）。
+typealias HubStatus = dev.appmcp.hub.ffi.HubStatus
+typealias AuthStatus = dev.appmcp.hub.ffi.AuthStatus
+typealias AppStatus = dev.appmcp.hub.ffi.AppStatus
+typealias AppState = dev.appmcp.hub.ffi.AppState
+typealias InstanceStatus = dev.appmcp.hub.ffi.InstanceStatus
+typealias InstanceState = dev.appmcp.hub.ffi.InstanceState
+typealias LastError = dev.appmcp.hub.ffi.LastError
+typealias DiagnosticReport = dev.appmcp.hub.ffi.DiagnosticReport
+
 /** 工具暴露方式（`AUTO` / `PROGRESSIVE` / `ALL`，spec/hub-api.md 3.7）。 */
 typealias ToolExposure = dev.appmcp.hub.ffi.ToolExposure
 
@@ -53,7 +63,9 @@ typealias WakeRequest = dev.appmcp.hub.ffi.WakeRequest
 
 /**
  * Hub 事件（sealed class）。休眠相关：`HubEvent.AppDormant(appId, instanceId)`、
- * `HubEvent.AppWaking(appId, instanceId?)`（`null` = 冷启动）。未单独映射的新事件以 `HubEvent.Other(kind, json)` 送达。
+ * `HubEvent.AppWaking(appId, instanceId?)`（`null` = 冷启动）；SDK 诊断上报：
+ * `HubEvent.AppDiagnostic(appId, instanceId, code, message, count)`（spec/protocol.md 10.2）。
+ * 未单独映射的新事件以 `HubEvent.Other(kind, json)` 送达。
  * 子类需通过 `dev.appmcp.hub.ffi.HubEvent.AppConnected` 等访问（typealias 不能访问嵌套类）。
  */
 typealias HubEvent = dev.appmcp.hub.ffi.HubEvent
@@ -179,6 +191,12 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
     fun resources(): List<HubResource> = inner.resources()
 
     fun overview(appId: String): AppOverviewInfo? = inner.overview(appId)
+
+    /**
+     * 运行状态（spec/hub-api.md 3.9，与 `GET /status` 相同）：身份、监听位置、令牌策略、各 App 与实例的状态
+     * （实例带 `info.connectionId`）、最近错误、最近的 SDK 诊断上报。已停止时抛出 `HubException.Shutdown`。
+     */
+    fun status(): HubStatus = inner.status()
 
     /** 设置全局默认实例（`null` 恢复按规则路由）。 */
     fun selectInstance(appId: String, instanceId: String?) = inner.selectInstance(appId, instanceId)

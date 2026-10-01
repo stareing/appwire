@@ -1,10 +1,14 @@
 [package]
 name = "app-mcp-hub-uniffi"
-description = "Hub SDK 的 uniffi 绑定（Kotlin、Swift、Python）"
+description = "AppWire Hub bindings for Kotlin, Swift and Python agents (UniFFI)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 publish = false
 
 [lib]
@@ -20,11 +24,22 @@ required-features = ["cli"]
 
 [features]
 # `cli` 只给 hub-uniffi-bindgen 用；交叉编译移动端库时用 --no-default-features 省掉 bindgen 依赖。
-default = ["cli"]
+default = ["cli", "desktop"]
 cli = ["uniffi/cli"]
+# Hub 能力组合（app-mcp-hub 的 cargo features，spec/hub-api.md）。各组合导出的 uniffi 接口完全相同，
+# 未包含的能力在运行时返回明确错误（mcp_http / upstreams / serve_http → Unsupported），参数校验缺省时参数原样交给 App。
+# 桌面（jar / wheel / Swift 包）：完整能力，与 app-mcp-hub 默认 features 相同。
+desktop = ["mobile", "schema-validation", "app-mcp-hub/mcp-server", "app-mcp-hub/upstream"]
+# 移动端精简组合（generate.sh --android 默认 `--no-default-features --features mobile,schema-validation`）：App 连接（/app、/healthz）、
+# 工具调用、资源、导出 / 分派、生命周期；不含 MCP 出口（厂商 Agent 直接调 Hub API）、上游聚合（移动端不启动
+# 子进程 MCP 服务器）与 Hub 侧参数校验（jsonschema 及正则引擎，arm64 约 2.7 MB）。
+mobile = []
+# 调用前按 inputSchema 校验参数（spec/protocol.md 第 6 节）；Android 默认带上，体积优先时 --android-features mobile 去掉。
+schema-validation = ["app-mcp-hub/schema-validation"]
 
 [dependencies]
-app-mcp-hub.workspace = true
+# 不用 workspace 依赖：其默认 features 无法在成员中关闭；按上面的 desktop / mobile 选择能力。
+app-mcp-hub = { path = "../../crates/hub", default-features = false }
 app-mcp-manifest.workspace = true
 uniffi = { workspace = true }
 thiserror.workspace = true
@@ -38,3 +53,5 @@ async-trait = "0.1"
 
 [dev-dependencies]
 app-mcp-native.workspace = true
+# 测试中模拟网页 SDK 发送 `app/diagnostic`。
+tokio-tungstenite.workspace = true

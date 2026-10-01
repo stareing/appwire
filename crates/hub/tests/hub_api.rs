@@ -343,14 +343,17 @@ async fn export_and_dispatch_roundtrip_all_formats() {
         assert!(!text.contains("<app-overview"), "{format:?}: {text}");
         assert!(text.contains("再见"));
 
-        // 参数不合法 → 错误结果
-        let r = hub
-            .dispatch_in_session(format, tool_call(format, "shop__echo", json!({})), Some(&session))
-            .await;
-        let (text, is_error) = result_text(format, &r);
-        assert!(text.starts_with("INVALID_INPUT: "), "{format:?}: {text}");
-        if matches!(format, ToolFormat::Mcp | ToolFormat::Anthropic | ToolFormat::Gemini) {
-            assert!(is_error, "{format:?}");
+        // 参数不合法 → 错误结果（Hub 侧校验，feature schema-validation）
+        #[cfg(feature = "schema-validation")]
+        {
+            let r = hub
+                .dispatch_in_session(format, tool_call(format, "shop__echo", json!({})), Some(&session))
+                .await;
+            let (text, is_error) = result_text(format, &r);
+            assert!(text.starts_with("INVALID_INPUT: "), "{format:?}: {text}");
+            if matches!(format, ToolFormat::Mcp | ToolFormat::Anthropic | ToolFormat::Gemini) {
+                assert!(is_error, "{format:?}");
+            }
         }
 
         // 未知工具
@@ -472,8 +475,11 @@ async fn call_errors_and_builtins() {
     // 工具层失败 → Ok + result Err
     let o = hub.call_tool(CallRequest::new("shop.missing", json!({}))).await.unwrap();
     assert_eq!(o.result.unwrap_err().kind, ErrorKind::ToolNotFound);
-    let o = hub.call_tool(CallRequest::new("shop.echo", json!({"text": 1}))).await.unwrap();
-    assert_eq!(o.result.unwrap_err().kind, ErrorKind::InvalidInput);
+    #[cfg(feature = "schema-validation")]
+    {
+        let o = hub.call_tool(CallRequest::new("shop.echo", json!({"text": 1}))).await.unwrap();
+        assert_eq!(o.result.unwrap_err().kind, ErrorKind::InvalidInput);
+    }
     // 指定不存在的实例
     let mut r = CallRequest::new("shop.echo", json!({"text": "x"}));
     r.instance_id = Some("zzz".into());
@@ -764,6 +770,7 @@ async fn no_ws_and_shutdown() {
 // MCP 出口与 Hub API 共用调用逻辑
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "mcp-server")]
 #[tokio::test]
 async fn mcp_session_uses_same_call_path() {
     use rmcp::ServiceExt;

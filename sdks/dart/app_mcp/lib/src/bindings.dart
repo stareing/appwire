@@ -286,6 +286,13 @@ final class AppMcpBindings {
       Pointer<Utf8> Function(Pointer<AmClient>)>('am_client_instance_id');
   late final am_client_token = library.lookupFunction<Pointer<Utf8> Function(Pointer<AmClient>),
       Pointer<Utf8> Function(Pointer<AmClient>)>('am_client_token');
+  // v6：诊断（spec/protocol.md 第 10 节）；输出字符串需 am_string_free。
+  late final am_client_state_code = library.lookupFunction<
+      Int32 Function(Pointer<AmClient>, Pointer<Pointer<Utf8>>),
+      int Function(Pointer<AmClient>, Pointer<Pointer<Utf8>>)>('am_client_state_code');
+  late final am_client_connection_id = library.lookupFunction<
+      Int32 Function(Pointer<AmClient>, Pointer<Pointer<Utf8>>),
+      int Function(Pointer<AmClient>, Pointer<Pointer<Utf8>>)>('am_client_connection_id');
   late final am_client_root_scope = library.lookupFunction<
       Int32 Function(Pointer<AmClient>, Pointer<Pointer<AmScope>>),
       int Function(Pointer<AmClient>, Pointer<Pointer<AmScope>>)>('am_client_root_scope');

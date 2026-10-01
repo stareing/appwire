@@ -96,30 +96,38 @@ enum ConnectionStatus {
 
 /// 连接状态快照。
 final class McpConnectionState {
-  const McpConnectionState(this.status, {this.retryIn, this.reason});
+  const McpConnectionState(this.status, {this.retryIn, this.reason, this.code});
 
   final ConnectionStatus status;
 
   /// [ConnectionStatus.backoff] 时距下一次重连的时间。
   final Duration? retryIn;
 
-  /// [ConnectionStatus.rejected] 时的原因。
+  /// [ConnectionStatus.rejected] / [ConnectionStatus.hostMismatch] 时的原因；
+  /// [ConnectionStatus.backoff] 时为连接失败 / 断开的原因（有的话）。
   final String? reason;
+
+  /// 与 [reason] 对应的错误码（spec/protocol.md 10.1，如 `HOST_NOT_RUNNING`）：rejected / hostMismatch 时总有，
+  /// backoff 时在连接失败等情况下有，其他状态为 null。
+  final String? code;
 
   @override
   bool operator ==(Object other) =>
       other is McpConnectionState &&
       other.status == status &&
       other.retryIn == retryIn &&
-      other.reason == reason;
+      other.reason == reason &&
+      other.code == code;
 
   @override
-  int get hashCode => Object.hash(status, retryIn, reason);
+  int get hashCode => Object.hash(status, retryIn, reason, code);
 
   @override
   String toString() => switch (status) {
-        ConnectionStatus.backoff => 'McpConnectionState(backoff, retryIn: $retryIn)',
-        ConnectionStatus.rejected => 'McpConnectionState(rejected, reason: $reason)',
+        ConnectionStatus.backoff => 'McpConnectionState(backoff, retryIn: $retryIn, code: $code)',
+        ConnectionStatus.rejected ||
+        ConnectionStatus.hostMismatch =>
+          'McpConnectionState(${status.name}, code: $code, reason: $reason)',
         _ => 'McpConnectionState(${status.name})',
       };
 }

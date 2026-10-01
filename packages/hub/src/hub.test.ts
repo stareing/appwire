@@ -27,6 +27,18 @@ function fakeBinding() {
       state.shutdown = true
     },
     apps: () => '[]',
+    status: () =>
+      JSON.stringify({
+        service: 'app-mcp',
+        version: '0.1.0',
+        pid: 1,
+        startedAtMs: 5,
+        mcpHttp: false,
+        auth: { tokenConfigured: false, tokenRequiredWithoutOrigin: false },
+        mcpSessions: 0,
+        apps: [{ appId: 'a', name: 'A', kind: 'app', state: 'disconnected', instances: [], lastError: { message: 'x', atMs: 1 } }],
+        reports: [],
+      }),
     tools: (f) => JSON.stringify([{ name: 'a.b', filter: f ? JSON.parse(f) : null }]),
     resources: () => '[]',
     overview: (id) => (id === 'a' ? '{"appId":"a"}' : null),
@@ -81,6 +93,9 @@ describe('Hub 封装', () => {
     expect(hub.tools({ maxRisk: 'read' })).toEqual([{ name: 'a.b', filter: { maxRisk: 'read' } }])
     expect(hub.overview('a')).toEqual({ appId: 'a' })
     expect(hub.overview('b')).toBeNull()
+    const status = hub.status()
+    expect(status.service).toBe('app-mcp')
+    expect(status.apps[0]).toMatchObject({ appId: 'a', state: 'disconnected', lastError: { message: 'x' } })
     expect((await hub.callTool({ name: 'a.b', arguments: { x: 1 } })).result.ok).toEqual({
       name: 'a.b',
       arguments: { x: 1 },

@@ -12,7 +12,7 @@
  *
  * 返回值满足 @app-mcp/web 的 `AppMcp` 接口，页面代码（包括 @app-mcp/react）无需修改。
  * 身份与连接由主进程负责：`appId` / `appName` / `hostUrl` 等选项在页面中被忽略，
- * `instanceId` 与 `state` 取自主进程客户端（首次握手完成前 `instanceId` 为空字符串）。
+ * `instanceId`、`state` 与 `connectionId` 取自主进程客户端（首次握手完成前 `instanceId` 为空字符串）。
  */
 
 import { createBridgeAppMcp, type AppMcp, type AppMcpOptions } from '@app-mcp/web'

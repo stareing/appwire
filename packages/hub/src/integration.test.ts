@@ -437,6 +437,30 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(out.result.ok).toEqual({ saved: { text: 'x' } })
   })
 
+  it('status：运行状态与实例连接 ID（与 apps() 一致）', async () => {
+    const { hub } = await startHub()
+    const before = hub.status()
+    expect(before).toMatchObject({
+      service: 'app-mcp',
+      listen: hub.listenAddr,
+      mcpSessions: 0,
+      auth: { tokenConfigured: false, tokenRequiredWithoutOrigin: false },
+      apps: [],
+      reports: [],
+    })
+    expect(before.pid).toBe(process.pid)
+    expect(before.startedAtMs).toBeGreaterThan(0)
+    expect(before.ipcEndpoint).toBeUndefined()
+
+    await startShop(hub)
+    const shop = hub.status().apps.find((a) => a.appId === 'shop')
+    expect(shop).toMatchObject({ kind: 'app', state: 'connected', name: '测试商店' })
+    const inst = shop!.instances[0]!
+    expect(inst.state).toBe('connected')
+    expect(inst.connectionId).toMatch(/^[0-9a-f]+-\d+$/)
+    expect(hub.apps().find((a) => a.appId === 'shop')?.instances[0]?.connectionId).toBe(inst.connectionId)
+  })
+
   it('shutdown 后调用抛 SHUTDOWN', async () => {
     const { hub } = await startHub({ listen: null })
     expect(hub.listenAddr).toBeNull()
@@ -446,6 +470,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     await hub.shutdown()
     expect(hub.isShutdown).toBe(true)
     expect(() => hub.tools()).toThrow(expect.objectContaining({ kind: 'SHUTDOWN' }))
+    expect(() => hub.status()).toThrow(expect.objectContaining({ kind: 'SHUTDOWN' }))
     await expect(hub.callTool({ name: 'a.b' })).rejects.toMatchObject({ kind: 'SHUTDOWN' })
   })
 

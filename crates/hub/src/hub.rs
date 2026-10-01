@@ -17,7 +17,9 @@ use app_mcp_protocol::{
     DEFAULT_LISTEN_ADDR, ErrorKind, ResourceInfo, ResourceSubscribeParams, ResourcesReadParams,
     ResourcesReadResult, ToolError, method,
 };
-use rmcp::model::{Resource, ResourceUpdatedNotificationParam, Tool};
+#[cfg(any(feature = "mcp-server", feature = "upstream"))]
+use rmcp::model::Resource;
+use rmcp::model::{ResourceUpdatedNotificationParam, Tool};
 use rmcp::{Peer, RoleClient, RoleServer};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -28,9 +30,12 @@ use crate::connection::RequestError;
 use crate::format::{self, NameCodec, ToolFormat};
 use crate::http_server::{Health, HttpOptions, Router, Transport};
 use crate::instance::Instance;
+#[cfg(feature = "mcp-server")]
 use crate::mcp::McpSession;
 use crate::origin::OriginPolicy;
-use crate::overview::{AppSummary, Overview, OverviewSource};
+#[cfg(feature = "mcp-server")]
+use crate::overview::AppSummary;
+use crate::overview::{Overview, OverviewSource};
 use crate::registry::Registry;
 use crate::types::{
     AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy, AuthStatus,
@@ -490,6 +495,7 @@ impl HubShared {
         }
     }
 
+    #[cfg(feature = "mcp-server")]
     pub(crate) fn register_session(&self, id: u64, peer: Peer<RoleServer>) {
         lock(&self.sessions).insert(id, peer);
     }
@@ -625,6 +631,7 @@ impl HubShared {
     }
 
     /// MCP `tools/list`：内置工具 + （渐进暴露时只含已展开 App 的）App 工具 + 上游工具。
+    #[cfg(feature = "mcp-server")]
     pub(crate) fn mcp_tools(&self, key: &str) -> Vec<Tool> {
         let exposed = self.exposed_apps(key);
         let listed = |app_id: &str| exposed.as_ref().is_none_or(|e| e.contains(app_id));
@@ -927,6 +934,7 @@ impl HubShared {
             .unwrap_or_else(|| name.to_owned())
     }
 
+    #[cfg(feature = "upstream")]
     pub(crate) fn upstream_connected(
         &self,
         name: &str,
@@ -977,6 +985,7 @@ impl HubShared {
         self.mark_resources_changed();
     }
 
+    #[cfg(feature = "upstream")]
     pub(crate) fn set_upstream_tools(&self, name: &str, tools: Vec<Tool>) {
         if let Some(st) = lock(&self.upstreams).get_mut(name) {
             st.tools = tools;
@@ -984,6 +993,7 @@ impl HubShared {
         self.mark_tools_changed();
     }
 
+    #[cfg(feature = "upstream")]
     pub(crate) fn set_upstream_resources(&self, name: &str, resources: Vec<Resource>) {
         if let Some(st) = lock(&self.upstreams).get_mut(name) {
             st.resources = resources;
@@ -992,6 +1002,7 @@ impl HubShared {
     }
 
     /// 已连接上游的资源，URI 改为 `app-mcp://<name>/<编码后的上游 URI>`。
+    #[cfg(feature = "mcp-server")]
     pub(crate) fn upstream_resources(&self) -> Vec<Resource> {
         let ups = lock(&self.upstreams);
         let mut out = Vec::new();
@@ -1015,6 +1026,7 @@ impl HubShared {
     }
 
     /// 所有已知 App 与上游的一句话简介（按 appId 排序）。
+    #[cfg(feature = "mcp-server")]
     pub(crate) fn summaries(&self) -> Vec<AppSummary> {
         let mut out = self.registry().summaries();
         out.extend(lock(&self.upstreams).iter().map(|(name, st)| AppSummary {
@@ -1171,6 +1183,7 @@ impl Hub {
     /// 错误：`ResourceBusy`（单实例锁已被持有）、`AddrInUse`（地址 / IPC 端点被占用）、
     /// `PermissionDenied`（非回环地址未允许远程）、`InvalidInput`（配置不合法）。
     pub async fn start(config: HubConfig) -> std::io::Result<Hub> {
+        crate::features::check_config(&config)?;
         // 锁先于任何监听：并发启动的两个 Host 只有一个能走到绑定。
         let instance = config.run_dir.as_deref().map(Instance::acquire).transpose()?;
         let listener = match &config.listen {
@@ -1497,12 +1510,14 @@ impl Hub {
 
     // ---- 对外出口 ----
 
-    /// 为一个 MCP 连接创建会话处理器（rmcp `ServerHandler`）。
+    /// 为一个 MCP 连接创建会话处理器（rmcp `ServerHandler`）。feature `mcp-server`。
+    #[cfg(feature = "mcp-server")]
     pub fn mcp_session(&self) -> McpSession {
         McpSession::new(self.shared.clone())
     }
 
-    /// 以 stdio 作为 MCP 传输运行，直到 MCP 客户端断开。
+    /// 以 stdio 作为 MCP 传输运行，直到 MCP 客户端断开。feature `mcp-server`。
+    #[cfg(feature = "mcp-server")]
     pub async fn serve_stdio(&self) -> anyhow::Result<()> {
         use rmcp::ServiceExt;
         let service = self.mcp_session().serve(rmcp::transport::stdio()).await?;
@@ -1535,6 +1550,8 @@ impl Hub {
         addr: &str,
         options: HttpOptions,
     ) -> std::io::Result<SocketAddr> {
+        // 本方法总是提供 /mcp：缺少 MCP 出口时 Unsupported（spec/hub-api.md cargo features）。
+        crate::features::require_mcp_server("MCP 出口（Hub::serve_http）")?;
         let listener = TcpListener::bind(addr).await?;
         let local = listener.local_addr()?;
         if !local.ip().is_loopback() && !options.allow_remote {

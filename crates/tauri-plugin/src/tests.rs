@@ -268,6 +268,49 @@ async fn page_tool_roundtrip_with_rust_tool() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn connection_id_reaches_page_and_bridge_drop_stops_client() {
+    let fx = Fixture::new("cid", None).await;
+    let page = Arc::new(FakePage::default());
+
+    let hello = fx.op(&page, "main", "main", json!({ "op": "hello" }));
+    assert!(hello["value"].get("connectionId").is_none(), "未连接时不带连接 ID");
+    fx.op(&page, "main", "main", register(1, "page.add"));
+    fx.connected("cid").await;
+
+    let hub_cid = fx
+        .hub
+        .apps()
+        .into_iter()
+        .find(|a| a.app_id == "cid")
+        .and_then(|a| a.instances.into_iter().next())
+        .and_then(|i| i.connection_id)
+        .expect("Hub 分配了连接 ID");
+    assert_eq!(fx.bridge.client().connection_id().as_deref(), Some(hub_cid.as_str()));
+    let mut connected = None;
+    eventually("页面收到带连接 ID 的 connected", || {
+        connected = page
+            .all()
+            .into_iter()
+            .find(|e| e["type"] == "state" && e["state"]["status"] == "connected");
+        connected.is_some()
+    })
+    .await;
+    assert_eq!(connected.unwrap_or(Value::Null)["connectionId"], hub_cid.as_str());
+    let hello = fx.op(&page, "main", "main", json!({ "op": "hello" }));
+    assert_eq!(hello["value"]["connectionId"], hub_cid.as_str());
+
+    // Sessions 与客户端之间的引用环由 Bridge 的 Drop 断开：丢弃 Bridge 后客户端停止、App 从 Hub 消失。
+    let Fixture { hub, bridge, sessions } = fx;
+    drop(bridge);
+    eventually("丢弃 Bridge 后 App 断开", || {
+        !hub.apps().iter().any(|a| a.app_id == "cid" && a.connected)
+    })
+    .await;
+    drop(sessions);
+    shutdown(hub).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn scopes_resources_and_updates() {
     let fx = Fixture::new("scopes", None).await;
     let page = Arc::new(FakePage::default());

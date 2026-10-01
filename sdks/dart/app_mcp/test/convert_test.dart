@@ -46,6 +46,22 @@ void main() {
       expect(stateFromNative(AmStateStatus.connected, 1500, 'x'),
           const McpConnectionState(ConnectionStatus.connected));
       expect(stateFromNative(AmStateStatus.rejected, 0, 'bad token').reason, 'bad token');
+      // v6：backoff 也保留原因（可为 null）。
+      expect(stateFromNative(AmStateStatus.backoff, 0, '连接被拒绝').reason, '连接被拒绝');
+    });
+
+    test('stateFromNative 只在 backoff / rejected / hostMismatch 保留 code', () {
+      for (final st in [AmStateStatus.backoff, AmStateStatus.rejected, AmStateStatus.hostMismatch]) {
+        expect(stateFromNative(st, 0, 'r', code: 'HOST_NOT_RUNNING').code, 'HOST_NOT_RUNNING');
+      }
+      for (final st in [AmStateStatus.idle, AmStateStatus.connected, AmStateStatus.stopped, AmStateStatus.dormant]) {
+        expect(stateFromNative(st, 0, null, code: 'X').code, isNull);
+      }
+      expect(stateFromNative(AmStateStatus.backoff, 0, null).code, isNull);
+      const a = McpConnectionState(ConnectionStatus.backoff, code: 'A');
+      expect(a == const McpConnectionState(ConnectionStatus.backoff, code: 'B'), isFalse);
+      expect(a.hashCode == const McpConnectionState(ConnectionStatus.backoff, code: 'A').hashCode, isTrue);
+      expect(a.toString(), contains('A'));
     });
   });
 

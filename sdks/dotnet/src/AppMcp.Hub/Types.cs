@@ -391,6 +391,8 @@ public static class HubEventTypes
     public const string AppDormant = "appDormant";
     /// <summary>Hub 正在唤醒 App。含 appId、instanceId（null = 冷启动）。</summary>
     public const string AppWaking = "appWaking";
+    /// <summary>SDK 上报了此前遇到的连接问题（app/diagnostic）。含 appId、instanceId、code、message、count。</summary>
+    public const string AppDiagnostic = "appDiagnostic";
     /// <summary>事件回调处理过慢导致丢失，应重新查询全量状态。</summary>
     public const string Lagged = "lagged";
 }
@@ -412,7 +414,63 @@ public sealed record InstanceInfo(
     string Visibility,
     bool Focused,
     ulong LastActiveMs,
-    string? Title);
+    string? Title)
+{
+    /// <summary>Hub 分配的连接 ID（"&lt;标记&gt;-&lt;序号&gt;"，与 Hub / SDK 日志的 cid 相同）；休眠实例为 null。</summary>
+    public string? ConnectionId { get; init; }
+}
+
+/// <summary>运行状态（HubStatus，与 GET /status 相同，spec/hub-api.md 3.9）。</summary>
+public sealed record HubStatusInfo(
+    string Service,
+    string Version,
+    string? User,
+    uint Pid,
+    string? Listen,
+    string? IpcEndpoint,
+    ulong StartedAtMs,
+    bool McpHttp,
+    HubAuthStatus Auth,
+    int McpSessions,
+    IReadOnlyList<AppStatusInfo> Apps,
+    IReadOnlyList<DiagnosticReport> Reports);
+
+/// <summary>主 HTTP 服务的令牌策略（AuthStatus）。</summary>
+public sealed record HubAuthStatus(bool TokenConfigured, bool TokenRequiredWithoutOrigin);
+
+/// <summary>App 状态（AppStatus）。State：connected / waking / dormant / disconnected。</summary>
+public sealed record AppStatusInfo(
+    string AppId,
+    string Name,
+    string Kind,
+    string State,
+    IReadOnlyList<InstanceStatusInfo> Instances,
+    LastErrorInfo? LastError);
+
+/// <summary>实例状态（InstanceStatus = InstanceInfo + state）。State：connected / dormant / waking。</summary>
+public sealed record InstanceStatusInfo(
+    string InstanceId,
+    string ClientKind,
+    string Visibility,
+    bool Focused,
+    ulong LastActiveMs,
+    string? Title,
+    uint? Pid,
+    string? ConnectionId,
+    string State);
+
+/// <summary>最近一次错误（LastError）。Code 为连接级错误码或工具错误类别，未知时为 null；上游错误的 AtMs 为 0。</summary>
+public sealed record LastErrorInfo(string? Code, string Message, ulong AtMs);
+
+/// <summary>一条 SDK 诊断上报（DiagnosticReport，app/diagnostic）。</summary>
+public sealed record DiagnosticReport(
+    string AppId,
+    string InstanceId,
+    string ConnectionId,
+    string Code,
+    string Message,
+    uint Count,
+    ulong ReceivedAtMs);
 
 /// <summary>App 信息（AppInfo）。</summary>
 public sealed record AppInfo(

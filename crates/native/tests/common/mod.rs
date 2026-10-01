@@ -29,6 +29,8 @@ pub enum HostEvent {
 enum HostCmd {
     Send(Message),
     Close,
+    /// 不发 Close 帧直接丢弃连接（模拟 Host 崩溃 / 连接被重置）。
+    Abort,
 }
 
 pub struct MockHost {
@@ -101,6 +103,7 @@ impl MockHost {
                             cmd = cmd_rx.recv() => match cmd {
                                 Some(HostCmd::Send(m)) => { let _ = ws.send(WsMessage::text(m.to_json())).await; }
                                 Some(HostCmd::Close) => { let _ = ws.close(None).await; }
+                                Some(HostCmd::Abort) => break,
                                 None => return,
                             },
                         }
@@ -208,6 +211,10 @@ impl MockHost {
 
     pub fn close(&self) {
         self.cmds.send(HostCmd::Close).unwrap();
+    }
+
+    pub fn abort(&self) {
+        self.cmds.send(HostCmd::Abort).unwrap();
     }
 }
 

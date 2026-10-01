@@ -487,6 +487,8 @@ pub struct InstanceInfo {
     pub title: Option<String>,
     /// 实例进程号（经本地 IPC 连接时由操作系统提供；否则为空）。
     pub pid: Option<u32>,
+    /// Hub 分配的连接 ID（spec/protocol.md 10.3），与 Hub 日志的 `cid`、SDK 日志中的连接 ID 相同；休眠实例为空。
+    pub connection_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -512,6 +514,7 @@ impl From<hub::InstanceInfo> for InstanceInfo {
             last_active_ms: i.last_active_ms,
             title: i.title,
             pid: i.pid,
+            connection_id: i.connection_id,
         }
     }
 }
@@ -527,6 +530,199 @@ impl From<hub::AppInfo> for AppInfo {
             instances: a.instances.into_iter().map(Into::into).collect(),
             selected_instance: a.selected_instance,
             dormant_instances: a.dormant_instances.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 运行状态（spec/hub-api.md 3.9；与 `GET /status` 的 JSON 同构）
+// ---------------------------------------------------------------------------
+
+/// App 的整体状态。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum AppState {
+    /// 至少一个实例在线（上游：子进程已连接）。
+    Connected,
+    /// 正在唤醒。
+    Waking,
+    /// 没有在线实例，但有休眠实例。
+    Dormant,
+    /// 未连接（只有静态清单、握手被拒，或上游未连接）。
+    Disconnected,
+}
+
+impl From<hub::AppState> for AppState {
+    fn from(v: hub::AppState) -> Self {
+        match v {
+            hub::AppState::Connected => AppState::Connected,
+            hub::AppState::Waking => AppState::Waking,
+            hub::AppState::Dormant => AppState::Dormant,
+            hub::AppState::Disconnected => AppState::Disconnected,
+        }
+    }
+}
+
+/// 实例状态。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum InstanceState {
+    Connected,
+    Dormant,
+    /// 休眠实例正在被唤醒。
+    Waking,
+}
+
+impl From<hub::InstanceState> for InstanceState {
+    fn from(v: hub::InstanceState) -> Self {
+        match v {
+            hub::InstanceState::Connected => InstanceState::Connected,
+            hub::InstanceState::Dormant => InstanceState::Dormant,
+            hub::InstanceState::Waking => InstanceState::Waking,
+        }
+    }
+}
+
+/// 主 HTTP 服务的令牌策略。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AuthStatus {
+    /// 是否配置了访问令牌。
+    pub token_configured: bool,
+    /// 不带 `Origin` 的本地客户端是否也必须携带令牌（`--auth all`）。
+    pub token_required_without_origin: bool,
+}
+
+/// 最近一次错误（握手 / 配对被拒、唤醒失败 / 超时；上游为进程错误）。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct LastError {
+    /// 连接级错误码（spec/protocol.md 10.1）或工具错误类别（如 `APP_NOT_RESPONDING`）；未知时为空。
+    pub code: Option<String>,
+    pub message: String,
+    /// 发生时刻（Unix 毫秒）；上游错误为 0。
+    pub at_ms: u64,
+}
+
+/// 实例及其状态。
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct InstanceStatus {
+    pub info: InstanceInfo,
+    pub state: InstanceState,
+}
+
+/// 一个 App（或上游）的运行状态。
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct AppStatus {
+    pub app_id: String,
+    pub name: String,
+    pub kind: AppKind,
+    pub state: AppState,
+    /// 在线实例在前，其后为休眠实例；上游为空。
+    pub instances: Vec<InstanceStatus>,
+    pub last_error: Option<LastError>,
+}
+
+/// 一条 SDK 诊断上报（`app/diagnostic`，spec/protocol.md 10.2）。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct DiagnosticReport {
+    pub app_id: String,
+    pub instance_id: String,
+    /// 上报所在连接的连接 ID。
+    pub connection_id: String,
+    pub code: String,
+    pub message: String,
+    pub count: u32,
+    /// Hub 收到的时刻（Unix 毫秒）。
+    pub received_at_ms: u64,
+}
+
+/// `AppMcpHub::status()` 的结果（spec/hub-api.md 3.9）。
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct HubStatus {
+    /// 固定为 `app-mcp`。
+    pub service: String,
+    pub version: String,
+    /// 进程的操作系统用户；取不到时为空。
+    pub user: Option<String>,
+    pub pid: u32,
+    /// HTTP 服务实际监听的地址；未开启时为空。
+    pub listen: Option<String>,
+    /// 本地 IPC 端点；未开启时为空。
+    pub ipc_endpoint: Option<String>,
+    /// 启动时刻（Unix 毫秒）。
+    pub started_at_ms: u64,
+    /// 是否提供 MCP Streamable HTTP（`/mcp`）。
+    pub mcp_http: bool,
+    pub auth: AuthStatus,
+    /// 已初始化的 MCP 会话数。
+    pub mcp_sessions: u64,
+    /// App（含上游），按 appId 排序。
+    pub apps: Vec<AppStatus>,
+    /// 最近的 SDK 诊断上报，旧的在前（最多 32 条）。
+    pub reports: Vec<DiagnosticReport>,
+}
+
+impl From<hub::LastError> for LastError {
+    fn from(e: hub::LastError) -> Self {
+        LastError {
+            code: e.code,
+            message: e.message,
+            at_ms: e.at_ms,
+        }
+    }
+}
+
+impl From<hub::InstanceStatus> for InstanceStatus {
+    fn from(i: hub::InstanceStatus) -> Self {
+        InstanceStatus {
+            info: i.info.into(),
+            state: i.state.into(),
+        }
+    }
+}
+
+impl From<hub::AppStatus> for AppStatus {
+    fn from(a: hub::AppStatus) -> Self {
+        AppStatus {
+            app_id: a.app_id,
+            name: a.name,
+            kind: a.kind.into(),
+            state: a.state.into(),
+            instances: a.instances.into_iter().map(Into::into).collect(),
+            last_error: a.last_error.map(Into::into),
+        }
+    }
+}
+
+impl From<hub::DiagnosticReport> for DiagnosticReport {
+    fn from(r: hub::DiagnosticReport) -> Self {
+        DiagnosticReport {
+            app_id: r.app_id,
+            instance_id: r.instance_id,
+            connection_id: r.connection_id,
+            code: r.code,
+            message: r.message,
+            count: r.count,
+            received_at_ms: r.received_at_ms,
+        }
+    }
+}
+
+impl From<hub::HubStatus> for HubStatus {
+    fn from(s: hub::HubStatus) -> Self {
+        HubStatus {
+            service: s.identity.service,
+            version: s.identity.version,
+            user: s.identity.user,
+            pid: s.identity.pid,
+            listen: s.listen,
+            ipc_endpoint: s.ipc_endpoint,
+            started_at_ms: s.started_at_ms,
+            mcp_http: s.mcp_http,
+            auth: AuthStatus {
+                token_configured: s.auth.token_configured,
+                token_required_without_origin: s.auth.token_required_without_origin,
+            },
+            mcp_sessions: u64::try_from(s.mcp_sessions).unwrap_or(u64::MAX),
+            apps: s.apps.into_iter().map(Into::into).collect(),
+            reports: s.reports.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -815,6 +1011,15 @@ pub enum HubEvent {
         app_id: String,
         instance_id: Option<String>,
     },
+    /// SDK 上报了此前遇到的连接问题（`app/diagnostic`，spec/protocol.md 10.2），如浏览器拦截。
+    /// `code` 为错误码（10.1；可能是本 Hub 不认识的新码），`count` 为合并的次数。
+    AppDiagnostic {
+        app_id: String,
+        instance_id: String,
+        code: String,
+        message: String,
+        count: u32,
+    },
     /// 本绑定尚未单独映射的 Hub 事件（兜底，兼容未来新增）。`kind` 为事件类型名，
     /// `json` 为事件的完整 JSON 文本。
     Other {
@@ -875,6 +1080,19 @@ impl From<hub::HubEvent> for HubEvent {
             } => HubEvent::AppWaking {
                 app_id,
                 instance_id,
+            },
+            H::AppDiagnostic {
+                app_id,
+                instance_id,
+                code,
+                message,
+                count,
+            } => HubEvent::AppDiagnostic {
+                app_id,
+                instance_id,
+                code,
+                message,
+                count,
             },
             #[allow(unreachable_patterns)]
             other => other_event(&other),
@@ -1232,6 +1450,89 @@ mod tests {
         });
         assert_eq!(r.descriptor.kind, WakeKind::AndroidIntent);
         assert_eq!(r.descriptor.target.as_deref(), Some("p/.R"));
+    }
+
+    #[test]
+    fn diagnostic_mapping() {
+        assert_eq!(
+            HubEvent::from(hub::HubEvent::AppDiagnostic {
+                app_id: "a".into(),
+                instance_id: "i".into(),
+                code: "BLOCKED_LOCAL_NETWORK_ACCESS".into(),
+                message: "m".into(),
+                count: 3,
+            }),
+            HubEvent::AppDiagnostic {
+                app_id: "a".into(),
+                instance_id: "i".into(),
+                code: "BLOCKED_LOCAL_NETWORK_ACCESS".into(),
+                message: "m".into(),
+                count: 3,
+            }
+        );
+        // 与 `GET /status` 同构：从 JSON 解析 Hub 的 HubStatus 再转换，覆盖每个字段。
+        let st: hub::HubStatus = serde_json::from_value(serde_json::json!({
+            "service": "app-mcp", "version": "9.9.9", "user": "u", "pid": 42,
+            "listen": "127.0.0.1:7717", "ipcEndpoint": "unix:/x.sock", "startedAtMs": 5,
+            "mcpHttp": true, "auth": {"tokenConfigured": true, "tokenRequiredWithoutOrigin": false},
+            "mcpSessions": 2,
+            "apps": [
+                {"appId": "a", "name": "A", "kind": "app", "state": "dormant",
+                 "instances": [
+                    {"instanceId": "i1", "clientKind": "native", "visibility": "visible", "focused": true,
+                     "lastActiveMs": 7, "title": null, "pid": 9, "connectionId": "abc123-1", "state": "connected"},
+                    {"instanceId": "i2", "clientKind": "web", "visibility": "hidden", "focused": false,
+                     "lastActiveMs": 8, "title": "t", "state": "waking"}],
+                 "lastError": {"code": "APP_NOT_RESPONDING", "message": "超时", "atMs": 11}},
+                {"appId": "u", "name": "U", "kind": "upstream", "state": "disconnected", "instances": []}
+            ],
+            "reports": [{"appId": "a", "instanceId": "i1", "connectionId": "abc123-1",
+                         "code": "BLOCKED_MIXED_CONTENT", "message": "m", "count": 1, "receivedAtMs": 12}]
+        }))
+        .unwrap();
+        let s = HubStatus::from(st);
+        assert_eq!((s.service.as_str(), s.version.as_str(), s.user.as_deref(), s.pid), ("app-mcp", "9.9.9", Some("u"), 42));
+        assert_eq!(s.listen.as_deref(), Some("127.0.0.1:7717"));
+        assert_eq!(s.ipc_endpoint.as_deref(), Some("unix:/x.sock"));
+        assert_eq!((s.started_at_ms, s.mcp_http, s.mcp_sessions), (5, true, 2));
+        assert_eq!(
+            s.auth,
+            AuthStatus {
+                token_configured: true,
+                token_required_without_origin: false
+            }
+        );
+        let a = &s.apps[0];
+        assert_eq!((a.kind, a.state), (AppKind::App, AppState::Dormant));
+        assert_eq!(a.instances[0].state, InstanceState::Connected);
+        assert_eq!(a.instances[0].info.connection_id.as_deref(), Some("abc123-1"));
+        assert_eq!(a.instances[0].info.pid, Some(9));
+        assert_eq!(a.instances[1].state, InstanceState::Waking);
+        assert_eq!(a.instances[1].info.connection_id, None);
+        assert_eq!(
+            a.last_error,
+            Some(LastError {
+                code: Some("APP_NOT_RESPONDING".into()),
+                message: "超时".into(),
+                at_ms: 11
+            })
+        );
+        assert_eq!((s.apps[1].kind, s.apps[1].state, &s.apps[1].last_error), (AppKind::Upstream, AppState::Disconnected, &None));
+        assert_eq!(
+            s.reports,
+            vec![DiagnosticReport {
+                app_id: "a".into(),
+                instance_id: "i1".into(),
+                connection_id: "abc123-1".into(),
+                code: "BLOCKED_MIXED_CONTENT".into(),
+                message: "m".into(),
+                count: 1,
+                received_at_ms: 12
+            }]
+        );
+        assert_eq!(InstanceState::from(hub::InstanceState::Dormant), InstanceState::Dormant);
+        assert_eq!(AppState::from(hub::AppState::Waking), AppState::Waking);
+        assert_eq!(AppState::from(hub::AppState::Connected), AppState::Connected);
     }
 
     #[test]

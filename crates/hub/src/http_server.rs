@@ -29,7 +29,9 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
+#[cfg(feature = "mcp-server")]
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+#[cfg(feature = "mcp-server")]
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -40,7 +42,35 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 
 use crate::app_server::Peer;
 use crate::hub::HubShared;
+#[cfg(feature = "mcp-server")]
 use crate::mcp::McpSession;
+
+/// `/mcp` 的服务实现（rmcp Streamable HTTP）。
+#[cfg(feature = "mcp-server")]
+type McpService = StreamableHttpService<McpSession, LocalSessionManager>;
+/// 本构建未包含 MCP 出口（feature `mcp-server`）：不可构造，`/mcp` 总是 404。
+#[cfg(not(feature = "mcp-server"))]
+type McpService = Infallible;
+
+/// 创建 `/mcp` 服务；缺少 MCP 出口时为 `None`（调用方已由 `features` 检查拒绝开启 MCP 的配置）。
+#[cfg(feature = "mcp-server")]
+fn mcp_service(shared: &Arc<HubShared>, options: &HttpOptions) -> Option<McpService> {
+    let mut config = StreamableHttpServerConfig::default();
+    if options.allow_remote {
+        config = config.disable_allowed_hosts();
+    }
+    let factory_shared = shared.clone();
+    Some(StreamableHttpService::new(
+        move || Ok(McpSession::new(factory_shared.clone())),
+        Arc::new(LocalSessionManager::default()),
+        config,
+    ))
+}
+
+#[cfg(not(feature = "mcp-server"))]
+fn mcp_service(_shared: &Arc<HubShared>, _options: &HttpOptions) -> Option<McpService> {
+    None
+}
 
 pub use app_mcp_protocol::{APP_PATH, HEALTH_PATH, MCP_PATH, STATUS_PATH};
 
@@ -172,7 +202,7 @@ pub(crate) struct Router {
     shared: Arc<HubShared>,
     transport: Transport,
     options: HttpOptions,
-    mcp: Option<StreamableHttpService<McpSession, LocalSessionManager>>,
+    mcp: Option<McpService>,
     health: Health,
     /// 是否已提示过根路径兼容（只提示一次，之后记 debug 日志）。
     root_path_hinted: AtomicBool,
@@ -188,18 +218,7 @@ impl Router {
         mcp: bool,
         mut health: Health,
     ) -> Arc<Self> {
-        let mcp = mcp.then(|| {
-            let mut config = StreamableHttpServerConfig::default();
-            if options.allow_remote {
-                config = config.disable_allowed_hosts();
-            }
-            let factory_shared = shared.clone();
-            StreamableHttpService::new(
-                move || Ok(McpSession::new(factory_shared.clone())),
-                Arc::new(LocalSessionManager::default()),
-                config,
-            )
-        });
+        let mcp = if mcp { mcp_service(&shared, &options) } else { None };
         health.mcp_path = mcp.is_some().then(|| MCP_PATH.to_owned());
         health.token_required_for_browsers = mcp.is_some() && options.token.is_some();
         Arc::new(Self {
@@ -259,7 +278,10 @@ impl Router {
                     tracing::warn!(%peer, ?origin, "拒绝未携带有效令牌的 HTTP 请求");
                     return unauthorized(reason);
                 }
-                service.handle(req).await
+                #[cfg(feature = "mcp-server")]
+                return service.handle(req).await;
+                #[cfg(not(feature = "mcp-server"))]
+                match *service {}
             }
             APP_PATH => plain(
                 http::StatusCode::UPGRADE_REQUIRED,

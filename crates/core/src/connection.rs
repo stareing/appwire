@@ -334,7 +334,7 @@ impl Client {
             if now >= sent.saturating_add(timeout) {
                 let message = format!("心跳超时：{timeout}ms 内未收到 ping 响应，断开并重连");
                 self.warn(message.clone());
-                self.drop_connection(ConnectionIssue::new(ConnectionErrorCode::ConnectFailed, message), now);
+                self.drop_connection(ConnectionIssue::new(ConnectionErrorCode::HeartbeatTimeout, message), now);
                 return;
             }
         }

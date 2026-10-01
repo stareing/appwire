@@ -439,9 +439,27 @@ final class AppMcp {
       final reason = arena<Pointer<Utf8>>();
       reason.value = nullptr;
       _rt.check(_b.am_client_state(_ptr, status, retry, reason));
-      return stateFromNative(status.value, retry.value, _takeString(_b, reason.value));
+      final r = _takeString(_b, reason.value);
+      return stateFromNative(status.value, retry.value, r, code: _queryStateCode());
     });
   }
+
+  /// Host 为当前连接分配的连接 ID（spec/protocol.md 10.3），与 Host 日志中的 `cid` 对应；未连接时为 null。
+  String? get connectionId {
+    _ensureAlive();
+    return _takeOut(_b.am_client_connection_id);
+  }
+
+  /// 当前状态的错误码（am_client_state_code）。
+  String? _queryStateCode() => _takeOut(_b.am_client_state_code);
+
+  /// 调用 `AmStatus f(client, char **out)` 形式的查询，取走输出字符串。
+  String? _takeOut(int Function(Pointer<AmClient>, Pointer<Pointer<Utf8>>) f) => using((arena) {
+        final out = arena<Pointer<Utf8>>();
+        out.value = nullptr;
+        _rt.check(f(_ptr, out));
+        return _takeString(_b, out.value);
+      });
 
   String get instanceId {
     _ensureAlive();
@@ -589,7 +607,17 @@ final class AppMcp {
 
   void _onNativeState(int status, int retryInMs, String? reason) {
     if (_disposed) return;
-    _states.add(stateFromNative(status, retryInMs, reason));
+    // @why 状态回调签名没有 code（C ABI v6 只新增查询函数），投递到本 isolate 时再查询；
+    // 回调异步投递，状态可能已再次变化，此时 code 反映更新后的状态（可能为 null）。
+    String? code;
+    if (statusHasCode(statusFromNative(status))) {
+      try {
+        code = _queryStateCode();
+      } on AppMcpException {
+        code = null; // @why 原生客户端已停止 / 释放中：状态照常送达，只缺 code
+      }
+    }
+    _states.add(stateFromNative(status, retryInMs, reason, code: code));
   }
 
   void _onNativePaired(String token) {

@@ -138,6 +138,18 @@ public sealed class AppMcpHub : IDisposable, IAsyncDisposable
         return TakeJson(json);
     }
 
+    /// <summary>运行状态 HubStatus 的原始 JSON（与 GET /status 相同，spec/hub-api.md 3.9）。</summary>
+    public JsonElement GetStatus()
+    {
+        HubNativeMethods.Check(HubNativeMethods.am_hub_status_json(_handle, out var json));
+        return TakeJson(json);
+    }
+
+    /// <summary>运行状态（类型化）：监听、令牌策略、各 App 状态与最近错误、SDK 诊断上报。</summary>
+    public HubStatusInfo Status() =>
+        GetStatus().Deserialize<HubStatusInfo>(WireOptions)
+        ?? throw new HubException(HubStatus.Internal, "状态 JSON 为空");
+
     /// <summary>AppOverviewInfo；App 未知或没有总览时为 null。</summary>
     public unsafe JsonElement? GetOverview(string appId)
     {

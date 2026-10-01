@@ -912,7 +912,7 @@ fn heartbeat_timeout_visible() {
     let Some(Event::StateChanged(ConnectionState::Backoff { retry_at, code, .. })) = ev.last() else {
         panic!("{ev:?}")
     };
-    assert_eq!((*retry_at, *code), (h.now + 500, Some(ConnectionErrorCode::ConnectFailed)));
+    assert_eq!((*retry_at, *code), (h.now + 500, Some(ConnectionErrorCode::HeartbeatTimeout)));
 
     // 核心自行完成断开处理，随后按退避重连
     let ev = h.advance(500);
@@ -1181,6 +1181,32 @@ fn connect_failure_and_handshake_timeout_carry_codes() {
     let ev = h.advance(10_000);
     assert!(ev.contains(&Event::Disconnect));
     assert_eq!(h.c.state().code(), Some(ConnectionErrorCode::HandshakeTimeout));
+}
+
+#[test]
+fn disconnect_with_issue_carries_code() {
+    let mut h = Harness::new();
+    h.connect();
+    h.c.handle_disconnected_with(ConnectionIssue::new(ConnectionErrorCode::ConnectionClosed, "Host 关闭了连接"), h.now);
+    let ev = h.drain();
+    assert_eq!(
+        ev.last(),
+        Some(&Event::StateChanged(ConnectionState::Backoff {
+            retry_at: h.now + 500,
+            reason: Some("Host 关闭了连接".into()),
+            code: Some(ConnectionErrorCode::ConnectionClosed),
+        }))
+    );
+    // 已在 Backoff：再次报告断开不改变状态
+    h.c.handle_disconnected_with(ConnectionIssue::new(ConnectionErrorCode::ConnectionLost, "x"), h.now);
+    assert!(h.drain().is_empty());
+    assert_eq!(h.c.state().code(), Some(ConnectionErrorCode::ConnectionClosed));
+
+    // 无原因的断开仍不带码（向后兼容）
+    let mut h = Harness::new();
+    h.connect();
+    h.c.handle_disconnected(h.now);
+    assert_eq!(h.c.state().code(), None);
 }
 
 #[test]

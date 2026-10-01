@@ -7,6 +7,7 @@
 // - 页面 → Rust：`__TAURI_INTERNALS__.invoke('plugin:app-mcp|op', { op })`，返回 OpReply。
 // - Rust → 页面：Rust 侧对本 WebView 执行 `window.__APP_MCP_TAURI_DISPATCH__(<事件 JSON>)`。
 //
+// 本脚本只透传消息，不解析字段：协议在版本 1 内新增的可选字段（如 hello 回复 / state 事件的 connectionId）无需改动这里。
 // 版本号须与 @app-mcp/web 的 BRIDGE_VERSION 一致（packages/tauri 的测试会检查）。
 ;(function () {
   'use strict'

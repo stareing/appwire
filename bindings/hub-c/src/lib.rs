@@ -599,6 +599,13 @@ pub unsafe extern "C" fn am_hub_apps_json(hub: *const AmHub, out_json: *mut *mut
     unsafe { query(hub, out_json, |_, h| to_json(&h.apps())) }
 }
 
+/// 运行状态（HubStatus，与 `GET /status` 相同，spec/hub-api.md 3.9）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_hub_status_json(hub: *const AmHub, out_json: *mut *mut c_char) -> AmHubStatus {
+    // SAFETY: 转交调用方的保证。
+    unsafe { query(hub, out_json, |_, h| to_json(&h.status())) }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn am_hub_tools_json(
     hub: *const AmHub,

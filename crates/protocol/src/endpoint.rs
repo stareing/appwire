@@ -161,6 +161,33 @@ pub fn default_endpoint_without_env() -> String {
     }
 }
 
+/// Unix 域套接字路径的最大字节数：`sockaddr_un.sun_path` 的长度减去结尾 NUL（Linux / Android 107，macOS / BSD 103）。
+#[cfg(unix)]
+pub const MAX_UNIX_SOCKET_PATH_BYTES: usize =
+    std::mem::size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path) - 1;
+
+/// 检查 Unix 域套接字路径能否放进 `sockaddr_un`（Hub 绑定前、SDK 连接前调用）。
+///
+/// @error 超过 [`MAX_UNIX_SOCKET_PATH_BYTES`] 时返回 `IPC_PATH_TOO_LONG`，说明中带实际长度、上限与修复建议
+/// （spec/protocol.md 10.1）。
+#[cfg(unix)]
+pub fn check_unix_socket_path(path: &Path) -> Result<(), crate::diagnostic::ConnectionIssue> {
+    use crate::diagnostic::{ConnectionErrorCode, ConnectionIssue};
+    let len = path.as_os_str().len();
+    if len <= MAX_UNIX_SOCKET_PATH_BYTES {
+        return Ok(());
+    }
+    let code = ConnectionErrorCode::IpcPathTooLong;
+    Err(ConnectionIssue::new(
+        code,
+        format!(
+            "本地 IPC 套接字路径过长（{len} 字节，本平台上限 {MAX_UNIX_SOCKET_PATH_BYTES} 字节）：{}。建议：{}",
+            path.display(),
+            code.hint()
+        ),
+    ))
+}
+
 /// 当前进程的有效用户 ID（Unix 域套接字的对端凭据检查用）。
 #[cfg(unix)]
 pub fn current_uid() -> u32 {
@@ -338,6 +365,25 @@ pub mod win {
 
 #[cfg(test)]
 mod tests {
+
+    /// 上限与标准库构造 `sockaddr_un` 的判定一致；超长路径给出 `IPC_PATH_TOO_LONG`。
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_path_limit() {
+        use crate::diagnostic::ConnectionErrorCode;
+        use std::os::unix::net::SocketAddr;
+        let path_of = |n: usize| PathBuf::from(format!("/{}", "a".repeat(n - 1)));
+        let max = MAX_UNIX_SOCKET_PATH_BYTES;
+        assert!(max >= 100, "{max}");
+        assert!(SocketAddr::from_pathname(path_of(max)).is_ok());
+        assert!(SocketAddr::from_pathname(path_of(max + 1)).is_err());
+        assert_eq!(check_unix_socket_path(&path_of(max)), Ok(()));
+        let issue = check_unix_socket_path(&path_of(max + 1)).unwrap_err();
+        assert_eq!(issue.code, ConnectionErrorCode::IpcPathTooLong);
+        assert!(issue.message.contains(&format!("{} 字节", max + 1)), "{issue}");
+        assert!(issue.message.contains("--ipc-endpoint"), "{issue}");
+    }
+
     use super::*;
 
     #[test]

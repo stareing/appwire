@@ -229,9 +229,41 @@ describe('createBridgeAppMcp', () => {
     expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/tool\.register 失败：already registered/))
   })
 
+  it('连接 ID：取自 hello 回复与 state 事件，缺省（旧主进程）时为 undefined', async () => {
+    const fake = fakeBridge()
+    const request = fake.bridge.request as ReturnType<typeof vi.fn>
+    request.mockImplementationOnce(async () => ({
+      ok: true,
+      value: { instanceId: 'main-1', state: { status: 'connected' }, connectionId: 'ab12cd-3' },
+    }))
+    const app = createBridgeAppMcp({ appId: 'shop', appName: 'Shop', logger: silentLogger() }, fake.bridge)
+    expect(app.connectionId).toBeUndefined()
+    await settle()
+    expect(app.connectionId).toBe('ab12cd-3')
+
+    const seen: (string | undefined)[] = []
+    app.onStateChange(() => seen.push(app.connectionId))
+    fake.emit({ type: 'state', state: { status: 'backoff', retryAt: 1, code: 'CONNECT_FAILED' } })
+    fake.emit({ type: 'state', state: { status: 'connected' }, connectionId: 'ab12cd-4' })
+    // 旧主进程的 state 事件不带 connectionId；非字符串值忽略。
+    fake.emit({ type: 'state', state: { status: 'connected' } })
+    fake.emit({ type: 'state', state: { status: 'connected' }, connectionId: 42 as unknown as string })
+    expect(seen).toEqual([undefined, 'ab12cd-4', undefined, undefined])
+    app.dispose()
+    expect(app.connectionId).toBeUndefined()
+  })
+
+  it('旧主进程的 hello 回复不带 connectionId', async () => {
+    const app = createBridgeAppMcp({ appId: 'shop', appName: 'Shop', logger: silentLogger() }, fakeBridge().bridge)
+    await settle()
+    expect(app.state).toEqual({ status: 'connected' })
+    expect(app.connectionId).toBeUndefined()
+  })
+
   it('bridge 为 null 时为 disabled 空操作', () => {
     const app = createBridgeAppMcp({ appId: 'shop', appName: 'Shop' }, null)
     expect(app.state).toEqual({ status: 'disabled' })
+    expect(app.connectionId).toBeUndefined()
     app.tool('t', { description: 't', handler: () => 1 }).dispose()
     app.dispose()
   })

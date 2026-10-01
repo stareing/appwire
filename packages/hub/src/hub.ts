@@ -19,6 +19,7 @@ import type {
   HubConfig,
   HubEvent,
   HubResource,
+  HubStatus,
   HubTool,
   PairingHandler,
   PairingRequest,
@@ -151,6 +152,11 @@ export class Hub {
   /** 所有已知 App（含静态清单、上游）。 */
   apps(): AppInfo[] {
     return wrapSync(() => JSON.parse(this.#native.apps()) as AppInfo[])
+  }
+
+  /** 运行状态、各 App 最近错误与 SDK 诊断上报（与 `GET /status` 相同，spec/hub-api.md 3.9）。 */
+  status(): HubStatus {
+    return wrapSync(() => JSON.parse(this.#native.status()) as HubStatus)
   }
 
   tools(filter?: ToolFilter): HubTool[] {

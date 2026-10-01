@@ -42,8 +42,11 @@ public class IntegrationTests(ITestOutputHelper output)
         });
         client.StateChanged += (_, e) => states.Enqueue(e.State.Status);
 
+        // 连接期间（handler 内）可查 Host 分配的连接 ID（fake_host 返回 "fake-<pid>"，spec/protocol.md 10.3）。
+        var connectionIds = new ConcurrentBag<string?>();
         using var greet = client.RegisterTool<GreetInput, GreetOutput>("greet", "问好", async (input, ctx) =>
         {
+            connectionIds.Add(client.ConnectionId);
             handlerThreads.Add(Environment.CurrentManagedThreadId);
             if (string.IsNullOrEmpty(input.Name)) throw new ToolCallException(ToolErrorKind.InvalidInput, "缺少 name 参数");
             await Task.Yield(); // 仍在调度器线程上继续
@@ -85,6 +88,8 @@ public class IntegrationTests(ITestOutputHelper output)
         Assert.NotEmpty(handlerThreads);
         Assert.All(handlerThreads, id => Assert.Equal(ui.ThreadId, id));
         Assert.Contains(ClientStatus.Connected, states);
+        Assert.NotEmpty(connectionIds);
+        Assert.All(connectionIds, id => Assert.StartsWith("fake-", id));
     }
 }
 

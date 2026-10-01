@@ -412,6 +412,7 @@ impl HubShared {
             SchemaCheck::BadSchema(e) => {
                 tracing::warn!(app_id, tool = tool_name, error = %e, "工具的 inputSchema 无法编译，跳过 Hub 侧校验");
             }
+            SchemaCheck::Unchecked => {}
         }
 
         if woken.is_none() {
@@ -901,6 +902,7 @@ pub(crate) fn upstream_hub_tool(name: &str, t: &Tool) -> HubTool {
 }
 
 /// App 工具的 MCP 形式。
+#[cfg(feature = "mcp-server")]
 pub(crate) fn to_mcp_tool(app_id: &str, info: &ToolInfo, availability: Availability) -> Tool {
     let schema = match &info.input_schema {
         Value::Object(m) => m.clone(),
@@ -1117,6 +1119,7 @@ mod tests {
         assert_eq!(r.content[0].as_text().unwrap().text, "[1]");
     }
 
+    #[cfg(feature = "mcp-server")]
     #[test]
     fn tool_conversion() {
         let info: ToolInfo = serde_json::from_value(json!({
@@ -1191,6 +1194,7 @@ mod tests {
         fn send_sync<T: Send + Sync>() {}
         fn send<F: Send>(_: &F) {}
         send_sync::<crate::Hub>();
+        #[cfg(feature = "mcp-server")]
         send_sync::<crate::McpSession>();
         send_sync::<crate::HubEvent>();
         // 仅做类型检查，不运行。

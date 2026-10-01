@@ -462,6 +462,13 @@ fn ipc_check(endpoint: Option<&str>, running: bool, status: Option<&Result<HubSt
     if let Some(path) = ep.strip_prefix("unix:") {
         use std::os::unix::fs::{FileTypeExt, MetadataExt};
         let path = Path::new(path);
+        if let Err(issue) = app_mcp_protocol::endpoint::check_unix_socket_path(path) {
+            let max = app_mcp_protocol::endpoint::MAX_UNIX_SOCKET_PATH_BYTES;
+            let len = path.as_os_str().len();
+            return Check::new("ipc", T, Level::Error, format!("{}：{len} 字节，超过本平台上限 {max} 字节", path.display()))
+                .code(issue.code)
+                .details(details);
+        }
         let me = app_mcp_protocol::endpoint::current_uid();
         match std::fs::symlink_metadata(path) {
             Ok(m) => {
@@ -717,6 +724,16 @@ mod tests {
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["checks"][1]["status"], "error");
         assert_eq!(v["checks"][1]["code"], "PORT_BUSY");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ipc_check_reports_too_long_path() {
+        let long = format!("unix:/{}", "p".repeat(app_mcp_protocol::endpoint::MAX_UNIX_SOCKET_PATH_BYTES));
+        let c = ipc_check(Some(&long), false, None);
+        assert!(matches!(c.status, Level::Error), "{c:?}");
+        assert_eq!(c.code, Some("IPC_PATH_TOO_LONG"));
+        assert!(c.hint.as_deref().is_some_and(|h| h.contains("--ipc-endpoint")), "{:?}", c.hint);
     }
 
     #[test]

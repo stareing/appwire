@@ -73,6 +73,7 @@ struct AmClient {
     int status;
     uint64_t retry;
     char *reason;
+    char *code; /* v6：当前状态的错误码 */
     ScopeRec root;
     ToolRec *tools[MAX_ITEMS];
     int n_tools;
@@ -267,16 +268,21 @@ static void state_job(void *p) {
     else am_string_free(j->reason);
     free(j);
 }
-static void emit_state(AmClient *c, int status, uint64_t retry, const char *reason) {
+static void emit_state_code(AmClient *c, int status, uint64_t retry, const char *reason, const char *code) {
     pthread_mutex_lock(&g_lock);
     c->status = status;
     c->retry = retry;
     free(c->reason);
     c->reason = dup_str(reason);
+    free(c->code);
+    c->code = dup_str(code);
     pthread_mutex_unlock(&g_lock);
     StateJob *j = malloc(sizeof *j);
     j->c = c; j->status = status; j->retry = retry; j->reason = give_owned(reason);
     run_on_thread(state_job, j);
+}
+static void emit_state(AmClient *c, int status, uint64_t retry, const char *reason) {
+    emit_state_code(c, status, retry, reason, NULL);
 }
 
 AmStatus am_client_start(AmClient *c) {
@@ -302,7 +308,29 @@ AmStatus am_client_state(const AmClient *c, AmStateStatus *status, uint64_t *ret
     pthread_mutex_lock(&g_lock);
     *status = (AmStateStatus)c->status;
     if (retry) *retry = c->retry;
-    if (reason) *reason = c->status == AM_STATE_REJECTED ? dup_str(c->reason ? c->reason : "") : NULL;
+    if (reason) {
+        /* v6：REJECTED / HOST_MISMATCH 总有原因，BACKOFF 有原因时也给出。 */
+        int always = c->status == AM_STATE_REJECTED || c->status == AM_STATE_HOST_MISMATCH;
+        *reason = always ? dup_str(c->reason ? c->reason : "")
+                         : (c->status == AM_STATE_BACKOFF ? dup_str(c->reason) : NULL);
+    }
+    pthread_mutex_unlock(&g_lock);
+    return AM_OK;
+}
+/* v6：与真实库一致，只在 BACKOFF / REJECTED / HOST_MISMATCH 时可能非 NULL。 */
+AmStatus am_client_state_code(const AmClient *c, char **code) {
+    if (!c || !code) return AM_ERR_INVALID_ARGUMENT;
+    pthread_mutex_lock(&g_lock);
+    int has = c->status == AM_STATE_BACKOFF || c->status == AM_STATE_REJECTED || c->status == AM_STATE_HOST_MISMATCH;
+    *code = has ? dup_str(c->code) : NULL;
+    pthread_mutex_unlock(&g_lock);
+    return AM_OK;
+}
+/* v6：CONNECTED 时返回固定的假连接 ID。 */
+AmStatus am_client_connection_id(const AmClient *c, char **id) {
+    if (!c || !id) return AM_ERR_INVALID_ARGUMENT;
+    pthread_mutex_lock(&g_lock);
+    *id = c->status == AM_STATE_CONNECTED ? dup_str("fake-cid-1") : NULL;
     pthread_mutex_unlock(&g_lock);
     return AM_OK;
 }
@@ -781,6 +809,9 @@ char *fake_result(int idx) {
 }
 
 void fake_emit_state(int status, uint64_t retry, const char *reason) { emit_state(g_client, status, retry, reason); }
+void fake_emit_state_code(int status, uint64_t retry, const char *reason, const char *code) {
+    emit_state_code(g_client, status, retry, reason, code);
+}
 
 typedef struct { AmClient *c; char *token; } PairJob;
 static void pair_job(void *p) {

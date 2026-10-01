@@ -125,6 +125,18 @@ public class HubBasicTests
         Assert.Equal(0, hub.GetResources().GetArrayLength());
         Assert.Null(hub.GetOverview("nope"));
 
+        var status = hub.Status();
+        Assert.Equal("app-mcp", status.Service);
+        Assert.Equal((uint)Environment.ProcessId, status.Pid);
+        Assert.Null(status.Listen);
+        Assert.Null(status.IpcEndpoint);
+        Assert.True(status.StartedAtMs > 0);
+        Assert.False(status.Auth.TokenConfigured);
+        Assert.Equal(0, status.McpSessions);
+        Assert.Empty(status.Apps);
+        Assert.Empty(status.Reports);
+        Assert.Equal("app-mcp", hub.GetStatus().GetProperty("service").GetString());
+
         // 内置工具 apps.list 等
         var tools = hub.GetTools();
         Assert.Contains(tools.EnumerateArray(), t => t.GetProperty("name").GetString() == "apps.list");
@@ -145,6 +157,7 @@ public class HubBasicTests
         hub.Shutdown();
         hub.Shutdown(); // 幂等
         Assert.Equal(HubStatus.Stopped, Assert.Throws<HubException>(() => hub.GetApps()).Status);
+        Assert.Equal(HubStatus.Stopped, Assert.Throws<HubException>(() => hub.Status()).Status);
         Assert.Equal(HubStatus.Stopped, (await Assert.ThrowsAsync<HubException>(() => hub.CallAsync("apps.list"))).Status);
     }
 
@@ -240,6 +253,17 @@ public class HubIntegrationTests
 
         var apps = hub.GetApps();
         Assert.Equal("notes", apps[0].GetProperty("appId").GetString());
+
+        // 运行状态：实例带连接 ID，与 ListApps 一致
+        var status = hub.Status();
+        Assert.Equal(addr, status.Listen);
+        var notesStatus = Assert.Single(status.Apps, a => a.AppId == "notes");
+        Assert.Equal("connected", notesStatus.State);
+        var inst = Assert.Single(notesStatus.Instances);
+        Assert.Equal("n1", inst.InstanceId);
+        Assert.Equal("connected", inst.State);
+        Assert.Matches("^[0-9a-f]+-[0-9]+$", inst.ConnectionId);
+        Assert.Equal(inst.ConnectionId, hub.ListApps().Single(a => a.AppId == "notes").Instances[0].ConnectionId);
 
         // 普通调用：成功 + stateHints + 首次附带总览
         var ok = await hub.CallAsync(new CallRequest("notes.add", new { text = "买牛奶" }) { Session = "s1" });

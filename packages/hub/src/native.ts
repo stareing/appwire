@@ -17,6 +17,7 @@ export interface NativeHub {
   readonly isShutdown: boolean
   shutdown(): Promise<void>
   apps(): string
+  status(): string
   tools(filterJson?: string | null): string
   resources(): string
   overview(appId: string): string | null

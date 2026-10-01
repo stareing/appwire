@@ -10,7 +10,7 @@
  *
  * `createAppMcp` 检测到桥接（{@link findElectronBridge}）时自动走这条路径；页面代码无需修改。
  * 身份与连接由主进程负责：`appId` / `appName` / `hostUrl` 等选项在页面中被忽略，
- * `instanceId` 与 `state` 取自主进程客户端（首次 hello 完成前 `instanceId` 为空字符串）。
+ * `instanceId`、`state` 与 `connectionId` 取自主进程客户端（首次 hello 完成前 `instanceId` 为空字符串）。
  */
 
 import { checkHandlerOrLoad, loadHandler, type LazySlot } from './lazy'
@@ -39,6 +39,9 @@ import type {
 // ---------------------------------------------------------------------------
 // 协议（BRIDGE_VERSION = 1）
 // ---------------------------------------------------------------------------
+//
+// @compat 版本 1 内只做可选字段的新增，旧页面忽略、新页面缺省为 undefined，因此不升版本
+// （升版本会让 findElectronBridge 拒绝新旧混用）。已有新增：`HelloReply.connectionId`、`state` 事件的 `connectionId`。
 
 /** preload 默认把桥接对象暴露为 `window.appMcpBridge`。 */
 export const DEFAULT_BRIDGE_KEY = 'appMcpBridge'
@@ -85,6 +88,8 @@ export type RendererOp =
 export interface HelloReply {
   instanceId: string
   state: ConnectionState
+  /** 主进程客户端当前的连接 ID（spec/protocol.md 10.3）；未连接或旧主进程时缺省。 */
+  connectionId?: string
 }
 
 export type OpReply = { ok: true; value?: unknown } | { ok: false; code?: string; message: string }
@@ -93,7 +98,8 @@ export type MainEvent =
   | { type: 'call'; callId: string; toolId: number; input: unknown }
   | { type: 'cancel'; callId: string; kind: ErrorKind; message: string }
   | { type: 'read'; readId: number; resourceId: number }
-  | { type: 'state'; state: ConnectionState }
+  /** `connectionId`：该状态下主进程客户端的连接 ID；未连接或旧主进程时缺省。 */
+  | { type: 'state'; state: ConnectionState; connectionId?: string }
 
 /** preload 暴露给页面的最小桥接对象。 */
 export interface AppMcpBridge {
@@ -549,6 +555,7 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
   readonly scopeId = undefined
   readonly options: Readonly<AppMcpOptions>
   instanceId = ''
+  private currentConnectionId: string | undefined
   private currentState: ConnectionState
   private readonly listeners = new Set<(state: ConnectionState) => void>()
   private readonly unsubscribe: () => void
@@ -569,7 +576,7 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
       if (!reply?.ok || this.disposed) return
       const hello = reply.value as HelloReply
       this.instanceId = hello.instanceId
-      this.setState(hello.state)
+      this.setState(hello.state, hello.connectionId)
     })
   }
 
@@ -579,6 +586,10 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
 
   get state(): ConnectionState {
     return this.currentState
+  }
+
+  get connectionId(): string | undefined {
+    return this.currentConnectionId
   }
 
   // 生命周期由主进程的 @app-mcp/node 客户端负责（模式、空闲时间在主进程配置）；
@@ -608,8 +619,10 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
     }
   }
 
-  private setState(state: ConnectionState): void {
+  /** @invariant 连接 ID 与状态一起更新：先更新再通知监听器，监听器内读到的是新状态对应的连接 ID。 */
+  private setState(state: ConnectionState, connectionId?: unknown): void {
     this.currentState = state
+    this.currentConnectionId = typeof connectionId === 'string' && connectionId !== '' ? connectionId : undefined
     for (const listener of [...this.listeners]) {
       try {
         listener(state)
@@ -632,7 +645,7 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
         this.client.onRead(event.readId, event.resourceId)
         break
       case 'state':
-        this.setState(event.state)
+        this.setState(event.state, event.connectionId)
         break
     }
   }

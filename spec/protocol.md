@@ -562,8 +562,11 @@ SDK 的连接状态（`Backoff` / `Rejected` / `HostMismatch`，网页另有 `bl
 |---|---|---|---|---|
 | `HOST_NOT_RUNNING` | connect | SDK `backoff` | Host 未运行：端点上没有监听者（连接被拒绝、套接字 / 管道不存在） | 启动 Host（`app-mcp-host serve` 或 `service install`）；`app-mcp-host doctor` 查看端点 |
 | `CONNECT_TIMEOUT` | connect | SDK `backoff` | 规定时间内没能建立连接 | 检查 Host 是否卡住（`doctor`）、防火墙 / 代理是否拦截回环连接 |
-| `CONNECT_FAILED` | connect | SDK `backoff`；断线 | 建立连接失败 / 连接中断（其他系统错误） | 查看 SDK 日志中的系统错误并运行 `doctor` |
+| `CONNECT_FAILED` | connect | SDK `backoff` | 建立连接失败（其他系统错误） | 查看 SDK 日志中的系统错误并运行 `doctor` |
 | `IPC_PERMISSION_DENIED` | connect | 原生 SDK `backoff` | 本地 IPC 端点属于其他用户，或当前用户无权访问（1.4） | 以同一用户运行 Host 与 App；套接字目录 0700 且属于当前用户（`doctor` 检查） |
+| `CONNECTION_CLOSED` | disconnect | 原生 SDK `backoff`（断线） | 已建立的连接被 Host 正常关闭（Close 帧或连接结束：Host 停止、重启、主动断开） | 自动重连；Host 已停止时启动它；频繁出现时查看 Host 日志 |
+| `CONNECTION_LOST` | disconnect | 原生 SDK `backoff`（断线） | 已建立的连接因 I/O 错误中断（连接被重置、管道断开，未经关闭握手） | 自动重连；频繁出现时检查 Host 是否崩溃（`doctor`、Host 日志）、代理 / 安全软件是否切断连接 |
+| `HEARTBEAT_TIMEOUT` | disconnect | SDK `backoff`（断线） | 心跳超时：Host 没有及时响应 `ping`（5.5），SDK 主动断开 | 自动重连；Host 可能卡住或过载：查看 Host 日志，必要时重启 |
 | `HOST_NOT_APP_MCP` | identity | SDK `host-mismatch` | 对端不是 app-mcp Host（端口被其他程序占用，1.6） | 停止占用端口的程序（`doctor` 给出进程），或指定正确端点 |
 | `HOST_OTHER_USER` | identity | 原生 SDK `host-mismatch` | 对端是其他操作系统用户的 Host | 启动自己的 Host，或用 `APP_MCP_ENDPOINT` 指定自己的端点 |
 | `HANDSHAKE_TIMEOUT` | handshake | SDK `backoff` | Host 没有及时回复 `app/hello` | 查看 Host 日志，必要时重启 Host |
@@ -578,12 +581,20 @@ SDK 的连接状态（`Backoff` / `Rejected` / `HostMismatch`，网页另有 `bl
 | `LOCK_HELD` | host | `app-mcp-host serve` / `doctor` | 同一配置目录已有 Host 在运行（1.5） | 无需处理；重启前先 `service stop` |
 | `PORT_BUSY` | host | `serve` / `service install` / `doctor` | 监听端口被占用 | `doctor` 查看占用进程并停止它，或 `--listen` 换端口 |
 | `IPC_ENDPOINT_BUSY` | host | `serve` / `doctor` | 本地 IPC 端点被占用（另一个配置目录的 Host） | 停止它，或 `--ipc-endpoint` 换端点 |
+| `IPC_PATH_TOO_LONG` | host | `serve` / Hub 启动 / `doctor`；原生 SDK `backoff` | 本地 IPC 套接字路径超过系统上限（`sockaddr_un.sun_path`：Linux 107 字节、macOS 103 字节） | `--ipc-endpoint unix:<较短的绝对路径>`（嵌入式 Hub 为 `HubConfig.ipc_endpoint`，SDK 为 `APP_MCP_ENDPOINT` / `host_url`），或缩短 `XDG_RUNTIME_DIR` / `--home` 所在路径 |
 | `SDK_INIT_FAILED` | sdk | 网页 SDK `rejected` | SDK 本地初始化失败（WASM 核心加载失败、创建核心失败），没有连接 Host | 检查 `wasmUrl` 能否加载、CSP 是否允许 WebAssembly（`'wasm-unsafe-eval'`）与控制台错误 |
 
 - Host 拒绝握手时在 `HelloResult.code` / `PairingResultParams.code` 中给出码（`PROTOCOL_INCOMPATIBLE`、`ORIGIN_NOT_ALLOWED`、
   `INVALID_HELLO`、`PAIRING_REJECTED`）；旧 Host 不带时 SDK 用 `REJECTED`。
 - 原生 SDK 的驱动层把建立连接时的系统错误归类（`app_mcp_protocol::diagnostic::connect_error_code`）：连接被拒绝 / 不存在 →
   `HOST_NOT_RUNNING`，超时 → `CONNECT_TIMEOUT`，权限 → `IPC_PERMISSION_DENIED`，其他 → `CONNECT_FAILED`。
+- Unix 域套接字路径在绑定 / 连接前按 `app_mcp_protocol::endpoint::check_unix_socket_path` 检查长度（上限
+  `MAX_UNIX_SOCKET_PATH_BYTES`）：Hub 启动返回 `InvalidInput`，错误内含 `ConnectionIssue`（`IPC_PATH_TOO_LONG`，说明带实际长度、
+  上限与建议，可经 `io::Error::get_ref` 取出）；原生 SDK 进入带该码的 `backoff`。
+- 已建立的连接断开（类别 `disconnect`）：原生驱动层收到 Close 帧或读到连接结束 → `CONNECTION_CLOSED`（说明中带关闭码与原因），
+  读取出错 → `CONNECTION_LOST`，经核心 `Client::handle_disconnected_with` 进入带码的 `Backoff`；核心自身的心跳超时 →
+  `HEARTBEAT_TIMEOUT`（此前为 `CONNECT_FAILED`）、握手超时 → `HANDSHAKE_TIMEOUT`。驱动层未给出原因的断线（`handle_disconnected`）
+  仍不带码。网页 SDK 的驱动层目前对已建立连接的断开不带码。
 - 各语言的状态对象都带 `code`：Rust 核心 `ConnectionState::{Backoff, Rejected, HostMismatch}` 的 `code` 字段、
   原生 `StateInfo.code`、JS `state.code`。
 
@@ -609,4 +620,6 @@ Host 记录每个 App 最近的上报（`/status` 的 `reports`，`app-mcp-host 
 Host 为每条 App 连接（多路复用时为每个通道）分配连接 ID（`<Host 启动标记>-<序号>`，如 `3f9a1c-12`），在 `HelloResult.connectionId`
 中返回；每个 MCP 会话同样有会话 ID（`mcp-<序号>`）。Host 日志中与该连接 / 会话有关的记录都带 `cid` 字段；SDK 握手成功后把连接 ID
 写入日志（原生日志回调、网页 `logger`），连接期间的日志带 `[cid]` 前缀（原生为 `[cid] …`，网页为 `[app-mcp] [cid] …`），便于在两边日志中对照同一条连接。`/status` 的实例信息也带
-`connectionId`。
+`connectionId`。Electron / Tauri 页面经桥接（`window.appMcpBridge`）连接时，连接属于主进程（Rust 侧）的客户端：桥接的 hello 回复与
+`state` 事件带可选 `connectionId`（`BRIDGE_VERSION` 仍为 1，版本内只做可选字段新增；旧主进程不带时页面为 `undefined`），
+页面的 `AppMcp.connectionId` 与主进程日志中的 `[cid]` 相同。

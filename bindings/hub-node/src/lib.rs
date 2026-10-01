@@ -392,6 +392,12 @@ impl JsHub {
         to_json(&self.hub()?.apps())
     }
 
+    /// `HubStatus` 的 JSON（运行状态、最近错误、SDK 上报；与 `GET /status` 相同，spec/hub-api.md 3.9）。
+    #[napi]
+    pub fn status(&self) -> Result<String> {
+        to_json(&self.hub()?.status())
+    }
+
     /// `HubTool[]` 的 JSON。`filterJson` 为 `ToolFilter`（可省略）。
     #[napi]
     pub fn tools(&self, filter_json: Option<String>) -> Result<String> {

@@ -65,6 +65,8 @@ var outcome = await hub.CallAsync("notes.add", new { text = "买牛奶" });  // 
   `ReadResourceAsync` 失败抛 `HubCallException`；FFI 层错误抛 `HubException`（带 `HubStatus`）。
 - handler 以 GCHandle 交给原生库，务必 `Dispose` / `DisposeAsync`。
 - `ListApps()` / `ListTools()` 返回类型化的 `AppInfo` / `HubToolInfo`（`GetApps()` / `GetTools()` 返回原始 JSON）。
+- `Status()` 返回运行状态 `HubStatusInfo`（监听、令牌策略、各 App 状态与最近错误、SDK 诊断上报，与 `GET /status` 相同；
+  `GetStatus()` 返回原始 JSON）；`InstanceInfo.ConnectionId` 为 Hub 分配的连接 ID（与日志 `cid` 相同）。
   事件类型常量见 `HubEventTypes`，可用性常量见 `HubAvailability`。
 
 ### 休眠与唤醒（spec/hub-api.md 3.5）

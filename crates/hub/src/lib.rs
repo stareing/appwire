@@ -13,12 +13,14 @@
 pub mod app_server;
 pub mod call;
 pub mod connection;
+pub mod features;
 pub mod format;
 pub mod http_server;
 pub mod hub;
 mod instance;
 mod ipc;
 mod lifecycle;
+#[cfg(feature = "mcp-server")]
 pub mod mcp;
 pub mod origin;
 pub mod overview;
@@ -36,6 +38,7 @@ pub use hub::{
     DEFAULT_TOOL_EXPOSURE_THRESHOLD, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
     load_manifests, parse_resource_uri, resource_uri,
 };
+#[cfg(feature = "mcp-server")]
 pub use mcp::McpSession;
 pub use types::{
     AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy,

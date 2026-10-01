@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -91,8 +93,16 @@ int main(int argc, char** argv) {
                 }  // 析构即释放
                 throw app_mcp::ToolCallError("USER_REJECTED", "额度不足", std::string(R"({"hint":"upgrade"})"));
             });
-        auto t2 = client.register_tool("greet", "问好",
-                                       [](app_mcp::Call call) { call.complete(R"({"greeting":"Hello, World!"})"); });
+        // 连接期间（handler 内）Host 分配的连接 ID 可查（fake_host 返回 "fake-<pid>"，spec/protocol.md 10.3）。
+        std::mutex cid_mu;
+        std::optional<std::string> cid_in_call;
+        auto t2 = client.register_tool("greet", "问好", [&](app_mcp::Call call) {
+            {
+                std::lock_guard<std::mutex> lock(cid_mu);
+                cid_in_call = client.connection_id();
+            }
+            call.complete(R"({"greeting":"Hello, World!"})");
+        });
         client.start();
 
         bool saw_wake = false, hello_current = false, unsynced = false, greet_ok = false, details_ok = false;
@@ -131,6 +141,11 @@ int main(int argc, char** argv) {
         EXPECT(greet_ok);
         EXPECT(details_ok);
         EXPECT(held == 1);
+        {
+            std::lock_guard<std::mutex> lock(cid_mu);
+            EXPECT(cid_in_call.has_value() && cid_in_call->rfind("fake-", 0) == 0);
+        }
+        EXPECT(!client.connection_id().has_value());  // 已休眠，没有连接
         for (int i = 0; i < 50 && idle_exits < 2; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
         EXPECT(idle_exits == 2);
         EXPECT(client.state().status == AM_STATE_DORMANT);

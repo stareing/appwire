@@ -113,6 +113,9 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)] internal static partial AmStatus am_client_state(ClientSafeHandle client, out int status, out ulong retryInMs, out nint reason);
     [LibraryImport(Lib)] internal static partial nint am_client_instance_id(ClientSafeHandle client);
     [LibraryImport(Lib)] internal static partial nint am_client_token(ClientSafeHandle client);
+    // v6：诊断（spec/protocol.md 第 10 节）；输出字符串需 am_string_free。
+    [LibraryImport(Lib)] internal static partial AmStatus am_client_state_code(ClientSafeHandle client, out nint code);
+    [LibraryImport(Lib)] internal static partial AmStatus am_client_connection_id(ClientSafeHandle client, out nint id);
     [LibraryImport(Lib)] internal static partial AmStatus am_client_root_scope(ClientSafeHandle client, out nint scope);
 
     // v3：生命周期

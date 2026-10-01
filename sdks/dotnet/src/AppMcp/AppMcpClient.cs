@@ -146,14 +146,35 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         {
             NativeMethods.Check(NativeMethods.am_client_state(_handle, out var status, out var retry, out var reason));
             var st = (ClientStatus)status;
-            return new ClientState(st, st == ClientStatus.Backoff ? TimeSpan.FromMilliseconds(retry) : null, NativeMethods.TakeString(reason));
+            var reasonText = NativeMethods.TakeString(reason);
+            return new ClientState(st, st == ClientStatus.Backoff ? TimeSpan.FromMilliseconds(retry) : null, reasonText)
+            {
+                Code = QueryStateCode(),
+            };
         }
+    }
+
+    /// <summary>当前状态的错误码（am_client_state_code）。</summary>
+    internal string? QueryStateCode()
+    {
+        NativeMethods.Check(NativeMethods.am_client_state_code(_handle, out var code));
+        return NativeMethods.TakeString(code);
     }
 
     public string InstanceId => NativeMethods.TakeString(NativeMethods.am_client_instance_id(_handle)) ?? string.Empty;
 
     /// <summary>当前 token（配置带入的或配对后获得的）。</summary>
     public string? Token => NativeMethods.TakeString(NativeMethods.am_client_token(_handle));
+
+    /// <summary>Host 为当前连接分配的连接 ID（spec/protocol.md 10.3），与 Host 日志中的 <c>cid</c> 对应；未连接时为 null。</summary>
+    public string? ConnectionId
+    {
+        get
+        {
+            NativeMethods.Check(NativeMethods.am_client_connection_id(_handle, out var id));
+            return NativeMethods.TakeString(id);
+        }
+    }
 
     // ---- 生命周期（spec/lifecycle.md 第 8 节） ------------------------------
 

@@ -338,6 +338,39 @@ void main() {
     await sub.cancel();
   });
 
+  test('状态流与 state 带 code（v6 am_client_state_code）；connectionId 取自 am_client_connection_id', () async {
+    final states = <McpConnectionState>[];
+    final sub = client.states.listen(states.add);
+    expect(client.connectionId, isNull); // 未连接
+    client.start();
+    await eventually(() => states.isNotEmpty);
+    expect(states.last.status, ConnectionStatus.connected);
+    expect(states.last.code, isNull);
+    expect(client.connectionId, 'fake-cid-1');
+
+    fake.emitStateCode(5, 1000, '连接被拒绝', 'HOST_NOT_RUNNING');
+    await eventually(() => states.length == 2);
+    expect(states.last,
+        const McpConnectionState(ConnectionStatus.backoff,
+            retryIn: Duration(seconds: 1), reason: '连接被拒绝', code: 'HOST_NOT_RUNNING'));
+    expect(client.state.code, 'HOST_NOT_RUNNING');
+    expect(client.state.reason, '连接被拒绝');
+    expect(client.connectionId, isNull);
+
+    fake.emitStateCode(10, 0, '不是 app-mcp', 'HOST_NOT_APP_MCP');
+    await eventually(() => states.length == 3);
+    expect(states.last.status, ConnectionStatus.hostMismatch);
+    expect(states.last.code, 'HOST_NOT_APP_MCP');
+
+    // 不带码的状态即使原生侧残留 code 也为 null。
+    fake.emitStateCode(4, 0, null, 'STALE');
+    await eventually(() => states.length == 4);
+    expect(states.last.code, isNull);
+    expect(client.state.code, isNull);
+    expect(fake.ownedOutstanding(), 0);
+    await sub.cancel();
+  });
+
   test('配对：token 取自回调并被释放', () async {
     final tokenF = client.onPaired.first;
     fake.pair('tok-123');

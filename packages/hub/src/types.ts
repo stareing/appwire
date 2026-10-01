@@ -135,6 +135,8 @@ export interface InstanceInfo {
   title: string | null
   /** 实例进程号：经本地 IPC 连接时由操作系统提供；否则缺省。 */
   pid?: number
+  /** Hub 分配的连接 ID（`<标记>-<序号>`，与 Hub / SDK 日志的 `cid` 相同）；休眠实例缺省。 */
+  connectionId?: string
 }
 
 export interface AppInfo {
@@ -283,6 +285,85 @@ export type HubEvent =
   | { type: 'appDormant'; appId: string; instanceId: string }
   /** Hub 正在唤醒 App；`instanceId` 为 null 表示 App 未运行、按清单冷启动。 */
   | { type: 'appWaking'; appId: string; instanceId: string | null }
+  /** SDK 上报了此前遇到的连接问题（`app/diagnostic`，spec/protocol.md 10.2）；`code` 可能是本 Hub 不认识的新码。 */
+  | { type: 'appDiagnostic'; appId: string; instanceId: string; code: string; message: string; count: number }
+
+// ---------------------------------------------------------------------------
+// 运行状态（spec/hub-api.md 3.9；与 `GET /status` 相同）
+// ---------------------------------------------------------------------------
+
+/** 主 HTTP 服务的令牌策略。 */
+export interface AuthStatus {
+  /** 是否配置了访问令牌。 */
+  tokenConfigured: boolean
+  /** 不带 `Origin` 的本地客户端是否也必须携带令牌（`--auth all`）。 */
+  tokenRequiredWithoutOrigin: boolean
+}
+
+/** App 整体状态。 */
+export type AppState = 'connected' | 'waking' | 'dormant' | 'disconnected'
+
+/** 实例状态。 */
+export type InstanceState = 'connected' | 'dormant' | 'waking'
+
+export interface InstanceStatus extends InstanceInfo {
+  state: InstanceState
+}
+
+/** 最近一次错误（握手被拒、配对被拒、唤醒失败 / 超时；上游为进程错误）。 */
+export interface LastError {
+  /** 连接级错误码（spec/protocol.md 10.1）或工具错误类别；未知时缺省。 */
+  code?: string
+  message: string
+  /** 发生时刻（Unix 毫秒）；上游错误为 0。 */
+  atMs: number
+}
+
+export interface AppStatus {
+  appId: string
+  name: string
+  kind: 'app' | 'upstream'
+  state: AppState
+  /** 在线实例在前，其后为休眠实例；上游为空。 */
+  instances: InstanceStatus[]
+  lastError?: LastError
+}
+
+/** 一条 SDK 诊断上报（`app/diagnostic`）。 */
+export interface DiagnosticReport {
+  appId: string
+  instanceId: string
+  connectionId: string
+  code: string
+  message: string
+  count: number
+  /** Hub 收到的时刻（Unix 毫秒）。 */
+  receivedAtMs: number
+}
+
+export interface HubStatus {
+  /** 固定为 `app-mcp`。 */
+  service: string
+  version: string
+  /** 进程的操作系统用户；取不到时缺省。 */
+  user?: string
+  pid: number
+  /** HTTP 服务实际监听地址；未开启时缺省。 */
+  listen?: string
+  /** 本地 IPC 端点；未开启时缺省。 */
+  ipcEndpoint?: string
+  /** 启动时刻（Unix 毫秒）。 */
+  startedAtMs: number
+  /** 是否提供 MCP Streamable HTTP（`/mcp`）。 */
+  mcpHttp: boolean
+  auth: AuthStatus
+  /** 已初始化的 MCP 会话数。 */
+  mcpSessions: number
+  /** App（含上游），按 appId 排序。 */
+  apps: AppStatus[]
+  /** 最近的 SDK 诊断上报，旧的在前（最多 32 条）。 */
+  reports: DiagnosticReport[]
+}
 
 // ---------------------------------------------------------------------------
 // 策略回调

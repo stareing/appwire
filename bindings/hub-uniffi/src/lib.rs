@@ -385,6 +385,14 @@ impl AppMcpHub {
         hub.overview(&app_id).map(Into::into)
     }
 
+    /// 运行状态（spec/hub-api.md 3.9）：身份、监听位置、令牌策略、各 App 与实例的状态、最近错误与 SDK 诊断上报。
+    /// 与 `GET /status` 内容相同。已停止时返回 `Shutdown`。
+    pub fn status(&self) -> Result<HubStatus, HubError> {
+        let hub = self.hub()?;
+        let _g = self.handle.enter();
+        Ok(hub.status().into())
+    }
+
     // ---- 操作 ----
 
     /// 调用工具。工具层面的失败（参数不合法、用户拒绝、超时、App 报错…）放在 `CallOutcome.error`；

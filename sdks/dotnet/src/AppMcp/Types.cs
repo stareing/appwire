@@ -123,7 +123,21 @@ public class ToolCallException : Exception
 }
 
 /// <summary>客户端状态。</summary>
-public readonly record struct ClientState(ClientStatus Status, TimeSpan? RetryIn, string? Reason);
+/// <param name="Status">状态。</param>
+/// <param name="RetryIn"><see cref="ClientStatus.Backoff"/> 时距下一次重连的时间。</param>
+/// <param name="Reason"><see cref="ClientStatus.Rejected"/> / <see cref="ClientStatus.HostMismatch"/> 时的原因；
+/// <see cref="ClientStatus.Backoff"/> 时为连接失败 / 断开的原因（有的话）。</param>
+public readonly record struct ClientState(ClientStatus Status, TimeSpan? RetryIn, string? Reason)
+{
+    /// <summary>与 <see cref="Reason"/> 对应的错误码（spec/protocol.md 10.1，如 <c>HOST_NOT_RUNNING</c>）；
+    /// Rejected / HostMismatch 时总有，Backoff 时在连接失败等情况下有，其他状态为 null。</summary>
+    /// <remarks>@compat 用 init 属性而非新增位置参数，保持构造函数与解构的源码兼容。</remarks>
+    public string? Code { get; init; }
+
+    /// <summary>只有这些状态带错误码（spec/protocol.md 10.1）。</summary>
+    internal static bool StatusHasCode(ClientStatus status) =>
+        status is ClientStatus.Backoff or ClientStatus.Rejected or ClientStatus.HostMismatch;
+}
 
 public sealed class ClientStateChangedEventArgs(ClientState state) : EventArgs
 {

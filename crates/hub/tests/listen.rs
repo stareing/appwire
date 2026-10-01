@@ -8,15 +8,20 @@
 //!
 //! 所有 TCP 监听都绑定端口 0 并从监听器取实际地址。
 
+#[cfg(feature = "mcp-server")]
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use app_mcp_hub::{Health, HttpOptions, Hub, HubConfig};
+#[cfg(feature = "mcp-server")]
+use app_mcp_hub::Health;
+use app_mcp_hub::{HttpOptions, Hub, HubConfig};
 use app_mcp_protocol::registry::{EndpointRegistry, LOCK_FILE, REGISTRY_FILE};
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+#[cfg(feature = "mcp-server")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(feature = "mcp-server")]
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
@@ -38,6 +43,7 @@ fn temp_dir(tag: &str) -> PathBuf {
 }
 
 /// 发一个 HTTP/1.1 请求，返回 (状态码, 响应体)。
+#[cfg(feature = "mcp-server")]
 async fn http(addr: SocketAddr, method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> (u16, String) {
     let mut s = TcpStream::connect(addr).await.unwrap();
     let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: {}\r\n", body.len());
@@ -78,6 +84,7 @@ async fn hello(url: &str, origin: Option<&str>) -> Value {
     }
 }
 
+#[cfg(feature = "mcp-server")]
 #[tokio::test(flavor = "multi_thread")]
 async fn one_port_serves_app_mcp_and_healthz() {
     let hub = Hub::start(HubConfig {
@@ -143,6 +150,7 @@ async fn one_port_serves_app_mcp_and_healthz() {
     hub.shutdown().await;
 }
 
+#[cfg(feature = "mcp-server")]
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_is_off_unless_enabled_and_extra_listener_serves_it() {
     let hub = Hub::start(config()).await.unwrap();

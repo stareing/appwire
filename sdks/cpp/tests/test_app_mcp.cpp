@@ -3,9 +3,13 @@
 // 第一部分不需要原生运行时；第二部分需要原生运行时已实现（未实现时 am_client_new 返回
 // AM_ERR_PANIC，这部分会被跳过并打印提示）。都不需要 Host。
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <mutex>
+#include <optional>
 #include <string>
 
 #include "app_mcp.hpp"
@@ -208,6 +212,61 @@ void test_lifecycle() {
     EXPECT(idle_exits == 0);
 }
 
+void test_diagnostics() {
+    // 不存在的本地 IPC 端点 → BACKOFF，错误码 HOST_NOT_RUNNING（spec/protocol.md 10.1）。
+    // @why 不用 ws://127.0.0.1:1：WSL 等环境下回环连接未监听端口可能超时（CONNECT_TIMEOUT）而非被拒绝。
+    app_mcp::ClientConfig config;
+    config.app_id = "cpp-diag";
+    config.app_name = "C++ Diagnostics";
+#ifdef _WIN32
+    config.host_url = "pipe:\\\\.\\pipe\\app-mcp-cpp-test-missing";
+#else
+    config.host_url = "unix:/nonexistent-app-mcp-cpp-test/hub.sock";
+#endif
+    config.connect_timeout_ms = 2000;
+
+    std::mutex mu;
+    std::condition_variable cv;
+    std::optional<app_mcp::StateInfo> backoff;
+    bool non_backoff_had_code = false;
+    app_mcp::ClientCallbacks callbacks;
+    callbacks.on_state = [&](const app_mcp::StateInfo& info) {
+        std::lock_guard<std::mutex> lock(mu);
+        if (info.status == AM_STATE_BACKOFF) {
+            if (!backoff) backoff = info;
+            cv.notify_all();
+        } else if (info.status != AM_STATE_REJECTED && info.status != AM_STATE_HOST_MISMATCH && info.code) {
+            non_backoff_had_code = true;
+        }
+    };
+    app_mcp::Client client(config, callbacks);
+    EXPECT(!client.state().code.has_value());  // IDLE 不带码
+    EXPECT(!client.connection_id().has_value());
+    client.start();
+    {
+        std::unique_lock<std::mutex> lock(mu);
+        cv.wait_for(lock, std::chrono::seconds(10), [&] { return backoff.has_value(); });
+        EXPECT(backoff.has_value());
+        if (backoff) {
+            EXPECT(backoff->code == std::optional<std::string>("HOST_NOT_RUNNING"));
+            EXPECT(!backoff->reason.empty());
+        }
+        EXPECT(!non_backoff_had_code);
+    }
+    app_mcp::StateInfo now = client.state();
+    if (now.status == AM_STATE_BACKOFF) {
+        EXPECT(now.code == std::optional<std::string>("HOST_NOT_RUNNING"));
+    }
+    EXPECT(!client.connection_id().has_value());  // 从未连上
+    client.stop();
+    EXPECT(!client.state().code.has_value());  // STOPPED 不带码
+
+    // 空句柄：查询函数报 AM_ERR_INVALID_ARGUMENT（经 detail::check 抛出）。
+    app_mcp::Client moved = std::move(client);
+    EXPECT(status_of([&] { (void)client.connection_id(); }) == AM_ERR_INVALID_ARGUMENT);
+    EXPECT(status_of([&] { (void)client.state(); }) == AM_ERR_INVALID_ARGUMENT);
+}
+
 }  // namespace
 
 int main() {
@@ -215,6 +274,7 @@ int main() {
         test_basics();
         test_runtime();
         test_lifecycle();
+        test_diagnostics();
     } catch (const std::exception& e) {
         ++g_failed;
         std::fprintf(stderr, "FAIL 未捕获的异常：%s\n", e.what());

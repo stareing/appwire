@@ -94,11 +94,18 @@ internal static unsafe class Callbacks
             // 字符串归回调方所有（AM_API_VERSION 2）：先取出并释放。
             var reasonText = NativeMethods.TakeString(reason);
             var st = (ClientStatus)status;
+            var sink = Target<ClientEventSink>(userData);
+            if (sink is null) return;
             var state = new ClientState(
                 st,
                 st == ClientStatus.Backoff ? TimeSpan.FromMilliseconds(retryInMs) : null,
-                reasonText);
-            Target<ClientEventSink>(userData)?.OnState(state);
+                reasonText)
+            {
+                // @why 状态回调签名没有 code（C ABI v6 只新增查询函数）：在分发线程上立即查询，尽量贴近本次状态；
+                // 回调异步分发，状态可能已再次变化，此时 code 反映更新后的状态（可能为 null）。
+                Code = ClientState.StatusHasCode(st) ? sink.QueryStateCode() : null,
+            };
+            sink.OnState(state);
         }
         catch
         {
@@ -195,6 +202,15 @@ internal sealed class ClientEventSink(SynchronizationContext? dispatcher)
     }
 
     public void OnState(ClientState state) => Raise(c => c.RaiseStateChanged(state));
+
+    /// <summary>在分发线程上查询当前状态的错误码；客户端已回收 / 释放时为 null。</summary>
+    public string? QueryStateCode()
+    {
+        if (_client is null || !_client.TryGetTarget(out var client)) return null;
+        try { return client.QueryStateCode(); }
+        catch (ObjectDisposedException) { return null; } // @why Dispose 与回调并发：句柄已关闭，没有可查询的状态
+        catch (AppMcpException) { return null; }         // @why 客户端已停止 / 释放中：状态回调照常送达，只缺 code
+    }
     public void OnPaired(string token) => Raise(c => c.RaisePaired(token));
     public void OnLog(LogLevel level, string message) => Raise(c => c.RaiseLog(level, message));
     public void OnIdleExit() => Raise(c => c.RaiseIdleExit());

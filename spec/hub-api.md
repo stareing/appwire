@@ -401,6 +401,9 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
 - `HubConfig.ipc_endpoint: Option<String>`：`unix:<绝对路径>` / `pipe:\\.\pipe\<名称>`，默认
   `app_mcp_protocol::endpoint::default_ipc_endpoint()`（Android / iOS 为 `None`）；`None` = 不开。
   不是 IPC 形式、或本平台不支持时 `Hub::start` 返回 `InvalidInput`；端点已有 Hub 监听时返回 `AddrInUse`。
+  Unix 套接字路径超过 `sockaddr_un.sun_path` 上限（`app_mcp_protocol::endpoint::MAX_UNIX_SOCKET_PATH_BYTES`，Linux 107 / macOS 103 字节）
+  时在建目录之前返回 `InvalidInput`，错误内含 `ConnectionIssue { code: IPC_PATH_TOO_LONG, .. }`（`err.get_ref()` 可 downcast；
+  `Display` 为 `[IPC_PATH_TOO_LONG] …（N 字节，本平台上限 M 字节）：<路径>。建议：…`）。
   与 `listen` 一样，默认值会占用本机唯一的端点：同机器上的第二个 Hub（含测试）应改用其他端点或设为 `None`。
 - `Hub::ipc_endpoint()`：实际监听的端点字符串，可直接作为原生 SDK 的 `host_url`。
 - `InstanceInfo.pid: Option<u32>`：IPC 连接的对端进程号（操作系统提供）；TCP 连接与休眠实例为 `None`。
@@ -445,9 +448,37 @@ pub struct DiagnosticReport { app_id, instance_id, connection_id, code, message,
   配对被拒时 `PairingResultParams.code = PAIRING_REJECTED`。
 - `app-mcp-host doctor` / `status` 经本地 IPC（核对监听方用户后）读 `/status`；IPC 关闭时改用 TCP + 令牌。
 
-绑定：hub-c / hub-node 的事件按 JSON 透传 `AppDiagnostic`（`type: "appDiagnostic"` 形式与其他事件相同）；hub-uniffi 落到既有的
-`HubEvent::Other`；`InstanceInfo.connection_id` 目前只在 Rust / JSON（hub-c、hub-node）中可见，uniffi 记录未加该字段；
-`Hub::status()` 尚未在各绑定中导出（可经 IPC `GET /status` 获取同样内容）。
+绑定：
+
+| 绑定 | `status()` | `InstanceInfo.connection_id` | `AppDiagnostic` 事件 |
+|---|---|---|---|
+| hub-c | `am_hub_status_json`（HubStatus JSON，与 `/status` 相同） | JSON `connectionId` | `{"type":"appDiagnostic","appId","instanceId","code","message","count"}` |
+| hub-node / `@app-mcp/hub` | `hub.status(): HubStatus`（TS 类型） | `connectionId?` | 同上（`HubEvent` 联合） |
+| C#（`AppMcp.Hub`，基于 hub-c） | `Status()`（`HubStatusInfo`）/ `GetStatus()`（`JsonElement`） | `ConnectionId` | `HubEventTypes.AppDiagnostic` |
+| hub-uniffi（Kotlin / Swift / Python） | `status()` → `HubStatus` 记录（已停止时 `HubError::Shutdown`） | `connection_id` 字段 | 专门变体 `HubEvent::AppDiagnostic { app_id, instance_id, code, message, count }` |
+
+uniffi 的 `HubStatus` 把 `identity` 展开为 `service` / `version` / `user` / `pid` 四个字段，`InstanceStatus` 为 `{ info: InstanceInfo, state }`
+（JSON 中 `info` 为 flatten），`mcp_sessions` 为 `u64`；其余字段与 JSON 一一对应。
+
+### 3.10 cargo features（能力裁剪）
+
+`app-mcp-hub` 默认 `["mcp-server", "upstream", "schema-validation"]`，与此前行为、公开 API 完全一致。关闭某项时 `HubConfig`
+字段与方法签名保留（各绑定源码不需改动），用到该能力时返回明确错误；检查在 `Hub::start` 开头（`features` 模块，常量
+`features::{MCP_SERVER, UPSTREAM, SCHEMA_VALIDATION}`）。
+
+| feature | 内容 | 关闭时 |
+|---|---|---|
+| `mcp-server` | MCP 出口：`/mcp`（Streamable HTTP）、`serve_http(_with)`、`serve_stdio`、`McpSession` | `mcp_http = true` / `serve_http(_with)` → `ErrorKind::Unsupported`（说明缺哪个 feature）；`/mcp` 404；`mcp` 模块、`McpSession`、`Hub::mcp_session`、`Hub::serve_stdio` 不编译 |
+| `upstream` | 上游聚合：以子进程启动其他 MCP 服务器并汇入工具 | `upstreams` 非空 → `Unsupported`；`UpstreamConfig` 与配置解析保留 |
+| `schema-validation` | 调用前按 inputSchema 校验参数（jsonschema） | `schema::check` 返回 `SchemaCheck::Unchecked`，参数原样交给 App（由 App 的处理函数报参数错误；与 spec/protocol.md 第 6 节"Host 校验参数"不同） |
+
+HTTP 服务（`/app`、`/healthz`、`/status`）与本地 IPC 始终编译：移动端 App 也经 `ws://127.0.0.1:7717/app` 连接 Hub。
+rmcp 的 `server` / `client` 始终开启（模型类型与 `Peer`）。
+
+`bindings/hub-uniffi` 的组合：默认 `["cli", "desktop"]`（`desktop` = 全部能力，jar / wheel / Swift 包用）；`mobile` = 不含上述三项。
+`scripts/generate.sh --android` 用 `--no-default-features --features mobile,schema-validation`（保留 Hub 侧参数校验），
+`--android-features <list>` 可改（体积优先用 `mobile`，去掉校验）。各组合导出的 uniffi 接口相同。arm64（mobile-release）：完整 8.98 MB（gzip 3.26）、
+`mobile,schema-validation` 6.66 MB（2.52）、`mobile` 3.92 MB（1.56）。
 
 ## 4. 进程内 App（可选，M2）
 

@@ -22,6 +22,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -278,19 +279,23 @@ async fn drive(
             Wakeup::Incoming(Some(Ok(WsMessage::Text(text)))) => {
                 shared.lock().client.handle_message(text.as_str(), now_ms());
             }
-            Wakeup::Incoming(Some(Ok(WsMessage::Close(_))) | None) => {
+            Wakeup::Incoming(Some(Ok(WsMessage::Close(frame)))) => {
                 if let Some(old) = conn.take() {
                     closing.push(old.close());
                 }
-                log(&shared, &jobs, LogLevel::Info, "Host 关闭了连接".to_owned());
-                shared.lock().client.handle_disconnected(now_ms());
+                lost_connection(&shared, &jobs, closed_issue(&host_url, frame.as_ref()));
+            }
+            Wakeup::Incoming(None) => {
+                if let Some(old) = conn.take() {
+                    closing.push(old.close());
+                }
+                lost_connection(&shared, &jobs, closed_issue(&host_url, None));
             }
             Wakeup::Incoming(Some(Err(e))) => {
                 if let Some(old) = conn.take() {
                     closing.push(old.close());
                 }
-                log(&shared, &jobs, LogLevel::Info, format!("连接中断：{e}"));
-                shared.lock().client.handle_disconnected(now_ms());
+                lost_connection(&shared, &jobs, lost_issue(&host_url, &e));
             }
             // 二进制帧、ping / pong 由 tungstenite 处理或忽略。
             Wakeup::Incoming(Some(Ok(_))) => {}
@@ -355,6 +360,8 @@ async fn tcp_connect(url: &str) -> Result<TcpStream, WsError> {
 /// 连接 Unix 域套接字，并确认监听方与本进程是同一用户（防止他人抢占路径冒充 Host）。
 #[cfg(unix)]
 async fn unix_connect(path: &std::path::Path) -> Result<tokio::net::UnixStream, WsError> {
+    app_mcp_protocol::endpoint::check_unix_socket_path(path)
+        .map_err(|issue| WsError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, issue)))?;
     let stream = tokio::net::UnixStream::connect(path).await?;
     let cred = stream.peer_cred()?;
     let me = app_mcp_protocol::endpoint::current_uid();
@@ -414,11 +421,38 @@ async fn pipe_connect(name: &str) -> Result<TcpStream, WsError> {
 
 /// 建立连接失败的原因：按系统错误归类错误码（spec/protocol.md 10.1）。
 fn connect_issue(host_url: &str, e: &WsError) -> ConnectionIssue {
+    // 已归类的问题（如 IPC_PATH_TOO_LONG）原样使用，说明中已带建议。
+    if let WsError::Io(io) = e
+        && let Some(issue) = io.get_ref().and_then(|inner| inner.downcast_ref::<ConnectionIssue>())
+    {
+        return ConnectionIssue::new(issue.code, format!("连接 {host_url} 失败：{}", issue.message));
+    }
     let code = match e {
         WsError::Io(io) => app_mcp_protocol::diagnostic::connect_error_code(io.kind()),
         _ => ConnectionErrorCode::ConnectFailed,
     };
     ConnectionIssue::new(code, format!("连接 {host_url} 失败：{e}"))
+}
+
+/// 已建立的连接断开：记日志（带断开前的连接 ID），核心进入带错误码的 `Backoff`。
+fn lost_connection(shared: &Shared, jobs: &Sender<Job>, issue: ConnectionIssue) {
+    log(shared, jobs, LogLevel::Info, issue.to_string());
+    shared.lock().client.handle_disconnected_with(issue, now_ms());
+}
+
+/// 对端正常关闭（Close 帧或读到连接结束）的原因（spec/protocol.md 10.1 `CONNECTION_CLOSED`）。
+fn closed_issue(host_url: &str, frame: Option<&CloseFrame>) -> ConnectionIssue {
+    let detail = match frame {
+        Some(f) if !f.reason.is_empty() => format!("（关闭码 {}：{}）", u16::from(f.code), f.reason),
+        Some(f) => format!("（关闭码 {}）", u16::from(f.code)),
+        None => String::new(),
+    };
+    ConnectionIssue::new(ConnectionErrorCode::ConnectionClosed, format!("Host 关闭了连接 {host_url}{detail}，稍后重连"))
+}
+
+/// 连接因错误中断（未经关闭握手）的原因（spec/protocol.md 10.1 `CONNECTION_LOST`）。
+fn lost_issue(host_url: &str, e: &WsError) -> ConnectionIssue {
+    ConnectionIssue::new(ConnectionErrorCode::ConnectionLost, format!("与 {host_url} 的连接中断：{e}，稍后重连"))
 }
 
 /// 记录日志；连接期间以 `[连接 ID] ` 开头。调用时不得持有 `shared` 的锁。

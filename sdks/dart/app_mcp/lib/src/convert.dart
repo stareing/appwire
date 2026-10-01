@@ -89,14 +89,24 @@ ConnectionStatus statusFromNative(int status) => switch (status) {
       _ => ConnectionStatus.idle,
     };
 
-McpConnectionState stateFromNative(int status, int retryInMs, String? reason) {
+McpConnectionState stateFromNative(int status, int retryInMs, String? reason, {String? code}) {
   final s = statusFromNative(status);
   return McpConnectionState(
     s,
     retryIn: s == ConnectionStatus.backoff ? Duration(milliseconds: retryInMs) : null,
-    reason: s == ConnectionStatus.rejected || s == ConnectionStatus.hostMismatch ? (reason ?? '') : null,
+    reason: switch (s) {
+      ConnectionStatus.rejected || ConnectionStatus.hostMismatch => reason ?? '',
+      // C ABI v6 起 backoff 在连接失败等情况下也带原因。
+      ConnectionStatus.backoff => reason,
+      _ => null,
+    },
+    code: statusHasCode(s) ? code : null,
   );
 }
+
+/// 只有这些状态带错误码（spec/protocol.md 10.1）。
+bool statusHasCode(ConnectionStatus s) =>
+    s == ConnectionStatus.backoff || s == ConnectionStatus.rejected || s == ConnectionStatus.hostMismatch;
 
 /// 未知值按 [LogLevel.info] 处理。
 LogLevel logLevelFromNative(int level) => switch (level) {
