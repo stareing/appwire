@@ -240,6 +240,12 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - Y 开发者体验：Y1 一致性测试套件（第 14 项后首先做）；Y2 DevTools 面板与调用录制回放；Y3 Vue / Svelte 适配；Y4 Agent 侧类型化客户端用法与文档
    - Z 覆盖面：Z1 未改造 App 导入器（URI、D-Bus、`.desktop`、Jump List、`.sdef`）；Z2 OS 层 L2 / L3（Windows UIA 优先，macOS AX、Linux AT-SPI）；Z3 浏览器扩展（随 4d）
    - R 远程：R1 远程 / 跨设备 Agent，先出设计文档，默认关闭
+16. [ ] Agent OS：数据、权限、事件、事务与协同（2026-10-02 加入）——计划见 `docs/plans/16-agent-os.md`（四象限；按操作系统子系统对照找差距）
+   - 第一部分（正确性，随第 14 项第二部分）：N7a 写调用幂等键 `callId`（先验证断线 / 唤醒后是否重发）；O2 进度通知与取消透传到 App handler
+   - 第二部分（4c 之后）：N1 数据句柄（App 间传数据不经模型，TTL / 大小上限）；N2 信息流控制（私密标签 → 外发工具拦截并确认）
+   - 第三部分（4d 之后）：N5 按 Agent 的身份与授权范围（App、风险上限、有效期、可撤销）；N6 人机 / 多 Agent 并发仲裁（`busy()` / 对象锁、公平排队）
+   - 第四部分（与第 15 项穿插）：N3 事件与触发器；N4 标准意图（5 个动词试点）；O1 `apps.search` 工具检索；O3 只读结果缓存；O4 schema 演进；O5 冷启动预算与预热
+   - 第五部分（最后）：N7b 预演与跨 App 补偿；N8 App 界面嵌入 Agent（先核实 MCP Apps）；N9 跨设备接力（依赖第 15 项 R1）；N10 本地小模型辅助
 
 ## 进行中（子代理）
 
