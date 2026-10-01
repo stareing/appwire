@@ -222,6 +222,11 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
 11. [ ] Hub：Schema 校验缓存、导出名/会话 LRU·TTL、tracing 调用链与指标
 12. [ ] MCP 2026-07-28 无状态协议迁移方案（文档 + 兼容层设计）
    - 计划（2026-10-02）：见 `docs/plans/12-mcp-2026-07-28.md`
+13. [ ] 开箱即用：全新机器从安装到工具出现 ≤ 2 条命令、≤ 2 分钟（2026-10-02 加入）——计划见 `docs/plans/13-out-of-box.md`
+   - 第一部分（可与 4e 并行）：D1 发布流水线（各平台预编译 Host）；D2 `npx appwire` / `uvx appwire`；D3 `setup` / `uninstall`（自启 + 写入已装 Agent 的 MCP 配置 + doctor 自检，幂等、可回滚）；D4 默认免令牌、README 快速开始改 2 条命令
+   - 第二部分（4e 第二部分之后）：E1 各 SDK `start(appId)` 一行接入；E2 Gradle / SwiftPM / Cargo 清单生成；E3 首次打开登记（随 4d）
+   - 第三部分（4d 之后）：F1 手机端嵌入 Hub + 按名寻址，`setup --android` 自动 adb reverse；F2 错误码附修复命令（spec/protocol.md 第 10 节单一定义）
+   - 待确认：发布渠道账号与签名证书（npm、PyPI、Homebrew、winget、Windows 代码签名、macOS 公证）
 
 ## 进行中（子代理）
 
