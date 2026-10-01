@@ -35,6 +35,10 @@ set_target_properties(app_mcp PROPERTIES
 if(WIN32)
   set_target_properties(app_mcp PROPERTIES IMPORTED_IMPLIB "${_app_mcp_implib}")
 endif()
+# @why 头文件与示例含中文（UTF-8 无 BOM）；MSVC 默认按系统代码页（如 936）解码，注释吞掉换行、字面量编码错乱，
+#      因此源字符集与执行字符集都要指定 UTF-8，并随目标传给使用方。
+set_property(TARGET app_mcp APPEND PROPERTY INTERFACE_COMPILE_OPTIONS
+  "$<$<COMPILE_LANG_AND_ID:C,MSVC>:/utf-8>" "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/utf-8>")
 
 # C++ header-only 封装
 add_library(app_mcp_cpp INTERFACE)
@@ -87,6 +91,10 @@ if(BASH_PROGRAM)
   set_target_properties(lifecycle_c PROPERTIES C_STANDARD 11)
   target_link_libraries(lifecycle_c PRIVATE app_mcp)
   target_compile_options(lifecycle_c PRIVATE ${_warn})
+  if(MSVC)
+    # @why MSVC 的 <stdatomic.h> 需显式开启 C11 原子支持（否则 #error "C atomic support is not enabled"）。
+    target_compile_options(lifecycle_c PRIVATE /experimental:c11atomics)
+  endif()
   if(NOT WIN32)
     target_compile_definitions(lifecycle_c PRIVATE _POSIX_C_SOURCE=200809L)
   endif()

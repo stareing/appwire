@@ -15,6 +15,8 @@
 #include "app_mcp.hpp"
 
 static_assert(AM_API_VERSION >= 3, "生命周期 API 需要 API 版本 3");
+// @why 回归：MSVC 未加 /utf-8 时按系统代码页编译，中文字面量不是 UTF-8（CMakeLists.txt 经 app_mcp 目标传递 /utf-8）。
+static_assert(sizeof("中") == 4, "中文字面量须按 UTF-8 编码（MSVC 需 /utf-8）");
 
 namespace {
 

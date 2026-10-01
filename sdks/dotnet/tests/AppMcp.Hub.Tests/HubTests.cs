@@ -461,6 +461,14 @@ public class HubIntegrationTests
             var instance = hub.GetApps().EnumerateArray().First(a => a.GetProperty("appId").GetString() == "notes")
                 .GetProperty("instances")[0];
             Assert.Equal(Environment.ProcessId, instance.GetProperty("pid").GetInt32());
+
+            // IPC（Windows 命名管道 / Unix 套接字）上同样分配连接 ID：App 端与 Hub 运行状态一致
+            await WaitUntil(() => app.ConnectionId is not null, "App 未取得连接 ID");
+            var status = hub.Status();
+            Assert.Equal(endpoint, status.IpcEndpoint);
+            var inst = Assert.Single(Assert.Single(status.Apps, a => a.AppId == "notes").Instances);
+            Assert.Equal(app.ConnectionId, inst.ConnectionId);
+            Assert.Null(app.State.Code);
         }
         finally
         {

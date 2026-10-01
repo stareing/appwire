@@ -23,7 +23,7 @@ String? _existing(String? path) => path != null && File(path).existsSync() ? pat
 final String? nativePath = _existing(Platform.environment['APP_MCP_NATIVE_PATH']) ??
     _existing('$_targetDir/debug/${defaultNativeLibraryName()}');
 final String? fakeHostPath = _existing(Platform.environment['APP_MCP_FAKE_HOST']) ??
-    _existing('$_targetDir/debug/examples/fake_host');
+    _existing('$_targetDir/debug/examples/fake_host${Platform.isWindows ? '.exe' : ''}');
 
 /// 运行中的 fake host。
 final class FakeHost {

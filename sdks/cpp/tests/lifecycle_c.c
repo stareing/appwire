@@ -90,9 +90,10 @@ int main(int argc, char **argv) {
         return 2;
     }
     char cmd[4096];
+    /* @compat popen 在 Windows 上经 cmd.exe 执行，不认单引号；命令行里不放带引号的 JSON 参数（greet 不读参数）。 */
     snprintf(cmd, sizeof cmd,
              "\"%s\" --addr 127.0.0.1:0 --invoke reject_tool --await-sleep --wake "
-             "--invoke greet --args '{\"name\":\"World\"}' --await-sleep --timeout-ms 20000",
+             "--invoke greet --await-sleep --timeout-ms 20000",
              argv[1]);
     FILE *host = popen(cmd, "r");
     if (!host) {
