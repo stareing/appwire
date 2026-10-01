@@ -671,6 +671,31 @@ fn wake_during_sleep_handshake_rewakes_after_accept() {
     assert_eq!(h.link()["params"]["wakeReason"], "app");
 }
 
+/// 回归：已连接时收到唤醒令牌（Android WakeWorker 重排后迟到、前台广播）不应残留，
+/// 否则下一次空闲休眠被接受后会立即回连（2026-10-01 真机：DORMANT 后 11 ms 回连）。
+#[test]
+fn wake_token_while_connected_does_not_rewake_after_next_sleep() {
+    let mut h = Harness::new(LifecycleMode::Idle);
+    h.connect();
+    h.advance(IDLE / 2);
+    assert!(h.c.handle_wake("app-mcp-wake:stale", h.now), "是本 SDK 的唤醒参数");
+    assert!(h.drain().is_empty(), "已连接：不断开、不回连");
+    // 重新开始空闲计时：从收到唤醒起满 IDLE 才休眠
+    let woke_at = h.now;
+    let (sleep, at) = h.wait_sleep(3 * IDLE).unwrap();
+    assert_eq!(at, woke_at + IDLE);
+    let ev = h.accept_sleep(&sleep, "r1");
+    assert_eq!(ev, vec![Event::Disconnect, Event::StateChanged(ConnectionState::Dormant)]);
+    assert_eq!(h.c.poll_timeout(), None);
+
+    // 之后的正常唤醒不携带过期令牌
+    assert!(h.c.wake_with_reason(WakeReason::Visible, h.now));
+    h.drain();
+    let hello = h.link();
+    assert!(hello["params"].get("launchToken").is_none_or(Value::is_null), "{hello}");
+    assert_eq!(hello["params"]["wakeReason"], "visible");
+}
+
 #[test]
 fn handle_wake_before_start_connects_even_on_demand() {
     let mut cfg = config(LifecycleMode::OnDemand);

@@ -154,6 +154,12 @@ impl Client {
     }
 
     pub(crate) fn on_wake_token(&mut self, token: String, now: Millis) {
+        // @why 已连接且不在休眠握手中：Host 按实例 ID 认领本连接（唤醒等待随回连结束），令牌已无用途；
+        // 若保留，下次休眠被接受时会被当作"休眠中收到唤醒"而立即回连（spec/lifecycle.md 2 节）。
+        if self.state == ConnectionState::Connected && self.session.sleeping.is_none() {
+            self.restart_idle_timer(now);
+            return;
+        }
         self.launch_token = Some(token);
         if !self.life.ever_connected {
             self.life.launched_by_wake = true;

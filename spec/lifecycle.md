@@ -58,6 +58,15 @@ stateDiagram-v2
 - Host 没有订阅本实例的任何资源（有订阅说明模型在关注变化）；
 - 本实例未被 App 标记为 `hold()`（App 可临时阻止休眠，返回释放句柄）。
 
+**可见性与休眠 / 回连**（`idle` / `on-demand`）：
+- 可见性**不是**空闲条件：界面可见（前台）时同样会休眠，只是用 `idleTimeoutMs`（`on-demand` 为 `graceMs`）；隐藏 / 冻结时取它与
+  `hiddenIdleTimeoutMs` 的较小值。可见性变化重新开始计时。需要"前台一直在线"的 App 用 `persistent`、`hold()` 或调大 `idleTimeoutMs`。
+- 休眠后**仍然可见不会触发回连**：`dormant` 只在以下事件时回连——可见性从隐藏 / 冻结**变为**可见（封装层以 `visible` 原因
+  `wake`；Android 为进程回到前台 `ON_START`）、App 调用 `wake()` / `connectNow()`、OS 激活参数（`handleWake`，Host 路由调用时发出）、
+  休眠握手进行中收到上述任一唤醒或 `hold()`（休眠完成后立即回连）。
+- 已连接且不在休眠握手中时收到唤醒令牌（如前台广播、Android 被强制停止后 WorkManager 重新排入的旧唤醒任务）：只重新开始空闲计时，
+  令牌丢弃——Host 按实例 ID 认领现有连接，令牌不再有用途；不得因此在下一次休眠后立即回连。
+
 ## 4. 协议新增（合入 spec/protocol.md）
 
 ### 4.1 `app/sleep`（SDK → Host，请求）

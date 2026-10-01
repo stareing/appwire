@@ -720,7 +720,8 @@ impl Client {
     ///
     /// 不是本 SDK 的唤醒时返回 `false`，不改变任何状态。识别成功时令牌作为下次握手的 `launchToken`：
     /// `Dormant` → 回连（`Waking`）；`Backoff` → 立即重连；`Idle`（尚未 `start`）→ 记录，`start` 时连接
-    /// （`on-demand` 模式也会连接）；休眠握手进行中 → 休眠完成后立即回连。
+    /// （`on-demand` 模式也会连接）；休眠握手进行中 → 休眠完成后立即回连；已连接（不在休眠握手中）→ 只重新开始
+    /// 空闲计时，令牌丢弃（Host 按实例 ID 认领本连接，不影响之后的休眠）。
     pub fn handle_wake(&mut self, args: &str, now: Millis) -> bool {
         self.life.last_now = now;
         let Some(token) = parse_wake_token(args) else { return false };
