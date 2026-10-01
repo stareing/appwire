@@ -202,6 +202,80 @@ final class HubIntegrationTests: XCTestCase {
         hub.setWaker(nil)
     }
 
+    /// 第 14 / 19 项：限流 / 大小上限配置与统计、工具注解 / outputSchema、结构化调用结果。
+    func testLimitsAnnotationsAndStructuredResult() async throws {
+        // 非法：限流时 burst 须 ≥ 1
+        XCTAssertThrowsError(try Hub(config: HubConfig(
+            listen: "127.0.0.1:0", enableIpc: false, limits: LimitsConfig(toolRateBurst: 0)
+        ))) { error in
+            guard case HubError.InvalidConfig = error else { return XCTFail("\(error)") }
+        }
+        let hub = try Hub(config: HubConfig(
+            listen: "127.0.0.1:0", enableIpc: false,
+            limits: LimitsConfig(toolRatePerMinute: 1, toolRateBurst: 1, maxArgumentsBytes: 64),
+            outputValidation: .reject
+        ))
+        defer { hub.close() }
+        let app = try AppMcpClient(config: AppMcpConfig(
+            appId: "orders", appName: "订单", hostURL: "ws://\(hub.listenAddr ?? "")/app"
+        ))
+        let schema = #"{"type":"object","properties":{"orderId":{"type":"string"}}}"#
+        try app.tool(
+            "submit", description: "下单",
+            annotations: ToolAnnotations(idempotentHint: false), outputSchema: schema
+        ) { (_: NoArguments, _) in
+            ToolResult(
+                data: ["orderId": "o1"], status: .pending, stateResource: "order.state",
+                summary: "已提交，等待付款", annotations: ContentAnnotations(priority: 0.5)
+            )
+        }
+        try app.tool("echo", description: "回显") { (args: JSONValue, _) in args }
+        app.start()
+        defer { app.stop() }
+
+        let deadline = Date().addingTimeInterval(10)
+        var tools: [HubTool] = []
+        while tools.count < 2 || tools.contains(where: { $0.availability != .available }) {
+            if Date() > deadline { return XCTFail("等待工具注册超时") }
+            try await Task.sleep(nanoseconds: 20_000_000)
+            tools = hub.tools(ToolFilter(apps: ["orders"], includeBuiltin: false))
+        }
+        let submit = try XCTUnwrap(tools.first { $0.tool == "submit" })
+        XCTAssertEqual(submit.annotations.idempotentHint, false)
+        XCTAssertEqual(submit.annotations.readOnlyHint, false, "缺少的字段按 risk（write）推导")
+        let declared = try JSONSerialization.jsonObject(with: Data(try XCTUnwrap(submit.outputSchemaJson).utf8)) as? NSDictionary
+        XCTAssertEqual(declared, try JSONSerialization.jsonObject(with: Data(schema.utf8)) as? NSDictionary)
+        XCTAssertNil(tools.first { $0.tool == "echo" }?.outputSchemaJson)
+
+        let out = try await hub.callTool("orders.submit")
+        XCTAssertNil(out.error)
+        XCTAssertEqual(out.status, .pending)
+        XCTAssertEqual(out.stateResource, "app-mcp://orders/order.state")
+        XCTAssertEqual(out.summary, "已提交，等待付款")
+        XCTAssertEqual(out.annotations?.priority, 0.5)
+        let limited = try await hub.callTool("orders.submit")
+        XCTAssertEqual(limited.error?.kind, "RATE_LIMITED")
+        let big = try await hub.callTool("orders.echo", argumentsJSON: #"{"text":"\#(String(repeating: "x", count: 100))"}"#)
+        XCTAssertEqual(big.error?.kind, "PAYLOAD_TOO_LARGE")
+        let plain = try await hub.callTool("orders.echo", argumentsJSON: #"{"a":1}"#)
+        XCTAssertNil(plain.error)
+        XCTAssertEqual(plain.status, .done)
+
+        let st = try hub.status()
+        XCTAssertEqual(st.limits?.toolRatePerMinute, 1)
+        XCTAssertEqual(st.limits?.maxArgumentsBytes, 64)
+        XCTAssertEqual(st.limits?.appRatePerMinute, 600)
+        XCTAssertEqual(st.outputValidation, .reject)
+        let orders = try XCTUnwrap(st.apps.first { $0.appId == "orders" })
+        XCTAssertEqual(orders.rateLimited, 1)
+        XCTAssertEqual(orders.tooLarge, 1)
+        let decl = try XCTUnwrap(orders.tools.first { $0.name == "submit" })
+        XCTAssertEqual(decl.risk, .write)
+        XCTAssertEqual(decl.annotations?.idempotentHint, false)
+        XCTAssertEqual(decl.effective.readOnlyHint, false)
+        XCTAssertTrue(decl.outputSchema)
+    }
+
     func testProgressiveExposureConfig() throws {
         let hub = try Hub(config: HubConfig(
             enableListen: false, enableIpc: false, waker: .exec(argv: ["true"]), toolExposure: .progressive, toolExposureThreshold: 5

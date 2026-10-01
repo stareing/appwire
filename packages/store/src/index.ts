@@ -14,9 +14,11 @@ import {
   ToolCallError,
   type Activation,
   type InputDefinition,
+  type OutputDefinition,
   type Registrar,
   type ResourceHandle,
   type Risk,
+  type ToolAnnotations,
   type ToolDefinition,
   type ToolHandle,
 } from '@app-mcp/web'
@@ -63,7 +65,12 @@ export interface ActionOptions<S> {
   title?: string
   /** JSON Schema、zod v4 schema 或带 `toJSONSchema()` 的对象；缺省为无参数。 */
   input?: InputDefinition<any>
+  /** 旧写法；新代码优先用 `annotations`。 */
   risk?: Risk
+  /** 标准 MCP 工具注解，原样交给 SDK。 */
+  annotations?: ToolAnnotations
+  /** 结果的 schema（MCP `outputSchema`），描述 `result` 选择器（或 action 返回值）的形状。 */
+  outputSchema?: OutputDefinition<any>
   activation?: Activation
   /** Zustand / Pinia：state（store）上的函数名；Redux：未给 `creator` 时作为 action type。缺省为工具名最后一段。 */
   action?: string
@@ -243,6 +250,8 @@ export function exposeStore<S>(registrar: Registrar, adapter: StoreAdapter<S>, o
       if (config.title !== undefined) definition.title = config.title
       if (config.input !== undefined) definition.input = config.input
       if (config.risk !== undefined) definition.risk = config.risk
+      if (config.annotations !== undefined) definition.annotations = config.annotations
+      if (config.outputSchema !== undefined) definition.outputSchema = config.outputSchema
       if (config.activation !== undefined) definition.activation = config.activation
       if (enabledFn) definition.enabled = initiallyEnabled
 

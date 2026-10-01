@@ -171,18 +171,41 @@ Map<String, dynamic> decodeArguments(String json) {
 /// 编码 inputSchema；为 null 时返回 null（无参数）。
 String? encodeSchema(Map<String, Object?>? schema) => schema == null ? null : jsonEncode(schema);
 
+int resultStatusToNative(ToolResultStatus s) => switch (s) {
+      ToolResultStatus.done => AmResultStatus.done,
+      ToolResultStatus.pending => AmResultStatus.pending,
+      ToolResultStatus.partial => AmResultStatus.partial,
+      ToolResultStatus.noop => AmResultStatus.noop,
+    };
+
+/// 编码工具注解；为 null 时返回 null（不声明）。
+String? encodeToolAnnotations(ToolAnnotations? a) => a == null ? null : jsonEncode(a.toJson());
+
 /// handler 返回值规范化后的结果。
 final class EncodedResult {
-  const EncodedResult(this.dataJson, this.stateHints);
+  const EncodedResult(this.dataJson, this.stateHints,
+      {this.status = ToolResultStatus.done, this.stateResource, this.summary, this.annotationsJson});
   final String dataJson;
   final List<String> stateHints;
+  final ToolResultStatus status;
+  final String? stateResource;
+  final String? summary;
+  final String? annotationsJson;
+
+  /// 是否带 [ToolResult] 的扩展字段（需经 `am_call_complete_ex` 完成）。
+  bool get isStructured =>
+      status != ToolResultStatus.done || stateResource != null || summary != null || annotationsJson != null;
 }
 
 /// 把 handler 返回值编码为 JSON。无法编码时抛出 [ToolCallError]（HANDLER_ERROR）。
 EncodedResult encodeResult(Object? value) {
-  final data = value is ToolResult ? value.data : value;
-  final hints = value is ToolResult ? value.stateHints : const <String>[];
-  return EncodedResult(encodeJsonValue(data, '返回值'), hints);
+  if (value is! ToolResult) return EncodedResult(encodeJsonValue(value, '返回值'), const <String>[]);
+  final annotations = value.annotations;
+  return EncodedResult(encodeJsonValue(value.data, '返回值'), value.stateHints,
+      status: value.status,
+      stateResource: value.stateResource,
+      summary: value.summary,
+      annotationsJson: annotations == null ? null : encodeJsonValue(annotations.toJson(), '内容注解'));
 }
 
 /// 编码任意值为 JSON 文本；失败时抛出 [ToolCallError]。

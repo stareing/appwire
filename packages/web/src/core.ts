@@ -5,7 +5,8 @@
  * 方法与 `app_mcp_core::Client` 一一对应，时间参数为 `performance.now()` 毫秒，句柄为数字。
  */
 
-import type { Activation, AppOverview, ErrorKind, JsonSchema, Risk, Visibility } from './types'
+import type { NormalizedResult } from './result'
+import type { Activation, AppOverview, ErrorKind, JsonSchema, OutputSchema, Risk, ToolAnnotations, Visibility } from './types'
 
 export interface CoreConfig {
   appId: string
@@ -62,11 +63,13 @@ export interface CoreToolDef {
   risk?: Risk
   activation?: Activation
   title?: string
+  annotations?: ToolAnnotations
+  outputSchema?: OutputSchema
   enabled?: boolean
   scope?: number
 }
 
-/** 部分更新；缺省字段不变，`activation` / `title` 为 null 表示清除。 */
+/** 部分更新；缺省字段不变，`activation` / `title` / `annotations` / `outputSchema` 为 null 表示清除。 */
 export interface CoreToolUpdate {
   description?: string
   inputSchema?: JsonSchema
@@ -74,6 +77,8 @@ export interface CoreToolUpdate {
   activation?: Activation | null
   title?: string | null
   enabled?: boolean
+  annotations?: ToolAnnotations | null
+  outputSchema?: OutputSchema | null
 }
 
 export interface CoreResourceDef {
@@ -90,8 +95,8 @@ export interface CoreToolError {
   details?: Record<string, unknown>
 }
 
-/** handler / 资源读取结果。 */
-export type CoreOutcome = { data: unknown; stateHints?: string[] } | { error: CoreToolError }
+/** handler / 资源读取结果（成功结果的可选字段见 bindings/wasm/src/convert.rs `JsCallOutcome`）。 */
+export type CoreOutcome = NormalizedResult | { error: CoreToolError }
 
 /** 核心连接状态（`retryAt` 为核心时钟，即 `performance.now()` 毫秒）。 */
 export type CoreState =

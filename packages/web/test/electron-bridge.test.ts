@@ -125,6 +125,47 @@ describe('createBridgeAppMcp', () => {
     return { ...fake, app, logger }
   }
 
+  it('注解与输出 schema 随定义发送；结构化结果的字段原样回传', async () => {
+    const { app, emit, results, ops } = page()
+    const t = app.tool('order.submit', {
+      description: '提交订单',
+      annotations: { destructiveHint: false, openWorldHint: true },
+      outputSchema: z.object({ orderId: z.string() }),
+      handler: () => ({
+        data: { orderId: 'o1' },
+        status: 'pending',
+        stateResource: 'order.state',
+        summary: '等待付款',
+        annotations: { audience: ['user'], priority: 1 },
+      }),
+    })
+    await settle()
+    expect(ops.find((o) => o.op === 'tool.register')).toMatchObject({
+      spec: {
+        annotations: { destructiveHint: false, openWorldHint: true },
+        outputSchema: { type: 'object', properties: { orderId: { type: 'string' } } },
+      },
+    })
+    emit({ type: 'call', callId: 'c1', toolId: 1, input: {} })
+    await settle()
+    expect(results()).toEqual([
+      {
+        op: 'call.result',
+        callId: 'c1',
+        ok: true,
+        data: { orderId: 'o1' },
+        status: 'pending',
+        stateResource: 'order.state',
+        summary: '等待付款',
+        annotations: { audience: ['user'], priority: 1 },
+      },
+    ])
+    // 更新时清除：整体发送的定义里不再带这两项
+    t.update({ annotations: undefined, outputSchema: undefined })
+    await settle()
+    expect(ops.find((o) => o.op === 'tool.update')).toEqual({ op: 'tool.update', id: 1, spec: { description: '提交订单' } })
+  })
+
   it('惰性 handler：首次调用加载并缓存，失败返回 HANDLER_ERROR 并可重试', async () => {
     const { app, emit, results, ops } = page()
     let attempt = 0

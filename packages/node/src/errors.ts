@@ -16,6 +16,8 @@ const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
   'RESOURCE_NOT_FOUND',
   'UNAUTHORIZED',
   'UNSUPPORTED_PROTOCOL',
+  'RATE_LIMITED',
+  'PAYLOAD_TOO_LARGE',
 ])
 
 export function isErrorKind(value: unknown): value is ErrorKind {

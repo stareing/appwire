@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use app_mcp_hub::{LeaseOverrides, LeasePolicy, ToolExposure, UpstreamConfig, WakerConfig};
+use app_mcp_hub::{
+    LeaseOverrides, LeasePolicy, LimitOverrides, LimitPolicy, OutputValidation, ToolExposure, UpstreamConfig, WakerConfig,
+};
 use serde::{Deserialize, Serialize};
 
 /// 默认的 HTTP 监听地址：同一端口承载 `/app`（App 连接）、`/mcp`、`/healthz`。
@@ -146,6 +148,9 @@ pub struct ToolsSection {
     /// `auto` 的阈值（App 与上游工具总数超过它时渐进暴露），默认 40。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threshold: Option<usize>,
+    /// App 结果与其 `outputSchema` 不符时：`"log"`（默认）/ `"reject"` / `"off"`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_validation: Option<OutputValidation>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +198,10 @@ pub struct FileConfig {
     pub lifecycle: LifecycleSection,
     #[serde(skip_serializing_if = "is_default")]
     pub tools: ToolsSection,
+    /// 资源保护（spec/hub-api.md 3.11）：`{"toolRatePerMinute","toolRateBurst","appRatePerMinute","appRateBurst",
+    /// "maxArgumentsBytes","maxResultBytes","maxResourceBytes"}`，缺省字段取默认值。
+    #[serde(skip_serializing_if = "is_default")]
+    pub limits: LimitOverrides,
     #[serde(skip_serializing_if = "is_default")]
     pub log: LogSection,
 }
@@ -251,6 +260,9 @@ pub struct Overrides {
     pub waker: Option<WakerConfig>,
     pub tool_exposure: Option<ToolExposure>,
     pub tool_exposure_threshold: Option<usize>,
+    /// 资源保护的命令行覆盖项（字段级合并到配置文件的 `limits`）。
+    pub limits: LimitOverrides,
+    pub output_validation: Option<OutputValidation>,
     pub log_level: Option<String>,
     pub log_file: Option<bool>,
 }
@@ -286,6 +298,8 @@ impl FileConfig {
         set(&mut self.lifecycle.waker, &o.waker);
         set(&mut self.tools.exposure, &o.tool_exposure);
         set(&mut self.tools.threshold, &o.tool_exposure_threshold);
+        set(&mut self.tools.output_validation, &o.output_validation);
+        self.limits.merge(&o.limits);
         set(&mut self.log.level, &o.log_level);
         set(&mut self.log.file, &o.log_file);
         for m in &o.manifests {
@@ -344,6 +358,8 @@ pub struct Settings {
     pub waker: WakerConfig,
     pub tool_exposure: ToolExposure,
     pub tool_exposure_threshold: usize,
+    pub limits: LimitPolicy,
+    pub output_validation: OutputValidation,
     pub log_level: String,
     pub log_file: bool,
     pub log_max_bytes: u64,
@@ -398,6 +414,9 @@ impl Settings {
             o.apply(&mut lease);
         }
         lease.validate().map_err(|e| anyhow::anyhow!("lifecycle.lease 无效：{e}"))?;
+        let mut limits = LimitPolicy::default();
+        c.limits.apply(&mut limits);
+        limits.validate().map_err(|e| anyhow::anyhow!("配置无效：{e}"))?;
         let listen_explicit = listen.is_some();
         let listen = listen.unwrap_or_else(|| DEFAULT_LISTEN_ADDR.to_owned());
         let compat_http_addr = c.http.addr.filter(|a| *a != listen);
@@ -431,6 +450,8 @@ impl Settings {
                 .tools
                 .threshold
                 .unwrap_or(app_mcp_hub::DEFAULT_TOOL_EXPOSURE_THRESHOLD),
+            limits,
+            output_validation: c.tools.output_validation.unwrap_or_default(),
             log_level: c.log.level.unwrap_or_else(|| "info".to_owned()),
             log_file: c.log.file.unwrap_or(true),
             log_max_bytes: c.log.max_bytes.unwrap_or(5 * 1024 * 1024),
@@ -634,6 +655,42 @@ mod tests {
         let e = Settings::resolve(&bad, &Overrides::default(), &home()).unwrap_err().to_string();
         assert!(e.contains("lifecycle.lease"), "{e}");
         assert!(serde_json::from_str::<FileConfig>(r#"{"lifecycle":{"lease":{"bogus":1}}}"#).is_err());
+    }
+
+    #[test]
+    fn limit_settings_from_file_and_cli() {
+        let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home()).unwrap();
+        assert_eq!((s.limits.clone(), s.output_validation), (LimitPolicy::default(), OutputValidation::Log));
+        let file: FileConfig = serde_json::from_str(
+            r#"{"limits":{"toolRatePerMinute":10,"toolRateBurst":2,"maxResultBytes":0},"tools":{"outputValidation":"reject"}}"#,
+        )
+        .unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home()).unwrap();
+        assert_eq!((s.limits.tool_rate.per_minute, s.limits.tool_rate.burst, s.limits.max_result_bytes), (10, 2, 0));
+        assert_eq!(s.output_validation, OutputValidation::Reject);
+        // 命令行按字段覆盖，写回配置时合并
+        let o = Overrides {
+            limits: LimitOverrides { tool_rate_burst: Some(5), app_rate_per_minute: Some(0), ..Default::default() },
+            output_validation: Some(OutputValidation::Off),
+            ..Default::default()
+        };
+        let s = Settings::resolve(&file, &o, &home()).unwrap();
+        assert_eq!((s.limits.tool_rate.per_minute, s.limits.tool_rate.burst), (10, 5));
+        assert!(s.limits.app_rate.is_unlimited());
+        assert_eq!(s.output_validation, OutputValidation::Off);
+        let mut f = file.clone();
+        f.apply(&o).unwrap();
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(
+            v["limits"],
+            serde_json::json!({"toolRatePerMinute": 10, "toolRateBurst": 5, "appRatePerMinute": 0, "maxResultBytes": 0})
+        );
+        assert_eq!(v["tools"]["outputValidation"], "off");
+        // 不合法：明确报错
+        let bad: FileConfig = serde_json::from_str(r#"{"limits":{"appRateBurst":0}}"#).unwrap();
+        let e = Settings::resolve(&bad, &Overrides::default(), &home()).unwrap_err().to_string();
+        assert!(e.contains("appRateBurst"), "{e}");
+        assert!(serde_json::from_str::<FileConfig>(r#"{"limits":{"bogus":1}}"#).is_err());
     }
 
     #[test]

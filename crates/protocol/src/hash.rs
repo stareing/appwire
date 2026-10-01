@@ -97,6 +97,8 @@ mod tests {
                     risk: Risk::Write,
                     activation: None,
                     title: None,
+                    annotations: None,
+                    output_schema: None,
                 },
                 ToolInfo {
                     name: "cart.checkout".into(),
@@ -105,6 +107,8 @@ mod tests {
                     risk: Risk::Payment,
                     activation: Some(Activation::Foreground),
                     title: Some("Checkout".into()),
+                    annotations: None,
+                    output_schema: None,
                 },
             ],
         }
@@ -112,7 +116,7 @@ mod tests {
 
     fn vector_resources() -> ResourcesSyncParams {
         ResourcesSyncParams {
-            resources: vec![ResourceInfo { name: "cart.state".into(), description: "购物车".into(), mime_type: None, realtime: false }],
+            resources: vec![ResourceInfo { name: "cart.state".into(), description: "购物车".into(), mime_type: None, realtime: false, annotations: None }],
         }
     }
 

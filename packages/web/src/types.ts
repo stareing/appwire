@@ -30,9 +30,58 @@ export type ErrorKind =
   | 'RESOURCE_NOT_FOUND'
   | 'UNAUTHORIZED'
   | 'UNSUPPORTED_PROTOCOL'
+  /** Host 侧限流，调用未转发（Host 产生，App 一般不抛）。 */
+  | 'RATE_LIMITED'
+  /** 调用参数 / 结果 / 资源内容超过 Host 的大小上限（Host 产生，App 一般不抛）。 */
+  | 'PAYLOAD_TOO_LARGE'
 
 /** JSON Schema 对象（只要求顶层 type 为 object）。 */
 export type JsonSchema = { type: 'object'; [key: string]: unknown }
+
+/**
+ * 标准 MCP 工具注解（spec/protocol.md 第 3 节），原样转发给 Agent，由 Agent 决定是否确认 / 放行。
+ * 与旧写法 `risk` 同时给出时，声明的字段逐个优先，缺少的按 `risk` 推导。
+ */
+export interface ToolAnnotations {
+  /** 给人看的工具标题。 */
+  title?: string
+  /** 不修改任何状态。 */
+  readOnlyHint?: boolean
+  /** 可能做出破坏性 / 不可撤销的修改（只在非只读时有意义）。 */
+  destructiveHint?: boolean
+  /** 以相同参数重复调用没有额外效果（只在非只读时有意义）。 */
+  idempotentHint?: boolean
+  /** 会与外部世界交互（网络、第三方、其他用户可见）。 */
+  openWorldHint?: boolean
+}
+
+/** 内容的接收方（MCP `Role`）。 */
+export type Audience = 'user' | 'assistant'
+
+/** 标准 MCP 内容注解：对结果内容的标注，Hub 原样转发。 */
+export interface ContentAnnotations {
+  /** 内容面向谁。 */
+  audience?: Audience[]
+  /** 重要程度，0（可选）到 1（必需）。 */
+  priority?: number
+  /** 最后修改时刻（ISO 8601）。 */
+  lastModified?: string
+}
+
+/**
+ * 调用结果的业务状态（spec/protocol.md 3.2）：`done`（缺省）已完成；`pending` 已受理、待用户在 App 内确认或异步完成
+ * （后续状态见 `stateResource`）；`partial` 只完成了一部分（说明见 `summary`）；`noop` 没有做任何改动。
+ */
+export type ResultStatus = 'done' | 'pending' | 'partial' | 'noop'
+
+/** 任意 JSON Schema 对象（输出 schema 的根类型不限于 object；非 object 时 Hub 包装为 `{ result: <schema> }`）。 */
+export type OutputSchema = { [key: string]: unknown }
+
+/**
+ * 工具结果的 schema（MCP `outputSchema`），形式同 {@link InputDefinition}：JSON Schema 对象、
+ * zod v4 schema（按输出形态转换，不做校验）或带 `toJSONSchema()` 方法的对象。
+ */
+export type OutputDefinition<O> = OutputSchema | { toJSONSchema(): OutputSchema } | ZodLike<O>
 
 /**
  * 工具输入定义。支持三种形式：
@@ -218,8 +267,32 @@ export interface ToolContext {
   hold?(): HoldHandle
 }
 
-/** handler 可以直接返回数据，也可以返回带 stateHints 的结果。 */
-export type ToolResult<O> = O | { data: O; stateHints?: string[] }
+/**
+ * 结构化调用结果。handler 返回的对象**含 `data` 键**、其余键都属于本接口且取值合法时按此解释，
+ * 否则整个返回值作为 `data`（避免把普通返回值误判为信封）。
+ */
+export interface ToolResultEnvelope<O> {
+  /** 返回值；`undefined` / `null` 表示无返回值（Hub 对模型输出"已完成"）。 */
+  data: O
+  /** 调用后内容可能已变化的资源名，提示模型重新读取。 */
+  stateHints?: string[]
+  /** 业务状态，缺省 `done`。 */
+  status?: ResultStatus
+  /** `pending` 时可读取后续状态的资源名（局部名）。 */
+  stateResource?: string
+  /** 一句面向模型 / 用户的结论（`partial` 时说明完成了哪部分）。 */
+  summary?: string
+  /** 结果内容的标注。 */
+  annotations?: ContentAnnotations
+}
+
+/**
+ * handler 可以直接返回数据，也可以返回结构化结果（{@link ToolResultEnvelope}）。
+ *
+ * @compat 保留旧成员 `{ data: O; stateHints?: string[] }`：否则形如 `{ data, status: 'success' }` 的普通返回值
+ * 在类型上会被当作信封检查而报错（运行时它整体作为 `data`，见 {@link ToolResultEnvelope}）。
+ */
+export type ToolResult<O> = O | { data: O; stateHints?: string[] } | ToolResultEnvelope<O>
 
 /** 工具 handler。 */
 export type ToolHandler<I = unknown, O = unknown> = (
@@ -241,8 +314,12 @@ export interface ToolDefinition<I = unknown, O = unknown> {
   title?: string
   /** 缺省为无参数（`{ type: 'object', properties: {} }`）。 */
   input?: InputDefinition<I>
-  /** 缺省 'write'。 */
+  /** 旧写法：缺省 'write'。新代码优先用 `annotations`；两者同时给出时 `annotations` 声明的字段优先。 */
   risk?: Risk
+  /** 标准 MCP 工具注解（只读、破坏性、幂等、开放世界）。 */
+  annotations?: ToolAnnotations
+  /** 结果的 schema（MCP `outputSchema`）；缺省不声明。 */
+  outputSchema?: OutputDefinition<O>
   activation?: Activation
   /** 缺省 true。为 false 时工具不对 Host 可见。 */
   enabled?: boolean
@@ -273,7 +350,10 @@ export type AnyToolDefinition<I = unknown, O = unknown> = ToolDefinition<I, O> |
 
 export interface ToolHandle {
   readonly name: string
-  /** 更新描述、schema、风险或启用状态；未提供的字段保持不变。 */
+  /**
+   * 更新描述、schema、风险、注解或启用状态；未提供的字段保持不变，显式给出 `undefined` 的字段恢复默认
+   * （`annotations` / `outputSchema` 为清除声明）。
+   */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void
   /** 替换 handler（不产生协议消息，供框架适配在每次渲染时刷新闭包）。 */
   setHandler(handler: ToolDefinition<any, any>['handler']): void

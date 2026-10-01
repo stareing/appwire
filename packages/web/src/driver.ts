@@ -20,7 +20,8 @@ import type {
   CoreToolDef,
   CoreToolUpdate,
 } from './core'
-import { describeParseError, isZodLike, toJsonSchema } from './schema'
+import { normalizeToolResult, toJsonValue } from './result'
+import { describeParseError, isZodLike, toJsonSchema, toOutputSchema } from './schema'
 import { type BroadcastChannelFactory, InstanceGuard } from './instance-guard'
 import { checkHandlerOrLoad, loadHandler } from './lazy'
 import { channelDisconnectIssue, socketDisconnectIssue } from './disconnect'
@@ -42,6 +43,8 @@ import type {
   JsonSchema,
   LazyToolDefinition,
   Logger,
+  OutputDefinition,
+  OutputSchema,
   ResourceDefinition,
   ResourceHandle,
   Scope,
@@ -126,13 +129,6 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/** 转换为可 JSON 序列化的值（语义同 JSON.stringify：Date → 字符串，undefined → null）。 */
-function toJsonValue(value: unknown): unknown {
-  if (value === undefined) return null
-  const text = JSON.stringify(value)
-  return text === undefined ? null : JSON.parse(text)
-}
-
 function isToolCallErrorLike(e: unknown): e is ToolCallError {
   return (
     e instanceof ToolCallError ||
@@ -157,21 +153,10 @@ function outcomeFromError(e: unknown): CoreOutcome {
   return errorOutcome('HANDLER_ERROR', errorMessage(e) || 'handler 出错')
 }
 
-/** handler 返回值 → 结果。`{ data, stateHints? }` 形式会被拆开。 */
+/** handler 返回值 → 结果，结构化结果（`{ data, stateHints?, status?, … }`）会被拆开（见 result.ts）。 */
 function outcomeFromResult(result: unknown): CoreOutcome {
-  let data: unknown = result
-  let stateHints: string[] | undefined
-  if (typeof result === 'object' && result !== null && !Array.isArray(result) && 'data' in result) {
-    const keys = Object.keys(result)
-    const hints = (result as { stateHints?: unknown }).stateHints
-    if (keys.every((k) => k === 'data' || k === 'stateHints') && (hints === undefined || Array.isArray(hints))) {
-      data = (result as { data: unknown }).data
-      stateHints = hints?.map(String)
-    }
-  }
   try {
-    const json = toJsonValue(data)
-    return stateHints && stateHints.length > 0 ? { data: json, stateHints } : { data: json }
+    return normalizeToolResult(result)
   } catch (e) {
     return errorOutcome('HANDLER_ERROR', `handler 返回值无法序列化为 JSON：${errorMessage(e)}`)
   }
@@ -1235,12 +1220,14 @@ export class AppMcpDriver implements AppMcp {
     ;(scope ? scope.tools : this.rootTools).add(rec)
     this.emitHub({ type: 'register', tool: this.toolView(rec) })
 
-    const schema = this.convertSchema(name, def.input)
-    const register = (core: CoreClient, inputSchema: JsonSchema): void => {
+    const schemas = this.convertSchemas(name, def.input, def.outputSchema)
+    const register = (core: CoreClient, { inputSchema, outputSchema }: ToolSchemas): void => {
       if (rec.disposed) return
       const coreDef: CoreToolDef = { name, description: def.description, inputSchema }
       if (def.title !== undefined) coreDef.title = def.title
       if (def.risk !== undefined) coreDef.risk = def.risk
+      if (def.annotations !== undefined) coreDef.annotations = def.annotations
+      if (outputSchema !== undefined) coreDef.outputSchema = outputSchema
       if (def.activation !== undefined) coreDef.activation = def.activation
       if (def.enabled !== undefined) coreDef.enabled = def.enabled
       if (scope) {
@@ -1254,7 +1241,7 @@ export class AppMcpDriver implements AppMcp {
       }
       this.toolsByCoreId.set(rec.coreId, rec)
     }
-    this.enqueue((core) => (isPromise(schema) ? schema.then((s) => register(core, s)) : register(core, schema)))
+    this.enqueue((core) => (isPromise(schemas) ? schemas.then((s) => register(core, s)) : register(core, schemas)))
     return handle
   }
 
@@ -1264,6 +1251,26 @@ export class AppMcpDriver implements AppMcp {
     } catch (e) {
       return Promise.reject(new Error(`工具 ${name} 的输入 schema 无效：${errorMessage(e)}`))
     }
+  }
+
+  private convertOutputSchema(name: string, output: OutputDefinition<unknown>): OutputSchema | Promise<OutputSchema> {
+    try {
+      return toOutputSchema(output)
+    } catch (e) {
+      return Promise.reject(new Error(`工具 ${name} 的输出 schema 无效：${errorMessage(e)}`))
+    }
+  }
+
+  /** 输入与输出 schema；都能同步转换时同步返回（注册顺序不受影响），否则返回 Promise。 */
+  private convertSchemas(
+    name: string,
+    input: unknown,
+    output: OutputDefinition<unknown> | undefined,
+  ): ToolSchemas | Promise<ToolSchemas> {
+    const inputSchema = this.convertSchema(name, input)
+    const outputSchema = output === undefined ? undefined : this.convertOutputSchema(name, output)
+    if (!isPromise(inputSchema) && !isPromise(outputSchema)) return { inputSchema, outputSchema }
+    return Promise.all([inputSchema, outputSchema]).then(([i, o]) => ({ inputSchema: i, outputSchema: o }))
   }
 
   private toolHandle(rec: ToolRec): ToolHandle {
@@ -1293,18 +1300,27 @@ export class AppMcpDriver implements AppMcp {
         if ('enabled' in changes) update.enabled = changes.enabled ?? true
         if ('title' in changes) update.title = changes.title ?? null
         if ('activation' in changes) update.activation = changes.activation ?? null
+        if ('annotations' in changes) update.annotations = changes.annotations ?? null
+        if ('outputSchema' in changes && changes.outputSchema === undefined) update.outputSchema = null
         const schema = 'input' in changes ? this.convertSchema(rec.name, changes.input) : undefined
-        if (schema === undefined && Object.keys(update).length === 0) return
-        const apply = (core: CoreClient, inputSchema: JsonSchema | undefined): void => {
+        const output =
+          changes.outputSchema !== undefined ? this.convertOutputSchema(rec.name, changes.outputSchema) : undefined
+        if (schema === undefined && output === undefined && Object.keys(update).length === 0) return
+        const apply = (core: CoreClient, inputSchema: JsonSchema | undefined, outputSchema: OutputSchema | undefined): void => {
           if (rec.disposed || rec.coreId === undefined) return
           if (inputSchema !== undefined) update.inputSchema = inputSchema
+          if (outputSchema !== undefined) update.outputSchema = outputSchema
           try {
             core.updateTool(rec.coreId, update)
           } catch (e) {
             throw new Error(`更新工具 ${rec.name} 失败：${errorMessage(e)}`)
           }
         }
-        this.enqueue((core) => (isPromise(schema) ? schema.then((s) => apply(core, s)) : apply(core, schema)))
+        this.enqueue((core) =>
+          isPromise(schema) || isPromise(output)
+            ? Promise.all([schema, output]).then(([i, o]) => apply(core, i, o))
+            : apply(core, schema, output),
+        )
       },
       setHandler: (handler) => {
         rec.handler = handler
@@ -1445,6 +1461,12 @@ export class AppMcpDriver implements AppMcp {
 }
 
 type AnyDef = ToolDefinition<any, any> | LazyToolDefinition<any, any>
+
+/** 转换后的工具 schema。 */
+interface ToolSchemas {
+  inputSchema: JsonSchema
+  outputSchema: OutputSchema | undefined
+}
 
 function isPromise<T>(v: T | Promise<T> | undefined): v is Promise<T> {
   return typeof v === 'object' && v !== null && typeof (v as Promise<T>).then === 'function'

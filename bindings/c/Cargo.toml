@@ -17,4 +17,5 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 app-mcp-native.workspace = true
+serde.workspace = true
 serde_json.workspace = true

@@ -20,9 +20,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use app_mcp_native::{
-    Activation, AppOverview, ClientKind, ClientListener, ErrorKind, HeartbeatMode, LifecycleMode, LifecyclePolicy,
-    NativeClient, NativeConfig, Residency, ResourceOptions, ResourceSpec, Risk, SleepReason, ToolSpec, Visibility,
-    WakeDescriptor, WakeKind, WakeReason,
+    Activation, AppOverview, CallResult, ClientKind, ClientListener, ContentAnnotations, ErrorKind, HeartbeatMode,
+    LifecycleMode, LifecyclePolicy, NativeClient, NativeConfig, Residency, ResourceOptions, ResourceSpec, ResultStatus,
+    Risk, SleepReason, ToolAnnotations, ToolOptions, ToolSpec, Visibility, WakeDescriptor, WakeKind, WakeReason,
 };
 
 pub use callbacks::{
@@ -121,6 +121,30 @@ pub struct AmToolSpec {
     pub enabled: bool,
 }
 
+/// v9：`am_tool_register_ex` / `am_tool_update_ex` 的工具选项（带 `struct_size`，按调用方给出的大小读取）。
+#[repr(C)]
+pub struct AmToolOptions {
+    pub struct_size: u32,
+    /// 标准 MCP 工具注解（JSON 对象文本）；NULL = 未声明。
+    pub annotations_json: *const c_char,
+    /// 结果的 JSON Schema 文本（MCP `outputSchema`）；NULL = 未声明。
+    pub output_schema_json: *const c_char,
+}
+
+/// v9：`am_call_complete_ex` 的调用结果（带 `struct_size`，按调用方给出的大小读取；`status` 用 c_int 接收）。
+#[repr(C)]
+pub struct AmCallResult {
+    pub struct_size: u32,
+    pub data_json: *const c_char,
+    pub state_hints: *const *const c_char,
+    pub state_hints_len: usize,
+    pub status: c_int,
+    pub state_resource: *const c_char,
+    pub summary: *const c_char,
+    /// 内容注解（MCP `Annotations`，JSON 对象文本）；NULL = 无。
+    pub annotations_json: *const c_char,
+}
+
 #[repr(C)]
 pub struct AmResourceSpec {
     pub name: *const c_char,
@@ -150,6 +174,16 @@ fn risk_from(v: c_int) -> FfiResult<Risk> {
         3 => Ok(Risk::Payment),
         4 => Ok(Risk::OsSensitive),
         _ => Err(FfiError::invalid_argument(format!("非法的 risk：{v}"))),
+    }
+}
+
+fn result_status_from(v: c_int) -> FfiResult<ResultStatus> {
+    match v {
+        0 => Ok(ResultStatus::Done),
+        1 => Ok(ResultStatus::Pending),
+        2 => Ok(ResultStatus::Partial),
+        3 => Ok(ResultStatus::Noop),
+        _ => Err(FfiError::invalid_argument(format!("非法的 status：{v}"))),
     }
 }
 
@@ -350,6 +384,94 @@ unsafe fn read_resource_options(p: *const AmResourceOptions) -> FfiResult<Resour
         options.realtime = unsafe { std::ptr::addr_of!((*p).realtime).read() };
     }
     Ok(options)
+}
+
+/// 读取 `struct_size`：至少要含 `struct_size` 字段本身。
+///
+/// # Safety
+/// `p` 非空，指向以 `u32` 的 `struct_size` 开头的结构体。
+unsafe fn struct_size_of(p: *const u32, what: &str) -> FfiResult<usize> {
+    // SAFETY: 由调用方保证。
+    let size = unsafe { p.read_unaligned() } as usize;
+    if size < std::mem::size_of::<u32>() {
+        return Err(FfiError::invalid_argument(format!("{what}->struct_size 必须设为 sizeof 结构体")));
+    }
+    Ok(size)
+}
+
+/// 可为 NULL 的 JSON 文本 → `T`（`null` 文本也视为未提供）；非法 UTF-8 / JSON 返回 `AM_ERR_INVALID_JSON`。
+///
+/// # Safety
+/// `p` 为 NULL 或有效的 C 字符串。
+unsafe fn opt_json<T: serde::de::DeserializeOwned>(p: *const c_char, what: &str) -> FfiResult<Option<T>> {
+    let text = unsafe { opt_str(p, what) }
+        .map_err(|_| FfiError::new(AmStatus::InvalidJson, format!("{what} 不是合法的 UTF-8")))?;
+    let Some(text) = text else { return Ok(None) };
+    serde_json::from_str::<Option<T>>(text)
+        .map_err(|e| FfiError::new(AmStatus::InvalidJson, format!("{what} 不合法：{e}")))
+}
+
+/// 按 `struct_size` 读取工具选项；`p` 为 NULL 时为空选项（不声明 / 清除）。
+unsafe fn read_tool_options(p: *const AmToolOptions) -> FfiResult<ToolOptions> {
+    use std::mem::{offset_of, size_of};
+    let mut options = ToolOptions::default();
+    if p.is_null() {
+        return Ok(options);
+    }
+    // SAFETY: 调用方保证 p 指向至少 struct_size 字节（struct_size 字段本身总在开头）。
+    let size = unsafe { struct_size_of(std::ptr::addr_of!((*p).struct_size), "options") }?;
+    let has = |offset: usize| size >= offset + size_of::<*const c_char>();
+    if has(offset_of!(AmToolOptions, annotations_json)) {
+        let text = unsafe { std::ptr::addr_of!((*p).annotations_json).read() };
+        options.annotations = unsafe { opt_json::<ToolAnnotations>(text, "options->annotations_json") }?;
+    }
+    if has(offset_of!(AmToolOptions, output_schema_json)) {
+        let text = unsafe { std::ptr::addr_of!((*p).output_schema_json).read() };
+        options.output_schema_json =
+            unsafe { opt_str(text, "options->output_schema_json") }?.map(str::to_owned);
+    }
+    Ok(options)
+}
+
+/// 按 `struct_size` 读取调用结果；`p` 为 NULL 时为默认结果（无返回值、done）。
+/// 只有 `AM_ERR_INVALID_JSON` 表示可重试（调用不应被消费）。
+unsafe fn read_call_result(p: *const AmCallResult) -> FfiResult<CallResult> {
+    use std::mem::{offset_of, size_of};
+    let mut result = CallResult::default();
+    if p.is_null() {
+        return Ok(result);
+    }
+    // SAFETY（本函数内各处）：调用方保证 p 指向至少 struct_size 字节，字符串字段为 NULL 或有效的 C 字符串。
+    let size = unsafe { struct_size_of(std::ptr::addr_of!((*p).struct_size), "result") }?;
+    let has = |offset: usize, len: usize| size >= offset + len;
+    let ptr_len = size_of::<*const c_char>();
+    if has(offset_of!(AmCallResult, data_json), ptr_len) {
+        let text = unsafe { std::ptr::addr_of!((*p).data_json).read() };
+        result.data_json = unsafe { opt_str(text, "result->data_json") }
+            .map_err(|_| FfiError::new(AmStatus::InvalidJson, "result->data_json 不是合法的 UTF-8"))?
+            .map(str::to_owned);
+    }
+    if has(offset_of!(AmCallResult, annotations_json), ptr_len) {
+        let text = unsafe { std::ptr::addr_of!((*p).annotations_json).read() };
+        result.annotations = unsafe { opt_json::<ContentAnnotations>(text, "result->annotations_json") }?;
+    }
+    if has(offset_of!(AmCallResult, state_hints_len), size_of::<usize>()) {
+        let hints = unsafe { std::ptr::addr_of!((*p).state_hints).read() };
+        let len = unsafe { std::ptr::addr_of!((*p).state_hints_len).read() };
+        result.state_hints = unsafe { read_hints(hints, len) }?;
+    }
+    if has(offset_of!(AmCallResult, status), size_of::<c_int>()) {
+        result.status = result_status_from(unsafe { std::ptr::addr_of!((*p).status).read() })?;
+    }
+    if has(offset_of!(AmCallResult, state_resource), ptr_len) {
+        let text = unsafe { std::ptr::addr_of!((*p).state_resource).read() };
+        result.state_resource = unsafe { opt_str(text, "result->state_resource") }?.map(str::to_owned);
+    }
+    if has(offset_of!(AmCallResult, summary), ptr_len) {
+        let text = unsafe { std::ptr::addr_of!((*p).summary).read() };
+        result.summary = unsafe { opt_str(text, "result->summary") }?.map(str::to_owned);
+    }
+    Ok(result)
 }
 
 impl Default for AmLifecycle {
@@ -928,6 +1050,21 @@ pub unsafe extern "C" fn am_tool_register(
     free_user_data: Option<AmFreeFn>,
     out: *mut *mut AmTool,
 ) -> AmStatus {
+    // SAFETY: 参数约定与 am_tool_register_ex 相同，options 为 NULL。
+    unsafe { am_tool_register_ex(scope, spec, std::ptr::null(), handler, user_data, free_user_data, out) }
+}
+
+/// v9：同 `am_tool_register`，另带工具选项（`options` 可为 NULL）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_tool_register_ex(
+    scope: *mut AmScope,
+    spec: *const AmToolSpec,
+    options: *const AmToolOptions,
+    handler: Option<AmToolFn>,
+    user_data: *mut c_void,
+    free_user_data: Option<AmFreeFn>,
+    out: *mut *mut AmTool,
+) -> AmStatus {
     guard(|| {
         let ud = UserData::new(user_data, free_user_data);
         let out = unsafe { prepare_out(out) }?;
@@ -935,16 +1072,18 @@ pub unsafe extern "C" fn am_tool_register(
         let spec = unsafe { spec.as_ref() }.ok_or_else(|| FfiError::null("spec"))?;
         let f = handler.ok_or_else(|| FfiError::null("handler"))?;
         let spec = unsafe { convert_tool_spec(spec, None) }?;
+        // SAFETY: options 为 NULL 或指向至少 struct_size 字节。
+        let options = unsafe { read_tool_options(options) }?;
         let handler = Arc::new(CToolHandler { f, user_data: ud });
         let handle = match &scope.kind {
             ScopeKind::Root => {
-                let h = scope.shared.client()?.register_tool(spec, handler)?;
+                let h = scope.shared.client()?.register_tool_with(spec, options, handler)?;
                 scope.shared.track_tool(&h);
                 h
             }
             ScopeKind::Child(s) => {
                 scope.shared.check_alive()?;
-                s.register_tool(spec, handler)?
+                s.register_tool_with(spec, options, handler)?
             }
         };
         *out = Box::into_raw(Box::new(AmTool {
@@ -968,6 +1107,24 @@ pub unsafe extern "C" fn am_tool_update(tool: *mut AmTool, spec: *const AmToolSp
         let spec = unsafe { spec.as_ref() }.ok_or_else(|| FfiError::null("spec"))?;
         let spec = unsafe { convert_tool_spec(spec, Some(tool.handle.name())) }?;
         tool.handle.update(spec)?;
+        Ok(())
+    })
+}
+
+/// v9：用新定义与选项整体替换（`options` 为 NULL 或字段为 NULL 表示清除该声明）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_tool_update_ex(
+    tool: *mut AmTool,
+    spec: *const AmToolSpec,
+    options: *const AmToolOptions,
+) -> AmStatus {
+    guard(|| {
+        let tool = unsafe { tool_ref(tool) }?;
+        let spec = unsafe { spec.as_ref() }.ok_or_else(|| FfiError::null("spec"))?;
+        let spec = unsafe { convert_tool_spec(spec, Some(tool.handle.name())) }?;
+        // SAFETY: options 为 NULL 或指向至少 struct_size 字节。
+        let options = unsafe { read_tool_options(options) }?;
+        tool.handle.update_with(spec, options)?;
         Ok(())
     })
 }
@@ -1152,6 +1309,34 @@ pub unsafe extern "C" fn am_call_complete(
             }
         };
         c.handle.complete(data, hints)?;
+        Ok(())
+    });
+    if status != AmStatus::InvalidJson {
+        unsafe { consume(call) };
+    }
+    status
+}
+
+/// v9：成功完成并消费 call，附带业务状态、摘要与内容注解（`result` 可为 NULL）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_call_complete_ex(call: *mut AmCall, result: *const AmCallResult) -> AmStatus {
+    if call.is_null() {
+        return guard(|| Err(FfiError::null("call")));
+    }
+    let status = guard(|| {
+        // SAFETY: call 非空且尚未消费。
+        let c = unsafe { &*call };
+        // SAFETY: result 为 NULL 或指向至少 struct_size 字节。
+        let result = match unsafe { read_call_result(result) } {
+            Ok(r) => r,
+            Err(e) if e.status == AmStatus::InvalidJson => return Err(e),
+            Err(e) => {
+                // call 仍会被消费，因此以 HANDLER_ERROR 结束调用，避免调用悬挂到超时。
+                let _ = c.handle.fail(ErrorKind::HandlerError, &format!("调用结果非法：{}", e.message));
+                return Err(e);
+            }
+        };
+        c.handle.complete_with(result)?;
         Ok(())
     });
     if status != AmStatus::InvalidJson {

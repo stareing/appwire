@@ -179,7 +179,7 @@ SDK 核心在处理握手结果之前核对（`app_mcp_protocol::identity::check
 
 ```ts
 type ClientKind = "web" | "native" | "hybrid"
-type Risk = "read" | "write" | "destructive" | "payment" | "os-sensitive"   // 缺省 "write"
+type Risk = "read" | "write" | "destructive" | "payment" | "os-sensitive"   // 缺省 "write"；旧写法，新代码用 ToolAnnotations（3.2）
 type Activation = "headless" | "background" | "foreground"
 type Visibility = "visible" | "hidden" | "frozen"
 type PairingStatus = "paired" | "pending" | "rejected"
@@ -234,15 +234,41 @@ interface ToolInfo {
   name: string             // [a-zA-Z0-9_.-]{1,64}，App 内唯一，不含 appId
   description: string
   inputSchema: object      // JSON Schema，type 必须为 "object"
-  risk?: Risk
+  risk?: Risk              // 旧写法（3.2）
   activation?: Activation
   title?: string
+  annotations?: ToolAnnotations  // 标准 MCP 工具注解（3.2）
+  outputSchema?: object    // 结果的 JSON Schema（MCP outputSchema），根类型任意（3.2）
+}
+
+// 标准 MCP 工具注解，Host 原样转发给 Agent（3.2）
+interface ToolAnnotations {
+  title?: string
+  readOnlyHint?: boolean
+  destructiveHint?: boolean
+  idempotentHint?: boolean
+  openWorldHint?: boolean
+}
+
+// 标准 MCP 内容注解，Host 原样转发（3.2）
+interface ContentAnnotations {
+  audience?: ("user" | "assistant")[]
+  priority?: number        // 0（可选）~ 1（必需）
+  lastModified?: string    // ISO 8601
 }
 interface ToolsSyncParams { tools: ToolInfo[] }
 interface ToolsChangedParams { upserted: ToolInfo[]; removed: string[] }
 
 interface ToolsInvokeParams { callId: string; name: string; arguments: object; timeoutMs?: number }
-interface ToolsInvokeResult { data: unknown; stateHints?: string[] }
+interface ToolsInvokeResult {
+  data: unknown            // 无返回值时为 null
+  stateHints?: string[]
+  status?: ResultStatus    // 缺省 "done"，done 时不序列化（3.2）
+  stateResource?: string   // status 为 pending 时：可读取后续状态的资源名（局部名）
+  summary?: string         // 一句面向模型 / 用户的结论；partial 时说明完成了哪部分
+  annotations?: ContentAnnotations  // 结果内容的标注
+}
+type ResultStatus = "done" | "pending" | "partial" | "noop"
 interface ToolsCancelParams { callId: string; reason?: string }
 
 interface ResourceInfo {
@@ -250,6 +276,7 @@ interface ResourceInfo {
   description: string
   mimeType?: string
   realtime?: boolean       // 需实时推送：被订阅时 SDK 保持连接（spec/lifecycle.md 第 13 节 B3）；缺省 false，只在 true 时序列化
+  annotations?: ContentAnnotations  // 资源内容的标注（3.2）
 }
 interface ResourcesSyncParams { resources: ResourceInfo[] }
 interface ResourcesChangedParams { upserted: ResourceInfo[]; removed: string[] }
@@ -280,6 +307,28 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 - 局部名以 `<appId>.` 开头在协议上仍合法（按原样拼接），但几乎总是误把全名当成局部名（全名会变成
   `shop.shop.info`）。核心在注册时、Host 在收到同步 / 加载清单时给出警告；`@app-mcp/build` 的注释扫描直接报错。
 
+### 3.2 工具声明与调用结果（第 14 项 S1 / S2、第 19 项 R1–R3）
+
+本库只**如实传递** App 的声明，不据此做任何判断（是否确认、是否放行由 Agent 决定，高风险操作的最终确认在 App 内，
+docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省时消息与之前完全相同（`toolsHash` 不变）。
+
+- **工具注解 `annotations`**：标准 MCP `ToolAnnotations`，Host 在 MCP `tools/list` 中原样给出。与旧写法 `risk` 同时存在时
+  **声明的字段逐个优先**，缺少的字段按 `risk` 推导：`read` → `readOnlyHint: true`；`destructive` / `payment` →
+  `readOnlyHint: false, destructiveHint: true`；`write` / `os-sensitive` → `readOnlyHint: false`（`Risk::annotations`，唯一定义）。
+  只声明 `risk` 时 Agent 看到的注解与之前相同。`risk` 保留为旧写法（不删除），Hub SDK 的 `ApprovalPolicy` 仍按它审批。
+- **输出 schema `outputSchema`**：结果 `data` 的 JSON Schema。MCP 要求 `outputSchema` 根类型为 `object`：根类型是 `object` 时
+  原样给出、对象结果放入 `structuredContent`；其他根类型（数组、字符串等）包装为
+  `{ "type": "object", "properties": { "result": <schema> }, "required": ["result"] }`，结果放入 `structuredContent: { "result": data }`。
+  未声明时只有对象结果放入 `structuredContent`（之前的行为）。Host 可按配置核对结果是否符合（默认只记日志，spec/hub-api.md 3.11）。
+- **结果状态 `status`**：handler 正常返回只说明请求被处理。`pending` = 已受理、尚未完成（等待用户在 App 内确认、异步处理），
+  附 `stateResource`；`partial` = 只完成一部分，`summary` 说明；`noop` = 没有做任何改动。Host 在 MCP 结果最前面加一句说明
+  （如"已受理，尚未完成……不要当作已完成，也不要重复提交"），并在 `_meta` 写 `app-mcp/status`、`app-mcp/stateResource`（资源 URI）；
+  `done` 时都不加。
+- **摘要 `summary` 与无返回值**：有 `summary` 时作为一段文本放在返回值之前。`data` 为 `null` 且没有 `summary`、状态为 `done` 时，
+  Host 对模型输出固定文本"已完成"（不再输出 `null`），且不填 `structuredContent`。`summary` 计入结果大小上限（spec/hub-api.md 3.11）。
+- **内容注解 `annotations`**（结果与资源）：标准 MCP 内容注解。结果的注解加在 App 给出的内容块（摘要、返回值）上，不加在 Host
+  生成的说明、总览与资源变化提示上；资源的注解出现在 MCP `resources/list` 中。Host 不修正、不据此决策。
+
 ## 4. 错误
 
 失败统一用 JSON-RPC 错误对象返回，`data.kind` 为错误类别：
@@ -301,6 +350,8 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 | `RESOURCE_NOT_FOUND` | -32013 | 资源不存在 |
 | `UNAUTHORIZED` | -32014 | 未配对 |
 | `UNSUPPORTED_PROTOCOL` | -32015 | 协议版本不兼容 |
+| `RATE_LIMITED` | -32016 | Host 限流：对该（App, 工具）或该 App 的调用过于频繁，调用未转发。`data`：`retryAfterMs`（建议等待毫秒数）、`scope`（`tool` / `app`）、`perMinute`、`burst`、`appId`、`tool`（spec/hub-api.md 3.11） |
+| `PAYLOAD_TOO_LARGE` | -32017 | Host 大小上限：调用参数、调用结果或资源内容超过上限，未转发 / 未返回（不截断）。`data`：`part`（`arguments` / `result` / `resource`）、`sizeBytes`、`limitBytes`。`result` 超限时调用可能已在 App 内执行 |
 
 `message` 面向模型，应说明原因和建议的下一步。`data` 中除 `kind` 外可携带其他字段。
 标准 JSON-RPC 错误码（-32700、-32600、-32601、-32602、-32603）用于协议层错误。

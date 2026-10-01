@@ -148,6 +148,23 @@ describe('按标准写的页面代码', () => {
     for (const [i, [, risk]] of cases.entries()) expect(coreTool(h, `r${i}`)?.risk).toBe(risk)
   })
 
+  it('MCP 提示字段原样作为工具注解转发；没有时不声明', async () => {
+    await mc().registerTool({
+      name: 'hinted',
+      description: 'd',
+      execute: () => null,
+      annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true, consequentialHint: true, debugging: true },
+    })
+    await mc().registerTool({ name: 'bare', description: 'd', execute: () => null, annotations: { untrustedContentHint: true } })
+    await settle()
+    expect(coreTool(h, 'hinted')).toMatchObject({
+      risk: 'destructive',
+      annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
+    })
+    expect((coreTool(h, 'hinted') as { annotations?: object }).annotations).not.toHaveProperty('consequentialHint')
+    expect(coreTool(h, 'bare')).not.toHaveProperty('annotations')
+  })
+
   it('navigator.modelContext 入口同样可用（旧写法）', async () => {
     await navMc().registerTool({ name: 'legacy', description: 'L', execute: () => 'hi' })
     await settle()

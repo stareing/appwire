@@ -2,14 +2,15 @@
 //!
 //! 检查项：Host 运行 / 版本 / 身份、单实例锁、运行时目录权限、本地 IPC 端点（路径、权限、所有者、可连通）、
 //! 监听端口与备选端口（空闲 / 本 Host / 其他 app-mcp / 其他进程及其 pid 与名称）、Windows 排除端口段、防火墙说明、
-//! 令牌与鉴权模式、各 App 实例状态与最近错误、网页 SDK 的拦截上报、Android `adb reverse`。
+//! 令牌与鉴权模式、各 App 实例状态与最近错误、各工具的声明（risk 与 MCP 注解）、资源保护（限流 / 大小上限与拒绝次数）、
+//! 网页 SDK 的拦截上报、Android `adb reverse`。
 //!
 //! 只读：不加锁（锁状态从 `/proc/locks` 或锁文件中的进程号推断）、不修改任何文件。
 
 use std::path::Path;
 use std::time::Duration;
 
-use app_mcp_hub::{AppState, AwakeReason, HubStatus, InstancePower, LeaseStatus};
+use app_mcp_hub::{AppState, AwakeReason, HubStatus, InstancePower, LeaseStatus, ToolAnnotations};
 use app_mcp_protocol::registry::{EndpointRegistry, LOCK_FILE};
 use app_mcp_protocol::{ConnectionErrorCode, LISTEN_CANDIDATE_PORTS};
 use serde::Serialize;
@@ -399,6 +400,8 @@ pub async fn run(home: &AppHome, s: &Settings) -> Report {
     // 9. App 实例
     checks.push(apps_check(status.as_ref()));
     checks.push(lease_check(status.as_ref()));
+    checks.push(tools_check(status.as_ref()));
+    checks.push(limits_check(status.as_ref()));
 
     // 10. 网页拦截上报
     checks.push(reports_check(status.as_ref()));
@@ -659,6 +662,103 @@ fn lease_check(status: Option<&Result<HubStatus, String>>) -> Check {
     Check::new("lease", T, Level::Info, lease_text(l)).details(details)
 }
 
+/// 各工具的声明（docs/plans/14-safety.md S5）：`risk` 与 Agent 实际看到的 MCP 注解，便于用户核对 Agent 的放行规则。
+fn tools_check(status: Option<&Result<HubStatus, String>>) -> Check {
+    const T: &str = "工具声明（risk 与 MCP 注解）";
+    let Some(Ok(st)) = status else {
+        return Check::new("tools", T, Level::Skip, "无法读取 Host 状态");
+    };
+    let details: serde_json::Map<String, Value> = st
+        .apps
+        .iter()
+        .filter(|a| !a.tools.is_empty())
+        .map(|a| (a.app_id.clone(), serde_json::to_value(&a.tools).unwrap_or(Value::Null)))
+        .collect();
+    let lines: Vec<String> = st
+        .apps
+        .iter()
+        .flat_map(|a| {
+            a.tools.iter().map(move |d| {
+                let source = if d.annotations.is_some() { "已声明注解" } else { "注解按 risk 推导" };
+                let output = if d.output_schema { "，有 outputSchema" } else { "" };
+                let risk = serde_json::to_value(d.risk).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+                format!("{}.{}：risk {risk}，{}（{source}{output}）", a.app_id, d.name, annotation_text(&d.effective))
+            })
+        })
+        .collect();
+    if lines.is_empty() {
+        return Check::new("tools", T, Level::Info, "没有已知工具（或运行中的 Host 版本不提供工具声明）");
+    }
+    Check::new("tools", T, Level::Info, format!("{} 个工具：\n    {}", lines.len(), lines.join("\n    ")))
+        .hint("本库只如实传递 App 的声明，要不要确认由 Agent 决定；可据此配置 Agent 的放行规则（按工具全名）")
+        .details(Value::Object(details))
+}
+
+/// MCP 工具注解的一行文本（未声明的提示为 `-`）。
+fn annotation_text(a: &ToolAnnotations) -> String {
+    let b = |v: Option<bool>| v.map_or("-".to_owned(), |v| v.to_string());
+    let mut text = format!(
+        "readOnlyHint={} destructiveHint={} idempotentHint={} openWorldHint={}",
+        b(a.read_only_hint),
+        b(a.destructive_hint),
+        b(a.idempotent_hint),
+        b(a.open_world_hint)
+    );
+    if let Some(t) = &a.title {
+        text.push_str(&format!(" title=「{t}」"));
+    }
+    text
+}
+
+/// 资源保护（spec/hub-api.md 3.11）：限流与大小上限的策略，以及各 App 启动以来被拒绝的次数。
+fn limits_check(status: Option<&Result<HubStatus, String>>) -> Check {
+    const T: &str = "资源保护（限流与大小上限）";
+    let Some(Ok(st)) = status else {
+        return Check::new("limits", T, Level::Skip, "无法读取 Host 状态");
+    };
+    let Some(l) = &st.limits else {
+        return Check::new("limits", T, Level::Skip, "运行中的 Host 版本不提供资源保护信息");
+    };
+    let n = |v: Option<u64>| match v {
+        Some(0) => "不限".to_owned(),
+        Some(v) => v.to_string(),
+        None => "-".to_owned(),
+    };
+    let rate = |per_minute: Option<u32>, burst: Option<u32>| match per_minute {
+        Some(0) => "不限".to_owned(),
+        _ => format!("每分钟 {} 次、突发 {} 次", n(per_minute.map(u64::from)), n(burst.map(u64::from))),
+    };
+    let policy = format!(
+        "每工具 {}；每 App {}；参数 {} 字节、结果 {} 字节、资源 {} 字节；outputSchema 不符时 {}",
+        rate(l.tool_rate_per_minute, l.tool_rate_burst),
+        rate(l.app_rate_per_minute, l.app_rate_burst),
+        n(l.max_arguments_bytes),
+        n(l.max_result_bytes),
+        n(l.max_resource_bytes),
+        st.output_validation
+            .and_then(|v| serde_json::to_value(v).ok())
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "-".to_owned()),
+    );
+    let rejected: Vec<String> = st
+        .apps
+        .iter()
+        .filter(|a| a.rate_limited > 0 || a.too_large > 0)
+        .map(|a| format!("{}：限流 {} 次、超大 {} 次", a.app_id, a.rate_limited, a.too_large))
+        .collect();
+    let details = json!({
+        "limits": l,
+        "outputValidation": st.output_validation,
+        "rejected": st.apps.iter().map(|a| json!({"appId": a.app_id, "rateLimited": a.rate_limited, "tooLarge": a.too_large})).collect::<Vec<_>>(),
+    });
+    if rejected.is_empty() {
+        return Check::new("limits", T, Level::Ok, format!("{policy}；没有被拒绝的调用")).details(details);
+    }
+    Check::new("limits", T, Level::Warn, format!("{policy}。启动以来被拒绝：{}", rejected.join("；")))
+        .hint("RATE_LIMITED / PAYLOAD_TOO_LARGE 见 spec/protocol.md 第 4 节；确属正常用量时调大 --tool-rate-limit / --app-rate-limit / --max-*-bytes")
+        .details(details)
+}
+
 fn lease_text(l: &LeaseStatus) -> String {
     let policy = match l.mode.as_str() {
         "off" => return "租约已关闭（--lease-ms 0）".to_owned(),
@@ -841,6 +941,60 @@ mod tests {
         assert!(lease_text(&l).contains("已关闭"));
         let c = lease_check(None);
         assert!(matches!(c.status, Level::Skip));
+    }
+
+    fn status_with_tools(rate_limited: u64) -> HubStatus {
+        serde_json::from_value(json!({
+            "service": "app-mcp", "version": "0", "pid": 1, "startedAtMs": 0, "mcpHttp": true,
+            "auth": {"tokenConfigured": false, "tokenRequiredWithoutOrigin": false}, "mcpSessions": 0, "reports": [],
+            "apps": [{
+                "appId": "shop", "name": "商城", "kind": "app", "state": "connected", "instances": [],
+                "rateLimited": rate_limited, "tooLarge": 1,
+                "tools": [
+                    {"name": "cart.checkout", "risk": "payment", "effective": {"readOnlyHint": false, "destructiveHint": true}},
+                    {"name": "order.cancel", "risk": "write", "annotations": {"idempotentHint": true, "title": "取消"},
+                     "effective": {"readOnlyHint": false, "idempotentHint": true, "title": "取消"}, "outputSchema": true}
+                ]
+            }],
+            "limits": {"toolRatePerMinute": 120, "toolRateBurst": 30, "appRatePerMinute": 0, "appRateBurst": 60,
+                       "maxArgumentsBytes": 1048576, "maxResultBytes": 0, "maxResourceBytes": 4194304},
+            "outputValidation": "log"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn tools_check_lists_declarations() {
+        let st = status_with_tools(0);
+        let c = tools_check(Some(&Ok(st)));
+        assert!(matches!(c.status, Level::Info));
+        assert!(c.summary.contains("2 个工具"), "{}", c.summary);
+        assert!(
+            c.summary.contains("shop.cart.checkout：risk payment，readOnlyHint=false destructiveHint=true idempotentHint=- openWorldHint=-（注解按 risk 推导）"),
+            "{}",
+            c.summary
+        );
+        assert!(c.summary.contains("shop.order.cancel：risk write") && c.summary.contains("title=「取消」（已声明注解，有 outputSchema）"), "{}", c.summary);
+        assert_eq!(c.details["shop"][1]["annotations"]["idempotentHint"], true);
+        assert!(matches!(tools_check(None).status, Level::Skip));
+        let mut empty = status_with_tools(0);
+        empty.apps[0].tools.clear();
+        assert!(tools_check(Some(&Ok(empty))).summary.contains("没有已知工具"));
+    }
+
+    #[test]
+    fn limits_check_reports_policy_and_rejections() {
+        let c = limits_check(Some(&Ok(status_with_tools(0))));
+        assert!(matches!(c.status, Level::Warn), "超大 1 次也算");
+        assert!(c.summary.contains("每工具 每分钟 120 次、突发 30 次；每 App 不限") && c.summary.contains("结果 不限 字节"), "{}", c.summary);
+        assert!(c.summary.contains("shop：限流 0 次、超大 1 次") && c.summary.contains("不符时 log"), "{}", c.summary);
+        let mut ok = status_with_tools(0);
+        ok.apps[0].too_large = 0;
+        let c = limits_check(Some(&Ok(ok)));
+        assert!(matches!(c.status, Level::Ok) && c.summary.contains("没有被拒绝的调用"), "{}", c.summary);
+        let mut old = status_with_tools(3);
+        old.limits = None;
+        assert!(matches!(limits_check(Some(&Ok(old))).status, Level::Skip));
     }
 
     #[test]

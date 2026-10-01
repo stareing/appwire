@@ -38,6 +38,8 @@ const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
   'RESOURCE_NOT_FOUND',
   'UNAUTHORIZED',
   'UNSUPPORTED_PROTOCOL',
+  'RATE_LIMITED',
+  'PAYLOAD_TOO_LARGE',
 ])
 
 /** createAsyncThunk dispatch 结果：带 `unwrap()` 的 Promise。 */

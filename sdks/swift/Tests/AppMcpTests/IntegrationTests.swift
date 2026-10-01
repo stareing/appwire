@@ -118,6 +118,79 @@ final class IntegrationTests: XCTestCase {
         XCTAssertEqual(cart?["items"] as? [String], ["A"])
     }
 
+    /// 工具注解 + outputSchema 到达 Host；结构化结果（pending + stateResource + summary + 内容标注）原样回给 Host；普通返回值不变。
+    func testToolOptionsAndStructuredResultReachHost() async throws {
+        let host = Process()
+        host.executableURL = URL(fileURLWithPath: try fakeHost())
+        host.arguments = [
+            "--tool-info",
+            "--invoke", "order.submit",
+            "--invoke", "bg.submit",
+            "--invoke", "plain",
+            "--timeout-ms", "15000",
+        ]
+        let out = Pipe()
+        host.standardOutput = out
+        try host.run()
+        defer { if host.isRunning { host.terminate() } }
+
+        let first = readLine(out.fileHandleForReading)
+        XCTAssertTrue(first.hasPrefix("LISTENING "), first)
+        let addr = String(first.dropFirst("LISTENING ".count))
+
+        let client = try AppMcpClient(config: AppMcpConfig(appId: "swift-it", appName: "Swift 集成测试", hostURL: "ws://\(addr)"))
+        let schema = #"{"type":"object","properties":{"orderId":{"type":"string"}}}"#
+        try client.tool(
+            "order.submit", description: "下单",
+            annotations: ToolAnnotations(idempotentHint: false, openWorldHint: true),
+            outputSchema: schema
+        ) { (_: NoArguments, ctx) in
+            ctx.addStateHint("cart")
+            return ToolResult(
+                data: ["orderId": "o1"],
+                status: .pending,
+                stateResource: "order.state",
+                summary: "已提交，等待用户在 App 内付款",
+                annotations: ContentAnnotations(audience: [.user], priority: 0.5)
+            )
+        }
+        try client.backgroundTool("bg.submit", description: "后台部分完成") { (_: NoArguments, _) in
+            ToolResult<String>(data: nil, status: .partial, summary: "完成 2 / 3")
+        }
+        try client.tool("plain", description: "普通返回值", risk: .read) { (_: NoArguments, _) in ["ok": true] }
+        client.start()
+
+        let handle = out.fileHandleForReading
+        let data = await Task.detached { handle.readDataToEndOfFile() }.value
+        host.waitUntilExit()
+        client.stop()
+        let text = String(decoding: data, as: UTF8.self)
+        XCTAssertEqual(host.terminationStatus, 0, text)
+
+        let lines = try text.split(separator: "\n").map {
+            try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any]
+        }
+        let info = lines.first?["toolInfo"] as? [String: Any]
+        let submit = info?["order.submit"] as? NSDictionary
+        XCTAssertEqual(submit, [
+            "risk": "write",
+            "annotations": ["idempotentHint": false, "openWorldHint": true],
+            "outputSchema": ["type": "object", "properties": ["orderId": ["type": "string"]]],
+        ] as NSDictionary)
+        XCTAssertEqual(info?["plain"] as? NSDictionary, ["risk": "read"] as NSDictionary)
+
+        var results: [String: [String: Any]] = [:]
+        for l in lines.dropFirst() { results[l["name"] as! String] = l }
+        XCTAssertEqual(results["order.submit"]?["result"] as? NSDictionary, [
+            "data": ["orderId": "o1"], "stateHints": ["cart"], "status": "pending", "stateResource": "order.state",
+            "summary": "已提交，等待用户在 App 内付款", "annotations": ["audience": ["user"], "priority": 0.5],
+        ] as NSDictionary)
+        XCTAssertEqual(results["bg.submit"]?["result"] as? NSDictionary, [
+            "data": NSNull(), "status": "partial", "summary": "完成 2 / 3",
+        ] as NSDictionary)
+        XCTAssertEqual(results["plain"]?["result"] as? NSDictionary, ["data": ["ok": true]] as NSDictionary)
+    }
+
     /// idle 休眠 → handleWake 回连（toolsCurrent 跳过同步）→ 调用（含 details 错误、ctx.hold）→ 再休眠。
     func testIdleSleepWakeRoundTrip() async throws {
         let host = Process()

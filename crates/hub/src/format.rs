@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::call::{UNAVAILABLE_PREFIX, result_text, risk_annotations};
+use crate::call::{UNAVAILABLE_PREFIX, result_text};
 use crate::types::{Availability, HubTool, risk_str};
 
 /// OpenAI / Anthropic 工具名长度上限。
@@ -289,10 +289,13 @@ fn export_one(format: ToolFormat, t: &HubTool, name: &str) -> Value {
                 "name": name,
                 "description": description,
                 "inputSchema": plain_schema(t),
-                "annotations": risk_annotations(t.risk),
+                "annotations": t.annotations,
             });
             if let Some(title) = &t.title {
                 v["title"] = json!(title);
+            }
+            if let Some(output) = &t.output_schema {
+                v["outputSchema"] = Value::Object(crate::mcp_convert::mcp_output_schema(output));
             }
             v
         }
@@ -483,6 +486,8 @@ mod tests {
             risk,
             activation: Activation::Foreground,
             availability: Availability::Available,
+            annotations: risk.annotations(),
+            output_schema: None,
         }
     }
 

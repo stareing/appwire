@@ -5,7 +5,13 @@
 
 import { toJsonSchema } from '../schema'
 import type { StandardBridge } from './bridge'
-import { assertTrustworthyOrigins, domException, executeOptions, riskToAnnotations, toStandardResult } from './convert'
+import {
+  assertTrustworthyOrigins,
+  domException,
+  executeOptions,
+  toolToStandardAnnotations,
+  toStandardResult,
+} from './convert'
 import type {
   ModelContext,
   ModelContextExecuteToolOptions,
@@ -91,7 +97,7 @@ export class ModelContextPolyfill extends EventTarget implements ModelContext {
           inputSchema,
           window: win,
           origin,
-          annotations: riskToAnnotations(def.risk),
+          annotations: toolToStandardAnnotations(def.risk, def.annotations),
         })
       }
     }

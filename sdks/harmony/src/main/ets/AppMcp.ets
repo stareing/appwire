@@ -9,14 +9,14 @@
  */
 
 import type {
-  Call, ClientConfig, ClientEvent, Hold, JsStateInfo, LifecycleInit, NativeClient, Read, Resource,
-  ResourceSpecInit, Scope as NativeScope, Tool, ToolSpecInit,
+  Call, CallResultInit, ClientConfig, ClientEvent, ContentAnnotationsInit, Hold, JsStateInfo, LifecycleInit,
+  NativeClient, Read, Resource, ResourceSpecInit, Scope as NativeScope, Tool, ToolAnnotationsInit, ToolSpecInit,
 } from 'libapp_mcp_harmony.so';
 import { Failure, ToolCallError, nativeErrorCode, toFailure } from './Errors';
 import {
-  AppMcpOptions, CancelReason, ConnectionState, ConnectionStatus, HoldHandle, LifecycleOptions, Logger,
-  Registrar, ResourceDefinition, ResourceHandle, Scope, ToolChanges, ToolContext, ToolDefinition, ToolHandle,
-  ToolResult, Visibility, WakeReason,
+  AppMcpOptions, CancelReason, ConnectionState, ConnectionStatus, ContentAnnotations, HoldHandle, LifecycleOptions,
+  Logger, Registrar, ResourceDefinition, ResourceHandle, Scope, ToolAnnotations, ToolChanges, ToolContext,
+  ToolDefinition, ToolHandle, ToolResult, Visibility, WakeReason,
 } from './Types';
 
 /** 原生客户端工厂：`(config, listener) => new native.NativeClient(config, listener)`。 */
@@ -192,6 +192,43 @@ class CallContext implements ToolContext {
 // 工具
 // ---------------------------------------------------------------------------
 
+function toolAnnotationsInit(a: ToolAnnotations): ToolAnnotationsInit {
+  const init: ToolAnnotationsInit = {};
+  init.title = a.title;
+  init.readOnlyHint = a.readOnlyHint;
+  init.destructiveHint = a.destructiveHint;
+  init.idempotentHint = a.idempotentHint;
+  init.openWorldHint = a.openWorldHint;
+  return init;
+}
+
+function contentAnnotationsInit(a: ContentAnnotations): ContentAnnotationsInit {
+  const init: ContentAnnotationsInit = {};
+  if (a.audience !== undefined) {
+    init.audience = a.audience.map((role: string): string => role);
+  }
+  init.priority = a.priority;
+  init.lastModified = a.lastModified;
+  return init;
+}
+
+/** 是否带有 data / stateHints 以外的字段（需要 `completeWith`）。 */
+function hasResultExtras<O>(r: ToolResult<O>): boolean {
+  return r.status !== undefined || r.stateResource !== undefined || r.summary !== undefined ||
+    r.annotations !== undefined;
+}
+
+function callResultInit<O>(json: string, r: ToolResult<O>): CallResultInit {
+  const init: CallResultInit = { dataJson: json, stateHints: r.stateHints };
+  init.status = r.status;
+  init.stateResource = r.stateResource;
+  init.summary = r.summary;
+  if (r.annotations !== undefined) {
+    init.annotations = contentAnnotationsInit(r.annotations);
+  }
+  return init;
+}
+
 class ToolEntry<I, O> implements ToolHandle, Child {
   readonly name: string;
   private def: ToolDefinition<I, O>;
@@ -224,6 +261,10 @@ class ToolEntry<I, O> implements ToolHandle, Child {
     spec.risk = d.risk;
     spec.activation = d.activation;
     spec.title = d.title;
+    if (d.annotations !== undefined) {
+      spec.annotations = toolAnnotationsInit(d.annotations);
+    }
+    spec.outputSchemaJson = d.outputSchema;
     return spec;
   }
 
@@ -237,13 +278,16 @@ class ToolEntry<I, O> implements ToolHandle, Child {
       title: changes.title ?? d.title,
       inputSchema: changes.inputSchema ?? d.inputSchema,
       risk: changes.risk ?? d.risk,
+      annotations: changes.annotations ?? d.annotations,
+      outputSchema: changes.outputSchema ?? d.outputSchema,
       activation: changes.activation ?? d.activation,
       enabled: changes.enabled ?? d.enabled,
       handler: d.handler,
     };
     this.def = next;
     if (this.native !== null) {
-      this.native.update(this.spec());
+      // 定义始终完整：用 updateWith 一并替换注解与输出 schema
+      this.native.updateWith(this.spec());
     }
   }
 
@@ -320,14 +364,9 @@ class ToolEntry<I, O> implements ToolHandle, Child {
       if (context.isCancelled()) {
         return;
       }
-      let data: O;
-      let hints: string[] = [];
-      if (result instanceof ToolResult) {
-        data = result.data;
-        hints = result.stateHints;
-      } else {
-        data = result as O;
-      }
+      const structured: ToolResult<O> | null = result instanceof ToolResult ? result : null;
+      const data: O = structured !== null ? structured.data : result as O;
+      const hints: string[] = structured !== null ? structured.stateHints : [];
       let json: string;
       try {
         json = stringifyJson(data as Object);
@@ -335,7 +374,21 @@ class ToolEntry<I, O> implements ToolHandle, Child {
         fail(toFailure(new ToolCallError('HANDLER_ERROR', `返回值无法序列化为 JSON：${errorText(error as Object)}`)));
         return;
       }
-      finish(() => call.complete(json, hints));
+      if (structured === null || !hasResultExtras(structured)) {
+        finish(() => call.complete(json, hints));
+        return;
+      }
+      try {
+        call.completeWith(callResultInit(json, structured));
+        finish(() => {});
+      } catch (error) {
+        if (nativeErrorCode(error as Object) === 'ALREADY_COMPLETED') {
+          finish(() => {});
+          return;
+        }
+        // 取值不合法（如未知的 status / audience）：失败完成，不让调用挂起到超时
+        fail(toFailure(new ToolCallError('HANDLER_ERROR', `返回的结构化结果无效：${errorText(error as Object)}`)));
+      }
     }, (error: Object): void => {
       if (context.isCancelled()) {
         return;

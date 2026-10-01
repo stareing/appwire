@@ -11,6 +11,9 @@
  * fake_idle_exit 在其他线程触发 on_idle_exit。
  * v7 / v8（4e 功耗）：fake_lifecycle 末尾追加 heartbeat、host_absent_retries、legacy_timers、merge_window_ms、
  * sleep_on_background；am_resource_register_ex 记录 realtime（fake_resource_realtime）。
+ * v9：am_tool_register_ex / am_tool_update_ex 记录注解与 outputSchema（fake_tool_options；outputSchema 为 "{" 时
+ * 返回 AM_ERR_INVALID_SCHEMA）；am_call_complete_ex 的结果另带 status / stateResource / summary / annotations
+ * （annotations_json 为 "{bad" 时返回 AM_ERR_INVALID_JSON）。
  *
  * 编译：cc -shared -fPIC -o libfake_app_mcp.so fake_app_mcp.c -lpthread
  * Windows（MSVC）：cl /c /utf-8 编译后按 dumpbin /symbols 中的外部函数生成 .def 再 link /DLL
@@ -71,6 +74,8 @@ typedef struct ToolRec {
     void *user_data;
     AmFreeFn free_user_data;
     int freed;
+    char *annotations;   /* v9 */
+    char *output_schema; /* v9 */
 } ToolRec;
 
 typedef struct ResRec {
@@ -596,6 +601,35 @@ AmStatus am_tool_update(AmTool *tool, const AmToolSpec *spec) {
     if (tool->rec->disposed) { set_error("已注销"); return AM_ERR_DISPOSED; }
     return apply_spec(tool->rec, spec);
 }
+/* v9：options 为 NULL 时清除；outputSchema 为 "{" 时视为非法 JSON。 */
+static AmStatus check_tool_options(const AmToolOptions *o) {
+    if (o && o->output_schema_json && strcmp(o->output_schema_json, "{") == 0) {
+        set_error("outputSchema 不是合法 JSON");
+        return AM_ERR_INVALID_SCHEMA;
+    }
+    return AM_OK;
+}
+static void apply_tool_options(ToolRec *t, const AmToolOptions *o) {
+    free(t->annotations);
+    free(t->output_schema);
+    t->annotations = o ? dup_str(o->annotations_json) : NULL;
+    t->output_schema = o ? dup_str(o->output_schema_json) : NULL;
+}
+AmStatus am_tool_register_ex(AmScope *scope, const AmToolSpec *spec, const AmToolOptions *options,
+                             AmToolFn handler, void *user_data, AmFreeFn free_user_data, AmTool **out) {
+    AmStatus st = check_tool_options(options);
+    if (st != AM_OK) return st;
+    st = am_tool_register(scope, spec, handler, user_data, free_user_data, out);
+    if (st == AM_OK) apply_tool_options((*out)->rec, options);
+    return st;
+}
+AmStatus am_tool_update_ex(AmTool *tool, const AmToolSpec *spec, const AmToolOptions *options) {
+    AmStatus st = check_tool_options(options);
+    if (st != AM_OK) return st;
+    st = am_tool_update(tool, spec);
+    if (st == AM_OK) apply_tool_options(tool->rec, options);
+    return st;
+}
 AmStatus am_tool_set_enabled(AmTool *tool, bool enabled) {
     if (!tool) return AM_ERR_INVALID_ARGUMENT;
     if (tool->rec->disposed) { set_error("已注销"); return AM_ERR_DISPOSED; }
@@ -711,6 +745,31 @@ AmStatus am_call_complete(AmCall *call, const char *data_json, const char *const
     }
     consume(call, buf);
     if (cancelled) { set_error("已取消"); return AM_ERR_ALREADY_COMPLETED; }
+    return AM_OK;
+}
+
+/* v9：在 am_call_complete 的结果 JSON 末尾追加 status / stateResource / summary / annotations。 */
+AmStatus am_call_complete_ex(AmCall *call, const AmCallResult *r) {
+    if (!call) return AM_ERR_INVALID_ARGUMENT;
+    if (!r) return am_call_complete(call, NULL, NULL, 0);
+    if (r->annotations_json && strcmp(r->annotations_json, "{bad") == 0) { set_error("非法 JSON"); return AM_ERR_INVALID_JSON; }
+    if (r->data_json && strcmp(r->data_json, "{bad") == 0) { set_error("非法 JSON"); return AM_ERR_INVALID_JSON; }
+    int index = call->index;
+    AmStatus st = am_call_complete(call, r->data_json, r->state_hints, r->state_hints_len);
+    if (st != AM_OK) return st;
+    lock_global();
+    char *base = g_results[index];
+    size_t cap = strlen(base) + 128 + (r->state_resource ? strlen(r->state_resource) : 0) +
+                 (r->summary ? strlen(r->summary) : 0) + (r->annotations_json ? strlen(r->annotations_json) : 0);
+    char *buf = malloc(cap);
+    int off = snprintf(buf, cap, "%.*s,\"status\":%d", (int)(strlen(base) - 1), base, (int)r->status);
+    if (r->state_resource) off += snprintf(buf + off, cap - off, ",\"stateResource\":\"%s\"", r->state_resource);
+    if (r->summary) off += snprintf(buf + off, cap - off, ",\"summary\":\"%s\"", r->summary);
+    if (r->annotations_json) off += snprintf(buf + off, cap - off, ",\"annotations\":%s", r->annotations_json);
+    snprintf(buf + off, cap - off, "}");
+    g_results[index] = buf;
+    unlock_global();
+    free(base);
     return AM_OK;
 }
 
@@ -936,6 +995,17 @@ int fake_resource_realtime(const char *name) {
 /* 工具当前的 enabled / risk / 描述，供测试断言 update。 */
 int fake_tool_enabled(const char *name) { ToolRec *t = find_tool(g_client, name); return t ? t->enabled : -1; }
 char *fake_tool_description(const char *name) { ToolRec *t = find_tool(g_client, name); return t ? dup_str(t->description) : NULL; }
+/* v9：工具当前的注解与 outputSchema，"<annotations 或 null>|<outputSchema 或 null>"（需 am_string_free）。 */
+char *fake_tool_options(const char *name) {
+    ToolRec *t = find_tool(g_client, name);
+    if (!t) return NULL;
+    const char *a = t->annotations ? t->annotations : "null";
+    const char *o = t->output_schema ? t->output_schema : "null";
+    size_t cap = strlen(a) + strlen(o) + 2;
+    char *buf = malloc(cap);
+    snprintf(buf, cap, "%s|%s", a, o);
+    return buf;
+}
 
 /* 最近一次 am_client_new 的总览（需 am_string_free）；没有时返回 NULL。 */
 char *fake_overview(void) { return dup_str(g_overview); }
@@ -958,6 +1028,10 @@ size_t fake_sizeof(int which) {
     case 13: return offsetof(AmClientOptions, sleep_on_background);
     case 14: return sizeof(AmResourceOptions);
     case 15: return offsetof(AmResourceOptions, realtime);
+    case 16: return sizeof(AmToolOptions);
+    case 17: return sizeof(AmCallResult);
+    case 18: return offsetof(AmCallResult, status);
+    case 19: return offsetof(AmCallResult, annotations_json);
     default: return 0;
     }
 }

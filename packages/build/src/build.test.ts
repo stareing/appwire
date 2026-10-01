@@ -13,6 +13,7 @@ import {
   ManifestError,
   normalizeWake,
   toInputSchema,
+  toOutputSchema,
   validateManifest,
   validateOverview,
   type AppMcpManifest,
@@ -184,6 +185,54 @@ describe('generateManifest', () => {
     const { errors, warnings } = validateManifest(manifest)
     expect(errors).toEqual([])
     expect(warnings).toEqual([expect.stringMatching(/tools\[0\]（shop\.info）.*请改为 "info"/)])
+  })
+
+  it('静态工具的 annotations 与 outputSchema 写入清单（zod 按输出形态转换）', () => {
+    const manifest = generateManifest({ appId: 'shop', name: '商城' }, [
+      {
+        name: 'orders.cancel',
+        description: '取消订单',
+        risk: 'destructive',
+        annotations: { idempotentHint: true, openWorldHint: false },
+        outputSchema: z.object({ cancelled: z.boolean().default(false) }),
+      },
+      { name: 'orders.ids', description: '订单号', outputSchema: { type: 'array', items: { type: 'string' } } },
+      { name: 'plain', description: 'd' },
+    ])
+    expect(manifest.tools?.[0]).toMatchObject({
+      risk: 'destructive',
+      annotations: { idempotentHint: true, openWorldHint: false },
+      outputSchema: { type: 'object', properties: { cancelled: { type: 'boolean' } }, required: ['cancelled'] },
+    })
+    expect(manifest.tools?.[1]?.outputSchema).toEqual({ type: 'array', items: { type: 'string' } })
+    expect(manifest.tools?.[2]).not.toHaveProperty('annotations')
+    expect(manifest.tools?.[2]).not.toHaveProperty('outputSchema')
+    expect(() => toOutputSchema(5)).toThrow(/outputSchema 必须是/)
+  })
+
+  it('校验工具注解与 outputSchema：类型不对报错，未知注解字段警告', () => {
+    const manifest = {
+      manifestVersion: 1,
+      appId: 'shop',
+      name: '商城',
+      tools: [
+        {
+          name: 't',
+          description: 'd',
+          inputSchema: { type: 'object' },
+          annotations: { readOnlyHint: 'yes', title: '标题', fooHint: true },
+          outputSchema: [],
+        },
+        { name: 'u', description: 'd', inputSchema: { type: 'object' }, annotations: null },
+      ],
+    } as unknown as AppMcpManifest
+    const { errors, warnings } = validateManifest(manifest)
+    expect(errors).toEqual([
+      expect.stringContaining('tools[0]（t） annotations.readOnlyHint 必须是 boolean'),
+      expect.stringContaining('tools[0]（t） outputSchema 必须是对象'),
+      expect.stringContaining('tools[1]（u） annotations 必须是对象'),
+    ])
+    expect(warnings).toEqual([expect.stringContaining('annotations.fooHint 不是标准 MCP 工具注解字段')])
   })
 
   it('toInputSchema 拒绝非对象输入', () => {

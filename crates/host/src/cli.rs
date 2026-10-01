@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use app_mcp_hub::{LeaseOverrides, ToolExposure, WakerConfig};
+use app_mcp_hub::{LeaseOverrides, LimitOverrides, OutputValidation, ToolExposure, WakerConfig};
 use app_mcp_hub::upstream::parse_cli_spec;
 use clap::{Args, Parser, Subcommand};
 
@@ -222,6 +222,38 @@ pub struct HubArgs {
     #[arg(long, value_name = "N")]
     pub tool_exposure_threshold: Option<usize>,
 
+    /// 每个（App, 工具）每分钟最多调用次数（令牌桶，spec/hub-api.md 3.11），默认 120；0 不限。超出返回 RATE_LIMITED。
+    #[arg(long, value_name = "N")]
+    pub tool_rate_limit: Option<u32>,
+
+    /// 每个（App, 工具）允许的突发调用数（令牌桶容量），默认 30。
+    #[arg(long, value_name = "N")]
+    pub tool_rate_burst: Option<u32>,
+
+    /// 每个 App（所有工具合计）每分钟最多调用次数，默认 600；0 不限。
+    #[arg(long, value_name = "N")]
+    pub app_rate_limit: Option<u32>,
+
+    /// 每个 App 允许的突发调用数，默认 60。
+    #[arg(long, value_name = "N")]
+    pub app_rate_burst: Option<u32>,
+
+    /// 调用参数（JSON）的字节上限，默认 1048576；0 不限。超出返回 PAYLOAD_TOO_LARGE。
+    #[arg(long, value_name = "BYTES")]
+    pub max_arguments_bytes: Option<u64>,
+
+    /// 调用结果的字节上限，默认 4194304；0 不限。
+    #[arg(long, value_name = "BYTES")]
+    pub max_result_bytes: Option<u64>,
+
+    /// 资源内容的字节上限，默认 4194304；0 不限。
+    #[arg(long, value_name = "BYTES")]
+    pub max_resource_bytes: Option<u64>,
+
+    /// App 结果与其声明的 outputSchema 不符时：log（默认，只记日志）/ reject（调用以 HANDLER_ERROR 结束）/ off（不校验）。
+    #[arg(long, value_name = "off|log|reject", value_parser = parse_output_validation)]
+    pub output_validation: Option<OutputValidation>,
+
     /// 日志级别（trace / debug / info / warn / error），默认 info。设置 RUST_LOG 时以 RUST_LOG 为准。
     #[arg(long, value_name = "LEVEL")]
     pub log_level: Option<String>,
@@ -266,6 +298,16 @@ impl HubArgs {
             waker: self.waker.clone(),
             tool_exposure: self.tool_exposure,
             tool_exposure_threshold: self.tool_exposure_threshold,
+            limits: LimitOverrides {
+                tool_rate_per_minute: self.tool_rate_limit,
+                tool_rate_burst: self.tool_rate_burst,
+                app_rate_per_minute: self.app_rate_limit,
+                app_rate_burst: self.app_rate_burst,
+                max_arguments_bytes: self.max_arguments_bytes,
+                max_result_bytes: self.max_result_bytes,
+                max_resource_bytes: self.max_resource_bytes,
+            },
+            output_validation: self.output_validation,
             log_level: self.log_level.clone(),
             ..Default::default()
         })
@@ -333,6 +375,11 @@ pub struct LegacyArgs {
 
 
 /// `--waker`：`system` / `none` 或 JSON（与配置文件 `lifecycle.waker` 相同的形式）。
+fn parse_output_validation(s: &str) -> Result<OutputValidation, String> {
+    serde_json::from_value(serde_json::Value::String(s.trim().to_owned()))
+        .map_err(|_| format!("应为 off、log 或 reject，而不是「{s}」"))
+}
+
 fn parse_exposure(s: &str) -> Result<ToolExposure, String> {
     serde_json::from_value(serde_json::Value::String(s.trim().to_owned()))
         .map_err(|_| format!("应为 auto、progressive 或 all，而不是「{s}」"))
@@ -400,6 +447,32 @@ mod tests {
         let o = s.hub.overrides().unwrap();
         assert_eq!(o.tool_exposure, Some(ToolExposure::Auto));
         assert_eq!(o.tool_exposure_threshold, Some(5));
+    }
+
+    #[test]
+    fn parses_limits() {
+        assert_eq!(parse_output_validation("reject"), Ok(OutputValidation::Reject));
+        assert!(parse_output_validation("strict").is_err());
+        let cli = Cli::try_parse_from([
+            "app-mcp-host", "serve", "--tool-rate-limit", "10", "--app-rate-burst", "3", "--max-arguments-bytes", "0",
+            "--max-resource-bytes", "99", "--output-validation", "off",
+        ])
+        .unwrap();
+        let Some(Command::Serve(s)) = cli.command else {
+            panic!()
+        };
+        let o = s.hub.overrides().unwrap();
+        assert_eq!(
+            o.limits,
+            LimitOverrides {
+                tool_rate_per_minute: Some(10),
+                app_rate_burst: Some(3),
+                max_arguments_bytes: Some(0),
+                max_resource_bytes: Some(99),
+                ..Default::default()
+            }
+        );
+        assert_eq!(o.output_validation, Some(OutputValidation::Off));
     }
 
     #[test]

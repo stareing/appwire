@@ -34,6 +34,8 @@ class McpTool extends StatefulWidget {
     this.activation,
     this.title,
     this.enabled = true,
+    this.annotations,
+    this.outputSchema,
     required this.handler,
     this.child,
   });
@@ -41,10 +43,18 @@ class McpTool extends StatefulWidget {
   final String name;
   final String description;
   final Map<String, Object?>? inputSchema;
+
+  /// 旧写法：优先用 [annotations]。
   final Risk risk;
   final Activation? activation;
   final String? title;
   final bool enabled;
+
+  /// 标准 MCP 工具注解；为 null 时不声明（Host 按 [risk] 推导）。
+  final ToolAnnotations? annotations;
+
+  /// 结果的 JSON Schema（MCP outputSchema）；为 null 时不声明。
+  final Map<String, Object?>? outputSchema;
   final ToolHandler handler;
   final Widget? child;
 
@@ -56,6 +66,8 @@ class McpTool extends StatefulWidget {
         activation: activation,
         title: title,
         enabled: enabled,
+        annotations: annotations,
+        outputSchema: outputSchema,
       );
 
   @override
@@ -243,6 +255,8 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
     Activation? activation,
     String? title,
     bool enabled = true,
+    ToolAnnotations? annotations,
+    Map<String, Object?>? outputSchema,
     required ToolHandler handler,
   }) {
     final scope = AppMcpScope.scopeOf(context);
@@ -261,7 +275,9 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
         risk: risk,
         activation: activation,
         title: title,
-        enabled: enabled);
+        enabled: enabled,
+        annotations: annotations,
+        outputSchema: outputSchema);
     final existing = _mcpTools[name];
     try {
       if (existing != null && !existing.isDisposed) {

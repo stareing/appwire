@@ -18,7 +18,8 @@ import {
   type NativeTool,
   type NativeToolSpec,
 } from './native.js'
-import { describeParseError, resolveInput, type ResolvedInput } from './schema.js'
+import { hasResultExtras, normalizeToolResult, type NormalizedResult } from './result.js'
+import { describeParseError, resolveInput, resolveOutput, type ResolvedInput } from './schema.js'
 import type {
   AppMcp,
   ConnectionState,
@@ -70,17 +71,18 @@ function mapState(info: NativeStateInfo): ConnectionState {
   }
 }
 
-/** 区分 `{ data, stateHints }` 与直接返回的数据。 */
-function normalizeResult(result: unknown): { data: unknown; stateHints: string[] } {
-  if (typeof result === 'object' && result !== null && !Array.isArray(result) && 'data' in result) {
-    const keys = Object.keys(result)
-    if (keys.every((k) => k === 'data' || k === 'stateHints')) {
-      const r = result as { data: unknown; stateHints?: unknown }
-      const hints = Array.isArray(r.stateHints) ? r.stateHints.filter((h): h is string => typeof h === 'string') : []
-      return { data: r.data, stateHints: hints }
-    }
-  }
-  return { data: result, stateHints: [] }
+/** 输入与输出定义解析后的结果。 */
+interface ResolvedTool extends ResolvedInput {
+  /** 输出 schema 的 JSON 文本；`undefined` 表示未声明。 */
+  outputSchemaJson: string | undefined
+}
+
+/** 解析输入与输出定义：都能同步完成时同步返回（同步注册的错误直接抛给调用方），否则返回 Promise。 */
+function resolveTool(def: Pick<ToolDefinition<any, any>, 'input' | 'outputSchema'>): ResolvedTool | Promise<ResolvedTool> {
+  const input = resolveInput(def.input)
+  const output = resolveOutput(def.outputSchema)
+  if (!(input instanceof Promise) && !(output instanceof Promise)) return { ...input, outputSchemaJson: output }
+  return Promise.all([input, output]).then(([i, o]) => ({ ...i, outputSchemaJson: o }))
 }
 
 /** 空操作的持有（未启用 / 旧版原生模块）。 */
@@ -116,7 +118,7 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
   handler: ToolHandler<any, any> | undefined
   load: ToolHandlerLoader<any, any> | undefined
   loading: Promise<ToolHandler<any, any>> | undefined
-  private resolved: ResolvedInput | undefined
+  private resolved: ResolvedTool | undefined
   private native: NativeTool | undefined
   private disposed = false
   /** 每次解析输入定义递增，丢弃过期的异步结果。 */
@@ -136,7 +138,7 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
     this.handler = handler
     this.load = load
     if (!registrar) return
-    const resolved = resolveInput(definition.input)
+    const resolved = resolveTool(definition)
     if (resolved instanceof Promise) {
       const seq = ++this.resolveSeq
       owner?.children.add(this)
@@ -153,7 +155,7 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
           }
         },
         (error: unknown) => {
-          this.logger.error(`[app-mcp] 工具 ${name} 的 input 定义无效`, error)
+          this.logger.error(`[app-mcp] 工具 ${name} 的 input / outputSchema 定义无效`, error)
         },
       )
       return
@@ -171,6 +173,8 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
     if (d.risk !== undefined) spec.risk = d.risk
     if (d.activation !== undefined) spec.activation = d.activation
     if (d.title !== undefined) spec.title = d.title
+    if (d.annotations !== undefined) spec.annotations = { ...d.annotations }
+    if (this.resolved?.outputSchemaJson !== undefined) spec.outputSchemaJson = this.resolved.outputSchemaJson
     return spec
   }
 
@@ -179,8 +183,8 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
     const { handler: _h, load: _l, ...meta } = changes as Partial<ToolDefinition<any, any>>
     this.def = { ...this.def, ...meta }
     if (!this.registrar) return
-    if ('input' in changes) {
-      const resolved = resolveInput(changes.input)
+    if ('input' in changes || 'outputSchema' in changes) {
+      const resolved = resolveTool(this.def)
       const seq = ++this.resolveSeq
       if (resolved instanceof Promise) {
         resolved.then(
@@ -189,7 +193,7 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
             this.resolved = r
             this.pushUpdate()
           },
-          (error: unknown) => this.logger.error(`[app-mcp] 工具 ${this.name} 的 input 定义无效`, error),
+          (error: unknown) => this.logger.error(`[app-mcp] 工具 ${this.name} 的 input / outputSchema 定义无效`, error),
         )
         return
       }
@@ -200,7 +204,9 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
 
   private pushUpdate(): void {
     if (!this.native) return // 尚在异步注册中：注册时会使用最新定义
-    this.native.update(this.spec())
+    // @compat 旧版原生模块没有 updateWith：注解与输出 schema 保持注册时的声明
+    if (this.native.updateWith) this.native.updateWith(this.spec())
+    else this.native.update(this.spec())
   }
 
   setHandler(handler: ToolDefinition<any, any>['handler']): void {
@@ -218,6 +224,44 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
 
   detach(): void {
     this.disposed = true
+  }
+
+  /**
+   * 提交成功结果：带业务状态 / 摘要 / 内容标注时用 `completeWith`，否则用 `complete`（与旧版行为一致）。
+   * @compat 旧版原生模块没有 `completeWith`：只提交 data 与 stateHints，并警告一次丢弃的字段。
+   * @error `completeWith` 拒绝取值（如非法 audience）时以 `HANDLER_ERROR` 失败完成，不让调用挂起到超时。
+   */
+  private complete(
+    call: NativeCall,
+    json: string,
+    result: NormalizedResult,
+    finish: (action: () => void) => void,
+    fail: (error: unknown) => void,
+  ): void {
+    const hints = result.stateHints ?? []
+    if (!hasResultExtras(result)) {
+      finish(() => call.complete(json, hints))
+      return
+    }
+    if (!call.completeWith) {
+      this.logger.warn(`[app-mcp] 原生模块版本过旧，工具 ${this.name} 结果中的 status / summary / annotations 已忽略`)
+      finish(() => call.complete(json, hints))
+      return
+    }
+    try {
+      call.completeWith({
+        dataJson: json,
+        stateHints: hints,
+        ...(result.status !== undefined && { status: result.status }),
+        ...(result.stateResource !== undefined && { stateResource: result.stateResource }),
+        ...(result.summary !== undefined && { summary: result.summary }),
+        ...(result.annotations !== undefined && { annotations: { ...result.annotations } }),
+      })
+      finish(() => {})
+    } catch (error) {
+      if (nativeErrorCode(error) === 'ALREADY_COMPLETED') return finish(() => {})
+      fail(new ToolCallError('HANDLER_ERROR', `返回的结构化结果无效：${error instanceof Error ? error.message : String(error)}`))
+    }
   }
 
   private onCall(call: NativeCall): void {
@@ -298,15 +342,15 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
       .then(
         (result) => {
           if (controller.signal.aborted) return
-          const { data, stateHints } = normalizeResult(result)
+          const normalized = normalizeToolResult(result)
           let json: string
           try {
-            json = stringifyJson(data)
+            json = stringifyJson(normalized.data)
           } catch (error) {
             fail(new ToolCallError('HANDLER_ERROR', `返回值无法序列化为 JSON：${String(error)}`))
             return
           }
-          finish(() => call.complete(json, stateHints))
+          this.complete(call, json, normalized, finish, fail)
         },
         (error: unknown) => {
           if (controller.signal.aborted) return

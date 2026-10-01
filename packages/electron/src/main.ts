@@ -20,7 +20,7 @@
  */
 
 import { ToolCallError, type AppMcp, type Logger, type Registrar, type Scope, type ToolHandle, type ResourceHandle } from '@app-mcp/node'
-import type { ConnectionState, ErrorKind, HoldHandle } from '@app-mcp/node'
+import type { ConnectionState, ErrorKind, HoldHandle, ToolResultEnvelope } from '@app-mcp/node'
 import {
   CHANNEL_EVENT,
   CHANNEL_OP,
@@ -168,7 +168,7 @@ class RendererSession {
         const pending = this.calls.get(op.callId)
         if (!pending) return undefined // 已取消或超时
         this.calls.delete(op.callId)
-        if (op.ok) pending.resolve({ data: op.data, ...(op.stateHints && { stateHints: op.stateHints }) })
+        if (op.ok) pending.resolve(callResult(op))
         else pending.reject(new ToolCallError(op.kind, op.message))
         return undefined
       }
@@ -274,6 +274,22 @@ function toolDefinition(spec: ToolSpecMessage) {
     ...(spec.risk !== undefined && { risk: spec.risk }),
     ...(spec.activation !== undefined && { activation: spec.activation }),
     ...(spec.enabled !== undefined && { enabled: spec.enabled }),
+    // 显式写出（可能为 undefined）：页面每次发送完整定义，update 时缺省表示清除之前的声明。
+    annotations: spec.annotations,
+    outputSchema: spec.outputSchema,
+  }
+}
+
+/** 页面的成功结果 → @app-mcp/node 的结构化结果（只带出现的字段；旧页面只有 data / stateHints）。 */
+function callResult(outcome: Extract<Outcome, { ok: true }>): ToolResultEnvelope<unknown> {
+  const { ok: _ok, data, stateHints, status, stateResource, summary, annotations } = outcome
+  return {
+    data,
+    ...(stateHints && { stateHints }),
+    ...(status !== undefined && { status }),
+    ...(stateResource !== undefined && { stateResource }),
+    ...(summary !== undefined && { summary }),
+    ...(annotations !== undefined && { annotations }),
   }
 }
 

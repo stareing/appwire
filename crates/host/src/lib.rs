@@ -141,6 +141,8 @@ fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
         waker: s.waker.clone(),
         tool_exposure: s.tool_exposure,
         tool_exposure_threshold: s.tool_exposure_threshold,
+        limits: s.limits.clone(),
+        output_validation: s.output_validation,
         ..defaults
     }
 }

@@ -210,6 +210,51 @@ describe('注册缓存与回放', () => {
     expect(schemas[2]).toEqual({ type: 'object', properties: { y: { type: 'number' } } })
   })
 
+  it('注解与输出 schema 交给核心；更新时 undefined 清除', async () => {
+    const h = setup()
+    await settle()
+    h.core.calls = []
+    const t = h.app.tool('orders.cancel', {
+      description: '取消订单',
+      risk: 'destructive',
+      annotations: { idempotentHint: true, openWorldHint: false, title: '取消' },
+      outputSchema: z.object({ cancelled: z.boolean() }),
+      handler: () => ({ cancelled: true }),
+    })
+    h.app.tool('orders.list', {
+      description: '订单',
+      outputSchema: { type: 'array', items: { type: 'string' } },
+      handler: () => [],
+    })
+    h.app.tool('plain', { description: '', handler: () => {} })
+    await settle()
+    const defs = h.core.callsOf('registerTool').map((c) => c[0] as Record<string, unknown>)
+    expect(defs[0]).toMatchObject({
+      risk: 'destructive',
+      annotations: { idempotentHint: true, openWorldHint: false, title: '取消' },
+      outputSchema: { type: 'object', properties: { cancelled: { type: 'boolean' } }, required: ['cancelled'] },
+    })
+    expect(defs[1]?.outputSchema).toEqual({ type: 'array', items: { type: 'string' } })
+    expect(defs[2]).not.toHaveProperty('annotations')
+    expect(defs[2]).not.toHaveProperty('outputSchema')
+
+    t.update({ annotations: { readOnlyHint: true }, outputSchema: { type: 'string' } })
+    t.update({ annotations: undefined, outputSchema: undefined })
+    await settle()
+    expect(h.core.callsOf('updateTool').map((c) => c[1])).toEqual([
+      { annotations: { readOnlyHint: true }, outputSchema: { type: 'string' } },
+      { annotations: null, outputSchema: null },
+    ])
+  })
+
+  it('输出 schema 不是对象时注册失败并记录', async () => {
+    const h = setup()
+    await settle()
+    h.app.tool('bad', { description: '', outputSchema: 'nope' as never, handler: () => {} })
+    await settle()
+    expect(h.logger.error).toHaveBeenCalledWith(expect.stringContaining('bad 的输出 schema 无效'), expect.anything())
+  })
+
   it('dispose 后的注册为空操作', async () => {
     const h = setup()
     await settle()
@@ -525,6 +570,33 @@ describe('工具调用', () => {
   it('拆开 { data, stateHints }', async () => {
     const { outcome } = await invoke(async () => ({ data: { ok: true }, stateHints: ['cart.state'] }))
     expect(outcome()).toEqual({ data: { ok: true }, stateHints: ['cart.state'] })
+  })
+
+  it('结构化结果：status / stateResource / summary / 内容注解', async () => {
+    const { outcome } = await invoke(() => ({
+      data: { orderId: 'o1' },
+      status: 'pending',
+      stateResource: 'order.state',
+      summary: '已提交，等待用户付款',
+      annotations: { audience: ['user'], priority: 0.8, lastModified: '2026-10-02T00:00:00Z' },
+      stateHints: ['cart.state'],
+    }))
+    expect(outcome()).toEqual({
+      data: { orderId: 'o1' },
+      stateHints: ['cart.state'],
+      status: 'pending',
+      stateResource: 'order.state',
+      summary: '已提交，等待用户付款',
+      annotations: { audience: ['user'], priority: 0.8, lastModified: '2026-10-02T00:00:00Z' },
+    })
+    expect((await invoke(() => ({ data: undefined, status: 'noop' }))).outcome()).toEqual({ data: null, status: 'noop' })
+  })
+
+  it('新增键取值不合法时整体作为 data（普通返回值不被误判）', async () => {
+    expect((await invoke(() => ({ data: [1], status: 'ok' }))).outcome()).toEqual({ data: { data: [1], status: 'ok' } })
+    expect((await invoke(() => ({ status: 'pending', summary: 's' }))).outcome()).toEqual({
+      data: { status: 'pending', summary: 's' },
+    })
   })
 
   it('含其他字段的对象整体作为 data', async () => {

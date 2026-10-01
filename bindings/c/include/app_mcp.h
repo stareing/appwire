@@ -44,7 +44,13 @@
  *   0 = 默认 2000，负数 = 不留窗口）与 sleep_on_background（B4 进入后台且空闲时立即休眠）；新增 AmResourceOptions（带
  *   struct_size，realtime：需实时推送，B3）与 am_resource_register_ex。默认行为变化：本连接处理过调用后空闲时长取
  *   min(合并窗口, 空闲时长)；普通资源的订阅不再阻止休眠。legacy_timers = true 同样恢复这两项旧行为。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v8 仍为 3。）
+ * - v9（第 14 项 S1/S2、第 19 项 R1–R3，spec/protocol.md 第 3 节与 3.2）：只做新增，已有结构体布局与函数签名不变。
+ *   · AmToolOptions（带 struct_size）+ am_tool_register_ex / am_tool_update_ex：标准 MCP 工具注解（annotations_json）
+ *     与结果的 JSON Schema（output_schema_json）。AmToolSpec.risk 为旧写法，优先用注解；两者同时声明时注解中的字段优先。
+ *   · AmResultStatus、AmCallResult（带 struct_size）+ am_call_complete_ex：结构化调用结果（业务状态 done / pending /
+ *     partial / noop、state_resource、summary、内容注解 annotations_json）。am_call_complete 等同于只给 data_json 与 state_hints。
+ *   · am_call_fail 的错误类别新增 "RATE_LIMITED"、"PAYLOAD_TOO_LARGE"（由 Host 产生，App 一般不用）。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v9 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -140,6 +146,14 @@ typedef enum AmHeartbeatMode {
     AM_HEARTBEAT_ALWAYS = 1,
     AM_HEARTBEAT_OFF = 2
 } AmHeartbeatMode;
+
+/* v9：调用结果的业务状态（AmCallResult.status，spec/protocol.md 3.2）。 */
+typedef enum AmResultStatus {
+    AM_RESULT_DONE = 0,            /* 已完成（缺省） */
+    AM_RESULT_PENDING = 1,         /* 已受理、尚未完成（等待用户在 App 内确认或异步处理）；后续状态见 state_resource */
+    AM_RESULT_PARTIAL = 2,         /* 只完成了一部分，说明见 summary */
+    AM_RESULT_NOOP = 3             /* 没有做任何改动（目标状态已满足或无事可做） */
+} AmResultStatus;
 
 typedef enum AmLifecycleMode {
     AM_LIFECYCLE_PERSISTENT = 0,   /* 不休眠（默认） */
@@ -282,6 +296,18 @@ typedef struct AmToolSpec {
     bool enabled;
 } AmToolSpec;
 
+/* v9：am_tool_register_ex / am_tool_update_ex 的工具选项。struct_size 必须设为 sizeof(AmToolOptions)；
+ * struct_size 不含的字段按 NULL 处理。 */
+typedef struct AmToolOptions {
+    uint32_t struct_size;
+    /* 可为 NULL：未声明（Host 按 risk 推导）。标准 MCP 工具注解的 JSON 对象，字段均可选：
+     * {"title": string, "readOnlyHint": bool, "destructiveHint": bool, "idempotentHint": bool, "openWorldHint": bool}；
+     * 原样转发给 Agent，本库不据此做判断。 */
+    const char *annotations_json;
+    /* 可为 NULL：未声明。结果的 JSON Schema 文本（MCP outputSchema）。 */
+    const char *output_schema_json;
+} AmToolOptions;
+
 typedef struct AmResourceSpec {
     const char *name;
     const char *description;
@@ -294,6 +320,21 @@ typedef struct AmResourceOptions {
     bool realtime;                 /* 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时保持连接、休眠中变化时回连推送；
                                       默认 false：订阅不阻止休眠，变化在下次连接时补发 */
 } AmResourceOptions;
+
+/* v9：am_call_complete_ex 的调用结果。struct_size 必须设为 sizeof(AmCallResult)；struct_size 不含的字段取默认值
+ * （NULL / 0 / AM_RESULT_DONE）。全部字段为默认值时等同于 am_call_complete(call, NULL, NULL, 0)。 */
+typedef struct AmCallResult {
+    uint32_t struct_size;
+    const char *data_json;               /* 可为 NULL：无返回值（null，Host 对模型输出"已完成"） */
+    const char *const *state_hints;      /* 调用后内容可能已变化的资源名；state_hints_len 为 0 时可为 NULL */
+    size_t state_hints_len;
+    AmResultStatus status;               /* 默认 AM_RESULT_DONE */
+    const char *state_resource;          /* 可为 NULL；PENDING 时可读取后续状态的资源名 */
+    const char *summary;                 /* 可为 NULL；一句面向模型 / 用户的结论（PARTIAL 时说明完成了哪部分） */
+    /* 可为 NULL。结果内容的标注（MCP 内容注解）JSON 对象，字段均可选：
+     * {"audience": ["user" | "assistant", ...], "priority": 0..1, "lastModified": "<ISO 8601>"}；Host 原样转发。 */
+    const char *annotations_json;
+} AmCallResult;
 
 /* ---------------------------------------------------------------------------
  * 通用
@@ -380,8 +421,16 @@ void am_scope_free(AmScope *scope);
 AmStatus am_tool_register(AmScope *scope, const AmToolSpec *spec,
                           AmToolFn handler, void *user_data, AmFreeFn free_user_data,
                           AmTool **out);
-/* 用新定义整体替换（spec->name 被忽略）。 */
+/* v9：同 am_tool_register，另带工具选项（options 可为 NULL：不声明）。annotations_json 不是合法的注解 JSON 时
+ * 返回 AM_ERR_INVALID_JSON，output_schema_json 不是合法 JSON 时返回 AM_ERR_INVALID_SCHEMA。 */
+AmStatus am_tool_register_ex(AmScope *scope, const AmToolSpec *spec, const AmToolOptions *options,
+                             AmToolFn handler, void *user_data, AmFreeFn free_user_data,
+                             AmTool **out);
+/* 用新定义整体替换（spec->name 被忽略）。已声明的工具选项（注解、输出 schema）保持不变。 */
 AmStatus am_tool_update(AmTool *tool, const AmToolSpec *spec);
+/* v9：用新定义与选项整体替换（spec->name 被忽略）。options 为 NULL 或其中的字段为 NULL 表示清除该声明。
+ * 错误与 am_tool_register_ex 相同；出错时工具保持原定义。 */
+AmStatus am_tool_update_ex(AmTool *tool, const AmToolSpec *spec, const AmToolOptions *options);
 AmStatus am_tool_set_enabled(AmTool *tool, bool enabled);
 /* 注销工具。幂等。 */
 AmStatus am_tool_dispose(AmTool *tool);
@@ -419,6 +468,12 @@ AmStatus am_call_set_cancel_callback(AmCall *call, AmCancelFn on_cancel, void *u
  * data_json 不是合法 UTF-8 时按 AM_ERR_INVALID_JSON 处理（不消费）；state_hints 含 NULL / 非法 UTF-8 时
  * 返回 AM_ERR_INVALID_ARGUMENT，调用以 HANDLER_ERROR 结束并消费 call。call 为 NULL 时返回 AM_ERR_INVALID_ARGUMENT。 */
 AmStatus am_call_complete(AmCall *call, const char *data_json, const char *const *state_hints, size_t state_hints_len);
+/* v9：成功完成并消费 call，附带业务状态、摘要与内容注解。result 为 NULL 时等同 am_call_complete(call, NULL, NULL, 0)。
+ * data_json 或 annotations_json 非法（含非法 UTF-8）时返回 AM_ERR_INVALID_JSON，call 不会被消费，可以重试。
+ * struct_size 过小、status 非法、state_hints / state_resource / summary 含 NULL 或非法 UTF-8 时返回
+ * AM_ERR_INVALID_ARGUMENT，调用以 HANDLER_ERROR 结束并消费 call。调用已被取消时仍然消费 call，并返回
+ * AM_ERR_ALREADY_COMPLETED。call 为 NULL 时返回 AM_ERR_INVALID_ARGUMENT。 */
+AmStatus am_call_complete_ex(AmCall *call, const AmCallResult *result);
 /* 失败完成并消费 call。kind 为协议错误类别字符串（如 "HANDLER_ERROR"），未知值按 HANDLER_ERROR 处理。 */
 AmStatus am_call_fail(AmCall *call, const char *kind, const char *message);
 /* v3：失败完成并消费 call，附带结构化详情（JSON 文本；对象的字段合并进错误的 data，其他值放在

@@ -4,7 +4,9 @@
 
 use std::time::Duration;
 
-use app_mcp_protocol::{Activation, ErrorKind, LifecycleMode, Risk, ToolError, Visibility};
+use app_mcp_protocol::{
+    Activation, ContentAnnotations, ErrorKind, LifecycleMode, ResultStatus, Risk, ToolAnnotations, ToolError, Visibility,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -95,6 +97,13 @@ pub struct HubTool {
     pub risk: Risk,
     pub activation: Activation,
     pub availability: Availability,
+    /// Agent 看到的 MCP 工具注解：App 声明的字段原样保留，缺少的按 `risk` 推导（spec/protocol.md 第 3 节）；
+    /// 上游工具为其原样注解。
+    #[serde(default)]
+    pub annotations: ToolAnnotations,
+    /// App 声明的结果 JSON Schema（原样；MCP 出口按需包装，spec/hub-api.md 3.2）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -191,6 +200,9 @@ pub struct HubResource {
     pub mime_type: Option<String>,
     /// App 未连接（来自静态清单）时为 `false`。
     pub available: bool,
+    /// 资源内容的标注（MCP 内容注解），原样。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ContentAnnotations>,
 }
 
 /// 资源内容。
@@ -266,6 +278,18 @@ pub struct CallOutcome {
     pub instance_id: Option<String>,
     /// 该会话首次接触此 App（或总览版本变化）时附带。
     pub overview: Option<AppOverviewInfo>,
+    /// App 声明的业务状态（spec/protocol.md 3.2；缺省 `done`）。
+    #[serde(default)]
+    pub status: ResultStatus,
+    /// `pending` 时可读取后续状态的资源 URI（`app-mcp://<appId>/<资源名>`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_resource: Option<String>,
+    /// App 给出的一句结论。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// App 对结果内容的标注（MCP 内容注解），原样。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ContentAnnotations>,
 }
 
 /// Hub 操作失败：[`ToolError`] 的包装（同一套错误码，spec/protocol.md §4）。
@@ -375,6 +399,12 @@ pub struct HubStatus {
     /// 租约策略与统计（spec/lifecycle.md 第 13 节 B2）；旧 Host 的 `/status` 没有该字段时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease: Option<crate::lease::LeaseStatus>,
+    /// 资源保护策略（spec/hub-api.md 3.11，全部字段给出）；旧 Host 没有时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<crate::limits::LimitOverrides>,
+    /// 结果与 `outputSchema` 不符时的处理；旧 Host 没有时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_validation: Option<crate::limits::OutputValidation>,
 }
 
 /// 主 HTTP 服务的令牌策略。
@@ -476,6 +506,32 @@ pub struct AppStatus {
     /// Hub 启动以来为该 App 实际发出的唤醒激活次数（含冷启动；上游为 0）。spec 之外的补充字段。
     #[serde(default)]
     pub wakes: u64,
+    /// Hub 启动以来因限流被拒绝的调用次数（spec/hub-api.md 3.11）。
+    #[serde(default)]
+    pub rate_limited: u64,
+    /// Hub 启动以来因大小上限被拒绝的参数 / 结果 / 资源次数（spec/hub-api.md 3.11）。
+    #[serde(default)]
+    pub too_large: u64,
+    /// 各工具的声明（`risk` 与 MCP 注解），供 `app-mcp-host doctor` 展示（docs/plans/14-safety.md S5）。旧 Host 没有时为空。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDeclaration>,
+}
+
+/// 一个工具的声明（[`AppStatus::tools`]）。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ToolDeclaration {
+    /// 局部名（不含 appId）。
+    pub name: String,
+    /// 旧写法 `risk`（未声明时为缺省 `write`）。
+    pub risk: Risk,
+    /// App 声明的 MCP 注解（原样）；`None` = 未声明。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ToolAnnotations>,
+    /// Agent 实际看到的注解（声明优先，缺少的按 `risk` 推导）。
+    pub effective: ToolAnnotations,
+    /// 是否声明了 `outputSchema`。
+    pub output_schema: bool,
 }
 
 /// 最近一次错误。
@@ -546,6 +602,9 @@ pub struct ApprovalRequest {
     pub risk: Risk,
     pub arguments: Value,
     pub session: Option<String>,
+    /// 工具的 MCP 注解（与 [`HubTool::annotations`] 相同），供厂商按声明决定是否确认。
+    #[serde(default)]
+    pub annotations: ToolAnnotations,
 }
 
 /// 厂商 UI 接管 App 配对。
@@ -696,6 +755,10 @@ mod tests {
             state_hints: vec![],
             instance_id: None,
             overview: None,
+            annotations: None,
+            state_resource: None,
+            status: Default::default(),
+            summary: None,
         };
         let v = serde_json::to_value(&o).unwrap();
         assert_eq!(v["result"]["error"]["kind"], "USER_REJECTED");

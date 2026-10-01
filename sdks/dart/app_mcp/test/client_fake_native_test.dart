@@ -40,6 +40,60 @@ void main() {
     expect(sizeOf<AmLifecycle>(), fake.sizeOf(6));
     expect(sizeOf<AmClientOptions>(), fake.sizeOf(7));
     expect(sizeOf<AmResourceOptions>(), fake.sizeOf(14));
+    expect(sizeOf<AmToolOptions>(), fake.sizeOf(16));
+    expect(sizeOf<AmCallResult>(), fake.sizeOf(17));
+  });
+
+  group('工具声明与结构化结果（v9）', () {
+    test('注解与 outputSchema 经 am_tool_register_ex 传入；replace 可清除', () {
+      final t = client.tool('order.submit',
+          description: '下单',
+          annotations: const ToolAnnotations(idempotentHint: false, openWorldHint: true),
+          outputSchema: {'type': 'object'},
+          handler: (args, ctx) => null);
+      expect(fake.toolOptions('order.submit'), '{"idempotentHint":false,"openWorldHint":true}|{"type":"object"}');
+      client.tool('plain', description: '普通', handler: (args, ctx) => null);
+      expect(fake.toolOptions('plain'), 'null|null');
+      t.update(annotations: const ToolAnnotations(readOnlyHint: true));
+      expect(fake.toolOptions('order.submit'), '{"readOnlyHint":true}|{"type":"object"}');
+      t.replace(ToolSpec(name: 'order.submit', description: '下单'));
+      expect(fake.toolOptions('order.submit'), 'null|null');
+    });
+
+    test('返回带业务状态的 ToolResult 经 am_call_complete_ex 完成', () async {
+      client.tool('order.submit',
+          description: '下单',
+          handler: (args, ctx) => const ToolResult({'orderId': 'o1'},
+              stateHints: ['cart'],
+              status: ToolResultStatus.pending,
+              stateResource: 'order.state',
+              summary: 'submitted',
+              annotations: ContentAnnotations(audience: [ContentAudience.user], priority: 0.5)));
+      final r = await invoke('order.submit', {});
+      expect(r, {
+        'ok': true,
+        'data': {'orderId': 'o1'},
+        'hints': ['cart'],
+        'status': AmResultStatus.pending,
+        'stateResource': 'order.state',
+        'summary': 'submitted',
+        'annotations': {
+          'audience': ['user'],
+          'priority': 0.5
+        },
+      });
+    });
+
+    test('只带 stateHints 的 ToolResult 与普通返回值仍走 am_call_complete（回归）', () async {
+      client.tool('a', description: 'a', handler: (args, ctx) => const ToolResult(1, stateHints: ['x']));
+      client.tool('b', description: 'b', handler: (args, ctx) => {'ok': true});
+      expect(await invoke('a', {}), {'ok': true, 'data': 1, 'hints': ['x']});
+      expect(await invoke('b', {}), {
+        'ok': true,
+        'data': {'ok': true},
+        'hints': <Object?>[]
+      });
+    });
   });
 
   group('功耗选项（v7 / v8）', () {

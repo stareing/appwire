@@ -183,6 +183,89 @@ describe('工具', () => {
     expect(await native.call('raw')).toEqual({ ok: true, data: { data: 1, other: 2 }, stateHints: [] })
   })
 
+  it('注解与 outputSchema 随注册下发；update 可替换与清除', async () => {
+    const { app, native } = setup()
+    const output = { type: 'object', properties: { orderId: { type: 'string' } } }
+    const t = app.tool('order.submit', {
+      description: '下单',
+      risk: 'payment',
+      annotations: { idempotentHint: false, openWorldHint: true, title: '提交订单' },
+      outputSchema: output,
+      handler: () => ({ orderId: 'o1' }),
+    })
+    expect(native.tools.get('order.submit')?.spec).toMatchObject({
+      risk: 'payment',
+      annotations: { idempotentHint: false, openWorldHint: true, title: '提交订单' },
+      outputSchemaJson: JSON.stringify(output),
+    })
+    // zod：按输出形态转换（根类型不限于 object）
+    t.update({ outputSchema: fakeZod({ type: 'array' }, (v) => v) })
+    expect(native.tools.get('order.submit')?.spec.outputSchemaJson).toBe('{"type":"array"}')
+    t.update({ annotations: undefined, outputSchema: undefined })
+    const spec = native.tools.get('order.submit')?.spec
+    expect(spec?.annotations).toBeUndefined()
+    expect(spec?.outputSchemaJson).toBeUndefined()
+    expect(() => app.tool('bad', { description: 'b', outputSchema: [] as never, handler: () => 1 })).toThrow(
+      /outputSchema/,
+    )
+  })
+
+  it('旧版原生模块没有 updateWith 时 update 保留注册时的声明', () => {
+    const { app, native } = setup()
+    const t = app.tool('x', { description: 'x', annotations: { readOnlyHint: true }, handler: () => 1 })
+    const rec = native.tools.get('x')!
+    const tool = (t as unknown as { native: { updateWith?: unknown } }).native
+    tool.updateWith = undefined
+    t.update({ annotations: undefined, description: 'y' })
+    expect(rec.spec).toMatchObject({ description: 'y', annotations: { readOnlyHint: true } })
+  })
+
+  it('结构化结果：status / stateResource / summary / 内容注解', async () => {
+    const { app, native, logger } = setup()
+    app.tool('order.pay', {
+      description: '付款',
+      handler: () => ({
+        data: { orderId: 'o1' },
+        status: 'pending' as const,
+        stateResource: 'order.state',
+        summary: '已提交，等待用户在 App 内付款',
+        annotations: { audience: ['user' as const], priority: 0.5 },
+        stateHints: ['cart'],
+      }),
+    })
+    app.tool('order.none', { description: 'n', handler: () => ({ data: undefined, status: 'noop' as const }) })
+    // 键属于信封但取值不合法：整体作为数据（不误判）
+    app.tool<unknown, unknown>('plain', { description: 'p', handler: () => ({ data: [1], status: 'success' }) })
+    app.tool('bad.audience', {
+      description: 'b',
+      handler: () => ({ data: 1, annotations: { audience: ['robot'] } }) as unknown as number,
+    })
+    expect(await native.call('order.pay')).toEqual({
+      ok: true,
+      data: { orderId: 'o1' },
+      stateHints: ['cart'],
+      status: 'pending',
+      stateResource: 'order.state',
+      summary: '已提交，等待用户在 App 内付款',
+      annotations: { audience: ['user'], priority: 0.5 },
+    })
+    expect(await native.call('order.none')).toEqual({ ok: true, data: null, stateHints: [], status: 'noop' })
+    expect(await native.call('plain')).toEqual({ ok: true, data: { data: [1], status: 'success' }, stateHints: [] })
+    expect(await native.call('bad.audience')).toMatchObject({ ok: false, kind: 'HANDLER_ERROR' })
+    expect(logger.error).not.toHaveBeenCalled()
+  })
+
+  it('旧版原生模块没有 completeWith：只提交 data / stateHints 并警告', async () => {
+    const { app, native, logger } = setup()
+    app.tool('t', { description: 't', handler: () => ({ data: 1, summary: '完成' }) })
+    const { callId, result } = native.invoke('t', {})
+    void callId
+    const call = [...(native as unknown as { calls: Map<string, { completeWith?: unknown }> }).calls.values()][0]!
+    call.completeWith = undefined
+    expect(await result).toEqual({ ok: true, data: 1, stateHints: [] })
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('原生模块版本过旧'))
+  })
+
   it('ToolCallError 映射为对应类别，其他异常为 HANDLER_ERROR', async () => {
     const { app, native } = setup()
     app.tool('reject', {

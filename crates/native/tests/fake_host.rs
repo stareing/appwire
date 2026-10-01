@@ -5,8 +5,8 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use app_mcp_native::{
-    CallHandle, ErrorKind, NativeClient, NativeConfig, ReadHandle, ResourceReader, ResourceSpec,
-    ToolHandler, ToolSpec,
+    CallHandle, CallResult, ContentAnnotations, ErrorKind, NativeClient, NativeConfig, ReadHandle, ResourceReader,
+    ResourceSpec, ResultStatus, ToolAnnotations, ToolHandler, ToolOptions, ToolSpec,
 };
 use serde_json::{Value, json};
 
@@ -112,4 +112,65 @@ fn native_client_against_fake_host() {
     assert_eq!(out[2]["result"]["contents"], json!({ "count": 3 }));
     assert_eq!(out[3]["error"]["data"]["kind"], "USER_REJECTED");
     assert_eq!(out[4]["error"]["data"]["kind"], "TOOL_NOT_FOUND");
+}
+
+struct Submit;
+impl ToolHandler for Submit {
+    fn invoke(&self, call: CallHandle) {
+        call.complete_with(CallResult {
+            data_json: Some(r#"{"orderId":"o1"}"#.into()),
+            status: ResultStatus::Pending,
+            state_resource: Some("order.state".into()),
+            summary: Some("已提交，等待用户在 App 内付款".into()),
+            annotations: Some(ContentAnnotations { priority: Some(0.5), ..ContentAnnotations::default() }),
+            ..CallResult::default()
+        })
+        .unwrap();
+    }
+}
+
+/// 工具选项（MCP 注解、输出 schema）与完整结果（状态、摘要、内容标注）原样到达 Host。
+#[test]
+fn tool_options_and_call_result_reach_host() {
+    let Some(bin) = fake_host_path() else {
+        eprintln!("未找到 fake_host 可执行文件，跳过（先运行 cargo build --example fake_host）");
+        return;
+    };
+    let mut child = Command::new(bin)
+        .args(["--tool-info", "--invoke", "order.submit", "--timeout-ms", "8000"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let addr = lines.next().unwrap().unwrap().strip_prefix("LISTENING ").expect("LISTENING 行").to_owned();
+    let mut config = NativeConfig::new("fake-test", "Fake");
+    config.host_url = format!("ws://{addr}");
+    let client = NativeClient::new(config, None).unwrap();
+    let options = ToolOptions {
+        annotations: Some(ToolAnnotations { idempotent_hint: Some(false), open_world_hint: Some(true), ..Default::default() }),
+        output_schema_json: Some(r#"{"type":"object","properties":{"orderId":{"type":"string"}}}"#.into()),
+    };
+    let tool = client.register_tool_with(ToolSpec::new("order.submit", "下单"), options, Arc::new(Submit)).unwrap();
+    // 非法 outputSchema：注册失败，不影响已注册的工具
+    let bad = ToolOptions { output_schema_json: Some("{".into()), ..ToolOptions::default() };
+    assert!(tool.update_with(ToolSpec::new("order.submit", "下单"), bad).is_err());
+    client.start();
+
+    let out: Vec<Value> = lines.map(|l| serde_json::from_str(&l.unwrap()).unwrap()).collect();
+    assert!(child.wait().unwrap().success());
+    assert_eq!(
+        out[0]["toolInfo"]["order.submit"],
+        json!({
+            "risk": "write",
+            "annotations": { "idempotentHint": false, "openWorldHint": true },
+            "outputSchema": { "type": "object", "properties": { "orderId": { "type": "string" } } }
+        })
+    );
+    assert_eq!(
+        out[1]["result"],
+        json!({
+            "data": { "orderId": "o1" }, "status": "pending", "stateResource": "order.state",
+            "summary": "已提交，等待用户在 App 内付款", "annotations": { "priority": 0.5 }
+        })
+    );
 }

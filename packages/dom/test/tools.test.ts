@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { attachDom } from '../src'
+import { toErrorKind } from '../src/attrs'
 import { createFakeAppMcp, settle, type FakeAppMcp } from './fake'
 
 let app: FakeAppMcp
@@ -306,5 +307,13 @@ describe('detach', () => {
     const scope = app.scope('dom')
     detach = attachDom(scope, { snapshot: false })
     expect(app.tools.get('a')!.scope).toBe('dom')
+  })
+})
+
+describe('toErrorKind', () => {
+  it('识别全部协议错误类别（含 Host 侧的 RATE_LIMITED / PAYLOAD_TOO_LARGE），未知值归为 HANDLER_ERROR', () => {
+    expect(toErrorKind('RATE_LIMITED')).toBe('RATE_LIMITED')
+    expect(toErrorKind('PAYLOAD_TOO_LARGE')).toBe('PAYLOAD_TOO_LARGE')
+    expect(toErrorKind('NOPE')).toBe('HANDLER_ERROR')
   })
 })

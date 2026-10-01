@@ -10,10 +10,16 @@
  *  * @risk payment
  *  * @activation foreground
  *  * @title 结算
+ *  * @idempotent false
+ *  * @openWorld
  *  * @param addressId 收货地址 ID
  *  *\/
- * export async function checkout(addressId: string, note?: string) { ... }
+ * export async function checkout(addressId: string, note?: string): Promise<{ orderId: string }> { ... }
  * ```
+ *
+ * 标准 MCP 工具注解（spec/protocol.md 第 3 节）：`@readOnly`、`@destructive`、`@idempotent`、`@openWorld`，
+ * 不带值为 true，也可写 `true` / `false`。返回值类型（去掉 Promise；返回结构化结果时取 `data` 的类型）
+ * 转换为 `outputSchema`，无返回值、`any` / `unknown` 或无法转换时不声明（后者给出警告）。
  *
  * `@mcp` 后首个词在以下情况作为工具名，否则整段为描述、工具名取 `<文件名>.<导出名>`：
  * 词符合名称规则，且（含 `.`，或 JSDoc 正文已给出描述）。
@@ -26,7 +32,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import ts from 'typescript'
-import type { Activation, Risk } from '@app-mcp/web'
+import type { Activation, Risk, ToolAnnotations, ToolResultEnvelope } from '@app-mcp/web'
 import { NAME_PATTERN, appIdPrefixMessage } from './manifest'
 
 // ---------------------------------------------------------------------------
@@ -56,6 +62,8 @@ export interface AnnotationScanOptions {
   tsconfig?: string
   /** App ID。给出时，工具名以 `<appId>.` 开头视为误写的全名并报错（工具名应为局部名）。 */
   appId?: string
+  /** 从返回值类型生成 `outputSchema`，默认 true。 */
+  outputSchema?: boolean
 }
 
 /** 调用方式：无参数、单个对象参数直接传入、多个位置参数按名称从输入对象中取出。 */
@@ -70,7 +78,11 @@ export interface AnnotatedTool {
   title?: string
   risk?: Risk
   activation?: Activation
+  /** 标准 MCP 工具注解（`@readOnly` 等标签）。 */
+  annotations?: ToolAnnotations
   inputSchema: { type: 'object'; [key: string]: unknown }
+  /** 从返回值类型推导的 JSON Schema。 */
+  outputSchema?: Record<string, unknown>
   /** 源文件绝对路径（`/` 分隔）。 */
   file: string
   /** 源文件相对 root 的路径。 */
@@ -95,6 +107,25 @@ export interface AnnotationScanResult {
 const RISKS: readonly string[] = ['read', 'write', 'destructive', 'payment', 'os-sensitive']
 const ACTIVATIONS: readonly string[] = ['headless', 'background', 'foreground']
 const MCP_TAG = /@mcp\b/
+/** 注解标签 → 工具注解字段（`@readonly` 是 JSDoc 常见写法，同 `@readOnly`）。 */
+const HINT_TAGS: Readonly<Record<string, keyof ToolAnnotations>> = {
+  readOnly: 'readOnlyHint',
+  readonly: 'readOnlyHint',
+  destructive: 'destructiveHint',
+  idempotent: 'idempotentHint',
+  openWorld: 'openWorldHint',
+}
+/** 注解标签的取值：不带值为 true。 */
+const HINT_VALUES: Readonly<Record<string, boolean>> = { '': true, true: true, false: false }
+/** 结构化结果的键（返回值是该形状时取 `data` 的类型作为输出）。 */
+const ENVELOPE_KEYS: readonly string[] = [
+  'data',
+  'stateHints',
+  'status',
+  'stateResource',
+  'summary',
+  'annotations',
+] satisfies (keyof ToolResultEnvelope<unknown>)[]
 
 function slash(path: string): string {
   return path.replace(/\\/g, '/')
@@ -518,6 +549,7 @@ function analyzeCandidate(
   warnings: string[],
   errors: string[],
   appId: string | undefined,
+  withOutputSchema: boolean,
 ): AnnotatedTool | null {
   const source = slash(relative(root, file))
   const doc = parseDoc(candidate.docNode)!
@@ -579,6 +611,15 @@ function analyzeCandidate(
     }
     tool.activation = activation as Activation
   }
+  const annotations: ToolAnnotations = {}
+  for (const tag of doc.tags) {
+    const field = HINT_TAGS[tag.name]
+    if (field === undefined) continue
+    const value = HINT_VALUES[tag.text]
+    if (value === undefined) return skip(`的 @${tag.name} "${tag.text}" 不合法（不写值，或写 true / false）`)
+    ;(annotations as Record<string, boolean>)[field] = value
+  }
+  if (Object.keys(annotations).length > 0) tool.annotations = annotations
 
   // 参数
   const paramDocs = new Map<string, string>()
@@ -588,6 +629,10 @@ function analyzeCandidate(
   const signature = checker.getSignatureFromDeclaration(candidate.fn)
   if (!signature) return skip('无法解析函数签名')
   const ctx: ConvertContext = { checker, warnings, label: `${where}（工具 ${name}）`, stack: [] }
+  if (withOutputSchema) {
+    const outputSchema = returnSchema(signature, ctx)
+    if (outputSchema) tool.outputSchema = outputSchema
+  }
   const params = candidate.fn.parameters.map((decl, i) => {
     const symbol = signature.parameters[i]
     const type = symbol ? checker.getTypeOfSymbol(symbol) : checker.getTypeAtLocation(decl)
@@ -649,6 +694,40 @@ function analyzeCandidate(
     if (err instanceof UnsupportedType) return skip(`参数无法转换为 JSON Schema：${err.message}`)
     throw err
   }
+}
+
+/** 不提供任何信息的返回值类型：无返回值、any / unknown、never、只有 null。 */
+const OPAQUE_RETURN = ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Never | ts.TypeFlags.Null
+
+/** 返回值是结构化结果（含 `data`，其余键都属于信封）时取 `data` 的类型。 */
+function envelopeDataType(type: ts.Type, checker: ts.TypeChecker): ts.Type | undefined {
+  if (type.isUnion() || !(type.flags & ts.TypeFlags.Object)) return undefined
+  const props = checker.getPropertiesOfType(type)
+  const data = props.find((p) => p.getName() === 'data')
+  if (!data || !props.every((p) => ENVELOPE_KEYS.includes(p.getName()))) return undefined
+  return checker.getTypeOfSymbol(data)
+}
+
+/**
+ * 返回值类型 → `outputSchema`（去掉 Promise；结构化结果取 `data`）。可能返回 undefined 时允许 null
+ * （SDK 把无返回值发为 null）。没有信息时返回 undefined；无法转换时给出警告并返回 undefined。
+ */
+function returnSchema(signature: ts.Signature, ctx: ConvertContext): Schema | undefined {
+  const raw = signature.getReturnType()
+  const awaited = ctx.checker.getAwaitedType(raw) ?? raw
+  if (awaited.flags & OPAQUE_RETURN) return undefined
+  const data = envelopeDataType(awaited, ctx.checker) ?? awaited
+  if (data.flags & OPAQUE_RETURN) return undefined
+  let schema: Schema
+  try {
+    schema = toSchema(data, ctx, 0, '返回值')
+  } catch (err) {
+    if (!(err instanceof UnsupportedType)) throw err
+    ctx.warnings.push(`${ctx.label}：返回值类型无法转换为 outputSchema（${err.message}），不声明 outputSchema`)
+    return undefined
+  }
+  if (Object.keys(schema).length === 0) return undefined
+  return includesUndefined(data) ? { anyOf: [schema, { type: 'null' }] } : schema
 }
 
 /**
@@ -721,7 +800,17 @@ export function createAnnotationScanner(options: AnnotationScanOptions): Annotat
       if (candidates.length === 0) continue
       const exports = exportNames(checker, sourceFile)
       for (const candidate of candidates) {
-        const tool = analyzeCandidate(candidate, file, root, checker, exports, warnings, errors, options.appId)
+        const tool = analyzeCandidate(
+          candidate,
+          file,
+          root,
+          checker,
+          exports,
+          warnings,
+          errors,
+          options.appId,
+          options.outputSchema ?? true,
+        )
         if (tool) tools.push(tool)
       }
     }
@@ -778,7 +867,9 @@ export interface AnnotatedToolInfo {
   title?: string
   risk?: Risk
   activation?: Activation
+  annotations?: ToolAnnotations
   inputSchema: { type: 'object'; [key: string]: unknown }
+  outputSchema?: Record<string, unknown>
   /** 源文件相对项目根目录的路径。 */
   source: string
   exportName: string
@@ -796,6 +887,8 @@ export function toAnnotatedToolInfo(tool: AnnotatedTool): AnnotatedToolInfo {
   if (tool.title !== undefined) info.title = tool.title
   if (tool.risk !== undefined) info.risk = tool.risk
   if (tool.activation !== undefined) info.activation = tool.activation
+  if (tool.annotations !== undefined) info.annotations = tool.annotations
+  if (tool.outputSchema !== undefined) info.outputSchema = tool.outputSchema
   if (tool.member !== undefined) info.member = tool.member
   return info
 }
@@ -840,6 +933,8 @@ export function generateAnnotatedModule(tools: readonly AnnotatedTool[]): string
     '      if (tool.title !== undefined) definition.title = tool.title',
     '      if (tool.risk !== undefined) definition.risk = tool.risk',
     '      if (tool.activation !== undefined) definition.activation = tool.activation',
+    '      if (tool.annotations !== undefined) definition.annotations = tool.annotations',
+    '      if (tool.outputSchema !== undefined) definition.outputSchema = tool.outputSchema',
     '      handles.push(registrar.tool(tool.name, definition))',
     '    })',
     '  } catch (err) {',

@@ -330,6 +330,10 @@ fn outcome_error_json(call_id: &str, e: ToolError) -> String {
         state_hints: Vec::new(),
         instance_id: None,
         overview: None,
+        status: hub::ResultStatus::Done,
+        state_resource: None,
+        summary: None,
+        annotations: None,
     };
     serde_json::to_string(&o).unwrap_or_default()
 }

@@ -56,6 +56,14 @@
  *   · HubStatus JSON 中新增：lease（mode、defaultMs、minMs、maxMs、marginMs、window、idleRevokeMs、adaptiveGrants、
  *     defaultGrants、revokedSessionEnd、revokedIdle、pairs[{session、appId、samples、nextTtlMs、adaptive}]）。
  *   · awakeReasons 的 "subscription" 只计声明 realtime 的资源的订阅；ResourceInfo 可带 realtime。
+ * - v9（资源保护与结果约定，spec/hub-api.md 3.11、spec/protocol.md 3.2）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 limits（{"toolRatePerMinute","toolRateBurst","appRatePerMinute","appRateBurst",
+ *     "maxArgumentsBytes","maxResultBytes","maxResourceBytes"}）与 outputValidation（"off" | "log" | "reject"）。
+ *   · JSON 中新增：HubTool.annotations（Agent 实际看到的 MCP 工具注解）、HubTool.outputSchema；HubResource.annotations；
+ *     CallOutcome.status / stateResource / summary / annotations；ApprovalRequest.annotations；
+ *     HubStatus.limits、HubStatus.outputValidation；AppStatus.rateLimited、tooLarge、tools（ToolDeclaration 数组）。
+ *   · 错误类别新增 "RATE_LIMITED"（details：retryAfterMs、scope、perMinute、burst、appId、tool）与
+ *     "PAYLOAD_TOO_LARGE"（details：part、sizeBytes、limitBytes）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -123,7 +131,7 @@ typedef void (*AmHubResultFn)(void *user_data, char *result_json);
 typedef void (*AmHubEventFn)(void *user_data, char *event_json);
 
 /* 调用审批。request_json 为 ApprovalRequest（callId、appId、appName、tool、title、description、risk、
- * arguments、session）。approval 的所有权转移给回调方，必须最终调用 am_hub_approval_complete 恰好一次
+ * arguments、session；v9 起另有 annotations：与 HubTool.annotations 相同）。approval 的所有权转移给回调方，必须最终调用 am_hub_approval_complete 恰好一次
  * （可在任意线程、回调返回之后）。超时（approval.timeout / responseTimeout）或调用被取消后完成返回
  * AM_HUB_ERR_ALREADY_COMPLETED。 */
 typedef void (*AmHubApprovalFn)(void *user_data, char *request_json, AmHubApproval *approval);
@@ -190,6 +198,13 @@ void am_hub_string_free(char *s);
  *                        p90 + marginMs，限制在 [minMs, maxMs]，样本不足 3 个时用 leaseTtlMs；adaptive=false 回退到固定
  *                        leaseTtlMs；idleRevokeMs：会话无请求这么久后收回其默认租约（0 不收回）。window=0 或 minMs>maxMs
  *                        报 AM_HUB_ERR_INVALID_CONFIG
+ *   —— v9 资源保护与结果约定（spec/hub-api.md 3.11）——
+ *   limits               {"toolRatePerMinute": 120, "toolRateBurst": 30, "appRatePerMinute": 600, "appRateBurst": 60,
+ *                        "maxArgumentsBytes": 1048576, "maxResultBytes": 4194304, "maxResourceBytes": 4194304}
+ *                        （缺省字段取这些默认值）。限流按（App, 工具）与按 App 两级令牌桶，超出 → RATE_LIMITED；
+ *                        参数 / 结果 / 资源超过字节上限 → PAYLOAD_TOO_LARGE（不截断）。*PerMinute = 0 不限流，
+ *                        *Bytes = 0 不限大小；限流时 *Burst = 0 报 AM_HUB_ERR_INVALID_CONFIG；未知字段报 AM_HUB_ERR_INVALID_JSON
+ *   outputValidation     结果与工具 outputSchema 不符时："off" 不校验 / "log"（默认）只记日志 / "reject" 以 HANDLER_ERROR 结束
  *   —— v3 渐进暴露（spec/hub-api.md 3.7）——
  *   toolExposure         "auto"（默认，App 工具总数超过阈值时渐进）/ "progressive" / "all"
  *   toolExposureThreshold  auto 的阈值，默认 40
@@ -223,10 +238,10 @@ AmHubStatus am_hub_serve_http(AmHub *hub, const char *addr, bool allow_remote, c
 
 /* AppInfo 数组（含上游，kind = "upstream"）。 */
 AmHubStatus am_hub_apps_json(const AmHub *hub, char **out_json);
-/* HubTool 数组。filter_json 可为 NULL：ToolFilter {apps, maxRisk, onlyAvailable, includeBuiltin, session}。
+/* HubTool 数组（v9 起含 annotations：声明优先、缺少的按 risk 推导；outputSchema?：App 声明的原样 schema）。filter_json 可为 NULL：ToolFilter {apps, maxRisk, onlyAvailable, includeBuiltin, session}。
  * 渐进暴露生效且未给 apps 时，只含内置工具与 session 会话已展开 / 调用过 / 选定了实例的 App 的工具。 */
 AmHubStatus am_hub_tools_json(const AmHub *hub, const char *filter_json, char **out_json);
-/* HubResource 数组。 */
+/* HubResource 数组（v9 起可带 annotations：MCP 内容注解）。 */
 AmHubStatus am_hub_resources_json(const AmHub *hub, char **out_json);
 /* AppOverviewInfo；App 未知或没有总览时为 "null"。 */
 AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **out_json);
@@ -236,7 +251,11 @@ AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **ou
  *    apps: [{appId, name, kind, state: "connected"|"waking"|"dormant"|"disconnected",
  *            instances: [InstanceInfo + state: "connected"|"dormant"|"waking"],
  *            lastError?: {code?, message, atMs}}],          按 appId 排序，含上游
- *    reports: [{appId, instanceId, connectionId, code, message, count, receivedAtMs}]}  最近的 SDK 上报，旧的在前 */
+ *    reports: [{appId, instanceId, connectionId, code, message, count, receivedAtMs}]}  最近的 SDK 上报，旧的在前
+ * v7 / v8 起另有 AppStatus.wakes、InstanceStatus.power、lease（见文件头“版本”）。v9 起另有：
+ *   limits（同配置 limits，全部字段给出）、outputValidation；
+ *   AppStatus.rateLimited / tooLarge（启动以来 RATE_LIMITED / PAYLOAD_TOO_LARGE 的拒绝次数）、
+ *   AppStatus.tools：[{name（局部名）, risk, annotations?（App 声明的原样注解）, effective（Agent 看到的注解）, outputSchema（bool：是否声明）}] */
 AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------
@@ -247,7 +266,9 @@ AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
  * out_call_id 可为 NULL；否则写入本次 callId（请求未给出时自动生成，需 am_hub_string_free），供 am_hub_cancel_call。
  * cb 收到 CallOutcome JSON：
  *   {"callId":…, "result": {"ok": <data>} | {"error": {"kind","message","details"?}},
- *    "stateHints": […], "instanceId": …|null, "overview": AppOverviewInfo|null}
+ *    "stateHints": […], "instanceId": …|null, "overview": AppOverviewInfo|null,
+ *    v9："status": "done"|"pending"|"partial"|"noop", "stateResource"?: "app-mcp://<appId>/<名>",
+ *        "summary"?: …, "annotations"?: {"audience"?, "priority"?, "lastModified"?}}
  * 名称无法解析（appId 未知等）也以 CallOutcome 形式返回（result.error，kind 为 TOOL_NOT_FOUND）。 */
 AmHubStatus am_hub_call(AmHub *hub, const char *request_json, AmHubResultFn cb, void *user_data,
                         char **out_call_id);

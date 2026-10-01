@@ -36,6 +36,7 @@ export {
   WAKE_PLATFORMS,
   RESERVED_APP_IDS,
   toInputSchema,
+  toOutputSchema,
   validateManifest,
   type AppMcpManifest,
   type GenerateOptions,

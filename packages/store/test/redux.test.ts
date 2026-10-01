@@ -197,6 +197,8 @@ describe('exposeRedux', () => {
     const tce = new ToolCallError('TIMEOUT', 't')
     expect(toCallError(tce)).toBe(tce)
     expect(toCallError({ kind: 'NOT_A_KIND', message: 'm' })).not.toBeInstanceOf(ToolCallError)
+    expect(toCallError({ kind: 'RATE_LIMITED', message: 'm' })).toMatchObject({ kind: 'RATE_LIMITED' })
+    expect(toCallError({ code: 'PAYLOAD_TOO_LARGE', message: 'm' })).toMatchObject({ kind: 'PAYLOAD_TOO_LARGE' })
     expect(toCallError('坏了').message).toContain('坏了')
     expect(toCallError(42).message).toContain('42')
   })

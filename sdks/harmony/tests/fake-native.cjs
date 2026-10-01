@@ -43,6 +43,16 @@ class FakeCall {
   complete(dataJson, stateHints) {
     this.settle({ ok: true, dataJson, stateHints });
   }
+  /** 与原生绑定一致：status / audience 取值不合法时抛出 INVALID_ARG（调用仍未完成）。 */
+  completeWith(result) {
+    if (result.status !== undefined && !['done', 'pending', 'partial', 'noop'].includes(result.status)) {
+      throw nativeError('INVALID_ARG', `未知的 status：${result.status}`);
+    }
+    for (const role of (result.annotations && result.annotations.audience) || []) {
+      if (role !== 'user' && role !== 'assistant') throw nativeError('INVALID_ARG', `未知的 audience：${role}`);
+    }
+    this.settle({ ok: true, ...result });
+  }
   fail(kind, message) {
     this.settle({ ok: false, kind, message });
   }
@@ -88,6 +98,9 @@ class FakeRegistrar {
       handler,
       disposed: false,
       update: (next) => {
+        tool.spec = { ...next, annotations: tool.spec.annotations, outputSchemaJson: tool.spec.outputSchemaJson };
+      },
+      updateWith: (next) => {
         tool.spec = next;
       },
       setEnabled: () => {},

@@ -74,7 +74,8 @@ pub enum ClientKind {
     Hybrid,
 }
 
-/// 风险等级。决定 Host 的确认策略。
+/// 风险等级（旧写法，spec/protocol.md 第 3 节）。新代码优先声明 [`ToolAnnotations`]；未声明的注解字段按
+/// [`Risk::annotations`] 推导。Hub SDK 的 `ApprovalPolicy` 仍按它审批。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Risk {
@@ -435,6 +436,89 @@ pub struct ToolInfo {
     pub activation: Option<Activation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// 标准 MCP 工具注解，Hub 原样转发给 Agent；与 `risk` 同时存在时逐字段优先（[`ToolInfo::effective_annotations`]）。
+    /// 未声明时不序列化（`toolsHash` 不变）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ToolAnnotations>,
+    /// 结果的 JSON Schema（MCP `outputSchema`）。根类型不是 `object` 时 Hub 按 MCP 规范包装为 `{ result: <schema> }`
+    /// （spec/protocol.md 3.2）。未声明时不序列化（`toolsHash` 不变）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+}
+
+impl ToolInfo {
+    /// Agent 看到的注解：声明的字段原样保留，缺少的字段按 `risk` 推导（[`Risk::annotations`]）。
+    pub fn effective_annotations(&self) -> ToolAnnotations {
+        let base = self.risk.annotations();
+        match &self.annotations {
+            None => base,
+            Some(a) => ToolAnnotations {
+                title: a.title.clone(),
+                read_only_hint: a.read_only_hint.or(base.read_only_hint),
+                destructive_hint: a.destructive_hint.or(base.destructive_hint),
+                idempotent_hint: a.idempotent_hint.or(base.idempotent_hint),
+                open_world_hint: a.open_world_hint.or(base.open_world_hint),
+            },
+        }
+    }
+}
+
+/// 标准 MCP 工具注解（MCP `ToolAnnotations`）：App 对工具行为的声明，供 Agent 决定是否确认 / 放行。
+/// 本库不据此做任何判断，只原样传递（docs/plans/14-safety.md 第 1 节）。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAnnotations {
+    /// 给人看的工具标题。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// 不修改任何状态。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    /// 可能做出破坏性 / 不可撤销的修改（只在非只读时有意义）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    /// 以相同参数重复调用没有额外效果（只在非只读时有意义）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
+    /// 会与外部世界交互（网络、第三方、其他用户可见）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
+}
+
+impl Risk {
+    /// 旧写法 `risk` 对应的注解（唯一定义）：`read` → 只读；`destructive` / `payment` → 非只读 + 破坏性；
+    /// `write` / `os-sensitive` → 非只读。
+    pub fn annotations(self) -> ToolAnnotations {
+        let (read_only, destructive) = match self {
+            Risk::Read => (true, None),
+            Risk::Destructive | Risk::Payment => (false, Some(true)),
+            Risk::Write | Risk::OsSensitive => (false, None),
+        };
+        ToolAnnotations { read_only_hint: Some(read_only), destructive_hint: destructive, ..ToolAnnotations::default() }
+    }
+}
+
+/// 内容的接收方（MCP `Role`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Audience {
+    User,
+    Assistant,
+}
+
+/// 标准 MCP 内容注解（MCP `Annotations`）：App 对结果 / 资源内容的标注，Hub 原样转发，不据此做判断。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentAnnotations {
+    /// 内容面向谁（`user` / `assistant`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<Vec<Audience>>,
+    /// 重要程度，0（可选）到 1（必需）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<f64>,
+    /// 最后修改时刻（ISO 8601）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -467,16 +551,49 @@ pub struct ToolsInvokeParams {
     pub timeout_ms: Option<u64>,
 }
 
+/// 调用结果的业务状态（spec/protocol.md 3.2）。handler 正常返回只说明请求被处理，不一定说明业务已完成。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResultStatus {
+    /// 已完成（缺省）。
+    #[default]
+    Done,
+    /// 已受理、尚未完成：等待用户在 App 内确认或异步处理；后续状态见 `stateResource`。
+    Pending,
+    /// 只完成了一部分，说明见 `summary`。
+    Partial,
+    /// 没有做任何改动（目标状态已满足或无事可做）。
+    Noop,
+}
+
+impl ResultStatus {
+    pub fn is_done(&self) -> bool {
+        *self == ResultStatus::Done
+    }
+}
+
 /// 调用成功的结果。失败通过 JSON-RPC 错误返回（见 [`crate::ErrorKind`]）。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolsInvokeResult {
-    /// handler 返回值；无返回值时为 `null`。
+    /// handler 返回值；无返回值时为 `null`（Hub 对模型输出"已完成"）。
     #[serde(default)]
     pub data: Value,
     /// 调用后内容可能已变化的资源名，提示模型重新读取。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub state_hints: Vec<String>,
+    /// 结果内容的标注，Hub 原样放到结果内容块上（不含总览与资源变化提示）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ContentAnnotations>,
+    /// 业务状态；缺省 `done`，`done` 时不序列化。
+    #[serde(default, skip_serializing_if = "ResultStatus::is_done")]
+    pub status: ResultStatus,
+    /// `pending` 时：可读取后续状态的 App 资源名（局部名）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_resource: Option<String>,
+    /// 一句面向模型 / 用户的结论（`partial` 时说明完成了哪部分）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -504,6 +621,9 @@ pub struct ResourceInfo {
     /// （未声明的资源 `toolsHash` 不变）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub realtime: bool,
+    /// 资源内容的标注，Hub 原样放到 MCP `resources/list` 的资源注解上。未声明时不序列化（`toolsHash` 不变）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ContentAnnotations>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -744,6 +864,81 @@ mod tests {
         assert_eq!(t.risk, Risk::Write);
         assert_eq!(t.activation, None);
         assert_eq!(serde_json::to_value(Risk::OsSensitive).unwrap(), json!("os-sensitive"));
+        assert_eq!(t.annotations, None);
+        assert!(serde_json::to_value(&t).unwrap().get("annotations").is_none());
+    }
+
+    #[test]
+    fn risk_annotation_mapping() {
+        let a = |ro: bool, d: Option<bool>| ToolAnnotations {
+            read_only_hint: Some(ro),
+            destructive_hint: d,
+            ..ToolAnnotations::default()
+        };
+        assert_eq!(Risk::Read.annotations(), a(true, None));
+        assert_eq!(Risk::Write.annotations(), a(false, None));
+        assert_eq!(Risk::OsSensitive.annotations(), a(false, None));
+        assert_eq!(Risk::Destructive.annotations(), a(false, Some(true)));
+        assert_eq!(Risk::Payment.annotations(), a(false, Some(true)));
+    }
+
+    #[test]
+    fn declared_annotations_win_per_field() {
+        let mut t: ToolInfo = serde_json::from_value(json!({
+            "name": "orders.cancel", "description": "取消", "inputSchema": {"type": "object"}, "risk": "destructive",
+            "annotations": {"readOnlyHint": false, "idempotentHint": true, "openWorldHint": true, "title": "取消订单"}
+        }))
+        .unwrap();
+        let e = t.effective_annotations();
+        assert_eq!(e.destructive_hint, Some(true), "缺少的字段按 risk 推导");
+        assert_eq!((e.idempotent_hint, e.open_world_hint), (Some(true), Some(true)));
+        assert_eq!(e.title.as_deref(), Some("取消订单"));
+        // 声明的字段优先于 risk
+        t.annotations = Some(ToolAnnotations { destructive_hint: Some(false), ..ToolAnnotations::default() });
+        assert_eq!(t.effective_annotations().destructive_hint, Some(false));
+        assert_eq!(t.effective_annotations().read_only_hint, Some(false));
+        // 未声明：与 risk 映射相同
+        t.annotations = None;
+        assert_eq!(t.effective_annotations(), Risk::Destructive.annotations());
+        let v = serde_json::to_value(ToolAnnotations { read_only_hint: Some(true), ..ToolAnnotations::default() }).unwrap();
+        assert_eq!(v, json!({"readOnlyHint": true}));
+    }
+
+    #[test]
+    fn content_annotations_roundtrip() {
+        let v = json!({"audience": ["user", "assistant"], "priority": 0.5, "lastModified": "2026-10-02T00:00:00Z"});
+        let a: ContentAnnotations = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(a.audience, Some(vec![Audience::User, Audience::Assistant]));
+        assert_eq!(serde_json::to_value(&a).unwrap(), v);
+        let r: ToolsInvokeResult = serde_json::from_value(json!({"data": 1})).unwrap();
+        assert_eq!(r.annotations, None);
+        let r = ToolsInvokeResult { annotations: Some(a), ..r };
+        assert_eq!(serde_json::to_value(&r).unwrap()["annotations"]["priority"], json!(0.5));
+        let res: ResourceInfo = serde_json::from_value(json!({"name": "n", "description": "d"})).unwrap();
+        assert!(serde_json::to_value(&res).unwrap().get("annotations").is_none());
+    }
+
+    #[test]
+    fn result_status_and_summary() {
+        let r: ToolsInvokeResult = serde_json::from_value(json!({"data": null})).unwrap();
+        assert_eq!((r.status, r.summary.as_deref(), r.state_resource.as_deref()), (ResultStatus::Done, None, None));
+        // 缺省值不序列化：旧 Host 看到的消息不变
+        assert_eq!(serde_json::to_value(&r).unwrap(), json!({"data": null}));
+        let r: ToolsInvokeResult = serde_json::from_value(json!({
+            "data": {"orderId": "o1"}, "status": "pending", "stateResource": "order.state", "summary": "已提交，等待付款"
+        }))
+        .unwrap();
+        assert_eq!(r.status, ResultStatus::Pending);
+        assert_eq!(r.state_resource.as_deref(), Some("order.state"));
+        for (st, s) in [(ResultStatus::Partial, "partial"), (ResultStatus::Noop, "noop"), (ResultStatus::Pending, "pending")] {
+            assert_eq!(serde_json::to_value(st).unwrap(), json!(s));
+        }
+        let t: ToolInfo = serde_json::from_value(json!({
+            "name": "n", "description": "d", "inputSchema": {"type": "object"}, "outputSchema": {"type": "array"}
+        }))
+        .unwrap();
+        assert_eq!(t.output_schema, Some(json!({"type": "array"})));
+        assert_eq!(serde_json::to_value(&t).unwrap()["outputSchema"], json!({"type": "array"}));
     }
 
     #[test]

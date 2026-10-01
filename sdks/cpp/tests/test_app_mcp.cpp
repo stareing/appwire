@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -331,6 +332,43 @@ void test_diagnostics() {
     EXPECT(status_of([&] { (void)client.state(); }) == AM_ERR_INVALID_ARGUMENT);
 }
 
+/// 工具注解 / 内容注解的 JSON 编码（app_mcp.h v9）；注册时库会再按协议类型校验。
+void test_annotations() {
+    app_mcp::ToolAnnotations ta;
+    EXPECT(app_mcp::detail::to_json(ta) == "{}");
+    ta.title = "下\"单";
+    ta.read_only_hint = false;
+    ta.open_world_hint = true;
+    EXPECT(app_mcp::detail::to_json(ta) == R"({"title":"下\"单","readOnlyHint":false,"openWorldHint":true})");
+
+    app_mcp::ContentAnnotations ca;
+    ca.audience = std::vector<app_mcp::Audience>{app_mcp::Audience::User, app_mcp::Audience::Assistant};
+    ca.priority = 0.5;
+    ca.last_modified = "2026-10-02T00:00:00Z";
+    EXPECT(app_mcp::detail::to_json(ca) ==
+           R"({"audience":["user","assistant"],"priority":0.5,"lastModified":"2026-10-02T00:00:00Z"})");
+    ca = {};
+    ca.priority = std::numeric_limits<double>::quiet_NaN();
+    EXPECT(app_mcp::detail::to_json(ca) == "{}");
+
+    app_mcp::ClientConfig config;
+    config.app_id = "cpp-annotations";
+    config.app_name = "C++ Annotations";
+    config.host_url = "ws://127.0.0.1:1";  // 不会 start，不连接
+    app_mcp::Client client(config);
+    auto handler = [](app_mcp::Call call) { call.complete(app_mcp::CallResult{}); };
+    app_mcp::ToolOptions options;
+    options.annotations = app_mcp::ToolAnnotations{std::nullopt, true, std::nullopt, std::nullopt, std::nullopt};
+    options.output_schema_json = R"({"type":"object"})";
+    auto t = client.register_tool("with.options", "带选项", handler, options);
+    EXPECT(static_cast<bool>(t));
+    app_mcp::ToolOptions bad = options;
+    bad.output_schema_json = "{";
+    EXPECT(status_of([&] { client.register_tool("bad.output", "x", handler, bad); }) == AM_ERR_INVALID_SCHEMA);
+    EXPECT(status_of([&] { t.update("改", bad); }) == AM_ERR_INVALID_SCHEMA);
+    EXPECT(status_of([&] { t.update("改"); }) == AM_OK);  // 清除注解与 outputSchema
+}
+
 }  // namespace
 
 int main() {
@@ -340,6 +378,7 @@ int main() {
         test_lifecycle();
         test_power_options();
         test_diagnostics();
+        test_annotations();
     } catch (const std::exception& e) {
         ++g_failed;
         std::fprintf(stderr, "FAIL 未捕获的异常：%s\n", e.what());

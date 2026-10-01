@@ -56,7 +56,13 @@ enum ErrorKind {
   instanceFrozen('INSTANCE_FROZEN'),
   resourceNotFound('RESOURCE_NOT_FOUND'),
   unauthorized('UNAUTHORIZED'),
-  unsupportedProtocol('UNSUPPORTED_PROTOCOL');
+  unsupportedProtocol('UNSUPPORTED_PROTOCOL'),
+
+  /// Host 侧限流（由 Host 产生，App 一般不用）。
+  rateLimited('RATE_LIMITED'),
+
+  /// 调用参数、结果或资源内容超过 Host 的大小上限（由 Host 产生，App 一般不用）。
+  payloadTooLarge('PAYLOAD_TOO_LARGE');
 
   const ErrorKind(this.wireName);
 
@@ -193,15 +199,129 @@ class AppMcpException implements Exception {
   String toString() => 'AppMcpException(${code.name}): $message';
 }
 
-/// handler 可以直接返回数据，也可以返回 [ToolResult] 以附带 stateHints。
-final class ToolResult {
-  const ToolResult(this.data, {this.stateHints = const []});
+/// 调用结果的业务状态（spec/protocol.md 3.2）。
+enum ToolResultStatus {
+  /// 已完成（缺省）。
+  done('done'),
 
-  /// 可被 `jsonEncode` 编码的数据。
+  /// 已受理、尚未完成（等待用户在 App 内确认或异步处理）；后续状态见 [ToolResult.stateResource]。
+  pending('pending'),
+
+  /// 只完成了一部分，说明见 [ToolResult.summary]。
+  partial('partial'),
+
+  /// 没有做任何改动（目标状态已满足或无事可做）。
+  noop('noop');
+
+  const ToolResultStatus(this.wireName);
+  final String wireName;
+}
+
+/// 内容面向谁（MCP 内容注解 audience）。
+enum ContentAudience {
+  user('user'),
+  assistant('assistant');
+
+  const ContentAudience(this.wireName);
+  final String wireName;
+}
+
+/// 结果内容的标注（MCP 内容注解），Host 原样转发；为 null 的字段不声明。
+final class ContentAnnotations {
+  const ContentAnnotations({this.audience, this.priority, this.lastModified});
+
+  final List<ContentAudience>? audience;
+
+  /// 重要程度，0（可选）到 1（必需）。
+  final double? priority;
+
+  /// 最后修改时刻（ISO 8601）。
+  final String? lastModified;
+
+  /// 协议 JSON 对象（省略 null 字段）。
+  Map<String, Object> toJson() => {
+        if (audience != null) 'audience': [for (final a in audience!) a.wireName],
+        if (priority != null) 'priority': priority!,
+        if (lastModified != null) 'lastModified': lastModified!,
+      };
+}
+
+/// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。本库不据此做判断，只原样转发；为 null 的字段不声明。
+final class ToolAnnotations {
+  const ToolAnnotations({
+    this.title,
+    this.readOnlyHint,
+    this.destructiveHint,
+    this.idempotentHint,
+    this.openWorldHint,
+  });
+
+  /// 给人看的工具标题。
+  final String? title;
+
+  /// 不修改任何状态。
+  final bool? readOnlyHint;
+
+  /// 可能做出破坏性 / 不可撤销的修改（只在非只读时有意义）。
+  final bool? destructiveHint;
+
+  /// 以相同参数重复调用没有额外效果（只在非只读时有意义）。
+  final bool? idempotentHint;
+
+  /// 会与外部世界交互（网络、第三方、其他用户可见）。
+  final bool? openWorldHint;
+
+  /// 协议 JSON 对象（省略 null 字段）。
+  Map<String, Object> toJson() => {
+        if (title != null) 'title': title!,
+        if (readOnlyHint != null) 'readOnlyHint': readOnlyHint!,
+        if (destructiveHint != null) 'destructiveHint': destructiveHint!,
+        if (idempotentHint != null) 'idempotentHint': idempotentHint!,
+        if (openWorldHint != null) 'openWorldHint': openWorldHint!,
+      };
+
+  @override
+  bool operator ==(Object other) =>
+      other is ToolAnnotations &&
+      other.title == title &&
+      other.readOnlyHint == readOnlyHint &&
+      other.destructiveHint == destructiveHint &&
+      other.idempotentHint == idempotentHint &&
+      other.openWorldHint == openWorldHint;
+
+  @override
+  int get hashCode => Object.hash(title, readOnlyHint, destructiveHint, idempotentHint, openWorldHint);
+}
+
+/// handler 可以直接返回数据，也可以返回 [ToolResult] 以附带 stateHints、业务状态、摘要与内容注解。
+/// 直接返回普通值 = 只有 [data] 的 done 结果。
+final class ToolResult {
+  const ToolResult(
+    this.data, {
+    this.stateHints = const [],
+    this.status = ToolResultStatus.done,
+    this.stateResource,
+    this.summary,
+    this.annotations,
+  });
+
+  /// 可被 `jsonEncode` 编码的数据；null 表示无返回值（Host 对模型输出"已完成"）。
   final Object? data;
 
   /// 调用后可能变化的资源名（提示 Host 重新读取）。
   final List<String> stateHints;
+
+  /// 业务状态，缺省 [ToolResultStatus.done]。
+  final ToolResultStatus status;
+
+  /// [ToolResultStatus.pending] 时可读取后续状态的资源名。
+  final String? stateResource;
+
+  /// 一句面向模型 / 用户的结论（partial 时说明完成了哪部分）。
+  final String? summary;
+
+  /// 结果内容的标注（MCP 内容注解）。
+  final ContentAnnotations? annotations;
 }
 
 /// 一次工具调用的上下文。
@@ -437,6 +557,8 @@ final class ToolSpec {
     this.activation,
     this.title,
     this.enabled = true,
+    this.annotations,
+    this.outputSchema,
   });
 
   /// App 内唯一，`[a-zA-Z0-9_.-]{1,64}`。
@@ -445,10 +567,18 @@ final class ToolSpec {
 
   /// JSON Schema，顶层 `type` 必须为 `object`；为 null 表示无参数。
   final Map<String, Object?>? inputSchema;
+
+  /// 旧写法：优先用 [annotations]。两者同时声明时注解中的字段优先，缺少的按 risk 推导。
   final Risk risk;
   final Activation? activation;
   final String? title;
   final bool enabled;
+
+  /// 标准 MCP 工具注解，原样转发给 Agent；为 null 时不声明（Host 按 [risk] 推导）。
+  final ToolAnnotations? annotations;
+
+  /// 结果的 JSON Schema（MCP outputSchema）；为 null 时不声明。
+  final Map<String, Object?>? outputSchema;
 
   ToolSpec copyWith({
     String? description,
@@ -457,6 +587,8 @@ final class ToolSpec {
     Activation? activation,
     String? title,
     bool? enabled,
+    ToolAnnotations? annotations,
+    Map<String, Object?>? outputSchema,
   }) =>
       ToolSpec(
         name: name,
@@ -466,6 +598,8 @@ final class ToolSpec {
         activation: activation ?? this.activation,
         title: title ?? this.title,
         enabled: enabled ?? this.enabled,
+        annotations: annotations ?? this.annotations,
+        outputSchema: outputSchema ?? this.outputSchema,
       );
 
   @override
@@ -477,11 +611,13 @@ final class ToolSpec {
       other.activation == activation &&
       other.title == title &&
       other.enabled == enabled &&
-      _schemaText(other.inputSchema) == _schemaText(inputSchema);
+      other.annotations == annotations &&
+      _schemaText(other.inputSchema) == _schemaText(inputSchema) &&
+      _schemaText(other.outputSchema) == _schemaText(outputSchema);
 
   @override
-  int get hashCode =>
-      Object.hash(name, description, risk, activation, title, enabled, _schemaText(inputSchema));
+  int get hashCode => Object.hash(name, description, risk, activation, title, enabled, annotations,
+      _schemaText(inputSchema), _schemaText(outputSchema));
 
   static String? _schemaText(Map<String, Object?>? schema) =>
       schema == null ? null : jsonEncode(schema);

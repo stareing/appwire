@@ -21,7 +21,7 @@ import inspect
 import json
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from collections.abc import Sequence
 from typing import Any, Literal, TypeVar, Union
 
@@ -50,6 +50,9 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 RiskLike = Union[str, ffi.Risk]
 ActivationLike = Union[str, ffi.Activation]
+ToolAnnotationsLike = Union[ffi.ToolAnnotations, Mapping[str, Any]]
+ContentAnnotationsLike = Union[ffi.ContentAnnotations, Mapping[str, Any]]
+ResultStatusLike = Union[str, ffi.ResultStatus]
 
 _RISKS = {
     "read": ffi.Risk.READ,
@@ -98,6 +101,19 @@ _WAKE_REASONS = {
     "visible": ffi.WakeReason.VISIBLE,
     "cold-start": ffi.WakeReason.COLD_START,
 }
+_RESULT_STATUSES = {
+    "done": ffi.ResultStatus.DONE,
+    "pending": ffi.ResultStatus.PENDING,
+    "partial": ffi.ResultStatus.PARTIAL,
+    "noop": ffi.ResultStatus.NOOP,
+}
+_AUDIENCES = {
+    "user": ffi.Audience.USER,
+    "assistant": ffi.Audience.ASSISTANT,
+}
+_TOOL_ANNOTATION_KEYS = frozenset(
+    {"title", "read_only_hint", "destructive_hint", "idempotent_hint", "open_world_hint"}
+)
 _SLEEP_REASONS = {
     "idle": ffi.SleepReason.IDLE,
     "grace": ffi.SleepReason.GRACE,
@@ -145,6 +161,38 @@ def _risk(value: RiskLike | None) -> ffi.Risk | None:
         return _RISKS[value.lower().replace("_", "-")]
     except KeyError:
         raise ValueError(f"未知的 risk：{value!r}（可选 {sorted(_RISKS)}）") from None
+
+
+def _tool_annotations(value: ToolAnnotationsLike | None) -> ffi.ToolAnnotations | None:
+    """``dict`` 用 snake_case 键（``read_only_hint`` 等）；未知键抛 ``ValueError``。"""
+    if value is None or isinstance(value, ffi.ToolAnnotations):
+        return value
+    unknown = set(value) - _TOOL_ANNOTATION_KEYS
+    if unknown:
+        raise ValueError(f"未知的工具注解字段：{sorted(unknown)}（可选 {sorted(_TOOL_ANNOTATION_KEYS)}）")
+    return ffi.ToolAnnotations(**value)
+
+
+def _content_annotations(value: ContentAnnotationsLike | None) -> ffi.ContentAnnotations | None:
+    """``dict`` 键为 ``audience``（``"user"`` / ``"assistant"`` 列表）、``priority``、``last_modified``。"""
+    if value is None or isinstance(value, ffi.ContentAnnotations):
+        return value
+    unknown = set(value) - {"audience", "priority", "last_modified"}
+    if unknown:
+        raise ValueError(f"未知的内容注解字段：{sorted(unknown)}（可选 audience、priority、last_modified）")
+    audience = value.get("audience")
+    return ffi.ContentAnnotations(
+        audience=None if audience is None else [_enum_arg(a, _AUDIENCES, " audience") for a in audience],
+        priority=value.get("priority"),
+        last_modified=value.get("last_modified"),
+    )
+
+
+def _schema_json(schema: dict[str, Any] | str | None) -> str | None:
+    """字典或 JSON 文本 → 规范化的 JSON 文本；非法 JSON 抛 ``ValueError``。"""
+    if schema is None:
+        return None
+    return json.dumps(json.loads(schema) if isinstance(schema, str) else schema)
 
 
 def _activation(value: ActivationLike | None) -> ffi.Activation | None:
@@ -207,13 +255,47 @@ class Hold:
 
 
 class ToolResult:
-    """需要附带 ``state_hints`` 时作为返回值使用。"""
+    """结构化调用结果（spec/protocol.md 3.2），作为 handler 返回值。直接返回普通值 = ``done`` 且无附加信息。
 
-    __slots__ = ("data", "state_hints")
+    - ``data``：返回值；``None`` 表示无返回值（Hub 对模型输出"已完成"）。
+    - ``state_hints``：调用后内容可能变化的资源名（与 ``ctx.add_state_hint`` 合并）。
+    - ``status``：``"pending"``（已受理、待 App 内确认或异步完成）/ ``"partial"`` / ``"noop"``；缺省 ``"done"``。
+    - ``state_resource``：``pending`` 时可读取后续状态的资源名。
+    - ``summary``：一句面向模型 / 用户的结论（``partial`` 时说明完成了哪部分）。
+    - ``annotations``：结果内容的标注（``{"audience": ["user"], "priority": 0.5, "last_modified": "…"}``
+      或 ``ContentAnnotations``），Hub 原样转发。
 
-    def __init__(self, data: Any = None, state_hints: list[str] | None = None) -> None:
+    ``status`` / ``annotations`` 非法时构造即抛 ``ValueError``（handler 内抛出 → ``HANDLER_ERROR``）。
+    """
+
+    __slots__ = ("data", "state_hints", "status", "state_resource", "summary", "annotations")
+
+    def __init__(
+        self,
+        data: Any = None,
+        state_hints: list[str] | None = None,
+        *,
+        status: ResultStatusLike = "done",
+        state_resource: str | None = None,
+        summary: str | None = None,
+        annotations: ContentAnnotationsLike | None = None,
+    ) -> None:
         self.data = data
         self.state_hints = list(state_hints or [])
+        self.status: ffi.ResultStatus = _enum_arg(status, _RESULT_STATUSES, " status")
+        self.state_resource = state_resource
+        self.summary = summary
+        self.annotations = _content_annotations(annotations)
+
+    def _ffi(self, data_json: str, state_hints: list[str]) -> ffi.CallResult:
+        return ffi.CallResult(
+            data_json=data_json,
+            state_hints=state_hints,
+            status=self.status,
+            state_resource=self.state_resource,
+            summary=self.summary,
+            annotations=self.annotations,
+        )
 
 
 class ToolContext:
@@ -293,15 +375,18 @@ def _error_of(exc: BaseException) -> tuple[str, str, Any]:
 
 
 def _complete_ok(target: ffi.Call | ffi.Read, value: Any, hints: list[str] | None) -> None:
-    """``hints`` 为 ``None`` 表示资源读取，否则为工具调用。"""
+    """``hints`` 为 ``None`` 表示资源读取，否则为工具调用；``value`` 为 :class:`ToolResult` 时以完整结果提交。"""
+    data = value.data if isinstance(value, ToolResult) else value
     try:
-        text = json.dumps(value, default=to_jsonable, ensure_ascii=False)
+        text = json.dumps(data, default=to_jsonable, ensure_ascii=False)
     except (TypeError, ValueError) as e:
         _complete_err(target, "HANDLER_ERROR", f"返回值无法序列化为 JSON：{e}")
         return
     try:
         if hints is None:  # 资源读取
             target.complete(text)
+        elif isinstance(value, ToolResult):
+            target.complete_with(value._ffi(text, hints))
         else:
             target.complete(text, hints)
     except ffi.AppMcpError.AlreadyCompleted:
@@ -400,7 +485,6 @@ class _ToolAdapter(ffi.ToolHandler):
             hints = list(ctx.state_hints)
             if isinstance(result, ToolResult):
                 hints = result.state_hints + hints
-                result = result.data
             _complete_ok(call, result, hints)
 
         reg.owner._execute(reg, prepare, finish, lambda k, m, d=None: _complete_err(call, k, m, d), ctx)
@@ -474,6 +558,8 @@ class ToolHandle:
         input_schema: dict[str, Any] | None = None,
         risk: RiskLike | None = None,
         title: str | None = None,
+        annotations: ToolAnnotationsLike | None = None,
+        output_schema: dict[str, Any] | str | None = None,
     ) -> None:
         """修改定义（未给出的字段保持不变）。"""
         s = self._spec
@@ -485,6 +571,8 @@ class ToolHandle:
             activation=s.activation,
             title=title if title is not None else s.title,
             enabled=s.enabled,
+            annotations=_tool_annotations(annotations) if annotations is not None else s.annotations,
+            output_schema_json=_schema_json(output_schema) if output_schema is not None else s.output_schema_json,
         )
         self._inner.update(spec)
         self._spec = spec
@@ -532,8 +620,15 @@ class _Registrar:
         activation: ActivationLike | None = None,
         title: str | None = None,
         enabled: bool = True,
+        annotations: ToolAnnotationsLike | None = None,
+        output_schema: dict[str, Any] | str | None = None,
     ) -> ToolHandle:
-        """注册函数为工具，返回句柄。``input_schema`` 缺省时从函数签名生成。"""
+        """注册函数为工具，返回句柄。``input_schema`` 缺省时从函数签名生成。
+
+        ``risk`` 为旧写法，优先用 ``annotations``：标准 MCP 工具注解（``{"read_only_hint": True}`` 或
+        ``ToolAnnotations``），原样转发给 Agent；为空时 Hub 按 ``risk`` 推导。``output_schema`` 为结果的
+        JSON Schema（字典或 JSON 文本，MCP ``outputSchema``）。
+        """
         binder = ArgumentBinder(fn, ToolContext)
         if input_schema is None:
             schema = binder.schema()
@@ -547,6 +642,8 @@ class _Registrar:
             activation=_activation(activation),
             title=title,
             enabled=enabled,
+            annotations=_tool_annotations(annotations),
+            output_schema_json=_schema_json(output_schema),
         )
         adapter = _ToolAdapter(_Registration(self._owner, fn, binder))
         return ToolHandle(self._raw().register_tool(spec, adapter), spec)
@@ -561,6 +658,8 @@ class _Registrar:
         activation: ActivationLike | None = None,
         title: str | None = None,
         enabled: bool = True,
+        annotations: ToolAnnotationsLike | None = None,
+        output_schema: dict[str, Any] | str | None = None,
     ) -> Callable[[F], F]:
         """装饰器形式的 :meth:`add_tool`。返回原函数；句柄可用 ``client.tools[name]`` 取得。"""
 
@@ -574,6 +673,8 @@ class _Registrar:
                 activation=activation,
                 title=title,
                 enabled=enabled,
+                annotations=annotations,
+                output_schema=output_schema,
             )
             self._owner.tools[handle.name] = handle
             return fn

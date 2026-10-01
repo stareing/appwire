@@ -52,6 +52,21 @@ typealias InstanceState = dev.appmcp.hub.ffi.InstanceState
 typealias LastError = dev.appmcp.hub.ffi.LastError
 typealias DiagnosticReport = dev.appmcp.hub.ffi.DiagnosticReport
 
+// 资源保护与工具声明（spec/hub-api.md 3.11）。
+/** 限流与大小上限（[HubConfig.limits]；[HubStatus.limits] 为全部字段给出的生效值）。为空的字段取默认值。 */
+typealias LimitsConfig = dev.appmcp.hub.ffi.LimitsConfig
+/** 结果与其 `outputSchema` 不符时的处理：`OFF` / `LOG`（默认）/ `REJECT`。 */
+typealias OutputValidation = dev.appmcp.hub.ffi.OutputValidation
+/** 标准 MCP 工具注解（[HubTool.annotations]、[ApprovalRequest.annotations]）。 */
+typealias ToolAnnotations = dev.appmcp.hub.ffi.ToolAnnotations
+/** 内容标注（MCP 内容注解：audience、priority、lastModified）。 */
+typealias ContentAnnotations = dev.appmcp.hub.ffi.ContentAnnotations
+typealias Audience = dev.appmcp.hub.ffi.Audience
+/** 调用结果的业务状态：`DONE` / `PENDING` / `PARTIAL` / `NOOP`。 */
+typealias ResultStatus = dev.appmcp.hub.ffi.ResultStatus
+/** 一个工具的声明（[AppStatus.tools]）。 */
+typealias ToolDeclaration = dev.appmcp.hub.ffi.ToolDeclaration
+
 /** 工具暴露方式（`AUTO` / `PROGRESSIVE` / `ALL`，spec/hub-api.md 3.7）。 */
 typealias ToolExposure = dev.appmcp.hub.ffi.ToolExposure
 
@@ -97,6 +112,14 @@ data class CallResult(
     val instanceId: String?,
     /** 本会话首次接触该 App 时附带的总览。 */
     val overview: AppOverviewInfo?,
+    /** App 声明的业务状态（缺省 `DONE`；`PENDING` 时后续状态见 [stateResource]）。 */
+    val status: ResultStatus = ResultStatus.DONE,
+    /** `PENDING` 时可读取后续状态的资源 URI（`app-mcp://<appId>/<名>`）。 */
+    val stateResource: String? = null,
+    /** App 给出的一句结论。 */
+    val summary: String? = null,
+    /** App 对结果内容的标注，原样。 */
+    val annotations: ContentAnnotations? = null,
 ) {
     val isError: Boolean get() = error != null
 
@@ -118,6 +141,9 @@ val AppInfo.isDormant: Boolean get() = !connected && dormantInstances.isNotEmpty
 
 /** 工具参数 schema。 */
 val HubTool.inputSchema: JsonElement get() = HubJson.parseToJsonElement(inputSchemaJson)
+
+/** App 声明的结果 schema；未声明时为 `null`。 */
+val HubTool.outputSchema: JsonElement? get() = parseJson(outputSchemaJson)
 
 /** 待审批调用的参数。 */
 val ApprovalRequest.arguments: JsonElement get() = HubJson.parseToJsonElement(argumentsJson)
@@ -235,6 +261,10 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
             stateHints = out.stateHints,
             instanceId = out.instanceId,
             overview = out.overview,
+            status = out.status,
+            stateResource = out.stateResource,
+            summary = out.summary,
+            annotations = out.annotations,
         )
     }
 

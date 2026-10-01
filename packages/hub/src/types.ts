@@ -28,6 +28,47 @@ export type ErrorKind =
   | 'RESOURCE_NOT_FOUND'
   | 'UNAUTHORIZED'
   | 'UNSUPPORTED_PROTOCOL'
+  /**
+   * 调用频率超出 {@link LimitsConfig}，调用未转发。`details`：`retryAfterMs`（建议等待时长）、`scope`（`tool` / `app`）、
+   * `perMinute`、`burst`、`appId`、`tool`。
+   */
+  | 'RATE_LIMITED'
+  /** 参数 / 结果 / 资源内容超过大小上限（不截断）。`details`：`part`（`arguments` / `result` / `resource`）、`sizeBytes`、`limitBytes`。 */
+  | 'PAYLOAD_TOO_LARGE'
+
+/**
+ * 标准 MCP 工具注解（spec/protocol.md 第 3 节）。Hub 原样传递 App 的声明，不据此做判断；
+ * `HubTool.annotations` 中缺少的字段已按 `risk` 推导。
+ */
+export interface ToolAnnotations {
+  title?: string
+  /** 不修改任何状态。 */
+  readOnlyHint?: boolean
+  /** 可能做出破坏性 / 不可撤销的修改。 */
+  destructiveHint?: boolean
+  /** 以相同参数重复调用没有额外效果。 */
+  idempotentHint?: boolean
+  /** 会与外部世界交互。 */
+  openWorldHint?: boolean
+}
+
+/** 内容的接收方（MCP `Role`）。 */
+export type Audience = 'user' | 'assistant'
+
+/** 标准 MCP 内容注解（结果 / 资源内容的标注），原样来自 App。 */
+export interface ContentAnnotations {
+  audience?: Audience[]
+  /** 重要程度，0 到 1。 */
+  priority?: number
+  /** 最后修改时刻（ISO 8601）。 */
+  lastModified?: string
+}
+
+/**
+ * 调用结果的业务状态（spec/protocol.md 3.2）：`done` 已完成；`pending` 已受理、待用户在 App 内确认或异步完成；
+ * `partial` 只完成了一部分；`noop` 没有做任何改动。
+ */
+export type ResultStatus = 'done' | 'pending' | 'partial' | 'noop'
 
 /**
  * 绑定层自身的错误代码（非协议错误）。`UNSUPPORTED`：原生模块未包含所需能力（cargo feature，spec/hub-api.md 3.10，
@@ -84,6 +125,30 @@ export interface LeaseConfig {
   idleRevokeMs?: number
 }
 
+/**
+ * 资源保护（spec/hub-api.md 3.11）：调用频率（令牌桶，`*PerMinute` 为 0 = 不限；不限以外 `*Burst` 必须 ≥ 1，否则 `Hub.start` 失败）
+ * 与大小上限（字节，0 = 不限）。超出时调用以 `RATE_LIMITED` / `PAYLOAD_TOO_LARGE` 结束。缺省字段取默认值。
+ */
+export interface LimitsConfig {
+  /** 每（App, 工具）每分钟调用数，缺省 120。 */
+  toolRatePerMinute?: number
+  /** 每（App, 工具）的突发量，缺省 30。 */
+  toolRateBurst?: number
+  /** 每 App（所有工具合计）每分钟调用数，缺省 600。 */
+  appRatePerMinute?: number
+  /** 每 App 的突发量，缺省 60。 */
+  appRateBurst?: number
+  /** 调用参数（JSON）上限，缺省 1 MiB。 */
+  maxArgumentsBytes?: number
+  /** 调用结果上限，缺省 4 MiB。 */
+  maxResultBytes?: number
+  /** 资源内容上限，缺省 4 MiB。 */
+  maxResourceBytes?: number
+}
+
+/** 结果与工具 `outputSchema` 不符时的处理：`off` 不校验；`log`（默认）只记日志；`reject` 调用以 `HANDLER_ERROR` 结束。 */
+export type OutputValidation = 'off' | 'log' | 'reject'
+
 /** `Hub.start` 的配置。时长均为毫秒。 */
 export interface HubConfig {
   /**
@@ -138,6 +203,11 @@ export interface HubConfig {
   lease?: LeaseConfig
   /** 唤醒器，缺省 `system`。 */
   waker?: WakerConfig
+  // ---- 资源保护（spec/hub-api.md 3.11）----
+  /** 调用频率与大小上限。缺省字段取默认值。 */
+  limits?: LimitsConfig
+  /** 结果与 `outputSchema` 不符时的处理，缺省 `log`。 */
+  outputValidation?: OutputValidation
   // ---- 渐进暴露（spec/hub-api.md 3.7）----
   /** 工具暴露方式，缺省 `auto`。 */
   toolExposure?: ToolExposure
@@ -204,7 +274,12 @@ export interface HubTool {
   title: string | null
   description: string
   inputSchema: JsonSchema
+  /** 旧写法；Agent 侧以 `annotations` 为准。 */
   risk: Risk
+  /** Agent 看到的 MCP 工具注解：App 声明的字段原样，缺少的按 `risk` 推导；上游工具为其原样注解。 */
+  annotations: ToolAnnotations
+  /** App 声明的结果 JSON Schema（原样）；未声明时缺省。 */
+  outputSchema?: JsonSchema
   activation: Activation
   availability: Availability
 }
@@ -234,6 +309,8 @@ export interface HubResource {
   description: string
   mimeType: string | null
   available: boolean
+  /** 资源内容的标注；未声明时缺省。 */
+  annotations?: ContentAnnotations
 }
 
 export interface ResourceContent {
@@ -294,6 +371,14 @@ export interface CallOutcome {
   instanceId: string | null
   /** 该会话首次接触此 App 时附带：把 `overview.text` 放进模型上下文。 */
   overview: AppOverviewInfo | null
+  /** App 声明的业务状态；旧 Hub 缺省（视为 `done`）。 */
+  status?: ResultStatus
+  /** `pending` 时可读取后续状态的资源 URI（`app-mcp://<appId>/<资源名>`）。 */
+  stateResource?: string
+  /** App 给出的一句结论。 */
+  summary?: string
+  /** App 对结果内容的标注。 */
+  annotations?: ContentAnnotations
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +468,26 @@ export interface AppStatus {
   lastError?: LastError
   /** Hub 启动以来为该 App 实际发出的唤醒激活次数（含冷启动；上游为 0）。旧 Hub 缺省。 */
   wakes?: number
+  /** Hub 启动以来因限流被拒绝的调用次数。旧 Hub 缺省。 */
+  rateLimited?: number
+  /** Hub 启动以来因大小上限被拒绝的参数 / 结果 / 资源次数。旧 Hub 缺省。 */
+  tooLarge?: number
+  /** 各工具的声明（`risk` 与 MCP 注解）；没有工具或旧 Hub 时缺省。 */
+  tools?: ToolDeclaration[]
+}
+
+/** 一个工具的声明（{@link AppStatus.tools}）。 */
+export interface ToolDeclaration {
+  /** 局部名（不含 appId）。 */
+  name: string
+  /** 旧写法 `risk`（未声明时为 `write`）。 */
+  risk: Risk
+  /** App 声明的注解（原样）；未声明时缺省。 */
+  annotations?: ToolAnnotations
+  /** Agent 实际看到的注解（声明优先，缺少的按 `risk` 推导）。 */
+  effective: ToolAnnotations
+  /** 是否声明了 `outputSchema`。 */
+  outputSchema: boolean
 }
 
 /** 一条 SDK 诊断上报（`app/diagnostic`）。 */
@@ -421,6 +526,10 @@ export interface HubStatus {
   reports: DiagnosticReport[]
   /** 租约策略与统计（spec/lifecycle.md 第 13 节 B2）；旧 Hub 缺省。 */
   lease?: LeaseStatus
+  /** 资源保护策略（全部字段给出）；旧 Hub 缺省。 */
+  limits?: Required<LimitsConfig>
+  /** 结果与 `outputSchema` 不符时的处理；旧 Hub 缺省。 */
+  outputValidation?: OutputValidation
 }
 
 /** 租约策略与统计。 */
@@ -468,7 +577,10 @@ export interface ApprovalRequest {
   tool: string
   title: string | null
   description: string
+  /** 旧写法；按声明决定是否确认时以 `annotations` 为准。 */
   risk: Risk
+  /** 工具的 MCP 注解（与 {@link HubTool.annotations} 相同）。 */
+  annotations: ToolAnnotations
   arguments: unknown
   session: string | null
 }
@@ -527,6 +639,8 @@ export interface McpToolDef {
   description: string
   inputSchema: JsonSchema
   annotations?: Record<string, unknown>
+  /** 工具声明了 `outputSchema` 时给出（根类型不是 object 时已包装为 `{ result }`）。 */
+  outputSchema?: JsonSchema
 }
 export interface McpToolCall {
   name: string

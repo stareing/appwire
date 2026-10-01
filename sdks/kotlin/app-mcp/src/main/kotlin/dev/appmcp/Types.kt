@@ -4,7 +4,15 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.serialization.json.JsonElement
 
 // 直接复用 uniffi 生成的数据类型。
+/** 风险等级（旧写法：优先用 [ToolAnnotations]；两者同时存在时注解中声明的字段优先，缺少的按 risk 推导）。 */
 typealias Risk = dev.appmcp.ffi.Risk
+/** 标准 MCP 工具注解（title、readOnlyHint、destructiveHint、idempotentHint、openWorldHint，均可选）。 */
+typealias ToolAnnotations = dev.appmcp.ffi.ToolAnnotations
+/** 结果内容的标注（MCP 内容注解：audience、priority、lastModified）。 */
+typealias ContentAnnotations = dev.appmcp.ffi.ContentAnnotations
+typealias Audience = dev.appmcp.ffi.Audience
+/** 调用结果的业务状态：`DONE`（缺省）/ `PENDING` / `PARTIAL` / `NOOP`。 */
+typealias ResultStatus = dev.appmcp.ffi.ResultStatus
 typealias Activation = dev.appmcp.ffi.Activation
 typealias Visibility = dev.appmcp.ffi.Visibility
 typealias CancelReason = dev.appmcp.ffi.CancelReason
@@ -32,6 +40,10 @@ object ErrorKind {
     const val RESOURCE_NOT_FOUND = "RESOURCE_NOT_FOUND"
     const val UNAUTHORIZED = "UNAUTHORIZED"
     const val UNSUPPORTED_PROTOCOL = "UNSUPPORTED_PROTOCOL"
+    /** Host 侧限流（App 一般不抛）。 */
+    const val RATE_LIMITED = "RATE_LIMITED"
+    /** Host 侧大小上限（App 一般不抛）。 */
+    const val PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
 
     /** 原生库认可的全部类别。 */
     val all: Set<String> by lazy { dev.appmcp.ffi.errorKinds().toSet() }
@@ -50,8 +62,24 @@ class ToolCallException @JvmOverloads constructor(
     val details: JsonElement? = null,
 ) : Exception(message)
 
-/** 需要附带 stateHints 时作为 handler 返回值。 */
-data class ToolResult(val data: JsonElement?, val stateHints: List<String> = emptyList())
+/**
+ * 结构化调用结果，作为 handler 返回值（spec/protocol.md 3.2）。直接返回普通值 = `DONE` 且无附加信息。
+ *
+ * @property data 返回值；null 表示无返回值（Hub 对模型输出"已完成"）。
+ * @property stateHints 调用后内容可能变化的资源名。
+ * @property status 业务状态：`PENDING`（已受理、待 App 内确认或异步完成）/ `PARTIAL` / `NOOP`；缺省 `DONE`。
+ * @property stateResource `PENDING` 时可读取后续状态的资源名。
+ * @property summary 一句面向模型 / 用户的结论（`PARTIAL` 时说明完成了哪部分）。
+ * @property annotations 结果内容的标注，Hub 原样转发。
+ */
+data class ToolResult(
+    val data: JsonElement?,
+    val stateHints: List<String> = emptyList(),
+    val status: ResultStatus = ResultStatus.DONE,
+    val stateResource: String? = null,
+    val summary: String? = null,
+    val annotations: ContentAnnotations? = null,
+)
 
 /**
  * 客户端配置。

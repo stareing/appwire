@@ -3,8 +3,20 @@ using AppMcp.Native;
 
 namespace AppMcp.Internal;
 
-/// <summary>工具 handler 的原始形式：参数 JSON → 结果 JSON（null 表示 JSON null）。</summary>
-internal delegate Task<string?> RawToolHandler(string argumentsJson, ToolContext context);
+/// <summary>工具 handler 的原始形式：参数 JSON → 结果。</summary>
+internal delegate Task<ToolOutcome> RawToolHandler(string argumentsJson, ToolContext context);
+
+/// <summary>handler 的结果：返回值 JSON（null 表示 JSON null）+ 结构化结果（普通返回值时为 null）。</summary>
+internal readonly record struct ToolOutcome(string? DataJson, ToolResult? Structured)
+{
+    /// <summary>按运行时类型序列化；<see cref="ToolResult"/> 取其 Data 序列化并保留其余字段。</summary>
+    public static ToolOutcome From(object? result, JsonSerializerOptions json) => result switch
+    {
+        null => default,
+        ToolResult r => new(r.Data is null ? null : JsonSerializer.Serialize(r.Data, r.Data.GetType(), json), r),
+        _ => new(JsonSerializer.Serialize(result, result.GetType(), json), null),
+    };
+}
 
 /// <summary>资源读取的原始形式：返回内容 JSON。</summary>
 internal delegate Task<string> RawResourceReader(CancellationToken cancellationToken);
@@ -58,18 +70,38 @@ internal sealed unsafe class PendingCall
         }
     }
 
-    public void Complete(string? dataJson, IReadOnlyList<string> stateHints)
+    public void Complete(ToolOutcome outcome, IReadOnlyList<string> stateHints)
     {
         var call = Take();
         if (call == 0) return;
         using var strings = new Utf8Strings();
-        var data = strings.AddPtr(dataJson ?? "null");
-        var hints = new nint[stateHints.Count];
-        for (var i = 0; i < hints.Length; i++) hints[i] = strings.Add(stateHints[i]);
+        var structured = outcome.Structured;
+        var allHints = structured?.StateHints is { Count: > 0 } extra ? stateHints.Concat(extra).ToArray() : stateHints;
+        var hints = new nint[allHints.Count];
+        for (var i = 0; i < hints.Length; i++) hints[i] = strings.Add(allHints[i]);
         AmStatus status;
         fixed (nint* p = hints)
         {
-            status = NativeMethods.am_call_complete(call, data, hints.Length == 0 ? null : (byte**)p, (nuint)hints.Length);
+            var hintsPtr = hints.Length == 0 ? null : (byte**)p;
+            if (structured is null)
+            {
+                status = NativeMethods.am_call_complete(call, strings.AddPtr(outcome.DataJson ?? "null"), hintsPtr, (nuint)hints.Length);
+            }
+            else
+            {
+                var result = new AmCallResult
+                {
+                    StructSize = (uint)sizeof(AmCallResult),
+                    DataJson = strings.Add(outcome.DataJson),
+                    StateHints = (nint)hintsPtr,
+                    StateHintsLen = (nuint)hints.Length,
+                    Status = (int)structured.Status,
+                    StateResource = strings.Add(structured.StateResource),
+                    Summary = strings.Add(structured.Summary),
+                    AnnotationsJson = strings.Add(AnnotationsJson.Serialize(structured.Annotations)),
+                };
+                status = NativeMethods.am_call_complete_ex(call, &result);
+            }
         }
         if (status == AmStatus.InvalidJson)
         {

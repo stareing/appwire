@@ -89,9 +89,36 @@ InstanceStatus = ffi.InstanceStatus
 InstanceState = ffi.InstanceState
 LastError = ffi.LastError
 DiagnosticReport = ffi.DiagnosticReport
+# 资源保护与工具声明（spec/hub-api.md 3.11）。
+#: 限流与大小上限（``HubConfig.limits``；``HubStatus.limits`` 为全部字段给出的生效值）。为空的字段取默认值。
+LimitsConfig = ffi.LimitsConfig
+#: 结果与其 ``outputSchema`` 不符时的处理：``OutputValidation.OFF`` / ``LOG``（默认）/ ``REJECT``。
+OutputValidation = ffi.OutputValidation
+#: 一个工具的声明（``AppStatus.tools``）。
+ToolDeclaration = ffi.ToolDeclaration
+#: 标准 MCP 工具注解（``HubTool.annotations``、``ApprovalRequest.annotations``）。
+ToolAnnotations = ffi.ToolAnnotations
+#: 内容标注（``CallResult.annotations``、``HubResource.annotations``）。
+ContentAnnotations = ffi.ContentAnnotations
+Audience = ffi.Audience
+#: 调用结果的业务状态：``ResultStatus.DONE`` / ``PENDING`` / ``PARTIAL`` / ``NOOP``。
+ResultStatus = ffi.ResultStatus
 
 FormatLike = Union[ToolFormat, str]
 RiskLike = Union[Risk, str]
+LimitsLike = Union[LimitsConfig, dict[str, int]]
+OutputValidationLike = Union[OutputValidation, str]
+
+# LimitsConfig 字段 ← JSON 配置键（与 app-mcp-host 配置文件 ``limits`` 相同；也接受 snake_case）。
+_LIMIT_KEYS = {
+    "toolRatePerMinute": "tool_rate_per_minute",
+    "toolRateBurst": "tool_rate_burst",
+    "appRatePerMinute": "app_rate_per_minute",
+    "appRateBurst": "app_rate_burst",
+    "maxArgumentsBytes": "max_arguments_bytes",
+    "maxResultBytes": "max_result_bytes",
+    "maxResourceBytes": "max_resource_bytes",
+}
 Dispatcher = Callable[[Callable[[], None]], None]
 
 __all__ = [
@@ -102,9 +129,11 @@ __all__ = [
     "AppState",
     "AppStatus",
     "ApprovalRequest",
+    "Audience",
     "AuthStatus",
     "Availability",
     "CallResult",
+    "ContentAnnotations",
     "DiagnosticReport",
     "EventStream",
     "Hub",
@@ -118,9 +147,14 @@ __all__ = [
     "InstanceState",
     "InstanceStatus",
     "LastError",
+    "LimitsConfig",
+    "OutputValidation",
     "PairingRequest",
     "ResourceContent",
+    "ResultStatus",
     "Risk",
+    "ToolAnnotations",
+    "ToolDeclaration",
     "ToolError",
     "ToolErrorInfo",
     "ToolExposure",
@@ -172,6 +206,29 @@ def _risk(value: RiskLike | None) -> Risk | None:
     if value is None or isinstance(value, Risk):
         return value
     return Risk[value.strip().upper().replace("-", "_")]
+
+
+def _limits(value: LimitsLike | None) -> LimitsConfig | None:
+    """``LimitsConfig`` 或字典（JSON 配置键 ``toolRatePerMinute`` 等，或 snake_case）；未知键抛 ``ValueError``。"""
+    if value is None or isinstance(value, LimitsConfig):
+        return value
+    fields = set(_LIMIT_KEYS.values())
+    kwargs: dict[str, int] = {}
+    for key, v in value.items():
+        name = _LIMIT_KEYS.get(key, key)
+        if name not in fields:
+            raise ValueError(f"未知的 limits 字段：{key!r}（可选 {sorted(_LIMIT_KEYS)}）")
+        kwargs[name] = v
+    return LimitsConfig(**kwargs)
+
+
+def _output_validation(value: OutputValidationLike | None) -> OutputValidation | None:
+    if value is None or isinstance(value, OutputValidation):
+        return value
+    try:
+        return OutputValidation[value.strip().upper()]
+    except KeyError:
+        raise ValueError(f"未知的 output_validation：{value!r}（可选 off、log、reject）") from None
 
 
 def init_logging(filter: str | None = None) -> bool:
@@ -227,6 +284,14 @@ class CallResult:
     instance_id: str | None = None
     #: 本会话首次接触该 App 时附带的总览。
     overview: AppOverviewInfo | None = None
+    #: App 声明的业务状态（缺省 ``DONE``；``PENDING`` 时后续状态见 ``state_resource``）。
+    status: ResultStatus = ResultStatus.DONE
+    #: ``PENDING`` 时可读取后续状态的资源 URI（``app-mcp://<appId>/<名>``）。
+    state_resource: str | None = None
+    #: App 给出的一句结论。
+    summary: str | None = None
+    #: App 对结果内容的标注，原样。
+    annotations: ContentAnnotations | None = None
 
     @property
     def ok(self) -> bool:
@@ -429,7 +494,8 @@ class EventStream:
 class Hub:
     """嵌入式 Hub。
 
-    参数与 :class:`HubConfig` 字段一致（``approval_min_risk`` 可用字符串，如 ``"destructive"``）；
+    参数与 :class:`HubConfig` 字段一致（``approval_min_risk`` 可用字符串，如 ``"destructive"``；``limits`` 可用字典，
+    键同 JSON 配置，如 ``{"toolRatePerMinute": 60}``；``output_validation`` 可用 ``"off"`` / ``"log"`` / ``"reject"``）；
     也可直接传 ``config=HubConfig(...)``。
     """
 
@@ -437,6 +503,10 @@ class Hub:
         if config is None:
             if "approval_min_risk" in kwargs:
                 kwargs["approval_min_risk"] = _risk(kwargs["approval_min_risk"])
+            if "limits" in kwargs:
+                kwargs["limits"] = _limits(kwargs["limits"])
+            if "output_validation" in kwargs:
+                kwargs["output_validation"] = _output_validation(kwargs["output_validation"])
             config = HubConfig(**kwargs)
         elif kwargs:
             raise TypeError("config 与关键字参数不能同时使用")
@@ -548,6 +618,10 @@ class Hub:
             state_hints=list(out.state_hints),
             instance_id=out.instance_id,
             overview=out.overview,
+            status=out.status,
+            state_resource=out.state_resource,
+            summary=out.summary,
+            annotations=out.annotations,
         )
 
     def call_tool_sync(self, name: str, arguments: dict[str, Any] | None = None, **kwargs: Any) -> CallResult:

@@ -21,6 +21,7 @@
 //!     然后接受下一个连接，打印 `{"type":"hello","launchToken","resumeToken","wakeReason","toolsCurrent"}`，
 //!     恢复令牌与 `toolsHash` 都与休眠时一致时返回 `toolsCurrent: true`（沿用工具快照）。
 //!     该连接的 `app/ready` 之后照常打印工具列表，并附带 `"synced"`（本连接是否收到了 `tools/sync`）。
+//! - `--tool-info`：工具列表行另带 `"toolInfo": { <名称>: { risk, annotations?, outputSchema? } }`（核对工具声明）。
 //! - `--lease-ms <ms>`：`app/ready` 之后与每个操作完成后发送 `app/lease { ttlMs }`。
 //! - `--reject-sleep <ms>`：`--await-sleep` 期间收到的第一个 `app/sleep` 以 `retryAfterMs: <ms>` 拒绝，打印
 //!   `{"type":"sleep","accepted":false,"reason","toolsHash"}`。
@@ -62,6 +63,7 @@ struct Options {
     timeout_ms: u64,
     lease_ms: Option<u64>,
     reject_sleep_ms: Option<u64>,
+    tool_info: bool,
 }
 
 const DEFAULT_ADDR: &str = "127.0.0.1:0";
@@ -79,6 +81,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
         timeout_ms: 10_000,
         lease_ms: None,
         reject_sleep_ms: None,
+        tool_info: false,
     };
     let mut it = args.into_iter();
     while let Some(flag) = it.next() {
@@ -116,6 +119,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
                 }
                 opts.ops.push(Op::Wake);
             }
+            "--tool-info" => opts.tool_info = true,
             "--lease-ms" => opts.lease_ms = Some(parse_u64("--lease-ms", &value("--lease-ms")?)?),
             "--reject-sleep" => {
                 opts.reject_sleep_ms = Some(parse_u64("--reject-sleep", &value("--reject-sleep")?)?)
@@ -291,7 +295,7 @@ impl PipeListener {
 /// 当前 SDK 同步过来的工具与资源（已按名称排序）。休眠期间作为快照保留。
 #[derive(Default)]
 struct Catalog {
-    tools: BTreeSet<String>,
+    tools: BTreeMap<String, proto::ToolInfo>,
     resources: BTreeSet<String>,
 }
 
@@ -301,14 +305,14 @@ impl Catalog {
         match method_name {
             method::TOOLS_SYNC => {
                 let p: ToolsSyncParams = serde_json::from_value(params).map_err(bad)?;
-                self.tools = p.tools.into_iter().map(|t| t.name).collect();
+                self.tools = p.tools.into_iter().map(|t| (t.name.clone(), t)).collect();
             }
             method::TOOLS_CHANGED => {
                 let p: ToolsChangedParams = serde_json::from_value(params).map_err(bad)?;
                 for name in p.removed {
                     self.tools.remove(&name);
                 }
-                self.tools.extend(p.upserted.into_iter().map(|t| t.name));
+                self.tools.extend(p.upserted.into_iter().map(|t| (t.name.clone(), t)));
             }
             method::RESOURCES_SYNC => {
                 let p: ResourcesSyncParams = serde_json::from_value(params).map_err(bad)?;
@@ -334,6 +338,7 @@ struct HostState {
     lease_ms: Option<u64>,
     /// 还需要拒绝的休眠次数（`--reject-sleep`）。
     reject_sleep_ms: Option<u64>,
+    tool_info: bool,
     catalog: Catalog,
     /// 休眠被接受时发放的恢复令牌与当时的 toolsHash。
     resume: Option<(String, String)>,
@@ -357,6 +362,7 @@ async fn run(mut listener: Listener, opts: Options) -> Result<(), String> {
         ops: opts.ops.into_iter(),
         lease_ms: opts.lease_ms,
         reject_sleep_ms: opts.reject_sleep_ms,
+        tool_info: opts.tool_info,
         catalog: Catalog::default(),
         resume: None,
         wake_token: None,
@@ -503,11 +509,29 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                 if n.method == method::READY {
                     let mut line = json!({
                         "type": "tools",
-                        "tools": host.catalog.tools.iter().collect::<Vec<_>>(),
+                        "tools": host.catalog.tools.keys().collect::<Vec<_>>(),
                         "resources": host.catalog.resources.iter().collect::<Vec<_>>(),
                     });
                     if !first {
                         line["synced"] = json!(synced);
+                    }
+                    if host.tool_info {
+                        let info: serde_json::Map<String, Value> = host
+                            .catalog
+                            .tools
+                            .values()
+                            .map(|t| {
+                                let mut d = json!({ "risk": t.risk });
+                                if let Some(a) = &t.annotations {
+                                    d["annotations"] = to_value(a);
+                                }
+                                if let Some(o) = &t.output_schema {
+                                    d["outputSchema"] = o.clone();
+                                }
+                                (t.name.clone(), d)
+                            })
+                            .collect();
+                        line["toolInfo"] = Value::Object(info);
                     }
                     emit(&line.to_string());
                     started = true;

@@ -136,7 +136,7 @@ impl ServerHandler for McpSession {
                 } else {
                     format!("{UNAVAILABLE_PREFIX}{}（App 未连接）", r.info.description)
                 };
-                Resource::new(
+                let resource = Resource::new(
                     resource_uri(&r.app_id, &r.info.name),
                     format!("{}.{}", r.app_id, r.info.name),
                 )
@@ -146,7 +146,12 @@ impl ServerHandler for McpSession {
                         .mime_type
                         .clone()
                         .unwrap_or_else(|| DEFAULT_MIME.to_owned()),
-                )
+                );
+                // App 对资源内容的标注原样转发（spec/protocol.md 3.2）。
+                match &r.info.annotations {
+                    Some(a) => resource.with_annotations(crate::mcp_convert::content_annotations(a)),
+                    None => resource,
+                }
             })
             .chain(self.shared.upstream_resources())
             .collect();

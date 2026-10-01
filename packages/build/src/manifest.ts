@@ -3,7 +3,7 @@
  */
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import type { Activation, AppOverview, Risk } from '@app-mcp/web'
+import type { Activation, AppOverview, Risk, ToolAnnotations } from '@app-mcp/web'
 import type { StaticToolDefinition } from './define'
 import { validateOverview } from './overview'
 
@@ -53,6 +53,10 @@ export interface ManifestTool {
   risk?: Risk
   activation?: Activation
   title?: string
+  /** 标准 MCP 工具注解（spec/protocol.md 第 3 节）。 */
+  annotations?: ToolAnnotations
+  /** 结果的 JSON Schema（MCP `outputSchema`，根类型不限于 object）。 */
+  outputSchema?: Record<string, unknown>
 }
 
 /** 协议中的 ResourceInfo。 */
@@ -112,6 +116,30 @@ export const NAME_PATTERN = /^[a-zA-Z0-9_.-]{1,64}$/
 export const RESERVED_APP_IDS = ['apps', 'os', 'ax', 'host'] as const
 const RISKS: readonly string[] = ['read', 'write', 'destructive', 'payment', 'os-sensitive']
 const ACTIVATIONS: readonly string[] = ['headless', 'background', 'foreground']
+/** 工具注解的字段 → 取值类型。 */
+const TOOL_ANNOTATION_FIELDS: Readonly<Record<keyof ToolAnnotations, 'string' | 'boolean'>> = {
+  title: 'string',
+  readOnlyHint: 'boolean',
+  destructiveHint: 'boolean',
+  idempotentHint: 'boolean',
+  openWorldHint: 'boolean',
+}
+
+const isJsonObject = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v)
+
+/** 工具注解的问题列表（未知字段为警告，取值类型不对为错误）。 */
+function checkToolAnnotations(annotations: unknown, label: string, errors: string[], warnings: string[]): void {
+  if (!isJsonObject(annotations)) {
+    errors.push(`${label} annotations 必须是对象`)
+    return
+  }
+  for (const [key, value] of Object.entries(annotations)) {
+    const expected = TOOL_ANNOTATION_FIELDS[key as keyof ToolAnnotations]
+    if (expected === undefined) warnings.push(`${label} annotations.${key} 不是标准 MCP 工具注解字段`)
+    else if (typeof value !== expected) errors.push(`${label} annotations.${key} 必须是 ${expected}`)
+  }
+}
 const KNOWN_LAUNCH: Record<string, { platforms: string[]; field: string }> = {
   url: { platforms: ['web'], field: 'href' },
   uri: { platforms: ['windows', 'macos', 'linux'], field: 'scheme' },
@@ -282,6 +310,10 @@ export function validateManifest(manifest: AppMcpManifest): ValidationResult {
     if (tool.activation !== undefined && !ACTIVATIONS.includes(tool.activation)) {
       errors.push(`${label} activation "${tool.activation}" 不合法`)
     }
+    if (tool.annotations !== undefined) checkToolAnnotations(tool.annotations, label, errors, warnings)
+    if (tool.outputSchema !== undefined && !isJsonObject(tool.outputSchema)) {
+      errors.push(`${label} outputSchema 必须是对象`)
+    }
   }
 
   const resourceNames = new Set<string>()
@@ -341,20 +373,30 @@ function loadZodToJsonSchema(root: string): ZodToJsonSchema {
  */
 export function toInputSchema(input: unknown, root: string = process.cwd()): Record<string, unknown> {
   if (input === undefined) return { type: 'object', properties: {} }
-  if (input === null || typeof input !== 'object') {
-    throw new Error('input 必须是 JSON Schema 对象、zod schema 或带 toJSONSchema() 的对象')
+  return convertSchemaDefinition(input, 'input', root)
+}
+
+/** 输出定义（MCP `outputSchema`）→ JSON Schema，形式同 {@link toInputSchema}，zod 按输出形态转换。 */
+export function toOutputSchema(output: unknown, root: string = process.cwd()): Record<string, unknown> {
+  return convertSchemaDefinition(output, 'output', root)
+}
+
+function convertSchemaDefinition(definition: unknown, io: 'input' | 'output', root: string): Record<string, unknown> {
+  const field = io === 'input' ? 'input' : 'outputSchema'
+  if (definition === null || typeof definition !== 'object') {
+    throw new Error(`${field} 必须是 JSON Schema 对象、zod schema 或带 toJSONSchema() 的对象`)
   }
-  const candidate = input as { _zod?: unknown; toJSONSchema?: unknown }
+  const candidate = definition as { _zod?: unknown; toJSONSchema?: unknown }
   const isZod = '_zod' in candidate
   let schema: unknown
   if (typeof candidate.toJSONSchema === 'function') {
     schema = isZod
-      ? (candidate.toJSONSchema as (p: unknown) => unknown).call(input, { io: 'input' })
-      : (candidate.toJSONSchema as () => unknown).call(input)
+      ? (candidate.toJSONSchema as (p: unknown) => unknown).call(definition, { io })
+      : (candidate.toJSONSchema as () => unknown).call(definition)
   } else if (isZod) {
-    schema = loadZodToJsonSchema(root)(input, { io: 'input' })
+    schema = loadZodToJsonSchema(root)(definition, { io })
   } else {
-    schema = input
+    schema = definition
   }
   return JSON.parse(JSON.stringify(schema)) as Record<string, unknown>
 }
@@ -424,10 +466,17 @@ export function generateManifest(
       continue
     }
     let inputSchema: Record<string, unknown>
+    let outputSchema: Record<string, unknown> | undefined
     try {
       inputSchema = toInputSchema(tool.input, options.root)
     } catch (err) {
       errors.push(`tools[${i}]（${String(tool.name)}）的 input 无法转换为 JSON Schema：${(err as Error).message}`)
+      continue
+    }
+    try {
+      outputSchema = tool.outputSchema === undefined ? undefined : toOutputSchema(tool.outputSchema, options.root)
+    } catch (err) {
+      errors.push(`tools[${i}]（${String(tool.name)}）的 outputSchema 无法转换为 JSON Schema：${(err as Error).message}`)
       continue
     }
     const entry: ManifestTool = {
@@ -438,6 +487,8 @@ export function generateManifest(
     if (tool.title !== undefined) entry.title = tool.title
     if (tool.risk !== undefined) entry.risk = tool.risk
     if (tool.activation !== undefined) entry.activation = tool.activation
+    if (tool.annotations !== undefined) entry.annotations = { ...tool.annotations }
+    if (outputSchema !== undefined) entry.outputSchema = outputSchema
     manifestTools.push(entry)
   }
 

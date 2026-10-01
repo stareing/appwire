@@ -16,8 +16,8 @@ use app_mcp_protocol::{
     ToolsInvokeResult, method,
 };
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, ReadResourceRequestParams,
-    ReadResourceResult, ResourceContents, Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, MetaObject, ReadResourceRequestParams,
+    ReadResourceResult, ResourceContents, TextContent, Tool, ToolAnnotations,
 };
 use rmcp::{ErrorData as McpError, Peer, RoleClient, ServiceError};
 use serde_json::{Map, Value, json};
@@ -26,10 +26,12 @@ use tokio::sync::oneshot;
 use crate::hub::{
     DEFAULT_MIME, HubShared, lock, overview_info, parse_resource_uri, resource_uri,
 };
+use crate::limits::{OutputValidation, Payload};
+use crate::mcp_convert::{self, OutputShape};
 use crate::overview::Overview;
 use crate::schema::{self, SchemaCheck};
 use crate::types::{
-    ApprovalRequest, Availability, CallOutcome, CallRequest, HubError, HubTool, ResourceContent,
+    ApprovalRequest, Availability, CallOutcome, CallRequest, HubError, HubTool, ResourceContent, ToolDeclaration,
 };
 use crate::upstream::decode_uri_component;
 
@@ -94,6 +96,8 @@ pub(crate) struct Invocation {
     /// 本次附带的总览（该会话首次接触此 App 或版本变化时）。
     pub overview: Option<Overview>,
     pub body: Body,
+    /// App 工具声明的 `outputSchema` 决定的 `structuredContent` 形式。
+    pub output_shape: OutputShape,
 }
 
 impl Invocation {
@@ -102,7 +106,9 @@ impl Invocation {
         let mut r = match &self.body {
             Body::NotFound(e) | Body::Builtin(Err(e)) | Body::App(Err(e)) => error_result(e),
             Body::Builtin(Ok(r)) | Body::Upstream(Ok(r)) => r.clone(),
-            Body::App(Ok(r)) => success_result(self.app_id.as_deref().unwrap_or_default(), r.clone()),
+            Body::App(Ok(r)) => {
+                success_result(self.app_id.as_deref().unwrap_or_default(), r.clone(), self.output_shape)
+            }
             Body::Upstream(Err(e)) => return Err(e.clone()),
         };
         if let Some(ov) = &self.overview {
@@ -114,12 +120,15 @@ impl Invocation {
     /// Hub API 的结果。
     pub(crate) fn into_outcome(self) -> Result<CallOutcome, HubError> {
         let mut state_hints = Vec::new();
+        let mut app_result = None;
         let result = match self.body {
             Body::NotFound(e) => return Err(HubError(e)),
             Body::Builtin(r) => r.map(|r| result_value(&r)),
-            Body::App(r) => r.map(|r| {
-                state_hints = r.state_hints;
-                r.data
+            Body::App(r) => r.map(|mut r| {
+                state_hints = std::mem::take(&mut r.state_hints);
+                let data = std::mem::take(&mut r.data);
+                app_result = Some(r);
+                data
             }),
             Body::Upstream(Ok(r)) if r.is_error == Some(true) => Err(ToolError::new(
                 ErrorKind::HandlerError,
@@ -128,17 +137,31 @@ impl Invocation {
             Body::Upstream(Ok(r)) => Ok(result_value(&r)),
             Body::Upstream(Err(e)) => Err(mcp_error_to_tool(&e)),
         };
+        let app_id = self.app_id.unwrap_or_default();
+        let r = app_result.unwrap_or_default();
         Ok(CallOutcome {
             call_id: self.call_id,
             result,
             state_hints,
             instance_id: self.instance_id,
             overview: self.overview.as_ref().map(overview_info),
+            status: r.status,
+            state_resource: r.state_resource.map(|n| resource_uri(&app_id, &n)),
+            summary: r.summary,
+            annotations: r.annotations,
         })
     }
 }
 
 type CancelFut<'a> = Pin<&'a mut (dyn Future<Output = ()> + Send)>;
+
+/// 一次 App 工具调用的结果。
+pub(crate) struct ToolRun {
+    pub result: Result<ToolsInvokeResult, ToolError>,
+    /// 实际处理调用的实例。
+    pub instance_id: Option<String>,
+    pub output_shape: OutputShape,
+}
 
 fn cancelled() -> ToolError {
     ToolError::new(ErrorKind::Cancelled, "调用已被取消。")
@@ -193,14 +216,17 @@ impl HubShared {
             instance_id: None,
             overview: None,
             body,
+            output_shape: OutputShape::Undeclared,
         };
 
         // 上游 MCP 服务器
         if let Some((app_id, tool)) = name.split_once('.')
             && let Some(peer) = self.upstream_peer(app_id)
         {
-            let result = match args {
-                Value::Object(map) => {
+            let guard = if args.is_object() { self.guard_call(app_id, tool, &args) } else { Ok(()) };
+            let result = match (args, guard) {
+                (Value::Object(_), Err(e)) => Ok(error_result(&e)),
+                (Value::Object(map), Ok(())) => {
                     // 缓存中没有该工具（列表刚变化）时按 write 风险审批。
                     let hub_tool = match self.upstream_tool(app_id, tool) {
                         Some(t) => upstream_hub_tool(app_id, &t),
@@ -255,11 +281,15 @@ impl HubShared {
             );
             return inv(Some(app_id), Body::NotFound(e));
         }
-        let (result, instance_id) = self
-            .invoke_tool(call_id, app_id, tool, args, &ctx, cancel)
-            .await;
-        let mut out = inv(Some(app_id), Body::App(result));
-        out.instance_id = instance_id;
+        if let Err(e) = self.guard_call(app_id, tool, &args) {
+            let mut out = inv(Some(app_id), Body::App(Err(e)));
+            out.overview = self.attach_overview(&ctx.session_key, app_id);
+            return out;
+        }
+        let run = self.invoke_tool(call_id, app_id, tool, args, &ctx, cancel).await;
+        let mut out = inv(Some(app_id), Body::App(run.result));
+        out.instance_id = run.instance_id;
+        out.output_shape = run.output_shape;
         out.overview = self.attach_overview(&ctx.session_key, app_id);
         self.expose_in_session(&ctx, app_id);
         out
@@ -272,6 +302,34 @@ impl HubShared {
         {
             self.notify_session_tools_changed(id);
         }
+    }
+
+    /// 转发前的资源保护（spec/hub-api.md 3.11）：参数大小上限，然后（App, 工具）与 App 两级限流。
+    /// 超出时计入该 App 的拒绝计数，返回 `PAYLOAD_TOO_LARGE` / `RATE_LIMITED`。
+    fn guard_call(&self, app_id: &str, tool: &str, args: &Value) -> Result<(), ToolError> {
+        let limits = &self.config.limits;
+        if limits.max_arguments_bytes > 0 {
+            let size = serde_json::to_vec(args).map_or(0, |v| v.len());
+            if let Err(e) = Payload::Arguments.check(size, limits.max_arguments_bytes, &format!("工具「{app_id}.{tool}」")) {
+                lock(&self.rates).record_too_large(app_id);
+                return Err(e);
+            }
+        }
+        let now = tokio::time::Instant::now();
+        lock(&self.rates)
+            .acquire(limits, app_id, tool, now)
+            .map_err(|r| r.to_error(app_id, tool))
+    }
+
+    /// 结果 / 资源内容的大小上限；超出时计入该 App 的拒绝计数。
+    pub(crate) fn guard_payload(&self, app_id: &str, part: Payload, size: usize, target: &str) -> Result<(), ToolError> {
+        let limits = &self.config.limits;
+        let limit = match part {
+            Payload::Arguments => limits.max_arguments_bytes,
+            Payload::Result => limits.max_result_bytes,
+            Payload::Resource => limits.max_resource_bytes,
+        };
+        part.check(size, limit, target).inspect_err(|_| lock(&self.rates).record_too_large(app_id))
     }
 
     fn approval_request(&self, call_id: &str, t: &HubTool, args: &Value, ctx: &CallCtx) -> ApprovalRequest {
@@ -292,6 +350,7 @@ impl HubShared {
             risk: t.risk,
             arguments: args.clone(),
             session: ctx.session.clone(),
+            annotations: t.annotations.clone(),
         }
     }
 
@@ -325,7 +384,7 @@ impl HubShared {
         }
     }
 
-    /// 调用 App 工具：路由 → schema 校验 → 审批 → 转发。返回结果与目标实例。
+    /// 调用 App 工具：路由 → schema 校验 → 审批 → 转发。
     async fn invoke_tool(
         self: &Arc<Self>,
         call_id: &str,
@@ -333,7 +392,60 @@ impl HubShared {
         tool_name: &str,
         arguments: Value,
         ctx: &CallCtx,
+        cancel: CancelFut<'_>,
+    ) -> ToolRun {
+        let mut output_shape = OutputShape::Undeclared;
+        let (result, instance_id) = self
+            .invoke_routed(call_id, app_id, tool_name, arguments, ctx, cancel, &mut output_shape)
+            .await;
+        ToolRun { result, instance_id, output_shape }
+    }
+
+    /// 结果到达后的处理：大小上限 → 解析 → 按 [`OutputValidation`] 核对 `outputSchema`。
+    fn accept_result(&self, app_id: &str, tool: &str, info: &ToolInfo, v: Value) -> Result<ToolsInvokeResult, ToolError> {
+        let size = serde_json::to_vec(&v).map_or(0, |b| b.len());
+        self.guard_payload(app_id, Payload::Result, size, &format!("工具「{app_id}.{tool}」"))?;
+        let r = match serde_json::from_value::<ToolsInvokeResult>(v.clone()) {
+            Ok(r) => r,
+            Err(_) => ToolsInvokeResult { data: v, ..ToolsInvokeResult::default() },
+        };
+        let (Some(schema), false) = (&info.output_schema, r.data.is_null()) else {
+            return Ok(r);
+        };
+        let mode = self.config.output_validation;
+        if mode == OutputValidation::Off {
+            return Ok(r);
+        }
+        let msg = match schema::check(schema, &r.data) {
+            SchemaCheck::Invalid(msg) => msg,
+            SchemaCheck::BadSchema(e) => {
+                tracing::warn!(app_id, tool, error = %e, "工具的 outputSchema 无法编译，跳过结果校验");
+                return Ok(r);
+            }
+            SchemaCheck::Valid | SchemaCheck::Unchecked => return Ok(r),
+        };
+        if mode == OutputValidation::Reject {
+            return Err(ToolError::new(
+                ErrorKind::HandlerError,
+                format!("App 返回的结果不符合工具「{app_id}.{tool}」声明的 outputSchema：{msg}。调用可能已在 App 内执行，请确认状态后再决定是否重试。"),
+            )
+            .with_details(json!({ "appId": app_id, "outputSchemaError": msg })));
+        }
+        tracing::warn!(app_id, tool, error = %msg, "App 返回的结果不符合其声明的 outputSchema（只记录，结果照常返回）");
+        Ok(r)
+    }
+
+    /// [`HubShared::invoke_tool`] 的主体：返回结果与目标实例；路由到实例后把其 `outputSchema` 形式写入 `output_shape`。
+    #[allow(clippy::too_many_arguments)]
+    async fn invoke_routed(
+        self: &Arc<Self>,
+        call_id: &str,
+        app_id: &str,
+        tool_name: &str,
+        arguments: Value,
+        ctx: &CallCtx,
         mut cancel: CancelFut<'_>,
+        output_shape: &mut OutputShape,
     ) -> (Result<ToolsInvokeResult, ToolError>, Option<String>) {
         self.lease_call_started(&ctx.session_key, app_id);
         let selected = ctx
@@ -400,6 +512,7 @@ impl HubShared {
             );
         }
         let instance = Some(target.instance_id.clone());
+        *output_shape = OutputShape::of(target.tool.output_schema.as_ref());
         match schema::check(&target.tool.input_schema, &arguments) {
             SchemaCheck::Valid => {}
             SchemaCheck::Invalid(msg) => {
@@ -472,14 +585,7 @@ impl HubShared {
             }
         };
         let result = match outcome {
-            Ok(Ok(Ok(v))) => Ok(
-                serde_json::from_value::<ToolsInvokeResult>(v.clone()).unwrap_or(
-                    ToolsInvokeResult {
-                        data: v,
-                        state_hints: Vec::new(),
-                    },
-                ),
-            ),
+            Ok(Ok(Ok(v))) => self.accept_result(app_id, tool_name, &target.tool, v),
             Ok(Ok(Err(rpc))) => Err(rpc.to_tool_error()),
             Ok(Err(_)) => return (Err(disconnected()), instance),
             Err(_) => {
@@ -523,7 +629,13 @@ impl HubShared {
         let timeout = timeout.unwrap_or(self.config.response_timeout);
         tokio::select! {
             r = tokio::time::timeout(timeout, peer.call_tool(params)) => match r {
-                Ok(Ok(result)) => Ok(result),
+                Ok(Ok(result)) => {
+                    let size = serde_json::to_vec(&result).map_or(0, |v| v.len());
+                    match self.guard_payload(name, Payload::Result, size, &format!("工具「{name}.{tool}」")) {
+                        Ok(()) => Ok(result),
+                        Err(e) => Ok(error_result(&e)),
+                    }
+                }
                 Ok(Err(ServiceError::McpError(e))) => Err(e),
                 Ok(Err(e)) => Ok(error_result(&ToolError::new(
                     ErrorKind::AppDisconnected,
@@ -668,6 +780,7 @@ pub(crate) async fn read_resource(
         .await
         .map_err(|e| to_mcp_error(&e))?;
     let contents = resource_contents(uri, info.mime_type.as_deref(), result);
+    check_resource_size(shared, app_id, uri, std::slice::from_ref(&contents))?;
     Ok(ReadResourceResult::new(vec![contents]))
 }
 
@@ -711,7 +824,24 @@ async fn read_upstream_resource(
             *u = uri.to_owned();
         }
     }
+    check_resource_size(shared, name, uri, &result.contents)?;
     Ok(result)
+}
+
+/// 资源内容（文本 / base64）的大小上限（spec/hub-api.md 3.11）。
+fn check_resource_size(shared: &HubShared, app_id: &str, uri: &str, contents: &[ResourceContents]) -> Result<(), McpError> {
+    let size: usize = contents
+        .iter()
+        .map(|c| match c {
+            ResourceContents::TextResourceContents { text, .. } => text.len(),
+            ResourceContents::BlobResourceContents { blob, .. } => blob.len(),
+            #[allow(unreachable_patterns)]
+            _ => 0,
+        })
+        .sum();
+    shared
+        .guard_payload(app_id, Payload::Resource, size, &format!("资源「{uri}」"))
+        .map_err(|e| to_mcp_error(&e))
 }
 
 /// Hub API：取第一段内容。
@@ -859,6 +989,12 @@ pub(crate) fn builtin_hub_tools(with_apps_tools: bool) -> Vec<HubTool> {
                 risk: Risk::Read,
                 activation: Activation::Headless,
                 availability: Availability::Available,
+                annotations: t
+                    .annotations
+                    .as_ref()
+                    .map(mcp_convert::from_mcp_tool_annotations)
+                    .unwrap_or_default(),
+                output_schema: None,
             }
         })
         .collect()
@@ -866,6 +1002,7 @@ pub(crate) fn builtin_hub_tools(with_apps_tools: bool) -> Vec<HubTool> {
 
 pub(crate) fn app_hub_tool(app_id: &str, info: ToolInfo, availability: Availability) -> HubTool {
     HubTool {
+        annotations: info.effective_annotations(),
         name: format!("{app_id}.{}", info.name),
         app_id: app_id.to_owned(),
         tool: info.name,
@@ -875,6 +1012,30 @@ pub(crate) fn app_hub_tool(app_id: &str, info: ToolInfo, availability: Availabil
         risk: info.risk,
         activation: info.activation.unwrap_or_default(),
         availability,
+        output_schema: info.output_schema,
+    }
+}
+
+/// App 工具的声明（`/status` 的 `tools`，docs/plans/14-safety.md S5）。
+pub(crate) fn tool_declaration(info: &ToolInfo) -> ToolDeclaration {
+    ToolDeclaration {
+        name: info.name.clone(),
+        risk: info.risk,
+        annotations: info.annotations.clone(),
+        effective: info.effective_annotations(),
+        output_schema: info.output_schema.is_some(),
+    }
+}
+
+/// 上游工具的声明：注解原样（上游没有 `risk`，按注解推导，见 [`upstream_risk`]）。
+pub(crate) fn upstream_tool_declaration(t: &Tool) -> ToolDeclaration {
+    let annotations = t.annotations.as_ref().map(mcp_convert::from_mcp_tool_annotations);
+    ToolDeclaration {
+        name: t.name.to_string(),
+        risk: upstream_risk(t),
+        effective: annotations.clone().unwrap_or_default(),
+        annotations,
+        output_schema: t.output_schema.is_some(),
     }
 }
 
@@ -901,6 +1062,8 @@ pub(crate) fn upstream_hub_tool(name: &str, t: &Tool) -> HubTool {
         risk: upstream_risk(t),
         activation: Activation::Headless,
         availability: Availability::Available,
+        annotations: t.annotations.as_ref().map(mcp_convert::from_mcp_tool_annotations).unwrap_or_default(),
+        output_schema: t.output_schema.as_ref().map(|s| Value::Object((**s).clone())),
     }
 }
 
@@ -922,21 +1085,14 @@ pub(crate) fn to_mcp_tool(app_id: &str, info: &ToolInfo, availability: Availabil
         }
     };
     let mut tool = Tool::new(format!("{app_id}.{}", info.name), description, schema)
-        .with_annotations(risk_annotations(info.risk));
+        .with_annotations(mcp_convert::tool_annotations(&info.effective_annotations()));
     if let Some(title) = &info.title {
         tool = tool.with_title(title.clone());
     }
-    tool
-}
-
-pub(crate) fn risk_annotations(risk: Risk) -> ToolAnnotations {
-    match risk {
-        Risk::Read => ToolAnnotations::new().read_only(true),
-        Risk::Destructive | Risk::Payment => {
-            ToolAnnotations::new().read_only(false).destructive(true)
-        }
-        Risk::Write | Risk::OsSensitive => ToolAnnotations::new().read_only(false),
+    if let Some(output) = &info.output_schema {
+        tool = tool.with_raw_output_schema(Arc::new(mcp_convert::mcp_output_schema(output)));
     }
+    tool
 }
 
 // ---------------------------------------------------------------------------
@@ -966,10 +1122,31 @@ pub(crate) fn error_result(e: &ToolError) -> CallToolResult {
     r
 }
 
-pub(crate) fn success_result(app_id: &str, r: ToolsInvokeResult) -> CallToolResult {
-    let mut content = vec![ContentBlock::text(
-        serde_json::to_string(&r.data).unwrap_or_default(),
-    )];
+/// App 工具的成功结果（spec/hub-api.md 3.2）：状态说明（非 `done`）→ 摘要 → 返回值 JSON（无返回值、无摘要且 `done` 时为
+/// "已完成"）→ 资源变化提示。App 的内容标注只加在 App 给出的内容块（摘要、返回值）上。
+pub(crate) fn success_result(app_id: &str, r: ToolsInvokeResult, shape: OutputShape) -> CallToolResult {
+    let state_uri = r.state_resource.as_deref().map(|n| resource_uri(app_id, n));
+    let mut app_texts = Vec::new();
+    if let Some(s) = &r.summary {
+        app_texts.push(TextContent::new(s.clone()));
+    }
+    if !r.data.is_null() {
+        app_texts.push(TextContent::new(serde_json::to_string(&r.data).unwrap_or_default()));
+    }
+    if app_texts.is_empty() && r.status.is_done() {
+        app_texts.push(TextContent::new(mcp_convert::DONE_TEXT));
+    }
+    let annotations = r.annotations.as_ref().map(mcp_convert::content_annotations);
+    let mut content: Vec<ContentBlock> = mcp_convert::status_note(r.status, state_uri.as_deref())
+        .map(ContentBlock::text)
+        .into_iter()
+        .collect();
+    content.extend(app_texts.into_iter().map(|t| {
+        ContentBlock::Text(match &annotations {
+            Some(a) => t.with_annotations(a.clone()),
+            None => t,
+        })
+    }));
     if !r.state_hints.is_empty() {
         let uris: Vec<String> = r
             .state_hints
@@ -982,8 +1159,14 @@ pub(crate) fn success_result(app_id: &str, r: ToolsInvokeResult) -> CallToolResu
         )));
     }
     let mut result = CallToolResult::success(content);
-    if r.data.is_object() {
-        result.structured_content = Some(r.data);
+    result.structured_content = shape.structured(&r.data);
+    if !r.status.is_done() {
+        let mut meta = MetaObject::new();
+        meta.insert(mcp_convert::META_STATUS.to_owned(), json!(r.status));
+        if let Some(uri) = state_uri {
+            meta.insert(mcp_convert::META_STATE_RESOURCE.to_owned(), json!(uri));
+        }
+        result.meta = Some(meta);
     }
     result
 }
@@ -1046,7 +1229,7 @@ pub(crate) fn mcp_error_to_tool(e: &McpError) -> ToolError {
     }
 }
 
-const ALL_KINDS: [ErrorKind; 15] = [
+const ALL_KINDS: [ErrorKind; 17] = [
     ErrorKind::ToolNotFound,
     ErrorKind::ToolDisabled,
     ErrorKind::InvalidInput,
@@ -1062,6 +1245,8 @@ const ALL_KINDS: [ErrorKind; 15] = [
     ErrorKind::ResourceNotFound,
     ErrorKind::Unauthorized,
     ErrorKind::UnsupportedProtocol,
+    ErrorKind::RateLimited,
+    ErrorKind::PayloadTooLarge,
 ];
 
 /// 把协议错误转为 MCP 协议错误（资源读取等非工具调用路径）。
@@ -1099,7 +1284,9 @@ mod tests {
             ToolsInvokeResult {
                 data: json!({"ok": true}),
                 state_hints: vec!["cart.state".into()],
+                ..ToolsInvokeResult::default()
             },
+            OutputShape::Undeclared,
         );
         assert_eq!(r.is_error, Some(false));
         assert_eq!(r.content.len(), 2);
@@ -1113,13 +1300,72 @@ mod tests {
         assert_eq!(r.structured_content, Some(json!({"ok": true})));
         let r = success_result(
             "shop",
-            ToolsInvokeResult {
-                data: json!([1]),
-                state_hints: vec![],
-            },
+            ToolsInvokeResult { data: json!([1]), ..ToolsInvokeResult::default() },
+            OutputShape::Undeclared,
         );
         assert_eq!(r.structured_content, None);
         assert_eq!(r.content[0].as_text().unwrap().text, "[1]");
+        assert_eq!(r.meta, None);
+    }
+
+    /// 第 19 项 R3：无返回值 → "已完成"、不填 structuredContent；有摘要时摘要代替。
+    #[test]
+    fn success_result_without_value() {
+        let r = success_result("shop", ToolsInvokeResult::default(), OutputShape::Object);
+        assert_eq!(r.content.len(), 1);
+        assert_eq!(r.content[0].as_text().unwrap().text, "已完成");
+        assert_eq!(r.structured_content, None);
+        let r = success_result(
+            "shop",
+            ToolsInvokeResult { summary: Some("已加入购物车".into()), ..ToolsInvokeResult::default() },
+            OutputShape::Undeclared,
+        );
+        assert_eq!(r.content.len(), 1);
+        assert_eq!(r.content[0].as_text().unwrap().text, "已加入购物车");
+    }
+
+    /// 第 19 项 R1 + 第 14 项 S2：状态说明在前、_meta 带状态；内容标注只加在 App 的内容块上。
+    #[test]
+    fn success_result_status_and_annotations() {
+        let r = success_result(
+            "shop",
+            ToolsInvokeResult {
+                data: json!({"orderId": "o1"}),
+                status: app_mcp_protocol::ResultStatus::Pending,
+                state_resource: Some("order.state".into()),
+                summary: Some("已提交，等待付款".into()),
+                annotations: Some(app_mcp_protocol::ContentAnnotations { priority: Some(0.5), ..Default::default() }),
+                state_hints: vec!["cart.state".into()],
+            },
+            OutputShape::Object,
+        );
+        let texts: Vec<&str> = r.content.iter().map(|c| c.as_text().unwrap().text.as_str()).collect();
+        assert_eq!(texts.len(), 4, "{texts:?}");
+        assert!(texts[0].contains("尚未完成") && texts[0].contains("app-mcp://shop/order.state"));
+        assert_eq!(texts[1], "已提交，等待付款");
+        assert_eq!(texts[2], r#"{"orderId":"o1"}"#);
+        assert!(texts[3].contains("app-mcp://shop/cart.state"));
+        let annotated: Vec<bool> = r.content.iter().map(|c| c.as_text().unwrap().annotations.is_some()).collect();
+        assert_eq!(annotated, [false, true, true, false]);
+        let meta = r.meta.unwrap();
+        assert_eq!(meta.get("app-mcp/status"), Some(&json!("pending")));
+        assert_eq!(meta.get("app-mcp/stateResource"), Some(&json!("app-mcp://shop/order.state")));
+        assert_eq!(r.structured_content, Some(json!({"orderId": "o1"})));
+        // noop 且无返回值：只有状态说明，不出现"已完成"
+        let r = success_result(
+            "shop",
+            ToolsInvokeResult { status: app_mcp_protocol::ResultStatus::Noop, ..ToolsInvokeResult::default() },
+            OutputShape::Undeclared,
+        );
+        assert_eq!(r.content.len(), 1);
+        assert!(r.content[0].as_text().unwrap().text.contains("没有做任何改动"));
+        // 非对象结果按声明包装
+        let r = success_result(
+            "shop",
+            ToolsInvokeResult { data: json!(["a"]), ..ToolsInvokeResult::default() },
+            OutputShape::Wrapped,
+        );
+        assert_eq!(r.structured_content, Some(json!({"result": ["a"]})));
     }
 
     #[cfg(feature = "mcp-server")]
@@ -1134,6 +1380,29 @@ mod tests {
         assert_eq!(t.description.as_deref(), Some("[当前不可用] 搜索"));
         assert_eq!(t.title.as_deref(), Some("搜"));
         assert_eq!(t.annotations.unwrap().read_only_hint, Some(true));
+        assert!(t.output_schema.is_none());
+        // 声明的注解逐字段优先，缺少的按 risk 推导；非对象 outputSchema 包装
+        let declared: ToolInfo = serde_json::from_value(json!({
+            "name": "orders.cancel", "description": "取消", "inputSchema": {"type": "object"}, "risk": "destructive",
+            "annotations": {"idempotentHint": true, "openWorldHint": false, "title": "取消订单"},
+            "outputSchema": {"type": "array"}
+        }))
+        .unwrap();
+        let t = to_mcp_tool("shop", &declared, Availability::Available);
+        assert_eq!(
+            serde_json::to_value(t.annotations.unwrap()).unwrap(),
+            json!({"title": "取消订单", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false})
+        );
+        assert_eq!(
+            Value::Object((*t.output_schema.unwrap()).clone()),
+            json!({"type": "object", "properties": {"result": {"type": "array"}}, "required": ["result"]})
+        );
+        let d = tool_declaration(&declared);
+        assert_eq!((d.risk, d.output_schema, d.effective.destructive_hint), (Risk::Destructive, true, Some(true)));
+        assert_eq!(d.annotations.unwrap().destructive_hint, None, "声明原样");
+        let hd = app_hub_tool("shop", declared, Availability::Available);
+        assert_eq!(hd.annotations.idempotent_hint, Some(true));
+        assert_eq!(hd.output_schema, Some(json!({"type": "array"})));
         let h = app_hub_tool("shop", info, Availability::Available);
         assert_eq!(h.name, "shop.orders.search");
         assert_eq!(h.tool, "orders.search");
@@ -1190,6 +1459,16 @@ mod tests {
         let t = Tool::new("ls", "列出", obj(json!({"type": "object"})));
         assert_eq!(upstream_risk(&t), Risk::Write);
         assert_eq!(upstream_hub_tool("files", &t).name, "files.ls");
+        assert_eq!(b[0].annotations.read_only_hint, Some(true));
+        // 上游注解原样；没有注解时为空
+        assert_eq!(upstream_hub_tool("files", &t).annotations, app_mcp_protocol::ToolAnnotations::default());
+        let rm = Tool::new("rm", "删除", obj(json!({"type": "object"})))
+            .with_annotations(ToolAnnotations::new().destructive(true).idempotent(true));
+        let h = upstream_hub_tool("files", &rm);
+        assert_eq!((h.annotations.destructive_hint, h.annotations.idempotent_hint), (Some(true), Some(true)));
+        let d = upstream_tool_declaration(&rm);
+        assert_eq!((d.name.as_str(), d.risk, d.output_schema), ("rm", Risk::Destructive, false));
+        assert_eq!(d.annotations, Some(d.effective.clone()));
     }
 
     #[test]

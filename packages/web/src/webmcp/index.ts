@@ -15,7 +15,14 @@
 
 export { installWebMcp } from './install'
 export { ToolActivatedEvent, ToolCancelEvent, type ToolEventInit } from './events'
-export { annotationsToRisk, fromStandardResult, riskToAnnotations, toStandardResult } from './convert'
+export {
+  annotationsToRisk,
+  fromStandardResult,
+  riskToAnnotations,
+  standardToToolAnnotations,
+  toolToStandardAnnotations,
+  toStandardResult,
+} from './convert'
 export type {
   ModelContext,
   ModelContextExecuteToolOptions,

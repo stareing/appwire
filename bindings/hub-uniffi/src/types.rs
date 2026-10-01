@@ -186,6 +186,98 @@ impl From<hub::Availability> for Availability {
 }
 enum_map!(ToolFormat <=> hub::ToolFormat { Mcp, OpenAiChat, OpenAiResponses, Anthropic, Gemini });
 
+/// 结果与其 `outputSchema` 不符时 Hub 的处理（spec/hub-api.md 3.11）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum OutputValidation {
+    /// 不校验。
+    Off,
+    /// 校验，不符时只记日志（默认）。
+    Log,
+    /// 校验，不符时调用以 `HANDLER_ERROR` 结束。
+    Reject,
+}
+
+enum_map!(OutputValidation <=> hub::OutputValidation { Off, Log, Reject });
+
+/// 调用结果的业务状态（spec/protocol.md 3.2）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum ResultStatus {
+    /// 已完成（缺省）。
+    Done,
+    /// 已受理、尚未完成（等待用户在 App 内确认或异步处理）；后续状态见 `CallOutcome.state_resource`。
+    Pending,
+    /// 只完成了一部分，说明见 `CallOutcome.summary`。
+    Partial,
+    /// 没有做任何改动。
+    Noop,
+}
+
+enum_map!(ResultStatus <=> hub::ResultStatus { Done, Pending, Partial, Noop });
+
+/// 内容面向的对象（MCP 内容注解 `audience`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum Audience {
+    User,
+    Assistant,
+}
+
+enum_map!(Audience <=> hub::Audience { User, Assistant });
+
+/// 标准 MCP 工具注解。为空 = 未声明。
+#[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Record)]
+pub struct ToolAnnotations {
+    /// 给人看的工具标题。
+    #[uniffi(default = None)]
+    pub title: Option<String>,
+    /// 不修改任何状态。
+    #[uniffi(default = None)]
+    pub read_only_hint: Option<bool>,
+    /// 可能做出破坏性 / 不可撤销的修改（只在非只读时有意义）。
+    #[uniffi(default = None)]
+    pub destructive_hint: Option<bool>,
+    /// 以相同参数重复调用没有额外效果（只在非只读时有意义）。
+    #[uniffi(default = None)]
+    pub idempotent_hint: Option<bool>,
+    /// 会与外部世界交互。
+    #[uniffi(default = None)]
+    pub open_world_hint: Option<bool>,
+}
+
+impl From<hub::ToolAnnotations> for ToolAnnotations {
+    fn from(a: hub::ToolAnnotations) -> Self {
+        ToolAnnotations {
+            title: a.title,
+            read_only_hint: a.read_only_hint,
+            destructive_hint: a.destructive_hint,
+            idempotent_hint: a.idempotent_hint,
+            open_world_hint: a.open_world_hint,
+        }
+    }
+}
+
+/// 内容标注（MCP 内容注解），Hub 原样转发 App 的声明。
+#[derive(Clone, Debug, Default, PartialEq, uniffi::Record)]
+pub struct ContentAnnotations {
+    #[uniffi(default = None)]
+    pub audience: Option<Vec<Audience>>,
+    /// 重要程度，0（可选）到 1（必需）。
+    #[uniffi(default = None)]
+    pub priority: Option<f64>,
+    /// 最后修改时刻（ISO 8601）。
+    #[uniffi(default = None)]
+    pub last_modified: Option<String>,
+}
+
+impl From<hub::ContentAnnotations> for ContentAnnotations {
+    fn from(a: hub::ContentAnnotations) -> Self {
+        ContentAnnotations {
+            audience: a.audience.map(|v| v.into_iter().map(Into::into).collect()),
+            priority: a.priority,
+            last_modified: a.last_modified,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 错误
 // ---------------------------------------------------------------------------
@@ -360,6 +452,13 @@ pub struct HubConfig {
     /// 自适应租约（默认见 [`LeaseConfig`]）。
     #[uniffi(default = None)]
     pub lease: Option<LeaseConfig>,
+    // ---- 资源保护（spec/hub-api.md 3.11）----
+    /// 限流与大小上限（默认见 [`LimitsConfig`]）。
+    #[uniffi(default = None)]
+    pub limits: Option<LimitsConfig>,
+    /// 结果与 `outputSchema` 不符时的处理（默认 `Log`）。
+    #[uniffi(default = None)]
+    pub output_validation: Option<OutputValidation>,
     // ---- 渐进暴露（spec/hub-api.md 3.7）----
     /// 工具暴露方式（默认 `Auto`）。
     #[uniffi(default = None)]
@@ -402,6 +501,8 @@ impl Default for HubConfig {
             wake_rate_limit: None,
             legacy_heartbeat: None,
             lease: None,
+            limits: None,
+            output_validation: None,
             tool_exposure: None,
             tool_exposure_threshold: None,
         }
@@ -441,6 +542,61 @@ impl From<LeaseConfig> for hub::LeaseOverrides {
             min_ms: c.min_ms,
             max_ms: c.max_ms,
             idle_revoke_ms: c.idle_revoke_ms,
+        }
+    }
+}
+
+/// 资源保护策略（spec/hub-api.md 3.11；与 JSON 配置 `limits` 同构）。为空的字段取默认值。
+/// 也用于 [`HubStatus::limits`]（全部字段给出）。
+#[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Record)]
+pub struct LimitsConfig {
+    /// 每（App, 工具）每分钟调用数（默认 120）；`0` 不限。
+    #[uniffi(default = None)]
+    pub tool_rate_per_minute: Option<u32>,
+    /// 每（App, 工具）允许的突发调用数（默认 30）；限流时须 ≥ 1。
+    #[uniffi(default = None)]
+    pub tool_rate_burst: Option<u32>,
+    /// 每 App 每分钟调用数（默认 600）；`0` 不限。
+    #[uniffi(default = None)]
+    pub app_rate_per_minute: Option<u32>,
+    /// 每 App 允许的突发调用数（默认 60）；限流时须 ≥ 1。
+    #[uniffi(default = None)]
+    pub app_rate_burst: Option<u32>,
+    /// 调用参数字节上限（默认 1 MiB）；`0` 不限。超出 → `PAYLOAD_TOO_LARGE`。
+    #[uniffi(default = None)]
+    pub max_arguments_bytes: Option<u64>,
+    /// 调用结果字节上限（默认 4 MiB）；`0` 不限。
+    #[uniffi(default = None)]
+    pub max_result_bytes: Option<u64>,
+    /// 资源内容字节上限（默认 4 MiB）；`0` 不限。
+    #[uniffi(default = None)]
+    pub max_resource_bytes: Option<u64>,
+}
+
+impl From<LimitsConfig> for hub::LimitOverrides {
+    fn from(c: LimitsConfig) -> Self {
+        hub::LimitOverrides {
+            tool_rate_per_minute: c.tool_rate_per_minute,
+            tool_rate_burst: c.tool_rate_burst,
+            app_rate_per_minute: c.app_rate_per_minute,
+            app_rate_burst: c.app_rate_burst,
+            max_arguments_bytes: c.max_arguments_bytes,
+            max_result_bytes: c.max_result_bytes,
+            max_resource_bytes: c.max_resource_bytes,
+        }
+    }
+}
+
+impl From<hub::LimitOverrides> for LimitsConfig {
+    fn from(c: hub::LimitOverrides) -> Self {
+        LimitsConfig {
+            tool_rate_per_minute: c.tool_rate_per_minute,
+            tool_rate_burst: c.tool_rate_burst,
+            app_rate_per_minute: c.app_rate_per_minute,
+            app_rate_burst: c.app_rate_burst,
+            max_arguments_bytes: c.max_arguments_bytes,
+            max_result_bytes: c.max_result_bytes,
+            max_resource_bytes: c.max_resource_bytes,
         }
     }
 }
@@ -527,6 +683,13 @@ impl HubConfig {
         if let Some(l) = self.lease {
             hub::LeaseOverrides::from(l).apply(&mut c.lease);
             c.lease.validate().map_err(|detail| HubError::InvalidConfig { detail: format!("lease：{detail}") })?;
+        }
+        if let Some(l) = self.limits {
+            hub::LimitOverrides::from(l).apply(&mut c.limits);
+            c.limits.validate().map_err(|detail| HubError::InvalidConfig { detail })?;
+        }
+        if let Some(v) = self.output_validation {
+            c.output_validation = v.into();
         }
         if let Some(v) = self.tool_exposure {
             c.tool_exposure = v.into();
@@ -832,6 +995,42 @@ pub struct AppStatus {
     /// Hub 启动以来为该 App 实际发出的唤醒激活次数（含冷启动；上游为 0）。
     #[uniffi(default = 0)]
     pub wakes: u64,
+    /// Hub 启动以来因限流被拒绝的调用次数。
+    #[uniffi(default = 0)]
+    pub rate_limited: u64,
+    /// Hub 启动以来因大小上限被拒绝的参数 / 结果 / 资源次数。
+    #[uniffi(default = 0)]
+    pub too_large: u64,
+    /// 各工具的声明（`risk` 与 MCP 注解）；上游与旧 Host 为空。
+    #[uniffi(default = [])]
+    pub tools: Vec<ToolDeclaration>,
+}
+
+/// 一个工具的声明（[`AppStatus::tools`]）。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ToolDeclaration {
+    /// 局部名（不含 appId）。
+    pub name: String,
+    /// 旧写法 `risk`（未声明时为 `Write`）。
+    pub risk: Risk,
+    /// App 声明的注解（原样）；为空 = 未声明。
+    pub annotations: Option<ToolAnnotations>,
+    /// Agent 实际看到的注解（声明优先，缺少的按 `risk` 推导）。
+    pub effective: ToolAnnotations,
+    /// 是否声明了 `outputSchema`。
+    pub output_schema: bool,
+}
+
+impl From<hub::ToolDeclaration> for ToolDeclaration {
+    fn from(d: hub::ToolDeclaration) -> Self {
+        ToolDeclaration {
+            name: d.name,
+            risk: d.risk.into(),
+            annotations: d.annotations.map(Into::into),
+            effective: d.effective.into(),
+            output_schema: d.output_schema,
+        }
+    }
 }
 
 /// 一条 SDK 诊断上报（`app/diagnostic`，spec/protocol.md 10.2）。
@@ -875,6 +1074,12 @@ pub struct HubStatus {
     /// 租约策略与统计。
     #[uniffi(default = None)]
     pub lease: Option<LeaseStatus>,
+    /// 资源保护策略（全部字段给出）；旧 Host 为空。
+    #[uniffi(default = None)]
+    pub limits: Option<LimitsConfig>,
+    /// 结果与 `outputSchema` 不符时的处理；旧 Host 为空。
+    #[uniffi(default = None)]
+    pub output_validation: Option<OutputValidation>,
 }
 
 impl From<hub::LastError> for LastError {
@@ -907,6 +1112,9 @@ impl From<hub::AppStatus> for AppStatus {
             instances: a.instances.into_iter().map(Into::into).collect(),
             last_error: a.last_error.map(Into::into),
             wakes: a.wakes,
+            rate_limited: a.rate_limited,
+            too_large: a.too_large,
+            tools: a.tools.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -944,6 +1152,8 @@ impl From<hub::HubStatus> for HubStatus {
             apps: s.apps.into_iter().map(Into::into).collect(),
             reports: s.reports.into_iter().map(Into::into).collect(),
             lease: s.lease.map(Into::into),
+            limits: s.limits.map(Into::into),
+            output_validation: s.output_validation.map(Into::into),
         }
     }
 }
@@ -962,9 +1172,15 @@ pub struct HubTool {
     pub description: String,
     /// JSON Schema 文本。
     pub input_schema_json: String,
+    /// 旧写法；优先看 `annotations`。
     pub risk: Risk,
     pub activation: Activation,
     pub availability: Availability,
+    /// Agent 看到的 MCP 工具注解：App 声明的字段原样保留，缺少的按 `risk` 推导；上游工具为其原样注解。
+    pub annotations: ToolAnnotations,
+    /// App 声明的结果 JSON Schema 文本（原样）；未声明时为空。
+    #[uniffi(default = None)]
+    pub output_schema_json: Option<String>,
 }
 
 impl From<hub::HubTool> for HubTool {
@@ -979,6 +1195,8 @@ impl From<hub::HubTool> for HubTool {
             risk: t.risk.into(),
             activation: t.activation.into(),
             availability: t.availability.into(),
+            annotations: t.annotations.into(),
+            output_schema_json: t.output_schema.map(|v| v.to_string()),
         }
     }
 }
@@ -1037,6 +1255,9 @@ pub struct HubResource {
     pub description: String,
     pub mime_type: Option<String>,
     pub available: bool,
+    /// 资源内容的标注（MCP 内容注解），原样。
+    #[uniffi(default = None)]
+    pub annotations: Option<ContentAnnotations>,
 }
 
 impl From<hub::HubResource> for HubResource {
@@ -1048,6 +1269,7 @@ impl From<hub::HubResource> for HubResource {
             description: r.description,
             mime_type: r.mime_type,
             available: r.available,
+            annotations: r.annotations.map(Into::into),
         }
     }
 }
@@ -1166,6 +1388,17 @@ pub struct CallOutcome {
     pub instance_id: Option<String>,
     /// 该会话首次接触此 App 时附带。
     pub overview: Option<AppOverviewInfo>,
+    /// App 声明的业务状态（缺省 `Done`）。
+    pub status: ResultStatus,
+    /// `Pending` 时可读取后续状态的资源 URI（`app-mcp://<appId>/<资源名>`）。
+    #[uniffi(default = None)]
+    pub state_resource: Option<String>,
+    /// App 给出的一句结论。
+    #[uniffi(default = None)]
+    pub summary: Option<String>,
+    /// App 对结果内容的标注，原样。
+    #[uniffi(default = None)]
+    pub annotations: Option<ContentAnnotations>,
 }
 
 impl From<hub::CallOutcome> for CallOutcome {
@@ -1188,6 +1421,10 @@ impl From<hub::CallOutcome> for CallOutcome {
             state_hints: o.state_hints,
             instance_id: o.instance_id,
             overview: o.overview.map(Into::into),
+            status: o.status.into(),
+            state_resource: o.state_resource,
+            summary: o.summary,
+            annotations: o.annotations.map(Into::into),
         }
     }
 }
@@ -1352,6 +1589,8 @@ pub struct ApprovalRequest {
     /// 参数 JSON 文本（已按 schema 校验）。
     pub arguments_json: String,
     pub session: Option<String>,
+    /// 工具的 MCP 注解（与 `HubTool.annotations` 相同），供厂商按声明决定是否确认。
+    pub annotations: ToolAnnotations,
 }
 
 impl From<hub::ApprovalRequest> for ApprovalRequest {
@@ -1366,6 +1605,7 @@ impl From<hub::ApprovalRequest> for ApprovalRequest {
             risk: r.risk.into(),
             arguments_json: r.arguments.to_string(),
             session: r.session,
+            annotations: r.annotations.into(),
         }
     }
 }
@@ -1555,8 +1795,13 @@ mod tests {
             state_hints: vec![],
             instance_id: None,
             overview: None,
+            status: hub::ResultStatus::Done,
+            state_resource: None,
+            summary: None,
+            annotations: None,
         }
         .into();
+        assert_eq!(o.status, ResultStatus::Done);
         let e = o.error.unwrap();
         assert_eq!(e.kind, "USER_REJECTED");
         assert_eq!(e.details_json.as_deref(), Some(r#"{"a":1}"#));
@@ -1577,6 +1822,94 @@ mod tests {
                 details_json: None
             }
         );
+    }
+
+    #[test]
+    fn structured_outcome_conversion() {
+        let o: CallOutcome = hub::CallOutcome {
+            call_id: "c".into(),
+            result: Ok(json!({"orderId": "o1"})),
+            state_hints: vec!["cart".into()],
+            instance_id: Some("i".into()),
+            overview: None,
+            status: hub::ResultStatus::Pending,
+            state_resource: Some("app-mcp://shop/order.state".into()),
+            summary: Some("等待付款".into()),
+            annotations: Some(hub::ContentAnnotations {
+                audience: Some(vec![hub::Audience::User]),
+                priority: Some(0.5),
+                last_modified: None,
+            }),
+        }
+        .into();
+        assert_eq!(o.status, ResultStatus::Pending);
+        assert_eq!(o.state_resource.as_deref(), Some("app-mcp://shop/order.state"));
+        assert_eq!(o.summary.as_deref(), Some("等待付款"));
+        assert_eq!(
+            o.annotations,
+            Some(ContentAnnotations { audience: Some(vec![Audience::User]), priority: Some(0.5), last_modified: None })
+        );
+        let d = ToolDeclaration::from(hub::ToolDeclaration {
+            name: "order.submit".into(),
+            risk: hub::Risk::Write,
+            annotations: Some(hub::ToolAnnotations { idempotent_hint: Some(false), ..Default::default() }),
+            effective: hub::ToolAnnotations {
+                read_only_hint: Some(false),
+                idempotent_hint: Some(false),
+                ..Default::default()
+            },
+            output_schema: true,
+        });
+        assert_eq!(d.risk, Risk::Write);
+        assert_eq!(d.annotations.and_then(|a| a.idempotent_hint), Some(false));
+        assert_eq!(d.effective.read_only_hint, Some(false));
+        assert!(d.output_schema);
+    }
+
+    #[test]
+    fn limits_config() {
+        let d = HubConfig::default().into_hub().unwrap();
+        assert_eq!(d.limits, hub::LimitPolicy::default());
+        assert_eq!(d.output_validation, hub::OutputValidation::Log);
+        let c = HubConfig {
+            limits: Some(LimitsConfig {
+                tool_rate_per_minute: Some(10),
+                tool_rate_burst: Some(2),
+                max_result_bytes: Some(0),
+                ..Default::default()
+            }),
+            output_validation: Some(OutputValidation::Reject),
+            ..Default::default()
+        }
+        .into_hub()
+        .unwrap();
+        assert_eq!((c.limits.tool_rate.per_minute, c.limits.tool_rate.burst), (10, 2));
+        assert_eq!(c.limits.max_result_bytes, 0);
+        assert_eq!(c.limits.app_rate, hub::LimitPolicy::default().app_rate);
+        assert_eq!(c.output_validation, hub::OutputValidation::Reject);
+        // 限流时 burst 须 ≥ 1；per_minute = 0（不限）时 burst 不检查
+        let e = HubConfig {
+            limits: Some(LimitsConfig { app_rate_burst: Some(0), ..Default::default() }),
+            ..Default::default()
+        }
+        .into_hub()
+        .unwrap_err();
+        assert!(matches!(e, HubError::InvalidConfig { .. }), "{e:?}");
+        assert!(
+            HubConfig {
+                limits: Some(LimitsConfig { app_rate_per_minute: Some(0), app_rate_burst: Some(0), ..Default::default() }),
+                ..Default::default()
+            }
+            .into_hub()
+            .is_ok()
+        );
+        // 状态中的完整形式往返
+        let full = LimitsConfig::from(hub::LimitOverrides::from_policy(&hub::LimitPolicy::default()));
+        assert_eq!(full.tool_rate_per_minute, Some(120));
+        assert_eq!(full.max_arguments_bytes, Some(1024 * 1024));
+        let mut p = hub::LimitPolicy::unlimited();
+        hub::LimitOverrides::from(full).apply(&mut p);
+        assert_eq!(p, hub::LimitPolicy::default());
     }
 
     #[test]

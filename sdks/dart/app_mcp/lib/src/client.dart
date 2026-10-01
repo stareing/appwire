@@ -553,6 +553,8 @@ final class AppMcp {
     Activation? activation,
     String? title,
     bool enabled = true,
+    ToolAnnotations? annotations,
+    Map<String, Object?>? outputSchema,
     required ToolHandler handler,
   }) =>
       _root.tool(name,
@@ -562,6 +564,8 @@ final class AppMcp {
           activation: activation,
           title: title,
           enabled: enabled,
+          annotations: annotations,
+          outputSchema: outputSchema,
           handler: handler);
 
   /// 在根作用域注册资源。见 [McpScope.resource]。
@@ -690,7 +694,18 @@ final class AppMcp {
       for (var i = 0; i < result.stateHints.length; i++) {
         hints[i] = result.stateHints[i].toNativeUtf8(allocator: arena);
       }
-      return _b.am_call_complete(call.ptr, data, hints, result.stateHints.length);
+      if (!result.isStructured) return _b.am_call_complete(call.ptr, data, hints, result.stateHints.length);
+      final r = arena<AmCallResult>();
+      r.ref
+        ..struct_size = sizeOf<AmCallResult>()
+        ..data_json = data
+        ..state_hints = hints
+        ..state_hints_len = result.stateHints.length
+        ..status = resultStatusToNative(result.status)
+        ..state_resource = _optStr(result.stateResource, arena)
+        ..summary = _optStr(result.summary, arena)
+        ..annotations_json = _optStr(result.annotationsJson, arena);
+      return _b.am_call_complete_ex(call.ptr, r);
     });
     if (status == AmStatus.invalidJson) {
       // 未被消费，改为失败完成。
@@ -794,6 +809,8 @@ final class McpScope {
     Activation? activation,
     String? title,
     bool enabled = true,
+    ToolAnnotations? annotations,
+    Map<String, Object?>? outputSchema,
     required ToolHandler handler,
   }) =>
       registerTool(
@@ -804,7 +821,9 @@ final class McpScope {
               risk: risk,
               activation: activation,
               title: title,
-              enabled: enabled),
+              enabled: enabled,
+              annotations: annotations,
+              outputSchema: outputSchema),
           handler);
 
   /// 用 [ToolSpec] 注册工具。
@@ -815,9 +834,10 @@ final class McpScope {
     final id = rt.register(entry);
     final ptr = using((arena) {
       final s = _toolSpec(spec, arena);
+      final options = _toolOptions(spec, arena);
       final out = arena<Pointer<AmTool>>();
-      final status = rt.b.am_tool_register(
-          _ptr, s, rt.tool.nativeFunction, Pointer<Void>.fromAddress(id), rt.free.nativeFunction, out);
+      final status = rt.b.am_tool_register_ex(_ptr, s, options, rt.tool.nativeFunction,
+          Pointer<Void>.fromAddress(id), rt.free.nativeFunction, out);
       if (status != AmStatus.ok) {
         final e = rt.error(status);
         rt.targets.remove(id);
@@ -945,6 +965,16 @@ Pointer<AmToolSpec> _toolSpec(ToolSpec spec, Allocator arena) {
   return s;
 }
 
+/// v9：工具注解与 outputSchema（为 null 的字段不声明 / 清除）。
+Pointer<AmToolOptions> _toolOptions(ToolSpec spec, Allocator arena) {
+  final o = arena<AmToolOptions>();
+  o.ref
+    ..struct_size = sizeOf<AmToolOptions>()
+    ..annotations_json = _optStr(encodeToolAnnotations(spec.annotations), arena)
+    ..output_schema_json = _optStr(encodeSchema(spec.outputSchema), arena);
+  return o;
+}
+
 // ---------------------------------------------------------------------------
 // 句柄
 // ---------------------------------------------------------------------------
@@ -971,6 +1001,8 @@ final class ToolHandle {
     Activation? activation,
     String? title,
     bool? enabled,
+    ToolAnnotations? annotations,
+    Map<String, Object?>? outputSchema,
   }) =>
       replace(_spec.copyWith(
           description: description,
@@ -978,9 +1010,12 @@ final class ToolHandle {
           risk: risk,
           activation: activation,
           title: title,
-          enabled: enabled));
+          enabled: enabled,
+          annotations: annotations,
+          outputSchema: outputSchema));
 
-  /// 用新定义整体替换（名称不可变，`spec.name` 被忽略）。与当前定义相同时不做任何事。
+  /// 用新定义整体替换（名称不可变，`spec.name` 被忽略；为 null 的 annotations / outputSchema 表示清除该声明）。
+  /// 与当前定义相同时不做任何事。
   void replace(ToolSpec spec) {
     _ensureAlive();
     final next = ToolSpec(
@@ -990,10 +1025,13 @@ final class ToolHandle {
         risk: spec.risk,
         activation: spec.activation,
         title: spec.title,
-        enabled: spec.enabled);
+        enabled: spec.enabled,
+        annotations: spec.annotations,
+        outputSchema: spec.outputSchema);
     if (next == _spec) return;
     final rt = _scope._client._rt;
-    using((arena) => rt.check(rt.b.am_tool_update(_ptr, _toolSpec(next, arena))));
+    using((arena) =>
+        rt.check(rt.b.am_tool_update_ex(_ptr, _toolSpec(next, arena), _toolOptions(next, arena))));
     _spec = next;
   }
 

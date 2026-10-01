@@ -41,12 +41,13 @@
       "title": "搜索订单",
       "description": "按关键词搜索历史订单",
       "inputSchema": { "type": "object", "properties": { "keyword": { "type": "string" } } },
-      "risk": "read",
-      "activation": "headless"
+      "annotations": { "readOnlyHint": true, "openWorldHint": false },
+      "activation": "headless",
+      "outputSchema": { "type": "array", "items": { "type": "object" } }
     }
   ],
   "resources": [
-    { "name": "cart.state", "description": "当前购物车内容与总价" }
+    { "name": "cart.state", "description": "当前购物车内容与总价", "annotations": { "audience": ["assistant"] } }
   ]
 }
 ```
@@ -63,8 +64,8 @@
 | `overview` | object | 否 | App 总览：`summary`（≤ 100 字符）、`body`（Markdown，≤ 2000 字符）、`locale`；模型首次接触该 App 时由 Host 附带，规则见 spec/protocol.md 第 7 节 |
 | `launch` | object | 否 | 各平台启动方式（冷启动，不带令牌），键为 `web` / `windows` / `macos` / `linux`，值为按顺序尝试的数组 |
 | `wake` | object | 否 | 各平台唤醒描述（spec/lifecycle.md 第 5 节），键为 `web` / `windows` / `macos` / `linux` / `android` / `ios`，值为按顺序尝试的 WakeDescriptor 数组；规则见 2.2 节 |
-| `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo` |
-| `resources` | array | 否 | 静态资源，结构同协议中的 `ResourceInfo`（含可选 `realtime`：需实时推送，被订阅时 App 保持连接，spec/lifecycle.md 第 13 节 B3） |
+| `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo`：含可选 `annotations`（标准 MCP 工具注解）与 `outputSchema`（结果的 JSON Schema），语义见 spec/protocol.md 3.2；`risk` 为旧写法（与 `annotations` 同时出现时声明的注解字段优先） |
+| `resources` | array | 否 | 静态资源，结构同协议中的 `ResourceInfo`（含可选 `realtime`：需实时推送，被订阅时 App 保持连接，spec/lifecycle.md 第 13 节 B3；可选 `annotations`：标准 MCP 内容注解，spec/protocol.md 3.2） |
 
 ### 2.1 `launch` 条目
 
@@ -109,7 +110,8 @@
 - `manifestVersion` 必须为 `1`。
 - `appId` 格式合法，且不能是保留名 `apps`、`os`、`ax`、`host`。
 - 工具名、资源名满足 `[a-zA-Z0-9_.-]{1,64}`，各自在清单内唯一。
-- 工具 `inputSchema` 必须是对象且 `type` 为 `"object"`。
+- 工具 `inputSchema` 必须是对象且 `type` 为 `"object"`；`outputSchema` 若给出必须是对象（根类型不限）。
+- `annotations` 各字段类型不对（如 `readOnlyHint` 不是布尔、`audience` 取值不是 `user` / `assistant`）时清单解析失败。
 - `description` 不能为空字符串。
 - `overview.summary` 不能为空；`summary` 超过 100 字符、`body` 超过 2000 字符时给出警告（Host 会截断）。
 - `wake`：除 `none` 外 `target` 必填且非空；`web-url` 必须是 http(s) 地址；`uri` 必须是合法 scheme；

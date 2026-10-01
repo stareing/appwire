@@ -21,6 +21,8 @@ mod instance;
 mod ipc;
 mod lease;
 mod lifecycle;
+mod limits;
+mod mcp_convert;
 mod power;
 #[cfg(feature = "mcp-server")]
 pub mod mcp;
@@ -33,9 +35,13 @@ pub mod types;
 pub mod upstream;
 pub mod wake;
 
-pub use app_mcp_protocol::{Activation, ErrorKind, LifecycleMode, Risk, ToolError, Visibility};
+pub use app_mcp_protocol::{
+    Activation, Audience, ContentAnnotations, ErrorKind, LifecycleMode, ResultStatus, Risk, ToolAnnotations, ToolError,
+    Visibility,
+};
 pub use format::ToolFormat;
 pub use lease::{LeaseOverrides, LeasePairStatus, LeasePolicy, LeaseStatus};
+pub use limits::{LimitOverrides, LimitPolicy, OutputValidation, RateLimit};
 pub use http_server::{Health, HttpOptions};
 pub use hub::{
     DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
@@ -47,7 +53,7 @@ pub use types::{
     AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy,
     ApprovalRequest, AuthStatus, Availability, AwakeReason, CallOutcome, CallRequest, DiagnosticReport, HubError,
     HubEvent, HubResource, HubStatus, HubTool, InstanceInfo, InstancePower, InstanceState, InstanceStatus, LastError,
-    PairingHandler, PairingRequest, ResourceContent, ToolExposure, ToolFilter, risk_rank,
+    PairingHandler, PairingRequest, ResourceContent, ToolDeclaration, ToolExposure, ToolFilter, risk_rank,
 };
 pub use upstream::UpstreamConfig;
 pub use wake::{

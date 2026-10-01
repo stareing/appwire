@@ -120,4 +120,15 @@ if(BASH_PROGRAM)
   add_test(NAME ipc_cpp
     COMMAND ${BASH_PROGRAM} "${CMAKE_CURRENT_SOURCE_DIR}/tests/with_fake_host.sh" "$<TARGET_FILE:ipc_cpp_test>")
   set_tests_properties(ipc_cpp PROPERTIES LABELS "integration;ipc" TIMEOUT 120)
+
+  # 工具声明（注解、outputSchema）与结构化调用结果（app_mcp.h v9）对接 fake_host --tool-info。
+  add_executable(result_cpp_test tests/result_cpp.cpp)
+  target_link_libraries(result_cpp_test PRIVATE app_mcp_cpp)
+  target_compile_options(result_cpp_test PRIVATE ${_warn})
+  if(NOT WIN32)
+    target_compile_definitions(result_cpp_test PRIVATE _POSIX_C_SOURCE=200809L)
+  endif()
+  add_test(NAME result_cpp
+    COMMAND ${BASH_PROGRAM} "${CMAKE_CURRENT_SOURCE_DIR}/tests/with_fake_host.sh" "$<TARGET_FILE:result_cpp_test>")
+  set_tests_properties(result_cpp PROPERTIES LABELS "integration;result" TIMEOUT 120)
 endif()

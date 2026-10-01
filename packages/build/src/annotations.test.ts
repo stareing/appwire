@@ -332,6 +332,68 @@ describe('scanAnnotations', () => {
     expect(result.errors).toEqual([])
   })
 
+  it('注解标签与返回值 outputSchema', async () => {
+    const proj = await makeProject({
+      'src/hints.ts': `
+interface Envelope { data: { orderId: string }; status?: 'done' | 'pending'; summary?: string }
+class Handle { close(): void {} }
+
+/** @mcp 只读查询 @readOnly @openWorld false */
+export function query(): string[] { return [] }
+
+/** @mcp 取消订单 @destructive true @idempotent */
+export async function cancel(id: string): Promise<Envelope> { return { data: { orderId: id } } }
+
+/** @mcp 可能没有结果 @readonly */
+export function maybe(): number | undefined { return undefined }
+
+/** @mcp 无返回值 */
+export async function nothing(): Promise<void> {}
+
+/** @mcp 任意值 */
+export function anything(): any { return 1 }
+
+/** @mcp 返回带方法的对象 */
+export function handle(): Handle { return new Handle() }
+
+/** @mcp 非法注解 @destructive maybe */
+export function badHint() {}
+`,
+    })
+    const scanned = scanAnnotations({ root: proj })
+    const byName = new Map(scanned.tools.map((t) => [t.name, t]))
+    expect(byName.get('hints.query')).toMatchObject({
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      outputSchema: { type: 'array', items: { type: 'string' } },
+    })
+    expect(byName.get('hints.cancel')).toMatchObject({
+      annotations: { destructiveHint: true, idempotentHint: true },
+      // 结构化结果：取 data 的类型
+      outputSchema: { type: 'object', properties: { orderId: { type: 'string' } }, required: ['orderId'] },
+    })
+    expect(byName.get('hints.maybe')).toMatchObject({
+      annotations: { readOnlyHint: true },
+      outputSchema: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+    })
+    for (const name of ['hints.nothing', 'hints.anything', 'hints.handle']) {
+      expect(byName.get(name)).not.toHaveProperty('outputSchema')
+      expect(byName.get(name)).not.toHaveProperty('annotations')
+    }
+    expect(byName.has('hints.badHint')).toBe(false)
+    const warnings = scanned.warnings.join('\n')
+    expect(warnings).toMatch(/函数 handle.*返回值类型无法转换为 outputSchema/)
+    expect(warnings).toMatch(/函数 badHint 的 @destructive "maybe" 不合法/)
+
+    const code = generateAnnotatedModule(scanned.tools)
+    expect(code).toContain('definition.annotations = tool.annotations')
+    expect(code).toContain('definition.outputSchema = tool.outputSchema')
+
+    // outputSchema: false 时不从返回值生成
+    const off = scanAnnotations({ root: proj, outputSchema: false })
+    expect(off.tools.some((t) => t.outputSchema !== undefined)).toBe(false)
+    expect(off.tools.find((t) => t.name === 'hints.query')?.annotations).toEqual({ readOnlyHint: true, openWorldHint: false })
+  })
+
   it('工具重名时报错', async () => {
     const dup = await makeProject({
       'src/a.ts': '/** @mcp same.name 甲 */\nexport function a() {}\n',
@@ -546,6 +608,11 @@ describe('与静态清单合并', () => {
       },
       risk: 'payment',
       activation: 'foreground',
+      outputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string' }, total: { type: 'number' } },
+        required: ['id', 'total'],
+      },
     })
   })
 

@@ -647,3 +647,98 @@ fn disabled_features_report_unsupported() {
     expect(hub::features::MCP_SERVER, "mcp-server", serve);
     hub.shutdown();
 }
+
+struct SubmitOrder;
+
+impl native::ToolHandler for SubmitOrder {
+    fn invoke(&self, call: native::CallHandle) {
+        let _ = call.complete_with(native::CallResult {
+            data_json: Some(r#"{"orderId":"o1"}"#.into()),
+            status: native::ResultStatus::Pending,
+            state_resource: Some("order.state".into()),
+            summary: Some("已提交，等待付款".into()),
+            annotations: Some(native::ContentAnnotations { priority: Some(0.5), ..Default::default() }),
+            ..native::CallResult::default()
+        });
+    }
+}
+
+/// 第 14 / 19 项：限流与大小上限、工具注解 / outputSchema、结构化结果经绑定层可见。
+#[test]
+fn limits_annotations_and_structured_result() {
+    let hub = AppMcpHub::start(HubConfig {
+        listen: Some("127.0.0.1:0".into()),
+        enable_ipc: false,
+        limits: Some(LimitsConfig {
+            tool_rate_per_minute: Some(1),
+            tool_rate_burst: Some(1),
+            max_arguments_bytes: Some(64),
+            ..Default::default()
+        }),
+        output_validation: Some(OutputValidation::Reject),
+        ..Default::default()
+    })
+    .expect("启动 Hub");
+    let mut cfg = native::NativeConfig::new("orders", "订单");
+    cfg.host_url = format!("ws://{}/app", hub.listen_addr().expect("监听地址"));
+    let app = native::NativeClient::new(cfg, None).expect("App");
+    let options = native::ToolOptions {
+        annotations: Some(native::ToolAnnotations { idempotent_hint: Some(false), ..Default::default() }),
+        output_schema_json: Some(r#"{"type":"object","properties":{"orderId":{"type":"string"}}}"#.into()),
+    };
+    app.register_tool_with(native::ToolSpec::new("order.submit", "下单"), options, Arc::new(SubmitOrder))
+        .expect("注册");
+    app.register_tool(native::ToolSpec::new("echo", "回显"), Arc::new(AddNote)).expect("注册");
+    app.start();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let tools = loop {
+        let t = hub.tools(ToolFilter { apps: Some(vec!["orders".into()]), include_builtin: false, ..Default::default() });
+        if t.len() == 2 && t.iter().all(|t| t.availability == Availability::Available) {
+            break t;
+        }
+        assert!(Instant::now() < deadline, "App 未连上");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let submit = tools.iter().find(|t| t.tool == "order.submit").expect("order.submit");
+    assert_eq!(submit.annotations.idempotent_hint, Some(false));
+    assert_eq!(submit.annotations.read_only_hint, Some(false), "缺少的字段按 risk（write）推导");
+    let schema: Value = serde_json::from_str(submit.output_schema_json.as_deref().expect("outputSchema")).unwrap();
+    assert_eq!(schema["properties"]["orderId"]["type"], "string");
+    let echo = tools.iter().find(|t| t.tool == "echo").expect("echo");
+    assert_eq!(echo.output_schema_json, None);
+
+    let out = wait(hub.call_tool(req("orders.order.submit", json!({})))).expect("调用");
+    assert!(out.error.is_none(), "{out:?}");
+    assert_eq!(out.status, ResultStatus::Pending);
+    assert_eq!(out.state_resource.as_deref(), Some("app-mcp://orders/order.state"));
+    assert_eq!(out.summary.as_deref(), Some("已提交，等待付款"));
+    assert_eq!(out.annotations.and_then(|a| a.priority), Some(0.5));
+
+    // 工具级突发 1：紧接着的第二次调用被限流
+    let out = wait(hub.call_tool(req("orders.order.submit", json!({})))).expect("调用");
+    assert_eq!(out.error.as_ref().map(|e| e.kind.as_str()), Some("RATE_LIMITED"), "{out:?}");
+    // 参数超过 64 字节
+    let out = wait(hub.call_tool(req("orders.echo", json!({ "text": "x".repeat(100) })))).expect("调用");
+    assert_eq!(out.error.as_ref().map(|e| e.kind.as_str()), Some("PAYLOAD_TOO_LARGE"), "{out:?}");
+    let plain = wait(hub.call_tool(req("orders.echo", json!({})))).expect("调用");
+    // 超限的调用不消耗令牌；普通结果仍为 Done、无附加字段
+    assert!(plain.error.is_none(), "{plain:?}");
+    assert_eq!((plain.status, plain.summary.as_deref()), (ResultStatus::Done, None));
+
+    let st = hub.status().expect("status");
+    let limits = st.limits.expect("limits");
+    assert_eq!((limits.tool_rate_per_minute, limits.tool_rate_burst), (Some(1), Some(1)));
+    assert_eq!(limits.max_arguments_bytes, Some(64));
+    assert_eq!(limits.app_rate_per_minute, Some(600));
+    assert_eq!(st.output_validation, Some(OutputValidation::Reject));
+    let orders = st.apps.iter().find(|a| a.app_id == "orders").expect("orders");
+    assert_eq!((orders.rate_limited, orders.too_large), (1, 1));
+    let decl = orders.tools.iter().find(|t| t.name == "order.submit").expect("声明");
+    assert_eq!(decl.risk, Risk::Write);
+    assert_eq!(decl.annotations.as_ref().and_then(|a| a.idempotent_hint), Some(false));
+    assert_eq!(decl.effective.read_only_hint, Some(false));
+    assert!(decl.output_schema);
+    app.stop();
+    hub.shutdown();
+}

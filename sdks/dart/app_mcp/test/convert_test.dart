@@ -74,6 +74,10 @@ void main() {
     test('未知值按 HANDLER_ERROR', () {
       expect(ErrorKind.parse('NOPE'), ErrorKind.handlerError);
     });
+    test('Host 侧类别', () {
+      expect(ErrorKind.parse('RATE_LIMITED'), ErrorKind.rateLimited);
+      expect(ErrorKind.payloadTooLarge.wireName, 'PAYLOAD_TOO_LARGE');
+    });
   });
 
   group('参数解码', () {
@@ -105,6 +109,33 @@ void main() {
       final r = encodeResult(const ToolResult([1, 2], stateHints: ['cart']));
       expect(r.dataJson, '[1,2]');
       expect(r.stateHints, ['cart']);
+    });
+    test('普通值与只带 stateHints 的 ToolResult 不是结构化结果', () {
+      expect(encodeResult({'ok': true}).isStructured, isFalse);
+      expect(encodeResult(const ToolResult(1, stateHints: ['x'])).isStructured, isFalse);
+    });
+    test('ToolResult 带业务状态、摘要与内容注解', () {
+      final r = encodeResult(const ToolResult(null,
+          status: ToolResultStatus.partial,
+          stateResource: 'job',
+          summary: '完成 2/3',
+          annotations: ContentAnnotations(
+              audience: [ContentAudience.user, ContentAudience.assistant],
+              priority: 1,
+              lastModified: '2026-10-02T00:00:00Z')));
+      expect(r.isStructured, isTrue);
+      expect(r.dataJson, 'null');
+      expect(r.status, ToolResultStatus.partial);
+      expect(resultStatusToNative(r.status), AmResultStatus.partial);
+      expect(r.stateResource, 'job');
+      expect(r.summary, '完成 2/3');
+      expect(r.annotationsJson,
+          '{"audience":["user","assistant"],"priority":1.0,"lastModified":"2026-10-02T00:00:00Z"}');
+      expect(encodeResult(const ToolResult(1, status: ToolResultStatus.noop)).isStructured, isTrue);
+    });
+    test('业务状态映射', () {
+      expect([for (final s in ToolResultStatus.values) resultStatusToNative(s)],
+          [AmResultStatus.done, AmResultStatus.pending, AmResultStatus.partial, AmResultStatus.noop]);
     });
     test('无法编码时为 HANDLER_ERROR', () {
       expect(() => encodeResult(Object()),
@@ -144,6 +175,28 @@ void main() {
       expect(a, b);
       expect(a.hashCode, b.hashCode);
       expect(a == a.copyWith(risk: Risk.read), isFalse);
+    });
+    test('相等性包含注解与 outputSchema', () {
+      const a = ToolSpec(
+          name: 'a',
+          description: 'd',
+          annotations: ToolAnnotations(readOnlyHint: true),
+          outputSchema: {'type': 'object'});
+      const b = ToolSpec(
+          name: 'a',
+          description: 'd',
+          annotations: ToolAnnotations(readOnlyHint: true),
+          outputSchema: {'type': 'object'});
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+      expect(a == a.copyWith(annotations: const ToolAnnotations(readOnlyHint: false)), isFalse);
+      expect(a == a.copyWith(outputSchema: {'type': 'array'}), isFalse);
+    });
+    test('encodeToolAnnotations', () {
+      expect(encodeToolAnnotations(null), isNull);
+      expect(encodeToolAnnotations(const ToolAnnotations()), '{}');
+      expect(encodeToolAnnotations(const ToolAnnotations(title: '查询', destructiveHint: false)),
+          '{"title":"查询","destructiveHint":false}');
     });
     test('encodeSchema', () {
       expect(encodeSchema(null), isNull);

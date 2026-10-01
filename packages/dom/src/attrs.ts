@@ -97,6 +97,8 @@ const ERROR_KINDS: readonly ErrorKind[] = [
   'RESOURCE_NOT_FOUND',
   'UNAUTHORIZED',
   'UNSUPPORTED_PROTOCOL',
+  'RATE_LIMITED',
+  'PAYLOAD_TOO_LARGE',
 ]
 
 export function isRisk(v: string): v is Risk {

@@ -20,9 +20,53 @@ public class BasicTests
     [InlineData(ToolErrorKind.HandlerError, "HANDLER_ERROR")]
     [InlineData(ToolErrorKind.InvalidInput, "INVALID_INPUT")]
     [InlineData(ToolErrorKind.UnsupportedProtocol, "UNSUPPORTED_PROTOCOL")]
+    [InlineData(ToolErrorKind.RateLimited, "RATE_LIMITED")]
+    [InlineData(ToolErrorKind.PayloadTooLarge, "PAYLOAD_TOO_LARGE")]
     public void ErrorKindStrings(ToolErrorKind kind, string expected)
     {
         Assert.Equal(expected, kind.ToProtocolString());
+    }
+
+    [Fact]
+    public void AnnotationsSerializeToProtocolJson()
+    {
+        Assert.Null(AppMcp.Internal.AnnotationsJson.Serialize((ToolAnnotations?)null));
+        Assert.Equal("{}", AppMcp.Internal.AnnotationsJson.Serialize(new ToolAnnotations()));
+        Assert.Equal(
+            """{"title":"查询","readOnlyHint":true,"openWorldHint":false}""",
+            AppMcp.Internal.AnnotationsJson.Serialize(new ToolAnnotations { Title = "查询", ReadOnlyHint = true, OpenWorldHint = false }));
+        var content = new ContentAnnotations
+        {
+            Audience = [ContentAudience.User, ContentAudience.Assistant],
+            Priority = 0.5,
+            LastModified = "2026-10-02T00:00:00Z",
+        };
+        Assert.Equal(
+            """{"audience":["user","assistant"],"priority":0.5,"lastModified":"2026-10-02T00:00:00Z"}""",
+            AppMcp.Internal.AnnotationsJson.Serialize(content));
+    }
+
+    [Fact]
+    public void ToolOptionsAreValidatedOnRegister()
+    {
+        using var client = AppMcpClient.Create(new AppMcpClientOptions
+        {
+            AppId = "dotnet-options",
+            AppName = "Options",
+            HostUrl = "ws://127.0.0.1:1",
+            Dispatcher = null,
+        });
+        var options = new ToolOptions
+        {
+            Annotations = new ToolAnnotations { ReadOnlyHint = true },
+            OutputSchemaJson = """{"type":"object"}""",
+        };
+        using var tool = client.RegisterTool("with.options", "带选项", (_, _) => Task.FromResult<object?>(new ToolResult()), options);
+        var bad = new ToolOptions { OutputSchemaJson = "{" };
+        var e = Assert.Throws<AppMcpException>(() => client.RegisterTool("bad.output", "x", (_, _) => Task.FromResult<object?>(null), bad));
+        Assert.Equal(AppMcpStatus.InvalidSchema, e.Status);
+        Assert.Equal(AppMcpStatus.InvalidSchema, Assert.Throws<AppMcpException>(() => tool.Update("改", bad)).Status);
+        tool.Update("改"); // 清除注解与 outputSchema
     }
 
     [Fact]

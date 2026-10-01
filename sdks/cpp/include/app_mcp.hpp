@@ -18,10 +18,16 @@
 // - 4e 功耗（spec/lifecycle.md 第 11、13 节）：ClientConfig::heartbeat、Lifecycle::host_absent_retries /
 //   legacy_timers / merge_window_ms / sleep_on_background、ResourceOptions::realtime。
 //   本封装不区分平台，默认 persistent（核心兼容）；平台默认（手机 on-demand、桌面 idle）由 App 自行设置。
+//
+// 工具声明与调用结果（spec/protocol.md 第 3 节、3.2；app_mcp.h v9）：
+// - ToolOptions::annotations（标准 MCP 工具注解）、ToolOptions::output_schema_json（MCP outputSchema）；
+//   ToolOptions::risk 为旧写法，优先用 annotations（同时声明时注解中的字段优先）。
+// - Call::complete(const CallResult&)：业务状态（done / pending / partial / noop）、state_resource、summary、内容注解。
 #ifndef APP_MCP_HPP
 #define APP_MCP_HPP
 
 #include <atomic>
+#include <charconv>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -127,6 +133,8 @@ using Residency = AmResidency;
 using WakeKind = AmWakeKind;
 using WakeReason = AmWakeReason;
 using SleepReason = AmSleepReason;
+/// 调用结果的业务状态（AM_RESULT_DONE / PENDING / PARTIAL / NOOP）。
+using ResultStatus = AmResultStatus;
 
 /// 本实例的唤醒描述（spec/lifecycle.md 第 5 节），随 app/sleep 上报。
 struct WakeDescriptor {
@@ -165,13 +173,57 @@ struct StateInfo {
     std::optional<std::string> code;
 };
 
+/// 标准 MCP 工具注解，原样转发给 Agent（本库不据此做判断）；未设置的字段不声明。
+struct ToolAnnotations {
+    std::optional<std::string> title;
+    /// 不修改任何状态。
+    std::optional<bool> read_only_hint;
+    /// 可能做出破坏性 / 不可撤销的修改（只在非只读时有意义）。
+    std::optional<bool> destructive_hint;
+    /// 以相同参数重复调用没有额外效果（只在非只读时有意义）。
+    std::optional<bool> idempotent_hint;
+    /// 会与外部世界交互（网络、第三方、其他用户可见）。
+    std::optional<bool> open_world_hint;
+};
+
 struct ToolOptions {
     /// JSON Schema 文本（type 必须为 object）；为空表示无参数。
     std::optional<std::string> input_schema_json;
+    /// 旧写法：优先用 annotations。两者同时声明时注解中的字段优先，缺少的按 risk 推导。
     Risk risk = AM_RISK_WRITE;
     Activation activation = AM_ACTIVATION_NONE;
     std::optional<std::string> title;
     bool enabled = true;
+    /// 标准 MCP 工具注解；为空表示不声明（Host 按 risk 推导）。
+    std::optional<ToolAnnotations> annotations;
+    /// 结果的 JSON Schema 文本（MCP outputSchema）；为空表示不声明。
+    std::optional<std::string> output_schema_json;
+};
+
+/// 内容面向谁（MCP 内容注解 audience）。
+enum class Audience { User, Assistant };
+
+/// 结果内容的标注（MCP 内容注解），Host 原样转发；未设置的字段不声明。
+struct ContentAnnotations {
+    std::optional<std::vector<Audience>> audience;
+    /// 重要程度，0（可选）到 1（必需）。
+    std::optional<double> priority;
+    /// 最后修改时刻（ISO 8601）。
+    std::optional<std::string> last_modified;
+};
+
+/// 调用成功的完整结果（Call::complete(const CallResult&)）。默认值 = 无返回值（null）、done。
+struct CallResult {
+    /// 返回值 JSON 文本；为空表示无返回值（null，Host 对模型输出"已完成"）。
+    std::optional<std::string> data_json;
+    /// 调用后内容可能已变化的资源名。
+    std::vector<std::string> state_hints;
+    ResultStatus status = AM_RESULT_DONE;
+    /// PENDING 时可读取后续状态的资源名。
+    std::optional<std::string> state_resource;
+    /// 一句面向模型 / 用户的结论（PARTIAL 时说明完成了哪部分）。
+    std::optional<std::string> summary;
+    std::optional<ContentAnnotations> annotations;
 };
 
 struct ResourceOptions {
@@ -216,6 +268,33 @@ struct ClientCallbacks {
     std::function<void()> on_idle_exit;
 };
 
+/// 把字符串编码为 JSON 字符串字面量（含引号），便于手写 JSON 结果。
+inline std::string json_quote(std::string_view s) {
+    static const char* hex = "0123456789abcdef";
+    std::string out;
+    out.reserve(s.size() + 2);
+    out.push_back('"');
+    for (unsigned char ch : s) {
+        switch (ch) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (ch < 0x20) {
+                    out += "\\u00";
+                    out.push_back(hex[ch >> 4]);
+                    out.push_back(hex[ch & 0xf]);
+                } else {
+                    out.push_back(static_cast<char>(ch));
+                }
+        }
+    }
+    out.push_back('"');
+    return out;
+}
+
 namespace detail {
 
 /// @compat C ABI 的 host_absent_retries：0 = 默认 3、负数 = 一直重连；封装层 0 = 一直重连。
@@ -253,6 +332,75 @@ inline void fill_client_options(const ClientConfig& config, AmLifecycle* lc, AmC
     opts->legacy_timers = config.lifecycle.legacy_timers;
     opts->merge_window_ms = encode_merge_window_ms(config.lifecycle.merge_window_ms);
     opts->sleep_on_background = config.lifecycle.sleep_on_background;
+}
+
+/// 逐个追加 JSON 对象成员（跳过未设置的可选值）。
+class JsonObject {
+public:
+    void field(const char* key, const std::optional<std::string>& v) {
+        if (v) key_(key) += json_quote(*v);
+    }
+    void field(const char* key, const std::optional<bool>& v) {
+        if (v) key_(key) += *v ? "true" : "false";
+    }
+    /// @invariant 非有限值（NaN / Inf）不是合法 JSON，不输出。
+    void field(const char* key, const std::optional<double>& v) {
+        if (!v || !(*v == *v) || *v > 1.7976931348623157e308 || *v < -1.7976931348623157e308) return;
+        char buf[32];
+        auto r = std::to_chars(buf, buf + sizeof buf, *v);
+        key_(key).append(buf, r.ptr);
+    }
+    void raw(const char* key, const std::string& json) { key_(key) += json; }
+    std::string finish() { return text_ + "}"; }
+
+private:
+    std::string& key_(const char* key) {
+        text_ += text_.size() > 1 ? "," : "";
+        text_ += json_quote(key);
+        text_ += ":";
+        return text_;
+    }
+    std::string text_ = "{";
+};
+
+inline std::string to_json(const ToolAnnotations& a) {
+    JsonObject o;
+    o.field("title", a.title);
+    o.field("readOnlyHint", a.read_only_hint);
+    o.field("destructiveHint", a.destructive_hint);
+    o.field("idempotentHint", a.idempotent_hint);
+    o.field("openWorldHint", a.open_world_hint);
+    return o.finish();
+}
+
+inline std::string to_json(const ContentAnnotations& a) {
+    JsonObject o;
+    if (a.audience) {
+        std::string list = "[";
+        for (Audience who : *a.audience) {
+            if (list.size() > 1) list += ",";
+            list += who == Audience::User ? "\"user\"" : "\"assistant\"";
+        }
+        o.raw("audience", list + "]");
+    }
+    o.field("priority", a.priority);
+    o.field("lastModified", a.last_modified);
+    return o.finish();
+}
+
+/// ToolOptions → AmToolOptions。
+/// @invariant 指针借用 annotations_json（由调用方保持存活）与 options 的字符串。
+inline AmToolOptions tool_options(const ToolOptions& options, const std::optional<std::string>& annotations_json) {
+    AmToolOptions o{};
+    o.struct_size = sizeof(AmToolOptions);
+    o.annotations_json = c_str_or_null(annotations_json);
+    o.output_schema_json = c_str_or_null(options.output_schema_json);
+    return o;
+}
+
+inline std::optional<std::string> annotations_json(const ToolOptions& options) {
+    if (!options.annotations) return std::nullopt;
+    return to_json(*options.annotations);
 }
 
 /// 客户端回调的 user_data：用户回调 + 客户端句柄（状态回调里查询错误码用）。
@@ -375,6 +523,28 @@ public:
         hints.reserve(state_hints.size());
         for (const auto& h : state_hints) hints.push_back(h.c_str());
         AmStatus s = am_call_complete(c, data_json.c_str(), hints.empty() ? nullptr : hints.data(), hints.size());
+        if (s == AM_ERR_INVALID_JSON) state_->put_back(c);
+        detail::check(s);
+    }
+
+    /// 成功完成，附带业务状态、摘要与内容注解。data_json 非法时抛出 Error 且调用仍待完成。
+    void complete(const CallResult& result) {
+        std::vector<const char*> hints;
+        hints.reserve(result.state_hints.size());
+        for (const auto& h : result.state_hints) hints.push_back(h.c_str());
+        std::optional<std::string> annotations;
+        if (result.annotations) annotations = detail::to_json(*result.annotations);
+        AmCallResult r{};
+        r.struct_size = sizeof(AmCallResult);
+        r.data_json = detail::c_str_or_null(result.data_json);
+        r.state_hints = hints.empty() ? nullptr : hints.data();
+        r.state_hints_len = hints.size();
+        r.status = result.status;
+        r.state_resource = detail::c_str_or_null(result.state_resource);
+        r.summary = detail::c_str_or_null(result.summary);
+        r.annotations_json = detail::c_str_or_null(annotations);
+        AmCall* c = take();
+        AmStatus s = am_call_complete_ex(c, &r);
         if (s == AM_ERR_INVALID_JSON) state_->put_back(c);
         detail::check(s);
     }
@@ -539,7 +709,7 @@ public:
     explicit operator bool() const noexcept { return h_ != nullptr; }
     AmTool* get() const noexcept { return h_; }
 
-    /// 用新定义替换（名称不变）。
+    /// 用新定义整体替换（名称不变；options 中未设置的 annotations / output_schema_json 表示清除该声明）。
     void update(const std::string& description, const ToolOptions& options = {}) {
         AmToolSpec spec{};
         spec.name = nullptr;
@@ -549,7 +719,9 @@ public:
         spec.activation = options.activation;
         spec.title = detail::c_str_or_null(options.title);
         spec.enabled = options.enabled;
-        detail::check(am_tool_update(h_, &spec));
+        auto annotations = detail::annotations_json(options);
+        AmToolOptions topts = detail::tool_options(options, annotations);
+        detail::check(am_tool_update_ex(h_, &spec, &topts));
     }
     void set_enabled(bool enabled) { detail::check(am_tool_set_enabled(h_, enabled)); }
     void dispose() { detail::check(am_tool_dispose(h_)); }
@@ -620,11 +792,13 @@ public:
         spec.activation = options.activation;
         spec.title = detail::c_str_or_null(options.title);
         spec.enabled = options.enabled;
+        auto annotations = detail::annotations_json(options);
+        AmToolOptions topts = detail::tool_options(options, annotations);
         // 所有权交给库：无论成功与否，库都会调用 delete_fn 释放。
         auto* holder = new ToolHandler(std::move(handler));
         AmTool* out = nullptr;
-        detail::check(am_tool_register(h_, &spec, &detail::tool_trampoline, holder,
-                                       &detail::delete_fn<ToolHandler>, &out));
+        detail::check(am_tool_register_ex(h_, &spec, &topts, &detail::tool_trampoline, holder,
+                                          &detail::delete_fn<ToolHandler>, &out));
         return Tool(out);
     }
 
@@ -852,33 +1026,6 @@ inline std::optional<std::string> parse_wake_token(const std::string& args) {
     char* t = am_parse_wake_token(args.c_str());
     if (!t) return std::nullopt;
     return detail::take_string(t);
-}
-
-/// 把字符串编码为 JSON 字符串字面量（含引号），便于手写 JSON 结果。
-inline std::string json_quote(std::string_view s) {
-    static const char* hex = "0123456789abcdef";
-    std::string out;
-    out.reserve(s.size() + 2);
-    out.push_back('"');
-    for (unsigned char ch : s) {
-        switch (ch) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (ch < 0x20) {
-                    out += "\\u00";
-                    out.push_back(hex[ch >> 4]);
-                    out.push_back(hex[ch & 0xf]);
-                } else {
-                    out.push_back(static_cast<char>(ch));
-                }
-        }
-    }
-    out.push_back('"');
-    return out;
 }
 
 }  // namespace app_mcp

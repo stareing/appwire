@@ -25,6 +25,8 @@ fn tool(name: &str) -> ToolDef {
         title: None,
         enabled: true,
         scope: None,
+        annotations: None,
+        output_schema: None,
     }
 }
 
@@ -542,7 +544,7 @@ fn stop_flushes_queued_sends_before_disconnect() {
     h.c.register_tool(tool("a")).unwrap();
     h.connect();
     h.invoke("c1", "a");
-    h.c.complete_call("c1", Ok(CallOutput { data: json!(7), state_hints: vec![] }), h.now).unwrap();
+    h.c.complete_call("c1", Ok(CallOutput { data: json!(7), state_hints: vec![], annotations: None, state_resource: None, status: Default::default(), summary: None }), h.now).unwrap();
     h.c.stop(h.now);
     let ev = h.drain();
     let send_idx = ev.iter().position(|e| matches!(e, Event::Send(_))).expect("结果仍会发出");
@@ -849,6 +851,8 @@ fn tools_hash_fixed_vector() {
         title: None,
         enabled: true,
         scope: None,
+        annotations: None,
+        output_schema: None,
     })
     .unwrap();
     let checkout = h
@@ -862,6 +866,8 @@ fn tools_hash_fixed_vector() {
             title: Some("Checkout".into()),
             enabled: true,
             scope: None,
+            annotations: None,
+            output_schema: None,
         })
         .unwrap();
     h.c.register_resource(ResourceDef {

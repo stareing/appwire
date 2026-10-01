@@ -133,6 +133,14 @@ abstract final class AmSleepReason {
   static const int app = 3;
 }
 
+/// v9：调用结果的业务状态（`AmCallResult.status`）。
+abstract final class AmResultStatus {
+  static const int done = 0;
+  static const int pending = 1;
+  static const int partial = 2;
+  static const int noop = 3;
+}
+
 // ---------------------------------------------------------------------------
 // 不透明句柄
 // ---------------------------------------------------------------------------
@@ -261,6 +269,29 @@ final class AmToolSpec extends Struct {
   external Pointer<Utf8> title;
   @Bool()
   external bool enabled;
+}
+
+/// v9：`am_tool_register_ex` / `am_tool_update_ex` 的工具选项。
+final class AmToolOptions extends Struct {
+  @Uint32()
+  external int struct_size;
+  external Pointer<Utf8> annotations_json;
+  external Pointer<Utf8> output_schema_json;
+}
+
+/// v9：`am_call_complete_ex` 的调用结果。
+final class AmCallResult extends Struct {
+  @Uint32()
+  external int struct_size;
+  external Pointer<Utf8> data_json;
+  external Pointer<Pointer<Utf8>> state_hints;
+  @Size()
+  external int state_hints_len;
+  @Int32()
+  external int status;
+  external Pointer<Utf8> state_resource;
+  external Pointer<Utf8> summary;
+  external Pointer<Utf8> annotations_json;
 }
 
 final class AmResourceSpec extends Struct {
@@ -392,6 +423,26 @@ final class AppMcpBindings {
   late final am_tool_update = library.lookupFunction<
       Int32 Function(Pointer<AmTool>, Pointer<AmToolSpec>),
       int Function(Pointer<AmTool>, Pointer<AmToolSpec>)>('am_tool_update');
+  late final am_tool_register_ex = library.lookupFunction<
+      Int32 Function(
+          Pointer<AmScope>,
+          Pointer<AmToolSpec>,
+          Pointer<AmToolOptions>,
+          Pointer<NativeFunction<AmToolFnNative>>,
+          Pointer<Void>,
+          Pointer<NativeFunction<AmFreeFnNative>>,
+          Pointer<Pointer<AmTool>>),
+      int Function(
+          Pointer<AmScope>,
+          Pointer<AmToolSpec>,
+          Pointer<AmToolOptions>,
+          Pointer<NativeFunction<AmToolFnNative>>,
+          Pointer<Void>,
+          Pointer<NativeFunction<AmFreeFnNative>>,
+          Pointer<Pointer<AmTool>>)>('am_tool_register_ex');
+  late final am_tool_update_ex = library.lookupFunction<
+      Int32 Function(Pointer<AmTool>, Pointer<AmToolSpec>, Pointer<AmToolOptions>),
+      int Function(Pointer<AmTool>, Pointer<AmToolSpec>, Pointer<AmToolOptions>)>('am_tool_update_ex');
   late final am_tool_set_enabled = library.lookupFunction<Int32 Function(Pointer<AmTool>, Bool),
       int Function(Pointer<AmTool>, bool)>('am_tool_set_enabled');
   late final am_tool_dispose = library
@@ -464,6 +515,9 @@ final class AppMcpBindings {
       Int32 Function(Pointer<AmCall>, Pointer<Utf8>, Pointer<Pointer<Utf8>>, Size),
       int Function(
           Pointer<AmCall>, Pointer<Utf8>, Pointer<Pointer<Utf8>>, int)>('am_call_complete');
+  late final am_call_complete_ex = library.lookupFunction<
+      Int32 Function(Pointer<AmCall>, Pointer<AmCallResult>),
+      int Function(Pointer<AmCall>, Pointer<AmCallResult>)>('am_call_complete_ex');
   late final am_call_fail = library.lookupFunction<
       Int32 Function(Pointer<AmCall>, Pointer<Utf8>, Pointer<Utf8>),
       int Function(Pointer<AmCall>, Pointer<Utf8>, Pointer<Utf8>)>('am_call_fail');

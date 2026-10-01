@@ -35,8 +35,9 @@ use app_mcp_protocol as proto;
 use serde_json::Value;
 
 pub use proto::{
-    Activation, AppOverview, ClientKind, ConnectionErrorCode, ConnectionIssue, DiagnosticParams, LifecycleMode, Risk,
-    SleepReason, ToolError, TransportKind, Visibility, WakeDescriptor, WakeKind, WakeReason,
+    Activation, AppOverview, Audience, ClientKind, ConnectionErrorCode, ConnectionIssue, ContentAnnotations,
+    DiagnosticParams, LifecycleMode, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolError, TransportKind, Visibility,
+    WakeDescriptor, WakeKind, WakeReason,
 };
 pub use lifecycle::parse_wake_token;
 
@@ -256,6 +257,10 @@ pub struct ToolDef {
     pub risk: Risk,
     pub activation: Option<Activation>,
     pub title: Option<String>,
+    /// 标准 MCP 工具注解（spec/protocol.md 第 3 节），原样同步给 Host；`None` = 未声明（按 `risk` 推导）。
+    pub annotations: Option<ToolAnnotations>,
+    /// 结果的 JSON Schema（MCP `outputSchema`）；`None` = 未声明。
+    pub output_schema: Option<Value>,
     /// 为 false 时不同步给 Host（等同于从 Host 的角度看不存在）。
     pub enabled: bool,
     /// 所属 scope；scope 被销毁时工具自动注销。
@@ -271,6 +276,10 @@ pub struct ToolUpdate {
     pub activation: Option<Option<Activation>>,
     pub title: Option<Option<String>>,
     pub enabled: Option<bool>,
+    /// `Some(None)` 清除声明的注解。
+    pub annotations: Option<Option<ToolAnnotations>>,
+    /// `Some(None)` 清除声明的输出 schema。
+    pub output_schema: Option<Option<Value>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -291,6 +300,14 @@ pub struct CallOutput {
     pub data: Value,
     /// 调用后内容可能已变化的资源名。
     pub state_hints: Vec<String>,
+    /// 结果内容的标注（MCP 内容注解），Host 原样转发。
+    pub annotations: Option<ContentAnnotations>,
+    /// 业务状态（缺省 `Done`，spec/protocol.md 3.2）。
+    pub status: ResultStatus,
+    /// `Pending` 时可读取后续状态的资源名。
+    pub state_resource: Option<String>,
+    /// 一句结论摘要。
+    pub summary: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

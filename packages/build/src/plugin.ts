@@ -48,6 +48,8 @@ export interface AnnotationsOption {
   exclude?: string[]
   /** 用于类型解析的 tsconfig（相对 Vite root），默认 root 下的 tsconfig.json。 */
   tsconfig?: string
+  /** 从返回值类型生成工具的 `outputSchema`，默认 true。 */
+  outputSchema?: boolean
 }
 
 const ANNOTATED_ID = 'virtual:app-mcp/annotated'
@@ -158,6 +160,8 @@ export function appMcp(options: AppMcpPluginOptions): Plugin {
     if (tool.title !== undefined) def.title = tool.title
     if (tool.risk !== undefined) def.risk = tool.risk
     if (tool.activation !== undefined) def.activation = tool.activation
+    if (tool.annotations !== undefined) def.annotations = tool.annotations
+    if (tool.outputSchema !== undefined) def.outputSchema = tool.outputSchema
     return def
   }
 

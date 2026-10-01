@@ -41,6 +41,10 @@ pub enum ErrorKind {
     Unauthorized,
     /// 协议版本不兼容。
     UnsupportedProtocol,
+    /// Host 侧限流：对该（App, 工具）或该 App 的调用频率超出上限，调用未转发；`data.retryAfterMs` 给出建议等待时长。
+    RateLimited,
+    /// Host 侧大小上限：调用参数、调用结果或资源内容超过上限，未转发 / 未返回（不截断）。
+    PayloadTooLarge,
 }
 
 impl ErrorKind {
@@ -62,6 +66,8 @@ impl ErrorKind {
             ErrorKind::ResourceNotFound => -32013,
             ErrorKind::Unauthorized => -32014,
             ErrorKind::UnsupportedProtocol => -32015,
+            ErrorKind::RateLimited => -32016,
+            ErrorKind::PayloadTooLarge => -32017,
         }
     }
 
@@ -82,6 +88,8 @@ impl ErrorKind {
             ErrorKind::ResourceNotFound => "RESOURCE_NOT_FOUND",
             ErrorKind::Unauthorized => "UNAUTHORIZED",
             ErrorKind::UnsupportedProtocol => "UNSUPPORTED_PROTOCOL",
+            ErrorKind::RateLimited => "RATE_LIMITED",
+            ErrorKind::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
         }
     }
 }
@@ -171,5 +179,8 @@ mod tests {
     fn kind_serializes_screaming() {
         assert_eq!(serde_json::to_value(ErrorKind::AppNotResponding).unwrap(), json!("APP_NOT_RESPONDING"));
         assert_eq!(ErrorKind::AppNotResponding.as_str(), "APP_NOT_RESPONDING");
+        assert_eq!(serde_json::to_value(ErrorKind::RateLimited).unwrap(), json!("RATE_LIMITED"));
+        assert_eq!((ErrorKind::RateLimited.code(), ErrorKind::PayloadTooLarge.code()), (-32016, -32017));
+        assert_eq!(ErrorKind::PayloadTooLarge.as_str(), "PAYLOAD_TOO_LARGE");
     }
 }

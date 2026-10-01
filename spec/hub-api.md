@@ -46,6 +46,8 @@ pub struct HubConfig {
     pub run_dir: Option<PathBuf>,           // 单实例锁 + 登记文件目录，默认 None（3.6）
     pub ipc_endpoint: Option<String>,       // 本地 IPC 端点，默认平台默认端点；None = 不开（3.8）
     pub approval: ApprovalPolicy,           // 见 3.3
+    pub limits: LimitPolicy,                // 资源保护：限流与大小上限（3.11）
+    pub output_validation: OutputValidation, // 结果与 outputSchema 不符时 Off / Log（默认）/ Reject（3.11）
 }
 
 impl Hub {
@@ -111,7 +113,10 @@ pub struct HubTool {
     pub title: Option<String>, pub description: String,
     pub input_schema: Value, pub risk: Risk, pub activation: Activation,
     pub availability: Availability,   // Available | Disconnected | NotRegistered | Dormant
+    pub annotations: ToolAnnotations, // Agent 实际看到的 MCP 注解（声明优先，缺少的按 risk 推导；上游原样，spec/protocol.md 3.2）
+    pub output_schema: Option<Value>, // App 声明的结果 schema（原样；MCP 出口按需包装）
 }
+// HubResource 另有 annotations: Option<ContentAnnotations>（App 对资源内容的标注，原样）
 pub struct ToolFilter {
     pub apps: Option<Vec<String>>,          // None = 全部
     pub max_risk: Option<Risk>,             // 只要不高于此风险的工具
@@ -134,6 +139,10 @@ pub struct CallOutcome {
     pub state_hints: Vec<String>,
     pub instance_id: Option<String>,
     pub overview: Option<AppOverviewInfo>,    // 该会话首次接触此 App 时附带（spec/protocol.md §7）
+    pub status: ResultStatus,                 // done（缺省）| pending | partial | noop（spec/protocol.md 3.2）
+    pub state_resource: Option<String>,       // pending 时的状态资源 URI（app-mcp://<appId>/<名>）
+    pub summary: Option<String>,              // App 给出的一句结论
+    pub annotations: Option<ContentAnnotations>, // App 对结果内容的标注（原样）
 }
 
 pub enum HubEvent {
@@ -159,6 +168,17 @@ schema 校验 → 策略审批（3.3）→ 路由（selected → focused → 最
 只有休眠实例注册了该工具（或 App 未运行而清单声明了 `wake`）时先唤醒（3.5）；无法唤醒的静态工具且 App 未连接时返回
 `APP_DISCONNECTED`（details 含 `launchUrl`）→ 转发、超时、取消。
 
+App 工具与上游工具在路由 / 审批之前先过资源保护（3.11）：参数大小 → 限流；结果到达后检查结果大小，再按 `output_validation`
+核对 `outputSchema`。内置工具 `apps.*` 不受限。
+
+**MCP 出口的工具与结果**（spec/protocol.md 3.2 为唯一定义，此处只列映射）：`tools/list` 的 `annotations` = `HubTool.annotations`，
+`outputSchema` = 声明的 schema（根类型非 object 时包装为 `{result}`）；成功结果的内容块依次为：状态说明（`status` 非 `done`）→
+`summary` → 返回值 JSON（无返回值、无摘要且 `done` 时为"已完成"）→ 资源变化提示（`stateHints`），App 的内容标注只加在
+摘要与返回值块上；`structuredContent` 按 `outputSchema` 决定（无返回值时不填）；`status` 非 `done` 时 `_meta` 带
+`app-mcp/status` 与 `app-mcp/stateResource`（键名前缀暂定，第 19 项 R4 核实 MCP `_meta` 命名约定后可能调整）。
+资源列表的 `annotations` 为 App 声明的内容注解。Hub API（`CallOutcome`）给出同样的信息：`result` 为原始 `data`（无返回值为 `null`），
+另有 `status`、`state_resource`、`summary`、`annotations` 字段。
+
 ### 3.3 策略回调（厂商 UI 接管确认）
 
 ```rust
@@ -171,7 +191,8 @@ pub trait ApprovalHandler: Send + Sync {
 }
 pub struct ApprovalRequest { pub call_id: String, pub app_id: String, pub app_name: String,
     pub tool: String, pub title: Option<String>, pub description: String,
-    pub risk: Risk, pub arguments: Value, pub session: Option<String> }
+    pub risk: Risk, pub arguments: Value, pub session: Option<String>,
+    pub annotations: ToolAnnotations }      // 与 HubTool.annotations 相同，供厂商按声明决定是否确认
 
 #[async_trait]
 pub trait PairingHandler: Send + Sync {
@@ -485,6 +506,8 @@ pub struct HubStatus {
     apps: Vec<AppStatus>,                              // 按 appId 排序，含上游
     reports: Vec<DiagnosticReport>,                    // 最近 32 条 SDK 上报（MAX_REPORTS），旧的在前
     lease: Option<LeaseStatus>,                        // 4e B2：租约策略与统计（旧 Host 无此字段 → None）
+    limits: Option<LimitOverrides>,                    // 第 14 项：资源保护策略（3.11；旧 Host → None）
+    output_validation: Option<OutputValidation>,       // 第 19 项 R2（3.11；旧 Host → None）
 }
 pub struct LeaseStatus { mode: String,                 // adaptive | fixed | off（lease_ttl = 0）
     default_ms, min_ms, max_ms, margin_ms: u64, window: u32, idle_revoke_ms: u64,
@@ -494,7 +517,9 @@ pub struct AppStatus { app_id, name, kind: AppKind, state: AppState,   // connec
     instances: Vec<InstanceStatus>,                    // InstanceInfo（flatten）+ state: connected | dormant | waking
                                                        //   + power: Option<InstancePower>（4e，见下）
     last_error: Option<LastError>,                     // { code: Option<String>, message, at_ms }
-    wakes: u64 }                                       // 4e：Hub 启动以来为该 App 实际发出的唤醒激活次数（含冷启动）
+    wakes: u64,                                        // 4e：Hub 启动以来为该 App 实际发出的唤醒激活次数（含冷启动）
+    rate_limited: u64, too_large: u64,                 // 第 14 项：启动以来因限流 / 大小上限被拒绝的次数（3.11）
+    tools: Vec<ToolDeclaration> }                      // 第 14 项 S5：各工具的 risk 与注解（声明原样 + 实际生效），旧 Host 为空
 pub struct InstancePower {                             // 4e 功耗观测（spec/lifecycle.md 第 12 节），JSON 字段可选新增
     reconnects: u64,                                   // 同一 instanceId 完成握手的次数 - 1（Hub 启动以来）
     wakes: u64,                                        // 以该休眠实例为目标实际发出的唤醒激活次数
@@ -565,6 +590,32 @@ rmcp 的 `server` / `client` 始终开启（模型类型与 `Peer`）。
 `--android-features <list>` 可改（体积优先用 `mobile`，去掉校验）。各组合导出的 uniffi 接口相同。arm64（mobile-release）：完整 8.98 MB（gzip 3.26）、
 `mobile,schema-validation` 6.66 MB（2.52）、`mobile` 3.92 MB（1.56）。
 
+### 3.11 资源保护：限流与大小上限（第 14 项 S3 / S4）
+
+保护 App 与设备（调用频率、数据大小）是本库职责；是否确认、是否放行不是（docs/plans/14-safety.md 第 1 节）。超出时返回明确错误，
+不静默丢弃、不截断。错误码（`RATE_LIMITED` -32016、`PAYLOAD_TOO_LARGE` -32017）与 `data` 字段的唯一定义见 spec/protocol.md 第 4 节。
+
+| `HubConfig` 字段 | 默认 | 含义 | `app-mcp-host` 命令行 / 配置文件 | hub-c / hub-node JSON |
+|---|---|---|---|---|
+| `limits.tool_rate: RateLimit` | 每分钟 120 次、突发 30 | 每（App, 工具）的令牌桶：每分钟补充 `per_minute` 个，最多攒 `burst` 个；`per_minute = 0` 不限 | `--tool-rate-limit`、`--tool-rate-burst` / `limits.toolRatePerMinute`、`toolRateBurst` | `limits.toolRatePerMinute`、`toolRateBurst` |
+| `limits.app_rate: RateLimit` | 每分钟 600 次、突发 60 | 每 App（所有工具合计）的令牌桶 | `--app-rate-limit`、`--app-rate-burst` / `limits.appRatePerMinute`、`appRateBurst` | 同左 |
+| `limits.max_arguments_bytes: u64` | 1 MiB | 调用参数序列化后的字节上限；0 不限 | `--max-arguments-bytes` / `limits.maxArgumentsBytes` | 同左 |
+| `limits.max_result_bytes: u64` | 4 MiB | App 回给 Hub 的整个结果（含 `summary`）序列化后的字节上限；上游结果同样适用；0 不限 | `--max-result-bytes` / `limits.maxResultBytes` | 同左 |
+| `limits.max_resource_bytes: u64` | 4 MiB | 资源内容（文本 / base64）的字节上限；0 不限 | `--max-resource-bytes` / `limits.maxResourceBytes` | 同左 |
+| `output_validation: OutputValidation` | `Log` | 结果与声明的 `outputSchema` 不符时：`Off` 不校验 / `Log` 只记 warn 日志、照常返回 / `Reject` 调用以 `HANDLER_ERROR` 结束（`details.outputSchemaError`）。无返回值不校验；未启用 `schema-validation` 时不校验 | `--output-validation off\|log\|reject` / `tools.outputValidation` | `outputValidation` |
+
+- JSON 形式 `LimitOverrides`（`{toolRatePerMinute, toolRateBurst, appRatePerMinute, appRateBurst, maxArgumentsBytes, maxResultBytes,
+  maxResourceBytes}`，缺省字段取默认，未知字段报错）为各绑定与配置文件共用；`per_minute > 0` 而 `burst = 0` 时 `Hub::start` 返回
+  `InvalidInput`（host：配置无效；hub-c：`AM_HUB_ERR_INVALID_CONFIG`）。默认值宽松：只拦失控循环与异常数据，均低于 WebSocket
+  单条消息 64 MiB 的上限（tungstenite 默认，超过时连接被断开而不是返回错误）。
+- 检查顺序：参数大小 → 两级限流（两级都有令牌才各扣一个；任一级不足都不扣，`retryAfterMs` 取较长的等待）→ 路由 / 审批 / 唤醒
+  （被限流的调用不会唤醒 App、不会触发审批）→ 转发 → 结果大小 → `outputSchema` 核对。`result` 超限时调用可能已在 App 内执行（错误信息如实说明）。
+- 计数：`AppStatus.rate_limited` / `too_large`（Hub 启动以来被拒绝的次数）；`HubStatus.limits`（`LimitOverrides`，全部字段给出）与
+  `HubStatus.output_validation`。令牌桶表最多 4096 个、计数表最多 1024 个 App（超出时淘汰，见 `crates/hub/src/limits.rs`）。
+- `app-mcp-host doctor`：「资源保护」检查显示策略与各 App 被拒绝次数（有拒绝时为注意）；「工具声明」检查逐个列出每个工具的
+  `risk` 与 Agent 实际看到的注解（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` / `title`，注明是声明的还是按
+  `risk` 推导的、是否有 `outputSchema`），`--json` 的 `details` 原样给出 `AppStatus.tools`（`ToolDeclaration { name, risk, annotations?, effective, output_schema }`）。
+
 ## 4. 进程内 App（可选，M2）
 
 `Hub::attach_local(hello) -> LocalAppChannel`：厂商自带的系统 App 与 Hub 同进程时，
@@ -576,7 +627,7 @@ rmcp 的 `server` / `client` 始终开启（模型类型与 `Peer`）。
 
 | `ToolFormat` | `export_tools` 输出 | `dispatch` 输入 → 输出 |
 |---|---|---|
-| `Mcp` | `[{name, title, description, inputSchema, annotations}]` | `{name, arguments}` → MCP `CallToolResult` JSON |
+| `Mcp` | `[{name, title, description, inputSchema, annotations, outputSchema?}]`（`annotations` = `HubTool.annotations`；`outputSchema` 同 MCP 出口） | `{name, arguments}` → MCP `CallToolResult` JSON |
 | `OpenAiChat` | `[{type:"function", function:{name, description, parameters}}]` | `{id, type:"function", function:{name, arguments:"<json 字符串>"}}` → `{role:"tool", tool_call_id, content}` |
 | `OpenAiResponses` | `[{type:"function", name, description, parameters}]` | `{type:"function_call", call_id, name, arguments}` → `{type:"function_call_output", call_id, output}` |
 | `Anthropic` | `[{name, description, input_schema}]` | `{type:"tool_use", id, name, input}` → `{type:"tool_result", tool_use_id, content, is_error?}` |

@@ -1117,6 +1117,7 @@ mod tests {
             description: "r".into(),
             mime_type: None,
             realtime: false,
+            annotations: None,
         }
     }
 

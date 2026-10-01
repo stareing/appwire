@@ -27,6 +27,8 @@ fn tool(name: &str) -> ToolDef {
         title: None,
         enabled: true,
         scope: None,
+        annotations: None,
+        output_schema: None,
     }
 }
 
@@ -433,6 +435,39 @@ fn disable_and_enable_tools() {
     assert!(h.drain().is_empty());
 }
 
+/// 第 14 项 S1 / 第 19 项 R1–R3：注解与输出 schema 随工具同步、可清除；结构化结果原样回给 Host。
+#[test]
+fn annotations_output_schema_and_structured_result() {
+    let mut h = Harness::new();
+    let mut t = tool("a");
+    t.annotations = Some(ToolAnnotations { open_world_hint: Some(true), ..Default::default() });
+    t.output_schema = Some(json!({"type": "object"}));
+    let a = h.c.register_tool(t).unwrap();
+    let ev = h.connect();
+    let sync = sends(&ev).into_iter().find(|m| m["method"] == "tools/sync").unwrap();
+    assert_eq!(sync["params"]["tools"][0]["annotations"], json!({"openWorldHint": true}));
+    assert_eq!(sync["params"]["tools"][0]["outputSchema"], json!({"type": "object"}));
+    // 清除：不再序列化
+    h.c.update_tool(a, ToolUpdate { annotations: Some(None), output_schema: Some(None), ..Default::default() }).unwrap();
+    let msgs = sends(&h.drain());
+    let upserted = &msgs[0]["params"]["upserted"][0];
+    assert!(upserted.get("annotations").is_none() && upserted.get("outputSchema").is_none(), "{upserted}");
+
+    h.invoke(10, "c1", "a", None);
+    let out = CallOutput {
+        status: ResultStatus::Partial,
+        summary: Some("只加入了 2 件".into()),
+        annotations: Some(ContentAnnotations { priority: Some(1.0), ..Default::default() }),
+        ..CallOutput::default()
+    };
+    h.c.complete_call("c1", Ok(out), h.now).unwrap();
+    let msgs = sends(&h.drain());
+    assert_eq!(
+        msgs[0]["result"],
+        json!({"data": null, "status": "partial", "summary": "只加入了 2 件", "annotations": {"priority": 1.0}})
+    );
+}
+
 #[test]
 fn registration_errors() {
     let mut h = Harness::new();
@@ -511,8 +546,12 @@ fn call_success_and_handler_error() {
         ev,
         vec![Event::InvokeTool { call_id: "c1".into(), tool: a, name: "a".into(), arguments: json!({"x": 1}) }]
     );
-    h.c.complete_call("c1", Ok(CallOutput { data: json!({"ok": true}), state_hints: vec!["cart.state".into()] }), h.now)
-        .unwrap();
+    h.c.complete_call(
+        "c1",
+        Ok(CallOutput { data: json!({"ok": true}), state_hints: vec!["cart.state".into()], ..CallOutput::default() }),
+        h.now,
+    )
+    .unwrap();
     let msgs = sends(&h.drain());
     assert_eq!(msgs, vec![json!({"jsonrpc": "2.0", "id": 10, "result": {"data": {"ok": true}, "stateHints": ["cart.state"]}})]);
     assert_eq!(h.c.poll_timeout().map(|t| t > h.now + 5_000), Some(true), "已完成调用的超时不再计时");

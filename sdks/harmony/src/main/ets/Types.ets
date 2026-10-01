@@ -6,7 +6,8 @@
  * - 工具输入 schema 用 JSON 文本（`inputSchema: string`）；
  * - 连接状态是单一接口（`status` + 可选字段），而不是联合类型；
  * - 取消用 `ToolContext.onCancel` / `isCancelled`（ArkTS 运行时没有 AbortSignal）；
- * - 带 stateHints 的结果用 `ToolResult` 类表示。
+ * - 工具输出 schema 同样用 JSON 文本（`outputSchema: string`）；
+ * - 结构化结果（stateHints、status、summary 等）用 `ToolResult` 类表示。
  */
 
 export type Risk = 'read' | 'write' | 'destructive' | 'payment' | 'os-sensitive';
@@ -17,7 +18,44 @@ export type Visibility = 'visible' | 'hidden' | 'frozen';
 export type ErrorKind =
   'TOOL_NOT_FOUND' | 'TOOL_DISABLED' | 'INVALID_INPUT' | 'USER_REJECTED' | 'TIMEOUT' | 'HANDLER_ERROR' |
   'CANCELLED' | 'APP_DISCONNECTED' | 'APP_NOT_INSTALLED' | 'LAUNCH_FAILED' | 'APP_NOT_RESPONDING' |
-  'INSTANCE_FROZEN' | 'RESOURCE_NOT_FOUND' | 'UNAUTHORIZED' | 'UNSUPPORTED_PROTOCOL';
+  'INSTANCE_FROZEN' | 'RESOURCE_NOT_FOUND' | 'UNAUTHORIZED' | 'UNSUPPORTED_PROTOCOL' |
+  // Host 产生（限流 / 超过大小上限），App 一般不抛
+  'RATE_LIMITED' | 'PAYLOAD_TOO_LARGE';
+
+/**
+ * 标准 MCP 工具注解（spec/protocol.md 第 3 节），原样转发给 Agent，由 Agent 决定是否确认 / 放行。
+ * 与旧写法 `risk` 同时给出时，声明的字段逐个优先，缺少的按 `risk` 推导。
+ */
+export interface ToolAnnotations {
+  /** 给人看的工具标题。 */
+  title?: string;
+  /** 不修改任何状态。 */
+  readOnlyHint?: boolean;
+  /** 可能做出破坏性 / 不可撤销的修改（只在非只读时有意义）。 */
+  destructiveHint?: boolean;
+  /** 以相同参数重复调用没有额外效果（只在非只读时有意义）。 */
+  idempotentHint?: boolean;
+  /** 会与外部世界交互（网络、第三方、其他用户可见）。 */
+  openWorldHint?: boolean;
+}
+
+/** 内容的接收方（MCP `Role`）。 */
+export type Audience = 'user' | 'assistant';
+
+/** 标准 MCP 内容注解：对结果内容的标注，Hub 原样转发。 */
+export interface ContentAnnotations {
+  audience?: Audience[];
+  /** 重要程度，0（可选）到 1（必需）。 */
+  priority?: number;
+  /** 最后修改时刻（ISO 8601）。 */
+  lastModified?: string;
+}
+
+/**
+ * 调用结果的业务状态（spec/protocol.md 3.2）：`done`（缺省）已完成；`pending` 已受理、待用户在 App 内确认或异步完成
+ * （后续状态见 `stateResource`）；`partial` 只完成了一部分（说明见 `summary`）；`noop` 没有做任何改动。
+ */
+export type ResultStatus = 'done' | 'pending' | 'partial' | 'noop';
 
 export type ConnectionStatus =
   'disabled' | 'idle' | 'connecting' | 'handshaking' | 'pending-pairing' | 'connected' | 'backoff' |
@@ -103,14 +141,39 @@ export interface ToolContext {
   hold(): HoldHandle;
 }
 
-/** 带状态提示的结果；handler 也可以直接返回数据。 */
+/** {@link ToolResult} 的可选字段。 */
+export interface ToolResultOptions {
+  /** 业务状态，缺省 `done`。 */
+  status?: ResultStatus;
+  /** `pending` 时可读取后续状态的资源名（局部名）。 */
+  stateResource?: string;
+  /** 一句面向模型 / 用户的结论（`partial` 时说明完成了哪部分）。 */
+  summary?: string;
+  /** 结果内容的标注。 */
+  annotations?: ContentAnnotations;
+}
+
+/**
+ * 结构化结果（状态提示、业务状态、摘要、内容标注）；handler 也可以直接返回数据。
+ * `data` 为 undefined / null 表示无返回值（Hub 对模型输出"已完成"）。
+ */
 export class ToolResult<O> {
   readonly data: O;
   readonly stateHints: string[];
+  readonly status?: ResultStatus;
+  readonly stateResource?: string;
+  readonly summary?: string;
+  readonly annotations?: ContentAnnotations;
 
-  constructor(data: O, stateHints: string[]) {
+  constructor(data: O, stateHints: string[], options?: ToolResultOptions) {
     this.data = data;
     this.stateHints = stateHints;
+    if (options !== undefined) {
+      this.status = options.status;
+      this.stateResource = options.stateResource;
+      this.summary = options.summary;
+      this.annotations = options.annotations;
+    }
   }
 }
 
@@ -122,20 +185,26 @@ export interface ToolDefinition<I, O> {
   title?: string;
   /** 输入的 JSON Schema 文本（顶层 `type` 为 `"object"`）；缺省为无参数。 */
   inputSchema?: string;
-  /** 缺省 `write`。 */
+  /** 旧写法：缺省 `write`。新代码优先用 `annotations`；两者同时给出时 `annotations` 声明的字段优先。 */
   risk?: Risk;
+  /** 标准 MCP 工具注解（只读、破坏性、幂等、开放世界）。 */
+  annotations?: ToolAnnotations;
+  /** 结果的 JSON Schema 文本（MCP `outputSchema`，根类型不限）；缺省不声明。 */
+  outputSchema?: string;
   activation?: Activation;
   /** 缺省 true。 */
   enabled?: boolean;
   handler: ToolHandler<I, O>;
 }
 
-/** `ToolHandle.update` 的变更；未提供的字段保持不变。 */
+/** `ToolHandle.update` 的变更；未提供的字段保持不变（`annotations` / `outputSchema` 整体替换，不支持清除）。 */
 export interface ToolChanges {
   description?: string;
   title?: string;
   inputSchema?: string;
   risk?: Risk;
+  annotations?: ToolAnnotations;
+  outputSchema?: string;
   activation?: Activation;
   enabled?: boolean;
 }

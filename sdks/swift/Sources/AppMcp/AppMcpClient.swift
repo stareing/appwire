@@ -111,8 +111,13 @@ private func failQuietly(_ read: Read, _ kind: String, _ message: String) {
     } catch {}
 }
 
-/// 类型擦除后的工具实现：参数 JSON → 结果 JSON（`nil` 表示 null）。
-typealias ErasedTool = @Sendable (String, ToolContext) async throws -> String?
+/// 类型擦除后的工具实现：参数 JSON → 原生调用结果（`dataJson` 为 `nil` 表示 null）。
+typealias ErasedTool = @Sendable (String, ToolContext) async throws -> CallResult
+
+/// 普通返回值对应的调用结果。
+func plainResult(_ dataJson: String?) -> CallResult {
+    CallResult(dataJson: dataJson, stateHints: [], status: .done)
+}
 
 final class CancelBridge: CancelListener, @unchecked Sendable {
     private let action: @Sendable (CancelReason) -> Void
@@ -136,9 +141,10 @@ final class ToolBridge: ToolHandler, @unchecked Sendable {
         let ctx = ToolContext(callId: call.callId(), toolName: call.toolName(), argumentsJSON: call.argumentsJson(), call: call)
         let body = self.body
         let task = launch(on: target, timeout: timeout, fail: { failQuietly(call, $0, $1, $2) }) {
-            let json = try await body(ctx.argumentsJSON, ctx)
+            var result = try await body(ctx.argumentsJSON, ctx)
+            result.stateHints += ctx.stateHints
             do {
-                try call.complete(dataJson: json, stateHints: ctx.stateHints)
+                try call.completeWith(result: result)
             } catch AppMcpError.AlreadyCompleted {
             } catch {
                 failQuietly(call, ErrorKind.handlerError, "提交结果失败：\(error)")
@@ -191,7 +197,14 @@ public final class ToolHandle: @unchecked Sendable {
     public func setEnabled(_ enabled: Bool) throws { try inner.setEnabled(enabled: enabled) }
 
     /// 修改定义；为 `nil` 的参数保持不变。
-    public func update(description: String? = nil, inputSchema: String? = nil, risk: Risk? = nil, title: String? = nil) throws {
+    public func update(
+        description: String? = nil,
+        inputSchema: String? = nil,
+        risk: Risk? = nil,
+        title: String? = nil,
+        annotations: ToolAnnotations? = nil,
+        outputSchema: String? = nil
+    ) throws {
         lock.lock()
         defer { lock.unlock() }
         var next = spec
@@ -199,6 +212,8 @@ public final class ToolHandle: @unchecked Sendable {
         if let inputSchema { next.inputSchemaJson = inputSchema }
         if let risk { next.risk = risk }
         if let title { next.title = title }
+        if let annotations { next.annotations = annotations }
+        if let outputSchema { next.outputSchemaJson = outputSchema }
         try inner.update(spec: next)
         spec = next
     }
@@ -233,11 +248,13 @@ public class ToolRegistrar: @unchecked Sendable {
 
     func register(
         _ name: String, _ description: String, _ inputSchema: String?, _ risk: Risk, _ activation: Activation?,
-        _ title: String?, _ enabled: Bool, _ target: ExecutionTarget, _ body: @escaping ErasedTool
+        _ title: String?, _ enabled: Bool, _ annotations: ToolAnnotations?, _ outputSchema: String?,
+        _ target: ExecutionTarget, _ body: @escaping ErasedTool
     ) throws -> ToolHandle {
         let spec = ToolSpec(
             name: name, description: description, inputSchemaJson: inputSchema, risk: risk,
-            activation: activation, title: title, enabled: enabled
+            activation: activation, title: title, enabled: enabled,
+            annotations: annotations, outputSchemaJson: outputSchema
         )
         let raw = try registerRaw(spec, ToolBridge(target: target, timeout: dispatchTimeout, body: body))
         return ToolHandle(inner: raw, spec: spec)
@@ -252,6 +269,9 @@ public class ToolRegistrar: @unchecked Sendable {
     ///     return cart.snapshot
     /// }
     /// ```
+    ///
+    /// `risk` 为旧写法，优先用 `annotations`（标准 MCP 工具注解，原样转发给 Agent；为空时 Hub 按 `risk` 推导）；
+    /// `outputSchema` 为结果的 JSON Schema 文本（MCP `outputSchema`）。返回 `ToolResult` 见下方重载。
     @discardableResult
     public func tool<Args: Decodable, Output: Encodable>(
         _ name: String,
@@ -261,12 +281,34 @@ public class ToolRegistrar: @unchecked Sendable {
         activation: Activation? = nil,
         title: String? = nil,
         enabled: Bool = true,
+        annotations: ToolAnnotations? = nil,
+        outputSchema: String? = nil,
         handler: @escaping @MainActor (Args, ToolContext) async throws -> Output
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             let output = try await handler(args, ctx)
-            return try encodeJSON(output)
+            return plainResult(try encodeJSON(output))
+        }
+    }
+
+    /// 同上，handler 返回结构化结果（业务状态、摘要、内容标注）。
+    @discardableResult
+    public func tool<Args: Decodable, Output: Encodable>(
+        _ name: String,
+        description: String,
+        inputSchema: String? = nil,
+        risk: Risk = .write,
+        activation: Activation? = nil,
+        title: String? = nil,
+        enabled: Bool = true,
+        annotations: ToolAnnotations? = nil,
+        outputSchema: String? = nil,
+        handler: @escaping @MainActor (Args, ToolContext) async throws -> ToolResult<Output>
+    ) throws -> ToolHandle {
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, .mainActor) { json, ctx in
+            let args = try decodeJSON(Args.self, json)
+            return try await handler(args, ctx).ffi()
         }
     }
 
@@ -280,12 +322,14 @@ public class ToolRegistrar: @unchecked Sendable {
         activation: Activation? = nil,
         title: String? = nil,
         enabled: Bool = true,
+        annotations: ToolAnnotations? = nil,
+        outputSchema: String? = nil,
         handler: @escaping @MainActor (Args, ToolContext) async throws -> Void
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             try await handler(args, ctx)
-            return nil
+            return plainResult(nil)
         }
     }
 
@@ -299,11 +343,33 @@ public class ToolRegistrar: @unchecked Sendable {
         activation: Activation? = nil,
         title: String? = nil,
         enabled: Bool = true,
+        annotations: ToolAnnotations? = nil,
+        outputSchema: String? = nil,
         handler: @escaping @Sendable (Args, ToolContext) async throws -> Output
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, .background) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, .background) { json, ctx in
             let args = try decodeJSON(Args.self, json)
-            return try encodeJSON(try await handler(args, ctx))
+            return plainResult(try encodeJSON(try await handler(args, ctx)))
+        }
+    }
+
+    /// 同上，handler 返回结构化结果（业务状态、摘要、内容标注）。
+    @discardableResult
+    public func backgroundTool<Args: Decodable, Output: Encodable>(
+        _ name: String,
+        description: String,
+        inputSchema: String? = nil,
+        risk: Risk = .write,
+        activation: Activation? = nil,
+        title: String? = nil,
+        enabled: Bool = true,
+        annotations: ToolAnnotations? = nil,
+        outputSchema: String? = nil,
+        handler: @escaping @Sendable (Args, ToolContext) async throws -> ToolResult<Output>
+    ) throws -> ToolHandle {
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, .background) { json, ctx in
+            let args = try decodeJSON(Args.self, json)
+            return try await handler(args, ctx).ffi()
         }
     }
 

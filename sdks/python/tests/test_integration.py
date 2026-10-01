@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from app_mcp import AppMcp, ToolCallError, ToolContext
+from app_mcp import AppMcp, ToolCallError, ToolContext, ToolResult
 
 pytestmark = pytest.mark.integration
 
@@ -114,6 +114,65 @@ def test_invoke_tools_via_fake_host(fake_host_bin: Path):
     assert results["boom"]["error"]["data"]["kind"] == "HANDLER_ERROR"
     assert results["cart"]["result"]["contents"] == {"items": ["A"]}
     assert threads and threads[0].startswith("app-mcp")
+
+
+def test_tool_options_and_structured_result_reach_host(fake_host_bin: Path):
+    """工具注解 + outputSchema 到达 Host；结构化结果原样回给 Host；普通返回值不变。"""
+    proc, addr = run_host(
+        fake_host_bin,
+        "--tool-info",
+        "--invoke", "order.submit",
+        "--invoke", "plain",
+        "--timeout-ms", "15000",
+    )
+    client = AppMcp(app_id="py-it", app_name="Python 集成测试", host_url=f"ws://{addr}")
+    schema = {"type": "object", "properties": {"orderId": {"type": "string"}}}
+
+    @client.tool(
+        "order.submit",
+        description="下单",
+        annotations={"idempotent_hint": False, "open_world_hint": True},
+        output_schema=schema,
+    )
+    def submit() -> ToolResult:
+        return ToolResult(
+            {"orderId": "o1"},
+            status="pending",
+            state_resource="order.state",
+            summary="已提交，等待用户在 App 内付款",
+            annotations={"audience": ["user"], "priority": 0.5},
+        )
+
+    @client.tool("plain", description="普通返回值", risk="read")
+    def plain() -> dict:
+        return {"ok": True}
+
+    try:
+        client.start()
+        out, err = proc.communicate(timeout=30)
+    finally:
+        client.close()
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 0, f"fake_host 退出码 {proc.returncode}\nstdout:\n{out}\nstderr:\n{err}"
+
+    lines = [json.loads(line) for line in out.splitlines() if line.strip()]
+    info = lines[0]["toolInfo"]
+    assert info["order.submit"] == {
+        "risk": "write",
+        "annotations": {"idempotentHint": False, "openWorldHint": True},
+        "outputSchema": schema,
+    }
+    assert info["plain"] == {"risk": "read"}
+    results = {line["name"]: line for line in lines[1:]}
+    assert results["order.submit"]["result"] == {
+        "data": {"orderId": "o1"},
+        "status": "pending",
+        "stateResource": "order.state",
+        "summary": "已提交，等待用户在 App 内付款",
+        "annotations": {"audience": ["user"], "priority": 0.5},
+    }
+    assert results["plain"]["result"] == {"data": {"ok": True}}
 
 
 def test_idle_sleep_wake_roundtrip(fake_host_bin: Path, caplog: pytest.LogCaptureFixture):

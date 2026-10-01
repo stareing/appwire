@@ -388,6 +388,10 @@ fn header_consistency() {
         "am_call_hold",
         // v8
         "am_resource_register_ex",
+        // v9
+        "am_tool_register_ex",
+        "am_tool_update_ex",
+        "am_call_complete_ex",
     ];
     // 收集头文件中形如 `am_xxx(` 的声明。
     let mut declared = Vec::new();
@@ -447,6 +451,10 @@ fn header_consistency() {
             "AM_WAKE_REASON_COLD_START = 3",
             wake_reason_from(3).ok() == Some(WakeReason::ColdStart),
         ),
+        ("AM_RESULT_DONE = 0", result_status_from(0).ok() == Some(ResultStatus::Done)),
+        ("AM_RESULT_PENDING = 1", result_status_from(1).ok() == Some(ResultStatus::Pending)),
+        ("AM_RESULT_PARTIAL = 2", result_status_from(2).ok() == Some(ResultStatus::Partial)),
+        ("AM_RESULT_NOOP = 3", result_status_from(3).ok() == Some(ResultStatus::Noop)),
         (
             "AM_SLEEP_REASON_APP = 3",
             sleep_reason_from(3).ok() == Some(SleepReason::App),
@@ -996,4 +1004,255 @@ fn resource_options_are_read_up_to_struct_size() {
     assert_eq!(unsafe { read_resource_options(&short) }.ok(), Some(ResourceOptions::default()));
     let bad = AmResourceOptions { struct_size: 0, realtime: true };
     assert!(unsafe { read_resource_options(&bad) }.is_err());
+}
+
+#[test]
+fn tool_options_are_read_up_to_struct_size() {
+    let ann = CString::new(r#"{"readOnlyHint":true,"title":"查询"}"#).unwrap_or_default();
+    let schema = CString::new(r#"{"type":"object"}"#).unwrap_or_default();
+    let full = AmToolOptions {
+        struct_size: std::mem::size_of::<AmToolOptions>() as u32,
+        annotations_json: ann.as_ptr(),
+        output_schema_json: schema.as_ptr(),
+    };
+    let options = unsafe { read_tool_options(&full) }.ok();
+    assert_eq!(
+        options,
+        Some(ToolOptions {
+            annotations: Some(ToolAnnotations {
+                title: Some("查询".into()),
+                read_only_hint: Some(true),
+                ..ToolAnnotations::default()
+            }),
+            output_schema_json: Some(r#"{"type":"object"}"#.into()),
+        })
+    );
+    assert_eq!(unsafe { read_tool_options(ptr::null()) }.ok(), Some(ToolOptions::default()));
+    // 只含到 annotations_json 的调用方：output_schema_json 按 NULL 处理
+    let short = AmToolOptions {
+        struct_size: (std::mem::offset_of!(AmToolOptions, annotations_json) + std::mem::size_of::<*const c_char>())
+            as u32,
+        ..full
+    };
+    let options = unsafe { read_tool_options(&short) }.ok();
+    assert!(options.as_ref().is_some_and(|o| o.annotations.is_some() && o.output_schema_json.is_none()));
+    let bad = AmToolOptions { struct_size: 0, ..full };
+    assert_eq!(unsafe { read_tool_options(&bad) }.err().map(|e| e.status), Some(AmStatus::InvalidArgument));
+    // 注解不是对象 / 字段类型不对：AM_ERR_INVALID_JSON；`null` 视为未声明
+    for text in ["[1]", r#"{"readOnlyHint":"yes"}"#, "{"] {
+        let t = CString::new(text).unwrap_or_default();
+        let o = AmToolOptions { annotations_json: t.as_ptr(), ..full };
+        assert_eq!(unsafe { read_tool_options(&o) }.err().map(|e| e.status), Some(AmStatus::InvalidJson), "{text}");
+    }
+    let null = CString::new("null").unwrap_or_default();
+    let o = AmToolOptions { annotations_json: null.as_ptr(), ..full };
+    assert!(unsafe { read_tool_options(&o) }.is_ok_and(|o| o.annotations.is_none()));
+}
+
+#[test]
+fn call_result_is_read_up_to_struct_size() {
+    let data = CString::new(r#"{"orderId":"o1"}"#).unwrap_or_default();
+    let hint = CString::new("cart").unwrap_or_default();
+    let hints = [hint.as_ptr()];
+    let res = CString::new("order.state").unwrap_or_default();
+    let summary = CString::new("已提交").unwrap_or_default();
+    let ann = CString::new(r#"{"audience":["user"],"priority":0.5}"#).unwrap_or_default();
+    let full = AmCallResult {
+        struct_size: std::mem::size_of::<AmCallResult>() as u32,
+        data_json: data.as_ptr(),
+        state_hints: hints.as_ptr(),
+        state_hints_len: 1,
+        status: 1,
+        state_resource: res.as_ptr(),
+        summary: summary.as_ptr(),
+        annotations_json: ann.as_ptr(),
+    };
+    assert_eq!(
+        unsafe { read_call_result(&full) }.ok(),
+        Some(CallResult {
+            data_json: Some(r#"{"orderId":"o1"}"#.into()),
+            state_hints: vec!["cart".into()],
+            status: ResultStatus::Pending,
+            state_resource: Some("order.state".into()),
+            summary: Some("已提交".into()),
+            annotations: Some(ContentAnnotations {
+                audience: Some(vec![app_mcp_native::Audience::User]),
+                priority: Some(0.5),
+                last_modified: None,
+            }),
+        })
+    );
+    assert_eq!(unsafe { read_call_result(ptr::null()) }.ok(), Some(CallResult::default()));
+    // 只含到 state_hints_len 的调用方：其余字段取默认值
+    let short = AmCallResult {
+        struct_size: (std::mem::offset_of!(AmCallResult, state_hints_len) + std::mem::size_of::<usize>()) as u32,
+        ..full
+    };
+    let r = unsafe { read_call_result(&short) }.ok();
+    assert!(r.as_ref().is_some_and(|r| r.status == ResultStatus::Done
+        && r.summary.is_none()
+        && r.annotations.is_none()
+        && r.state_hints.len() == 1));
+    let bad_status = AmCallResult { status: 9, ..full };
+    assert_eq!(unsafe { read_call_result(&bad_status) }.err().map(|e| e.status), Some(AmStatus::InvalidArgument));
+    let bad_ann = CString::new(r#"{"audience":["robot"]}"#).unwrap_or_default();
+    let r = AmCallResult { annotations_json: bad_ann.as_ptr(), ..full };
+    assert_eq!(unsafe { read_call_result(&r) }.err().map(|e| e.status), Some(AmStatus::InvalidJson));
+    let r = AmCallResult { state_hints: ptr::null(), ..full };
+    assert_eq!(unsafe { read_call_result(&r) }.err().map(|e| e.status), Some(AmStatus::InvalidArgument));
+    assert_eq!(unsafe { am_call_complete_ex(ptr::null_mut(), &full) }, AmStatus::InvalidArgument);
+}
+
+fn fake_host_path() -> Option<std::path::PathBuf> {
+    // target/<profile>/deps/<test> → target/<profile>/examples/fake_host
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.parent()?;
+    let path = dir.join("examples").join(format!("fake_host{}", std::env::consts::EXE_SUFFIX));
+    path.exists().then_some(path)
+}
+
+/// `order.submit`：以 pending + stateResource + summary + 内容注解完成；`plain`：普通返回值（回归）。
+unsafe extern "C" fn submit_tool(_ud: *mut c_void, call: *mut AmCall) {
+    let name = unsafe { CStr::from_ptr(am_call_tool_name(call)) }.to_string_lossy().into_owned();
+    if name == "plain" {
+        let data = CString::new(r#"{"ok":true}"#).unwrap_or_default();
+        let _ = unsafe { am_call_complete(call, data.as_ptr(), ptr::null(), 0) };
+        return;
+    }
+    let data = CString::new(r#"{"orderId":"o1"}"#).unwrap_or_default();
+    let res = CString::new("order.state").unwrap_or_default();
+    let summary = CString::new("已提交，等待用户在 App 内付款").unwrap_or_default();
+    let ann = CString::new(r#"{"priority":0.5}"#).unwrap_or_default();
+    let bad = CString::new("{").unwrap_or_default();
+    let mut result = AmCallResult {
+        struct_size: std::mem::size_of::<AmCallResult>() as u32,
+        data_json: data.as_ptr(),
+        state_hints: ptr::null(),
+        state_hints_len: 0,
+        status: 1,
+        state_resource: res.as_ptr(),
+        summary: summary.as_ptr(),
+        annotations_json: bad.as_ptr(),
+    };
+    // 非法注解：不消费 call，可以重试
+    if unsafe { am_call_complete_ex(call, &result) } != AmStatus::InvalidJson {
+        let _ = unsafe { am_call_fail(call, ptr::null(), ptr::null()) };
+        return;
+    }
+    result.annotations_json = ann.as_ptr();
+    let _ = unsafe { am_call_complete_ex(call, &result) };
+}
+
+/// 端到端：经 C 接口注册带注解 + outputSchema 的工具、以结构化结果完成调用，核对 fake_host 收到的内容。
+#[test]
+fn tool_options_and_call_result_reach_host() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let Some(bin) = fake_host_path() else {
+        eprintln!("未找到 fake_host 可执行文件，跳过（先运行 cargo build -p app-mcp-native --example fake_host）");
+        return;
+    };
+    let Ok(mut child) = Command::new(bin)
+        .args(["--tool-info", "--invoke", "order.submit", "--invoke", "plain", "--timeout-ms", "8000"])
+        .stdout(Stdio::piped())
+        .spawn()
+    else {
+        panic!("无法启动 fake_host");
+    };
+    let Some(stdout) = child.stdout.take() else { panic!("fake_host 没有 stdout") };
+    let mut lines = BufReader::new(stdout).lines();
+    let first = lines.next().and_then(Result::ok).unwrap_or_default();
+    let addr = first.strip_prefix("LISTENING ").unwrap_or_default().to_owned();
+    assert!(!addr.is_empty(), "LISTENING 行：{first}");
+
+    let id = CString::new("c-abi-result").unwrap_or_default();
+    let name = CString::new("C ABI Result").unwrap_or_default();
+    let url = CString::new(format!("ws://{addr}")).unwrap_or_default();
+    let cfg = AmClientConfig {
+        app_id: id.as_ptr(),
+        app_name: name.as_ptr(),
+        instance_id: ptr::null(),
+        host_url: url.as_ptr(),
+        app_version: ptr::null(),
+        instance_title: ptr::null(),
+        token: ptr::null(),
+        launch_token: ptr::null(),
+        client_kind: 0,
+        max_concurrent_calls: 0,
+        overview_summary: ptr::null(),
+        overview_body: ptr::null(),
+        overview_locale: ptr::null(),
+    };
+    let mut client: *mut AmClient = ptr::null_mut();
+    assert_eq!(unsafe { am_client_new(&cfg, ptr::null(), &mut client) }, AmStatus::Ok);
+    let mut root: *mut AmScope = ptr::null_mut();
+    assert_eq!(unsafe { am_client_root_scope(client, &mut root) }, AmStatus::Ok);
+
+    let tname = CString::new("order.submit").unwrap_or_default();
+    let desc = CString::new("下单").unwrap_or_default();
+    let spec = AmToolSpec {
+        name: tname.as_ptr(),
+        description: desc.as_ptr(),
+        input_schema_json: ptr::null(),
+        risk: 1,
+        activation: -1,
+        title: ptr::null(),
+        enabled: true,
+    };
+    let ann = CString::new(r#"{"idempotentHint":false,"openWorldHint":true}"#).unwrap_or_default();
+    let schema = CString::new(r#"{"type":"object","properties":{"orderId":{"type":"string"}}}"#).unwrap_or_default();
+    let options = AmToolOptions {
+        struct_size: std::mem::size_of::<AmToolOptions>() as u32,
+        annotations_json: ann.as_ptr(),
+        output_schema_json: schema.as_ptr(),
+    };
+    let mut tool: *mut AmTool = ptr::null_mut();
+    assert_eq!(
+        unsafe { am_tool_register_ex(root, &spec, &options, Some(submit_tool), ptr::null_mut(), None, &mut tool) },
+        AmStatus::Ok
+    );
+    // 非法 outputSchema：更新失败，工具保持原定义
+    let bad = CString::new("{").unwrap_or_default();
+    let bad_options = AmToolOptions { output_schema_json: bad.as_ptr(), ..options };
+    assert_eq!(unsafe { am_tool_update_ex(tool, &spec, &bad_options) }, AmStatus::InvalidSchema);
+    // am_tool_update 保留已声明的选项
+    assert_eq!(unsafe { am_tool_update(tool, &spec) }, AmStatus::Ok);
+
+    let pname = CString::new("plain").unwrap_or_default();
+    let plain_spec = AmToolSpec { name: pname.as_ptr(), risk: 0, ..spec };
+    let mut plain: *mut AmTool = ptr::null_mut();
+    assert_eq!(
+        unsafe { am_tool_register(root, &plain_spec, Some(submit_tool), ptr::null_mut(), None, &mut plain) },
+        AmStatus::Ok
+    );
+    assert_eq!(unsafe { am_client_start(client) }, AmStatus::Ok);
+
+    let out: Vec<serde_json::Value> =
+        lines.map_while(Result::ok).filter_map(|l| serde_json::from_str(&l).ok()).collect();
+    let ok = child.wait().is_ok_and(|s| s.success());
+    unsafe {
+        am_tool_free(tool);
+        am_tool_free(plain);
+        am_scope_free(root);
+        am_client_free(client);
+    }
+    assert!(ok, "fake_host 退出码非 0：{out:?}");
+    assert_eq!(
+        out[0]["toolInfo"]["order.submit"],
+        serde_json::json!({
+            "risk": "write",
+            "annotations": { "idempotentHint": false, "openWorldHint": true },
+            "outputSchema": { "type": "object", "properties": { "orderId": { "type": "string" } } }
+        })
+    );
+    assert_eq!(out[0]["toolInfo"]["plain"], serde_json::json!({ "risk": "read" }));
+    assert_eq!(
+        out[1]["result"],
+        serde_json::json!({
+            "data": { "orderId": "o1" }, "status": "pending", "stateResource": "order.state",
+            "summary": "已提交，等待用户在 App 内付款", "annotations": { "priority": 0.5 }
+        })
+    );
+    assert_eq!(out[2]["result"], serde_json::json!({ "data": { "ok": true } }));
 }

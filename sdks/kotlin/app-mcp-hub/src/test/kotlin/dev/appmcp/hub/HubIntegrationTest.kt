@@ -283,6 +283,89 @@ class HubIntegrationTest {
         hub.close()
     }
 
+    /** 第 14 / 19 项：限流 / 大小上限配置与统计、工具注解 / outputSchema、结构化调用结果。 */
+    @Test
+    fun limitsAnnotationsAndStructuredResult() = runBlocking {
+        // 非法：限流时 burst 须 ≥ 1
+        assertFailsWith<FfiHubException.InvalidConfig> {
+            Hub.start(HubConfig(listen = "127.0.0.1:0", enableIpc = false, limits = LimitsConfig(toolRateBurst = 0u)))
+        }
+        val hub = Hub.start(
+            HubConfig(
+                listen = "127.0.0.1:0",
+                enableIpc = false,
+                limits = LimitsConfig(toolRatePerMinute = 1u, toolRateBurst = 1u, maxArgumentsBytes = 64uL),
+                outputValidation = OutputValidation.REJECT,
+            ),
+        )
+        val app = AppMcp.create(
+            AppMcpConfig("orders", "订单", hostUrl = "ws://${hub.listenAddr}/app", dispatcher = Dispatchers.Default),
+        )
+        val outputSchema = buildJsonObject {
+            put("type", "object")
+            putJsonObject("properties") { putJsonObject("orderId") { put("type", "string") } }
+        }
+        app.tool(
+            "submit", "下单",
+            annotations = dev.appmcp.ToolAnnotations(idempotentHint = false),
+            outputSchema = outputSchema,
+        ) { _, _ ->
+            dev.appmcp.ToolResult(
+                buildJsonObject { put("orderId", "o1") },
+                status = dev.appmcp.ResultStatus.PENDING,
+                stateResource = "order.state",
+                summary = "已提交，等待付款",
+                annotations = dev.appmcp.ContentAnnotations(priority = 0.5),
+            )
+        }
+        app.tool("echo", "回显") { args, _ -> args }
+        try {
+            app.start()
+            val tools = withTimeout(10.seconds) {
+                var t = hub.tools(ToolFilter(apps = listOf("orders"), includeBuiltin = false))
+                while (t.size < 2 || t.any { it.availability != Availability.AVAILABLE }) {
+                    delay(20)
+                    t = hub.tools(ToolFilter(apps = listOf("orders"), includeBuiltin = false))
+                }
+                t
+            }
+            val submit = tools.first { it.tool == "submit" }
+            assertEquals(false, submit.annotations.idempotentHint)
+            assertEquals(false, submit.annotations.readOnlyHint, "缺少的字段按 risk（write）推导")
+            assertEquals(outputSchema, submit.outputSchema)
+            assertEquals(null, tools.first { it.tool == "echo" }.outputSchema)
+
+            val out = hub.callTool("orders.submit")
+            assertEquals(null, out.error, out.toString())
+            assertEquals(ResultStatus.PENDING, out.status)
+            assertEquals("app-mcp://orders/order.state", out.stateResource)
+            assertEquals("已提交，等待付款", out.summary)
+            assertEquals(0.5, out.annotations?.priority)
+            assertEquals("RATE_LIMITED", hub.callTool("orders.submit").error?.kind)
+            val big = buildJsonObject { put("text", "x".repeat(100)) }
+            assertEquals("PAYLOAD_TOO_LARGE", hub.callTool("orders.echo", big).error?.kind)
+            val plain = hub.callTool("orders.echo", buildJsonObject { put("a", 1) })
+            assertEquals(null, plain.error, plain.toString())
+            assertEquals(ResultStatus.DONE, plain.status)
+
+            val st = hub.status()
+            assertEquals(1u, st.limits?.toolRatePerMinute)
+            assertEquals(64uL, st.limits?.maxArgumentsBytes)
+            assertEquals(600u, st.limits?.appRatePerMinute)
+            assertEquals(OutputValidation.REJECT, st.outputValidation)
+            val orders = st.apps.first { it.appId == "orders" }
+            assertEquals(1uL to 1uL, orders.rateLimited to orders.tooLarge)
+            val decl = orders.tools.first { it.name == "submit" }
+            assertEquals(Risk.WRITE, decl.risk)
+            assertEquals(false, decl.annotations?.idempotentHint)
+            assertEquals(false, decl.effective.readOnlyHint)
+            assertTrue(decl.outputSchema)
+        } finally {
+            app.close()
+            hub.close()
+        }
+    }
+
     @Test
     fun nativeAppOverIpc() = runBlocking {
         val windows = System.getProperty("os.name").lowercase().contains("windows")

@@ -29,8 +29,9 @@ use napi::bindgen_prelude::Unknown;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 use native::{
-    Activation, CancelReason, ClientKind, ErrorKind, HeartbeatMode, LifecycleMode, LifecyclePolicy, LogLevel, NativeError,
-    Residency, Risk, SleepReason, StateInfo, StateStatus, Visibility, WakeDescriptor, WakeKind, WakeReason,
+    Activation, Audience, CancelReason, ClientKind, ContentAnnotations, ErrorKind, HeartbeatMode, LifecycleMode,
+    LifecyclePolicy, LogLevel, NativeError, Residency, ResultStatus, Risk, SleepReason, StateInfo, StateStatus,
+    ToolAnnotations, Visibility, WakeDescriptor, WakeKind, WakeReason,
 };
 
 /// 本绑定抛出的错误：`status` 字符串成为 JS 错误的 `code`（napi-derive 按名称 `Result` 识别返回类型）。
@@ -120,7 +121,27 @@ fn parse_error_kind(s: &str) -> Result<ErrorKind, String> {
         "RESOURCE_NOT_FOUND" => ErrorKind::ResourceNotFound,
         "UNAUTHORIZED" => ErrorKind::Unauthorized,
         "UNSUPPORTED_PROTOCOL" => ErrorKind::UnsupportedProtocol,
+        "RATE_LIMITED" => ErrorKind::RateLimited,
+        "PAYLOAD_TOO_LARGE" => ErrorKind::PayloadTooLarge,
         other => return Err(invalid_arg(format!("未知的错误类别：{other:?}"))),
+    })
+}
+
+fn parse_result_status(s: &str) -> Result<ResultStatus, String> {
+    Ok(match s {
+        "done" => ResultStatus::Done,
+        "pending" => ResultStatus::Pending,
+        "partial" => ResultStatus::Partial,
+        "noop" => ResultStatus::Noop,
+        other => return Err(invalid_arg(format!("未知的 status：{other:?}"))),
+    })
+}
+
+fn parse_audience(s: &str) -> Result<Audience, String> {
+    Ok(match s {
+        "user" => Audience::User,
+        "assistant" => Audience::Assistant,
+        other => return Err(invalid_arg(format!("未知的 audience：{other:?}"))),
     })
 }
 
@@ -385,9 +406,93 @@ pub struct ToolSpecInit {
     pub activation: Option<String>,
     pub title: Option<String>,
     pub enabled: Option<bool>,
+    /// 标准 MCP 工具注解（与旧写法 `risk` 同时给出时声明的字段逐个优先）。
+    pub annotations: Option<ToolAnnotationsInit>,
+    /// 结果的 JSON Schema 文本（MCP `outputSchema`，根类型不限）。
+    pub output_schema_json: Option<String>,
+}
+
+/// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。
+#[napi(object)]
+pub struct ToolAnnotationsInit {
+    pub title: Option<String>,
+    pub read_only_hint: Option<bool>,
+    pub destructive_hint: Option<bool>,
+    pub idempotent_hint: Option<bool>,
+    pub open_world_hint: Option<bool>,
+}
+
+impl From<ToolAnnotationsInit> for ToolAnnotations {
+    fn from(a: ToolAnnotationsInit) -> Self {
+        ToolAnnotations {
+            title: a.title,
+            read_only_hint: a.read_only_hint,
+            destructive_hint: a.destructive_hint,
+            idempotent_hint: a.idempotent_hint,
+            open_world_hint: a.open_world_hint,
+        }
+    }
+}
+
+/// 标准 MCP 内容注解（调用结果的 `annotations`）。
+#[napi(object)]
+pub struct ContentAnnotationsInit {
+    /// `'user'` / `'assistant'`。
+    pub audience: Option<Vec<String>>,
+    /// 0（可选）到 1（必需）。
+    pub priority: Option<f64>,
+    /// ISO 8601。
+    pub last_modified: Option<String>,
+}
+
+impl ContentAnnotationsInit {
+    fn into_annotations(self) -> Result<ContentAnnotations, String> {
+        let audience = self
+            .audience
+            .map(|roles| roles.iter().map(|r| parse_audience(r)).collect::<Result<Vec<_>, String>>())
+            .transpose()?;
+        Ok(ContentAnnotations { audience, priority: self.priority, last_modified: self.last_modified })
+    }
+}
+
+/// 调用成功的完整结果（`Call.completeWith`）。缺省 = 无返回值、`done`。
+#[napi(object)]
+pub struct CallResultInit {
+    /// 返回值 JSON 文本；`null` / 省略表示无返回值。
+    pub data_json: Option<String>,
+    pub state_hints: Option<Vec<String>>,
+    /// `'done'`（缺省）/ `'pending'` / `'partial'` / `'noop'`。
+    pub status: Option<String>,
+    /// `pending` 时可读取后续状态的资源名。
+    pub state_resource: Option<String>,
+    /// 一句面向模型 / 用户的结论。
+    pub summary: Option<String>,
+    pub annotations: Option<ContentAnnotationsInit>,
+}
+
+impl CallResultInit {
+    fn into_result(self) -> Result<native::CallResult, String> {
+        Ok(native::CallResult {
+            data_json: self.data_json,
+            state_hints: self.state_hints.unwrap_or_default(),
+            status: self.status.as_deref().map(parse_result_status).transpose()?.unwrap_or_default(),
+            state_resource: self.state_resource,
+            summary: self.summary,
+            annotations: self.annotations.map(ContentAnnotationsInit::into_annotations).transpose()?,
+        })
+    }
 }
 
 impl ToolSpecInit {
+    /// 拆成定义与选项（选项中未给出的字段为 `None`）。
+    fn into_parts(mut self) -> Result<(native::ToolSpec, native::ToolOptions), String> {
+        let options = native::ToolOptions {
+            annotations: self.annotations.take().map(ToolAnnotations::from),
+            output_schema_json: self.output_schema_json.take(),
+        };
+        Ok((self.into_spec()?, options))
+    }
+
     fn into_spec(self) -> Result<native::ToolSpec, String> {
         let mut spec = native::ToolSpec::new(self.name, self.description);
         spec.input_schema_json = self.input_schema_json;
@@ -559,6 +664,12 @@ impl Call {
         self.inner.complete(data_json.as_deref(), state_hints.unwrap_or_default()).map_err(to_js_error)
     }
 
+    /// 成功完成，附带业务状态、摘要与内容标注（spec/protocol.md 3.2）。取值不合法时抛出 `INVALID_ARG`（调用仍未完成）。
+    #[napi]
+    pub fn complete_with(&self, result: CallResultInit) -> Result<(), String> {
+        self.inner.complete_with(result.into_result()?).map_err(to_js_error)
+    }
+
     /// 失败完成。`kind` 为协议错误类别（如 `'HANDLER_ERROR'`）。
     #[napi]
     pub fn fail(&self, kind: String, message: String) -> Result<(), String> {
@@ -635,10 +746,18 @@ impl Tool {
         self.inner.name()
     }
 
-    /// 整体替换定义（`spec.name` 被忽略）。
+    /// 整体替换定义（`spec.name` 被忽略）。`annotations` / `outputSchemaJson` 被忽略、已声明的保持不变
+    /// （旧行为；要一并替换用 `updateWith`）。
     #[napi]
     pub fn update(&self, spec: ToolSpecInit) -> Result<(), String> {
         self.inner.update(spec.into_spec()?).map_err(to_js_error)
+    }
+
+    /// 整体替换定义与选项（`spec.name` 被忽略）：`annotations` / `outputSchemaJson` 未给出表示清除该声明。
+    #[napi]
+    pub fn update_with(&self, spec: ToolSpecInit) -> Result<(), String> {
+        let (spec, options) = spec.into_parts()?;
+        self.inner.update_with(spec, options).map_err(to_js_error)
     }
 
     #[napi]
@@ -686,9 +805,11 @@ pub struct Scope {
 impl Scope {
     #[napi]
     pub fn register_tool(&self, spec: ToolSpecInit, handler: WeakTsfn<Call>) -> Result<Tool, String> {
-        let spec = spec.into_spec()?;
-        let inner =
-            self.inner.register_tool(spec, Arc::new(JsToolHandler { tsfn: handler })).map_err(to_js_error)?;
+        let (spec, options) = spec.into_parts()?;
+        let inner = self
+            .inner
+            .register_tool_with(spec, options, Arc::new(JsToolHandler { tsfn: handler }))
+            .map_err(to_js_error)?;
         Ok(Tool { inner })
     }
 
@@ -855,9 +976,11 @@ impl JsNativeClient {
 
     #[napi]
     pub fn register_tool(&self, spec: ToolSpecInit, handler: WeakTsfn<Call>) -> Result<Tool, String> {
-        let spec = spec.into_spec()?;
-        let inner =
-            self.inner.register_tool(spec, Arc::new(JsToolHandler { tsfn: handler })).map_err(to_js_error)?;
+        let (spec, options) = spec.into_parts()?;
+        let inner = self
+            .inner
+            .register_tool_with(spec, options, Arc::new(JsToolHandler { tsfn: handler }))
+            .map_err(to_js_error)?;
         Ok(Tool { inner })
     }
 

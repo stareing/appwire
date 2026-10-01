@@ -101,6 +101,29 @@ internal struct AmToolSpec
     public byte Enabled; // C bool
 }
 
+/// <summary>v9：am_tool_register_ex / am_tool_update_ex 的工具选项。StructSize = sizeof(AmToolOptions)。</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct AmToolOptions
+{
+    public uint StructSize;
+    public nint AnnotationsJson;  // MCP 工具注解 JSON；0 = 未声明
+    public nint OutputSchemaJson; // MCP outputSchema；0 = 未声明
+}
+
+/// <summary>v9：am_call_complete_ex 的调用结果。StructSize = sizeof(AmCallResult)。</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct AmCallResult
+{
+    public uint StructSize;
+    public nint DataJson;         // 0 = null
+    public nint StateHints;       // const char* const*
+    public nuint StateHintsLen;
+    public int Status;            // AmResultStatus
+    public nint StateResource;
+    public nint Summary;
+    public nint AnnotationsJson;  // MCP 内容注解 JSON；0 = 无
+}
+
 [StructLayout(LayoutKind.Sequential)]
 internal struct AmResourceSpec
 {
@@ -152,6 +175,9 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport(Lib)] internal static partial AmStatus am_tool_register(ScopeSafeHandle scope, AmToolSpec* spec, nint handler, nint userData, nint freeUserData, out nint tool);
     [LibraryImport(Lib)] internal static partial AmStatus am_tool_update(ToolSafeHandle tool, AmToolSpec* spec);
+    // v9
+    [LibraryImport(Lib)] internal static partial AmStatus am_tool_register_ex(ScopeSafeHandle scope, AmToolSpec* spec, AmToolOptions* options, nint handler, nint userData, nint freeUserData, out nint tool);
+    [LibraryImport(Lib)] internal static partial AmStatus am_tool_update_ex(ToolSafeHandle tool, AmToolSpec* spec, AmToolOptions* options);
     [LibraryImport(Lib)] internal static partial AmStatus am_tool_set_enabled(ToolSafeHandle tool, [MarshalAs(UnmanagedType.U1)] bool enabled);
     [LibraryImport(Lib)] internal static partial AmStatus am_tool_dispose(ToolSafeHandle tool);
     [LibraryImport(Lib)] internal static partial void am_tool_free(nint tool);
@@ -167,6 +193,7 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)] [return: MarshalAs(UnmanagedType.U1)] internal static partial bool am_call_is_cancelled(nint call);
     [LibraryImport(Lib)] internal static partial AmStatus am_call_set_cancel_callback(nint call, nint onCancel, nint userData, nint freeUserData);
     [LibraryImport(Lib)] internal static partial AmStatus am_call_complete(nint call, byte* dataJson, byte** stateHints, nuint stateHintsLen);
+    [LibraryImport(Lib)] internal static partial AmStatus am_call_complete_ex(nint call, AmCallResult* result);
     [LibraryImport(Lib)] internal static partial AmStatus am_call_fail(nint call, byte* kind, byte* message);
     [LibraryImport(Lib)] internal static partial AmStatus am_call_fail_with_details(nint call, byte* kind, byte* message, byte* detailsJson);
     [LibraryImport(Lib)] internal static partial AmStatus am_call_hold(nint call, out nint hold);

@@ -2,7 +2,7 @@
  * 运行时安全的定义辅助：静态工具定义（不含 handler）与 App 总览。本模块不依赖 Node 或 Vite，可以在浏览器运行时代码中导入
  * （`@app-mcp/build/define`），用同一份定义注册带 handler 的工具，保证静态清单与运行时一致。
  */
-import type { Activation, InputDefinition, Risk } from '@app-mcp/web'
+import type { Activation, InputDefinition, OutputDefinition, Risk, ToolAnnotations } from '@app-mcp/web'
 
 export interface StaticToolDefinition<I = unknown> {
   /** 工具名，`[a-zA-Z0-9_.-]{1,64}`，不含 appId。 */
@@ -11,8 +11,12 @@ export interface StaticToolDefinition<I = unknown> {
   title?: string
   /** JSON Schema、zod v4 schema 或带 `toJSONSchema()` 的对象；缺省为无参数。 */
   input?: InputDefinition<I>
-  /** 缺省 'write'。 */
+  /** 旧写法：缺省 'write'。新代码优先用 `annotations`。 */
   risk?: Risk
+  /** 标准 MCP 工具注解。 */
+  annotations?: ToolAnnotations
+  /** 结果的 schema（MCP `outputSchema`）：JSON Schema、zod v4 schema（按输出形态转换）或带 `toJSONSchema()` 的对象。 */
+  outputSchema?: OutputDefinition<unknown>
   activation?: Activation
 }
 

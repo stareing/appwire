@@ -31,6 +31,7 @@ use crate::format::{self, NameCodec, ToolFormat};
 use crate::http_server::{Health, HttpOptions, Router, Transport};
 use crate::instance::Instance;
 use crate::lease::{LeaseBook, LeasePolicy};
+use crate::limits::{LimitOverrides, LimitPolicy, OutputValidation, RateBook};
 #[cfg(feature = "mcp-server")]
 use crate::mcp::McpSession;
 use crate::origin::OriginPolicy;
@@ -158,6 +159,11 @@ pub struct HubConfig {
     pub tool_exposure: ToolExposure,
     /// `Auto` 的阈值：App 与上游工具（不含内置工具）总数**超过**此值时按渐进暴露。默认 40。
     pub tool_exposure_threshold: usize,
+    /// 资源保护（spec/hub-api.md 3.11）：按（App, 工具）与按 App 的调用频率上限、参数 / 结果 / 资源内容的大小上限。
+    /// 超出返回 `RATE_LIMITED` / `PAYLOAD_TOO_LARGE`。默认值宽松（[`LimitPolicy::default`]）。
+    pub limits: LimitPolicy,
+    /// App 结果与其声明的 `outputSchema` 不符时的处理（第 19 项 R2）。默认只记日志，不拒绝。
+    pub output_validation: OutputValidation,
 }
 
 /// [`HubConfig::tool_exposure_threshold`] 的默认值。
@@ -205,6 +211,8 @@ impl Default for HubConfig {
             waker: WakerConfig::System,
             tool_exposure: ToolExposure::Auto,
             tool_exposure_threshold: DEFAULT_TOOL_EXPOSURE_THRESHOLD,
+            limits: LimitPolicy::default(),
+            output_validation: OutputValidation::default(),
         }
     }
 }
@@ -277,6 +285,8 @@ pub struct HubShared {
     pub(crate) leases: Mutex<LeaseBook>,
     /// 请求活动 / 默认租约变化时唤醒空闲收回任务。
     pub(crate) lease_changed: Notify,
+    /// 调用限流状态与每 App 的拒绝计数（spec/hub-api.md 3.11）。
+    pub(crate) rates: Mutex<RateBook>,
 }
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -333,6 +343,7 @@ impl HubShared {
             power: Mutex::new(crate::power::PowerBook::default()),
             leases: Mutex::new(LeaseBook::default()),
             lease_changed: Notify::new(),
+            rates: Mutex::new(RateBook::default()),
         }
     }
 
@@ -398,6 +409,8 @@ impl HubShared {
         let infos = self.registry().app_infos(&HashMap::new());
         let now = tokio::time::Instant::now();
         let leased = self.leased_connections(now);
+        let mut declarations = self.tool_declarations();
+        let limit_counts = |app_id: &str| lock(&self.rates).counters(app_id);
         let mut apps: Vec<AppStatus> = infos
             .into_iter()
             .map(|a| {
@@ -437,9 +450,13 @@ impl HubShared {
                 } else {
                     AppState::Dormant
                 };
+                let counts = limit_counts(&a.app_id);
                 AppStatus {
                     last_error: last_errors.get(&a.app_id).cloned(),
                     wakes: lock(&self.power).app_wakes(&a.app_id),
+                    rate_limited: counts.rate_limited,
+                    too_large: counts.too_large,
+                    tools: declarations.remove(&a.app_id).unwrap_or_default(),
                     app_id: a.app_id,
                     name: a.name,
                     kind: AppKind::App,
@@ -456,6 +473,9 @@ impl HubShared {
             instances: Vec::new(),
             last_error: st.last_error.as_ref().map(|m| LastError { code: None, message: m.clone(), at_ms: 0 }),
             wakes: 0,
+            rate_limited: limit_counts(name).rate_limited,
+            too_large: limit_counts(name).too_large,
+            tools: declarations.remove(name).unwrap_or_default(),
         }));
         // 只出现过错误（如握手被拒）、从未登记的 App 也列出，便于诊断。
         for (app_id, err) in &last_errors {
@@ -468,6 +488,9 @@ impl HubShared {
                     instances: Vec::new(),
                     last_error: Some(err.clone()),
                     wakes: lock(&self.power).app_wakes(app_id),
+                    rate_limited: limit_counts(app_id).rate_limited,
+                    too_large: limit_counts(app_id).too_large,
+                    tools: Vec::new(),
                 });
             }
         }
@@ -487,7 +510,21 @@ impl HubShared {
             apps,
             reports,
             lease: Some(lock(&self.leases).status(&self.config.lease, self.config.lease_ttl)),
+            limits: Some(LimitOverrides::from_policy(&self.config.limits)),
+            output_validation: Some(self.config.output_validation),
         }
+    }
+
+    /// 各 App（含上游）的工具声明（`/status` 的 `tools`）。
+    fn tool_declarations(&self) -> HashMap<String, Vec<crate::types::ToolDeclaration>> {
+        let mut out: HashMap<String, Vec<crate::types::ToolDeclaration>> = HashMap::new();
+        for t in self.registry().tools() {
+            out.entry(t.app_id.clone()).or_default().push(call::tool_declaration(&t.info));
+        }
+        for (name, st) in lock(&self.upstreams).iter() {
+            out.entry(name.clone()).or_default().extend(st.tools.iter().map(call::upstream_tool_declaration));
+        }
+        out
     }
 
     pub(crate) fn emit(&self, ev: HubEvent) {
@@ -1233,6 +1270,7 @@ impl Hub {
         config
             .lease
             .validate()
+            .and_then(|()| config.limits.validate())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         // 锁先于任何监听：并发启动的两个 Host 只有一个能走到绑定。
         let instance = config.run_dir.as_deref().map(Instance::acquire).transpose()?;
@@ -1433,6 +1471,7 @@ impl Hub {
                 description: r.info.description,
                 mime_type: r.info.mime_type,
                 available: r.available,
+                annotations: r.info.annotations,
             })
             .collect();
         for (name, st) in lock(&self.shared.upstreams).iter() {
@@ -1444,6 +1483,7 @@ impl Hub {
                     description: r.description.clone().unwrap_or_default(),
                     mime_type: r.mime_type.clone(),
                     available: true,
+                    annotations: r.annotations.as_ref().map(crate::mcp_convert::from_mcp_content_annotations),
                 });
             }
         }

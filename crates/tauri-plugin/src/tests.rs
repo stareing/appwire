@@ -267,6 +267,143 @@ async fn page_tool_roundtrip_with_rust_tool() {
     shutdown(fx.hub).await;
 }
 
+fn hub_tool(hub: &Hub, name: &str) -> Option<app_mcp_hub::HubTool> {
+    hub.tools(&ToolFilter::default())
+        .into_iter()
+        .find(|t| t.name == name)
+}
+
+/// 第 14 项 S1 / 第 19 项 R1–R3：页面与 Rust 工具的注解、输出 schema 与结构化结果经桥接到达 Hub。
+#[tokio::test(flavor = "multi_thread")]
+async fn annotations_output_schema_and_structured_results() {
+    let fx = Fixture::new("annot", None).await;
+    let page = Arc::new(FakePage::default());
+    fx.op(&page, "main", "main", json!({ "op": "hello" }));
+    let spec = json!({
+        "description": "下单", "risk": "write",
+        "annotations": { "title": "下单", "idempotentHint": true, "openWorldHint": true },
+        "outputSchema": { "type": "object", "properties": { "orderId": { "type": "string" } } }
+    });
+    let reply = fx.op(
+        &page,
+        "main",
+        "main",
+        json!({ "op": "tool.register", "id": 1, "name": "page.order", "spec": spec }),
+    );
+    assert_eq!(reply, json!({ "ok": true }));
+
+    struct Native;
+    impl ToolHandler for Native {
+        fn invoke(&self, call: CallHandle) {
+            let _ = call.complete_with(CallResult {
+                summary: Some("没有需要清理的项".to_owned()),
+                status: ResultStatus::Noop,
+                ..CallResult::default()
+            });
+        }
+    }
+    fx.bridge
+        .client()
+        .register_tool_with(
+            ToolSpec::new("app.clean", "清理"),
+            ToolOptions {
+                annotations: Some(ToolAnnotations {
+                    destructive_hint: Some(true),
+                    ..ToolAnnotations::default()
+                }),
+                output_schema_json: Some(r#"{"type":"array"}"#.to_owned()),
+            },
+            Arc::new(Native),
+        )
+        .expect("注册 Rust 工具");
+    fx.connected("annot").await;
+    eventually("Hub 看到两个工具", || tool_names(&fx.hub, "annot").len() == 2).await;
+
+    let page_tool = hub_tool(&fx.hub, "annot.page.order").expect("页面工具");
+    assert_eq!(page_tool.annotations.idempotent_hint, Some(true));
+    assert_eq!(page_tool.annotations.open_world_hint, Some(true));
+    assert_eq!(page_tool.annotations.title.as_deref(), Some("下单"));
+    assert_eq!(page_tool.annotations.read_only_hint, Some(false), "缺少的字段按 risk 推导");
+    assert_eq!(
+        page_tool.output_schema,
+        Some(json!({ "type": "object", "properties": { "orderId": { "type": "string" } } }))
+    );
+    let rust_tool = hub_tool(&fx.hub, "annot.app.clean").expect("Rust 工具");
+    assert_eq!(rust_tool.annotations.destructive_hint, Some(true));
+    assert_eq!(rust_tool.output_schema, Some(json!({ "type": "array" })));
+
+    // 结构化结果：pending + stateResource + summary + 内容注解。
+    let hub = fx.hub.clone();
+    let pending = tokio::spawn(async move {
+        hub.call_tool(CallRequest::new("annot.page.order", json!({})))
+            .await
+    });
+    let call = wait_event(&page, "call").await;
+    let reply = fx.op(
+        &page,
+        "main",
+        "main",
+        json!({
+            "op": "call.result", "callId": call["callId"], "ok": true, "data": { "orderId": "o1" },
+            "status": "pending", "stateResource": "order.state", "summary": "已提交，等待用户确认",
+            "annotations": { "audience": ["user"], "priority": 0.8 }
+        }),
+    );
+    assert_eq!(reply["ok"], true);
+    let out = pending.await.expect("join").expect("调用");
+    assert_eq!(out.result.expect("成功")["orderId"], "o1");
+    assert_eq!(out.status, ResultStatus::Pending);
+    assert_eq!(out.summary.as_deref(), Some("已提交，等待用户确认"));
+    assert!(
+        out.state_resource.as_deref().is_some_and(|r| r.ends_with("order.state")),
+        "{:?}",
+        out.state_resource
+    );
+    let ann = out.annotations.expect("内容注解");
+    assert_eq!(ann.audience, Some(vec![Audience::User]));
+    assert_eq!(ann.priority, Some(0.8));
+
+    let native = fx
+        .hub
+        .call_tool(CallRequest::new("annot.app.clean", json!({})))
+        .await
+        .expect("调用 Rust 工具");
+    assert_eq!(native.status, ResultStatus::Noop);
+    assert_eq!(native.summary.as_deref(), Some("没有需要清理的项"));
+
+    // 取值不合法的 status：调用以 HANDLER_ERROR 结束，页面收到 INVALID_RESULT。
+    let hub = fx.hub.clone();
+    let pending = tokio::spawn(async move {
+        hub.call_tool(CallRequest::new("annot.page.order", json!({})))
+            .await
+    });
+    let call = wait_event(&page, "call").await;
+    let reply = fx.op(
+        &page,
+        "main",
+        "main",
+        json!({ "op": "call.result", "callId": call["callId"], "ok": true, "data": 1, "status": "bogus" }),
+    );
+    assert_eq!(reply["code"], "INVALID_RESULT");
+    let err = pending.await.expect("join").expect("调用").result.expect_err("失败");
+    assert_eq!(err.kind, ErrorKind::HandlerError);
+
+    // 整体更新（页面发送完整定义）：缺少 annotations / outputSchema 即清除声明。
+    fx.op(
+        &page,
+        "main",
+        "main",
+        json!({ "op": "tool.update", "id": 1, "spec": { "description": "下单", "risk": "read" } }),
+    );
+    eventually("Hub 看到注解被清除", || {
+        hub_tool(&fx.hub, "annot.page.order")
+            .is_some_and(|t| t.output_schema.is_none() && t.annotations.idempotent_hint.is_none())
+    })
+    .await;
+    fx.bridge.client().stop();
+    shutdown(fx.hub).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn connection_id_reaches_page_and_bridge_drop_stops_client() {
     let fx = Fixture::new("cid", None).await;

@@ -109,4 +109,69 @@ class IntegrationTest {
         )
         assertTrue(threads.isNotEmpty() && threads[0].startsWith("DefaultDispatcher"), threads.toString())
     }
+
+    /** 工具注解 + outputSchema 到达 Host；结构化结果（pending + stateResource + summary + 内容标注）原样回给 Host。 */
+    @Test
+    fun toolOptionsAndStructuredResultReachHost() {
+        val host = ProcessBuilder(
+            fakeHost().path,
+            "--tool-info",
+            "--invoke", "order.submit",
+            "--invoke", "plain",
+            "--timeout-ms", "15000",
+        ).redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        val out = host.inputStream.bufferedReader()
+        val first = out.readLine() ?: fail("fake_host 没有输出")
+        val addr = first.removePrefix("LISTENING ").trim()
+
+        val client = AppMcp.create(AppMcpConfig("kotlin-it", "Kotlin 集成测试", hostUrl = "ws://$addr"))
+        val outputSchema = Json.parseToJsonElement(
+            """{"type":"object","properties":{"orderId":{"type":"string"}}}""",
+        ).jsonObject
+        client.tool(
+            "order.submit", "下单",
+            annotations = ToolAnnotations(idempotentHint = false, openWorldHint = true),
+            outputSchema = outputSchema,
+        ) { _, _ ->
+            ToolResult(
+                JsonObject(mapOf("orderId" to JsonPrimitive("o1"))),
+                status = ResultStatus.PENDING,
+                stateResource = "order.state",
+                summary = "已提交，等待用户在 App 内付款",
+                annotations = ContentAnnotations(audience = listOf(Audience.USER), priority = 0.5),
+            )
+        }
+        client.tool("plain", "普通返回值", risk = Risk.READ) { _, _ -> mapOf("ok" to true) }
+
+        val lines = try {
+            client.start()
+            val text = out.readText()
+            assertTrue(host.waitFor(30, TimeUnit.SECONDS), "fake_host 未退出")
+            assertEquals(0, host.exitValue(), "fake_host 退出码非 0，输出：\n$text")
+            text.lines().filter { it.isNotBlank() }.map { Json.parseToJsonElement(it).jsonObject }
+        } finally {
+            client.close()
+            host.destroy()
+        }
+
+        val info = lines[0]["toolInfo"]!!.jsonObject
+        assertEquals(
+            Json.parseToJsonElement(
+                """{"risk":"write","annotations":{"idempotentHint":false,"openWorldHint":true},"outputSchema":$outputSchema}""",
+            ),
+            info["order.submit"],
+        )
+        assertEquals(Json.parseToJsonElement("""{"risk":"read"}"""), info["plain"])
+
+        val results = lines.drop(1).associateBy { it["name"]!!.jsonPrimitive.content }
+        assertEquals(
+            Json.parseToJsonElement(
+                """{"data":{"orderId":"o1"},"status":"pending","stateResource":"order.state",
+                   "summary":"已提交，等待用户在 App 内付款","annotations":{"audience":["user"],"priority":0.5}}""",
+            ),
+            results["order.submit"]!!["result"],
+        )
+        // 普通返回值：只有 data（status 缺省 done 不序列化）
+        assertEquals(Json.parseToJsonElement("""{"data":{"ok":true}}"""), results["plain"]!!["result"])
+    }
 }

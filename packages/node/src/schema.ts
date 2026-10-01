@@ -7,7 +7,7 @@
  * - 普通 JSON Schema 对象：原样使用。
  */
 
-import type { InputDefinition } from './types.js'
+import type { InputDefinition, OutputDefinition } from './types.js'
 
 export interface ResolvedInput {
   /** JSON Schema 文本；`undefined` 表示无参数。 */
@@ -26,8 +26,10 @@ interface ZodModuleLike {
   toJSONSchema(schema: unknown, params?: Record<string, unknown>): unknown
 }
 
-/** zod 转 JSON Schema 时使用输入侧类型（默认值、transform 前的形状）。 */
-const ZOD_JSON_SCHEMA_PARAMS = { io: 'input', unrepresentable: 'any' } as const
+type SchemaIo = 'input' | 'output'
+
+/** zod 转 JSON Schema 的参数：输入 schema 用输入侧类型（默认值、transform 前的形状），输出 schema 用输出侧类型。 */
+const zodParams = (io: SchemaIo) => ({ io, unrepresentable: 'any' }) as const
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -42,6 +44,32 @@ function toSchemaJson(schema: unknown): string {
     throw new TypeError('工具的 input schema 顶层 type 必须为 "object"')
   }
   return JSON.stringify(schema)
+}
+
+/** 输出 schema 只要求是 JSON 对象（根类型不限）。 */
+function toOutputSchemaJson(schema: unknown): string {
+  if (!isObject(schema) || Array.isArray(schema)) throw new TypeError('工具的 outputSchema 必须是 JSON 对象')
+  return JSON.stringify(schema)
+}
+
+/** zod schema → JSON Schema 值（同步可得时直接返回）。顺序与 @app-mcp/web 相同：Standard JSON Schema → 实例方法 → `z.toJSONSchema`。 */
+function zodToJsonSchema(schema: ZodSchemaLike, io: SchemaIo): unknown {
+  const std = (schema as { '~standard'?: { jsonSchema?: Partial<Record<SchemaIo, (o: { target: string }) => unknown>> } })[
+    '~standard'
+  ]?.jsonSchema?.[io]
+  if (typeof std === 'function') return std({ target: 'draft-2020-12' })
+  if (typeof schema.toJSONSchema === 'function') return schema.toJSONSchema(zodParams(io))
+  return importZod().then(
+    (z) => z.toJSONSchema(schema, zodParams(io)),
+    (error: unknown) => {
+      throw new TypeError(`无法加载 zod 以转换 ${io} schema：${String(error)}`)
+    },
+  )
+}
+
+/** 同步值或 Promise 统一做后续转换。 */
+function then<T, R>(value: unknown, map: (v: unknown) => R): R | Promise<R> {
+  return value instanceof Promise ? (value.then(map) as Promise<R>) : map(value as T)
 }
 
 /** 可替换的 zod 加载器（测试用）。 */
@@ -64,27 +92,25 @@ export function resolveInput(input: InputDefinition<unknown> | undefined): Resol
   if (input === undefined) return { schemaJson: undefined }
   if (isZodSchema(input)) {
     const parse = (value: unknown) => input.parse(value)
-    // Standard JSON Schema（zod ≥ 4.2）：与 @app-mcp/web 相同的优先顺序。
-    const std = (input as { '~standard'?: { jsonSchema?: { input?: (o: { target: string }) => unknown } } })[
-      '~standard'
-    ]?.jsonSchema
-    if (std && typeof std.input === 'function') {
-      return { schemaJson: toSchemaJson(std.input({ target: 'draft-2020-12' })), parse }
-    }
-    if (typeof input.toJSONSchema === 'function') {
-      return { schemaJson: toSchemaJson(input.toJSONSchema(ZOD_JSON_SCHEMA_PARAMS)), parse }
-    }
-    return importZod().then(
-      (z) => ({ schemaJson: toSchemaJson(z.toJSONSchema(input, ZOD_JSON_SCHEMA_PARAMS)), parse }),
-      (error: unknown) => {
-        throw new TypeError(`无法加载 zod 以转换 input schema：${String(error)}`)
-      },
-    )
+    return then(zodToJsonSchema(input, 'input'), (schema) => ({ schemaJson: toSchemaJson(schema), parse }))
   }
   if (isObject(input) && typeof input.toJSONSchema === 'function') {
     return { schemaJson: toSchemaJson((input.toJSONSchema as () => unknown)()) }
   }
   return { schemaJson: toSchemaJson(input) }
+}
+
+/**
+ * 解析输出定义（MCP `outputSchema`）→ JSON Schema 文本；`undefined` 表示未声明。zod 按输出形态转换、不做校验。
+ * 同步 / 异步与失败方式同 {@link resolveInput}。
+ */
+export function resolveOutput(output: OutputDefinition<unknown> | undefined): string | undefined | Promise<string> {
+  if (output === undefined) return undefined
+  if (isZodSchema(output)) return then(zodToJsonSchema(output, 'output'), toOutputSchemaJson)
+  if (isObject(output) && typeof output.toJSONSchema === 'function') {
+    return toOutputSchemaJson((output.toJSONSchema as () => unknown)())
+  }
+  return toOutputSchemaJson(output)
 }
 
 /** zod 校验失败的简要说明与详情（与 @app-mcp/web 的格式一致：`details.issues` 为 `{ path, message }[]`）。 */

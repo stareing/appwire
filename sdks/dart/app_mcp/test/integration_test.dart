@@ -183,6 +183,70 @@ void main() {
     }
   }, skip: skip, timeout: const Timeout(Duration(seconds: 60)));
 
+  test('工具注解 + outputSchema 到达 Host；结构化结果与普通返回值（回归）', () async {
+    final host = await FakeHost.start([
+      '--tool-info',
+      '--invoke', 'order.submit',
+      '--invoke', 'plain',
+      '--timeout-ms', '15000',
+    ]);
+    final client = AppMcp(
+      appId: 'dart-result',
+      appName: 'Dart Result',
+      hostUrl: 'ws://${host.addr}',
+      libraryPath: nativePath,
+    );
+    client.tool('order.submit',
+        description: '下单',
+        annotations: const ToolAnnotations(idempotentHint: false, openWorldHint: true),
+        outputSchema: {
+          'type': 'object',
+          'properties': {
+            'orderId': {'type': 'string'}
+          }
+        },
+        handler: (args, ctx) => const ToolResult({'orderId': 'o1'},
+            status: ToolResultStatus.pending,
+            stateResource: 'order.state',
+            summary: '已提交，等待用户在 App 内付款',
+            annotations: ContentAnnotations(priority: 0.5)));
+    client.tool('plain', description: '普通', risk: Risk.read, handler: (args, ctx) => {'ok': true});
+    client.start();
+    try {
+      final tools = await host.nextJson();
+      expect(tools['type'], 'tools');
+      final info = tools['toolInfo'] as Map;
+      expect(info['order.submit'], {
+        'risk': 'write',
+        'annotations': {'idempotentHint': false, 'openWorldHint': true},
+        'outputSchema': {
+          'type': 'object',
+          'properties': {
+            'orderId': {'type': 'string'}
+          }
+        },
+      });
+      expect(info['plain'], {'risk': 'read'});
+
+      final submit = await host.nextJson();
+      expect(submit['result'], {
+        'data': {'orderId': 'o1'},
+        'status': 'pending',
+        'stateResource': 'order.state',
+        'summary': '已提交，等待用户在 App 内付款',
+        'annotations': {'priority': 0.5},
+      });
+      final plain = await host.nextJson();
+      expect(plain['result'], {
+        'data': {'ok': true}
+      });
+      expect(await host.process.exitCode.timeout(const Duration(seconds: 10)), 0);
+    } finally {
+      host.process.kill();
+      client.dispose();
+    }
+  }, skip: skip, timeout: const Timeout(Duration(seconds: 60)));
+
   test('经本地 IPC 正向连接（Windows 每进程命名管道 / 临时目录 Unix 套接字）：连接、connectionId、调用', () async {
     // @why 不用平台默认端点：常驻 Host 可能正在用。
     final Directory? dir =

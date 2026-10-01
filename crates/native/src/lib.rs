@@ -28,8 +28,9 @@
 use std::sync::Arc;
 
 pub use app_mcp_core::{
-    Activation, AppOverview, ClientKind, HeartbeatMode, LifecycleMode, LifecyclePolicy, Residency, Risk, SleepReason,
-    TransportKind, Visibility, WakeDescriptor, WakeKind, WakeReason, parse_wake_token,
+    Activation, AppOverview, Audience, ClientKind, ContentAnnotations, HeartbeatMode, LifecycleMode, LifecyclePolicy,
+    Residency, ResultStatus, Risk, SleepReason, ToolAnnotations, TransportKind, Visibility, WakeDescriptor, WakeKind,
+    WakeReason, parse_wake_token,
 };
 pub use app_mcp_protocol::{ConnectionErrorCode, ErrorKind};
 
@@ -130,6 +131,34 @@ pub struct ResourceSpec {
     pub name: String,
     pub description: String,
     pub mime_type: Option<String>,
+}
+
+/// 工具的附加选项（`register_tool_with` / [`ToolHandle::update_with`]，spec/protocol.md 第 3 节）。
+///
+/// @compat 不放进 [`ToolSpec`]：给结构体加字段会破坏现有绑定与 App 的结构体字面量；以后的工具选项都加在这里。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToolOptions {
+    /// 标准 MCP 工具注解，原样转发给 Agent；`None` = 未声明（Hub 按 `risk` 推导）。
+    pub annotations: Option<ToolAnnotations>,
+    /// 结果的 JSON Schema 文本（MCP `outputSchema`）；`None` = 未声明。
+    pub output_schema_json: Option<String>,
+}
+
+/// 调用成功的完整结果（[`CallHandle::complete_with`]，spec/protocol.md 3.2）。`Default` = 无返回值、`done`。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CallResult {
+    /// 返回值 JSON 文本；`None` 表示无返回值（`null`，Hub 对模型输出"已完成"）。
+    pub data_json: Option<String>,
+    /// 调用后内容可能已变化的资源名。
+    pub state_hints: Vec<String>,
+    /// 业务状态：`Pending`（已受理、待 App 内确认或异步完成）/ `Partial` / `Noop`；缺省 `Done`。
+    pub status: ResultStatus,
+    /// `Pending` 时可读取后续状态的资源名。
+    pub state_resource: Option<String>,
+    /// 一句面向模型 / 用户的结论。
+    pub summary: Option<String>,
+    /// 结果内容的标注（MCP 内容注解），Hub 原样转发。
+    pub annotations: Option<ContentAnnotations>,
 }
 
 /// 资源的附加选项（`register_resource_with`）。
@@ -282,13 +311,29 @@ impl CallHandle {
         data_json: Option<&str>,
         state_hints: Vec<String>,
     ) -> Result<(), NativeError> {
-        let data = match data_json {
+        self.complete_with(CallResult {
+            data_json: data_json.map(str::to_owned),
+            state_hints,
+            ..CallResult::default()
+        })
+    }
+    /// 成功完成，附带业务状态、摘要与内容标注（spec/protocol.md 3.2）。非法 JSON 返回
+    /// [`NativeError::InvalidJson`]（调用仍未完成）。
+    pub fn complete_with(&self, result: CallResult) -> Result<(), NativeError> {
+        let data = match result.data_json.as_deref() {
             None => Value::Null,
             Some(text) => {
                 serde_json::from_str(text).map_err(|e| NativeError::InvalidJson(e.to_string()))?
             }
         };
-        self.inner.finish(Ok(CallOutput { data, state_hints }))
+        self.inner.finish(Ok(CallOutput {
+            data,
+            state_hints: result.state_hints,
+            annotations: result.annotations,
+            status: result.status,
+            state_resource: result.state_resource,
+            summary: result.summary,
+        }))
     }
     /// 失败完成。
     pub fn fail(&self, kind: ErrorKind, message: &str) -> Result<(), NativeError> {
@@ -384,16 +429,17 @@ impl ToolHandle {
     pub fn name(&self) -> String {
         self.inner.name.clone()
     }
-    /// 用新定义整体替换（名称不可变，`spec.name` 被忽略）。
+    /// 用新定义整体替换（名称不可变，`spec.name` 被忽略）。已声明的 [`ToolOptions`] 保持不变。
     pub fn update(&self, spec: ToolSpec) -> Result<(), NativeError> {
-        let input_schema = parse_schema(spec.input_schema_json.as_deref())?;
+        self.apply(spec_update(spec)?)
+    }
+    /// 用新定义与选项整体替换（选项中的 `None` 表示清除该声明）。
+    pub fn update_with(&self, spec: ToolSpec, options: ToolOptions) -> Result<(), NativeError> {
+        let output_schema = parse_output_schema(options.output_schema_json.as_deref())?;
         self.apply(ToolUpdate {
-            description: Some(spec.description),
-            input_schema: Some(input_schema),
-            risk: Some(spec.risk),
-            activation: Some(spec.activation),
-            title: Some(spec.title),
-            enabled: Some(spec.enabled),
+            annotations: Some(options.annotations),
+            output_schema: Some(output_schema),
+            ..spec_update(spec)?
         })
     }
     pub fn set_enabled(&self, enabled: bool) -> Result<(), NativeError> {
@@ -491,10 +537,19 @@ impl ScopeHandle {
         spec: ToolSpec,
         handler: Arc<dyn ToolHandler>,
     ) -> Result<ToolHandle, NativeError> {
+        self.register_tool_with(spec, ToolOptions::default(), handler)
+    }
+    /// 同 [`ScopeHandle::register_tool`]，另带工具选项（MCP 注解、输出 schema）。
+    pub fn register_tool_with(
+        &self,
+        spec: ToolSpec,
+        options: ToolOptions,
+        handler: Arc<dyn ToolHandler>,
+    ) -> Result<ToolHandle, NativeError> {
         self.check()?;
         self.inner
             .shared
-            .register_tool(Some(self.inner.id), spec, handler)
+            .register_tool(Some(self.inner.id), spec, options, handler)
     }
     pub fn register_resource(
         &self,
@@ -654,7 +709,16 @@ impl NativeClient {
         spec: ToolSpec,
         handler: Arc<dyn ToolHandler>,
     ) -> Result<ToolHandle, NativeError> {
-        self.owner.shared.register_tool(None, spec, handler)
+        self.register_tool_with(spec, ToolOptions::default(), handler)
+    }
+    /// 同 [`NativeClient::register_tool`]，另带工具选项（MCP 注解、输出 schema，spec/protocol.md 第 3 节）。
+    pub fn register_tool_with(
+        &self,
+        spec: ToolSpec,
+        options: ToolOptions,
+        handler: Arc<dyn ToolHandler>,
+    ) -> Result<ToolHandle, NativeError> {
+        self.owner.shared.register_tool(None, spec, options, handler)
     }
     pub fn register_resource(
         &self,
@@ -877,6 +941,27 @@ fn core_error(e: CoreError) -> NativeError {
 }
 
 /// 解析 inputSchema 文本；`None` 表示无参数。`type: object` 由核心校验。
+fn parse_output_schema(text: Option<&str>) -> Result<Option<Value>, NativeError> {
+    text.map(|t| {
+        serde_json::from_str(t).map_err(|e| NativeError::InvalidSchema(format!("outputSchema 不是合法 JSON：{e}")))
+    })
+    .transpose()
+}
+
+/// [`ToolSpec`] 对应的整体更新（不含 [`ToolOptions`] 的字段）。
+fn spec_update(spec: ToolSpec) -> Result<ToolUpdate, NativeError> {
+    let input_schema = parse_schema(spec.input_schema_json.as_deref())?;
+    Ok(ToolUpdate {
+        description: Some(spec.description),
+        input_schema: Some(input_schema),
+        risk: Some(spec.risk),
+        activation: Some(spec.activation),
+        title: Some(spec.title),
+        enabled: Some(spec.enabled),
+        ..ToolUpdate::default()
+    })
+}
+
 fn parse_schema(text: Option<&str>) -> Result<Value, NativeError> {
     match text {
         None => Ok(json!({ "type": "object", "properties": {} })),
@@ -1058,6 +1143,7 @@ impl Shared {
         self: &Arc<Self>,
         scope: Option<ScopeId>,
         spec: ToolSpec,
+        options: ToolOptions,
         handler: Arc<dyn ToolHandler>,
     ) -> Result<ToolHandle, NativeError> {
         let mut st = self.lock();
@@ -1065,6 +1151,7 @@ impl Shared {
             return Err(NativeError::Stopped);
         }
         let input_schema = parse_schema(spec.input_schema_json.as_deref())?;
+        let output_schema = parse_output_schema(options.output_schema_json.as_deref())?;
         let name = spec.name.clone();
         let id = st
             .client
@@ -1077,6 +1164,8 @@ impl Shared {
                 title: spec.title,
                 enabled: spec.enabled,
                 scope,
+                annotations: options.annotations,
+                output_schema,
             })
             .map_err(core_error)?;
         st.tools.insert(id, ToolEntry { handler, scope });

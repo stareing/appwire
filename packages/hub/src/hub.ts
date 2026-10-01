@@ -75,7 +75,8 @@ function decision<R>(handler: (req: R) => boolean | Promise<boolean>): (json: st
 const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
   'TOOL_NOT_FOUND', 'TOOL_DISABLED', 'INVALID_INPUT', 'USER_REJECTED', 'TIMEOUT', 'HANDLER_ERROR',
   'CANCELLED', 'APP_DISCONNECTED', 'APP_NOT_INSTALLED', 'LAUNCH_FAILED', 'APP_NOT_RESPONDING',
-  'INSTANCE_FROZEN', 'RESOURCE_NOT_FOUND', 'UNAUTHORIZED', 'UNSUPPORTED_PROTOCOL',
+  'INSTANCE_FROZEN', 'RESOURCE_NOT_FOUND', 'UNAUTHORIZED', 'UNSUPPORTED_PROTOCOL', 'RATE_LIMITED',
+  'PAYLOAD_TOO_LARGE',
 ])
 
 /** 把用户的 Waker 规整为“总是 resolve”的 Promise：null = 成功；失败为 `{"kind","message"}` JSON。 */

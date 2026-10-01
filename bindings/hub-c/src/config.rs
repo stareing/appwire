@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use hub::{ApprovalPolicy, HubConfig, LeaseOverrides, ToolExposure, UpstreamConfig, WakerConfig, load_manifests};
+use hub::{
+    ApprovalPolicy, HubConfig, LeaseOverrides, LimitOverrides, OutputValidation, ToolExposure, UpstreamConfig, WakerConfig,
+    load_manifests,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -49,6 +52,11 @@ pub(crate) struct ConfigJson {
     pub legacy_heartbeat: Option<bool>,
     /// 自适应租约（spec/hub-api.md 3.5）：`{"adaptive","window","marginMs","minMs","maxMs","idleRevokeMs"}`。
     pub lease: Option<LeaseOverrides>,
+    /// 资源保护（spec/hub-api.md 3.11）：`{"toolRatePerMinute","toolRateBurst","appRatePerMinute","appRateBurst",
+    /// "maxArgumentsBytes","maxResultBytes","maxResourceBytes"}`。
+    pub limits: Option<LimitOverrides>,
+    /// 结果与 `outputSchema` 不符时的处理：`"off"` / `"log"`（默认）/ `"reject"`。
+    pub output_validation: Option<OutputValidation>,
     /// `"system"` / `"none"` / `{"exec": [...]}`（spec/hub-api.md 3.5）。
     pub waker: Option<WakerConfig>,
     /// 渐进暴露（spec/hub-api.md 3.7）。
@@ -86,6 +94,8 @@ impl Default for ConfigJson {
             wake_rate_limit: None,
             legacy_heartbeat: None,
             lease: None,
+            limits: None,
+            output_validation: None,
             waker: None,
             tool_exposure: None,
             tool_exposure_threshold: None,
@@ -168,6 +178,15 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
         hub.lease
             .validate()
             .map_err(|e| FfiError::new(AmHubStatus::InvalidConfig, format!("lease 无效：{e}")))?;
+    }
+    if let Some(o) = &c.limits {
+        o.apply(&mut hub.limits);
+        hub.limits
+            .validate()
+            .map_err(|e| FfiError::new(AmHubStatus::InvalidConfig, format!("limits 无效：{e}")))?;
+    }
+    if let Some(v) = c.output_validation {
+        hub.output_validation = v;
     }
     if let Some(w) = c.waker {
         hub.waker = w;
@@ -262,6 +281,31 @@ mod tests {
         assert!(parse(Some(r#"{"lease": {"bogus": 1}}"#)).is_err(), "lease 内未知字段报错");
         let e = parse(Some(r#"{"lease": {"window": 0}}"#)).err().map(|e| e.status);
         assert_eq!(e, Some(AmHubStatus::InvalidConfig));
+    }
+
+    #[test]
+    fn limit_fields() {
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert_eq!(p.hub.limits, hub::LimitPolicy::default());
+        assert_eq!(p.hub.output_validation, OutputValidation::Log);
+        let p = parse(Some(
+            r#"{"limits": {"toolRatePerMinute": 10, "toolRateBurst": 2, "maxResultBytes": 0}, "outputValidation": "reject"}"#,
+        ))
+        .map_err(|e| e.message)
+        .expect("解析");
+        let d = hub::LimitPolicy::default();
+        assert_eq!((p.hub.limits.tool_rate.per_minute, p.hub.limits.tool_rate.burst), (10, 2));
+        assert_eq!(p.hub.limits.max_result_bytes, 0);
+        assert_eq!((p.hub.limits.app_rate, p.hub.limits.max_arguments_bytes), (d.app_rate, d.max_arguments_bytes));
+        assert_eq!(p.hub.output_validation, OutputValidation::Reject);
+        // 不限（perMinute = 0）时 burst 可为 0
+        assert!(parse(Some(r#"{"limits": {"appRatePerMinute": 0, "appRateBurst": 0}}"#)).is_ok());
+        let e = parse(Some(r#"{"limits": {"toolRateBurst": 0}}"#)).err().map(|e| e.status);
+        assert_eq!(e, Some(AmHubStatus::InvalidConfig), "限流时 burst = 0 被拒");
+        let e = parse(Some(r#"{"limits": {"bogus": 1}}"#)).err().map(|e| e.status);
+        assert_eq!(e, Some(AmHubStatus::InvalidJson), "limits 内未知字段报错");
+        let e = parse(Some(r#"{"outputValidation": "strict"}"#)).err().map(|e| e.status);
+        assert_eq!(e, Some(AmHubStatus::InvalidJson));
     }
 
     #[test]

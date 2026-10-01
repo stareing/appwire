@@ -55,6 +55,19 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
       risk: 'write',
       handler: ({ id }: { id: string }) => ({ data: { added: id }, stateHints: ['cart.state'] }),
     })
+    app.tool('order.submit', {
+      description: '提交订单',
+      risk: 'payment',
+      annotations: { idempotentHint: false, openWorldHint: true },
+      outputSchema: { type: 'object', properties: { orderId: { type: 'string' } } },
+      handler: () => ({
+        data: { orderId: 'o1' },
+        status: 'pending',
+        stateResource: 'order.state',
+        summary: '已提交，等待付款',
+        annotations: { audience: ['user', 'assistant'], priority: 0.5 },
+      }),
+    })
     app.tool('cart.fail', {
       description: '总是失败',
       handler: () => {
@@ -90,7 +103,16 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     const methods = sent().map((m) => m.method)
     expect(methods).toEqual(['app/hello', 'tools/sync', 'resources/sync', 'app/visibility', 'app/ready'])
     const sync = sent()[1] as Json
-    expect(sync.params.tools.map((t: { name: string }) => t.name).sort()).toEqual(['cart.add', 'cart.fail'])
+    expect(sync.params.tools.map((t: { name: string }) => t.name).sort()).toEqual(['cart.add', 'cart.fail', 'order.submit'])
+    const submit = sync.params.tools.find((t: { name: string }) => t.name === 'order.submit')
+    expect(submit).toMatchObject({
+      risk: 'payment',
+      annotations: { idempotentHint: false, openWorldHint: true },
+      outputSchema: { type: 'object', properties: { orderId: { type: 'string' } } },
+    })
+    const add = sync.params.tools.find((t: { name: string }) => t.name === 'cart.add')
+    expect(add).not.toHaveProperty('annotations')
+    expect(add).not.toHaveProperty('outputSchema')
     expect(localStorage.getItem('app-mcp:shop:token')).toBe('tk')
 
     // 调用成功
@@ -98,6 +120,17 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     await settle()
     const r1 = sent().find((m) => m.id === 'h1') as Json
     expect(r1.result).toEqual({ data: { added: 'p1' }, stateHints: ['cart.state'] })
+
+    // 结构化结果
+    ws.receive(JSON.stringify({ jsonrpc: '2.0', id: 'h4', method: 'tools/invoke', params: { callId: 'c4', name: 'order.submit', arguments: {} } }))
+    await settle()
+    expect((sent().find((m) => m.id === 'h4') as Json).result).toEqual({
+      data: { orderId: 'o1' },
+      status: 'pending',
+      stateResource: 'order.state',
+      summary: '已提交，等待付款',
+      annotations: { audience: ['user', 'assistant'], priority: 0.5 },
+    })
 
     // ToolCallError
     ws.receive(JSON.stringify({ jsonrpc: '2.0', id: 'h2', method: 'tools/invoke', params: { callId: 'c2', name: 'cart.fail', arguments: {} } }))

@@ -10,8 +10,8 @@ export {
   HarmonyAppMcp, HilogLogger, WAKE_PARAM, WAKE_URI_PATH, createAppMcp, nativeClientFactory, wakeArgsFromWant,
 } from './src/main/ets/Harmony';
 export {
-  Activation, AppMcpOptions, AppOverview, CancelReason, ConnectionState, ConnectionStatus, ErrorKind, HeartbeatMode,
-  HoldHandle, LifecycleMode, LifecycleOptions, Logger, Registrar, Residency, ResourceDefinition, ResourceHandle, Risk, Scope,
-  ToolChanges, ToolContext, ToolDefinition, ToolHandle, ToolHandler, ToolResult, Visibility, WakeDescriptor,
-  WakeKind, WakeReason,
+  Activation, AppMcpOptions, AppOverview, Audience, CancelReason, ConnectionState, ConnectionStatus, ContentAnnotations,
+  ErrorKind, HeartbeatMode, HoldHandle, LifecycleMode, LifecycleOptions, Logger, Registrar, Residency, ResourceDefinition,
+  ResourceHandle, ResultStatus, Risk, Scope, ToolAnnotations, ToolChanges, ToolContext, ToolDefinition, ToolHandle,
+  ToolHandler, ToolResult, ToolResultOptions, Visibility, WakeDescriptor, WakeKind, WakeReason,
 } from './src/main/ets/Types';

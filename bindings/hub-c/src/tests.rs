@@ -8,8 +8,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use app_mcp_native::{
-    CallHandle, NativeClient, NativeConfig, ReadHandle, ResourceReader, ResourceSpec, Risk,
-    ToolHandler, ToolSpec,
+    CallHandle, CallResult, ContentAnnotations, NativeClient, NativeConfig, ReadHandle, ResourceReader, ResourceSpec,
+    ResultStatus, Risk, ToolAnnotations, ToolHandler, ToolOptions, ToolSpec,
 };
 
 use super::*;
@@ -888,4 +888,95 @@ fn unsupported_io_error_maps_to_own_status() {
         // SAFETY: am_hub_start 成功返回的句柄。
         unsafe { am_hub_free(hub) };
     }
+}
+
+/// 以 pending + stateResource + summary + 内容注解完成（第 19 项 R1–R3）。
+struct Submit;
+
+impl ToolHandler for Submit {
+    fn invoke(&self, call: CallHandle) {
+        let _ = call.complete_with(CallResult {
+            data_json: Some(r#"{"orderId":"o1"}"#.into()),
+            status: ResultStatus::Pending,
+            state_resource: Some("order.state".into()),
+            summary: Some("已提交".into()),
+            annotations: Some(ContentAnnotations { priority: Some(0.5), ..ContentAnnotations::default() }),
+            ..CallResult::default()
+        });
+    }
+}
+
+/// 配置 limits / outputValidation（v9）→ 工具注解与 outputSchema、结构化结果、RATE_LIMITED、/status 新字段。
+#[test]
+fn limits_annotations_and_structured_result() {
+    // 非法：限流时 burst = 0
+    let bad = c(r#"{"listen":null,"ipcEndpoint":null,"limits":{"toolRateBurst":0}}"#);
+    let mut out = ptr::null_mut();
+    // SAFETY: 有效参数。
+    assert_eq!(unsafe { am_hub_start(bad.as_ptr(), &mut out) }, AmHubStatus::InvalidConfig);
+    assert!(out.is_null());
+    assert!(last_error().contains("toolRateBurst"), "{}", last_error());
+
+    let hub = start_hub(
+        r#"{"listen":"127.0.0.1:0","limits":{"toolRatePerMinute":1,"toolRateBurst":1},"outputValidation":"reject"}"#,
+    );
+    // SAFETY: 有效句柄。
+    let addr = unsafe { take(am_hub_listen_addr(hub)) };
+    let mut cfg = NativeConfig::new("shop", "商店");
+    cfg.host_url = format!("ws://{addr}/app");
+    let client = NativeClient::new(cfg, None).expect("创建 App");
+    let options = ToolOptions {
+        annotations: Some(ToolAnnotations { idempotent_hint: Some(false), ..ToolAnnotations::default() }),
+        output_schema_json: Some(r#"{"type":"object","properties":{"orderId":{"type":"string"}}}"#.into()),
+    };
+    let _tool = client
+        .register_tool_with(ToolSpec::new("order.submit", "下单"), options, Arc::new(Submit))
+        .expect("注册");
+    client.start();
+
+    let deadline = Instant::now() + WAIT;
+    let filter = c(r#"{"apps":["shop"],"onlyAvailable":true,"includeBuiltin":false}"#);
+    let tools = loop {
+        // SAFETY: 有效参数。
+        let t = query_json(|o| unsafe { am_hub_tools_json(hub, filter.as_ptr(), o) });
+        if t.as_array().map(Vec::len) == Some(1) {
+            break t;
+        }
+        assert!(Instant::now() < deadline, "工具未同步：{t}");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // 声明的字段优先，缺少的按 risk（write）推导
+    assert_eq!(tools[0]["annotations"]["idempotentHint"], false, "{tools}");
+    assert_eq!(tools[0]["annotations"]["readOnlyHint"], false, "{tools}");
+    assert_eq!(tools[0]["outputSchema"]["properties"]["orderId"]["type"], "string", "{tools}");
+
+    let (tx, rx) = mpsc::channel();
+    call(hub, json!({"name":"shop.order.submit"}), &tx);
+    let o = recv(&rx);
+    assert_eq!(o["result"]["ok"]["orderId"], "o1", "{o}");
+    assert_eq!(o["status"], "pending", "{o}");
+    assert_eq!(o["stateResource"], "app-mcp://shop/order.state", "{o}");
+    assert_eq!(o["summary"], "已提交", "{o}");
+    assert_eq!(o["annotations"], json!({"priority": 0.5}), "{o}");
+    // 突发 1：第二次立即调用被限流
+    call(hub, json!({"name":"shop.order.submit"}), &tx);
+    let o = recv(&rx);
+    assert_eq!(o["result"]["error"]["kind"], "RATE_LIMITED", "{o}");
+    assert_eq!(o["result"]["error"]["details"]["scope"], "tool", "{o}");
+
+    // SAFETY: 有效参数。
+    let st = query_json(|o| unsafe { am_hub_status_json(hub, o) });
+    assert_eq!(st["limits"]["toolRatePerMinute"], 1, "{st}");
+    assert_eq!(st["limits"]["appRatePerMinute"], 600, "{st}");
+    assert_eq!(st["outputValidation"], "reject", "{st}");
+    let app_st = &st["apps"][0];
+    assert_eq!(app_st["rateLimited"], 1, "{st}");
+    assert_eq!(app_st["tooLarge"], 0, "{st}");
+    assert_eq!(app_st["tools"][0]["name"], "order.submit", "{st}");
+    assert_eq!(app_st["tools"][0]["outputSchema"], true, "{st}");
+    assert_eq!(app_st["tools"][0]["annotations"], json!({"idempotentHint": false}), "{st}");
+
+    client.stop();
+    // SAFETY: 有效句柄。
+    unsafe { am_hub_free(hub) };
 }

@@ -8,7 +8,7 @@ final class UnitTests: XCTestCase {
             ErrorKind.timeout, ErrorKind.handlerError, ErrorKind.cancelled, ErrorKind.appDisconnected,
             ErrorKind.appNotInstalled, ErrorKind.launchFailed, ErrorKind.appNotResponding,
             ErrorKind.instanceFrozen, ErrorKind.resourceNotFound, ErrorKind.unauthorized,
-            ErrorKind.unsupportedProtocol,
+            ErrorKind.unsupportedProtocol, ErrorKind.rateLimited, ErrorKind.payloadTooLarge,
         ]
         XCTAssertEqual(ErrorKind.all, declared)
     }

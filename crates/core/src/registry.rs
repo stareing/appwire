@@ -43,6 +43,8 @@ fn tool_info(def: &ToolDef) -> ToolInfo {
         risk: def.risk,
         activation: def.activation,
         title: def.title.clone(),
+        annotations: def.annotations.clone(),
+        output_schema: def.output_schema.clone(),
     }
 }
 
@@ -52,6 +54,7 @@ fn resource_info(def: &ResourceDef) -> ResourceInfo {
         description: def.description.clone(),
         mime_type: def.mime_type.clone(),
         realtime: def.realtime,
+        annotations: None,
     }
 }
 
@@ -151,7 +154,7 @@ impl Registry {
             validate_schema(schema)?;
         }
         let def = self.tools.get_mut(&tool).ok_or(CoreError::UnknownTool(tool))?;
-        let ToolUpdate { description, input_schema, risk, activation, title, enabled } = update;
+        let ToolUpdate { description, input_schema, risk, activation, title, enabled, annotations, output_schema } = update;
         if let Some(v) = description {
             def.description = v;
         }
@@ -169,6 +172,12 @@ impl Registry {
         }
         if let Some(v) = enabled {
             def.enabled = v;
+        }
+        if let Some(v) = annotations {
+            def.annotations = v;
+        }
+        if let Some(v) = output_schema {
+            def.output_schema = v;
         }
         let name = def.name.clone();
         self.mark_tool(&name);
@@ -334,6 +343,8 @@ mod tests {
             title: None,
             enabled: true,
             scope,
+            annotations: None,
+            output_schema: None,
         }
     }
 

@@ -4,7 +4,7 @@
 
 import type { CoreOutcome } from '../core'
 import { EMPTY_INPUT_SCHEMA } from '../schema'
-import { type JsonSchema, type Risk, ToolCallError } from '../types'
+import { type JsonSchema, type Risk, ToolCallError, type ToolAnnotations as McpToolAnnotations } from '../types'
 import type { ToolAnnotations, ToolExecuteOptions } from './types'
 
 /** 标准的工具名规则：1–128 个 ASCII 字母数字、`_`、`-`、`.`。 */
@@ -41,6 +41,29 @@ export function riskToAnnotations(risk: Risk | undefined): ToolAnnotations {
     default:
       return { readOnlyHint: false }
   }
+}
+
+/** 两套注解共有的 MCP 提示字段（WebMCP 的 `ToolAnnotations` 与 app-mcp 工具注解同名同义）。 */
+const MCP_HINTS = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'] as const
+
+/** 只取取值为布尔的 MCP 提示字段；一个都没有时返回 undefined。 */
+function pickHints(source: Record<string, unknown> | undefined): McpToolAnnotations | undefined {
+  if (!source) return undefined
+  const entries = MCP_HINTS.filter((k) => typeof source[k] === 'boolean').map((k) => [k, source[k]])
+  return entries.length > 0 ? (Object.fromEntries(entries) as McpToolAnnotations) : undefined
+}
+
+/** 标准侧注解 → app-mcp 工具注解（只保留 MCP 提示字段，原样转发给 Agent）。 */
+export function standardToToolAnnotations(annotations: ToolAnnotations | undefined): McpToolAnnotations | undefined {
+  return pickHints(annotations)
+}
+
+/** app-mcp 工具的 risk 与声明的注解 → 标准注解：声明的 MCP 提示字段覆盖按 risk 推导的值。 */
+export function toolToStandardAnnotations(
+  risk: Risk | undefined,
+  annotations: McpToolAnnotations | undefined,
+): ToolAnnotations {
+  return { ...riskToAnnotations(risk), ...pickHints(annotations as Record<string, unknown> | undefined) }
 }
 
 /** 标准 `inputSchema` → app-mcp 输入 schema。字符串形式（旧版 Chrome 接受）先解析。 */

@@ -6,6 +6,7 @@
 import type {
   NativeBinding,
   NativeCall,
+  NativeCallResult,
   NativeCancelReason,
   NativeClient,
   NativeClientConfig,
@@ -22,7 +23,7 @@ import type {
 } from '../native.js'
 
 export type CallOutcome =
-  | { ok: true; data: unknown; stateHints: string[] }
+  | ({ ok: true; data: unknown; stateHints: string[] } & Omit<NativeCallResult, 'dataJson' | 'stateHints'>)
   | { ok: false; kind: string; message: string; details?: unknown }
 
 class NativeErrorWithCode extends Error {
@@ -70,6 +71,14 @@ class FakeCall implements NativeCall {
   }
 
   complete(dataJson?: string | null, stateHints?: string[]): void {
+    this.succeed(dataJson, stateHints, {})
+  }
+
+  private succeed(
+    dataJson: string | null | undefined,
+    stateHints: string[] | undefined,
+    extras: Omit<NativeCallResult, 'dataJson' | 'stateHints'>,
+  ): void {
     if (this.done) throw new NativeErrorWithCode('ALREADY_COMPLETED', 'call or read already completed or cancelled')
     let data: unknown = null
     if (dataJson != null) {
@@ -80,7 +89,22 @@ class FakeCall implements NativeCall {
       }
     }
     this.done = true
-    this.settle({ ok: true, data, stateHints: stateHints ?? [] })
+    this.settle({ ok: true, data, stateHints: stateHints ?? [], ...extras })
+  }
+
+  /** 与原生绑定一致：status / audience 取值不合法时抛出 `INVALID_ARG`（调用仍未完成）。 */
+  completeWith(result: NativeCallResult): void {
+    if (this.done) throw new NativeErrorWithCode('ALREADY_COMPLETED', 'call or read already completed or cancelled')
+    const { dataJson, stateHints, ...extras } = result
+    if (extras.status !== undefined && !['done', 'pending', 'partial', 'noop'].includes(extras.status)) {
+      throw new NativeErrorWithCode('INVALID_ARG', `未知的 status：${JSON.stringify(extras.status)}`)
+    }
+    for (const role of extras.annotations?.audience ?? []) {
+      if (role !== 'user' && role !== 'assistant') {
+        throw new NativeErrorWithCode('INVALID_ARG', `未知的 audience：${JSON.stringify(role)}`)
+      }
+    }
+    this.succeed(dataJson, stateHints, extras)
   }
 
   fail(kind: string, message: string): void {
@@ -160,6 +184,17 @@ abstract class FakeRegistrarBase implements NativeRegistrar {
     return {
       name,
       update(next) {
+        const rec = client.tools.get(name)
+        if (!rec) throw new NativeErrorWithCode('DISPOSED', 'disposed')
+        // 与原生绑定一致：update 保留已声明的注解与输出 schema
+        const { annotations: _a, outputSchemaJson: _o, ...rest } = next
+        const kept = {
+          ...(rec.spec.annotations !== undefined && { annotations: rec.spec.annotations }),
+          ...(rec.spec.outputSchemaJson !== undefined && { outputSchemaJson: rec.spec.outputSchemaJson }),
+        }
+        rec.spec = { ...rest, ...kept, name }
+      },
+      updateWith(next) {
         const rec = client.tools.get(name)
         if (!rec) throw new NativeErrorWithCode('DISPOSED', 'disposed')
         rec.spec = { ...next, name }

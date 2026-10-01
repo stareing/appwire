@@ -136,6 +136,30 @@ describe('useTool', () => {
     expect(app.count('tool.register')).toBe(1)
   })
 
+  it('annotations / outputSchema 按内容比较：内联字面量不重复 update，变化或移除时 update', () => {
+    function T(props: { idempotent?: boolean; items?: string }) {
+      useTool('t', {
+        description: 'x',
+        ...(props.idempotent !== undefined && { annotations: { idempotentHint: props.idempotent } }),
+        ...(props.items !== undefined && { outputSchema: { type: 'array', items: { type: props.items } } }),
+        handler: () => null,
+      })
+      return null
+    }
+    const { app, rerender } = setup(<T idempotent items="string" />)
+    rerender(<T idempotent items="string" />)
+    expect(app.count('tool.update')).toBe(0)
+    rerender(<T idempotent={false} items="number" />)
+    rerender(<T />)
+    const updates = app.events.filter((e) => e.type === 'tool.update').map((e) => 'changes' in e && e.changes)
+    expect(updates).toEqual([
+      { annotations: { idempotentHint: false }, outputSchema: { type: 'array', items: { type: 'number' } } },
+      { annotations: undefined, outputSchema: undefined },
+    ])
+    // 显式给出 undefined（= 清除），而不是省略
+    expect(Object.keys(updates[1] as object).sort()).toEqual(['annotations', 'outputSchema'])
+  })
+
   it('name 变化时重新注册', () => {
     function T({ name }: { name: string }) {
       useTool(name, { description: 'x', handler: () => null })

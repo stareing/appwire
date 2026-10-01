@@ -424,6 +424,10 @@ impl Manifest {
                     }
                 }
             }
+            // outputSchema 可以是任意根类型（非 object 时 Hub 按 MCP 要求包装，spec/protocol.md 3.2），但必须是 JSON Schema 对象。
+            if tool.output_schema.as_ref().is_some_and(|s| !s.is_object()) {
+                v.errors.push(Issue::new(format!("{path}.outputSchema"), "outputSchema 必须是对象（JSON Schema）"));
+            }
         }
 
         let mut seen = HashSet::new();
@@ -1149,6 +1153,29 @@ mod tests {
         let m: Manifest = serde_json::from_value(base).unwrap();
         assert!(m.validate().is_ok());
         assert!(m.resource("cart.state").unwrap().realtime);
+    }
+
+    #[test]
+    fn annotations_and_output_schema() {
+        let mut base = example();
+        base["tools"][0]["annotations"] = json!({"readOnlyHint": true, "openWorldHint": false});
+        base["tools"][0]["outputSchema"] = json!({"type": "array", "items": {"type": "string"}});
+        base["resources"][0]["annotations"] = json!({"audience": ["user"], "priority": 0.8});
+        let m: Manifest = serde_json::from_value(base.clone()).unwrap();
+        assert!(m.validate().is_ok(), "{:?}", m.validate().errors);
+        let t = &m.tools[0];
+        assert_eq!(t.annotations.as_ref().unwrap().open_world_hint, Some(false));
+        assert_eq!(t.output_schema.as_ref().unwrap()["type"], "array");
+        assert_eq!(m.resources[0].annotations.as_ref().unwrap().priority, Some(0.8));
+        // 往返保持字段
+        let back: Manifest = serde_json::from_value(serde_json::to_value(&m).unwrap()).unwrap();
+        assert_eq!(back, m);
+        // outputSchema 不是对象 → 错误；注解字段类型不对 → 解析失败
+        base["tools"][0]["outputSchema"] = json!("array");
+        let m: Manifest = serde_json::from_value(base.clone()).unwrap();
+        assert!(m.validate().errors.iter().any(|e| e.path == "tools[0].outputSchema"));
+        base["tools"][0]["annotations"] = json!({"readOnlyHint": "yes"});
+        assert!(serde_json::from_value::<Manifest>(base).is_err());
     }
 
     #[test]

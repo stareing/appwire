@@ -107,6 +107,7 @@ name = "app-mcp-c"
 version = "0.1.0"
 dependencies = [
  "app-mcp-native",
+ "serde",
  "serde_json",
 ]
 

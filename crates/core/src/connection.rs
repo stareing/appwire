@@ -461,7 +461,14 @@ impl Client {
 
     pub(crate) fn finish_call(&mut self, call: Call, outcome: Result<CallOutput, ToolError>) {
         let outcome = match outcome {
-            Ok(out) => Ok(to_value(&ToolsInvokeResult { data: out.data, state_hints: out.state_hints })),
+            Ok(out) => Ok(to_value(&ToolsInvokeResult {
+                data: out.data,
+                state_hints: out.state_hints,
+                annotations: out.annotations,
+                status: out.status,
+                state_resource: out.state_resource,
+                summary: out.summary,
+            })),
             Err(e) => Err(RpcError::from(e)),
         };
         self.respond(call.request_id, outcome);

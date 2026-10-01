@@ -91,6 +91,77 @@ public class IntegrationTests(ITestOutputHelper output)
         Assert.NotEmpty(connectionIds);
         Assert.All(connectionIds, id => Assert.StartsWith("fake-", id));
     }
+
+    /// <summary>带注解 + outputSchema 注册后 Host 收到的 ToolInfo；结构化结果（pending 等）与普通返回值（回归）。</summary>
+    [Fact]
+    public async Task ToolOptionsAndStructuredResultReachHost()
+    {
+        var fakeHost = FakeHost.Locate(output);
+        if (fakeHost is null) return;
+
+        using var host = FakeHost.Start(fakeHost,
+            "--tool-info",
+            "--invoke", "order.submit", "--args", "{}",
+            "--invoke", "order.typed", "--args", """{"name":"x"}""",
+            "--invoke", "plain", "--args", "{}",
+            "--timeout-ms", "20000");
+        var addr = await host.ReadListeningAsync();
+        await using var client = AppMcpClient.Create(new AppMcpClientOptions
+        {
+            AppId = "dotnet-result",
+            AppName = ".NET Result",
+            HostUrl = $"ws://{addr}",
+            Dispatcher = null,
+        });
+        using var submit = client.RegisterTool("order.submit", "下单", (_, ctx) =>
+        {
+            ctx.AddStateHint("cart");
+            return Task.FromResult<object?>(new ToolResult(new { orderId = "o1" })
+            {
+                Status = ToolResultStatus.Pending,
+                StateResource = "order.state",
+                Summary = "已提交，等待用户在 App 内付款",
+                Annotations = new ContentAnnotations { Priority = 0.5, Audience = [ContentAudience.User] },
+                StateHints = ["orders"],
+            });
+        }, new ToolOptions
+        {
+            Annotations = new ToolAnnotations { IdempotentHint = false, OpenWorldHint = true },
+            OutputSchemaJson = """{"type":"object","properties":{"orderId":{"type":"string"}}}""",
+        });
+        using var typed = client.RegisterTool<GreetInput, ToolResult>("order.typed", "类型化", (input, _) =>
+            Task.FromResult(new ToolResult { Status = ToolResultStatus.Noop, Summary = $"{input.Name} 已是目标状态" }));
+        using var plain = client.RegisterTool("plain", "普通", (_, _) => Task.FromResult<object?>(new { ok = true }),
+            new ToolOptions { Risk = ToolRisk.Read });
+
+        client.Start();
+        var lines = await host.WaitForExitAsync(TimeSpan.FromSeconds(30));
+        foreach (var l in lines) output.WriteLine(l);
+        Assert.Equal(0, host.ExitCode);
+
+        var json = lines.Where(l => l.StartsWith('{')).Select(l => JsonNode.Parse(l)!.AsObject()).ToList();
+        var info = json.Single(j => (string?)j["type"] == "tools")["toolInfo"]!;
+        Assert.True(JsonNode.DeepEquals(
+            JsonNode.Parse("""
+                {"risk":"write","annotations":{"idempotentHint":false,"openWorldHint":true},
+                 "outputSchema":{"type":"object","properties":{"orderId":{"type":"string"}}}}
+                """),
+            info["order.submit"]), info.ToJsonString());
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""{"risk":"read"}"""), info["plain"]), info.ToJsonString());
+
+        var invokes = json.Where(j => (string?)j["type"] == "invoke").ToList();
+        Assert.Equal(3, invokes.Count);
+        Assert.True(JsonNode.DeepEquals(
+            JsonNode.Parse("""
+                {"data":{"orderId":"o1"},"stateHints":["cart","orders"],"status":"pending","stateResource":"order.state",
+                 "summary":"已提交，等待用户在 App 内付款","annotations":{"audience":["user"],"priority":0.5}}
+                """),
+            invokes[0]["result"]), invokes[0].ToJsonString());
+        Assert.True(JsonNode.DeepEquals(
+            JsonNode.Parse("""{"data":null,"status":"noop","summary":"x 已是目标状态"}"""),
+            invokes[1]["result"]), invokes[1].ToJsonString());
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""{"data":{"ok":true}}"""), invokes[2]["result"]), invokes[2].ToJsonString());
+    }
 }
 
 /// <summary>在专用线程上执行所有回调的 SynchronizationContext（模拟 UI 线程）。</summary>

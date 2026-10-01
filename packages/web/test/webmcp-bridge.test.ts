@@ -170,6 +170,21 @@ describe('mirrorOwnTools', () => {
     expect(await native.invoke('before')).toEqual({ content: [{ type: 'text', text: 'x' }] })
     expect(handler.mock.calls[0]?.[1]).toMatchObject({ signal: expect.any(AbortSignal) })
 
+    // 声明的注解覆盖按 risk 推导的值
+    h.app.tool('cart.reset', {
+      description: '重置',
+      risk: 'destructive',
+      annotations: { destructiveHint: false, idempotentHint: true },
+      handler: () => null,
+    })
+    await settle()
+    expect(native.tools.get('cart.reset')?.annotations).toEqual({
+      readOnlyHint: false,
+      consequentialHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+    })
+
     handle.dispose()
     await settle()
     expect(native.tools.has('cart.remove')).toBe(false)

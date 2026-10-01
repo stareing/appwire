@@ -38,6 +38,7 @@ interface HostLine {
   error?: { code: number; message: string; data?: { kind?: string } }
   tools?: string[]
   resources?: string[]
+  toolInfo?: Record<string, unknown>
 }
 
 interface FakeHost {
@@ -187,6 +188,54 @@ describe.skipIf(!existsSync(nativePath))('真实原生模块', () => {
       expect(states).toContain('connected')
       expect(paired).toEqual(['fake-token'])
       expect(app.token).toBe('fake-token')
+    })
+
+    it('注解与 outputSchema 到达 Host；结构化结果原样提交；普通返回值不变', async (ctx) => {
+      if (!fakeHost) ctx.skip()
+      // prettier-ignore
+      const host = await startHost(fakeHost!, [
+        '--tool-info',
+        '--invoke', 'order.submit', '--args', '{}',
+        '--invoke', 'order.plain', '--args', '{}',
+      ])
+      const app = createAppMcp({ appId: 'demo', appName: 'Demo', binding: binding!, hostUrl: host.url, autoStart: false })
+      apps.push(app)
+      const t = app.tool('order.submit', {
+        description: '下单',
+        annotations: { idempotentHint: true },
+        handler: () => ({
+          data: { orderId: 'o1' },
+          status: 'pending' as const,
+          stateResource: 'order.state',
+          summary: '已提交，等待用户在 App 内付款',
+          annotations: { audience: ['user' as const], priority: 0.5 },
+        }),
+      })
+      // 整体更新：注解替换、输出 schema 新增（updateWith）
+      t.update({
+        annotations: { idempotentHint: false, openWorldHint: true },
+        outputSchema: { type: 'object', properties: { orderId: { type: 'string' } } },
+      })
+      app.tool('order.plain', { description: 'p', risk: 'read', handler: () => ({ data: 1, other: 2 }) })
+      app.start()
+
+      expect(await host.exit).toBe(0)
+      const line = host.lines.find((l) => l.type === 'tools')
+      expect(line?.toolInfo?.['order.submit']).toEqual({
+        risk: 'write',
+        annotations: { idempotentHint: false, openWorldHint: true },
+        outputSchema: { type: 'object', properties: { orderId: { type: 'string' } } },
+      })
+      expect(line?.toolInfo?.['order.plain']).toEqual({ risk: 'read' })
+      const invokes = host.lines.filter((l) => l.type === 'invoke')
+      expect(invokes[0]?.result).toEqual({
+        data: { orderId: 'o1' },
+        status: 'pending',
+        stateResource: 'order.state',
+        summary: '已提交，等待用户在 App 内付款',
+        annotations: { audience: ['user'], priority: 0.5 },
+      })
+      expect(invokes[1]?.result).toEqual({ data: { data: 1, other: 2 } })
     })
   })
 })

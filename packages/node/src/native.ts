@@ -82,6 +82,35 @@ export interface NativeToolSpec {
   activation?: string
   title?: string
   enabled?: boolean
+  /** 标准 MCP 工具注解（旧版原生模块忽略）。 */
+  annotations?: NativeToolAnnotations
+  /** 结果的 JSON Schema 文本（旧版原生模块忽略）。 */
+  outputSchemaJson?: string
+}
+
+export interface NativeToolAnnotations {
+  title?: string
+  readOnlyHint?: boolean
+  destructiveHint?: boolean
+  idempotentHint?: boolean
+  openWorldHint?: boolean
+}
+
+export interface NativeContentAnnotations {
+  audience?: string[]
+  priority?: number
+  lastModified?: string
+}
+
+/** `NativeCall.completeWith` 的参数（缺省 = 无返回值、`done`）。 */
+export interface NativeCallResult {
+  dataJson?: string | null
+  stateHints?: string[]
+  /** `'done'` / `'pending'` / `'partial'` / `'noop'`。 */
+  status?: string
+  stateResource?: string
+  summary?: string
+  annotations?: NativeContentAnnotations
 }
 
 export interface NativeResourceSpec {
@@ -100,6 +129,8 @@ export interface NativeCall {
   isCancelled(): boolean
   setCancelListener(listener: (reason: NativeCancelReason) => void): void
   complete(dataJson?: string | null, stateHints?: string[]): void
+  /** 成功完成并附带业务状态、摘要与内容标注。旧版原生模块没有此方法。 */
+  completeWith?(result: NativeCallResult): void
   fail(kind: string, message: string): void
   /** 失败完成并附带详情（JSON 文本）。旧版原生模块没有此方法。 */
   failWithDetails?(kind: string, message: string, detailsJson?: string | null): void
@@ -115,7 +146,10 @@ export interface NativeRead {
 
 export interface NativeTool {
   readonly name: string
+  /** 整体替换定义；已声明的 `annotations` / `outputSchemaJson` 保持不变（忽略参数中的这两项）。 */
   update(spec: NativeToolSpec): void
+  /** 整体替换定义与选项：`annotations` / `outputSchemaJson` 缺省表示清除。旧版原生模块没有此方法。 */
+  updateWith?(spec: NativeToolSpec): void
   setEnabled(enabled: boolean): void
   dispose(): void
 }

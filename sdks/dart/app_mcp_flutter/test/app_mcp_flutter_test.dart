@@ -198,4 +198,38 @@ void main() {
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
     expect(freeCount(), greaterThan(freesBefore));
   }, skip: path == null);
+
+  testWidgets('McpTool：注解与 outputSchema 传入注册，变化时整体替换', (tester) async {
+    final lib = DynamicLibrary.open(path!);
+    final options = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
+        Pointer<Utf8> Function(Pointer<Utf8>)>('fake_tool_options');
+    final stringFree = lib.lookupFunction<Void Function(Pointer<Utf8>),
+        void Function(Pointer<Utf8>)>('am_string_free');
+    String? toolOptions(String name) {
+      final p = using((a) => options(name.toNativeUtf8(allocator: a)));
+      if (p == nullptr) return null;
+      final s = p.toDartString();
+      stringFree(p);
+      return s;
+    }
+
+    final client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path);
+    addTearDown(client.dispose);
+
+    Widget app(ToolAnnotations? annotations) => AppMcpScope(
+          client: client,
+          trackLifecycle: false,
+          child: McpTool(
+              name: 'order.submit',
+              description: '下单',
+              annotations: annotations,
+              outputSchema: const {'type': 'object'},
+              handler: (a, c) => const ToolResult(null, status: ToolResultStatus.pending)),
+        );
+
+    await tester.pumpWidget(app(const ToolAnnotations(openWorldHint: true)));
+    expect(toolOptions('order.submit'), '{"openWorldHint":true}|{"type":"object"}');
+    await tester.pumpWidget(app(null));
+    expect(toolOptions('order.submit'), 'null|{"type":"object"}');
+  }, skip: path == null);
 }

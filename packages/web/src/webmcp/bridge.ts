@@ -14,8 +14,9 @@ import {
   domException,
   executeOptions,
   fromStandardResult,
-  riskToAnnotations,
   standardInputSchema,
+  standardToToolAnnotations,
+  toolToStandardAnnotations,
   toStandardResult,
 } from './convert'
 import { createToolEvent } from './events'
@@ -198,12 +199,14 @@ export class StandardBridge {
 
     // 2. app-mcp（进而 Host）
     if (APP_MCP_NAME_RE.test(name)) {
+      const standardHints = standardToToolAnnotations(tool.annotations)
       try {
         entry.handle = this.appMcp.tool(name, {
           description,
           ...(typeof tool.title === 'string' && tool.title !== '' && { title: tool.title }),
           input: inputSchema,
           risk: annotationsToRisk(tool.annotations),
+          ...(standardHints && { annotations: standardHints }),
           handler: (input, ctx) => this.runForHost(entry, input, ctx.signal),
         })
         entry.evict = () => {
@@ -326,7 +329,7 @@ export class StandardBridge {
         name: view.name,
         description: def.description,
         inputSchema,
-        annotations: riskToAnnotations(def.risk),
+        annotations: toolToStandardAnnotations(def.risk, def.annotations),
         execute: async (input: unknown, options?: Partial<ToolExecuteOptions>) =>
           toStandardResult(await view.call(normalizeInput(input), options?.signal ?? new AbortController().signal)),
       }

@@ -15,7 +15,8 @@
 
 import { checkHandlerOrLoad, loadHandler, type LazySlot } from './lazy'
 import { noopHold } from './noop'
-import { describeParseError, isZodLike, toJsonSchema } from './schema'
+import { normalizeToolResult, toJsonValue, type NormalizedResult } from './result'
+import { describeParseError, isZodLike, toJsonSchema, toOutputSchema } from './schema'
 import type {
   Activation,
   AppMcp,
@@ -26,10 +27,12 @@ import type {
   JsonSchema,
   LazyToolDefinition,
   Logger,
+  OutputSchema,
   ResourceDefinition,
   ResourceHandle,
   Risk,
   Scope,
+  ToolAnnotations,
   ToolDefinition,
   ToolHandle,
   ToolHandler,
@@ -41,7 +44,8 @@ import type {
 // ---------------------------------------------------------------------------
 //
 // @compat 版本 1 内只做可选字段的新增，旧页面忽略、新页面缺省为 undefined，因此不升版本
-// （升版本会让 findElectronBridge 拒绝新旧混用）。已有新增：`HelloReply.connectionId`、`state` 事件的 `connectionId`。
+// （升版本会让 findElectronBridge 拒绝新旧混用）。已有新增：`HelloReply.connectionId`、`state` 事件的 `connectionId`、
+// `ToolSpecMessage.annotations` / `outputSchema`、成功 `Outcome` 的 `status` / `stateResource` / `summary` / `annotations`。
 
 /** preload 默认把桥接对象暴露为 `window.appMcpBridge`。 */
 export const DEFAULT_BRIDGE_KEY = 'appMcpBridge'
@@ -52,13 +56,16 @@ export interface ToolSpecMessage {
   title?: string
   inputSchema?: JsonSchema
   risk?: Risk
+  /** 标准 MCP 工具注解；`tool.update` 时缺省表示清除。 */
+  annotations?: ToolAnnotations
+  /** 结果的 JSON Schema；`tool.update` 时缺省表示清除。 */
+  outputSchema?: OutputSchema
   activation?: Activation
   enabled?: boolean
 }
 
-export type Outcome =
-  | { ok: true; data: unknown; stateHints?: string[] }
-  | { ok: false; kind: ErrorKind; message: string }
+/** 成功结果的字段同 {@link NormalizedResult}（`data` 之外均可选，旧主进程忽略新增字段）。 */
+export type Outcome = ({ ok: true } & NormalizedResult) | { ok: false; kind: ErrorKind; message: string }
 
 export type RendererOp =
   /** 页面（重新）加载：主进程丢弃该 webContents 之前的全部登记。 */
@@ -177,24 +184,6 @@ function toOutcomeError(error: unknown): Outcome {
   return { ok: false, kind: 'HANDLER_ERROR', message: String(error) }
 }
 
-/** 转为可经 IPC 传输的 JSON 数据（与 Host 看到的结果一致）。 */
-function toJsonData(value: unknown): unknown {
-  const text = JSON.stringify(value === undefined ? null : value)
-  return text === undefined ? null : JSON.parse(text)
-}
-
-function normalizeResult(result: unknown): { data: unknown; stateHints?: string[] } {
-  if (typeof result === 'object' && result !== null && !Array.isArray(result) && 'data' in result) {
-    const keys = Object.keys(result)
-    const hints = (result as { stateHints?: unknown }).stateHints
-    if (keys.every((k) => k === 'data' || k === 'stateHints') && (hints === undefined || Array.isArray(hints))) {
-      const data = (result as { data: unknown }).data
-      return hints && hints.length > 0 ? { data, stateHints: hints.map(String) } : { data }
-    }
-  }
-  return { data: result }
-}
-
 interface ResolvedInput {
   schema: JsonSchema | undefined
   parse?: ((input: unknown) => unknown) | undefined
@@ -206,6 +195,11 @@ function resolveInput(input: unknown): ResolvedInput | Promise<ResolvedInput> {
   const parse = isZodLike(input) ? (value: unknown) => input.parse(value) : undefined
   const schema = toJsonSchema(input as ToolDefinition['input'])
   return schema instanceof Promise ? schema.then((s) => ({ schema: s, parse })) : { schema, parse }
+}
+
+/** 输出定义 → JSON Schema（缺省为 undefined；需要加载 zod 时返回 Promise；定义不合法时同步抛出）。 */
+function resolveOutput(output: ToolDefinition['outputSchema']): OutputSchema | undefined | Promise<OutputSchema> {
+  return output === undefined ? undefined : toOutputSchema(output)
 }
 
 type AnyDef = ToolDefinition<any, any> | LazyToolDefinition<any, any>
@@ -317,15 +311,14 @@ class Client {
       .then((fn) => fn(value, { callId, signal: controller.signal, hold: () => this.hold() }))
       .then(
         (result) => {
-          const { data, stateHints } = normalizeResult(result)
-          let json: unknown
+          let normalized: NormalizedResult
           try {
-            json = toJsonData(data)
+            normalized = normalizeToolResult(result)
           } catch (error) {
             finish({ ok: false, kind: 'HANDLER_ERROR', message: `返回值无法序列化为 JSON：${String(error)}` })
             return
           }
-          finish(stateHints ? { ok: true, data: json, stateHints } : { ok: true, data: json })
+          finish({ ok: true, ...normalized })
         },
         (error: unknown) => finish(toOutcomeError(error)),
       )
@@ -344,7 +337,7 @@ class Client {
         (value) => {
           let json: unknown
           try {
-            json = toJsonData(value)
+            json = toJsonValue(value)
           } catch (error) {
             this.send({ op: 'read.result', readId, ok: false, kind: 'HANDLER_ERROR', message: String(error) })
             return
@@ -371,6 +364,7 @@ class ToolEntry implements ToolHandle, Detachable, LazySlot {
   loading: Promise<ToolHandler<any, any>> | undefined
   schema: ResolvedInput['schema']
   parse: ResolvedInput['parse']
+  outputSchema: OutputSchema | undefined
   private disposed = false
 
   constructor(
@@ -388,13 +382,15 @@ class ToolEntry implements ToolHandle, Detachable, LazySlot {
     // 定义不合法时同步抛出（与驱动层一致）；需要加载 zod 时异步解析。
     checkHandlerOrLoad(name, definition)
     const resolved = resolveInput(definition.input)
+    const output = resolveOutput(definition.outputSchema)
     client.tools.set(this.id, this)
     owner.children.add(this)
     client.enqueue(async () => {
-      const r = await resolved
+      const [r, o] = await Promise.all([resolved, output])
       if (this.disposed) return null
       this.schema = r.schema
       this.parse = r.parse
+      this.outputSchema = o
       return { op: 'tool.register', id: this.id, ...scopeField(owner), name, spec: this.spec() }
     })
   }
@@ -406,6 +402,8 @@ class ToolEntry implements ToolHandle, Detachable, LazySlot {
       ...(d.title !== undefined && { title: d.title }),
       ...(this.schema !== undefined && { inputSchema: this.schema }),
       ...(d.risk !== undefined && { risk: d.risk }),
+      ...(d.annotations !== undefined && { annotations: d.annotations }),
+      ...(this.outputSchema !== undefined && { outputSchema: this.outputSchema }),
       ...(d.activation !== undefined && { activation: d.activation }),
       ...(d.enabled !== undefined && { enabled: d.enabled }),
     }
@@ -416,12 +414,14 @@ class ToolEntry implements ToolHandle, Detachable, LazySlot {
     const { handler: _h, load: _l, ...meta } = changes as Record<string, unknown>
     this.def = { ...this.def, ...meta }
     const resolved = 'input' in changes ? resolveInput(changes.input) : undefined
+    const output = 'outputSchema' in changes ? resolveOutput(changes.outputSchema) : undefined
     this.client.enqueue(async () => {
       if (resolved) {
         const r = await resolved
         this.schema = r.schema
         this.parse = r.parse
       }
+      if ('outputSchema' in changes) this.outputSchema = await output
       return this.disposed ? null : { op: 'tool.update', id: this.id, spec: this.spec() }
     })
   }

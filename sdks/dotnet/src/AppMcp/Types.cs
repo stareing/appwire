@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace AppMcp;
 
@@ -70,6 +71,10 @@ public enum ToolErrorKind
     ResourceNotFound,
     Unauthorized,
     UnsupportedProtocol,
+    /// <summary>Host 侧限流（由 Host 产生，App 一般不用）。</summary>
+    RateLimited,
+    /// <summary>调用参数、结果或资源内容超过 Host 的大小上限（由 Host 产生，App 一般不用）。</summary>
+    PayloadTooLarge,
 }
 
 public static class ToolErrorKinds
@@ -92,6 +97,8 @@ public static class ToolErrorKinds
         ToolErrorKind.ResourceNotFound => "RESOURCE_NOT_FOUND",
         ToolErrorKind.Unauthorized => "UNAUTHORIZED",
         ToolErrorKind.UnsupportedProtocol => "UNSUPPORTED_PROTOCOL",
+        ToolErrorKind.RateLimited => "RATE_LIMITED",
+        ToolErrorKind.PayloadTooLarge => "PAYLOAD_TOO_LARGE",
         _ => "HANDLER_ERROR",
     };
 }
@@ -219,9 +226,75 @@ public sealed class ToolOptions
 {
     /// <summary>JSON Schema 文本（type 必须为 object）。类型化注册时为 null 则由参数类型生成。</summary>
     public string? InputSchemaJson { get; init; }
+    /// <summary>旧写法：优先用 <see cref="Annotations"/>。两者同时声明时注解中的字段优先，缺少的按 Risk 推导。</summary>
     public ToolRisk Risk { get; init; } = ToolRisk.Write;
+    /// <summary>标准 MCP 工具注解，原样转发给 Agent；为 null 时不声明（Host 按 <see cref="Risk"/> 推导）。</summary>
+    public ToolAnnotations? Annotations { get; init; }
+    /// <summary>结果的 JSON Schema 文本（MCP outputSchema）；为 null 时不声明。可用 <see cref="ToolSchema.For{T}"/> 由结果类型生成。</summary>
+    public string? OutputSchemaJson { get; init; }
     /// <summary>为 null 时使用 Host 默认值。</summary>
     public ToolActivation? Activation { get; init; }
     public string? Title { get; init; }
     public bool Enabled { get; init; } = true;
+}
+
+/// <summary>标准 MCP 工具注解（spec/protocol.md 第 3 节）。本库不据此做判断，只原样转发；为 null 的字段不声明。</summary>
+public sealed record ToolAnnotations
+{
+    /// <summary>给人看的工具标题。</summary>
+    [JsonPropertyName("title")] public string? Title { get; init; }
+    /// <summary>不修改任何状态。</summary>
+    [JsonPropertyName("readOnlyHint")] public bool? ReadOnlyHint { get; init; }
+    /// <summary>可能做出破坏性 / 不可撤销的修改（只在非只读时有意义）。</summary>
+    [JsonPropertyName("destructiveHint")] public bool? DestructiveHint { get; init; }
+    /// <summary>以相同参数重复调用没有额外效果（只在非只读时有意义）。</summary>
+    [JsonPropertyName("idempotentHint")] public bool? IdempotentHint { get; init; }
+    /// <summary>会与外部世界交互（网络、第三方、其他用户可见）。</summary>
+    [JsonPropertyName("openWorldHint")] public bool? OpenWorldHint { get; init; }
+}
+
+/// <summary>内容面向谁（MCP 内容注解 audience）。</summary>
+public enum ContentAudience { User, Assistant }
+
+/// <summary>结果内容的标注（MCP 内容注解），Host 原样转发；为 null 的字段不声明。</summary>
+public sealed record ContentAnnotations
+{
+    [JsonPropertyName("audience")] public IReadOnlyList<ContentAudience>? Audience { get; init; }
+    /// <summary>重要程度，0（可选）到 1（必需）。</summary>
+    [JsonPropertyName("priority")] public double? Priority { get; init; }
+    /// <summary>最后修改时刻（ISO 8601）。</summary>
+    [JsonPropertyName("lastModified")] public string? LastModified { get; init; }
+}
+
+/// <summary>调用结果的业务状态（spec/protocol.md 3.2）。数值与 C 接口 AmResultStatus 一致。</summary>
+public enum ToolResultStatus
+{
+    /// <summary>已完成（缺省）。</summary>
+    Done = 0,
+    /// <summary>已受理、尚未完成（等待用户在 App 内确认或异步处理）；后续状态见 <see cref="ToolResult.StateResource"/>。</summary>
+    Pending = 1,
+    /// <summary>只完成了一部分，说明见 <see cref="ToolResult.Summary"/>。</summary>
+    Partial = 2,
+    /// <summary>没有做任何改动（目标状态已满足或无事可做）。</summary>
+    Noop = 3,
+}
+
+/// <summary>
+/// 结构化调用结果：handler 返回它（而不是普通值）时，除返回值外还带业务状态、摘要与内容注解。
+/// 直接返回普通值 = 只有 <see cref="Data"/> 的 done 结果。
+/// </summary>
+public sealed record ToolResult
+{
+    public ToolResult(object? data = null) => Data = data;
+
+    /// <summary>返回值，用客户端的序列化选项转成 JSON；null 表示无返回值（Host 对模型输出"已完成"）。</summary>
+    public object? Data { get; init; }
+    public ToolResultStatus Status { get; init; } = ToolResultStatus.Done;
+    /// <summary><see cref="ToolResultStatus.Pending"/> 时可读取后续状态的资源名。</summary>
+    public string? StateResource { get; init; }
+    /// <summary>一句面向模型 / 用户的结论（Partial 时说明完成了哪部分）。</summary>
+    public string? Summary { get; init; }
+    public ContentAnnotations? Annotations { get; init; }
+    /// <summary>调用后内容可能已变化的资源名；与 <see cref="ToolContext.AddStateHint"/> 添加的合并。</summary>
+    public IReadOnlyList<string>? StateHints { get; init; }
 }

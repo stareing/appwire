@@ -82,6 +82,52 @@ test('工具调用：返回值序列化为 JSON，ToolResult 带 stateHints', as
   assert.equal((await client.invoke('noop').done).dataJson, 'null');
 });
 
+test('注解与 outputSchema 随注册下发；update 整体替换', () => {
+  const { mcp, client } = create();
+  const h = mcp.tool('order.submit', {
+    description: '下单',
+    risk: 'payment',
+    annotations: { idempotentHint: false, openWorldHint: true, title: '提交订单' },
+    outputSchema: '{"type":"object","properties":{"orderId":{"type":"string"}}}',
+    handler: () => ({ orderId: 'o1' }),
+  });
+  const spec = client.tools.get('order.submit').spec;
+  assert.deepEqual(
+    { ...spec.annotations },
+    { title: '提交订单', readOnlyHint: undefined, destructiveHint: undefined, idempotentHint: false, openWorldHint: true },
+  );
+  assert.equal(spec.outputSchemaJson, '{"type":"object","properties":{"orderId":{"type":"string"}}}');
+  h.update({ annotations: { readOnlyHint: true }, description: '下单2' });
+  const next = client.tools.get('order.submit').spec;
+  assert.equal(next.annotations.readOnlyHint, true);
+  assert.equal(next.annotations.openWorldHint, undefined);
+  assert.equal(next.outputSchemaJson, spec.outputSchemaJson, '未给出的 outputSchema 保持不变');
+  assert.equal(next.description, '下单2');
+});
+
+test('结构化结果：pending + stateResource + summary + 内容注解；普通返回值不变', async () => {
+  const { mcp, client } = create();
+  mcp.tool('order.pay', {
+    description: '付款',
+    handler: () => new ToolResult({ orderId: 'o1' }, ['cart'], {
+      status: 'pending', stateResource: 'order.state', summary: '等待付款', annotations: { audience: ['user'], priority: 0.5 },
+    }),
+  });
+  const r = await client.invoke('order.pay').done;
+  assert.deepEqual(r, {
+    ok: true, dataJson: '{"orderId":"o1"}', stateHints: ['cart'], status: 'pending', stateResource: 'order.state',
+    summary: '等待付款', annotations: { audience: ['user'], priority: 0.5, lastModified: undefined },
+  });
+  // 普通对象（即使含 data / status 键）按原样作为数据
+  mcp.tool('plain', { description: 'p', handler: () => ({ data: 1, status: 'pending' }) });
+  assert.deepEqual(await client.invoke('plain').done, { ok: true, dataJson: '{"data":1,"status":"pending"}', stateHints: [] });
+  // 取值不合法：HANDLER_ERROR，不挂起
+  mcp.tool('bad', { description: 'b', handler: () => new ToolResult(1, [], { status: 'bogus' }) });
+  const bad = await client.invoke('bad').done;
+  assert.equal(bad.ok, false);
+  assert.equal(bad.kind, 'HANDLER_ERROR');
+});
+
 test('失败：ToolCallError 带详情、普通异常、非法 JSON、同步抛出', async () => {
   const { mcp, client } = create();
   mcp.tool('pay', {

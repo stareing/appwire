@@ -20,9 +20,10 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use app_mcp_native::{
-    Activation, CallHandle, CancelListener, CancelReason, ErrorKind, HoldHandle, NativeClient,
-    NativeError, ReadHandle, ResourceHandle, ResourceOptions, ResourceReader, ResourceSpec, Risk,
-    ScopeHandle, StateInfo, StateStatus, ToolHandle, ToolHandler, ToolSpec,
+    Activation, CallHandle, CallResult, CancelListener, CancelReason, ContentAnnotations,
+    ErrorKind, HoldHandle, NativeClient, NativeError, ReadHandle, ResourceHandle, ResourceOptions,
+    ResourceReader, ResourceSpec, ResultStatus, Risk, ScopeHandle, StateInfo, StateStatus,
+    ToolAnnotations, ToolHandle, ToolHandler, ToolOptions, ToolSpec,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -55,9 +56,24 @@ struct ToolSpecMessage {
     activation: Option<Activation>,
     #[serde(default)]
     enabled: Option<bool>,
+    /// 标准 MCP 工具注解；`tool.update` 时缺省表示清除（页面每次发送完整定义）。
+    #[serde(default)]
+    annotations: Option<ToolAnnotations>,
+    /// 结果的 JSON Schema；`tool.update` 时缺省表示清除。
+    #[serde(default, rename = "outputSchema")]
+    output_schema: Option<Value>,
 }
 
 impl ToolSpecMessage {
+    /// 拆成工具定义与选项（注解、输出 schema）。
+    fn into_parts(mut self, name: String) -> (ToolSpec, ToolOptions) {
+        let options = ToolOptions {
+            annotations: self.annotations.take(),
+            output_schema_json: self.output_schema.take().map(|s| s.to_string()),
+        };
+        (self.into_spec(name), options)
+    }
+
     fn into_spec(self, name: String) -> ToolSpec {
         let mut spec = ToolSpec::new(name, self.description);
         spec.title = self.title;
@@ -150,7 +166,11 @@ enum PageOp {
     },
 }
 
-/// `Outcome`：`{ok: true, data, stateHints?}` / `{ok: false, kind, message}`。
+/// `Outcome`：`{ok: true, data, stateHints?, status?, stateResource?, summary?, annotations?}` /
+/// `{ok: false, kind, message}`。
+///
+/// @compat `status` / `annotations` 先按原始 JSON 接收、在 [`Outcome::call_result`] 中转换：取值不合法时
+/// 调用以 `HANDLER_ERROR` 结束，而不是整条消息解析失败（那样调用会一直挂到超时）。
 #[derive(Debug, Deserialize)]
 struct Outcome {
     ok: bool,
@@ -158,6 +178,14 @@ struct Outcome {
     data: Option<Value>,
     #[serde(default, rename = "stateHints")]
     state_hints: Option<Vec<String>>,
+    #[serde(default)]
+    status: Option<Value>,
+    #[serde(default, rename = "stateResource")]
+    state_resource: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    annotations: Option<Value>,
     #[serde(default)]
     kind: Option<String>,
     #[serde(default)]
@@ -167,6 +195,32 @@ struct Outcome {
 impl Outcome {
     fn data_json(&self) -> String {
         self.data.as_ref().unwrap_or(&Value::Null).to_string()
+    }
+
+    /// 成功结果。
+    ///
+    /// @error `status` / `annotations` 取值不合法时返回说明。
+    fn call_result(self) -> Result<CallResult, String> {
+        let status = match self.status {
+            None | Some(Value::Null) => ResultStatus::Done,
+            Some(v) => serde_json::from_value::<ResultStatus>(v)
+                .map_err(|e| format!("结果的 status 不合法（应为 done / pending / partial / noop）：{e}"))?,
+        };
+        let annotations = match self.annotations {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                serde_json::from_value::<ContentAnnotations>(v)
+                    .map_err(|e| format!("结果的 annotations 不合法：{e}"))?,
+            ),
+        };
+        Ok(CallResult {
+            data_json: Some(self.data.unwrap_or(Value::Null).to_string()),
+            state_hints: self.state_hints.unwrap_or_default(),
+            status,
+            state_resource: self.state_resource,
+            summary: self.summary,
+            annotations,
+        })
     }
 
     /// 失败的类别与说明；类别无法识别时按 `HANDLER_ERROR`。
@@ -556,9 +610,10 @@ impl Session {
                     session: Arc::downgrade(self),
                     tool_id: id,
                 });
+                let (spec, options) = spec.into_parts(name);
                 let handle = match registrar {
-                    Some(scope) => scope.register_tool(spec.into_spec(name), handler)?,
-                    None => self.scope.register_tool(spec.into_spec(name), handler)?,
+                    Some(scope) => scope.register_tool_with(spec, options, handler)?,
+                    None => self.scope.register_tool_with(spec, options, handler)?,
                 };
                 st.tools.insert(id, handle);
                 Ok(None)
@@ -566,7 +621,8 @@ impl Session {
             PageOp::ToolUpdate { id, spec } => {
                 let st = self.live()?;
                 if let Some(tool) = st.tools.get(&id) {
-                    tool.update(spec.into_spec(tool.name()))?;
+                    let (spec, options) = spec.into_parts(tool.name());
+                    tool.update_with(spec, options)?;
                 }
                 Ok(None)
             }
@@ -647,10 +703,13 @@ impl Session {
                     return Ok(None);
                 };
                 let done = if outcome.ok {
-                    call.complete(
-                        Some(&outcome.data_json()),
-                        outcome.state_hints.unwrap_or_default(),
-                    )
+                    match outcome.call_result() {
+                        Ok(result) => call.complete_with(result),
+                        Err(message) => {
+                            let _ = call.fail(ErrorKind::HandlerError, &message);
+                            return Err(op_error("INVALID_RESULT", message));
+                        }
+                    }
                 } else {
                     let (kind, message) = outcome.error();
                     call.fail(kind, &message)

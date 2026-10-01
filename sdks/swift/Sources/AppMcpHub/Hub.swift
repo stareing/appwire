@@ -58,6 +58,21 @@ public typealias InstanceStatus = AppMcpHubBindings.InstanceStatus
 public typealias InstanceState = AppMcpHubBindings.InstanceState
 public typealias LastError = AppMcpHubBindings.LastError
 public typealias DiagnosticReport = AppMcpHubBindings.DiagnosticReport
+// 资源保护与工具声明（spec/hub-api.md 3.11）。
+/// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。
+public typealias LimitsConfig = AppMcpHubBindings.LimitsConfig
+/// 结果与其 `outputSchema` 不符时的处理：`.off` / `.log`（默认）/ `.reject`。
+public typealias OutputValidation = AppMcpHubBindings.OutputValidation
+/// 一个工具的声明（`AppStatus.tools`）。
+public typealias ToolDeclaration = AppMcpHubBindings.ToolDeclaration
+/// 标准 MCP 工具注解（`HubTool.annotations`、`ApprovalRequest.annotations`）。
+/// 与 App 端模块 `AppMcp.ToolAnnotations` 同名，这里加前缀避免同时导入两个模块时歧义（下同）。
+public typealias HubToolAnnotations = AppMcpHubBindings.ToolAnnotations
+/// 内容标注（MCP 内容注解：audience、priority、lastModified）。
+public typealias HubContentAnnotations = AppMcpHubBindings.ContentAnnotations
+public typealias HubAudience = AppMcpHubBindings.Audience
+/// 调用结果的业务状态：`.done` / `.pending` / `.partial` / `.noop`。
+public typealias HubResultStatus = AppMcpHubBindings.ResultStatus
 
 /// 工具调用以错误结束（`CallResult.decode` / `CallResult.get()`）。`kind` 为协议错误类别，如 `USER_REJECTED`。
 public struct ToolError: Error, Sendable, Equatable, CustomStringConvertible {
@@ -81,6 +96,14 @@ public struct CallResult: Sendable, Equatable {
     public let instanceId: String?
     /// 本会话首次接触该 App 时附带的总览。
     public let overview: AppOverviewInfo?
+    /// App 声明的业务状态（缺省 `.done`；`.pending` 时后续状态见 `stateResource`）。
+    public let status: HubResultStatus
+    /// `.pending` 时可读取后续状态的资源 URI（`app-mcp://<appId>/<名>`）。
+    public let stateResource: String?
+    /// App 给出的一句结论。
+    public let summary: String?
+    /// App 对结果内容的标注，原样。
+    public let annotations: HubContentAnnotations?
 
     public var isError: Bool { error != nil }
 
@@ -301,7 +324,11 @@ public final class Hub: @unchecked Sendable {
             error: out.error,
             stateHints: out.stateHints,
             instanceId: out.instanceId,
-            overview: out.overview
+            overview: out.overview,
+            status: out.status,
+            stateResource: out.stateResource,
+            summary: out.summary,
+            annotations: out.annotations
         )
     }
 

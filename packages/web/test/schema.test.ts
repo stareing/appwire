@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { EMPTY_INPUT_SCHEMA, describeParseError, isZodLike, toJsonSchema } from '../src/schema'
+import { EMPTY_INPUT_SCHEMA, describeParseError, isZodLike, toJsonSchema, toOutputSchema } from '../src/schema'
 
 describe('toJsonSchema', () => {
   it('缺省为无参数', () => {
@@ -68,5 +68,22 @@ describe('zod 辅助', () => {
     expect(d.message).toMatch(/^参数校验失败：a\.b: /)
     expect(d.details).toEqual({ issues: [{ path: 'a.b', message: expect.any(String) }] })
     expect(describeParseError(new Error('x')).message).toBe('参数校验失败：x')
+  })
+})
+
+describe('toOutputSchema', () => {
+  it('根类型不限于 object；JSON Schema 原样返回', () => {
+    const s = { type: 'array', items: { type: 'string' } }
+    expect(toOutputSchema(s)).toBe(s)
+    expect(toOutputSchema({ toJSONSchema: () => ({ type: 'string' }) })).toEqual({ type: 'string' })
+  })
+
+  it('zod 按输出形态转换（带默认值的字段在输出中必有）', () => {
+    const out = toOutputSchema(z.object({ qty: z.number().default(1) })) as { required?: string[] }
+    expect(out.required).toEqual(['qty'])
+  })
+
+  it('不是对象时抛出', () => {
+    expect(() => toOutputSchema('x' as never)).toThrow('输出 schema 必须是 JSON 对象')
   })
 })

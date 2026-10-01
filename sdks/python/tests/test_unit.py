@@ -92,6 +92,7 @@ def test_tool_call_error_validates_kind():
     with pytest.raises(ValueError):
         ToolCallError("NOT_A_KIND", "x")
     assert "HANDLER_ERROR" in app_mcp.ERROR_KINDS
+    assert {"RATE_LIMITED", "PAYLOAD_TOO_LARGE"} <= app_mcp.ERROR_KINDS
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +124,13 @@ class FakeCall:
         if self.done.is_set():
             raise ffi.AppMcpError.AlreadyCompleted()
         self.result = ("ok", json.loads(data_json) if data_json is not None else None, hints)
+        self.done.set()
+
+    def complete_with(self, result):
+        if self.done.is_set():
+            raise ffi.AppMcpError.AlreadyCompleted()
+        self.full = result
+        self.result = ("ok", json.loads(result.data_json) if result.data_json is not None else None, result.state_hints)
         self.done.set()
 
     def fail(self, kind, message):
@@ -169,6 +177,61 @@ def test_tool_result_hints(client):
     call = FakeCall({})
     adapter(client, lambda: ToolResult([1], state_hints=["x"])).invoke(call)
     assert call.wait() == ("ok", [1], ["x"])
+
+
+def test_structured_tool_result(client):
+    def submit(ctx: ToolContext):
+        ctx.add_state_hint("cart")
+        return ToolResult(
+            {"orderId": "o1"},
+            status="pending",
+            state_resource="order.state",
+            summary="已提交",
+            annotations={"audience": ["user"], "priority": 0.5},
+        )
+
+    call = FakeCall({})
+    adapter(client, submit).invoke(call)
+    assert call.wait() == ("ok", {"orderId": "o1"}, ["cart"])
+    full = call.full
+    assert full.status == ffi.ResultStatus.PENDING
+    assert (full.state_resource, full.summary) == ("order.state", "已提交")
+    assert full.annotations == ffi.ContentAnnotations(audience=[ffi.Audience.USER], priority=0.5, last_modified=None)
+
+    # 默认 done、无附加信息
+    r = ToolResult()
+    assert (r.status, r.state_resource, r.summary, r.annotations) == (ffi.ResultStatus.DONE, None, None, None)
+
+
+def test_tool_result_rejects_invalid_values():
+    with pytest.raises(ValueError):
+        ToolResult(status="later")
+    with pytest.raises(ValueError):
+        ToolResult(annotations={"audience": ["robot"]})
+    with pytest.raises(ValueError):
+        ToolResult(annotations={"lastModified": "2026-01-01"})
+
+
+def test_tool_annotations_and_output_schema(client):
+    handle = client.add_tool(
+        lambda: None,
+        "order.submit",
+        "下单",
+        annotations={"idempotent_hint": False, "open_world_hint": True},
+        output_schema={"type": "object"},
+    )
+    spec = handle._spec
+    assert spec.annotations == ffi.ToolAnnotations(idempotent_hint=False, open_world_hint=True)
+    assert json.loads(spec.output_schema_json) == {"type": "object"}
+    handle.update(description="下单（新）")
+    assert handle._spec.annotations == spec.annotations  # 未给出的字段保持不变
+    handle.update(annotations=ffi.ToolAnnotations(read_only_hint=True), output_schema='{"type":"array"}')
+    assert handle._spec.annotations.read_only_hint is True
+    assert json.loads(handle._spec.output_schema_json) == {"type": "array"}
+    with pytest.raises(ValueError):
+        client.add_tool(lambda: None, "bad", "坏", annotations={"readOnlyHint": True})
+    with pytest.raises(ValueError):
+        client.add_tool(lambda: None, "bad2", "坏", output_schema="{")
 
 
 def test_none_result_is_null(client):

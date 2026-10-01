@@ -49,11 +49,12 @@ use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Manager, RunEvent, Runtime, Webview, WindowEvent};
 
 pub use app_mcp_native::{
-    Activation, AppOverview, CallHandle, CancelListener, CancelReason, ClientKind, ClientListener,
-    ErrorKind, HeartbeatMode, HoldHandle, LifecycleMode, LifecyclePolicy, LogLevel, NativeClient,
-    NativeConfig, NativeError, ReadHandle, Residency, ResourceHandle, ResourceOptions,
-    ResourceReader, ResourceSpec, Risk, ScopeHandle, SleepReason, StateInfo, StateStatus,
-    ToolHandle, ToolHandler, ToolSpec, Visibility, WakeDescriptor, WakeKind, WakeReason,
+    Activation, AppOverview, Audience, CallHandle, CallResult, CancelListener, CancelReason,
+    ClientKind, ClientListener, ContentAnnotations, ErrorKind, HeartbeatMode, HoldHandle,
+    LifecycleMode, LifecyclePolicy, LogLevel, NativeClient, NativeConfig, NativeError, ReadHandle,
+    Residency, ResourceHandle, ResourceOptions, ResourceReader, ResourceSpec, ResultStatus, Risk,
+    ScopeHandle, SleepReason, StateInfo, StateStatus, ToolAnnotations, ToolHandle, ToolHandler,
+    ToolOptions, ToolSpec, Visibility, WakeDescriptor, WakeKind, WakeReason,
 };
 pub use bridge::BRIDGE_VERSION;
 

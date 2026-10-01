@@ -3,6 +3,7 @@ package dev.appmcp
 import dev.appmcp.ffi.AppMcpClient
 import dev.appmcp.ffi.AppMcpException
 import dev.appmcp.ffi.Call
+import dev.appmcp.ffi.CallResult
 import dev.appmcp.ffi.CancelListener
 import dev.appmcp.ffi.ClientListener
 import dev.appmcp.ffi.Read
@@ -88,12 +89,16 @@ class ToolHandle internal constructor(private val inner: FfiTool, @Volatile priv
         inputSchema: JsonObject? = null,
         risk: Risk? = null,
         title: String? = null,
+        annotations: ToolAnnotations? = null,
+        outputSchema: JsonObject? = null,
     ) {
         val next = spec.copy(
             description = description ?: spec.description,
             inputSchemaJson = inputSchema?.toString() ?: spec.inputSchemaJson,
             risk = risk ?: spec.risk,
             title = title ?: spec.title,
+            annotations = annotations ?: spec.annotations,
+            outputSchemaJson = outputSchema?.toString() ?: spec.outputSchemaJson,
         )
         inner.update(next)
         spec = next
@@ -121,12 +126,19 @@ abstract class AppMcpRegistrar internal constructor() {
      * 注册工具。
      *
      * ```kotlin
-     * client.tool("cart.checkout", "结账", schema, risk = Risk.PAYMENT) { args, ctx ->
+     * client.tool(
+     *     "cart.checkout", "结账", schema,
+     *     annotations = ToolAnnotations(destructiveHint = true, openWorldHint = true),
+     * ) { args, ctx ->
      *     checkout(args["coupon"]?.jsonPrimitive?.contentOrNull)
      * }
      * ```
      *
-     * 返回值见 [anyToJson]；返回 [ToolResult] 可附带 stateHints。
+     * 返回值见 [anyToJson]；返回 [ToolResult] 可附带 stateHints、业务状态、摘要与内容标注。
+     *
+     * @param risk 旧写法，优先用 [annotations]。
+     * @param annotations 标准 MCP 工具注解，原样转发给 Agent；为空时 Hub 按 [risk] 推导。
+     * @param outputSchema 结果的 JSON Schema（MCP `outputSchema`）。
      */
     fun tool(
         name: String,
@@ -136,6 +148,8 @@ abstract class AppMcpRegistrar internal constructor() {
         activation: Activation? = null,
         title: String? = null,
         enabled: Boolean = true,
+        annotations: ToolAnnotations? = null,
+        outputSchema: JsonObject? = null,
         handler: ToolFunction,
     ): ToolHandle {
         val spec = ToolSpec(
@@ -146,6 +160,8 @@ abstract class AppMcpRegistrar internal constructor() {
             activation = activation,
             title = title,
             enabled = enabled,
+            annotations = annotations,
+            outputSchemaJson = outputSchema?.toString(),
         )
         val o = owner
         val raw = registerRaw(spec, object : ToolHandler {
@@ -165,9 +181,11 @@ abstract class AppMcpRegistrar internal constructor() {
         activation: Activation? = null,
         title: String? = null,
         enabled: Boolean = true,
+        annotations: ToolAnnotations? = null,
+        outputSchema: JsonObject? = null,
         noinline handler: suspend (args: A, ctx: ToolContext) -> R,
     ): ToolHandle = typedToolImpl(
-        name, description, inputSchema, risk, activation, title, enabled,
+        name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema,
         serializer<A>(), serializer<R>(), handler,
     )
 
@@ -180,10 +198,14 @@ abstract class AppMcpRegistrar internal constructor() {
         activation: Activation?,
         title: String?,
         enabled: Boolean,
+        annotations: ToolAnnotations?,
+        outputSchema: JsonObject?,
         argSerializer: KSerializer<A>,
         resultSerializer: KSerializer<R>,
         handler: suspend (A, ToolContext) -> R,
-    ): ToolHandle = tool(name, description, inputSchema, risk, activation, title, enabled) { args, ctx ->
+    ): ToolHandle = tool(
+        name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema,
+    ) { args, ctx ->
         val decoded = try {
             AppMcpJson.decodeFromJsonElement(argSerializer, args)
         } catch (e: SerializationException) {
@@ -426,12 +448,23 @@ class AppMcp private constructor(
             fail = { kind, msg, details -> failQuietly(call, kind, msg, details) },
         ) {
             val result = handler(args, ctx)
-            val (data, hints) = when (result) {
-                is ToolResult -> (result.data ?: JsonNull) to (result.stateHints + ctx.stateHints)
-                else -> anyToJson(result) to ctx.stateHints.toList()
+            val completion = when (result) {
+                is ToolResult -> CallResult(
+                    dataJson = (result.data ?: JsonNull).toString(),
+                    stateHints = result.stateHints + ctx.stateHints,
+                    status = result.status,
+                    stateResource = result.stateResource,
+                    summary = result.summary,
+                    annotations = result.annotations,
+                )
+                else -> CallResult(
+                    dataJson = anyToJson(result).toString(),
+                    stateHints = ctx.stateHints.toList(),
+                    status = ResultStatus.DONE,
+                )
             }
             try {
-                call.complete(data.toString(), hints)
+                call.completeWith(completion)
             } catch (_: AppMcpException.AlreadyCompleted) {
             }
         }

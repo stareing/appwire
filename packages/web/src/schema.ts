@@ -2,7 +2,7 @@
  * 工具输入定义 → JSON Schema，以及 zod 校验。
  */
 
-import type { InputDefinition, JsonSchema, ZodLike } from './types'
+import type { InputDefinition, JsonSchema, OutputDefinition, OutputSchema, ZodLike } from './types'
 
 export const EMPTY_INPUT_SCHEMA: JsonSchema = { type: 'object', properties: {} }
 
@@ -15,30 +15,53 @@ export function isZodLike(input: unknown): input is ZodLike<unknown> {
   )
 }
 
+type SchemaIo = 'input' | 'output'
+
 interface StandardJsonSchema {
-  '~standard'?: { jsonSchema?: { input?: (options: { target: string }) => unknown } }
+  '~standard'?: { jsonSchema?: Partial<Record<SchemaIo, (options: { target: string }) => unknown>> }
 }
 
 type ZodModule = { toJSONSchema?: (schema: unknown, params?: { io?: 'input' | 'output' }) => unknown }
 
-function asSchema(value: unknown): JsonSchema {
+const IO_LABEL: Record<SchemaIo, string> = { input: '输入', output: '输出' }
+
+function asObject(value: unknown, io: SchemaIo): OutputSchema {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('输入 schema 必须是 JSON 对象')
+    throw new Error(`${IO_LABEL[io]} schema 必须是 JSON 对象`)
   }
-  return value as JsonSchema
+  return value as OutputSchema
 }
 
 /** zod v4：优先用 Standard JSON Schema（zod ≥ 4.2，无需再 import zod），否则动态加载 `z.toJSONSchema`。 */
-async function zodToJsonSchemaAsync(schema: unknown): Promise<JsonSchema> {
+async function zodToJsonSchemaAsync(schema: unknown, io: SchemaIo): Promise<OutputSchema> {
   let mod: ZodModule & { z?: ZodModule }
   try {
     mod = (await import('zod')) as unknown as ZodModule & { z?: ZodModule }
   } catch (e) {
-    throw new Error(`无法加载 zod 以转换输入 schema：${e instanceof Error ? e.message : String(e)}`)
+    throw new Error(`无法加载 zod 以转换${IO_LABEL[io]} schema：${e instanceof Error ? e.message : String(e)}`)
   }
   const toJSONSchema = mod.toJSONSchema ?? mod.z?.toJSONSchema
   if (typeof toJSONSchema !== 'function') throw new Error('当前 zod 版本不支持 toJSONSchema（需要 zod v4）')
-  return asSchema(toJSONSchema(schema, { io: 'input' }))
+  return asObject(toJSONSchema(schema, { io }), io)
+}
+
+/** schema 定义（JSON Schema / zod / 带 `toJSONSchema()` 的对象）→ JSON Schema 对象，按 `io` 选择 zod 的转换形态。 */
+function convertDefinition(definition: object, io: SchemaIo): OutputSchema | Promise<OutputSchema> {
+  if (isZodLike(definition)) {
+    const convert = (definition as StandardJsonSchema)['~standard']?.jsonSchema?.[io]
+    if (typeof convert === 'function') return asObject(convert({ target: 'draft-2020-12' }), io)
+    // zod v4 classic 的实例方法，无需再 import zod
+    const method = (definition as { toJSONSchema?: unknown }).toJSONSchema
+    if (typeof method === 'function') {
+      return asObject((method as (params: { io: SchemaIo }) => unknown).call(definition, { io }), io)
+    }
+    return zodToJsonSchemaAsync(definition, io)
+  }
+  const withMethod = definition as { toJSONSchema?: unknown }
+  if (typeof withMethod.toJSONSchema === 'function') {
+    return asObject((withMethod.toJSONSchema as () => unknown).call(definition), io)
+  }
+  return asObject(definition, io)
 }
 
 /**
@@ -47,23 +70,15 @@ async function zodToJsonSchemaAsync(schema: unknown): Promise<JsonSchema> {
  */
 export function toJsonSchema(input: InputDefinition<unknown> | undefined): JsonSchema | Promise<JsonSchema> {
   if (input === undefined || input === null) return EMPTY_INPUT_SCHEMA
-  if (isZodLike(input)) {
-    const std = (input as StandardJsonSchema)['~standard']?.jsonSchema
-    if (std && typeof std.input === 'function') {
-      return asSchema(std.input({ target: 'draft-2020-12' }))
-    }
-    // zod v4 classic 的实例方法（按输入形态转换），无需再 import zod
-    const method = (input as { toJSONSchema?: unknown }).toJSONSchema
-    if (typeof method === 'function') {
-      return asSchema((method as (params: { io: 'input' }) => unknown).call(input, { io: 'input' }))
-    }
-    return zodToJsonSchemaAsync(input)
-  }
-  const withMethod = input as { toJSONSchema?: unknown }
-  if (typeof withMethod.toJSONSchema === 'function') {
-    return asSchema((withMethod.toJSONSchema as () => unknown).call(input))
-  }
-  return asSchema(input)
+  return convertDefinition(input, 'input') as JsonSchema | Promise<JsonSchema>
+}
+
+/**
+ * 转换输出定义（MCP `outputSchema`），zod 按输出形态转换；根类型不限于 object。
+ * 同步 / 异步与失败方式同 {@link toJsonSchema}。
+ */
+export function toOutputSchema(output: OutputDefinition<unknown>): OutputSchema | Promise<OutputSchema> {
+  return convertDefinition(output, 'output')
 }
 
 /** zod 校验失败的简要说明与详情。 */

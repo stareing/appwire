@@ -131,7 +131,7 @@ public sealed class AppMcpHub : IDisposable, IAsyncDisposable
         return TakeJson(json);
     }
 
-    /// <summary>HubResource 数组。</summary>
+    /// <summary>HubResource 数组（可带 annotations：MCP 内容注解）。</summary>
     public JsonElement GetResources()
     {
         HubNativeMethods.Check(HubNativeMethods.am_hub_resources_json(_handle, out var json));

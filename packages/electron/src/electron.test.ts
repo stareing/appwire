@@ -130,6 +130,44 @@ describe('Electron 桥接', () => {
     expect(page.instanceId).toBe('fake-instance')
   })
 
+  it('注解、outputSchema 与结构化结果经桥接往返；update 可清除声明', async () => {
+    const { ipcMain, native } = setupMain()
+    const { page } = setupPage(ipcMain, new FakeWebContents(1))
+    const t = page.tool('order.submit', {
+      description: '下单',
+      annotations: { idempotentHint: false, openWorldHint: true },
+      outputSchema: { type: 'object', properties: { orderId: { type: 'string' } } },
+      handler: () => ({
+        data: { orderId: 'o1' },
+        status: 'pending' as const,
+        stateResource: 'order.state',
+        summary: '等待付款',
+        annotations: { audience: ['user' as const], priority: 0.5 },
+      }),
+    })
+    page.tool<unknown, unknown>('plain', { description: 'p', handler: () => ({ data: 1, status: 'success' }) })
+    await flush()
+    expect(native.tools.get('order.submit')?.spec).toMatchObject({
+      annotations: { idempotentHint: false, openWorldHint: true },
+      outputSchemaJson: '{"type":"object","properties":{"orderId":{"type":"string"}}}',
+    })
+    expect(await native.call('order.submit')).toEqual({
+      ok: true,
+      data: { orderId: 'o1' },
+      stateHints: [],
+      status: 'pending',
+      stateResource: 'order.state',
+      summary: '等待付款',
+      annotations: { audience: ['user'], priority: 0.5 },
+    })
+    expect(await native.call('plain')).toEqual({ ok: true, data: { data: 1, status: 'success' }, stateHints: [] })
+    t.update({ annotations: undefined, outputSchema: undefined })
+    await flush()
+    const spec = native.tools.get('order.submit')?.spec
+    expect(spec?.annotations).toBeUndefined()
+    expect(spec?.outputSchemaJson).toBeUndefined()
+  })
+
   it('zod 输入在渲染进程 parse', async () => {
     const { ipcMain, native } = setupMain()
     const { page } = setupPage(ipcMain, new FakeWebContents(1))

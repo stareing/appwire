@@ -55,6 +55,29 @@ describe('exposeStore', () => {
     expect(stats.unsubscribes).toBe(1)
   })
 
+  it('annotations 与 outputSchema 原样交给 SDK；未给出时不声明', () => {
+    const reg = new FakeRegistrar()
+    const { adapter } = makeAdapter({ cancel: () => {}, go: () => {} })
+    exposeStore(reg, adapter, {
+      actions: {
+        cancel: {
+          description: '取消',
+          risk: 'destructive',
+          annotations: { idempotentHint: true },
+          outputSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+        },
+        go: { description: 'x' },
+      },
+    })
+    expect(reg.getTool('cancel').def).toMatchObject({
+      risk: 'destructive',
+      annotations: { idempotentHint: true },
+      outputSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+    })
+    expect(reg.getTool('go').def).not.toHaveProperty('annotations')
+    expect(reg.getTool('go').def).not.toHaveProperty('outputSchema')
+  })
+
   it('没有 enabled 与资源时不订阅', () => {
     const reg = new FakeRegistrar()
     const { adapter, stats } = makeAdapter({ go: () => 1 })

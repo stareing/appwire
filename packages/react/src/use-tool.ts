@@ -14,8 +14,8 @@ interface MetaSnapshot {
   risk: ToolDefinition['risk']
   activation: ToolDefinition['activation']
   enabled: boolean
-  input: unknown
-  inputKey: string | null
+  /** 按内容比较的字段：原值与比较键（{@link schemaKey}）。 */
+  structured: Record<StructuredKey, { value: unknown; key: string | null }>
 }
 
 interface Registration {
@@ -27,17 +27,24 @@ interface Registration {
 }
 
 const SCALAR_KEYS = ['description', 'title', 'risk', 'activation', 'enabled'] as const
+/** 常写成内联字面量（每次渲染引用都变）的字段：先比较引用，再比较内容。 */
+const STRUCTURED_KEYS = ['input', 'outputSchema', 'annotations'] as const
+type StructuredKey = (typeof STRUCTURED_KEYS)[number]
 
 function snapshot(def: AnyDef, prev?: MetaSnapshot): MetaSnapshot {
-  const sameInput = prev !== undefined && prev.input === def.input
+  const structured = {} as MetaSnapshot['structured']
+  for (const k of STRUCTURED_KEYS) {
+    const value: unknown = def[k]
+    const before = prev?.structured[k]
+    structured[k] = { value, key: before !== undefined && before.value === value ? before.key : schemaKey(value) }
+  }
   return {
     description: def.description,
     title: def.title,
     risk: def.risk,
     activation: def.activation,
     enabled: def.enabled ?? true,
-    input: def.input,
-    inputKey: sameInput ? prev.inputKey : schemaKey(def.input),
+    structured,
   }
 }
 
@@ -50,10 +57,13 @@ function diff(prev: MetaSnapshot, next: MetaSnapshot, def: AnyDef): ToolChanges 
       changed = true
     }
   }
-  if (prev.input !== next.input) {
-    // 引用变化时再比较 schema 内容；无法比较（inputKey 为 null）时视为已变化。
-    if (prev.inputKey === null || next.inputKey === null || prev.inputKey !== next.inputKey) {
-      changes.input = def.input
+  for (const k of STRUCTURED_KEYS) {
+    const a = prev.structured[k]
+    const b = next.structured[k]
+    if (a.value === b.value) continue
+    // 引用变化时再比较内容；无法比较（key 为 null）时视为已变化。
+    if (a.key === null || b.key === null || a.key !== b.key) {
+      changes[k] = def[k]
       changed = true
     }
   }
@@ -67,8 +77,8 @@ function diff(prev: MetaSnapshot, next: MetaSnapshot, def: AnyDef): ToolChanges 
  * - `handler` 每次渲染后通过 `setHandler` 刷新，始终使用最新闭包，不重新注册。
  * - 也可以给出惰性加载器 `load`（与 `handler` 二选一，见 `LazyToolDefinition`）：首次调用时加载并缓存；
  *   `load` 的引用变化不会重新加载。
- * - `description` / `title` / `input` / `risk` / `activation` / `enabled` 变化时调用 `update`，
- *   只传变化的字段（`input` 先比较引用，再比较转换后的 JSON Schema）。
+ * - `description` / `title` / `input` / `outputSchema` / `risk` / `annotations` / `activation` / `enabled` 变化时调用
+ *   `update`，只传变化的字段（`input` / `outputSchema` / `annotations` 先比较引用，再比较转换后的 JSON 内容）。
  * - 不触发任何额外渲染：注册信息保存在 ref 中。
  * - 没有 `<AppMcpProvider>` 时为空操作。
  *

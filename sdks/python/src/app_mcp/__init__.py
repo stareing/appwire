@@ -35,6 +35,10 @@ if TYPE_CHECKING:  # pragma: no cover
     AppOverview = ffi.AppOverview
     CancelReason = ffi.CancelReason
     Risk = ffi.Risk
+    ToolAnnotations = ffi.ToolAnnotations
+    ContentAnnotations = ffi.ContentAnnotations
+    ResultStatus = ffi.ResultStatus
+    Audience = ffi.Audience
     Activation = ffi.Activation
     Visibility = ffi.Visibility
     StateInfo = ffi.StateInfo
@@ -66,6 +70,10 @@ _LAZY: dict[str, tuple[str, str]] = {
             "AppOverview",
             "CancelReason",
             "Risk",
+            "ToolAnnotations",
+            "ContentAnnotations",
+            "ResultStatus",
+            "Audience",
             "Activation",
             "Visibility",
             "StateInfo",
@@ -99,11 +107,14 @@ __all__ = [
     "AppMcp",
     "AppMcpError",
     "AppOverview",
+    "Audience",
     "CancelReason",
+    "ContentAnnotations",
     "Dispatcher",
     "Hold",
     "LifecyclePolicy",
     "ResourceHandle",
+    "ResultStatus",
     "Risk",
     "Scope",
     "SleepReason",
@@ -111,6 +122,7 @@ __all__ = [
     "StateStatus",
     "ToolCallError",
     "ToolContext",
+    "ToolAnnotations",
     "ToolHandle",
     "ToolResult",
     "Visibility",

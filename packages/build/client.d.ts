@@ -7,7 +7,7 @@
  * ```
  */
 declare module 'virtual:app-mcp/annotated' {
-  import type { Activation, JsonSchema, Registrar, Risk } from '@app-mcp/web'
+  import type { Activation, JsonSchema, OutputSchema, Registrar, Risk, ToolAnnotations } from '@app-mcp/web'
 
   /** 由 `@mcp` 注释声明的工具元数据。 */
   export interface AnnotatedToolInfo {
@@ -16,8 +16,12 @@ declare module 'virtual:app-mcp/annotated' {
     title?: string
     risk?: Risk
     activation?: Activation
+    /** `@readOnly` / `@destructive` / `@idempotent` / `@openWorld` 标签给出的标准 MCP 工具注解。 */
+    annotations?: ToolAnnotations
     /** 从 TypeScript 参数类型推导的 JSON Schema。 */
     inputSchema: JsonSchema
+    /** 从 TypeScript 返回值类型推导的 JSON Schema（MCP `outputSchema`）。 */
+    outputSchema?: OutputSchema
     /** 源文件相对项目根目录的路径。 */
     source: string
     /** 模块导出名。 */

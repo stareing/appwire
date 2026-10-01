@@ -2,7 +2,15 @@ import AppMcpBindings
 import Foundation
 
 // 直接复用 uniffi 生成的数据类型。
+/// 风险等级（旧写法：优先用 `ToolAnnotations`；两者同时存在时注解中声明的字段优先，缺少的按 risk 推导）。
 public typealias Risk = AppMcpBindings.Risk
+/// 标准 MCP 工具注解（title、readOnlyHint、destructiveHint、idempotentHint、openWorldHint，均可选）。
+public typealias ToolAnnotations = AppMcpBindings.ToolAnnotations
+/// 结果内容的标注（MCP 内容注解：audience、priority、lastModified）。
+public typealias ContentAnnotations = AppMcpBindings.ContentAnnotations
+public typealias Audience = AppMcpBindings.Audience
+/// 调用结果的业务状态：`.done`（缺省）/ `.pending` / `.partial` / `.noop`。
+public typealias ResultStatus = AppMcpBindings.ResultStatus
 public typealias Activation = AppMcpBindings.Activation
 public typealias Visibility = AppMcpBindings.Visibility
 public typealias CancelReason = AppMcpBindings.CancelReason
@@ -37,6 +45,10 @@ public enum ErrorKind {
     public static let resourceNotFound = "RESOURCE_NOT_FOUND"
     public static let unauthorized = "UNAUTHORIZED"
     public static let unsupportedProtocol = "UNSUPPORTED_PROTOCOL"
+    /// Host 侧限流（App 一般不抛）。
+    public static let rateLimited = "RATE_LIMITED"
+    /// Host 侧大小上限（App 一般不抛）。
+    public static let payloadTooLarge = "PAYLOAD_TOO_LARGE"
 
     /// 原生库认可的全部类别。
     public static var all: Set<String> { Set(AppMcpBindings.errorKinds()) }
@@ -61,6 +73,58 @@ public struct ToolCallError: Error, Sendable, Equatable, CustomStringConvertible
     }
 
     public var description: String { "\(kind): \(message)" }
+}
+
+/// 结构化调用结果（spec/protocol.md 3.2），作为 handler 返回值。直接返回普通值 = `.done` 且无附加信息。
+///
+/// ```swift
+/// return ToolResult(data: order, status: .pending, stateResource: "order.state", summary: "已提交，等待用户付款")
+/// ```
+///
+/// @invariant 不遵循 `Encodable`：注册重载据此区分结构化结果与普通返回值。
+public struct ToolResult<Value: Encodable> {
+    /// 返回值；`nil` 表示无返回值（Hub 对模型输出"已完成"）。
+    public var data: Value?
+    /// 调用后内容可能变化的资源名（与 `ToolContext.addStateHint` 合并）。
+    public var stateHints: [String]
+    /// 业务状态：`.pending`（已受理、待 App 内确认或异步完成）/ `.partial` / `.noop`；缺省 `.done`。
+    public var status: ResultStatus
+    /// `.pending` 时可读取后续状态的资源名。
+    public var stateResource: String?
+    /// 一句面向模型 / 用户的结论（`.partial` 时说明完成了哪部分）。
+    public var summary: String?
+    /// 结果内容的标注，Hub 原样转发。
+    public var annotations: ContentAnnotations?
+
+    public init(
+        data: Value?,
+        stateHints: [String] = [],
+        status: ResultStatus = .done,
+        stateResource: String? = nil,
+        summary: String? = nil,
+        annotations: ContentAnnotations? = nil
+    ) {
+        self.data = data
+        self.stateHints = stateHints
+        self.status = status
+        self.stateResource = stateResource
+        self.summary = summary
+        self.annotations = annotations
+    }
+}
+
+extension ToolResult {
+    /// 原生调用结果（`stateHints` 只含本结果声明的部分；上下文中的由提交方合并）。
+    func ffi() throws -> CallResult {
+        CallResult(
+            dataJson: try data.map { try encodeJSON($0) },
+            stateHints: stateHints,
+            status: status,
+            stateResource: stateResource,
+            summary: summary,
+            annotations: annotations
+        )
+    }
 }
 
 /// 无参数工具的参数类型。

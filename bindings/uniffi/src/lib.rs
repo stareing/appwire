@@ -4,9 +4,9 @@
 //!
 //! - 对象（`uniffi::Object`）：[`AppMcpClient`]、[`Scope`]、[`Tool`]、[`Resource`]、[`Call`]、[`Read`]、
 //!   [`Hold`]，分别包装原生运行时的 `NativeClient` 与各类句柄。
-//! - 记录（`uniffi::Record`）：[`ClientConfig`]、[`AppOverview`]、[`ToolSpec`]、[`ResourceSpec`]、[`StateInfo`]、
-//!   [`LifecyclePolicy`]、[`WakeDescriptor`]。
-//! - 枚举（`uniffi::Enum`）：[`Risk`]、[`Activation`]、[`Visibility`]、[`ClientKind`]、[`CancelReason`]、
+//! - 记录（`uniffi::Record`）：[`ClientConfig`]、[`AppOverview`]、[`ToolSpec`]、[`ToolAnnotations`]、[`ResourceSpec`]、
+//!   [`CallResult`]、[`ContentAnnotations`]、[`StateInfo`]、[`LifecyclePolicy`]、[`WakeDescriptor`]。
+//! - 枚举（`uniffi::Enum`）：[`Risk`]、[`ResultStatus`]、[`Audience`]、[`Activation`]、[`Visibility`]、[`ClientKind`]、[`CancelReason`]、
 //!   [`StateStatus`]、[`LogLevel`]、[`LifecycleMode`]、[`Residency`]、[`WakeKind`]、[`WakeReason`]、[`SleepReason`]。
 //! - 函数：[`error_kinds`]、[`parse_wake_token`]。
 //! - 错误（`uniffi::Error`）：[`AppMcpError`]。
@@ -38,7 +38,7 @@ uniffi::setup_scaffolding!();
 // 枚举
 // ---------------------------------------------------------------------------
 
-/// 风险等级，决定 Host 的确认策略。
+/// 风险等级（旧写法：优先用 [`ToolSpec::annotations`]；两者同时存在时注解中声明的字段优先，缺少的按 risk 推导）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum Risk {
     Read,
@@ -46,6 +46,46 @@ pub enum Risk {
     Destructive,
     Payment,
     OsSensitive,
+}
+
+/// 调用结果的业务状态（spec/protocol.md 3.2）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ResultStatus {
+    /// 已完成（缺省）。
+    Done,
+    /// 已受理、尚未完成（等待用户在 App 内确认或异步处理）；后续状态见 `CallResult.state_resource`。
+    Pending,
+    /// 只完成了一部分，说明见 `CallResult.summary`。
+    Partial,
+    /// 没有做任何改动（目标状态已满足或无事可做）。
+    Noop,
+}
+
+/// 内容面向的对象（MCP 内容注解 `audience`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum Audience {
+    User,
+    Assistant,
+}
+
+impl From<ResultStatus> for native::ResultStatus {
+    fn from(v: ResultStatus) -> Self {
+        match v {
+            ResultStatus::Done => native::ResultStatus::Done,
+            ResultStatus::Pending => native::ResultStatus::Pending,
+            ResultStatus::Partial => native::ResultStatus::Partial,
+            ResultStatus::Noop => native::ResultStatus::Noop,
+        }
+    }
+}
+
+impl From<Audience> for native::Audience {
+    fn from(v: Audience) -> Self {
+        match v {
+            Audience::User => native::Audience::User,
+            Audience::Assistant => native::Audience::Assistant,
+        }
+    }
 }
 
 /// 调用时 App 需要的激活方式。
@@ -383,7 +423,7 @@ impl From<native::NativeError> for AppMcpError {
 }
 
 /// 所有协议错误类别（FFI 上的字符串形式）。
-const ALL_ERROR_KINDS: [ErrorKind; 15] = [
+const ALL_ERROR_KINDS: [ErrorKind; 17] = [
     ErrorKind::ToolNotFound,
     ErrorKind::ToolDisabled,
     ErrorKind::InvalidInput,
@@ -399,6 +439,8 @@ const ALL_ERROR_KINDS: [ErrorKind; 15] = [
     ErrorKind::ResourceNotFound,
     ErrorKind::Unauthorized,
     ErrorKind::UnsupportedProtocol,
+    ErrorKind::RateLimited,
+    ErrorKind::PayloadTooLarge,
 ];
 
 fn parse_error_kind(kind: &str) -> Result<ErrorKind, AppMcpError> {
@@ -611,7 +653,7 @@ pub struct ToolSpec {
     /// JSON Schema 文本，`type` 必须为 `"object"`；为空表示无参数。
     #[uniffi(default = None)]
     pub input_schema_json: Option<String>,
-    /// 为空时为 `Write`。
+    /// 旧写法（优先用 `annotations`）。为空时为 `Write`。
     #[uniffi(default = None)]
     pub risk: Option<Risk>,
     #[uniffi(default = None)]
@@ -620,9 +662,48 @@ pub struct ToolSpec {
     pub title: Option<String>,
     #[uniffi(default = true)]
     pub enabled: bool,
+    /// 标准 MCP 工具注解，原样转发给 Agent；为空 = 未声明（Hub 按 `risk` 推导）。
+    #[uniffi(default = None)]
+    pub annotations: Option<ToolAnnotations>,
+    /// 结果的 JSON Schema 文本（MCP `outputSchema`）；为空 = 未声明。
+    #[uniffi(default = None)]
+    pub output_schema_json: Option<String>,
 }
 
-impl From<ToolSpec> for native::ToolSpec {
+/// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。均可选，为空 = 未声明。
+#[derive(Clone, Debug, Default, PartialEq, uniffi::Record)]
+pub struct ToolAnnotations {
+    /// 给人看的工具标题。
+    #[uniffi(default = None)]
+    pub title: Option<String>,
+    /// 不修改任何状态。
+    #[uniffi(default = None)]
+    pub read_only_hint: Option<bool>,
+    /// 可能做出破坏性 / 不可撤销的修改（只在非只读时有意义）。
+    #[uniffi(default = None)]
+    pub destructive_hint: Option<bool>,
+    /// 以相同参数重复调用没有额外效果（只在非只读时有意义）。
+    #[uniffi(default = None)]
+    pub idempotent_hint: Option<bool>,
+    /// 会与外部世界交互（网络、第三方、其他用户可见）。
+    #[uniffi(default = None)]
+    pub open_world_hint: Option<bool>,
+}
+
+impl From<ToolAnnotations> for native::ToolAnnotations {
+    fn from(a: ToolAnnotations) -> Self {
+        native::ToolAnnotations {
+            title: a.title,
+            read_only_hint: a.read_only_hint,
+            destructive_hint: a.destructive_hint,
+            idempotent_hint: a.idempotent_hint,
+            open_world_hint: a.open_world_hint,
+        }
+    }
+}
+
+/// @compat 原生层把注解与 outputSchema 放在 `ToolOptions`；这里拆成两部分，注册与更新都整体传入。
+impl From<ToolSpec> for (native::ToolSpec, native::ToolOptions) {
     fn from(s: ToolSpec) -> Self {
         let mut n = native::ToolSpec::new(s.name, s.description);
         n.input_schema_json = s.input_schema_json;
@@ -632,7 +713,70 @@ impl From<ToolSpec> for native::ToolSpec {
         n.activation = s.activation.map(Into::into);
         n.title = s.title;
         n.enabled = s.enabled;
-        n
+        let options = native::ToolOptions {
+            annotations: s.annotations.map(Into::into),
+            output_schema_json: s.output_schema_json,
+        };
+        (n, options)
+    }
+}
+
+/// 结果内容的标注（MCP 内容注解），Hub 原样转发，不据此做判断。
+#[derive(Clone, Debug, Default, PartialEq, uniffi::Record)]
+pub struct ContentAnnotations {
+    /// 内容面向谁。
+    #[uniffi(default = None)]
+    pub audience: Option<Vec<Audience>>,
+    /// 重要程度，0（可选）到 1（必需）。
+    #[uniffi(default = None)]
+    pub priority: Option<f64>,
+    /// 最后修改时刻（ISO 8601）。
+    #[uniffi(default = None)]
+    pub last_modified: Option<String>,
+}
+
+impl From<ContentAnnotations> for native::ContentAnnotations {
+    fn from(a: ContentAnnotations) -> Self {
+        native::ContentAnnotations {
+            audience: a.audience.map(|v| v.into_iter().map(Into::into).collect()),
+            priority: a.priority,
+            last_modified: a.last_modified,
+        }
+    }
+}
+
+/// 调用成功的完整结果（[`Call::complete_with`]，spec/protocol.md 3.2）。
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CallResult {
+    /// 返回值 JSON 文本；为空表示无返回值（`null`，Hub 对模型输出"已完成"）。
+    #[uniffi(default = None)]
+    pub data_json: Option<String>,
+    /// 调用后内容可能已变化的资源名。
+    #[uniffi(default = [])]
+    pub state_hints: Vec<String>,
+    /// 业务状态；一般为 `Done`。
+    pub status: ResultStatus,
+    /// `Pending` 时可读取后续状态的资源名。
+    #[uniffi(default = None)]
+    pub state_resource: Option<String>,
+    /// 一句面向模型 / 用户的结论（`Partial` 时说明完成了哪部分）。
+    #[uniffi(default = None)]
+    pub summary: Option<String>,
+    /// 结果内容的标注。
+    #[uniffi(default = None)]
+    pub annotations: Option<ContentAnnotations>,
+}
+
+impl From<CallResult> for native::CallResult {
+    fn from(r: CallResult) -> Self {
+        native::CallResult {
+            data_json: r.data_json,
+            state_hints: r.state_hints,
+            status: r.status.into(),
+            state_resource: r.state_resource,
+            summary: r.summary,
+            annotations: r.annotations.map(Into::into),
+        }
     }
 }
 
@@ -807,6 +951,10 @@ impl Call {
     ) -> Result<(), AppMcpError> {
         Ok(self.inner.complete(data_json.as_deref(), state_hints)?)
     }
+    /// 以完整结果成功完成（业务状态、摘要、内容标注）。非法 JSON 返回 `InvalidJson`（调用仍未完成）。
+    pub fn complete_with(&self, result: CallResult) -> Result<(), AppMcpError> {
+        Ok(self.inner.complete_with(result.into())?)
+    }
     /// 失败完成。`kind` 为错误类别字符串（如 `"HANDLER_ERROR"`），未知类别返回 `UnknownErrorKind`。
     pub fn fail(&self, kind: String, message: String) -> Result<(), AppMcpError> {
         let kind = parse_error_kind(&kind)?;
@@ -880,9 +1028,10 @@ impl Tool {
     pub fn name(&self) -> String {
         self.inner.name()
     }
-    /// 用新定义整体替换（名称不可变，`spec.name` 被忽略）。
+    /// 用新定义整体替换（名称不可变，`spec.name` 被忽略）。`annotations` / `output_schema_json` 为空表示清除该声明。
     pub fn update(&self, spec: ToolSpec) -> Result<(), AppMcpError> {
-        Ok(self.inner.update(spec.into())?)
+        let (spec, options) = spec.into();
+        Ok(self.inner.update_with(spec, options)?)
     }
     pub fn set_enabled(&self, enabled: bool) -> Result<(), AppMcpError> {
         Ok(self.inner.set_enabled(enabled)?)
@@ -924,9 +1073,10 @@ impl Scope {
         spec: ToolSpec,
         handler: Arc<dyn ToolHandler>,
     ) -> Result<Arc<Tool>, AppMcpError> {
+        let (spec, options) = spec.into();
         let inner = self
             .inner
-            .register_tool(spec.into(), Arc::new(ToolHandlerAdapter(handler)))?;
+            .register_tool_with(spec, options, Arc::new(ToolHandlerAdapter(handler)))?;
         Ok(Arc::new(Tool { inner }))
     }
     pub fn register_resource(
@@ -1000,9 +1150,10 @@ impl AppMcpClient {
         spec: ToolSpec,
         handler: Arc<dyn ToolHandler>,
     ) -> Result<Arc<Tool>, AppMcpError> {
+        let (spec, options) = spec.into();
         let inner = self
             .inner
-            .register_tool(spec.into(), Arc::new(ToolHandlerAdapter(handler)))?;
+            .register_tool_with(spec, options, Arc::new(ToolHandlerAdapter(handler)))?;
         Ok(Arc::new(Tool { inner }))
     }
     pub fn register_resource(
@@ -1067,7 +1218,9 @@ mod tests {
     #[test]
     fn error_kinds_roundtrip() {
         let kinds = error_kinds();
-        assert_eq!(kinds.len(), 15);
+        assert_eq!(kinds.len(), 17);
+        assert!(kinds.contains(&"RATE_LIMITED".to_owned()));
+        assert!(kinds.contains(&"PAYLOAD_TOO_LARGE".to_owned()));
         for k in &kinds {
             assert_eq!(parse_error_kind(k).map(|e| e.as_str()), Ok(k.as_str()));
         }
@@ -1132,17 +1285,53 @@ mod tests {
             activation: Some(Activation::Background),
             title: None,
             enabled: false,
+            annotations: None,
+            output_schema_json: None,
         };
-        let n: native::ToolSpec = spec.clone().into();
+        let (n, options): (native::ToolSpec, native::ToolOptions) = spec.clone().into();
         assert_eq!(n.risk, native::Risk::Write);
         assert_eq!(n.activation, Some(native::Activation::Background));
         assert!(!n.enabled);
-        let n: native::ToolSpec = ToolSpec {
+        assert_eq!(options, native::ToolOptions::default());
+        let (n, options): (native::ToolSpec, native::ToolOptions) = ToolSpec {
             risk: Some(Risk::OsSensitive),
+            annotations: Some(ToolAnnotations {
+                read_only_hint: Some(false),
+                idempotent_hint: Some(true),
+                ..ToolAnnotations::default()
+            }),
+            output_schema_json: Some(r#"{"type":"object"}"#.into()),
             ..spec
         }
         .into();
         assert_eq!(n.risk, native::Risk::OsSensitive);
+        let a = options.annotations.expect("annotations");
+        assert_eq!((a.read_only_hint, a.idempotent_hint, a.destructive_hint), (Some(false), Some(true), None));
+        assert_eq!(options.output_schema_json.as_deref(), Some(r#"{"type":"object"}"#));
+    }
+
+    #[test]
+    fn call_result_conversion() {
+        let r: native::CallResult = CallResult {
+            data_json: Some(r#"{"id":1}"#.into()),
+            state_hints: vec!["cart".into()],
+            status: ResultStatus::Pending,
+            state_resource: Some("order.status".into()),
+            summary: Some("等待确认".into()),
+            annotations: Some(ContentAnnotations {
+                audience: Some(vec![Audience::User]),
+                priority: Some(0.5),
+                last_modified: None,
+            }),
+        }
+        .into();
+        assert_eq!(r.status, native::ResultStatus::Pending);
+        assert_eq!(r.state_resource.as_deref(), Some("order.status"));
+        assert_eq!(r.summary.as_deref(), Some("等待确认"));
+        assert_eq!(r.state_hints, vec!["cart".to_owned()]);
+        let a = r.annotations.expect("annotations");
+        assert_eq!(a.audience, Some(vec![native::Audience::User]));
+        assert_eq!(a.priority, Some(0.5));
     }
 
     #[test]

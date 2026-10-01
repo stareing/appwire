@@ -81,6 +81,36 @@ export interface ToolSpecInit {
   activation?: string;
   title?: string;
   enabled?: boolean;
+  /** 标准 MCP 工具注解。 */
+  annotations?: ToolAnnotationsInit;
+  /** 结果的 JSON Schema 文本（MCP `outputSchema`）。 */
+  outputSchemaJson?: string;
+}
+
+export interface ToolAnnotationsInit {
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
+export interface ContentAnnotationsInit {
+  /** 'user' | 'assistant' */
+  audience?: string[];
+  priority?: number;
+  lastModified?: string;
+}
+
+/** `Call.completeWith` 的参数；缺省 = 无返回值、`done`。 */
+export interface CallResultInit {
+  dataJson?: string;
+  stateHints?: string[];
+  /** 'done'（缺省）| 'pending' | 'partial' | 'noop' */
+  status?: string;
+  stateResource?: string;
+  summary?: string;
+  annotations?: ContentAnnotationsInit;
 }
 
 export interface ResourceSpecInit {
@@ -102,6 +132,8 @@ export class Call {
   isCancelled(): boolean;
   setCancelListener(listener: (reason: string) => void): void;
   complete(dataJson?: string | null, stateHints?: string[] | null): void;
+  /** 成功完成并附带业务状态、摘要与内容标注；取值不合法时抛出 `INVALID_ARG`（调用仍未完成）。 */
+  completeWith(result: CallResultInit): void;
   fail(kind: string, message: string): void;
   failWithDetails(kind: string, message: string, detailsJson?: string | null): void;
   hold(): Hold;
@@ -115,7 +147,10 @@ export class Read {
 
 export class Tool {
   readonly name: string;
+  /** 整体替换定义；已声明的 `annotations` / `outputSchemaJson` 保持不变。 */
   update(spec: ToolSpecInit): void;
+  /** 整体替换定义与选项：`annotations` / `outputSchemaJson` 缺省表示清除。 */
+  updateWith(spec: ToolSpecInit): void;
   setEnabled(enabled: boolean): void;
   dispose(): void;
 }

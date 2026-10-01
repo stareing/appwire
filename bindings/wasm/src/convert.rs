@@ -9,7 +9,9 @@ use app_mcp_core::{
     HeartbeatPolicy, LifecycleMode, LifecyclePolicy, ReconnectPolicy, Residency, ResourceDef, ScopeId, SleepReason, ToolDef, ToolError,
     ToolUpdate, TransportKind, Visibility, WakeReason,
 };
-use app_mcp_core::{Activation, AppOverview, Risk, WakeDescriptor};
+use app_mcp_core::{
+    Activation, AppOverview, Audience, ContentAnnotations, ResultStatus, Risk, ToolAnnotations, WakeDescriptor,
+};
 use app_mcp_protocol::ErrorKind;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
@@ -510,6 +512,8 @@ pub struct JsToolDef {
     pub risk: Option<Risk>,
     pub activation: Option<Activation>,
     pub title: Option<String>,
+    pub annotations: Option<ToolAnnotations>,
+    pub output_schema: Option<Value>,
     /// 缺省 true。
     pub enabled: Option<bool>,
     pub scope: Option<f64>,
@@ -531,6 +535,8 @@ impl FromJson for JsToolDef {
             risk: f.protocol("risk"),
             activation: f.protocol("activation"),
             title: f.string("title"),
+            annotations: f.object("annotations"),
+            output_schema: f.value("outputSchema"),
             enabled: f.bool("enabled"),
             scope: f.f64("scope"),
         };
@@ -549,7 +555,62 @@ impl JsToolDef {
             title: self.title,
             enabled: self.enabled.unwrap_or(true),
             scope: scope_handle(self.scope)?,
+            annotations: self.annotations,
+            output_schema: self.output_schema,
         })
+    }
+}
+
+/// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。
+///
+/// @why 用 [`Fields`] 逐字段读取而不是 serde 派生：派生的反序列化代码让 WASM gzip 增加约 1.7 KB。
+impl FromJson for ToolAnnotations {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        let a = ToolAnnotations {
+            title: f.string("title"),
+            read_only_hint: f.bool("readOnlyHint"),
+            destructive_hint: f.bool("destructiveHint"),
+            idempotent_hint: f.bool("idempotentHint"),
+            open_world_hint: f.bool("openWorldHint"),
+        };
+        f.finish(a)
+    }
+}
+
+fn parse_result_status(s: &str) -> Option<ResultStatus> {
+    Some(match s {
+        "done" => ResultStatus::Done,
+        "pending" => ResultStatus::Pending,
+        "partial" => ResultStatus::Partial,
+        "noop" => ResultStatus::Noop,
+        _ => return None,
+    })
+}
+
+/// 标准 MCP 内容注解（结果的 `annotations`）。
+impl FromJson for ContentAnnotations {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        let audience = f.strings("audience").map(|roles| {
+            roles
+                .iter()
+                .filter_map(|r| match r.as_str() {
+                    "user" => Some(Audience::User),
+                    "assistant" => Some(Audience::Assistant),
+                    other => {
+                        f.fail(format!("字段 audience 的取值应为 user / assistant：\"{other}\""));
+                        None
+                    }
+                })
+                .collect()
+        });
+        let a = ContentAnnotations {
+            audience,
+            priority: f.f64("priority"),
+            last_modified: f.string("lastModified"),
+        };
+        f.finish(a)
     }
 }
 
@@ -562,6 +623,10 @@ pub struct JsToolUpdate {
     pub activation: Option<Option<Activation>>,
     pub title: Option<Option<String>>,
     pub enabled: Option<bool>,
+    /// `null` 清除声明的注解。
+    pub annotations: Option<Option<ToolAnnotations>>,
+    /// `null` 清除声明的输出 schema。
+    pub output_schema: Option<Option<Value>>,
 }
 
 impl FromJson for JsToolUpdate {
@@ -581,7 +646,20 @@ impl FromJson for JsToolUpdate {
                 None
             }
         };
+        let annotations = match f.nullable("annotations") {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(v)) => match ToolAnnotations::from_json(v) {
+                Ok(a) => Some(Some(a)),
+                Err(e) => {
+                    f.fail(format!("annotations.{e}"));
+                    None
+                }
+            },
+        };
         let u = JsToolUpdate {
+            annotations,
+            output_schema: f.nullable("outputSchema"),
             description: f.string("description"),
             input_schema: f.value("inputSchema"),
             risk: f.protocol("risk"),
@@ -602,6 +680,8 @@ impl JsToolUpdate {
             activation: self.activation,
             title: self.title,
             enabled: self.enabled,
+            annotations: self.annotations,
+            output_schema: self.output_schema,
         }
     }
 }
@@ -671,18 +751,31 @@ impl FromJson for JsToolError {
     }
 }
 
-/// handler / 资源读取的结果：`{ data, stateHints? }` 或 `{ error: { kind, message, details? } }`。
+/// handler / 资源读取的结果：`{ data, stateHints?, annotations?, status?, stateResource?, summary? }` 或
+/// `{ error: { kind, message, details? } }`。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct JsCallOutcome {
     pub data: Option<Value>,
     pub state_hints: Option<Vec<String>>,
+    pub annotations: Option<ContentAnnotations>,
+    pub status: Option<ResultStatus>,
+    pub state_resource: Option<String>,
+    pub summary: Option<String>,
     pub error: Option<JsToolError>,
 }
 
 impl FromJson for JsCallOutcome {
     fn from_json(value: Value) -> Result<Self, String> {
         let mut f = Fields::new(value)?;
-        let o = JsCallOutcome { data: f.value("data"), state_hints: f.strings("stateHints"), error: f.object("error") };
+        let o = JsCallOutcome {
+            data: f.value("data"),
+            state_hints: f.strings("stateHints"),
+            annotations: f.object("annotations"),
+            status: f.keyword("status", "无效的 status", parse_result_status),
+            state_resource: f.string("stateResource"),
+            summary: f.string("summary"),
+            error: f.object("error"),
+        };
         f.finish(o)
     }
 }
@@ -702,6 +795,10 @@ impl JsCallOutcome {
             None => Ok(CallOutput {
                 data: self.data.unwrap_or(Value::Null),
                 state_hints: self.state_hints.unwrap_or_default(),
+                annotations: self.annotations,
+                state_resource: self.state_resource,
+                status: self.status.unwrap_or_default(),
+                summary: self.summary,
             }),
         }
     }
@@ -945,6 +1042,57 @@ mod tests {
 
         let bad_kind = JsCallOutcome::from_json(json!({ "error": { "kind": "NOPE" } }));
         assert!(bad_kind.is_err());
+    }
+
+    /// 第 14 项 S1 / 第 19 项 R2：工具注解与输出 schema；更新时 `null` 清除。
+    #[test]
+    fn tool_annotations_and_output_schema() {
+        let d = JsToolDef::from_json(json!({
+            "name": "order.cancel", "inputSchema": { "type": "object" },
+            "annotations": { "destructiveHint": true, "idempotentHint": true, "title": "取消" },
+            "outputSchema": { "type": "array" }
+        }))
+        .unwrap()
+        .into_core()
+        .unwrap();
+        let a = d.annotations.unwrap();
+        assert_eq!((a.destructive_hint, a.idempotent_hint, a.read_only_hint), (Some(true), Some(true), None));
+        assert_eq!(a.title.as_deref(), Some("取消"));
+        assert_eq!(d.output_schema, Some(json!({ "type": "array" })));
+        let e = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "annotations": { "readOnlyHint": 1 } }))
+            .unwrap_err();
+        assert_eq!(e, "annotations.字段 readOnlyHint 应为布尔值");
+        let u = JsToolUpdate::from_json(json!({ "annotations": null, "outputSchema": null })).unwrap().into_core();
+        assert_eq!((u.annotations, u.output_schema), (Some(None), Some(None)));
+        let u = JsToolUpdate::from_json(json!({ "annotations": { "openWorldHint": false } })).unwrap().into_core();
+        assert_eq!(u.annotations.unwrap().unwrap().open_world_hint, Some(false));
+        assert_eq!(u.output_schema, None);
+        assert!(JsToolUpdate::from_json(json!({ "annotations": { "title": 1 } })).is_err());
+    }
+
+    /// 第 19 项 R1 / R3 与第 14 项 S2：结果状态、状态资源、摘要、内容标注。
+    #[test]
+    fn outcome_status_summary_annotations() {
+        let o = JsCallOutcome::from_json(json!({
+            "data": null, "status": "pending", "stateResource": "order.state", "summary": "已提交",
+            "annotations": { "audience": ["user", "assistant"], "priority": 0.5, "lastModified": "2026-10-02T00:00:00Z" }
+        }))
+        .unwrap()
+        .into_call()
+        .unwrap();
+        assert_eq!(o.status, ResultStatus::Pending);
+        assert_eq!((o.state_resource.as_deref(), o.summary.as_deref()), (Some("order.state"), Some("已提交")));
+        let a = o.annotations.unwrap();
+        assert_eq!(a.audience, Some(vec![Audience::User, Audience::Assistant]));
+        assert_eq!((a.priority, a.last_modified.as_deref()), (Some(0.5), Some("2026-10-02T00:00:00Z")));
+        for (s, st) in [("done", ResultStatus::Done), ("partial", ResultStatus::Partial), ("noop", ResultStatus::Noop)] {
+            let o = JsCallOutcome::from_json(json!({ "status": s })).unwrap().into_call().unwrap();
+            assert_eq!(o.status, st);
+        }
+        assert_eq!(JsCallOutcome::from_json(json!({ "status": "maybe" })).unwrap_err(), "无效的 status：\"maybe\"");
+        assert!(JsCallOutcome::from_json(json!({ "annotations": { "audience": ["robot"] } })).is_err());
+        let plain = JsCallOutcome::from_json(json!({ "data": 1 })).unwrap().into_call().unwrap();
+        assert_eq!((plain.status, plain.summary, plain.annotations), (ResultStatus::Done, None, None));
     }
 
     #[test]

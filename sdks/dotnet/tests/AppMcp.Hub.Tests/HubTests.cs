@@ -129,6 +129,55 @@ public class HubBasicTests
     }
 
     [Fact]
+    public void LimitsAndOutputValidationConfig()
+    {
+        var json = JsonNode.Parse(new HubOptions
+        {
+            Limits = new HubLimits { ToolRatePerMinute = 10, ToolRateBurst = 2, MaxResultBytes = 0 },
+            OutputValidation = OutputValidation.Reject,
+        }.ToConfigJson())!.AsObject();
+        Assert.Equal(10, (int?)json["limits"]!["toolRatePerMinute"]);
+        Assert.Equal(2, (int?)json["limits"]!["toolRateBurst"]);
+        Assert.Equal(0, (int?)json["limits"]!["maxResultBytes"]);
+        Assert.False(json["limits"]!.AsObject().ContainsKey("appRatePerMinute"));
+        Assert.Equal("reject", (string?)json["outputValidation"]);
+        Assert.False(JsonNode.Parse(new HubOptions().ToConfigJson())!.AsObject().ContainsKey("limits"));
+
+        using (var h = AppMcpHub.Start(new HubOptions
+        {
+            DisableIpc = true,
+            DisableListen = true,
+            Dispatcher = null,
+            Limits = new HubLimits { ToolRatePerMinute = 10, ToolRateBurst = 2 },
+            OutputValidation = OutputValidation.Off,
+        }))
+        {
+            var status = h.Status();
+            Assert.Equal(10U, status.Limits!.ToolRatePerMinute);
+            Assert.Equal(2U, status.Limits.ToolRateBurst);
+            Assert.Equal(600U, status.Limits.AppRatePerMinute); // 缺省字段取默认值
+            Assert.Equal(4UL * 1024 * 1024, status.Limits.MaxResultBytes);
+            Assert.Equal(OutputValidation.Off, status.OutputValidation);
+        }
+        using (var h = AppMcpHub.Start(new HubOptions { DisableIpc = true, DisableListen = true, Dispatcher = null }))
+        {
+            Assert.Equal(OutputValidation.Log, h.Status().OutputValidation);
+        }
+        // 限流时 burst = 0 被拒；不限（perMinute = 0）时允许
+        var bad = new HubOptions { DisableIpc = true, DisableListen = true, Dispatcher = null, Limits = new HubLimits { ToolRateBurst = 0 } };
+        Assert.Equal(HubStatus.InvalidConfig, Assert.Throws<HubException>(() => AppMcpHub.Start(bad)).Status);
+        using (AppMcpHub.Start(new HubOptions
+        {
+            DisableIpc = true,
+            DisableListen = true,
+            Dispatcher = null,
+            Limits = new HubLimits { AppRatePerMinute = 0, AppRateBurst = 0 },
+        }))
+        {
+        }
+    }
+
+    [Fact]
     public void StartErrorsMapToStatus()
     {
         var e = Assert.Throws<HubException>(() => AppMcpHub.Start("""{"bogus":1}""", null));
@@ -351,6 +400,79 @@ public class HubIntegrationTests
         Assert.NotNull(again.Overview);
 
         app.Stop();
+    }
+
+    [Fact]
+    public async Task AnnotationsStructuredResultAndRateLimit()
+    {
+        await using var hub = AppMcpHub.Start(new HubOptions
+        {
+            DisableIpc = true,
+            Listen = "127.0.0.1:0",
+            Dispatcher = null,
+            RequireApprovalAtOrAbove = HubRisk.Write,
+            Limits = new HubLimits { ToolRatePerMinute = 1, ToolRateBurst = 1 },
+        });
+        var approvals = new ConcurrentQueue<ApprovalRequest>();
+        hub.ApprovalHandler = (req, _) =>
+        {
+            approvals.Enqueue(req);
+            return Task.FromResult(true);
+        };
+        await using var app = AppMcp.AppMcpClient.Create(new AppMcp.AppMcpClientOptions
+        {
+            AppId = "shop",
+            AppName = "商店",
+            HostUrl = $"ws://{hub.ListenAddress}/app",
+            Dispatcher = null,
+        });
+        using var submit = app.RegisterTool("order.submit", "下单", (_, _) =>
+            Task.FromResult<object?>(new AppMcp.ToolResult(new { orderId = "o1" })
+            {
+                Status = AppMcp.ToolResultStatus.Pending,
+                StateResource = "order.state",
+                Summary = "已提交",
+                Annotations = new AppMcp.ContentAnnotations { Audience = [AppMcp.ContentAudience.User], Priority = 0.5 },
+            }), new AppMcp.ToolOptions
+            {
+                Annotations = new AppMcp.ToolAnnotations { IdempotentHint = false },
+                OutputSchemaJson = """{"type":"object","properties":{"orderId":{"type":"string"}}}""",
+            });
+        app.Start();
+        await WaitUntil(() => hub.ListTools(new ToolFilter { Apps = ["shop"], OnlyAvailable = true, IncludeBuiltin = false }).Count == 1,
+            "工具未同步");
+
+        var tool = Assert.Single(hub.ListTools(new ToolFilter { Apps = ["shop"], IncludeBuiltin = false }));
+        // 声明的字段优先，缺少的按 risk（write）推导
+        Assert.False(tool.Annotations!.IdempotentHint);
+        Assert.False(tool.Annotations.ReadOnlyHint);
+        Assert.Equal("string", tool.OutputSchema!.Value.GetProperty("properties").GetProperty("orderId").GetProperty("type").GetString());
+
+        var outcome = await hub.CallAsync("shop.order.submit");
+        Assert.True(outcome.IsSuccess, outcome.Json.GetRawText());
+        Assert.Equal("o1", outcome.Data!.Value.GetProperty("orderId").GetString());
+        Assert.Equal(HubResultStatus.Pending, outcome.Status);
+        Assert.Equal("app-mcp://shop/order.state", outcome.StateResource);
+        Assert.Equal("已提交", outcome.Summary);
+        Assert.Equal(["user"], outcome.Annotations!.Audience!);
+        Assert.Equal(0.5, outcome.Annotations.Priority);
+        var approval = Assert.Single(approvals);
+        Assert.False(approval.Annotations!.IdempotentHint);
+
+        // 突发 1：第二次立即调用被限流
+        var limited = await hub.CallAsync("shop.order.submit");
+        Assert.Equal(HubError.RateLimited, limited.Error?.Kind);
+        Assert.Equal("tool", limited.Error!.Details!.Value.GetProperty("scope").GetString());
+
+        var shop = Assert.Single(hub.Status().Apps, a => a.AppId == "shop");
+        Assert.Equal(1UL, shop.RateLimited);
+        Assert.Equal(0UL, shop.TooLarge);
+        var decl = Assert.Single(shop.Tools);
+        Assert.Equal("order.submit", decl.Name);
+        Assert.Equal("write", decl.Risk);
+        Assert.True(decl.OutputSchema);
+        Assert.Equal(new HubToolAnnotations(null, null, null, false, null), decl.Annotations);
+        Assert.False(decl.Effective.ReadOnlyHint);
     }
 
     [Fact]

@@ -32,7 +32,7 @@ public sealed class ToolScope : IDisposable
 
     /// <summary>
     /// 注册工具（参数为原始 JSON）。handler 返回的对象用客户端的 <see cref="JsonSerializerOptions"/> 序列化；
-    /// 返回 null 表示 JSON null。
+    /// 返回 null 表示 JSON null；返回 <see cref="ToolResult"/> 时另带业务状态、摘要与内容注解。
     /// </summary>
     public ToolRegistration RegisterTool(
         string name,
@@ -54,8 +54,7 @@ public sealed class ToolScope : IDisposable
             {
                 throw new ToolCallException(ToolErrorKind.InvalidInput, "参数不是合法的 JSON：" + e.Message, e);
             }
-            var result = await handler(input, ctx).ConfigureAwait(false);
-            return result is null ? null : JsonSerializer.Serialize(result, result.GetType(), json);
+            return ToolOutcome.From(await handler(input, ctx).ConfigureAwait(false), json);
         };
         return Register(name, description, options?.InputSchemaJson, raw, options);
     }
@@ -63,6 +62,7 @@ public sealed class ToolScope : IDisposable
     /// <summary>
     /// 注册类型化工具：参数用 System.Text.Json 反序列化为 <typeparamref name="TInput"/>，结果序列化为 JSON。
     /// <see cref="ToolOptions.InputSchemaJson"/> 为 null 时由 <typeparamref name="TInput"/> 生成 inputSchema。
+    /// <typeparamref name="TOutput"/> 为 <see cref="ToolResult"/> 时按结构化结果完成。
     /// </summary>
     public ToolRegistration RegisterTool<TInput, TOutput>(
         string name,
@@ -85,7 +85,9 @@ public sealed class ToolScope : IDisposable
                 throw new ToolCallException(ToolErrorKind.InvalidInput, "参数无法解析：" + e.Message, e);
             }
             var result = await handler(input, ctx).ConfigureAwait(false);
-            return JsonSerializer.Serialize(result, json);
+            return result is ToolResult structured
+                ? ToolOutcome.From(structured, json)
+                : new ToolOutcome(JsonSerializer.Serialize(result, json), null);
         };
         return Register(name, description, schema, raw, options);
     }
@@ -103,9 +105,10 @@ public sealed class ToolScope : IDisposable
         var invoker = new ToolInvoker(raw, _client.Dispatcher, _client.SerializerOptions);
         using var strings = new Utf8Strings();
         var spec = BuildSpec(strings, name, description, schema, options);
+        var toolOptions = BuildOptions(strings, options);
         // user_data 的所有权交给库：注册失败时库也会调用 FreeGCHandle。
-        var status = NativeMethods.am_tool_register(
-            _handle, &spec, Callbacks.ToolPtr, Callbacks.Alloc(invoker), Callbacks.FreeGCHandlePtr, out var tool);
+        var status = NativeMethods.am_tool_register_ex(
+            _handle, &spec, &toolOptions, Callbacks.ToolPtr, Callbacks.Alloc(invoker), Callbacks.FreeGCHandlePtr, out var tool);
         NativeMethods.Check(status);
         return new ToolRegistration(new ToolSafeHandle(tool), name);
     }
@@ -119,6 +122,13 @@ public sealed class ToolScope : IDisposable
         Activation = options.Activation is { } a ? (int)a : -1,
         Title = strings.Add(options.Title),
         Enabled = options.Enabled ? (byte)1 : (byte)0,
+    };
+
+    internal static unsafe AmToolOptions BuildOptions(Utf8Strings strings, ToolOptions options) => new()
+    {
+        StructSize = (uint)sizeof(AmToolOptions),
+        AnnotationsJson = strings.Add(AnnotationsJson.Serialize(options.Annotations)),
+        OutputSchemaJson = strings.Add(options.OutputSchemaJson),
     };
 
     /// <summary>注册资源。reader 返回的对象序列化为资源内容。</summary>
@@ -209,13 +219,14 @@ public sealed class ToolRegistration : IDisposable
 
     public void SetEnabled(bool enabled) => NativeMethods.Check(NativeMethods.am_tool_set_enabled(_handle, enabled));
 
-    /// <summary>用新定义整体替换（名称不变）。</summary>
+    /// <summary>用新定义整体替换（名称不变；options 中为 null 的 Annotations / OutputSchemaJson 表示清除该声明）。</summary>
     public unsafe void Update(string description, ToolOptions? options = null)
     {
         options ??= new ToolOptions();
         using var strings = new Utf8Strings();
         var spec = ToolScope.BuildSpec(strings, null, description, options.InputSchemaJson, options);
-        NativeMethods.Check(NativeMethods.am_tool_update(_handle, &spec));
+        var toolOptions = ToolScope.BuildOptions(strings, options);
+        NativeMethods.Check(NativeMethods.am_tool_update_ex(_handle, &spec, &toolOptions));
     }
 
     public void Dispose()

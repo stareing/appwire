@@ -29,8 +29,9 @@ use std::time::Duration;
 
 use app_mcp_hub::{
     ApprovalHandler, ApprovalPolicy, ApprovalRequest, CallRequest, ErrorKind, Hub, HubConfig,
-    HubError, LeaseOverrides, PairingHandler, PairingRequest, ToolExposure, ToolFilter, ToolFormat,
-    UpstreamConfig, WakeRequest, Waker, WakerConfig, async_trait, load_manifests,
+    HubError, LeaseOverrides, LimitOverrides, OutputValidation, PairingHandler, PairingRequest,
+    ToolExposure, ToolFilter, ToolFormat, UpstreamConfig, WakeRequest, Waker, WakerConfig,
+    async_trait, load_manifests,
 };
 use napi::bindgen_prelude::{Promise, spawn};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -144,6 +145,10 @@ struct ConfigJson {
     legacy_heartbeat: Option<bool>,
     /// 自适应租约（spec/hub-api.md 3.5）。
     lease: Option<LeaseOverrides>,
+    /// 资源保护：调用频率与大小上限（spec/hub-api.md 3.11），缺省字段取默认值。
+    limits: Option<LimitOverrides>,
+    /// 结果与 `outputSchema` 不符时的处理：`"off"` / `"log"`（默认）/ `"reject"`。
+    output_validation: Option<OutputValidation>,
     /// `"system"` / `"none"` / `{"exec": [...]}`（spec/hub-api.md 3.5）。
     waker: Option<WakerConfig>,
     /// 渐进暴露（spec/hub-api.md 3.7）。
@@ -227,6 +232,12 @@ impl ConfigJson {
         }
         if let Some(o) = &self.lease {
             o.apply(&mut c.lease);
+        }
+        if let Some(o) = &self.limits {
+            o.apply(&mut c.limits);
+        }
+        if let Some(v) = self.output_validation {
+            c.output_validation = v;
         }
         if let Some(w) = self.waker {
             c.waker = w;

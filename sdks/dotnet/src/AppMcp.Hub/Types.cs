@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace AppMcp.Hub;
 
@@ -57,6 +58,48 @@ public enum ToolExposure
     Progressive,
     /// <summary>全部列出。</summary>
     All,
+}
+
+/// <summary>结果与工具 outputSchema 不符时 Hub 的处理（spec/hub-api.md 3.11）。</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<OutputValidation>))]
+public enum OutputValidation
+{
+    /// <summary>不校验。</summary>
+    Off,
+    /// <summary>校验，不符时只记日志（默认）。</summary>
+    Log,
+    /// <summary>校验，不符时调用以 HANDLER_ERROR 结束。</summary>
+    Reject,
+}
+
+/// <summary>
+/// 资源保护（spec/hub-api.md 3.11，JSON 形式即 LimitOverrides）：按（App, 工具）与按 App 两级令牌桶限流，超出 → RATE_LIMITED；
+/// 参数 / 结果 / 资源超过字节上限 → PAYLOAD_TOO_LARGE（不截断）。为 null 的字段取默认值（工具 120/分钟、突发 30；
+/// App 600/分钟、突发 60；参数 1 MiB、结果 4 MiB、资源 4 MiB）。*PerMinute = 0 不限流，*Bytes = 0 不限大小；
+/// 限流时 *Burst = 0 启动失败（InvalidConfig）。也用于 <see cref="HubStatusInfo.Limits"/>（全部字段给出）。
+/// </summary>
+public sealed class HubLimits
+{
+    public uint? ToolRatePerMinute { get; set; }
+    public uint? ToolRateBurst { get; set; }
+    public uint? AppRatePerMinute { get; set; }
+    public uint? AppRateBurst { get; set; }
+    public ulong? MaxArgumentsBytes { get; set; }
+    public ulong? MaxResultBytes { get; set; }
+    public ulong? MaxResourceBytes { get; set; }
+
+    internal JsonObject ToJson()
+    {
+        var o = new JsonObject();
+        if (ToolRatePerMinute is { } a) o["toolRatePerMinute"] = a;
+        if (ToolRateBurst is { } b) o["toolRateBurst"] = b;
+        if (AppRatePerMinute is { } c) o["appRatePerMinute"] = c;
+        if (AppRateBurst is { } d) o["appRateBurst"] = d;
+        if (MaxArgumentsBytes is { } e) o["maxArgumentsBytes"] = e;
+        if (MaxResultBytes is { } f) o["maxResultBytes"] = f;
+        if (MaxResourceBytes is { } g) o["maxResourceBytes"] = g;
+        return o;
+    }
 }
 
 /// <summary>唤醒器配置（spec/hub-api.md 3.5）；<see cref="AppMcpHub"/> 的自定义唤醒回调优先。</summary>
@@ -159,6 +202,13 @@ public sealed class HubOptions
     /// <summary>自适应租约（默认见 <see cref="LeaseOptions"/>）。</summary>
     public LeaseOptions? Lease { get; set; }
 
+    // ---- 资源保护与结果约定（spec/hub-api.md 3.11）----
+
+    /// <summary>调用频率与数据大小上限（默认见 <see cref="HubLimits"/>）。</summary>
+    public HubLimits? Limits { get; set; }
+    /// <summary>结果与 outputSchema 不符时的处理（默认 <see cref="AppMcp.Hub.OutputValidation.Log"/>）。</summary>
+    public OutputValidation? OutputValidation { get; set; }
+
     // ---- 渐进暴露（spec/hub-api.md 3.7）----
 
     /// <summary>工具暴露方式（默认 <see cref="AppMcp.Hub.ToolExposure.Auto"/>）。</summary>
@@ -228,6 +278,8 @@ public sealed class HubOptions
         }
         if (LegacyHeartbeat is { } lh) o["legacyHeartbeat"] = lh;
         if (Lease is { } lease) o["lease"] = lease.ToJson();
+        if (Limits is { } limits) o["limits"] = limits.ToJson();
+        if (OutputValidation is { } ov) o["outputValidation"] = ov.ToString().ToLowerInvariant();
         if (ToolExposure is { } te) o["toolExposure"] = te.ToString().ToLowerInvariant();
         if (ToolExposureThreshold is { } tt)
         {
@@ -383,8 +435,40 @@ public sealed class CallRequest
     }
 }
 
-/// <summary>调用出错信息（{kind, message, details?}）。</summary>
-public sealed record HubError(string Kind, string Message, JsonElement? Details);
+/// <summary>调用出错信息（{kind, message, details?}）。Kind 为协议错误类别，如 TOOL_NOT_FOUND；Hub 的资源保护另有
+/// RATE_LIMITED（Details：retryAfterMs、scope "tool"/"app"、perMinute、burst、appId、tool）与
+/// PAYLOAD_TOO_LARGE（Details：part "arguments"/"result"/"resource"、sizeBytes、limitBytes）。</summary>
+public sealed record HubError(string Kind, string Message, JsonElement? Details)
+{
+    /// <summary>Hub 侧限流。</summary>
+    public const string RateLimited = "RATE_LIMITED";
+    /// <summary>参数、结果或资源内容超过 Hub 的大小上限。</summary>
+    public const string PayloadTooLarge = "PAYLOAD_TOO_LARGE";
+}
+
+/// <summary>App 声明的调用结果业务状态（spec/protocol.md 3.2）。</summary>
+public enum HubResultStatus
+{
+    /// <summary>已完成（缺省）。</summary>
+    Done,
+    /// <summary>已受理、尚未完成；后续状态见 <see cref="CallOutcome.StateResource"/>。</summary>
+    Pending,
+    /// <summary>只完成了一部分，说明见 <see cref="CallOutcome.Summary"/>。</summary>
+    Partial,
+    /// <summary>没有做任何改动。</summary>
+    Noop,
+}
+
+/// <summary>标准 MCP 工具注解（HubTool.annotations 等）；为 null 的字段未声明。</summary>
+public sealed record HubToolAnnotations(
+    string? Title,
+    bool? ReadOnlyHint,
+    bool? DestructiveHint,
+    bool? IdempotentHint,
+    bool? OpenWorldHint);
+
+/// <summary>MCP 内容注解（结果 / 资源内容的标注）。Audience 的元素为 "user" / "assistant"。</summary>
+public sealed record HubContentAnnotations(IReadOnlyList<string>? Audience, double? Priority, string? LastModified);
 
 /// <summary>工具调用结果（CallOutcome）。</summary>
 public sealed class CallOutcome
@@ -404,6 +488,22 @@ public sealed class CallOutcome
         }
         if (json.TryGetProperty("instanceId", out var inst) && inst.ValueKind == JsonValueKind.String) InstanceId = inst.GetString();
         if (json.TryGetProperty("overview", out var ov) && ov.ValueKind == JsonValueKind.Object) Overview = ov;
+        if (json.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.String)
+        {
+            Status = st.GetString() switch
+            {
+                "pending" => HubResultStatus.Pending,
+                "partial" => HubResultStatus.Partial,
+                "noop" => HubResultStatus.Noop,
+                _ => HubResultStatus.Done,
+            };
+        }
+        if (json.TryGetProperty("stateResource", out var sr) && sr.ValueKind == JsonValueKind.String) StateResource = sr.GetString();
+        if (json.TryGetProperty("summary", out var sum) && sum.ValueKind == JsonValueKind.String) Summary = sum.GetString();
+        if (json.TryGetProperty("annotations", out var ann) && ann.ValueKind == JsonValueKind.Object)
+        {
+            Annotations = ann.Deserialize<HubContentAnnotations>(AppMcpHub.WireOptions);
+        }
     }
 
     public string CallId { get; }
@@ -415,6 +515,14 @@ public sealed class CallOutcome
     public string? InstanceId { get; }
     /// <summary>本会话首次调用该 App 时附带的总览（AppOverviewInfo）。</summary>
     public JsonElement? Overview { get; }
+    /// <summary>App 声明的业务状态（缺省 <see cref="HubResultStatus.Done"/>；未知值按 Done）。</summary>
+    public HubResultStatus Status { get; } = HubResultStatus.Done;
+    /// <summary>Pending 时可读取后续状态的资源 URI（app-mcp://&lt;appId&gt;/&lt;名&gt;）。</summary>
+    public string? StateResource { get; }
+    /// <summary>App 给出的一句结论。</summary>
+    public string? Summary { get; }
+    /// <summary>App 对结果内容的标注（MCP 内容注解），原样。</summary>
+    public HubContentAnnotations? Annotations { get; }
     /// <summary>原始 CallOutcome JSON。</summary>
     public JsonElement Json { get; }
 
@@ -493,6 +601,10 @@ public sealed record HubStatusInfo(
 {
     /// <summary>租约策略与统计（spec/lifecycle.md 第 13 节 B2）；旧 Hub 为 null。</summary>
     public LeaseStatusInfo? Lease { get; init; }
+    /// <summary>资源保护策略（全部字段给出）；旧 Hub 为 null。</summary>
+    public HubLimits? Limits { get; init; }
+    /// <summary>结果与 outputSchema 不符时的处理；旧 Hub 为 null。</summary>
+    public OutputValidation? OutputValidation { get; init; }
 }
 
 /// <summary>租约策略与统计（LeaseStatus）。Mode：adaptive / fixed（固定 LeaseTtl）/ off（LeaseTtl = 0）。</summary>
@@ -552,7 +664,22 @@ public sealed record AppStatusInfo(
 {
     /// <summary>Hub 启动以来为该 App 实际发出的唤醒激活次数（含冷启动；上游为 0）。</summary>
     public ulong Wakes { get; init; }
+    /// <summary>Hub 启动以来该 App 的调用被限流（RATE_LIMITED）的次数。</summary>
+    public ulong RateLimited { get; init; }
+    /// <summary>Hub 启动以来该 App 的参数 / 结果 / 资源超过大小上限（PAYLOAD_TOO_LARGE）的次数。</summary>
+    public ulong TooLarge { get; init; }
+    /// <summary>该 App 的工具声明（核对注解与 outputSchema）；旧 Hub 为空。</summary>
+    public IReadOnlyList<ToolDeclarationInfo> Tools { get; init; } = [];
 }
+
+/// <summary>一个工具的声明（ToolDeclaration）。Name 为局部名；Annotations 为 App 声明的原样注解（未声明为 null）；
+/// Effective 为 Agent 实际看到的注解（声明优先、缺少的按 Risk 推导）；OutputSchema 表示是否声明了 outputSchema。</summary>
+public sealed record ToolDeclarationInfo(
+    string Name,
+    string Risk,
+    HubToolAnnotations? Annotations,
+    HubToolAnnotations Effective,
+    bool OutputSchema);
 
 /// <summary>实例状态（InstanceStatus = InstanceInfo + state）。State：connected / dormant / waking。</summary>
 public sealed record InstanceStatusInfo(
@@ -614,6 +741,10 @@ public sealed record HubToolInfo(
     string Availability)
 {
     public bool IsDormant => Availability == HubAvailability.Dormant;
+    /// <summary>Agent 实际看到的 MCP 工具注解（声明优先、缺少的按 Risk 推导；上游为原样）；旧 Hub 为 null。</summary>
+    public HubToolAnnotations? Annotations { get; init; }
+    /// <summary>App 声明的结果 JSON Schema（MCP outputSchema）；未声明为 null。</summary>
+    public JsonElement? OutputSchema { get; init; }
 }
 
 /// <summary>唤醒请求（WakeRequest，spec/hub-api.md 3.5），交给 <see cref="AppMcpHub.Waker"/>。</summary>
@@ -666,7 +797,11 @@ public sealed record ApprovalRequest(
     string Description,
     string Risk,
     JsonElement Arguments,
-    string? Session);
+    string? Session)
+{
+    /// <summary>与 <see cref="HubToolInfo.Annotations"/> 相同；旧 Hub 为 null。</summary>
+    public HubToolAnnotations? Annotations { get; init; }
+}
 
 /// <summary>App 配对请求（PairingRequest）。</summary>
 public sealed record PairingRequest(

@@ -322,6 +322,8 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
       tool: 'cart.clear',
       description: '清空购物车',
       risk: 'destructive',
+      // 未声明注解：按 risk 推导
+      annotations: { readOnlyHint: false, destructiveHint: true },
       session: 'conv-9',
       callId: rejected.callId,
     })
@@ -462,6 +464,101 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(hub.apps().find((a) => a.appId === 'shop')?.instances[0]?.connectionId).toBe(inst.connectionId)
   })
 
+  it('注解、outputSchema 与结构化结果经 Hub 原样到达；status 列出工具声明', async () => {
+    const { hub } = await startHub()
+    const app = createAppMcp({ appId: 'orders', appName: '订单', hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false })
+    apps.push(app)
+    app.tool('order.submit', {
+      description: '提交订单',
+      risk: 'payment',
+      annotations: { idempotentHint: false, openWorldHint: true, title: '提交' },
+      outputSchema: { type: 'object', properties: { orderId: { type: 'string' } } },
+      handler: () => ({
+        data: { orderId: 'o1' },
+        status: 'pending' as const,
+        stateResource: 'order.state',
+        summary: '已提交，等待用户付款',
+        annotations: { audience: ['user' as const], priority: 0.9 },
+      }),
+    })
+    app.tool('order.list', { description: '订单列表', risk: 'read', handler: () => [] })
+    app.resource('order.state', { description: '订单状态', read: () => ({ paid: false }) })
+    app.start()
+    const tools = await until(() => {
+      const list = hub.tools({ apps: ['orders'], onlyAvailable: true, includeBuiltin: false })
+      return list.length === 2 ? list : undefined
+    }, 'orders 工具登记')
+    const submit = tools.find((t) => t.name === 'orders.order.submit')!
+    expect(submit.annotations).toEqual({
+      title: '提交',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    })
+    expect(submit.outputSchema).toEqual({ type: 'object', properties: { orderId: { type: 'string' } } })
+    const list = tools.find((t) => t.name === 'orders.order.list')!
+    expect(list.annotations).toEqual({ readOnlyHint: true })
+    expect(list.outputSchema).toBeUndefined()
+    // 导出名可能经过转写（如 `.` → `_`），按描述查找
+    expect(hub.exportTools('mcp').find((t) => t.description.includes('提交订单'))?.outputSchema).toMatchObject({
+      type: 'object',
+    })
+
+    const out = await hub.callTool({ name: 'orders.order.submit' })
+    expect(out.result.ok).toEqual({ orderId: 'o1' })
+    expect(out).toMatchObject({
+      status: 'pending',
+      stateResource: 'app-mcp://orders/order.state',
+      summary: '已提交，等待用户付款',
+      annotations: { audience: ['user'], priority: 0.9 },
+    })
+    const plain = await hub.callTool({ name: 'orders.order.list' })
+    expect(plain.status).toBe('done')
+    expect(plain.summary).toBeUndefined()
+
+    const declared = hub.status().apps.find((a) => a.appId === 'orders')?.tools ?? []
+    expect(declared.find((t) => t.name === 'order.submit')).toMatchObject({
+      risk: 'payment',
+      annotations: { idempotentHint: false, openWorldHint: true, title: '提交' },
+      effective: { destructiveHint: true, readOnlyHint: false },
+      outputSchema: true,
+    })
+    expect(declared.find((t) => t.name === 'order.list')).toMatchObject({ risk: 'read', outputSchema: false })
+    expect(declared.find((t) => t.name === 'order.list')).not.toHaveProperty('annotations')
+  })
+
+  it('资源保护：limits / outputValidation 配置透传，超出时 RATE_LIMITED / PAYLOAD_TOO_LARGE 并计数', async () => {
+    const { hub } = await startHub({
+      limits: { toolRatePerMinute: 1, toolRateBurst: 1, maxArgumentsBytes: 64 },
+      outputValidation: 'reject',
+    })
+    expect(hub.status()).toMatchObject({
+      limits: {
+        toolRatePerMinute: 1,
+        toolRateBurst: 1,
+        appRatePerMinute: 600,
+        appRateBurst: 60,
+        maxArgumentsBytes: 64,
+        maxResultBytes: 4 * 1024 * 1024,
+        maxResourceBytes: 4 * 1024 * 1024,
+      },
+      outputValidation: 'reject',
+    })
+    await startShop(hub)
+    const big = await hub.callTool({ name: 'shop.cart.add', arguments: { sku: 'x'.repeat(100), qty: 1 } })
+    expect(big.result.error).toMatchObject({ kind: 'PAYLOAD_TOO_LARGE', details: { part: 'arguments', limitBytes: 64 } })
+    const first = await hub.callTool({ name: 'shop.cart.clear' })
+    expect(first.result.ok).toEqual({ cleared: true })
+    const second = await hub.callTool({ name: 'shop.cart.clear' })
+    expect(second.result.error).toMatchObject({ kind: 'RATE_LIMITED', details: { scope: 'tool', tool: 'cart.clear' } })
+    expect(hub.status().apps.find((a) => a.appId === 'shop')).toMatchObject({ rateLimited: 1, tooLarge: 1 })
+
+    // 默认值：status 给出全部字段
+    const { hub: plain } = await startHub({ listen: null })
+    expect(plain.status()).toMatchObject({ limits: { toolRatePerMinute: 120, toolRateBurst: 30 }, outputValidation: 'log' })
+  })
+
   it('shutdown 后调用抛 SHUTDOWN', async () => {
     const { hub } = await startHub({ listen: null })
     expect(hub.listenAddr).toBeNull()
@@ -487,6 +584,16 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     ).rejects.toMatchObject({ kind: 'START_FAILED' })
     await expect(
       Hub.start({ keepAlive: false, listen: null, ipcEndpoint: null, lease: { bogus: 1 } as never }),
+    ).rejects.toMatchObject({ kind: 'INVALID_ARG' })
+    // 限流 burst = 0（且未关闭限流）→ 启动失败；未知字段 / 非法取值 → INVALID_ARG
+    await expect(
+      Hub.start({ keepAlive: false, listen: null, ipcEndpoint: null, limits: { appRateBurst: 0 } }),
+    ).rejects.toMatchObject({ kind: 'START_FAILED' })
+    await expect(
+      Hub.start({ keepAlive: false, listen: null, ipcEndpoint: null, limits: { bogus: 1 } as never }),
+    ).rejects.toMatchObject({ kind: 'INVALID_ARG' })
+    await expect(
+      Hub.start({ keepAlive: false, listen: null, ipcEndpoint: null, outputValidation: 'strict' as never }),
     ).rejects.toMatchObject({ kind: 'INVALID_ARG' })
   })
 })

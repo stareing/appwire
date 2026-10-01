@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 
@@ -343,3 +344,88 @@ def test_native_app_over_ipc(tmp_path) -> None:
             assert inst.pid == os.getpid()
         finally:
             app.stop()
+
+
+def test_limits_annotations_and_structured_result() -> None:
+    """第 14 / 19 项：限流 / 大小上限配置与统计、工具注解 / outputSchema、结构化调用结果。"""
+    from app_mcp import ToolResult
+    from app_mcp.hub import LimitsConfig, OutputValidation, ResultStatus
+
+    # 非法：限流时 burst 须 ≥ 1；未知键 / 取值
+    with pytest.raises(HubError.InvalidConfig):
+        Hub(listen="127.0.0.1:0", enable_ipc=False, limits={"toolRateBurst": 0})
+    with pytest.raises(ValueError):
+        Hub(listen="127.0.0.1:0", enable_ipc=False, limits={"toolRate": 1})
+    with pytest.raises(ValueError):
+        Hub(listen="127.0.0.1:0", enable_ipc=False, output_validation="strict")
+
+    schema = {"type": "object", "properties": {"orderId": {"type": "string"}}}
+    with Hub(
+        listen="127.0.0.1:0",
+        enable_ipc=False,
+        limits={"toolRatePerMinute": 1, "tool_rate_burst": 1, "maxArgumentsBytes": 64},
+        output_validation="reject",
+    ) as hub:
+        app = AppMcp("orders", "订单", host_url=f"ws://{hub.listen_addr}/app")
+
+        @app.tool("submit", description="下单", annotations={"idempotent_hint": False}, output_schema=schema)
+        def submit() -> ToolResult:
+            return ToolResult(
+                {"orderId": "o1"},
+                status="pending",
+                state_resource="order.state",
+                summary="已提交，等待付款",
+                annotations={"priority": 0.5},
+            )
+
+        @app.tool("echo", description="回显")
+        def echo(text: str = "") -> dict:
+            return {"text": text}
+
+        app.start()
+        try:
+            deadline = time.monotonic() + 10
+            while True:
+                tools = hub.tools(apps=["orders"], include_builtin=False)
+                if len(tools) == 2 and all(t.availability.name == "AVAILABLE" for t in tools):
+                    break
+                assert time.monotonic() < deadline, "等待工具注册超时"
+                time.sleep(0.02)
+            by_name = {t.tool: t for t in tools}
+            submit_tool = by_name["submit"]
+            assert submit_tool.annotations.idempotent_hint is False
+            assert submit_tool.annotations.read_only_hint is False  # 缺少的字段按 risk（write）推导
+            assert json.loads(submit_tool.output_schema_json) == schema
+            assert by_name["echo"].output_schema_json is None
+
+            out = hub.call_tool_sync("orders.submit")
+            assert out.ok, out
+            assert out.data == {"orderId": "o1"}
+            assert out.status == ResultStatus.PENDING
+            assert out.state_resource == "app-mcp://orders/order.state"
+            assert out.summary == "已提交，等待付款"
+            assert out.annotations is not None and out.annotations.priority == 0.5
+            assert hub.call_tool_sync("orders.submit").error.kind == "RATE_LIMITED"
+            assert hub.call_tool_sync("orders.echo", {"text": "x" * 100}).error.kind == "PAYLOAD_TOO_LARGE"
+            plain = hub.call_tool_sync("orders.echo", {"text": "hi"})
+            assert plain.ok and plain.status == ResultStatus.DONE and plain.summary is None
+
+            st = hub.status()
+            assert st.limits == LimitsConfig(
+                tool_rate_per_minute=1,
+                tool_rate_burst=1,
+                app_rate_per_minute=600,
+                app_rate_burst=60,
+                max_arguments_bytes=64,
+                max_result_bytes=4 * 1024 * 1024,
+                max_resource_bytes=4 * 1024 * 1024,
+            )
+            assert st.output_validation == OutputValidation.REJECT
+            orders = next(a for a in st.apps if a.app_id == "orders")
+            assert (orders.rate_limited, orders.too_large) == (1, 1)
+            decl = next(t for t in orders.tools if t.name == "submit")
+            assert decl.annotations is not None and decl.annotations.idempotent_hint is False
+            assert decl.effective.read_only_hint is False
+            assert decl.output_schema is True
+        finally:
+            app.close()

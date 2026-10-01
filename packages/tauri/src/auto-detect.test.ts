@@ -26,5 +26,38 @@ it('@app-mcp/web 的 createAppMcp 自动改走 Tauri 桥接', async () => {
     stateHints: ['cart'],
   })
   expect(appMcp.state).toEqual({ status: 'connected' })
+
+  // 注解、输出 schema 与结构化结果原样经桥接到达 Rust 侧（可选字段，桥接协议版本不变）
+  appMcp.tool('order.submit', {
+    description: '下单',
+    annotations: { idempotentHint: true, openWorldHint: true },
+    outputSchema: { type: 'object', properties: { orderId: { type: 'string' } } },
+    handler: () => ({
+      data: { orderId: 'o1' },
+      status: 'pending' as const,
+      stateResource: 'order.state',
+      summary: '已提交，等待确认',
+      annotations: { audience: ['user' as const], priority: 0.8 },
+    }),
+  })
+  const order = (await fake.waitFor((op) => op.op === 'tool.register' && op.name === 'order.submit')) as Extract<
+    RendererOp,
+    { op: 'tool.register' }
+  >
+  expect(order.spec).toMatchObject({
+    annotations: { idempotentHint: true, openWorldHint: true },
+    outputSchema: { type: 'object', properties: { orderId: { type: 'string' } } },
+  })
+  fake.emit({ type: 'call', callId: 'c2', toolId: order.id, input: {} })
+  await expect(fake.waitFor((op) => op.op === 'call.result' && op.callId === 'c2')).resolves.toEqual({
+    op: 'call.result',
+    callId: 'c2',
+    ok: true,
+    data: { orderId: 'o1' },
+    status: 'pending',
+    stateResource: 'order.state',
+    summary: '已提交，等待确认',
+    annotations: { audience: ['user'], priority: 0.8 },
+  })
   appMcp.dispose()
 })
