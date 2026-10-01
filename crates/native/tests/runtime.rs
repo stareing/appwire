@@ -554,6 +554,21 @@ fn connect_failure_backs_off() {
     });
 }
 
+// 命名管道端点只在 Windows 上被配置接受（其他平台在配置校验时即拒绝）。
+#[cfg(windows)]
+#[test]
+fn overlong_pipe_name_backs_off_with_path_too_long() {
+    // 超过 MAX_PIPE_NAME_CHARS 的管道名：连接前即拒绝，错误码 IPC_PATH_TOO_LONG（spec/protocol.md 10.1）。
+    let name = format!(r"\\.\pipe\{}", "a".repeat(app_mcp_protocol::endpoint::MAX_PIPE_NAME_CHARS));
+    let mut c = NativeConfig::new("test-app", "测试");
+    c.host_url = format!("pipe:{name}");
+    let client = NativeClient::new(c, None).unwrap();
+    client.start();
+    eventually("Backoff", || client.state().status == StateStatus::Backoff);
+    let state = client.state();
+    assert_eq!(state.code.as_deref(), Some("IPC_PATH_TOO_LONG"), "{state:?}");
+}
+
 struct DropCounter(Arc<AtomicUsize>);
 impl Drop for DropCounter {
     fn drop(&mut self) {

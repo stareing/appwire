@@ -42,10 +42,14 @@ fn default_host_url_is_platform_endpoint() {
         let registered = app_mcp_protocol::registry::registered_app_endpoint();
         assert_eq!(config().host_url, registered.unwrap_or_else(|| expected.clone()));
     }
-    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
-    assert!(expected.starts_with("unix:/"), "{expected}");
-    #[cfg(windows)]
-    assert!(expected.starts_with(r"pipe:\\.\pipe\app-mcp-"), "{expected}");
+    // 以 protocol 的平台分类为唯一依据（含 ohos：target_os 为 linux 但属沙箱平台）。
+    use app_mcp_protocol::platform::{IpcKind, Target};
+    let prefix = match Target::CURRENT.default_ipc_kind() {
+        Some(IpcKind::Unix) => "unix:/",
+        Some(IpcKind::Pipe) => r"pipe:\\.\pipe\app-mcp-",
+        None => app_mcp_protocol::DEFAULT_WS_URL,
+    };
+    assert!(expected.starts_with(prefix), "{expected}");
 }
 
 #[test]

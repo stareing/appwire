@@ -335,7 +335,12 @@ async fn open(endpoint: &Endpoint) -> Result<WsStream, WsError> {
             (Box::new(tcp_connect(url).await?), url.as_str())
         }
         Endpoint::Unix(path) => (Box::new(unix_connect(path).await?), app_mcp_protocol::endpoint::IPC_WS_URL),
-        Endpoint::Pipe(name) => (Box::new(pipe_connect(name).await?), app_mcp_protocol::endpoint::IPC_WS_URL),
+        Endpoint::Pipe(name) => {
+            // 与 unix_connect 的路径检查对应；放在平台分支之前，超长名在任何平台都报 IPC_PATH_TOO_LONG。
+            app_mcp_protocol::endpoint::check_pipe_name(name)
+                .map_err(|issue| WsError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, issue)))?;
+            (Box::new(pipe_connect(name).await?), app_mcp_protocol::endpoint::IPC_WS_URL)
+        }
     };
     // IPC 上的 URL 为 ws://，不做 TLS；wss:// 由 tokio-tungstenite 完成 TLS 握手。
     tokio_tungstenite::client_async_tls(url, io)

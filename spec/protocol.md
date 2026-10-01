@@ -597,7 +597,7 @@ SDK 的连接状态（`Backoff` / `Rejected` / `HostMismatch`，网页另有 `bl
   上限与建议，可经 `io::Error::get_ref` 取出）；原生 SDK 进入带该码的 `backoff`。
 - Windows 命名管道完整名（`\\.\pipe\<名称>`，含前缀）按 `app_mcp_protocol::endpoint::check_pipe_name` 检查长度（上限
   `MAX_PIPE_NAME_CHARS` = 256 个 UTF-16 码元，`CreateNamedPipeW` 的限制）：Hub 创建管道前检查，返回同样的 `InvalidInput` +
-  `IPC_PATH_TOO_LONG`；`app-mcp-host doctor` 的 IPC 检查同样报出。原生 SDK 连接管道前尚未检查（超长名由系统报错，归为 `CONNECT_FAILED`）。
+  `IPC_PATH_TOO_LONG`；`app-mcp-host doctor` 的 IPC 检查同样报出。原生 SDK 连接管道前同样检查（`crates/native`），进入带该码的 `backoff`。
 - 已建立的连接断开（类别 `disconnect`）：原生驱动层收到 Close 帧或读到连接结束 → `CONNECTION_CLOSED`（说明中带关闭码与原因），
   读取出错 → `CONNECTION_LOST`，经核心 `Client::handle_disconnected_with` 进入带码的 `Backoff`；核心自身的心跳超时 →
   `HEARTBEAT_TIMEOUT`（此前为 `CONNECT_FAILED`）、握手超时 → `HANDSHAKE_TIMEOUT`。驱动层未给出原因的断线（`handle_disconnected`）
