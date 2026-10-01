@@ -36,8 +36,26 @@ Claude Code 或你自己的大模型循环都能用。工具就声明在已经�
 
 ## 目录
 
-[示例](#示例) · [安装](#安装) · [试用](#试用) · [平台与包](#平台与包) · [工作方式](#工作方式) ·
+[快速开始](#快速开始) · [示例](#示例) · [安装](#安装) · [试用](#试用) · [平台与包](#平台与包) · [工作方式](#工作方式) ·
 [对比](#与其他方案的对比) · [理念](#理念) · [常见问题](#常见问题) · [文档](#文档)
+
+## 快速开始
+
+把你的 AI Agent 接到本机所有接入了 AppWire 的 App：
+
+```bash
+npx appwire-cli setup        # 或：uvx appwire-cli setup
+npx appwire-cli uninstall    # 以后撤销 setup 所做的一切
+```
+
+`setup` 为当前用户安装 AppWire Host（`app-mcp-host`）：把二进制从包管理器缓存复制到 `~/.app-mcp/bin`，注册登录自启，
+并写入检测到的 Agent 的 MCP 配置——Claude Code、Codex、Gemini CLI、Cursor、VS Code（Windsurf 与 Claude Desktop 只打印需手动添加的条目）。
+它会备份每个要修改的文件，已有不同的同名条目时不覆盖（加 `--force` 才替换），最后运行 `doctor` 自检，可以重复执行；`--dry-run` 先查看计划。
+本机 Agent 不需要访问令牌。重启 Agent、打开接入了 AppWire 的 App，工具就会出现。全局安装（`npm install -g appwire-cli` 或
+`uv tool install appwire-cli`）后命令为 `appwire`。
+
+npm 与 PyPI 上的 `appwire-cli` 包随首个版本发布。在此之前请从源码构建：`cargo build -p app-mcp-host`，再运行
+`target/debug/app-mcp-host setup`，或按[试用](#试用)操作。
 
 ## 示例
 

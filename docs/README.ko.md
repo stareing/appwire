@@ -37,10 +37,30 @@ Gemini, Claude Code는 물론 직접 만든 LLM 루프에서도 사용할 수 �
 
 ## 목차
 
-[간단한 예시](#간단한-예시) · [설치](#설치) · [사용해 보기](#사용해-보기) ·
+[빠른 시작](#빠른-시작) · [간단한 예시](#간단한-예시) · [설치](#설치) · [사용해 보기](#사용해-보기) ·
 [플랫폼과 패키지](#플랫폼과-패키지) · [동작 방식](#동작-방식) ·
 [비교](#다른-방식과의-비교) · [철학](#철학) · [자주 묻는 질문](#자주-묻는-질문) ·
 [문서](#문서)
+
+## 빠른 시작
+
+이 컴퓨터에서 AppWire를 지원하는 앱에 AI 에이전트를 연결합니다.
+
+```bash
+npx appwire-cli setup        # 또는: uvx appwire-cli setup
+npx appwire-cli uninstall    # 나중에 setup이 한 일을 모두 되돌릴 때
+```
+
+`setup`은 현재 사용자용으로 AppWire Host(`app-mcp-host`)를 설치합니다. 바이너리를 패키지 매니저 캐시에서
+`~/.app-mcp/bin`으로 복사하고, 로그인 시 자동 시작을 등록하고, 찾은 에이전트(Claude Code, Codex, Gemini CLI, Cursor,
+VS Code)의 MCP 설정에 추가합니다(Windsurf와 Claude Desktop은 직접 추가할 항목을 출력합니다). 수정하는 파일은 모두
+백업하고, 내용이 다른 같은 이름의 항목은 `--force`를 주지 않으면 덮어쓰지 않으며, 마지막에 `doctor`로 자체 점검합니다.
+여러 번 실행해도 안전하고, `--dry-run`으로 계획을 먼저 볼 수 있습니다. 로컬 에이전트에는 액세스 토큰이 필요 없습니다.
+에이전트를 다시 시작하고 AppWire를 지원하는 앱을 열면 도구가 나타납니다. 패키지를 전역 설치하면
+(`npm install -g appwire-cli` 또는 `uv tool install appwire-cli`) 명령 이름은 `appwire`입니다.
+
+npm과 PyPI의 `appwire-cli` 패키지는 첫 릴리스와 함께 배포됩니다. 그전까지는 소스에서 빌드하세요:
+`cargo build -p app-mcp-host` 후 `target/debug/app-mcp-host setup`을 실행하거나 [사용해 보기](#사용해-보기)를 따르세요.
 
 ## 간단한 예시
 

@@ -55,7 +55,7 @@
 ### 第一部分：Host 分发与一条命令安装（可与 4e 并行）
 
 - **D1 发布流水线**：GitHub Actions 构建 Linux（x64 / arm64）、Windows（x64 / arm64）、macOS（x64 / arm64）的 `app-mcp-host`；产物进 Release。
-- **D2 包管理器入口**：`npx appwire` / `uvx appwire`（平台可选依赖包内含二进制，命令名 `appwire`，二进制仍为 `app-mcp-host`）；Homebrew、winget 在 U2 确认后加。
+- **D2 包管理器入口**：`npx appwire-cli` / `uvx appwire-cli`（npm 与 PyPI 上 `appwire` 已被占用；平台可选依赖包内含二进制，命令名 `appwire`，二进制仍为 `app-mcp-host`）；Homebrew、winget 在 U2 确认后加。
 - **D3 `setup` 子命令**：注册自启（复用 K2）→ 等 `/healthz` → 检测已装 Agent 并写入 MCP 配置（U1、U6）→ `doctor` 自检 → 打印结果；幂等。
   对应 `uninstall`（撤销服务 + 只删自己写入的条目）。
 - **D4 默认免令牌**：保持 `browser` 策略（K3），`setup` 不生成需要环境变量的配置；README 各语言版本把"快速开始"改为 2 条命令。
@@ -73,7 +73,7 @@
 
 ## 6. 验证
 
-1. 全新 Linux / Windows 用户目录（临时 `HOME` / 新建 Windows 用户）：`npx appwire setup` 后 Claude Code 中出现 `apps.*` 工具，计时 ≤ 2 分钟。
+1. 全新 Linux / Windows 用户目录（临时 `HOME` / 新建 Windows 用户）：`npx appwire-cli setup` 后 Claude Code 中出现 `apps.*` 工具，计时 ≤ 2 分钟。
 2. 重复执行 `setup` 无副作用；`uninstall` 后 Agent 配置恢复原样（与备份逐字节比对）。
 3. 示例 App（Python、网页 shop、Android 示例）只保留一行启动代码即可配对。
 4. macOS 记为待验证（U5）。

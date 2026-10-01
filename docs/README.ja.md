@@ -38,10 +38,30 @@ Claude、ChatGPT、Gemini、Claude Code、あるいは自作の LLM ループか
 
 ## 目次
 
-[コード例](#コード例) · [インストール](#インストール) · [試してみる](#試してみる) ·
+[クイックスタート](#クイックスタート) · [コード例](#コード例) · [インストール](#インストール) · [試してみる](#試してみる) ·
 [プラットフォーム](#対応プラットフォームとパッケージ) · [仕組み](#仕組み) ·
 [比較](#他の手法との比較) · [設計思想](#設計思想) · [FAQ](#よくある質問) ·
 [ドキュメント](#ドキュメント)
+
+## クイックスタート
+
+このコンピューター上の AppWire 対応アプリに AI エージェントをつなぎます。
+
+```bash
+npx appwire-cli setup        # または: uvx appwire-cli setup
+npx appwire-cli uninstall    # あとで setup の変更をすべて元に戻すとき
+```
+
+`setup` は現在のユーザー向けに AppWire Host（`app-mcp-host`）をインストールします。バイナリをパッケージマネージャーの
+キャッシュから `~/.app-mcp/bin` にコピーし、ログイン時の自動起動を登録し、見つかったエージェント（Claude Code、Codex、
+Gemini CLI、Cursor、VS Code）の MCP 設定に追加します（Windsurf と Claude Desktop には手動で追加する項目を表示します）。
+編集するファイルはすべてバックアップし、内容の異なる同名の項目は `--force` を付けない限り上書きせず、最後に `doctor` で
+自己診断します。何度実行しても安全で、`--dry-run` で先に計画を確認できます。ローカルのエージェントにアクセストークンは
+不要です。エージェントを再起動し、AppWire 対応アプリを開けばツールが現れます。パッケージをグローバルにインストールした場合
+（`npm install -g appwire-cli` または `uv tool install appwire-cli`）、コマンド名は `appwire` です。
+
+npm と PyPI の `appwire-cli` パッケージは最初のリリースで公開されます。それまではソースからビルドしてください:
+`cargo build -p app-mcp-host` のあと `target/debug/app-mcp-host setup` を実行するか、[試してみる](#試してみる)に従います。
 
 ## コード例
 

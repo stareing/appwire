@@ -40,10 +40,33 @@ kein Screen Scraping, kein Computer Use, keine Browser-Automatisierung.
 
 ## Inhalt
 
-[Kurzer Überblick](#ein-kurzer-überblick) · [Installation](#installation) · [Ausprobieren](#ausprobieren) ·
+[Schnellstart](#schnellstart) · [Kurzer Überblick](#ein-kurzer-überblick) · [Installation](#installation) · [Ausprobieren](#ausprobieren) ·
 [Plattformen](#plattformen-und-pakete) · [So funktioniert es](#so-funktioniert-es) ·
 [Vergleich](#appwire-im-vergleich) · [Philosophie](#philosophie) · [FAQ](#faq) ·
 [Dokumentation](#dokumentation)
+
+## Schnellstart
+
+Verbinden Sie Ihre KI-Agenten mit den AppWire-fähigen Apps auf diesem Computer:
+
+```bash
+npx appwire-cli setup        # oder: uvx appwire-cli setup
+npx appwire-cli uninstall    # später, um alles rückgängig zu machen, was setup getan hat
+```
+
+`setup` installiert den AppWire Host (`app-mcp-host`) für den aktuellen Benutzer: Es kopiert die Binärdatei aus
+dem Cache des Paketmanagers nach `~/.app-mcp/bin`, registriert den Start bei der Anmeldung und trägt den Host in
+die MCP-Konfiguration der gefundenen Agenten ein — Claude Code, Codex, Gemini CLI, Cursor und VS Code (für
+Windsurf und Claude Desktop gibt es den Eintrag zum manuellen Hinzufügen aus). Jede bearbeitete Datei wird
+gesichert, ein abweichender vorhandener Eintrag wird nur mit `--force` ersetzt, am Ende läuft ein
+`doctor`-Selbsttest, und der Befehl kann gefahrlos wiederholt werden; `--dry-run` zeigt zuerst den Plan. Lokale
+Agenten brauchen kein Zugriffstoken. Starten Sie Ihren Agenten neu, öffnen Sie eine App mit AppWire, und ihre
+Tools erscheinen. Nach einer globalen Installation (`npm install -g appwire-cli` oder
+`uv tool install appwire-cli`) heißt der Befehl `appwire`.
+
+Die Pakete `appwire-cli` auf npm und PyPI werden mit dem ersten Release veröffentlicht. Bis dahin aus dem
+Quellcode bauen — `cargo build -p app-mcp-host`, dann `target/debug/app-mcp-host setup` — oder
+[Ausprobieren](#ausprobieren) folgen.
 
 ## Ein kurzer Überblick
 
