@@ -257,6 +257,13 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - 第三部分（4d 之后）：N5 按 Agent 的身份与授权范围（App、风险上限、有效期、可撤销）；N6 人机 / 多 Agent 并发仲裁（`busy()` / 对象锁、公平排队）
    - 第四部分（与第 15 项穿插）：N3 事件与触发器；N4 标准意图（5 个动词试点）；O1 `apps.search` 工具检索；O3 只读结果缓存；O4 schema 演进；O5 冷启动预算与预热
    - 第五部分（最后）：N7b 预演与跨 App 补偿；N8 App 界面嵌入 Agent（先核实 MCP Apps）；N9 跨设备接力（依赖第 15 项 R1）；N10 本地小模型辅助
+17. [ ] 通用内容与文件：多媒体结果、数据句柄、文件选择与逐级退让（2026-10-02 加入）——计划见 `docs/plans/17-content-files.md`（第 16 项 N1 由本项实现）
+   - 现状：App 工具结果只有 JSON（Hub 序列化为一段文本），资源读取不支持二进制；MCP / rmcp 侧 image / audio / resource_link 已就绪
+   - 第一部分（内容通道）：C1 `ToolsInvokeResult.content` 多媒体内容块；C2 资源 `blob`；C3 缩略图给模型、原图转句柄、去 EXIF、不支持时降级
+   - 第二部分（句柄）：H1 Hub Blob 存储（`appmcp-blob://`、TTL、配额、绑定会话与授权、分块）；H2 参数 `format: "appmcp-file"`；H3 平台交付（Android `content://` + 临时授权、桌面临时文件 / fd、Flatpak 门户、网页 Blob）
+   - 第三部分（选择即授权）：F1 `files.pick` / `files.save` 系统对话框；F2 `share.send` 与分享目标；F3 剪贴板（`os-sensitive`）
+   - 第四部分（逐级退让）：R1 SDK 工具 → 系统意图 → 无障碍控件树 → 截图 + 视觉，`apps.list` 标注等级；R2 像素级兜底默认关闭、逐次确认
+   - 待验证：Claude Code 是否渲染图片 / 音频内容块；单帧上限；Android `grantUriPermission` 有效期；iOS、Flatpak 交付形态
 
 ## 进行中（子代理）
 
