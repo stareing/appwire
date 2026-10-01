@@ -23,7 +23,7 @@ data class AddItem(val sku: String, val qty: Int = 1)
 @Serializable
 data class Cart(val items: Map<String, Int>)
 
-/** 控制台示例：`./gradlew :sample-jvm:run --args="ws://127.0.0.1:7717"`。 */
+/** 控制台示例：`./gradlew :sample-jvm:run --args="ws://127.0.0.1:7717/app"`。 */
 fun main(args: Array<String>): Unit = runBlocking {
     val cart = java.util.concurrent.ConcurrentHashMap<String, Int>()
     val client = AppMcp.create(

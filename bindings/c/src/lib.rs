@@ -560,7 +560,12 @@ pub unsafe extern "C" fn am_client_state(
                 0
             };
         }
-        if !reason.is_null() && st.status == app_mcp_native::StateStatus::Rejected {
+        if !reason.is_null()
+            && matches!(
+                st.status,
+                app_mcp_native::StateStatus::Rejected | app_mcp_native::StateStatus::HostMismatch
+            )
+        {
             let text = st.reason.unwrap_or_default();
             unsafe { *reason = into_raw_cstring(&text) };
         }

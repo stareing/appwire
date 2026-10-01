@@ -16,8 +16,14 @@ const DEFAULT_WORKER_THREADS: usize = 2;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub(crate) struct ConfigJson {
-    /// 缺省为默认地址；显式 `null` 表示不开 WebSocket 服务。
-    pub ws_addr: Option<String>,
+    /// HTTP 监听地址（`/app`、`/healthz`，`mcpHttp` 时另有 `/mcp`）。缺省（字段不出现）为默认地址
+    /// `127.0.0.1:7717`，被占用时依次尝试 7737、7757；显式给出地址时只绑定该地址；显式 `null` 表示不开。
+    #[serde(deserialize_with = "explicit")]
+    pub listen: Option<Option<String>>,
+    /// 是否在 `listen` 上提供 MCP Streamable HTTP（`/mcp`），默认 `false`。
+    pub mcp_http: Option<bool>,
+    /// 单实例锁与登记文件目录（`<runDir>/hub.lock`、`endpoints.json`）；缺省不参与。
+    pub run_dir: Option<PathBuf>,
     /// 本地 IPC 端点（`unix:…` / `pipe:…`）；缺省为平台默认端点；显式 `null` 表示不开。
     pub ipc_endpoint: Option<String>,
     pub manifests: Vec<Value>,
@@ -50,7 +56,9 @@ pub(crate) struct ConfigJson {
 impl Default for ConfigJson {
     fn default() -> Self {
         Self {
-            ws_addr: HubConfig::default().ws_addr,
+            listen: None,
+            mcp_http: None,
+            run_dir: None,
             ipc_endpoint: HubConfig::default().ipc_endpoint,
             manifests: Vec::new(),
             manifest_files: Vec::new(),
@@ -79,6 +87,15 @@ impl Default for ConfigJson {
     }
 }
 
+/// 字段出现时（含 `null`）包一层 `Some`，用于区分“未给出”与“显式 null”。
+fn explicit<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
 pub(crate) struct ParsedConfig {
     pub hub: HubConfig,
     pub worker_threads: usize,
@@ -95,13 +112,23 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
         Some(t) => serde_json::from_str(t).map_err(|e| FfiError::json("config_json", e))?,
         None => ConfigJson::default(),
     };
+    let defaults = HubConfig::default();
+    let (listen, listen_alternates) = match c.listen {
+        // 字段不出现：默认地址与备选地址。
+        None => (defaults.listen.clone(), defaults.listen_alternates.clone()),
+        // 显式给出（或 null）：只绑定该地址。
+        Some(addr) => (addr, Vec::new()),
+    };
     let mut hub = HubConfig {
-        ws_addr: c.ws_addr,
+        listen,
+        listen_alternates,
+        mcp_http: c.mcp_http.unwrap_or(defaults.mcp_http),
+        run_dir: c.run_dir,
         ipc_endpoint: c.ipc_endpoint,
         allow_origins: c.allow_origins,
         upstreams: c.upstreams,
         approval: c.approval,
-        ..HubConfig::default()
+        ..defaults
     };
     set_ms(&mut hub.ping_interval, c.ping_interval_ms);
     set_ms(&mut hub.idle_timeout, c.idle_timeout_ms);
@@ -150,15 +177,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_and_null_ws_addr() {
+    fn defaults_and_null_listen() {
+        let d = HubConfig::default();
         let p = parse(None).map_err(|e| e.message).expect("默认配置");
-        assert_eq!(p.hub.ws_addr, HubConfig::default().ws_addr);
+        assert_eq!(p.hub.listen, d.listen);
+        assert_eq!(p.hub.listen_alternates, d.listen_alternates);
+        assert!(!p.hub.mcp_http);
+        assert_eq!(p.hub.run_dir, None);
         assert_eq!(p.worker_threads, DEFAULT_WORKER_THREADS);
-        let p = parse(Some(r#"{"wsAddr": null, "responseTimeoutMs": 1500,
+        // 显式地址：只绑定该地址
+        let p = parse(Some(r#"{"listen": "127.0.0.1:0", "mcpHttp": true, "runDir": "/tmp/r"}"#)).unwrap();
+        assert_eq!(p.hub.listen.as_deref(), Some("127.0.0.1:0"));
+        assert!(p.hub.listen_alternates.is_empty());
+        assert!(p.hub.mcp_http);
+        assert_eq!(p.hub.run_dir, Some(PathBuf::from("/tmp/r")));
+        let p = parse(Some(r#"{"listen": null, "responseTimeoutMs": 1500,
             "approval": {"requireAtOrAbove": "payment", "timeout": 200}}"#))
         .map_err(|e| e.message)
         .expect("解析");
-        assert_eq!(p.hub.ws_addr, None);
+        assert_eq!(p.hub.listen, None);
+        // 旧名不再接受
+        assert!(parse(Some(r#"{"wsAddr": "127.0.0.1:0"}"#)).is_err());
         assert_eq!(p.hub.response_timeout, Duration::from_millis(1500));
         assert_eq!(p.hub.approval.timeout, Some(Duration::from_millis(200)));
         assert_eq!(p.hub.ipc_endpoint, HubConfig::default().ipc_endpoint);

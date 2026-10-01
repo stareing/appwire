@@ -1,6 +1,6 @@
 // lifecycle.cpp —— 生命周期示例：on-demand 模式 + 唤醒入口 + 空闲退出。
 //
-// 用法：lifecycle_cpp [ws://127.0.0.1:7717] [激活参数...]
+// 用法：lifecycle_cpp [ws://127.0.0.1:7717/app] [激活参数...]
 //
 // - on-demand：启动时不连接；Host 需要时通过唤醒描述（这里是 URI scheme "lifecycle-cpp"）拉起 /
 //   叫醒本进程，参数形如 `lifecycle-cpp://app-mcp/wake?token=...` 或 `app-mcp-wake:<token>`。

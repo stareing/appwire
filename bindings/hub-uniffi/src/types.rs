@@ -263,12 +263,19 @@ pub struct UpstreamSpec {
 /// Hub 配置。可选字段为空时使用 `app_mcp_hub::HubConfig` 的默认值。
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct HubConfig {
-    /// App 连接服务（WebSocket）监听地址，端口 0 = 随机。为空时为 `127.0.0.1:7717`。
+    /// HTTP 监听地址：`/app`（App 的 WebSocket 连接）、`/healthz`，`mcp_http` 时另有 `/mcp`（spec/protocol.md 1.3）。
+    /// 端口 0 = 随机；显式给出时只绑定该地址。为空时为 `127.0.0.1:7717`（被占用时依次尝试 7737、7757）。
     #[uniffi(default = None)]
-    pub ws_addr: Option<String>,
-    /// `false` = 不开 WebSocket 服务（仅上游）。
+    pub listen: Option<String>,
+    /// `false` = 不开 HTTP 服务（仅本地 IPC / 上游）。
     #[uniffi(default = true)]
-    pub enable_ws: bool,
+    pub enable_listen: bool,
+    /// 是否在 `listen` 上提供 MCP Streamable HTTP（`/mcp`），默认 `false`。
+    #[uniffi(default = false)]
+    pub mcp_http: bool,
+    /// 单实例锁与登记文件目录（`<run_dir>/hub.lock`、`endpoints.json`，spec/protocol.md 1.5、1.7）；为空时不参与。
+    #[uniffi(default = None)]
+    pub run_dir: Option<String>,
     /// 本地 IPC 端点（`unix:<绝对路径>` / `pipe:\\.\pipe\<名称>`，spec/protocol.md 1.2）；
     /// 为空时为平台默认端点（原生 App 默认连接这里）。
     #[uniffi(default = None)]
@@ -348,8 +355,10 @@ pub struct HubConfig {
 impl Default for HubConfig {
     fn default() -> Self {
         HubConfig {
-            ws_addr: None,
-            enable_ws: true,
+            listen: None,
+            enable_listen: true,
+            mcp_http: false,
+            run_dir: None,
             ipc_endpoint: None,
             enable_ipc: true,
             manifest_files: Vec::new(),
@@ -382,11 +391,15 @@ impl Default for HubConfig {
 impl HubConfig {
     pub(crate) fn into_hub(self) -> Result<hub::HubConfig, HubError> {
         let mut c = hub::HubConfig::default();
-        if !self.enable_ws {
-            c.ws_addr = None;
-        } else if let Some(addr) = self.ws_addr {
-            c.ws_addr = Some(addr);
+        if !self.enable_listen {
+            c.listen = None;
+        } else if let Some(addr) = self.listen {
+            // 显式地址：只绑定它，不尝试备选端口。
+            c.listen = Some(addr);
+            c.listen_alternates = Vec::new();
         }
+        c.mcp_http = self.mcp_http;
+        c.run_dir = self.run_dir.map(PathBuf::from);
         if !self.enable_ipc {
             c.ipc_endpoint = None;
         } else if let Some(endpoint) = self.ipc_endpoint {
@@ -991,7 +1004,10 @@ mod tests {
     fn config_defaults_follow_hub() {
         let c = HubConfig::default().into_hub().unwrap();
         let d = hub::HubConfig::default();
-        assert_eq!(c.ws_addr, d.ws_addr);
+        assert_eq!(c.listen, d.listen);
+        assert_eq!(c.listen_alternates, d.listen_alternates);
+        assert!(!c.mcp_http);
+        assert_eq!(c.run_dir, None);
         assert_eq!(c.ipc_endpoint, d.ipc_endpoint);
         assert_eq!(c.response_timeout, d.response_timeout);
         assert_eq!(c.approval, d.approval);
@@ -1001,7 +1017,9 @@ mod tests {
     #[test]
     fn config_overrides() {
         let c = HubConfig {
-            ws_addr: Some("127.0.0.1:0".into()),
+            listen: Some("127.0.0.1:0".into()),
+            mcp_http: true,
+            run_dir: Some("/tmp/r".into()),
             approval_min_risk: Some(Risk::Destructive),
             approval_timeout_ms: Some(500),
             response_timeout_ms: Some(1234),
@@ -1016,7 +1034,10 @@ mod tests {
         }
         .into_hub()
         .unwrap();
-        assert_eq!(c.ws_addr.as_deref(), Some("127.0.0.1:0"));
+        assert_eq!(c.listen.as_deref(), Some("127.0.0.1:0"));
+        assert!(c.listen_alternates.is_empty(), "显式地址不尝试备选端口");
+        assert!(c.mcp_http);
+        assert_eq!(c.run_dir, Some(PathBuf::from("/tmp/r")));
         assert_eq!(c.approval.require_at_or_above, Some(hub::Risk::Destructive));
         assert_eq!(c.approval.timeout, Some(Duration::from_millis(500)));
         assert_eq!(c.response_timeout, Duration::from_millis(1234));
@@ -1024,13 +1045,13 @@ mod tests {
         assert_eq!(c.manifests[0].app_id, "shop");
 
         let off = HubConfig {
-            enable_ws: false,
-            ws_addr: Some("127.0.0.1:1".into()),
+            enable_listen: false,
+            listen: Some("127.0.0.1:1".into()),
             ..Default::default()
         }
         .into_hub()
         .unwrap();
-        assert_eq!(off.ws_addr, None);
+        assert_eq!(off.listen, None);
 
         let ipc = HubConfig {
             ipc_endpoint: Some("unix:/run/x/hub.sock".into()),

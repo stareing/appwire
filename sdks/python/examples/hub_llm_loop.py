@@ -4,7 +4,7 @@
 ``dispatch`` 执行并得到可直接回填的结果；高风险调用由自己的 UI 审批。
 
 为了能独立运行，本示例在同一进程里再起一个演示 App（app_mcp.AppMcp，经 WebSocket 连上 Hub）。
-真实场景中 App 是其他进程（浏览器页面、桌面 / 手机 App），连到 Hub 的 ``ws_addr``。
+真实场景中 App 是其他进程（浏览器页面、桌面 / 手机 App），连到 Hub 的 ``ws://<listen_addr>/app``。
 
 运行：
 
@@ -35,7 +35,7 @@ SESSION = "demo-conversation-1"  # 每段对话一个会话：首次接触 App �
 
 def start_demo_app(hub: Hub) -> AppMcp:
     notes: list[str] = []
-    app = AppMcp("notes", "笔记", host_url=f"ws://{hub.ws_addr}", overview="记事本：添加、列出、清空笔记")
+    app = AppMcp("notes", "笔记", host_url=f"ws://{hub.listen_addr}/app", overview="记事本：添加、列出、清空笔记")
 
     @app.tool("add", description="添加一条笔记", risk="write")
     def add(text: str) -> dict:
@@ -127,7 +127,7 @@ def make_model(use_claude: bool) -> Any:
 # ---------------------------------------------------------------------------
 
 async def run(user_input: str, use_claude: bool) -> None:
-    with Hub(ws_addr="127.0.0.1:0", enable_ipc=False, approval_min_risk="destructive") as hub:
+    with Hub(listen="127.0.0.1:0", enable_ipc=False, approval_min_risk="destructive") as hub:
         hub.set_approval_handler(approve_in_terminal)
         events = hub.events()
         app = start_demo_app(hub)

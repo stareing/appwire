@@ -1,6 +1,6 @@
 // 控制台示例：注册 greet({name}) 工具与 app.info 资源，连接 Host，Ctrl+C 退出。
 //
-// 用法：dotnet run --project samples/Console -- [ws://127.0.0.1:7717]
+// 用法：dotnet run --project samples/Console -- [ws://127.0.0.1:7717/app]
 // 也可用环境变量 APP_MCP_HOST_URL；原生库路径可用 APP_MCP_NATIVE_PATH 指定。
 
 using AppMcp;

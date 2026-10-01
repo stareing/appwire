@@ -9,14 +9,18 @@ Windows 无窗口版 `src/bin/app-mcp-hostw.rs` 只是入口）与集成测试�
 
 ## 推荐接入：常驻服务 + HTTP
 
-一个常驻的 `app-mcp-host serve` 进程同时提供：
+一个常驻的 `app-mcp-host serve` 进程提供：
 
-- **App 连接服务**：
-  - **本地 IPC**（原生 App 默认）：Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock`（未设置时 `~/.app-mcp/run/hub.sock`）、
-    macOS `~/.app-mcp/run/hub.sock`、Windows 命名管道 `\\.\pipe\app-mcp-<用户 SID>`；只接受同一用户的进程（见下方「本地 IPC」）；
-  - **WebSocket**（默认 `ws://127.0.0.1:7717`）：网页 SDK，以及显式配置 `ws://` 的 App；
-- **MCP Streamable HTTP**（默认 `http://127.0.0.1:7718/mcp`）：每个 MCP 客户端（Claude Code、Claude Desktop、IDE……）
-  各自建立一个 HTTP 会话，**共享同一组 App 连接**；每个会话有独立的 `apps.select` 选择与“首次接触附带总览”状态。
+- **一个 HTTP 端口**（默认 `127.0.0.1:7717`，`listen`），按路径分流（spec/protocol.md 1.3）：
+  - `/app`：App 连接（WebSocket 升级）——网页 SDK（`ws://127.0.0.1:7717/app`），以及显式配置 `ws://` 的原生 App；
+  - `/mcp`：MCP Streamable HTTP——每个 MCP 客户端（Claude Code、Claude Desktop、IDE……）各自建立一个 HTTP 会话，
+    **共享同一组 App 连接**；每个会话有独立的 `apps.select` 选择与“首次接触附带总览”状态；
+  - `/healthz`：Host 身份（`service`、`version`、`user`、`pid`）与监听信息。
+- **本地 IPC**（原生 App 默认）：Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock`（未设置时 `~/.app-mcp/run/hub.sock`）、
+  macOS `~/.app-mcp/run/hub.sock`、Windows 命名管道 `\\.\pipe\app-mcp-<用户 SID>`；只接受同一用户的进程（见下方「本地 IPC」）。
+
+默认端口被占用（且没有显式配置 `listen`）时依次改用 `7737`、`7757`（网页 SDK 按同一顺序尝试）；实际监听位置写在
+登记文件 `~/.app-mcp/run/endpoints.json`，原生 SDK、`service status` 与测试都读它。
 
 这样解决了 stdio 模式的根本问题：stdio 下每个 MCP 客户端各起一个 Host 进程，而 App 端口只能被一个进程占用。
 
@@ -27,15 +31,20 @@ app-mcp-host service status        # 安装与运行状态；未运行时退出�
 app-mcp-host service stop | start
 app-mcp-host service uninstall     # 停止并删除服务文件
 
-# 或临时在前台运行（Ctrl+C 退出）；已有健康实例在运行时打印其信息并以退出码 0 退出
+# 或临时在前台运行（Ctrl+C 退出）；同一配置目录已有实例在运行时打印其信息并以退出码 0 退出
 app-mcp-host serve
 ```
 
-客户端配置（Claude Code：`claude mcp add --transport http app-mcp http://127.0.0.1:7718/mcp`）：
+客户端配置（Claude Code：`claude mcp add --transport http app-mcp http://127.0.0.1:7717/mcp`）：
 
 ```json
-{ "mcpServers": { "app-mcp": { "type": "http", "url": "http://127.0.0.1:7718/mcp" } } }
+{ "mcpServers": { "app-mcp": { "type": "http", "url": "http://127.0.0.1:7717/mcp" } } }
 ```
+
+**从旧版本迁移**（合并端口之前 App 连接在 `7717`、MCP 在 `7718`）：MCP 客户端配置改为 `http://127.0.0.1:7717/mcp`。
+兼容期内：旧 SDK 以根路径 `ws://127.0.0.1:7717` 连接仍被接受（首次出现时日志提示升级）；仍需旧 MCP 端口时显式设置
+`http.addr` / `--http 127.0.0.1:7718`，Host 另开一个同样的监听器并记录弃用提示（默认不开）；配置文件中的 `wsAddr` /
+`--ws-addr` 按 `listen` 使用并提示改名（与 `listen` 同时设置且不同时报错）。
 
 ### 各平台的服务形式
 
@@ -43,7 +52,7 @@ app-mcp-host serve
 |---|---|---|---|
 | Linux | systemd 用户单元 | `~/.config/systemd/user/app-mcp-host.service` | `systemctl --user enable` + `restart`；`Restart=on-failure`；日志也进 `journalctl --user -u app-mcp-host`。没有 systemd 用户实例时报错并提示改用登录脚本运行 `serve` |
 | macOS | launchd LaunchAgent | `~/Library/LaunchAgents/dev.app-mcp.host.plist` | `launchctl bootstrap gui/<uid>`；`RunAtLoad`，`KeepAlive.SuccessfulExit=false`（异常退出才重启） |
-| Windows | 当前用户登录启动项 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 值 `app-mcp-host` | 指向同目录的 **`app-mcp-hostw.exe`**（GUI 子系统，同一份代码，不创建控制台窗口）；`service start` 以 `DETACHED_PROCESS \| CREATE_NO_WINDOW` 启动；`service stop` 按 `/healthz` 返回的 pid 结束进程 |
+| Windows | 当前用户登录启动项 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 值 `app-mcp-host` | 指向同目录的 **`app-mcp-hostw.exe`**（GUI 子系统，同一份代码，不创建控制台窗口）；`service start` 以 `DETACHED_PROCESS \| CREATE_NO_WINDOW` 启动；`service stop` 按登记文件中的 pid（经 `/healthz` 确认）结束进程 |
 
 服务文件内容由代码生成，启动命令统一为 `<可执行文件绝对路径> serve --home <配置目录>`，其余设置都在配置文件中。
 选 `Run` 项而不是计划任务：两者都无需管理员，但计划任务运行控制台程序会弹窗，且 `Run` 项最简单、可在“任务管理器 > 启动”中查看和禁用。
@@ -55,17 +64,22 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 网页只能用 WebSocket。两者上的协议完全相同（IPC 上同样是 WebSocket 帧，spec/protocol.md 第 1 节）。
 
 - 端点：配置文件 `ipcEndpoint`（`"unix:<绝对路径>"` / `"pipe:\\\\.\\pipe\\<名称>"`，`"none"` 关闭）或 `--ipc-endpoint`；
-  缺省为上面的平台默认端点。改了端点或关闭 IPC 时，App 需设置环境变量 `APP_MCP_ENDPOINT`（或在代码中配置端点，
-  如 `APP_MCP_ENDPOINT=ws://127.0.0.1:7717` 改走 WebSocket）——SDK 不会在连不上时自动换用其他传输。
+  缺省为上面的平台默认端点。改了端点或关闭 IPC 时，原生 SDK 从登记文件读到实际端点（IPC 关闭时为 `ws://<listen>/app`）；
+  也可设置环境变量 `APP_MCP_ENDPOINT` 或在代码中配置端点。SDK 不会在连不上时自动换用其他传输。
 - 鉴权：Unix 上套接字目录属于当前用户且为 0700、套接字 0600，并逐连接核对对端用户 ID（`SO_PEERCRED` / `getpeereid`）；
   Windows 上管道的 DACL 只允许当前用户、所有者为当前用户，拒绝远程客户端；SDK 也核对监听方是同一用户（防抢占）。
 - Hub API 的 `InstanceInfo.pid` 为 IPC 连接的对端进程号。
 
-### 单实例
+### 单实例与登记文件
 
-`serve` 绑定端口或 IPC 端点失败（`AddrInUse`：WebSocket 端口被占用、IPC 套接字上已有 Hub 在监听、同名命名管道已存在）时探测 `GET http://<http 地址>/healthz`：
-返回 `{"service":"app-mcp", "version", "pid", "wsAddr", ...}` 则说明已有健康实例，打印信息后**退出码 0**；
-端口被其他程序占用则报错（退出码 1）。因此 `serve` 可以放心重复执行（登录脚本、多个终端）。
+- **单实例锁** `<配置目录>/run/hub.lock`：`serve`（以及 stdio 模式）在任何监听之前独占锁定（`flock` / `LockFileEx`，
+  随进程退出释放，不会残留）。同一配置目录已有实例时，`serve` 打印其信息（pid、版本、MCP / App 地址、IPC 端点）并以
+  **退出码 0** 结束，因此可以放心重复执行（登录脚本、多个终端）；stdio 模式报错并给出该实例的 MCP 地址。
+- **登记文件** `<配置目录>/run/endpoints.json`（0600，原子写入，退出时删除）：实际 `listen` 地址、IPC 端点、pid、版本、
+  用户、启动时间。`service status|start|stop|uninstall` 以“登记文件存在且其地址上 `/healthz` 的 pid 一致”判断实例在运行。
+- **端口被占用**（锁已取得，说明不是同一配置目录的 Host）：显式配置的 `listen` 被占用时报错并说明占用者
+  （`/healthz` 是另一个 app-mcp → 给出其 pid 与用户，提示“不同的配置目录或其他用户”；否则“其他程序”），退出码 1；
+  缺省地址被占用时依次改用 7737、7757。IPC 端点被占用（另一个配置目录的 Host）同样报错。
 
 ## 配置
 
@@ -77,14 +91,15 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 | `token` | 本地访问令牌（首次需要时生成，Unix 权限 0600） |
 | `logs/app-mcp-host.log` | 常驻模式日志，按大小轮转（默认 5 MiB × 保留 3 个历史文件）；stderr 仍同时输出 |
 | `manifests/*.json` | 静态清单目录（默认） |
+| `run/hub.lock`、`run/endpoints.json` | 单实例锁与登记文件（运行时，见上方「单实例与登记文件」） |
 
 `config.json`（所有字段可省略；**命令行参数覆盖配置文件**，列表类参数追加）：
 
 ```json
 {
-  "wsAddr": "127.0.0.1:7717",
+  "listen": "127.0.0.1:7717",
   "ipcEndpoint": "unix:/run/user/1000/app-mcp/hub.sock",
-  "http": { "addr": "127.0.0.1:7718", "allowRemote": false, "auth": "browser" },
+  "http": { "allowRemote": false, "auth": "browser" },
   "manifests": ["/path/to/app-mcp.json"],
   "manifestDirs": ["/path/to/manifests"],
   "allowOrigins": ["https://app.example.com"],
@@ -107,9 +122,12 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 Host 随即只向该 MCP 会话发 `notifications/tools/list_changed`。未列出的工具按全名仍可直接调用。`auto` 在 App 与上游工具总数
 超过 `tools.threshold`（默认 40）时渐进，否则全部列出（与旧行为相同）。
 
+`listen` 缺省为 `127.0.0.1:7717`（被占用时依次尝试 7737、7757）；显式设置时只绑定该地址。`http.addr`（旧的独立 MCP
+端口）已弃用：只在兼容期内需要时设置，Host 另开一个同样的监听器。`wsAddr` 是 `listen` 的旧名。
+
 旧的 `--config` 文件（只有 `upstreams`）是它的子集，仍然可用。
 
-命令行（`serve` 与 `service install` 相同）：`--ws-addr`、`--ipc-endpoint <ENDPOINT|none>`、`--http`、`--http-allow-remote`、`--auth browser|all|off`、
+命令行（`serve` 与 `service install` 相同）：`--listen <ADDR>`、`--ipc-endpoint <ENDPOINT|none>`、`--http <ADDR>`（已弃用，兼容期的旧 MCP 端口）、`--http-allow-remote`、`--auth browser|all|off`、
 `--manifest <file>`（可重复）、`--manifest-dir <dir>`（可重复）、`--allow-origin <pattern>`（可重复）、
 `--upstream <name>=<命令行>`（可重复）、`--lease-ms`、`--wake-timeout-ms`、`--wake-from-launch`、
 `--waker system|none|'{"exec":[...]}'`、`--tool-exposure auto|progressive|all`、`--tool-exposure-threshold <N>`、`--log-level`、
@@ -117,7 +135,7 @@ Host 随即只向该 MCP 会话发 `notifications/tools/list_changed`。未列�
 
 ## 安全
 
-HTTP 端点的防护分三层：
+HTTP 端口（`/app`、`/mcp`、`/healthz`）的防护分三层；App 连接（`/app`）的 `Origin` 在 `app/hello` 时按同一允许列表与配对规则处理，令牌只作用于 `/mcp`：
 
 1. **只绑回环**：非回环地址必须显式 `--http-allow-remote`（同时关闭 Host 头校验，不推荐）。
 2. **Host / Origin 校验**：`Host` 头必须是回环地址（防 DNS rebinding）；带 `Origin` 头的请求必须在允许列表中
@@ -144,7 +162,7 @@ HTTP 端点的防护分三层：
   `"auth": "all"`，客户端配置 `Authorization: Bearer <令牌>`（Claude Code 的 `.mcp.json` 可写
   `"headers": {"Authorization": "Bearer ${APP_MCP_TOKEN:-}"}`，令牌放环境变量，不入库）。
 - 携带了错误的令牌一律拒绝（即使该请求本可不带），避免配置错误被静默忽略；空令牌（`Bearer ` 后为空，环境变量未设置时）视为未携带。
-- `/healthz` 不需要令牌（只返回服务名、版本、pid、WebSocket 地址），供单实例探测与 `service status` 使用；仍受 Origin 校验。
+- `/healthz` 不需要令牌（只返回服务名、版本、用户、pid、监听地址与 IPC 端点），供 `service status` 与端口占用诊断使用；仍受 Origin 校验。
 - 令牌比较为常量时间；`app-mcp-host token --regenerate` 轮换令牌（运行中的实例需重启）。
 
 ## stdio 模式（兼容 / 测试）
@@ -154,8 +172,9 @@ app-mcp-host stdio --manifest ./app-mcp.json    # 等同于旧用法：app-mcp-h
 ```
 
 单个 MCP 客户端以子进程方式启动 Host，stdout 专用于 MCP。适用于测试、一次性脚本、无法安装服务的环境；
-**不再推荐**用于日常接入：多个客户端各起一个 stdio Host 时，只有第一个能占用 App 连接端口。
-stdio 模式只在显式 `--config` 时读取配置文件，不写日志文件、不使用令牌。旧用法的 `--http` 仍可用（不校验令牌），请改用 `serve`。
+**不再推荐**用于日常接入：stdio Host 同样取得单实例锁，同一配置目录已有 Host（常驻或另一个 stdio）时报错并给出其 MCP 地址。
+stdio 模式只在显式 `--config` 时读取配置文件，不写日志文件、不使用令牌；`listen` 上只有 `/app` 与 `/healthz`（MCP 走 stdio）。
+旧用法的 `--http <ADDR>` 仍可用（另开一个带 `/mcp` 的监听器，不校验令牌），请改用 `serve`。
 
 ## 能力来源
 

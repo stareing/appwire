@@ -87,7 +87,7 @@ fn wait_for(rx: &mpsc::Receiver<HubEvent>, pred: impl Fn(&HubEvent) -> bool) -> 
 
 fn start_hub(approval: Option<Risk>) -> Arc<AppMcpHub> {
     AppMcpHub::start(HubConfig {
-        ws_addr: Some("127.0.0.1:0".into()),
+        listen: Some("127.0.0.1:0".into()),
         // 测试不占用本机常驻 Host 的默认 IPC 端点。
         enable_ipc: false,
         approval_min_risk: approval,
@@ -98,7 +98,7 @@ fn start_hub(approval: Option<Risk>) -> Arc<AppMcpHub> {
 
 fn start_app(hub: &AppMcpHub) -> native::NativeClient {
     let mut cfg = native::NativeConfig::new("notes", "笔记");
-    cfg.host_url = format!("ws://{}", hub.ws_addr().expect("ws 地址"));
+    cfg.host_url = format!("ws://{}/app", hub.listen_addr().expect("监听地址"));
     cfg.overview = Some(native::AppOverview {
         summary: "测试笔记 App".into(),
         body: None,
@@ -288,7 +288,7 @@ fn call_can_be_cancelled_by_dropping_future() {
     let (tx, rx) = mpsc::channel();
     hub.set_event_listener(Some(Arc::new(Events(Mutex::new(tx)))));
     let mut cfg = native::NativeConfig::new("slow", "慢");
-    cfg.host_url = format!("ws://{}", hub.ws_addr().unwrap());
+    cfg.host_url = format!("ws://{}/app", hub.listen_addr().unwrap());
     let app = native::NativeClient::new(cfg, None).unwrap();
     app.register_tool(native::ToolSpec::new("wait", "等"), Arc::new(Slow))
         .unwrap();
@@ -360,12 +360,12 @@ fn parse_formats_and_ws_disabled() {
     assert!(parse_tool_format("x".into()).is_err());
 
     let hub = AppMcpHub::start(HubConfig {
-        enable_ws: false,
+        enable_listen: false,
         enable_ipc: false,
         ..Default::default()
     })
     .unwrap();
-    assert_eq!(hub.ws_addr(), None);
+    assert_eq!(hub.listen_addr(), None);
     assert_eq!(hub.ipc_endpoint(), None);
     let tools = hub.tools(ToolFilter::default());
     assert!(tools.iter().any(|t| t.name == "apps.list"));
@@ -385,7 +385,7 @@ fn native_app_over_ipc_reports_pid() {
         None::<std::path::PathBuf>,
     );
     let hub = AppMcpHub::start(HubConfig {
-        enable_ws: false,
+        enable_listen: false,
         ipc_endpoint: Some(endpoint.clone()),
         ..Default::default()
     })
@@ -455,7 +455,7 @@ impl HubWaker for SilentWaker {
 #[test]
 fn dormant_app_woken_by_foreign_waker() {
     let hub = AppMcpHub::start(HubConfig {
-        ws_addr: Some("127.0.0.1:0".into()),
+        listen: Some("127.0.0.1:0".into()),
         enable_ipc: false,
         lease_ttl_ms: Some(0),
         wake_timeout_ms: Some(10_000),
@@ -467,7 +467,7 @@ fn dormant_app_woken_by_foreign_waker() {
     hub.set_event_listener(Some(Arc::new(Events(Mutex::new(tx)))));
 
     let mut cfg = native::NativeConfig::new("sleepy", "会睡觉的 App");
-    cfg.host_url = format!("ws://{}", hub.ws_addr().unwrap_or_default());
+    cfg.host_url = format!("ws://{}/app", hub.listen_addr().unwrap_or_default());
     cfg.instance_id = Some("s1".into());
     cfg.lifecycle.mode = native::LifecycleMode::Idle;
     cfg.lifecycle.idle_timeout_ms = 300;

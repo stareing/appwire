@@ -9,14 +9,12 @@ use anyhow::Context;
 use app_mcp_hub::{ToolExposure, UpstreamConfig, WakerConfig};
 use serde::{Deserialize, Serialize};
 
-/// 默认的 App 连接服务（WebSocket）地址。
-pub const DEFAULT_WS_ADDR: &str = app_mcp_protocol::DEFAULT_WS_ADDR;
+/// 默认的 HTTP 监听地址：同一端口承载 `/app`（App 连接）、`/mcp`、`/healthz`。
+pub const DEFAULT_LISTEN_ADDR: &str = app_mcp_protocol::DEFAULT_LISTEN_ADDR;
 /// 关闭本地 IPC 服务时 `ipcEndpoint` / `--ipc-endpoint` 的取值。
 pub const IPC_NONE: &str = "none";
-/// 默认的 MCP Streamable HTTP 监听地址。
-pub const DEFAULT_HTTP_ADDR: &str = "127.0.0.1:7718";
 /// 配置目录环境变量。
-pub const HOME_ENV: &str = "APP_MCP_HOME";
+pub const HOME_ENV: &str = app_mcp_protocol::registry::HOME_ENV;
 
 /// 配置目录（`~/.app-mcp`）及其中的固定文件。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,6 +50,13 @@ impl AppHome {
     }
     pub fn manifest_dir(&self) -> PathBuf {
         self.dir.join("manifests")
+    }
+    /// 运行时目录：单实例锁 `hub.lock` 与登记文件 `endpoints.json`（spec/protocol.md 1.5、1.7）。
+    pub fn run_dir(&self) -> PathBuf {
+        app_mcp_protocol::registry::run_dir(&self.dir)
+    }
+    pub fn registry_file(&self) -> PathBuf {
+        self.run_dir().join(app_mcp_protocol::registry::REGISTRY_FILE)
     }
 }
 
@@ -95,6 +100,8 @@ pub enum AuthMode {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct HttpSection {
+    /// 已弃用（兼容期）：旧的独立 MCP 端口（如 `127.0.0.1:7718`）。设置时另开一个监听器提供同样的
+    /// `/mcp`（启动时记录弃用提示）；MCP 已合并到 `listen` 的 `/mcp`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,6 +156,11 @@ pub struct LogSection {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct FileConfig {
+    /// HTTP 监听地址（`/app`、`/mcp`、`/healthz`），默认 `127.0.0.1:7717`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listen: Option<String>,
+    /// 已弃用：`listen` 的旧名（合并端口之前的 App 连接地址）。只设置它时按 `listen` 使用并记录提示；
+    /// 与 `listen` 同时设置且不同时报错。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ws_addr: Option<String>,
     /// 本地 IPC 端点（`unix:<绝对路径>` / `pipe:\\.\pipe\<名称>`）；`"none"` 关闭；省略时为平台默认端点。
@@ -205,6 +217,8 @@ impl FileConfig {
 /// 命令行给出的覆盖项（`None` / 空 = 未指定，沿用配置文件）。
 #[derive(Clone, Debug, Default)]
 pub struct Overrides {
+    pub listen: Option<String>,
+    /// 已弃用的 `--ws-addr`（同 `wsAddr`）。
     pub ws_addr: Option<String>,
     pub ipc_endpoint: Option<String>,
     pub http_addr: Option<String>,
@@ -233,6 +247,11 @@ impl FileConfig {
                 *dst = Some(v.clone());
             }
         }
+        if o.listen.is_some() {
+            // 新名称取代旧名称：写回配置时迁移。
+            self.ws_addr = None;
+        }
+        set(&mut self.listen, &o.listen);
         set(&mut self.ws_addr, &o.ws_addr);
         set(&mut self.ipc_endpoint, &o.ipc_endpoint);
         set(&mut self.http.addr, &o.http_addr);
@@ -275,10 +294,16 @@ impl FileConfig {
 /// 合并后的最终设置。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
-    pub ws_addr: String,
+    /// HTTP 监听地址（`/app`、`/mcp`、`/healthz`）。
+    pub listen: String,
+    /// `listen` 是否为显式配置：显式时只绑定该地址；缺省时默认端口被占用会依次尝试备选端口 7737、7757。
+    pub listen_explicit: bool,
+    /// 兼容期的额外 MCP 监听地址（已弃用的 `http.addr` / `--http`）；`None` = 不开（默认）。
+    pub compat_http_addr: Option<String>,
+    /// 解析配置时产生的提示（弃用的配置项等），日志初始化后记录。
+    pub notices: Vec<String>,
     /// 本地 IPC 端点；`None` = 关闭（配置为 `"none"`，或本平台没有默认端点）。
     pub ipc_endpoint: Option<String>,
-    pub http_addr: String,
     pub http_allow_remote: bool,
     pub auth: AuthMode,
     pub manifests: Vec<PathBuf>,
@@ -327,10 +352,34 @@ impl Settings {
             }
             None => app_mcp_protocol::endpoint::default_ipc_endpoint().map(|e| e.to_string()),
         };
+        let mut notices = Vec::new();
+        let listen = match (c.listen, c.ws_addr) {
+            (Some(l), Some(w)) if l != w => anyhow::bail!(
+                "配置同时设置了 listen（{l}）与已弃用的 wsAddr / --ws-addr（{w}）：请只保留 listen"
+            ),
+            (Some(l), _) => Some(l),
+            (None, Some(w)) => {
+                notices.push(format!(
+                    "wsAddr / --ws-addr 已弃用，按 listen = {w} 使用：App 连接、MCP 与 /healthz 已合并到同一端口（listen）"
+                ));
+                Some(w)
+            }
+            (None, None) => None,
+        };
+        let listen_explicit = listen.is_some();
+        let listen = listen.unwrap_or_else(|| DEFAULT_LISTEN_ADDR.to_owned());
+        let compat_http_addr = c.http.addr.filter(|a| *a != listen);
+        if let Some(a) = &compat_http_addr {
+            notices.push(format!(
+                "http.addr / --http 已弃用：MCP 已合并到 http://{listen}/mcp；兼容期内另在 {a} 提供同样的服务，请改用 listen 并更新 MCP 客户端配置"
+            ));
+        }
         Ok(Self {
-            ws_addr: c.ws_addr.unwrap_or_else(|| DEFAULT_WS_ADDR.to_owned()),
+            listen,
+            listen_explicit,
+            compat_http_addr,
+            notices,
             ipc_endpoint,
-            http_addr: c.http.addr.unwrap_or_else(|| DEFAULT_HTTP_ADDR.to_owned()),
             http_allow_remote: c.http.allow_remote.unwrap_or(false),
             auth: c.http.auth.unwrap_or_default(),
             manifests,
@@ -371,8 +420,10 @@ mod tests {
     #[test]
     fn defaults() {
         let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home()).unwrap();
-        assert_eq!(s.ws_addr, "127.0.0.1:7717");
-        assert_eq!(s.http_addr, "127.0.0.1:7718");
+        assert_eq!(s.listen, "127.0.0.1:7717");
+        assert!(!s.listen_explicit);
+        assert_eq!(s.compat_http_addr, None, "旧 MCP 端口默认不开");
+        assert!(s.notices.is_empty());
         assert_eq!(s.auth, AuthMode::Browser);
         assert_eq!(
             s.manifest_dirs,
@@ -417,7 +468,7 @@ mod tests {
     fn parse_full_and_legacy() {
         let full: FileConfig = serde_json::from_str(
             r#"{
-              "wsAddr": "127.0.0.1:9000",
+              "listen": "127.0.0.1:9000",
               "http": { "addr": "127.0.0.1:9001", "auth": "all" },
               "manifests": ["/m/a.json"],
               "manifestDirs": ["/m"],
@@ -431,8 +482,11 @@ mod tests {
         )
         .unwrap();
         let s = Settings::resolve(&full, &Overrides::default(), &home()).unwrap();
-        assert_eq!(s.ws_addr, "127.0.0.1:9000");
-        assert_eq!(s.http_addr, "127.0.0.1:9001");
+        assert_eq!(s.listen, "127.0.0.1:9000");
+        assert!(s.listen_explicit);
+        // 旧的独立 MCP 端口：兼容期内显式配置才另开，并记录弃用提示
+        assert_eq!(s.compat_http_addr.as_deref(), Some("127.0.0.1:9001"));
+        assert_eq!(s.notices.len(), 1);
         assert_eq!(s.auth, AuthMode::All);
         // Windows 上 "/m" 不是绝对路径，会接到当前目录（盘符）上
         assert_eq!(s.manifest_dirs, vec![(abs("/m"), true)]);
@@ -468,20 +522,43 @@ mod tests {
     #[test]
     fn cli_overrides_file() {
         let file: FileConfig = serde_json::from_str(
-            r#"{"wsAddr":"127.0.0.1:9000","manifests":["/m/a.json"],"lifecycle":{"leaseMs":500}}"#,
+            r#"{"listen":"127.0.0.1:9000","manifests":["/m/a.json"],"lifecycle":{"leaseMs":500}}"#,
         )
         .unwrap();
         let o = Overrides {
-            ws_addr: Some("127.0.0.1:1".into()),
+            listen: Some("127.0.0.1:1".into()),
             manifests: vec![PathBuf::from("/m/b.json")],
             auth: Some(AuthMode::Off),
             ..Default::default()
         };
         let s = Settings::resolve(&file, &o, &home()).unwrap();
-        assert_eq!(s.ws_addr, "127.0.0.1:1");
+        assert_eq!(s.listen, "127.0.0.1:1");
         assert_eq!(s.manifests, vec![abs("/m/a.json"), abs("/m/b.json")]);
         assert_eq!(s.lease_ms, 500);
         assert_eq!(s.auth, AuthMode::Off);
+    }
+
+    #[test]
+    fn deprecated_ws_addr_and_http_addr() {
+        let resolve = |file: &str, o: Overrides| {
+            let f: FileConfig = serde_json::from_str(file).unwrap();
+            Settings::resolve(&f, &o, &home())
+        };
+        // 只有旧名 wsAddr：按 listen 使用，带提示
+        let s = resolve(r#"{"wsAddr":"127.0.0.1:9000"}"#, Overrides::default()).unwrap();
+        assert_eq!((s.listen.as_str(), s.listen_explicit), ("127.0.0.1:9000", true));
+        assert_eq!(s.notices.len(), 1);
+        // 新旧同时设置且不同：报错；相同：接受
+        assert!(resolve(r#"{"wsAddr":"127.0.0.1:9000","listen":"127.0.0.1:9001"}"#, Overrides::default()).is_err());
+        assert!(resolve(r#"{"wsAddr":"127.0.0.1:9000","listen":"127.0.0.1:9000"}"#, Overrides::default()).is_ok());
+        // 命令行 --listen 取代文件中的旧名（写回时迁移）
+        let o = Overrides { listen: Some("127.0.0.1:1".into()), ..Default::default() };
+        let mut f: FileConfig = serde_json::from_str(r#"{"wsAddr":"127.0.0.1:9000"}"#).unwrap();
+        f.apply(&o).unwrap();
+        assert_eq!((f.listen.as_deref(), f.ws_addr.as_deref()), (Some("127.0.0.1:1"), None));
+        // http.addr 与 listen 相同：不另开监听
+        let s = resolve(r#"{"listen":"127.0.0.1:9000","http":{"addr":"127.0.0.1:9000"}}"#, Overrides::default()).unwrap();
+        assert_eq!(s.compat_http_addr, None);
     }
 
     #[test]
@@ -490,16 +567,13 @@ mod tests {
         let path = dir.join("config.json");
         let mut c = FileConfig::default();
         c.apply(&Overrides {
-            http_addr: Some("127.0.0.1:7718".into()),
+            listen: Some("127.0.0.1:7717".into()),
             ..Default::default()
         })
         .unwrap();
         c.save(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(
-            text,
-            "{\n  \"http\": {\n    \"addr\": \"127.0.0.1:7718\"\n  }\n}\n"
-        );
+        assert_eq!(text, "{\n  \"listen\": \"127.0.0.1:7717\"\n}\n");
         assert_eq!(FileConfig::load(&path, true).unwrap(), c);
         assert_eq!(
             FileConfig::load(&dir.join("missing.json"), false).unwrap(),

@@ -44,9 +44,15 @@ sha2 = "0.10"
 # 审批 / 配对回调（spec/hub-api.md 3.3）：dyn 兼容的 async trait。
 async-trait = "0.1"
 
-# Windows：AUMID 唤醒经 IApplicationActivationManager::ActivateApplication 传入令牌参数。
+# 单实例锁（instance.rs）：Unix flock。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Windows：AUMID 唤醒经 IApplicationActivationManager::ActivateApplication 传入令牌参数；
+# 单实例锁用 LockFileEx（windows-sys，与 app-mcp-protocol 同一版本）。
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dev-dependencies]
 app-mcp-native.workspace = true

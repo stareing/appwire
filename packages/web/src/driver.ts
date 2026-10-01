@@ -49,7 +49,17 @@ import type {
 import { type VisibilitySnapshot, type VisibilityWatcher, watchVisibility } from './visibility'
 
 export const SDK_VERSION = '0.1.0'
-export const DEFAULT_HOST_URL = 'ws://127.0.0.1:7717'
+/** 默认 Host 地址（spec/protocol.md 1.3）：合并端口上的 App 连接路径。 */
+export const DEFAULT_HOST_URL = 'ws://127.0.0.1:7717/app'
+/**
+ * 未指定 `hostUrl` 时依次尝试的地址：Host 的默认端口被占用时按同一顺序改用备选端口（7717 → 7737 → 7757）。
+ * 以握手结果核对对端身份（`service: "app-mcp"`），不是 app-mcp 的端口跳过。
+ */
+export const DEFAULT_HOST_URLS: readonly string[] = [
+  DEFAULT_HOST_URL,
+  'ws://127.0.0.1:7737/app',
+  'ws://127.0.0.1:7757/app',
+]
 
 const APP_ID_RE = /^[a-z][a-z0-9-]{0,62}$/
 const NAME_RE = /^[a-zA-Z0-9_.-]{1,64}$/
@@ -220,7 +230,12 @@ export class AppMcpDriver implements AppMcp {
   readonly options: Readonly<AppMcpOptions>
 
   private readonly log: Logger
-  private readonly hostUrl: string
+  /** 候选地址：显式 `hostUrl` 时只有它，否则为 {@link DEFAULT_HOST_URLS}。 */
+  private readonly hostUrls: readonly string[]
+  /** 当前尝试的候选。 */
+  private hostIndex = 0
+  /** 自上次成功连接以来判定为"不是 app-mcp"的候选数（全部不是时停在 `host-mismatch`）。 */
+  private mismatched = 0
   private readonly deps: DriverDeps
   private readonly now: () => number
   private readonly wallNow: () => number
@@ -282,7 +297,7 @@ export class AppMcpDriver implements AppMcp {
     this.options = Object.freeze({ ...options })
     this.deps = deps
     this.log = options.logger ?? defaultLogger
-    this.hostUrl = options.hostUrl ?? DEFAULT_HOST_URL
+    this.hostUrls = options.hostUrl !== undefined ? [options.hostUrl] : DEFAULT_HOST_URLS
     this.now = deps.now ?? (() => (typeof performance !== 'undefined' ? performance.now() : Date.now()))
     this.wallNow = deps.wallNow ?? (() => Date.now())
     this.guard = new InstanceGuard({
@@ -329,6 +344,16 @@ export class AppMcpDriver implements AppMcp {
     attachToolHub(this, this.hub)
 
     void this.load()
+  }
+
+  /** 当前连接（或正在尝试）的 Host 地址。 */
+  get hostUrl(): string {
+    return this.hostUrls[this.hostIndex] ?? DEFAULT_HOST_URL
+  }
+
+  /** 换到下一个候选地址；只有一个候选时不变。 */
+  private nextCandidate(): void {
+    if (this.hostUrls.length > 1) this.hostIndex = (this.hostIndex + 1) % this.hostUrls.length
   }
 
   // ---- AppMcp ---------------------------------------------------------
@@ -636,6 +661,8 @@ export class AppMcpDriver implements AppMcp {
         this.readResource(ev.read, ev.resource, ev.name)
         break
       case 'stateChanged':
+        if (ev.state.status === 'host-mismatch' && this.skipMismatchedCandidate(ev.state.reason)) break
+        if (ev.state.status === 'connected') this.mismatched = 0
         this.setState(this.mapState(ev.state))
         break
       case 'paired':
@@ -784,7 +811,33 @@ export class AppMcpDriver implements AppMcp {
       // 重新探测时不再满足拦截条件（如授权已变化）：回到普通的退避重连
       this.blocked = undefined
     }
+    // 连接没能建立：下次重连尝试下一个候选端口（未指定 hostUrl 时）
+    this.nextCandidate()
     this.input((c) => c.handleDisconnected(this.now()))
+  }
+
+  /**
+   * 核心判定对端不是 app-mcp Host：还有没试过的候选端口时换下一个并立即连接（不对外报告该状态），
+   * 返回 `true`；候选都不是 app-mcp（或显式指定了 hostUrl）时返回 `false`，状态停在 `host-mismatch`。
+   */
+  private skipMismatchedCandidate(reason: string): boolean {
+    this.mismatched += 1
+    if (this.mismatched >= this.hostUrls.length) {
+      this.log.warn(`[app-mcp] ${reason}`)
+      this.mismatched = 0
+      return false
+    }
+    this.log.debug(`[app-mcp] ${this.hostUrl} 不是 app-mcp Host（${reason}），尝试下一个候选端口`)
+    this.nextCandidate()
+    const core = this.core
+    if (core) {
+      try {
+        core.connectNow(this.now())
+      } catch (e) {
+        this.log.error(`[app-mcp] ${errorMessage(e)}`, e)
+      }
+    }
+    return true
   }
 
   /**

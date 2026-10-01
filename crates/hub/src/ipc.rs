@@ -21,7 +21,7 @@ pub(crate) struct Accepted<S> {
 }
 
 #[cfg(unix)]
-pub(crate) use unix::IpcListener;
+pub(crate) use unix::{IpcListener, prepare_dir as prepare_private_dir};
 #[cfg(windows)]
 pub(crate) use windows::IpcListener;
 
@@ -109,7 +109,7 @@ mod unix {
     }
 
     /// 目录不存在时以 0700 创建；存在时必须属于当前用户且组 / 其他用户不可写。
-    fn prepare_dir(dir: &Path) -> io::Result<()> {
+    pub(crate) fn prepare_dir(dir: &Path) -> io::Result<()> {
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -118,14 +118,14 @@ mod unix {
         if meta.uid() != current_uid() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                format!("套接字目录 {} 不属于当前用户", dir.display()),
+                format!("目录 {} 不属于当前用户", dir.display()),
             ));
         }
         if meta.mode() & 0o022 != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!(
-                    "套接字目录 {} 对组或其他用户可写（权限 {:o}），请改为 0700",
+                    "目录 {} 对组或其他用户可写（权限 {:o}），请改为 0700",
                     dir.display(),
                     meta.mode() & 0o777
                 ),

@@ -115,7 +115,7 @@ impl Sdk {
 
 /// 连接并握手；`paired` 后同步工具 / 资源 / 可见性并发送 ready。
 async fn connect_sdk(host: &Host, spec: SdkSpec) -> Sdk {
-    let url = format!("ws://{}", host.ws_addr().expect("ws"));
+    let url = format!("ws://{}/app", host.listen_addr().expect("listen"));
     let mut req = url.into_client_request().unwrap();
     if let Some(o) = &spec.origin {
         req.headers_mut().insert("Origin", o.parse().unwrap());
@@ -269,7 +269,7 @@ async fn mcp_client(host: &Host) -> (Client, TestClient) {
 
 fn config() -> HostConfig {
     HostConfig {
-        ws_addr: Some("127.0.0.1:0".into()),
+        listen: Some("127.0.0.1:0".into()),
         ipc_endpoint: None,
         ..Default::default()
     }
@@ -854,7 +854,7 @@ async fn heartbeat_and_idle_timeout() {
     assert!(tool_names(&client).await.contains(&"shop.echo".to_string()));
 
     // 握手后不再发送任何消息的连接会被断开
-    let url = format!("ws://{}", host.ws_addr().expect("ws"));
+    let url = format!("ws://{}/app", host.listen_addr().expect("listen"));
     let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
     let closed = timeout(Duration::from_secs(3), async {
         loop {

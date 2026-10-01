@@ -30,12 +30,18 @@
  *     am_client_tools_hash / am_parse_wake_token。
  *   · am_call_hold、am_call_fail_with_details。
  * - v4（本地 IPC 传输，spec/protocol.md 第 1 节）：布局与签名不变，只扩展 host_url 的取值与缺省值。
+ * - v5（Host 身份与登记文件，spec/protocol.md 1.6、1.7）：布局与签名不变。新增状态 AM_STATE_HOST_MISMATCH = 10
+ *   （对端不是 app-mcp，或属于其他用户；reason 非 NULL）；host_url 缺省值的解析顺序加入登记文件，
+ *   WebSocket 缺省地址改为 "ws://127.0.0.1:7717/app"。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4、v5 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
- *   "ws://…" / "wss://…"。NULL 时：环境变量 APP_MCP_ENDPOINT（非空时原样使用）→ 平台默认本地 IPC 端点
+ *   "ws://…" / "wss://…"（App 连接路径为 /app，如 "ws://127.0.0.1:7717/app"）。NULL 时：
+ *   环境变量 APP_MCP_ENDPOINT（非空时原样使用）→ 登记文件 ~/.app-mcp/run/endpoints.json（运行中的 Host 写下的
+ *   实际端点；APP_MCP_HOME 可改配置目录）→ 平台默认本地 IPC 端点
  *   （Linux $XDG_RUNTIME_DIR/app-mcp/hub.sock，否则 ~/.app-mcp/run/hub.sock；macOS ~/.app-mcp/run/hub.sock；
- *   Windows \\.\pipe\app-mcp-<当前用户 SID>）→ "ws://127.0.0.1:7717"（Android / iOS）。
+ *   Windows \\.\pipe\app-mcp-<当前用户 SID>）→ "ws://127.0.0.1:7717/app"（Android / iOS）。
  *   格式不合法或本平台不支持该形式时 am_client_new 返回 AM_ERR_INVALID_CONFIG；连不上时按退避重连同一端点。
  */
 #ifndef APP_MCP_H
@@ -108,7 +114,10 @@ typedef enum AmStateStatus {
     /* 已休眠：无连接、无定时器，等待唤醒（spec/lifecycle.md） */
     AM_STATE_DORMANT = 8,
     /* 收到唤醒后正在回连 */
-    AM_STATE_WAKING = 9
+    AM_STATE_WAKING = 9,
+    /* 对端不是期望的 Host（不是 app-mcp，或属于其他用户；spec/protocol.md 1.6）：不再自动重连，
+     * am_client_wake / am_client_connect_now 时再试一次；reason 为原因 */
+    AM_STATE_HOST_MISMATCH = 10
 } AmStateStatus;
 
 typedef enum AmLogLevel { AM_LOG_DEBUG = 0, AM_LOG_INFO = 1, AM_LOG_WARN = 2, AM_LOG_ERROR = 3 } AmLogLevel;
@@ -171,7 +180,7 @@ typedef void (*AmFreeFn)(void *user_data);
 
 /* 以下三个回调中的字符串归回调方所有（API 版本 2 起）：由库分配，回调方必须用 am_string_free 释放
  * （可以在回调返回后、任意线程释放，便于异步投递，如 dart:ffi NativeCallable.listener）。 */
-/* 状态变化。retry_in_ms 仅 BACKOFF 时有意义（否则为 0）；reason 仅 REJECTED 时非 NULL，
+/* 状态变化。retry_in_ms 仅 BACKOFF 时有意义（否则为 0）；reason 仅 REJECTED / HOST_MISMATCH 时非 NULL，
  * reason 为 NULL 或需由回调方用 am_string_free 释放。 */
 typedef void (*AmStateFn)(void *user_data, AmStateStatus status, uint64_t retry_in_ms, char *reason);
 /* 配对成功，App 应持久化 token。token 非 NULL，需由回调方用 am_string_free 释放。 */
@@ -274,7 +283,7 @@ void am_client_free(AmClient *client);
 AmStatus am_client_start(AmClient *client);
 AmStatus am_client_stop(AmClient *client);
 AmStatus am_client_set_visibility(AmClient *client, AmVisibility visibility, bool focused);
-/* 当前状态；retry_in_ms、reason 可为 NULL。*reason 需用 am_string_free 释放（非 REJECTED 时为 NULL）。 */
+/* 当前状态；retry_in_ms、reason 可为 NULL。*reason 需用 am_string_free 释放（非 REJECTED / HOST_MISMATCH 时为 NULL）。 */
 AmStatus am_client_state(const AmClient *client, AmStateStatus *status, uint64_t *retry_in_ms, char **reason);
 /* 返回的字符串需 am_string_free。 */
 char *am_client_instance_id(const AmClient *client);

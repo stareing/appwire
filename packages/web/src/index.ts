@@ -17,7 +17,7 @@ import { createSharedLink } from './shared-connection'
 import { loadWasmCore } from './wasm-loader'
 
 export * from './types'
-export { DEFAULT_HOST_URL, SDK_VERSION } from './driver'
+export { DEFAULT_HOST_URL, DEFAULT_HOST_URLS, SDK_VERSION } from './driver'
 export {
   BRIDGE_VERSION,
   createBridgeAppMcp,

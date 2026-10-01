@@ -73,6 +73,10 @@ pub struct ClientConfig {
     pub handshake_timeout_ms: Millis,
     /// 生命周期策略（spec/lifecycle.md 第 3 节）。默认 `persistent`（不休眠）。
     pub lifecycle: LifecyclePolicy,
+    /// 期望的 Host 用户（spec/protocol.md 1.6）：握手结果的 `user` 与之不同时进入
+    /// [`ConnectionState::HostMismatch`]。`None`（默认）不核对用户（网页、Android / iOS）；
+    /// 原生运行时填入 [`app_mcp_protocol::identity::expected_host_user`]。
+    pub expected_host_user: Option<String>,
 }
 
 impl ClientConfig {
@@ -102,6 +106,7 @@ impl ClientConfig {
             resource_update_throttle_ms: 100,
             handshake_timeout_ms: 10_000,
             lifecycle: LifecyclePolicy::default(),
+            expected_host_user: None,
         }
     }
 }
@@ -284,6 +289,10 @@ pub enum ConnectionState {
     Dormant,
     /// 收到唤醒后正在回连：已产生 [`Event::Connect`]，等待 [`Client::handle_connected`]。
     Waking,
+    /// 对端不是期望的 Host（spec/protocol.md 1.6）：不是 app-mcp（`service` 不符、不认识 `app/hello`、
+    /// 握手结果无法解析），或 Host 属于其他用户。已断开且不再自动重连；[`Client::wake`] /
+    /// [`Client::connect_now`] 时再试一次。
+    HostMismatch { reason: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]

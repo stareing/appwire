@@ -10,7 +10,7 @@ internal static unsafe partial class HubNativeMethods
     internal const string Lib = "app_mcp_hub";
 
     /// <summary>本封装对应的 C 接口版本（app_mcp_hub.h 中的 AM_HUB_API_VERSION）。</summary>
-    internal const int ApiVersion = 2;
+    internal const int ApiVersion = 3;
 
     [LibraryImport(Lib)] internal static partial nint am_hub_version();
     [LibraryImport(Lib)] internal static partial nint am_hub_last_error_message();
@@ -19,7 +19,7 @@ internal static unsafe partial class HubNativeMethods
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_start(byte* configJson, out nint hub);
     [LibraryImport(Lib)] internal static partial void am_hub_shutdown(HubSafeHandle hub);
     [LibraryImport(Lib)] internal static partial void am_hub_free(nint hub);
-    [LibraryImport(Lib)] internal static partial nint am_hub_ws_addr(HubSafeHandle hub);
+    [LibraryImport(Lib)] internal static partial nint am_hub_listen_addr(HubSafeHandle hub);
     [LibraryImport(Lib)] internal static partial nint am_hub_ipc_endpoint(HubSafeHandle hub);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_serve_http(HubSafeHandle hub, byte* addr, [MarshalAs(UnmanagedType.U1)] bool allowRemote, out nint outAddr);
 

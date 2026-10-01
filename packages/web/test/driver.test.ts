@@ -36,7 +36,7 @@ describe('创建与加载', () => {
     })
     expect(h.core.methods().slice(0, 2)).toEqual(['setVisibility', 'start'])
     expect(h.sockets).toHaveLength(1)
-    expect(h.socket().url).toBe('ws://127.0.0.1:7717')
+    expect(h.socket().url).toBe('ws://127.0.0.1:7717/app')
   })
 
   it('hostUrl 可覆盖', async () => {
@@ -274,6 +274,67 @@ describe('连接', () => {
     expect(h.sockets).toHaveLength(2)
     first.receive('late')
     expect(h.core.callsOf('handleMessage')).toHaveLength(0)
+  })
+
+  it('未指定 hostUrl：连接失败时依次尝试候选端口 7717 → 7737 → 7757', async () => {
+    const h = setup()
+    await settle()
+    const urls = () => h.sockets.map((s) => s.url)
+    const retry = (): void => {
+      h.core.emit({ type: 'connect' })
+      h.app.tool(`t${h.sockets.length}`, { description: '', handler: () => {} }) // 触发一次 pump
+    }
+    h.socket().fail()
+    retry()
+    h.socket().fail()
+    retry()
+    h.socket().fail()
+    retry()
+    expect(urls()).toEqual([
+      'ws://127.0.0.1:7717/app',
+      'ws://127.0.0.1:7737/app',
+      'ws://127.0.0.1:7757/app',
+      'ws://127.0.0.1:7717/app',
+    ])
+    // 连上之后断开：先重试同一端口（连接曾建立，不是端口不对）
+    h.socket().open()
+    h.socket().fail()
+    retry()
+    expect(urls().at(-1)).toBe('ws://127.0.0.1:7717/app')
+  })
+
+  it('对端不是 app-mcp：换下一个候选端口；都不是时停在 host-mismatch', async () => {
+    const h = await connected()
+    const states: ConnectionState[] = []
+    h.app.onStateChange((s) => states.push(s))
+    h.core.setState({ status: 'host-mismatch', reason: '不是 app-mcp' })
+    h.app.tool('a', { description: '', handler: () => {} }) // 触发一次 pump
+    expect(h.core.callsOf('connectNow')).toHaveLength(1)
+    expect(h.socket().url).toBe('ws://127.0.0.1:7737/app')
+    // （假核心的 handleConnected 直接进入 connected，会清零计数；真实核心此时在 handshaking，这里不打开连接）
+    h.core.setState({ status: 'host-mismatch', reason: '不是 app-mcp' })
+    h.app.tool('b', { description: '', handler: () => {} })
+    expect(h.socket().url).toBe('ws://127.0.0.1:7757/app')
+    expect(states.some((s) => s.status === 'host-mismatch')).toBe(false)
+    h.core.setState({ status: 'host-mismatch', reason: '不是 app-mcp' })
+    h.app.tool('c', { description: '', handler: () => {} })
+    expect(h.app.state).toEqual({ status: 'host-mismatch', reason: '不是 app-mcp' })
+    expect(h.logger.warn).toHaveBeenCalledWith('[app-mcp] 不是 app-mcp')
+    // connectNow：再试一轮
+    h.app.connectNow()
+    expect(h.core.callsOf('connectNow')).toHaveLength(3)
+  })
+
+  it('显式 hostUrl：不尝试其他端口，不是 app-mcp 时直接 host-mismatch', async () => {
+    const h = await connected({ hostUrl: 'ws://127.0.0.1:9999/app' })
+    h.core.setState({ status: 'host-mismatch', reason: 'x' })
+    h.app.tool('a', { description: '', handler: () => {} })
+    expect(h.app.state).toEqual({ status: 'host-mismatch', reason: 'x' })
+    expect(h.sockets.map((s) => s.url)).toEqual(['ws://127.0.0.1:9999/app'])
+    h.socket().fail()
+    h.core.emit({ type: 'connect' })
+    h.app.tool('b', { description: '', handler: () => {} })
+    expect(h.socket().url).toBe('ws://127.0.0.1:9999/app')
   })
 
   it('WebSocket 构造失败视为断开', async () => {

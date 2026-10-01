@@ -66,6 +66,11 @@ export type ConnectionState =
   | { status: 'dormant' }
   /** 收到唤醒后正在回连，之后进入 `handshaking`。 */
   | { status: 'waking' }
+  /**
+   * 对端不是期望的 Host（spec/protocol.md 1.6）：不是 app-mcp，或属于本机其他用户。不再自动重连，
+   * `wake()` / `connectNow()` 时再试一次。`reason` 为中文说明。
+   */
+  | { status: 'host-mismatch'; reason: string }
 
 // ---------------------------------------------------------------------------
 // 生命周期（spec/lifecycle.md）
@@ -142,7 +147,8 @@ export interface NodeAppMcpOptions {
   enabled?: boolean
   /**
    * Host 端点：`unix:<绝对路径>`、`pipe:\\.\pipe\<名称>`、`ws://…` 或 `wss://…`（spec/protocol.md 第 1 节）。
-   * 缺省：环境变量 `APP_MCP_ENDPOINT` → 平台默认本地 IPC 端点（Unix 域套接字 / Windows 命名管道）→ `ws://127.0.0.1:7717`。
+   * 缺省：环境变量 `APP_MCP_ENDPOINT` → 登记文件 `~/.app-mcp/run/endpoints.json`（运行中的 Host 写下的实际端点）→
+   * 平台默认本地 IPC 端点（Unix 域套接字 / Windows 命名管道）→ `ws://127.0.0.1:7717/app`。
    */
   hostUrl?: string
   /** 同时执行的调用上限，默认 1。 */

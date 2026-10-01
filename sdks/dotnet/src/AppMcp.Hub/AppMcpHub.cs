@@ -89,8 +89,8 @@ public sealed class AppMcpHub : IDisposable, IAsyncDisposable
     // 地址与出口
     // -----------------------------------------------------------------------
 
-    /// <summary>App 连接服务实际监听的地址（如 "127.0.0.1:52341"）；未开启或已停止时为 null。</summary>
-    public string? WsAddress => HubNativeMethods.TakeString(HubNativeMethods.am_hub_ws_addr(_handle));
+    /// <summary>HTTP 服务（/app、/healthz）实际监听的地址（如 "127.0.0.1:52341"，App 端点为 "ws://&lt;地址&gt;/app"）；未开启或已停止时为 null。</summary>
+    public string? ListenAddress => HubNativeMethods.TakeString(HubNativeMethods.am_hub_listen_addr(_handle));
 
     /// <summary>本地 IPC 连接服务的端点（"unix:…" / "pipe:…"，可直接作为 App 端 SDK 的 HostUrl）；未开启或已停止时为 null。</summary>
     public string? IpcEndpoint => HubNativeMethods.TakeString(HubNativeMethods.am_hub_ipc_endpoint(_handle));

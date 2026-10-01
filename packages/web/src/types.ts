@@ -79,6 +79,12 @@ export type ConnectionState =
    * 本地网络访问授权变为允许时自动重连；`wake()` / `connectNow()` 立即重试一次（可重新弹出授权提示）。
    */
   | { status: 'blocked'; cause: ConnectionBlockCause; message: string }
+  /**
+   * 对端不是 app-mcp Host（spec/protocol.md 1.6）：握手结果的 `service` 不是 `app-mcp`、不认识 `app/hello`
+   * 或结果无法解析。使用默认地址时 SDK 先依次尝试候选端口（7717 → 7737 → 7757），都不是 app-mcp 时停在此状态；
+   * 不再定时重试，`wake()` / `connectNow()` 时再试一次。`reason` 为中文说明。
+   */
+  | { status: 'host-mismatch'; reason: string }
 
 /**
  * 生命周期策略（spec/lifecycle.md 第 3 节）。Web 没有进程驻留（`residency`）概念；
@@ -118,7 +124,10 @@ export interface AppMcpOptions {
   appVersion?: string
   /** 为 false 时不加载 WASM、不连接，所有注册调用为空操作。默认 true。 */
   enabled?: boolean
-  /** Host 地址，默认 `ws://127.0.0.1:7717`。 */
+  /**
+   * Host 地址。缺省时依次尝试 `ws://127.0.0.1:7717/app`、`ws://127.0.0.1:7737/app`、`ws://127.0.0.1:7757/app`
+   * （Host 的默认端口被占用时按同一顺序改用备选端口），以握手结果核对对端是 app-mcp；显式指定时只连该地址。
+   */
   hostUrl?: string
   /**
    * 同一来源的多个标签页共用一条到 Host 的连接（SharedWorker；没有时选一个主标签页持有），默认 true。

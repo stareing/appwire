@@ -1,6 +1,6 @@
 // hello.cpp —— 用 C++ 封装注册 greet({name}) 工具与 app.info 资源，连接 Host，Ctrl+C 退出。
 //
-// 用法：hello_cpp [ws://127.0.0.1:7717]（或环境变量 APP_MCP_HOST_URL）
+// 用法：hello_cpp [ws://127.0.0.1:7717/app]（或环境变量 APP_MCP_HOST_URL）
 
 #include <atomic>
 #include <chrono>

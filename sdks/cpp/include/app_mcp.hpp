@@ -147,7 +147,7 @@ struct Lifecycle {
 struct StateInfo {
     StateStatus status = AM_STATE_IDLE;
     uint64_t retry_in_ms = 0;
-    std::string reason;  // 仅 REJECTED 时非空
+    std::string reason;  // 仅 REJECTED / HOST_MISMATCH（对端不是 app-mcp 或属于其他用户）时非空
 };
 
 struct ToolOptions {
@@ -170,7 +170,7 @@ struct ClientConfig {
     std::string app_id;
     std::string app_name;
     std::optional<std::string> instance_id;
-    std::optional<std::string> host_url;  // 默认：APP_MCP_ENDPOINT → 平台默认本地 IPC 端点（unix: / pipe:）→ ws://127.0.0.1:7717
+    std::optional<std::string> host_url;  // 默认：APP_MCP_ENDPOINT → 登记文件 ~/.app-mcp/run/endpoints.json → 平台默认本地 IPC 端点（unix: / pipe:）→ ws://127.0.0.1:7717/app
     std::optional<std::string> app_version;
     std::optional<std::string> instance_title;
     std::optional<std::string> token;

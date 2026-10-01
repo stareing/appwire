@@ -35,10 +35,12 @@ fn rejects_bad_host_url() {
 
 #[test]
 fn default_host_url_is_platform_endpoint() {
-    // 不依赖本进程的 APP_MCP_ENDPOINT：比较不看环境变量的默认值。
+    // 解析顺序（spec/protocol.md 1.3）：APP_MCP_ENDPOINT → 登记文件 → 平台默认 IPC 端点。
+    // 不依赖本机是否有运行中的 Host：登记文件存在时以它为准。
     let expected = app_mcp_protocol::endpoint::default_endpoint_without_env();
     if std::env::var_os(app_mcp_protocol::endpoint::ENDPOINT_ENV).is_none() {
-        assert_eq!(config().host_url, expected);
+        let registered = app_mcp_protocol::registry::registered_app_endpoint();
+        assert_eq!(config().host_url, registered.unwrap_or_else(|| expected.clone()));
     }
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     assert!(expected.starts_with("unix:/"), "{expected}");
@@ -266,4 +268,16 @@ fn types_are_send_sync() {
     check::<ToolHandle>();
     check::<ResourceHandle>();
     check::<ScopeHandle>();
+}
+
+#[test]
+fn host_mismatch_state_and_expected_user() {
+    let info = state_info(&ConnectionState::HostMismatch { reason: "不是 app-mcp".into() }, 0);
+    assert_eq!(info.status, StateStatus::HostMismatch);
+    assert_eq!(info.reason.as_deref(), Some("不是 app-mcp"));
+    // 桌面平台核对 Host 用户（spec/protocol.md 1.6）
+    let (core, _) = build_core_config(config()).unwrap();
+    assert_eq!(core.expected_host_user, app_mcp_protocol::identity::expected_host_user());
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    assert!(core.expected_host_user.is_some());
 }

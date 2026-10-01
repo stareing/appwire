@@ -17,7 +17,7 @@ const T: Duration = Duration::from_secs(10);
 
 fn config() -> HubConfig {
     HubConfig {
-        ws_addr: Some("127.0.0.1:0".into()),
+        listen: Some("127.0.0.1:0".into()),
         ipc_endpoint: None,
         list_changed_debounce: Duration::from_millis(10),
         ..Default::default()
@@ -50,7 +50,7 @@ struct Mux {
 
 impl Mux {
     async fn connect(hub: &Hub) -> (Mux, Value) {
-        let url = format!("ws://{}", hub.ws_addr().unwrap());
+        let url = format!("ws://{}/app", hub.listen_addr().unwrap());
         let (ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
         let (mut sink, mut stream) = ws.split();
         sink.send(Ws::text(json!({"jsonrpc": "2.0", "id": 0, "method": "app/mux", "params": {"version": 1}}).to_string()))
@@ -215,7 +215,7 @@ async fn channel_limit_and_invalid_frames() {
 #[tokio::test]
 async fn plain_connection_still_works_and_mux_is_first_message_only() {
     let hub = Hub::start(config()).await.unwrap();
-    let url = format!("ws://{}", hub.ws_addr().unwrap());
+    let url = format!("ws://{}/app", hub.listen_addr().unwrap());
     let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
     // 单实例连接：第一条是 app/hello
     ws.send(Ws::text(json!({"jsonrpc": "2.0", "id": 1, "method": "app/hello", "params": {

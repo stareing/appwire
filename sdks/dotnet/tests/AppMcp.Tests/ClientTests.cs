@@ -36,6 +36,16 @@ public class BasicTests
     }
 
     [Fact]
+    public void StateStatusMatchesHeader()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "bindings", "c", "include", "app_mcp.h"))) dir = dir.Parent;
+        var header = File.ReadAllText(Path.Combine(dir!.FullName, "bindings", "c", "include", "app_mcp.h"));
+        Assert.Contains($"AM_STATE_HOST_MISMATCH = {(int)ClientStatus.HostMismatch}", header);
+        Assert.Contains($"AM_STATE_WAKING = {(int)ClientStatus.Waking}", header);
+    }
+
+    [Fact]
     public void SchemaFromType()
     {
         var schema = JsonNode.Parse(ToolSchema.For<GreetInput>())!.AsObject();

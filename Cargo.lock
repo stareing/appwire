@@ -166,6 +166,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jsonschema",
+ "libc",
  "rand 0.9.5",
  "rmcp",
  "serde",
@@ -176,6 +177,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

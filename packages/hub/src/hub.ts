@@ -116,15 +116,15 @@ export class Hub {
     return new Hub(native, options)
   }
 
-  /** App 连接服务实际监听的地址（`host:port`）；未开启时为 null。 */
-  get wsAddr(): string | null {
-    return this.#native.wsAddr
+  /** HTTP 服务（`/app`、`/healthz`，`mcpHttp` 时另有 `/mcp`）实际监听的地址（`host:port`）；未开启时为 null。 */
+  get listenAddr(): string | null {
+    return this.#native.listenAddr
   }
 
-  /** App 端 SDK 的 `hostUrl`（`ws://host:port`）；未开启时为 null。 */
+  /** App 端 SDK 的 `hostUrl`（`ws://host:port/app`）；未开启时为 null。 */
   get wsUrl(): string | null {
-    const a = this.#native.wsAddr
-    return a ? `ws://${a}` : null
+    const a = this.#native.listenAddr
+    return a ? `ws://${a}/app` : null
   }
 
   /** 本地 IPC 连接服务的端点（`unix:…` / `pipe:…`，可直接作为原生 App 端 SDK 的 `hostUrl`）；未开启时为 null。 */
@@ -227,7 +227,7 @@ export class Hub {
     return JSON.parse(json) as ToolResultMessage[F]
   }
 
-  /** 同时以 Streamable HTTP MCP 对外提供（`http://<addr>/mcp`），返回实际地址。 */
+  /** 另开一个 HTTP 监听器（路由与主服务相同：`/app`、`/healthz`，且总是提供 `/mcp`），返回实际地址。 */
   async serveHttp(addr: string, allowRemote = false): Promise<string> {
     return wrap(this.#native.serveHttp(addr, allowRemote))
   }

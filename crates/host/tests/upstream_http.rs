@@ -36,7 +36,7 @@ fn upstreams(names: &[&str]) -> BTreeMap<String, UpstreamConfig> {
 
 fn config() -> HostConfig {
     HostConfig {
-        ws_addr: Some("127.0.0.1:0".into()),
+        listen: Some("127.0.0.1:0".into()),
         ipc_endpoint: None,
         ..Default::default()
     }
@@ -285,7 +285,7 @@ async fn sdk_cannot_take_upstream_name() {
     })
     .await
     .unwrap();
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}", host.ws_addr().expect("ws")))
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/app", host.listen_addr().expect("listen")))
         .await
         .unwrap();
     let hello = json!({"jsonrpc": "2.0", "id": 1, "method": "app/hello", "params": {

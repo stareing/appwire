@@ -5,23 +5,14 @@
 //! cargo test -p app-mcp-host --test service_systemd -- --ignored
 //! ```
 //!
-//! 使用临时配置目录与随机端口；测试结束（含失败）一定卸载。systemd 用户实例不可用、
+//! 使用临时配置目录、端口 0（实际地址由服务命令从登记文件读取）、不开 IPC；测试结束（含失败）一定卸载。systemd 用户实例不可用、
 //! 或本机已安装了 app-mcp-host.service（不覆盖用户自己的服务）时跳过。
 #![cfg(all(unix, not(target_os = "macos")))]
 
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_app-mcp-host");
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 fn host(home: &Path, args: &[&str]) -> (i32, String) {
     let out = Command::new(BIN)
@@ -73,12 +64,10 @@ fn systemd_install_status_stop_start_uninstall() {
     let home = std::env::temp_dir().join(format!("app-mcp-systemd-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let _cleanup = Cleanup(home.clone());
-    let ws = format!("127.0.0.1:{}", free_port());
-    let http = format!("127.0.0.1:{}", free_port());
-
+    // 端口 0 + 不开 IPC：不与本机可能在运行的 Host 冲突；实际地址由服务命令从登记文件读取。
     let (code, out) = host(
         &home,
-        &["service", "install", "--ws-addr", &ws, "--http", &http],
+        &["service", "install", "--listen", "127.0.0.1:0", "--ipc-endpoint", "none"],
     );
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("已在运行"), "{out}");
@@ -91,7 +80,7 @@ fn systemd_install_status_stop_start_uninstall() {
         "{unit}"
     );
     let config = std::fs::read_to_string(home.join("config.json")).unwrap();
-    assert!(config.contains(&http), "{config}");
+    assert!(config.contains("\"listen\": \"127.0.0.1:0\""), "{config}");
     assert!(home.join("token").exists());
 
     let (code, out) = host(&home, &["service", "status"]);

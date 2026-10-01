@@ -29,7 +29,7 @@ fn endpoint(tag: &str) -> String {
 
 fn config(endpoint: &str) -> HubConfig {
     HubConfig {
-        ws_addr: None,
+        listen: None,
         ipc_endpoint: Some(endpoint.to_owned()),
         ..Default::default()
     }
@@ -59,7 +59,7 @@ async fn native_roundtrip_over_ipc() {
     let ep = endpoint("roundtrip");
     let hub = Hub::start(config(&ep)).await.unwrap();
     assert_eq!(hub.ipc_endpoint(), Some(ep.as_str()));
-    assert_eq!(hub.ws_addr(), None);
+    assert_eq!(hub.listen_addr(), None);
 
     let mut c = NativeConfig::new("calc", "计算器");
     c.host_url = ep.clone();

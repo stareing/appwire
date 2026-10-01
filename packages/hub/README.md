@@ -17,11 +17,11 @@ pnpm --filter @app-mcp/hub build          # tsup → dist/
 import { Hub } from '@app-mcp/hub'
 
 const hub = await Hub.start({
-  wsAddr: '127.0.0.1:7717',            // App 连接服务；端口 0 = 随机；null = 不开
+  listen: '127.0.0.1:7717',            // HTTP 服务（/app 为 App 连接）；端口 0 = 随机；null = 不开
   approval: { requireAtOrAbove: 'destructive' },
   // manifestFiles / manifestDir / upstreams / 各超时（毫秒）…
 })
-console.log(hub.wsUrl)                   // App 端 SDK 的 hostUrl
+console.log(hub.wsUrl)                   // App 端 SDK 的 hostUrl（ws://<listenAddr>/app）
 
 hub.onEvent((e) => {                     // HubEvent 判别联合
   if (e.type === 'toolsChanged') refreshTools()
@@ -105,7 +105,8 @@ const { text } = await generateText({
 ### C. 对外开 MCP
 
 ```ts
-const addr = await hub.serveHttp('127.0.0.1:7718')   // Streamable HTTP：http://<addr>/mcp
+const addr = await hub.serveHttp('127.0.0.1:0')      // 额外监听器（/app、/mcp、/healthz）：http://<addr>/mcp
+// 或在 Hub.start 时设 mcpHttp: true，在 listen 上直接提供 /mcp
 ```
 
 ## 休眠与唤醒（spec/hub-api.md 3.5）
@@ -154,7 +155,7 @@ const results = await handleAnthropicToolUses(hub, content, { session: convId })
 ```ts
 import { Hub, toAnthropicTools, handleAnthropicToolUses } from '@app-mcp/hub'
 
-const hub = await Hub.start({ wsAddr: '127.0.0.1:7717', approval: { requireAtOrAbove: 'destructive' } })
+const hub = await Hub.start({ listen: '127.0.0.1:7717', approval: { requireAtOrAbove: 'destructive' } })
 hub.setApprovalHandler(async (req) => confirm(`允许「${req.appName}」执行 ${req.tool}？`))
 
 let tools = toAnthropicTools(hub)
@@ -191,7 +192,7 @@ await hub.shutdown()
 
 | 方法 | 说明 |
 |---|---|
-| `Hub.start(config)` | 启动；`wsAddr` / `wsUrl` 为实际监听地址 |
+| `Hub.start(config)` | 启动；`listenAddr` 为实际监听地址，`wsUrl`（`ws://<listenAddr>/app`）为 App 端点 |
 | `shutdown()` | 关闭 App 连接与后台任务；之后调用抛 `HubError('SHUTDOWN')` |
 | `apps()` / `tools(filter?)` / `resources()` / `overview(appId)` | 查询快照 |
 | `callTool(req)` / `cancelCall(callId)` | 调用与取消（`req.timeout` 毫秒） |

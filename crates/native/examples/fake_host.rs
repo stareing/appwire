@@ -339,6 +339,9 @@ async fn serve(mut ws: WebSocketStream<TcpStream>, host: &mut HostState) -> Resu
                                 host_version: "fake".to_owned(),
                                 reason: None,
                                 tools_current,
+                                service: Some(proto::identity::SERVICE_NAME.to_owned()),
+                                user: proto::identity::current_user(),
+                                pid: Some(std::process::id()),
                             }),
                         )
                     }

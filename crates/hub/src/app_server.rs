@@ -1,5 +1,6 @@
-//! App 连接服务：WebSocket 监听（回环 TCP 与本地 IPC）、握手、消息分发、心跳。
+//! App 连接服务：`/app` 上的 WebSocket 连接（回环 TCP 与本地 IPC）、握手、消息分发、心跳。
 //!
+//! 监听与 HTTP 路由在 [`crate::http_server`]；升级完成的 WebSocket 交给 [`handle_websocket`]。
 //! 两种传输上跑的是同一套 WebSocket 帧与 JSON-RPC 消息（spec/protocol.md 第 1 节），只有鉴权不同：
 //! TCP 连接只接受回环地址；IPC 连接的对端用户已在 [`crate::ipc`] 中核对过。
 //!
@@ -21,12 +22,8 @@ use futures::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, interval_at, sleep_until};
-use tokio_tungstenite::tungstenite::handshake::server::{
-    Callback, ErrorResponse, Request as HttpRequest, Response as HttpResponse,
-};
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 use crate::connection::{Connection, Outgoing};
@@ -34,8 +31,6 @@ use crate::hub::HubShared;
 use crate::lifecycle::SLEEP_RETRY_AFTER_MS;
 use crate::registry::{DormantInstance, NewInstance, client_kind_str};
 use crate::types::{HubEvent, PairingRequest};
-
-const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 连接的对端。
 #[derive(Clone, Copy, Debug)]
@@ -47,7 +42,7 @@ pub(crate) enum Peer {
 }
 
 impl Peer {
-    fn pid(self) -> Option<u32> {
+    pub(crate) fn pid(self) -> Option<u32> {
         match self {
             Peer::Tcp(_) => None,
             Peer::Ipc { pid } => pid,
@@ -61,36 +56,6 @@ impl std::fmt::Display for Peer {
             Peer::Tcp(addr) => write!(f, "tcp {addr}"),
             Peer::Ipc { pid: Some(pid) } => write!(f, "ipc pid {pid}"),
             Peer::Ipc { pid: None } => f.write_str("ipc"),
-        }
-    }
-}
-
-/// 接受 TCP 连接，直到任务被中止。
-pub(crate) async fn accept_loop(shared: Arc<HubShared>, listener: TcpListener) {
-    loop {
-        match listener.accept().await {
-            Ok((stream, addr)) => {
-                tokio::spawn(handle_connection(shared.clone(), stream, Peer::Tcp(addr)));
-            }
-            Err(e) => {
-                tracing::warn!("接受连接失败：{e}");
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
-    }
-}
-
-/// 接受本地 IPC 连接，直到任务被中止（中止时监听器被丢弃，Unix 上删除套接字文件）。
-pub(crate) async fn accept_ipc_loop(shared: Arc<HubShared>, mut listener: crate::ipc::IpcListener) {
-    loop {
-        match listener.accept().await {
-            Ok(a) => {
-                tokio::spawn(handle_connection(shared.clone(), a.stream, Peer::Ipc { pid: a.pid }));
-            }
-            Err(e) => {
-                tracing::warn!("接受 IPC 连接失败：{e}");
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
         }
     }
 }
@@ -119,31 +84,16 @@ enum Flow {
     Pending(Box<PendingPairing>),
 }
 
-/// 握手回调：只记录请求的 `Origin` 头，从不拒绝握手（来源校验在 `app/hello` 阶段进行）。
-///
-/// 回调签名由 tungstenite 的 [`Callback`] trait 固定（错误类型 `ErrorResponse` 是约 136 字节的
-/// `http::Response`）；以具名类型实现该 trait，签名归 trait 所有，本处从不构造错误值。
-struct CaptureOrigin<'a>(&'a mut Option<String>);
-
-impl Callback for CaptureOrigin<'_> {
-    fn on_request(self, req: &HttpRequest, resp: HttpResponse) -> Result<HttpResponse, ErrorResponse> {
-        *self.0 = req.headers().get("origin").and_then(|v| v.to_str().ok()).map(str::to_owned);
-        Ok(resp)
-    }
-}
-
-async fn handle_connection<S>(shared: Arc<HubShared>, stream: S, peer: Peer)
-where
+/// 一条已完成 WebSocket 握手的 App 连接（[`crate::http_server::Router`] 在 `/app` 升级后调用）。
+/// `origin` 为升级请求的 `Origin` 头。
+pub(crate) async fn handle_websocket<S>(
+    shared: Arc<HubShared>,
+    ws: tokio_tungstenite::WebSocketStream<S>,
+    origin: Option<String>,
+    peer: Peer,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let mut origin: Option<String> = None;
-    let ws = match tokio_tungstenite::accept_hdr_async(stream, CaptureOrigin(&mut origin)).await {
-        Ok(ws) => ws,
-        Err(e) => {
-            tracing::debug!(%peer, "WebSocket 握手失败：{e}");
-            return;
-        }
-    };
     let (sink, stream) = ws.split();
     let mut frames = text_frames(stream);
 
@@ -538,19 +488,28 @@ fn handle_text(
     }
 }
 
-fn reject(conn: &Connection, req: &Request, reason: String) -> Flow {
-    tracing::warn!(conn = conn.id, "拒绝连接：{reason}");
+/// `app/hello` 的结果，带 Host 身份（spec/protocol.md 1.6）。
+fn hello_result(shared: &HubShared, status: PairingStatus, token: Option<String>, reason: Option<String>, tools_current: bool) -> Value {
+    let id = &shared.identity;
     let result = HelloResult {
-        status: PairingStatus::Rejected,
-        token: None,
+        status,
+        token,
         protocol_version: PROTOCOL_VERSION.to_owned(),
-        host_version: HOST_VERSION.to_owned(),
-        reason: Some(reason),
-        ..Default::default()
+        host_version: id.version.clone(),
+        reason,
+        tools_current,
+        service: Some(id.service.clone()),
+        user: id.user.clone(),
+        pid: Some(id.pid),
     };
+    serde_json::to_value(result).unwrap_or(Value::Null)
+}
+
+fn reject(shared: &HubShared, conn: &Connection, req: &Request, reason: String) -> Flow {
+    tracing::warn!(conn = conn.id, "拒绝连接：{reason}");
     conn.send(&Message::result(
         req.id.clone(),
-        serde_json::to_value(result).unwrap_or(Value::Null),
+        hello_result(shared, PairingStatus::Rejected, None, Some(reason), false),
     ));
     Flow::Close
 }
@@ -597,6 +556,7 @@ fn handle_handshake_request(
     };
     if hello.protocol_version != PROTOCOL_VERSION {
         return reject(
+            shared,
             conn,
             &req,
             format!(
@@ -609,6 +569,7 @@ fn handle_handshake_request(
         && !addr.ip().is_loopback()
     {
         return reject(
+            shared,
             conn,
             &req,
             format!("只接受来自本机回环地址的连接（来自 {}）", addr.ip()),
@@ -618,6 +579,7 @@ fn handle_handshake_request(
     let pairing_handler = shared.pairing_handler();
     if !origin_ok && pairing_handler.is_none() {
         return reject(
+            shared,
             conn,
             &req,
             format!(
@@ -628,6 +590,7 @@ fn handle_handshake_request(
     }
     if !is_valid_app_id(&hello.app_id) {
         return reject(
+            shared,
             conn,
             &req,
             format!(
@@ -637,17 +600,22 @@ fn handle_handshake_request(
         );
     }
     if is_reserved_app_id(&hello.app_id) {
-        return reject(conn, &req, format!("appId「{}」是保留名", hello.app_id));
+        return reject(
+            shared,
+            conn, &req, format!("appId「{}」是保留名", hello.app_id));
     }
     if shared.is_upstream(&hello.app_id) {
         return reject(
+            shared,
             conn,
             &req,
             format!("appId「{}」已被上游 MCP 服务器占用", hello.app_id),
         );
     }
     if hello.instance_id.is_empty() {
-        return reject(conn, &req, "instanceId 不能为空".to_owned());
+        return reject(
+            shared,
+            conn, &req, "instanceId 不能为空".to_owned());
     }
 
     let token = hello
@@ -662,17 +630,9 @@ fn handle_handshake_request(
         if unknown && !shared.is_paired(&hello.app_id, origin, hello.token.as_deref()) {
             // 需要重新确认配对：不做快速恢复（pairingResult 不带 toolsCurrent）。
             take_resume(shared, &hello);
-            let result = HelloResult {
-                status: PairingStatus::Pending,
-                token: None,
-                protocol_version: PROTOCOL_VERSION.to_owned(),
-                host_version: HOST_VERSION.to_owned(),
-                reason: None,
-                ..Default::default()
-            };
             conn.send(&Message::result(
                 req.id,
-                serde_json::to_value(result).unwrap_or(Value::Null),
+                hello_result(shared, PairingStatus::Pending, None, None, false),
             ));
             let pair_req = PairingRequest {
                 app_id: hello.app_id.clone(),
@@ -697,17 +657,9 @@ fn handle_handshake_request(
 
     // 快速恢复（spec/protocol.md 8.3）：恢复令牌有效且摘要与休眠快照一致 → toolsCurrent。
     let (snapshot, tools_current) = take_resume(shared, &hello);
-    let result = HelloResult {
-        status: PairingStatus::Paired,
-        token: Some(token),
-        protocol_version: PROTOCOL_VERSION.to_owned(),
-        host_version: HOST_VERSION.to_owned(),
-        reason: None,
-        tools_current,
-    };
     conn.send(&Message::result(
         req.id,
-        serde_json::to_value(result).unwrap_or(Value::Null),
+        hello_result(shared, PairingStatus::Paired, Some(token), None, tools_current),
     ));
     let snapshot = snapshot.filter(|_| tools_current);
     Flow::Paired(register_instance_with(shared, conn, hello, origin, peer, snapshot))

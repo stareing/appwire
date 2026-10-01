@@ -57,7 +57,7 @@ async function until<T>(f: () => T | undefined | null | false, what: string, tim
 async function startHub(options: HubStartOptions = {}): Promise<{ hub: Hub; events: HubEvent[] }> {
   // 不占用本机常驻 Host 的默认 IPC 端点；IPC 用临时端点单独测试。
   const hub = await Hub.start({
-    wsAddr: '127.0.0.1:0',
+    listen: '127.0.0.1:0',
     ipcEndpoint: null,
     keepAlive: false,
     listChangedDebounceMs: 20,
@@ -160,7 +160,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
 
   it('列工具、App、资源与事件', async () => {
     const { hub, events } = await startHub()
-    expect(hub.wsAddr).toMatch(/^127\.0\.0\.1:\d+$/)
+    expect(hub.listenAddr).toMatch(/^127\.0\.0\.1:\d+$/)
     await startShop(hub)
 
     const tools = hub.tools()
@@ -419,7 +419,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
       process.platform === 'win32'
         ? `pipe:\\\\.\\pipe\\app-mcp-hub-ts-test-${process.pid}`
         : `unix:${join(tmpdir(), `app-mcp-hub-ts-ipc-${process.pid}`, 'hub.sock')}`
-    const { hub } = await startHub({ wsAddr: null, ipcEndpoint: endpoint })
+    const { hub } = await startHub({ listen: null, ipcEndpoint: endpoint })
     expect(hub.ipcEndpoint).toBe(endpoint)
     const app = createAppMcp({
       appId: 'notes',
@@ -438,8 +438,8 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
   })
 
   it('shutdown 后调用抛 SHUTDOWN', async () => {
-    const { hub } = await startHub({ wsAddr: null })
-    expect(hub.wsAddr).toBeNull()
+    const { hub } = await startHub({ listen: null })
+    expect(hub.listenAddr).toBeNull()
     expect(hub.wsUrl).toBeNull()
     expect(hub.ipcEndpoint).toBeNull()
     await hub.shutdown()
@@ -453,7 +453,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     await expect(Hub.start({ keepAlive: false, bogus: 1 } as HubStartOptions)).rejects.toMatchObject({
       kind: 'INVALID_ARG',
     })
-    await expect(Hub.start({ keepAlive: false, wsAddr: 'not-an-addr', ipcEndpoint: null })).rejects.toMatchObject({
+    await expect(Hub.start({ keepAlive: false, listen: 'not-an-addr', ipcEndpoint: null })).rejects.toMatchObject({
       kind: 'START_FAILED',
     })
   })

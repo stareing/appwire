@@ -58,7 +58,7 @@ class SampleApp : Application(), AppMcpProvider {
             AppMcpConfig(
                 appId = "sample-android", // 须匹配 [a-z][a-z0-9-]{0,62}，不能直接用包名
                 appName = "app-mcp Android 示例",
-                hostUrl = "ws://127.0.0.1:7717", // 配合 adb reverse tcp:7717 tcp:7717
+                hostUrl = "ws://127.0.0.1:7717/app", // 配合 adb reverse tcp:7717 tcp:7717
                 appVersion = "0.1.0",
                 overview = AppOverview(summary = "Android 示例：回显文本、计数器", body = null),
                 lifecycle = base.copy(idleTimeoutMillis = 10_000, hiddenIdleTimeoutMillis = 5_000),

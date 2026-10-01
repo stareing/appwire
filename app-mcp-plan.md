@@ -459,12 +459,12 @@ async fn main() -> anyhow::Result<()> {
 ```json
 {
   "mcpServers": {
-    "app-mcp": { "type": "http", "url": "http://127.0.0.1:7718/mcp" }
+    "app-mcp": { "type": "http", "url": "http://127.0.0.1:7717/mcp" }
   }
 }
 ```
 
-Claude Code：`claude mcp add --transport http app-mcp http://127.0.0.1:7718/mcp`。
+Claude Code：`claude mcp add --transport http app-mcp http://127.0.0.1:7717/mcp`。
 需要令牌时（多用户机器，`--auth all`）加 `"headers": {"Authorization": "Bearer ${APP_MCP_TOKEN:-}"}`，令牌放环境变量。
 
 仍支持 stdio（`{"command": "app-mcp-host", "args": ["stdio"]}`），仅用于测试 / 单客户端 / 无法安装服务的环境。
@@ -478,7 +478,9 @@ Host 通过各平台安装包、`cargo install`，以及 npm 包装器（`npx @a
 
 方案：**一个常驻 Host 进程原生服务多个 MCP 会话**，不做 stdio 转发 / 代理进程。
 
-- `app-mcp-host serve`：同一进程提供 App 连接服务（7717）与 MCP Streamable HTTP（`127.0.0.1:7718/mcp`）。
+- `app-mcp-host serve`：同一进程、同一端口（`127.0.0.1:7717`）提供 App 连接（`/app`）、MCP Streamable HTTP（`/mcp`）与 `/healthz`
+  （2026-10-01 合并端口，原 MCP 端口 7718 只在兼容期显式配置时另开）；单实例锁 `~/.app-mcp/run/hub.lock`，
+  实际监听位置写登记文件 `~/.app-mcp/run/endpoints.json`（spec/protocol.md 1.3–1.7）。
   每个客户端一个 HTTP 会话（`Mcp-Session-Id`），共享 App 连接；`apps.select`、首次附带总览、资源订阅按会话计算（spec/hub-api.md 3.6）。
 - `app-mcp-host service install|uninstall|status|start|stop`：当前用户的登录自启，无需管理员——
   Linux systemd `--user` unit、macOS launchd LaunchAgent、Windows `HKCU\…\Run` 项（指向无控制台窗口的 `app-mcp-hostw.exe`）。

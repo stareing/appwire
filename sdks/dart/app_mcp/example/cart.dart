@@ -1,6 +1,6 @@
 // 纯 Dart 示例：注册购物车工具并连接本机 Host。
 //
-//   APP_MCP_NATIVE_PATH=.../libapp_mcp.so dart run example/cart.dart [ws://127.0.0.1:7717]
+//   APP_MCP_NATIVE_PATH=.../libapp_mcp.so dart run example/cart.dart [ws://127.0.0.1:7717/app]
 import 'dart:async';
 import 'dart:io';
 

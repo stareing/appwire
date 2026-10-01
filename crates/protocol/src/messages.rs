@@ -222,6 +222,16 @@ pub struct HelloResult {
     /// （spec/lifecycle.md 4.3）。缺省 false。
     #[serde(default, skip_serializing_if = "is_false")]
     pub tools_current: bool,
+    /// Host 身份（spec/protocol.md 1.6）：固定为 [`crate::identity::SERVICE_NAME`]（`"app-mcp"`）。
+    /// 旧 Host 不发送；SDK 收到其他值时判定对端不是 app-mcp Host。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// Host 进程的操作系统用户（Unix 为十进制 uid，Windows 为用户 SID）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Host 进程号。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 /// `Default` 仅为方便构造（配合 `..Default::default()`）：`status` 缺省为 `rejected`，
@@ -235,6 +245,9 @@ impl Default for HelloResult {
             host_version: String::new(),
             reason: None,
             tools_current: false,
+            service: None,
+            user: None,
+            pid: None,
         }
     }
 }
@@ -609,6 +622,18 @@ mod tests {
         assert!(serde_json::to_value(&r).unwrap().get("toolsCurrent").is_none());
         let r = HelloResult { status: PairingStatus::Paired, tools_current: true, ..Default::default() };
         assert_eq!(serde_json::to_value(&r).unwrap()["toolsCurrent"], true);
+
+        // 身份字段（1.6）：缺省不序列化；旧 Host 不带时解析为 None
+        assert!(serde_json::to_value(&r).unwrap().get("service").is_none());
+        let r = HelloResult {
+            service: Some("app-mcp".into()),
+            user: Some("1000".into()),
+            pid: Some(42),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!((v["service"].as_str(), v["user"].as_str(), v["pid"].as_u64()), (Some("app-mcp"), Some("1000"), Some(42)));
+        assert_eq!(serde_json::from_value::<HelloResult>(v).unwrap(), r);
     }
 
     #[test]

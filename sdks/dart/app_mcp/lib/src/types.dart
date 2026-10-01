@@ -88,6 +88,10 @@ enum ConnectionStatus {
 
   /// 收到唤醒后正在回连。
   waking,
+
+  /// 对端不是期望的 Host（不是 app-mcp，或属于其他用户；spec/protocol.md 1.6）。不再自动重连，
+  /// `wake()` / `connectNow()` 时再试一次；原因见 [McpConnectionState.reason]。
+  hostMismatch,
 }
 
 /// 连接状态快照。

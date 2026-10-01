@@ -35,7 +35,7 @@ public class HubBasicTests
     {
         var o = new HubOptions
         {
-            WsAddress = "127.0.0.1:0",
+            Listen = "127.0.0.1:0",
             IpcEndpoint = "unix:/run/x/hub.sock",
             RequireApprovalAtOrAbove = HubRisk.OsSensitive,
             ApprovalTimeout = TimeSpan.FromSeconds(3),
@@ -45,7 +45,11 @@ public class HubBasicTests
         o.AllowOrigins.Add("http://localhost:*");
         o.Upstreams["fs"] = new UpstreamOptions { Command = "mcp-fs", Args = ["--root", "/tmp"] };
         var json = JsonNode.Parse(o.ToConfigJson())!.AsObject();
-        Assert.Equal("127.0.0.1:0", (string?)json["wsAddr"]);
+        Assert.Equal("127.0.0.1:0", (string?)json["listen"]);
+        Assert.False(json.ContainsKey("mcpHttp"));
+        var extra = JsonNode.Parse(new HubOptions { McpHttp = true, RunDir = "/tmp/r" }.ToConfigJson())!.AsObject();
+        Assert.True((bool?)extra["mcpHttp"]);
+        Assert.Equal("/tmp/r", (string?)extra["runDir"]);
         Assert.Equal("unix:/run/x/hub.sock", (string?)json["ipcEndpoint"]);
         Assert.Equal("os-sensitive", (string?)json["approval"]!["requireAtOrAbove"]);
         Assert.Equal(3000, (int?)json["approval"]!["timeout"]);
@@ -56,6 +60,7 @@ public class HubBasicTests
         var life = JsonNode.Parse(new HubOptions
         {
             DisableIpc = true,
+            Listen = "127.0.0.1:0",
             LeaseTtl = TimeSpan.Zero,
             WakeTimeout = TimeSpan.FromSeconds(2),
             WakeTokenTtl = TimeSpan.FromSeconds(3),
@@ -74,7 +79,7 @@ public class HubBasicTests
         var exposure = JsonNode.Parse(new HubOptions
         {
             DisableIpc = true,
-            WsAddress = "127.0.0.1:0",
+            Listen = "127.0.0.1:0",
             ToolExposure = ToolExposure.Progressive,
             ToolExposureThreshold = 5,
             Waker = WakerOptions.Exec("node", "wake.mjs"),
@@ -90,9 +95,9 @@ public class HubBasicTests
             Assert.Equal(["apps.list", "apps.select", "apps.overview", "apps.tools"], names);
         }
 
-        var disabled = JsonNode.Parse(new HubOptions { DisableWebSocket = true, DisableIpc = true }.ToConfigJson())!.AsObject();
-        Assert.True(disabled.ContainsKey("wsAddr"));
-        Assert.Null(disabled["wsAddr"]);
+        var disabled = JsonNode.Parse(new HubOptions { DisableListen = true, DisableIpc = true }.ToConfigJson())!.AsObject();
+        Assert.True(disabled.ContainsKey("listen"));
+        Assert.Null(disabled["listen"]);
         Assert.True(disabled.ContainsKey("ipcEndpoint"));
         Assert.Null(disabled["ipcEndpoint"]);
         Assert.False(JsonNode.Parse(new HubOptions().ToConfigJson())!.AsObject().ContainsKey("ipcEndpoint"));
@@ -105,7 +110,7 @@ public class HubBasicTests
         Assert.Equal(HubStatus.InvalidJson, e.Status);
         Assert.False(string.IsNullOrEmpty(e.Message));
 
-        var o = new HubOptions { DisableWebSocket = true, DisableIpc = true, Dispatcher = null };
+        var o = new HubOptions { DisableListen = true, DisableIpc = true, Dispatcher = null };
         o.Manifests.Add(JsonNode.Parse("""{"appId":""}""")!);
         Assert.Equal(HubStatus.InvalidConfig, Assert.Throws<HubException>(() => AppMcpHub.Start(o)).Status);
     }
@@ -113,8 +118,8 @@ public class HubBasicTests
     [Fact]
     public async Task QueriesWithoutApps()
     {
-        using var hub = AppMcpHub.Start(new HubOptions { DisableWebSocket = true, DisableIpc = true, Dispatcher = null });
-        Assert.Null(hub.WsAddress);
+        using var hub = AppMcpHub.Start(new HubOptions { DisableListen = true, DisableIpc = true, Dispatcher = null });
+        Assert.Null(hub.ListenAddress);
         Assert.Null(hub.IpcEndpoint);
         Assert.Equal(0, hub.GetApps().GetArrayLength());
         Assert.Equal(0, hub.GetResources().GetArrayLength());
@@ -146,7 +151,7 @@ public class HubBasicTests
     [Fact]
     public void UseAfterDisposeThrows()
     {
-        var hub = AppMcpHub.Start(new HubOptions { DisableWebSocket = true, DisableIpc = true, Dispatcher = null });
+        var hub = AppMcpHub.Start(new HubOptions { DisableListen = true, DisableIpc = true, Dispatcher = null });
         hub.Dispose();
         hub.Dispose();
         Assert.Throws<ObjectDisposedException>(() => hub.GetApps());
@@ -169,12 +174,12 @@ public class HubIntegrationTests
         await using var hub = AppMcpHub.Start(new HubOptions
         {
             DisableIpc = true,
-            WsAddress = "127.0.0.1:0",
+            Listen = "127.0.0.1:0",
             RequireApprovalAtOrAbove = HubRisk.Destructive,
             ApprovalTimeout = TimeSpan.FromSeconds(10),
             Dispatcher = ui,
         });
-        var addr = hub.WsAddress;
+        var addr = hub.ListenAddress;
         Assert.False(string.IsNullOrEmpty(addr));
 
         var events = new ConcurrentQueue<HubEventArgs>();
@@ -205,7 +210,7 @@ public class HubIntegrationTests
             AppId = "notes",
             AppName = "笔记",
             InstanceId = "n1",
-            HostUrl = $"ws://{addr}",
+            HostUrl = $"ws://{addr}/app",
             Overview = new AppMcp.AppOverview("笔记 App：可添加与删除笔记"),
             Dispatcher = null,
         });
@@ -297,14 +302,14 @@ public class HubIntegrationTests
     [Fact]
     public async Task PairingHandlerAcceptsAndRejects()
     {
-        await using var hub = AppMcpHub.Start(new HubOptions { WsAddress = "127.0.0.1:0", DisableIpc = true, Dispatcher = null });
+        await using var hub = AppMcpHub.Start(new HubOptions { Listen = "127.0.0.1:0", DisableIpc = true, Dispatcher = null });
         var requests = new ConcurrentQueue<PairingRequest>();
         hub.PairingHandler = (req, _) =>
         {
             requests.Enqueue(req);
             return Task.FromResult(req.AppId == "good");
         };
-        var url = $"ws://{hub.WsAddress}";
+        var url = $"ws://{hub.ListenAddress}/app";
 
         await using var good = AppMcp.AppMcpClient.Create(new AppMcp.AppMcpClientOptions { AppId = "good", AppName = "Good", HostUrl = url, Dispatcher = null });
         good.Start();
@@ -331,7 +336,7 @@ public class HubIntegrationTests
         await using var hub = AppMcpHub.Start(new HubOptions
         {
             DisableIpc = true,
-            WsAddress = "127.0.0.1:0",
+            Listen = "127.0.0.1:0",
             ListChangedDebounce = TimeSpan.FromMilliseconds(20),
             WakeTimeout = TimeSpan.FromSeconds(10),
             LeaseTtl = TimeSpan.Zero,
@@ -350,7 +355,7 @@ public class HubIntegrationTests
             AppId = "sleepy",
             AppName = "会睡觉的 App",
             InstanceId = "s1",
-            HostUrl = $"ws://{hub.WsAddress}",
+            HostUrl = $"ws://{hub.ListenAddress}/app",
             Dispatcher = null,
             Lifecycle = new AppMcp.LifecycleOptions
             {
@@ -416,7 +421,7 @@ public class HubIntegrationTests
             : $"unix:{Path.Combine(dir, "run", "hub.sock")}";
         try
         {
-            await using var hub = AppMcpHub.Start(new HubOptions { DisableWebSocket = true, IpcEndpoint = endpoint, Dispatcher = null });
+            await using var hub = AppMcpHub.Start(new HubOptions { DisableListen = true, IpcEndpoint = endpoint, Dispatcher = null });
             Assert.Equal(endpoint, hub.IpcEndpoint);
             await using var app = AppMcp.AppMcpClient.Create(new AppMcp.AppMcpClientOptions
             {

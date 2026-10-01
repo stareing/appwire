@@ -189,6 +189,14 @@ impl Client {
                 self.set_state(ConnectionState::Connecting);
                 true
             }
+            ConnectionState::HostMismatch { .. } => {
+                // 不自动重试；App 主动唤醒 / 连接时再试一次（如端点已改正、占用端口的程序已退出）。
+                self.retry_count = 0;
+                self.life.wake_reason = Some(reason);
+                self.events.push_back(Event::Connect);
+                self.set_state(ConnectionState::Connecting);
+                true
+            }
             ConnectionState::Connected if self.session.sleeping.is_some() => {
                 self.session.rewake = true;
                 true

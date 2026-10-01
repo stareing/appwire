@@ -2,10 +2,13 @@
 //!
 //! - 一个 serve 进程，两个独立的 MCP HTTP 会话同时列出并调用同一 App（app-mcp-native 客户端）的工具，
 //!   各自首次调用附带总览；
-//! - 第二个 serve 探测到健康实例后退出码 0；端口被其他程序占用时报错；
-//! - `/healthz`；本地访问令牌：带 Origin 无令牌 → 401，Origin 不在允许列表 → 403。
+//! - 单实例：同一配置目录的第二个 serve（单实例锁）打印已运行实例并退出码 0；stdio 模式报错并给出 MCP 地址；
+//!   端口被其他程序 / 其他配置目录的 Host 占用时报错并说明占用者；
+//! - 合并端口：同一端口上的 `/app`、`/mcp`、`/healthz`；本地访问令牌：带 Origin 无令牌 → 401，
+//!   Origin 不在允许列表 → 403。
 //!
-//! 每个测试用临时配置目录与随机端口，不影响本机可能在运行的实例。
+//! 每个测试用临时配置目录、临时 IPC 端点，监听端口 0；实际地址从登记文件 `<home>/run/endpoints.json` 读取
+//! （不用"先绑定再释放"的端口，消除端口竞争）。
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -16,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use app_mcp_host::probe::{Probe, probe};
 use app_mcp_native::{AppOverview, CallHandle, NativeClient, NativeConfig, ToolHandler, ToolSpec};
+use app_mcp_protocol::registry::{EndpointRegistry, REGISTRY_FILE, RUN_DIR};
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -25,24 +29,16 @@ use serde_json::{Value, json};
 const BIN: &str = env!("CARGO_BIN_EXE_app-mcp-host");
 const T: Duration = Duration::from_secs(15);
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 struct TempHome(PathBuf);
 impl TempHome {
     fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "app-mcp-serve-{tag}-{}-{}",
-            std::process::id(),
-            free_port()
-        ));
+        let n: u64 = rand::random();
+        let dir = std::env::temp_dir().join(format!("app-mcp-serve-{tag}-{}-{n:x}", std::process::id()));
         std::fs::create_dir_all(dir.join("manifests")).unwrap();
         Self(dir)
+    }
+    fn registry(&self) -> PathBuf {
+        self.0.join(RUN_DIR).join(REGISTRY_FILE)
     }
 }
 impl Drop for TempHome {
@@ -64,14 +60,14 @@ fn ipc_endpoint(home: &Path) -> String {
     }
 }
 
-fn serve_cmd(home: &Path, ws: u16, http: u16, extra: &[&str]) -> Command {
+/// `listen`：监听地址；测试一律用端口 0（或被占用的端口），实际地址读登记文件。
+fn serve_cmd(home: &Path, listen: &str, extra: &[&str]) -> Command {
     let mut c = Command::new(BIN);
     c.arg("serve")
         .arg("--home")
         .arg(home)
-        .args(["--ws-addr", &format!("127.0.0.1:{ws}")])
+        .args(["--listen", listen])
         .args(["--ipc-endpoint", &ipc_endpoint(home)])
-        .args(["--http", &format!("127.0.0.1:{http}")])
         .args(extra)
         .env_remove("APP_MCP_HOME")
         .env("RUST_LOG", "info")
@@ -84,8 +80,8 @@ fn serve_cmd(home: &Path, ws: u16, http: u16, extra: &[&str]) -> Command {
 /// 运行中的 serve 进程；Drop 时结束。
 struct Serve {
     child: Child,
-    http: SocketAddr,
-    ws: SocketAddr,
+    /// 实际监听地址（`/app`、`/mcp`、`/healthz`）。
+    addr: SocketAddr,
     ipc: String,
 }
 impl Drop for Serve {
@@ -95,38 +91,46 @@ impl Drop for Serve {
     }
 }
 
-async fn start_serve(home: &Path, extra: &[&str]) -> Serve {
-    let (ws, http) = (free_port(), free_port());
-    let child = serve_cmd(home, ws, http, extra)
-        .spawn()
-        .expect("启动 serve");
-    let http: SocketAddr = format!("127.0.0.1:{http}").parse().unwrap();
-    let mut s = Serve {
-        child,
-        http,
-        ws: format!("127.0.0.1:{ws}").parse().unwrap(),
-        ipc: ipc_endpoint(home),
-    };
+fn early_exit(child: &mut Child) -> Option<String> {
+    let status = child.try_wait().ok().flatten()?;
+    let mut err = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut err);
+    }
+    Some(format!("serve 提前退出（{status}）：{err}"))
+}
+
+/// 等 `cmd` 启动的 serve 写出登记文件（进程号一致），返回实际地址。
+async fn wait_registered(home: &TempHome, child: &mut Child) -> EndpointRegistry {
     let deadline = Instant::now() + T;
     loop {
-        if let Probe::AppMcp(h) = probe(&http.to_string()).await {
-            assert_eq!(h.pid, s.child.id());
-            assert_eq!(h.ws_addr.as_deref(), Some(s.ws.to_string().as_str()));
-            return s;
+        if let Ok(Some(reg)) = EndpointRegistry::read(&home.registry())
+            && reg.identity.pid == child.id()
+        {
+            return reg;
         }
-        if let Ok(Some(status)) = s.child.try_wait() {
-            let mut err = String::new();
-            s.child
-                .stderr
-                .take()
-                .unwrap()
-                .read_to_string(&mut err)
-                .unwrap();
-            panic!("serve 提前退出（{status}）：{err}");
+        if let Some(msg) = early_exit(child) {
+            panic!("{msg}");
         }
-        assert!(Instant::now() < deadline, "serve 未就绪");
+        assert!(Instant::now() < deadline, "serve 未写出登记文件");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+async fn start_serve(home: &TempHome, extra: &[&str]) -> Serve {
+    let mut child = serve_cmd(&home.0, "127.0.0.1:0", extra).spawn().expect("启动 serve");
+    let reg = wait_registered(home, &mut child).await;
+    let addr: SocketAddr = reg.listen.as_deref().expect("listen").parse().unwrap();
+    assert_ne!(addr.port(), 0);
+    assert_eq!(reg.ipc_endpoint.as_deref(), Some(ipc_endpoint(&home.0).as_str()));
+    // 登记文件写在绑定之后：/healthz 立即可用，且是同一个进程
+    let Probe::AppMcp(h) = probe(&addr.to_string()).await else {
+        panic!("登记后 /healthz 不可用");
+    };
+    assert_eq!(h.identity, reg.identity);
+    assert_eq!(h.listen.as_deref(), Some(addr.to_string().as_str()));
+    assert_eq!(h.mcp_path.as_deref(), Some("/mcp"));
+    Serve { child, addr, ipc: ipc_endpoint(&home.0) }
 }
 
 /// 同步运行一个 serve，等它退出，返回（退出码，stdout，stderr）。
@@ -250,12 +254,12 @@ fn has_overview(r: &CallToolResult) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 async fn two_http_sessions_share_one_app() {
     let home = TempHome::new("share");
-    let serve = start_serve(&home.0, &[]).await;
+    let serve = start_serve(&home, &[]).await;
     // 原生 App 经本地 IPC 连接常驻 Host。
     let app = calc_app(&serve.ipc);
 
-    let a = mcp(serve.http, None).await;
-    let b = mcp(serve.http, None).await;
+    let a = mcp(serve.addr, None).await;
+    let b = mcp(serve.addr, None).await;
     // 总览简介出现在两个会话的 instructions 中（App 已连接后建立的会话）
     tokio::join!(
         wait_tool(&a, "calc.math.add"),
@@ -273,7 +277,7 @@ async fn two_http_sessions_share_one_app() {
     assert!(!has_overview(&ra2), "{:?}", texts(&ra2));
     assert_eq!(ra2.structured_content.as_ref().unwrap()["sum"], 4);
     // 新会话再附带一次
-    let c = mcp(serve.http, None).await;
+    let c = mcp(serve.addr, None).await;
     let instructions = c
         .peer_info()
         .unwrap()
@@ -313,36 +317,54 @@ async fn two_http_sessions_share_one_app() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn second_serve_exits_zero_when_healthy_instance_runs() {
+async fn second_serve_exits_zero_when_instance_holds_lock() {
     let home = TempHome::new("single");
-    let serve = start_serve(&home.0, &[]).await;
-    let (code, stdout, stderr) = run_to_exit(serve_cmd(
-        &home.0,
-        serve.ws.port(),
-        serve.http.port(),
-        &["--no-log-file"],
-    ));
-    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
-    assert!(stdout.contains("已在运行"), "{stdout}");
-    assert!(
-        stdout.contains(&format!("pid {}", serve.child.id())),
-        "{stdout}"
-    );
+    let serve = start_serve(&home, &[]).await;
+    // 同一配置目录：单实例锁先于任何监听，与端口无关（端口 0、或第一个实例的端口都一样）
+    for listen in ["127.0.0.1:0".to_owned(), serve.addr.to_string()] {
+        let (code, stdout, stderr) = run_to_exit(serve_cmd(&home.0, &listen, &["--no-log-file"]));
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("已在运行"), "{stdout}");
+        assert!(stdout.contains(&format!("pid {}", serve.child.id())), "{stdout}");
+        assert!(stdout.contains(&format!("http://{}/mcp", serve.addr)), "{stdout}");
+    }
+    // stdio 模式：不能与常驻实例共存，报错并给出 MCP 地址
+    let out = Command::new(BIN)
+        .args(["stdio", "--home"])
+        .arg(&home.0)
+        .args(["--listen", "127.0.0.1:0", "--ipc-endpoint", "none"])
+        .env_remove("APP_MCP_HOME")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(&format!("http://{}/mcp", serve.addr)), "{stderr}");
     // 第一个实例不受影响
-    assert!(matches!(
-        probe(&serve.http.to_string()).await,
-        Probe::AppMcp(_)
-    ));
+    assert!(matches!(probe(&serve.addr.to_string()).await, Probe::AppMcp(_)));
+    assert!(home.registry().exists());
+    drop(serve);
+}
 
-    // 只有 HTTP 端口相同（WebSocket 端口空闲）时也识别为已在运行
-    let (code, stdout, _) = run_to_exit(serve_cmd(
-        &home.0,
-        free_port(),
-        serve.http.port(),
-        &["--no-log-file"],
-    ));
-    assert_eq!(code, 0, "{stdout}");
-    assert!(stdout.contains("已在运行"));
+#[tokio::test(flavor = "multi_thread")]
+async fn registry_is_removed_on_sigterm() {
+    let home = TempHome::new("term");
+    let serve = start_serve(&home, &["--no-log-file"]).await;
+    #[cfg(unix)]
+    {
+        let mut serve = serve;
+        // SIGTERM：正常停止，删除登记文件
+        let pid = serve.child.id();
+        assert!(Command::new("kill").arg(pid.to_string()).status().unwrap().success());
+        let status = serve.child.wait().unwrap();
+        assert!(status.success(), "{status}");
+        assert!(!home.registry().exists(), "退出时删除登记文件");
+        // 锁随进程释放：可以再次启动
+        let again = start_serve(&home, &["--no-log-file"]).await;
+        drop(again);
+    }
+    #[cfg(not(unix))]
+    drop(serve);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -350,7 +372,7 @@ async fn port_taken_by_other_program_is_an_error() {
     let home = TempHome::new("taken");
     // 一个“其他程序”：接受连接并返回 404
     let other = TcpListener::bind("127.0.0.1:0").unwrap();
-    let other_port = other.local_addr().unwrap().port();
+    let other_addr = other.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
         for mut s in other.incoming().flatten() {
             let mut buf = [0u8; 1024];
@@ -358,33 +380,25 @@ async fn port_taken_by_other_program_is_an_error() {
             let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
         }
     });
-
-    // HTTP 端口被占用
-    let (code, _, stderr) = run_to_exit(serve_cmd(
-        &home.0,
-        free_port(),
-        other_port,
-        &["--no-log-file"],
-    ));
+    // 显式指定的端口被占用：不换端口，报错并说明占用者
+    let (code, _, stderr) = run_to_exit(serve_cmd(&home.0, &other_addr, &["--no-log-file"]));
     assert_ne!(code, 0);
-    assert!(stderr.contains("已被占用"), "{stderr}");
     assert!(stderr.contains("其他程序"), "{stderr}");
+    assert!(!home.registry().exists());
 
-    // WebSocket 端口被占用（HTTP 端口空闲）
-    let (code, _, stderr) = run_to_exit(serve_cmd(
-        &home.0,
-        other_port,
-        free_port(),
-        &["--no-log-file"],
-    ));
+    // 端口被另一个配置目录的 app-mcp Host 占用
+    let first_home = TempHome::new("taken-first");
+    let first = start_serve(&first_home, &["--no-log-file"]).await;
+    let (code, _, stderr) = run_to_exit(serve_cmd(&home.0, &first.addr.to_string(), &["--no-log-file"]));
     assert_ne!(code, 0);
-    assert!(stderr.contains("App 连接端口"), "{stderr}");
+    assert!(stderr.contains("另一个 app-mcp Host"), "{stderr}");
+    assert!(stderr.contains(&format!("pid {}", first.child.id())), "{stderr}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn healthz_and_token_policy() {
     let home = TempHome::new("token");
-    let serve = start_serve(&home.0, &["--no-log-file"]).await;
+    let serve = start_serve(&home, &["--no-log-file"]).await;
     let token = std::fs::read_to_string(home.0.join("token"))
         .unwrap()
         .trim()
@@ -412,7 +426,7 @@ async fn healthz_and_token_policy() {
     };
     let status = |h: Vec<(&str, String)>| {
         let refs: Vec<(&str, &str)> = h.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        http_status(serve.http, "POST", "/mcp", &refs, init)
+        http_status(serve.addr, "POST", "/mcp", &refs, init)
     };
     let bearer = format!("Bearer {token}");
 
@@ -450,20 +464,21 @@ async fn healthz_and_token_policy() {
         401
     );
 
-    // /healthz 不需要令牌
-    assert_eq!(http_status(serve.http, "GET", "/healthz", &[], ""), 200);
+    // /healthz 不需要令牌；同一端口的 /app 是 App 连接（非升级请求 426）
+    assert_eq!(http_status(serve.addr, "GET", "/healthz", &[], ""), 200);
+    assert_eq!(http_status(serve.addr, "GET", "/app", &[], ""), 426);
     drop(serve);
 
     // --auth all：本地客户端也必须带令牌
-    let serve = start_serve(&home.0, &["--no-log-file", "--auth", "all"]).await;
+    let serve = start_serve(&home, &["--no-log-file", "--auth", "all"]).await;
     let status = |h: Vec<(&str, String)>| {
         let refs: Vec<(&str, &str)> = h.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        http_status(serve.http, "POST", "/mcp", &refs, init)
+        http_status(serve.addr, "POST", "/mcp", &refs, init)
     };
     assert_eq!(status(with(&[])), 401);
     assert_eq!(status(with(&[("Authorization", bearer.clone())])), 200);
     // rmcp 客户端带令牌可正常使用
-    let c = mcp(serve.http, Some(&token)).await;
+    let c = mcp(serve.addr, Some(&token)).await;
     assert!(
         c.list_all_tools()
             .await
@@ -476,13 +491,13 @@ async fn healthz_and_token_policy() {
 #[tokio::test(flavor = "multi_thread")]
 async fn config_file_is_read() {
     let home = TempHome::new("config");
-    let (ws, http) = (free_port(), free_port());
     std::fs::write(
         home.0.join("config.json"),
         json!({
-            "wsAddr": format!("127.0.0.1:{ws}"),
+            "listen": "127.0.0.1:0",
             "ipcEndpoint": ipc_endpoint(&home.0),
-            "http": { "addr": format!("127.0.0.1:{http}"), "auth": "off" },
+            // 已弃用的旧 MCP 端口：兼容期内显式配置才另开（这里用 localhost:0，与 listen 不同）
+            "http": { "addr": "localhost:0", "auth": "off" },
             "log": { "file": false }
         })
         .to_string(),
@@ -491,21 +506,32 @@ async fn config_file_is_read() {
     let mut child = Command::new(BIN)
         .args(["serve", "--home"])
         .arg(&home.0)
+        .env_remove("APP_MCP_HOME")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let addr = format!("127.0.0.1:{http}");
-    let deadline = Instant::now() + T;
-    let health = loop {
-        if let Probe::AppMcp(h) = probe(&addr).await {
-            break h;
+    // 逐行读 stderr，等到“已就绪”（兼容端口在登记之后才开）
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
         }
-        assert!(Instant::now() < deadline, "serve 未按配置文件监听");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    assert_eq!(health.ws_addr, Some(format!("127.0.0.1:{ws}")));
+    });
+    let reg = wait_registered(&home, &mut child).await;
+    let mut log = String::new();
+    while !log.contains("app-mcp-host 已就绪") {
+        let line = rx.recv_timeout(T).unwrap_or_else(|_| panic!("serve 未就绪：{log}"));
+        log.push_str(&line);
+        log.push('\n');
+    }
+    assert!(log.contains("http.addr / --http 已弃用"), "{log}");
+    assert!(log.contains("额外的 HTTP 服务已启动"), "{log}");
+    let addr = reg.listen.clone().unwrap();
+    let Probe::AppMcp(health) = probe(&addr).await else { panic!("/healthz") };
     assert!(!health.token_required_for_browsers, "auth=off");
     assert!(!home.0.join("token").exists(), "auth=off 时不生成令牌");
     assert!(!home.0.join("logs").exists(), "log.file=false");

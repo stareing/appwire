@@ -26,7 +26,10 @@ void main() {
       expect(statusFromNative(AmStateStatus.pendingPairing), ConnectionStatus.pendingPairing);
       expect(statusFromNative(AmStateStatus.dormant), ConnectionStatus.dormant);
       expect(statusFromNative(AmStateStatus.waking), ConnectionStatus.waking);
-      for (var i = 0; i <= AmStateStatus.waking; i++) {
+      expect(statusFromNative(AmStateStatus.hostMismatch), ConnectionStatus.hostMismatch);
+      final mismatch = stateFromNative(AmStateStatus.hostMismatch, 0, '不是 app-mcp');
+      expect(mismatch.reason, '不是 app-mcp');
+      for (var i = 0; i <= AmStateStatus.hostMismatch; i++) {
         expect(statusFromNative(i).index, i, reason: '枚举顺序与 C 一致');
       }
       expect(statusFromNative(99), ConnectionStatus.idle);
@@ -146,6 +149,7 @@ void main() {
       expect(SleepReason.values.map(sleepReasonToNative), [0, 1, 2, 3]);
       expect(statusFromNative(8), ConnectionStatus.dormant);
       expect(statusFromNative(9), ConnectionStatus.waking);
+      expect(statusFromNative(10), ConnectionStatus.hostMismatch);
       expect(durationToMs(const Duration(seconds: -1)), 0);
     });
     test('平台默认策略：移动端 idle + keep，iOS 隐藏即休眠', () {

@@ -28,6 +28,7 @@ pub enum AmStateStatus {
     Stopped = 7,
     Dormant = 8,
     Waking = 9,
+    HostMismatch = 10,
 }
 
 impl From<StateStatus> for AmStateStatus {
@@ -43,6 +44,7 @@ impl From<StateStatus> for AmStateStatus {
             StateStatus::Stopped => Self::Stopped,
             StateStatus::Dormant => Self::Dormant,
             StateStatus::Waking => Self::Waking,
+            StateStatus::HostMismatch => Self::HostMismatch,
         }
     }
 }

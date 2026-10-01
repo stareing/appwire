@@ -11,8 +11,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use app_mcp_manifest::Manifest;
+use app_mcp_protocol::identity::HostIdentity;
+use app_mcp_protocol::registry::EndpointRegistry;
 use app_mcp_protocol::{
-    DEFAULT_WS_ADDR, ErrorKind, ResourceInfo, ResourceSubscribeParams, ResourcesReadParams,
+    DEFAULT_LISTEN_ADDR, ErrorKind, ResourceInfo, ResourceSubscribeParams, ResourcesReadParams,
     ResourcesReadResult, ToolError, method,
 };
 use rmcp::model::{Resource, ResourceUpdatedNotificationParam, Tool};
@@ -24,7 +26,8 @@ use tokio::sync::{Notify, broadcast, oneshot};
 use crate::call::{self, CallCtx};
 use crate::connection::RequestError;
 use crate::format::{self, NameCodec, ToolFormat};
-use crate::http_server::HttpOptions;
+use crate::http_server::{Health, HttpOptions, Router, Transport};
+use crate::instance::Instance;
 use crate::mcp::McpSession;
 use crate::origin::OriginPolicy;
 use crate::overview::{AppSummary, Overview, OverviewSource};
@@ -63,9 +66,24 @@ pub fn parse_resource_uri(uri: &str) -> Option<(&str, &str)> {
 /// Hub 配置。
 #[derive(Clone, Debug)]
 pub struct HubConfig {
-    /// App 连接服务（WebSocket）监听地址；端口为 0 时随机分配。`None` = 不开 WebSocket 服务。
-    /// 网页只能经这里连接；原生 App 默认走 [`HubConfig::ipc_endpoint`]。
-    pub ws_addr: Option<String>,
+    /// HTTP 服务监听地址（spec/protocol.md 1.3）：同一端口承载 `/app`（App 的 WebSocket 连接）、
+    /// `/healthz`，以及开启 [`HubConfig::mcp_http`] 时的 `/mcp`。默认 `127.0.0.1:7717`；端口为 0 时随机分配；
+    /// `None` = 不开 TCP 服务（仅本地 IPC / 进程内 / 上游）。网页只能经这里连接；原生 App 默认走
+    /// [`HubConfig::ipc_endpoint`]。非回环地址需要 [`HttpOptions::allow_remote`]。
+    pub listen: Option<String>,
+    /// `listen` 被占用（`AddrInUse`）时依次尝试的地址。默认 `127.0.0.1:7737`、`127.0.0.1:7757`
+    /// （与网页 SDK 依次握手的端口一致，[`app_mcp_protocol::LISTEN_CANDIDATE_PORTS`]）；
+    /// 显式指定 `listen` 时通常应清空，绑定不到指定地址即报错。
+    pub listen_alternates: Vec<String>,
+    /// HTTP 服务选项（令牌、是否允许远程）。令牌只作用于 `/mcp`。
+    pub http: HttpOptions,
+    /// 是否在 `listen` 上提供 MCP Streamable HTTP（`/mcp`）。默认 `false`（嵌入式 Hub 通常只需要 App 连接）；
+    /// `app-mcp-host serve` 开启。
+    pub mcp_http: bool,
+    /// 单实例锁与登记文件所在目录（spec/protocol.md 1.5、1.7）：取得 `<run_dir>/hub.lock` 之后才开始监听，
+    /// 绑定完成后写 `<run_dir>/endpoints.json`，停止时删除。已被锁定时 [`Hub::start`] 返回
+    /// `ResourceBusy`。默认 `None`（嵌入式 Hub 不参与）；`app-mcp-host` 为 `<配置目录>/run`。
+    pub run_dir: Option<PathBuf>,
     /// 本地 IPC 端点（spec/protocol.md 1.2）：`unix:<绝对路径>`（Linux / macOS）或
     /// `pipe:\\.\pipe\<名称>`（Windows）。默认为平台默认端点
     /// （[`app_mcp_protocol::endpoint::default_ipc_endpoint`]；Android / iOS 上为 `None`）。
@@ -121,7 +139,14 @@ pub const DEFAULT_TOOL_EXPOSURE_THRESHOLD: usize = 40;
 impl Default for HubConfig {
     fn default() -> Self {
         Self {
-            ws_addr: Some(DEFAULT_WS_ADDR.to_owned()),
+            listen: Some(DEFAULT_LISTEN_ADDR.to_owned()),
+            listen_alternates: app_mcp_protocol::LISTEN_CANDIDATE_PORTS[1..]
+                .iter()
+                .map(|p| format!("127.0.0.1:{p}"))
+                .collect(),
+            http: HttpOptions::default(),
+            mcp_http: false,
+            run_dir: None,
             ipc_endpoint: app_mcp_protocol::endpoint::default_ipc_endpoint().map(|e| e.to_string()),
             manifests: Vec::new(),
             allow_origins: Vec::new(),
@@ -171,6 +196,8 @@ pub(crate) fn api_session_key(session: Option<&str>) -> String {
 /// Hub 各部分共享的状态。
 pub struct HubShared {
     pub(crate) config: HubConfig,
+    /// 本进程的 Host 身份（握手结果、`/healthz`、登记文件）。
+    pub(crate) identity: HostIdentity,
     pub(crate) origins: OriginPolicy,
     registry: Mutex<Registry>,
     /// 已完成初始化的 MCP 会话：会话 ID → peer。
@@ -230,6 +257,7 @@ impl HubShared {
         }
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         Self {
+            identity: HostIdentity::current(env!("CARGO_PKG_VERSION")),
             upstreams: Mutex::new(upstreams),
             origins: OriginPolicy::new(config.allow_origins.iter().cloned()),
             config,
@@ -947,19 +975,69 @@ pub(crate) fn overview_info(ov: &Overview) -> AppOverviewInfo {
 /// Drop 时中止后台任务（与 [`Hub::shutdown`] 相比不等待连接关闭）。
 pub struct Hub {
     shared: Arc<HubShared>,
-    ws_addr: Option<SocketAddr>,
+    listen_addr: Option<SocketAddr>,
     ipc_endpoint: Option<String>,
+    started_at_ms: u64,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// 单实例锁与登记文件（[`HubConfig::run_dir`]）；丢弃时删除登记文件并释放锁。
+    instance: Mutex<Option<Instance>>,
+}
+
+/// 绑定 `listen`；被占用时依次尝试 `alternates`。全部失败时返回第一个错误（带尝试过的地址）。
+async fn bind_listen(listen: &str, alternates: &[String]) -> std::io::Result<TcpListener> {
+    let first = match TcpListener::bind(listen).await {
+        Ok(l) => return Ok(l),
+        Err(e) => e,
+    };
+    if first.kind() != std::io::ErrorKind::AddrInUse || alternates.is_empty() {
+        return Err(first);
+    }
+    for alt in alternates {
+        match TcpListener::bind(alt).await {
+            Ok(l) => {
+                tracing::warn!("监听地址 {listen} 已被占用，改用备选地址 {alt}（网页 SDK 会依次尝试这些端口）");
+                return Ok(l);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AddrInUse,
+        format!("{first}（{listen} 及备选地址 {} 均已被占用）", alternates.join("、")),
+    ))
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 impl Hub {
-    /// 绑定 App 连接服务（若配置）并启动后台任务。必须在 tokio 运行时中调用。
+    /// 取得单实例锁（若配置 [`HubConfig::run_dir`]），绑定 HTTP 服务与本地 IPC（若配置），启动后台任务，
+    /// 写登记文件。必须在 tokio 运行时中调用。
+    ///
+    /// 错误：`ResourceBusy`（单实例锁已被持有）、`AddrInUse`（地址 / IPC 端点被占用）、
+    /// `PermissionDenied`（非回环地址未允许远程）、`InvalidInput`（配置不合法）。
     pub async fn start(config: HubConfig) -> std::io::Result<Hub> {
-        let listener = match &config.ws_addr {
-            Some(addr) => Some(TcpListener::bind(addr).await?),
+        // 锁先于任何监听：并发启动的两个 Host 只有一个能走到绑定。
+        let instance = config.run_dir.as_deref().map(Instance::acquire).transpose()?;
+        let listener = match &config.listen {
+            Some(addr) => Some(bind_listen(addr, &config.listen_alternates).await?),
             None => None,
         };
-        let ws_addr = listener.as_ref().map(TcpListener::local_addr).transpose()?;
+        let listen_addr = listener.as_ref().map(TcpListener::local_addr).transpose()?;
+        if let Some(local) = listen_addr
+            && !local.ip().is_loopback()
+            && !config.http.allow_remote
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("监听地址 {local} 不是回环地址；如确需远程访问请允许远程（--http-allow-remote）"),
+            ));
+        }
         let ipc = match &config.ipc_endpoint {
             Some(text) => {
                 let endpoint = app_mcp_protocol::Endpoint::parse(text)
@@ -980,53 +1058,62 @@ impl Hub {
             .build()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.0.message))?;
         let shared = Arc::new(HubShared::new(config, waker));
-        let mut tasks = vec![
-            tokio::spawn(shared.clone().notify_loop()),
-            tokio::spawn(shared.clone().dormant_sweep_loop()),
-        ];
-        if let Some(listener) = listener {
-            tasks.push(tokio::spawn(crate::app_server::accept_loop(
-                shared.clone(),
-                listener,
-            )));
-        }
-        let ipc_endpoint = match ipc {
-            Some((endpoint, listener)) => {
-                tasks.push(tokio::spawn(crate::app_server::accept_ipc_loop(
-                    shared.clone(),
-                    listener,
-                )));
-                tracing::info!(%endpoint, "本地 IPC 连接服务已启动");
-                Some(endpoint)
-            }
-            None => None,
+        let ipc_endpoint = ipc.as_ref().map(|(e, _)| e.clone());
+        let mut hub = Hub {
+            shared: shared.clone(),
+            listen_addr,
+            ipc_endpoint,
+            started_at_ms: unix_millis(),
+            tasks: Mutex::new(vec![
+                tokio::spawn(shared.clone().notify_loop()),
+                tokio::spawn(shared.clone().dormant_sweep_loop()),
+            ]),
+            instance: Mutex::new(instance),
         };
+        let health = hub.health_base();
+        let mut tasks = Vec::new();
+        if let Some(listener) = listener {
+            let router = Router::new(
+                shared.clone(),
+                Transport::Tcp,
+                shared.config.http.clone(),
+                shared.config.mcp_http,
+                health.clone(),
+            );
+            tasks.push(tokio::spawn(router.serve_tcp(listener)));
+        }
+        if let Some((endpoint, listener)) = ipc {
+            // MCP over IPC 尚未开启（/mcp 返回 404）；IPC 上只有 App 连接与 /healthz。
+            let router = Router::new(shared.clone(), Transport::Ipc, HttpOptions::default(), false, health);
+            tasks.push(tokio::spawn(router.serve_ipc(listener)));
+            tracing::info!(%endpoint, "本地 IPC 连接服务已启动");
+        }
         let upstreams: Vec<(String, UpstreamConfig)> = lock(&shared.upstreams)
             .iter()
             .map(|(n, s)| (n.clone(), s.config.clone()))
             .collect();
         for (name, cfg) in upstreams {
-            tasks.push(tokio::spawn(crate::upstream::run(
-                shared.clone(),
-                name,
-                cfg,
-            )));
+            tasks.push(tokio::spawn(crate::upstream::run(shared.clone(), name, cfg)));
         }
-        match ws_addr {
-            Some(addr) => tracing::info!(%addr, "App 连接服务已启动"),
-            None => tracing::info!("Hub 已启动（未开启 WebSocket 服务）"),
+        lock(&hub.tasks).extend(tasks);
+        match listen_addr {
+            Some(addr) => tracing::info!(
+                "HTTP 服务已启动：App 连接 ws://{addr}/app{}",
+                if shared.config.mcp_http { format!("，MCP http://{addr}/mcp") } else { String::new() }
+            ),
+            None => tracing::info!("Hub 已启动（未开启 TCP 服务）"),
         }
-        Ok(Hub {
-            shared,
-            ws_addr,
-            ipc_endpoint,
-            tasks: Mutex::new(tasks),
-        })
+        let registry = hub.endpoint_registry();
+        if let Some(inst) = hub.instance.get_mut().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            inst.publish(&registry)?;
+            tracing::info!(path = %inst.registry_path().display(), "已写登记文件");
+        }
+        Ok(hub)
     }
 
-    /// App 连接服务实际监听的地址；未开启时为 `None`。
-    pub fn ws_addr(&self) -> Option<SocketAddr> {
-        self.ws_addr
+    /// HTTP 服务（`/app`、`/mcp`、`/healthz`）实际监听的地址；未开启时为 `None`。
+    pub fn listen_addr(&self) -> Option<SocketAddr> {
+        self.listen_addr
     }
 
     /// 本地 IPC 连接服务的端点字符串（`unix:…` / `pipe:…`，可直接作为原生 SDK 的 `host_url`）；
@@ -1035,7 +1122,34 @@ impl Hub {
         self.ipc_endpoint.as_deref()
     }
 
-    /// 停止：中止后台任务（含上游子进程）、关闭所有 App 连接。
+    /// 本进程的 Host 身份（`service` / `version` / `user` / `pid`）。
+    pub fn identity(&self) -> &HostIdentity {
+        &self.shared.identity
+    }
+
+    /// 登记文件的内容（实际监听位置与身份；配置了 [`HubConfig::run_dir`] 时已写入 `endpoints.json`）。
+    pub fn endpoint_registry(&self) -> EndpointRegistry {
+        EndpointRegistry {
+            identity: self.shared.identity.clone(),
+            listen: self.listen_addr.map(|a| a.to_string()),
+            ipc_endpoint: self.ipc_endpoint.clone(),
+            started_at_ms: self.started_at_ms,
+        }
+    }
+
+    /// `/healthz` 的公共部分（`mcp_path` 等由各监听器的 [`Router`] 填写）。
+    fn health_base(&self) -> Health {
+        Health {
+            identity: self.shared.identity.clone(),
+            listen: self.listen_addr.map(|a| a.to_string()),
+            ipc_endpoint: self.ipc_endpoint.clone(),
+            app_path: crate::http_server::APP_PATH.to_owned(),
+            mcp_path: None,
+            token_required_for_browsers: false,
+        }
+    }
+
+    /// 停止：中止后台任务（含上游子进程）、关闭所有 App 连接，删除登记文件并释放单实例锁。
     pub async fn shutdown(self) {
         for t in lock(&self.tasks).drain(..) {
             t.abort();
@@ -1046,6 +1160,7 @@ impl Hub {
         }
         // 给写任务一点时间发送 Close 帧。
         tokio::time::sleep(Duration::from_millis(20)).await;
+        lock(&self.instance).take();
         tracing::info!("Hub 已停止");
     }
 
@@ -1232,7 +1347,7 @@ impl Hub {
         Ok(())
     }
 
-    /// 启动 Streamable HTTP MCP 服务（路径 `/mcp`），返回实际监听地址。
+    /// 另开一个 HTTP 监听器（路径与主服务相同：`/app`、`/mcp`、`/healthz`，且总是提供 `/mcp`），返回实际监听地址。
     ///
     /// 非回环地址需要 `allow_remote`；否则返回错误。等价于
     /// [`Hub::serve_http_with`]`(addr, HttpOptions { allow_remote, ..Default::default() })`。
@@ -1247,10 +1362,11 @@ impl Hub {
         .await
     }
 
-    /// 启动 Streamable HTTP MCP 服务（路径 `/mcp`，另有 `GET /healthz`），带访问令牌等选项。
+    /// 另开一个 HTTP 监听器，带访问令牌等选项（`/mcp` 总是开启）。主服务见 [`HubConfig::listen`]；
+    /// 本方法用于额外的地址（如 `app-mcp-host` 兼容期内的旧 MCP 端口）。
     ///
-    /// 可多次调用（多个监听地址）；同一 Hub 上的所有 HTTP 会话共享 App 连接，
-    /// 每个会话有独立的 `apps.select` 选择与“已附带总览”状态。
+    /// 可多次调用；同一 Hub 上的所有 HTTP 会话共享 App 连接，每个会话有独立的 `apps.select` 选择与
+    /// “已附带总览”状态。
     pub async fn serve_http_with(
         &self,
         addr: &str,
@@ -1266,14 +1382,10 @@ impl Hub {
                 ),
             ));
         }
-        let task = tokio::spawn(crate::http_server::serve(
-            self.shared.clone(),
-            listener,
-            options,
-            self.ws_addr,
-        ));
+        let router = Router::new(self.shared.clone(), Transport::Tcp, options, true, self.health_base());
+        let task = tokio::spawn(router.serve_tcp(listener));
         lock(&self.tasks).push(task);
-        tracing::info!(%local, "Streamable HTTP MCP 服务已启动：http://{local}/mcp");
+        tracing::info!(%local, "额外的 HTTP 服务已启动：MCP http://{local}/mcp，App 连接 ws://{local}/app");
         Ok(local)
     }
 

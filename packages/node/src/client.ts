@@ -58,6 +58,8 @@ function mapState(info: NativeStateInfo): ConnectionState {
       return { status: 'backoff', retryAt: Date.now() + (info.retryInMs ?? 0) }
     case 'rejected':
       return { status: 'rejected', reason: info.reason ?? '' }
+    case 'host-mismatch':
+      return { status: 'host-mismatch', reason: info.reason ?? '' }
     default:
       return { status: info.status }
   }

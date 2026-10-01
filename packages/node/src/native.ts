@@ -21,6 +21,7 @@ export type NativeStatus =
   | 'stopped'
   | 'dormant'
   | 'waking'
+  | 'host-mismatch'
 
 export interface NativeStateInfo {
   status: NativeStatus

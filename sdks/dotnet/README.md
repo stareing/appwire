@@ -46,7 +46,7 @@ cd sdks/dotnet && dotnet test tests/AppMcp.Hub.Tests   # 集成测试另需 carg
 ```csharp
 await using var hub = AppMcpHub.Start(new HubOptions
 {
-    WsAddress = "127.0.0.1:7717",
+    Listen = "127.0.0.1:7717",          // /app 为 App 连接；McpHttp = true 时另有 /mcp
     RequireApprovalAtOrAbove = HubRisk.Destructive,
 });
 hub.Event += (_, e) => Console.WriteLine(e.Type);            // appConnected、toolsChanged……（未知类型原样透传）

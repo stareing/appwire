@@ -29,7 +29,7 @@ const lifecycle =
         hiddenIdleTimeoutMs: positiveInt(env.VITE_APP_MCP_HIDDEN_IDLE_MS, 5_000),
       }
     : undefined
-/** Host 地址，缺省 ws://127.0.0.1:7717（e2e 用独立端口）。 */
+/** Host 地址，缺省依次尝试 ws://127.0.0.1:7717/app、7737、7757（e2e 用独立端口）。 */
 const hostUrl: string | undefined = env.VITE_APP_MCP_HOST_URL || undefined
 
 export const appMcp = createAppMcp({

@@ -43,7 +43,7 @@ class HubIntegrationTest {
 
     @Test
     fun endToEnd() = runBlocking {
-        val hub = Hub.start(HubConfig(wsAddr = "127.0.0.1:0", enableIpc = false, approvalMinRisk = Risk.DESTRUCTIVE))
+        val hub = Hub.start(HubConfig(listen = "127.0.0.1:0", enableIpc = false, approvalMinRisk = Risk.DESTRUCTIVE))
         val events = Channel<HubEvent>(Channel.UNLIMITED)
         val collector = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
             hub.events.collect { events.send(it) }
@@ -55,7 +55,7 @@ class HubIntegrationTest {
         }
 
         val app = AppMcp.create(
-            AppMcpConfig("notes", "笔记", hostUrl = "ws://${hub.wsAddr}", dispatcher = Dispatchers.Default),
+            AppMcpConfig("notes", "笔记", hostUrl = "ws://${hub.listenAddr}/app", dispatcher = Dispatchers.Default),
         )
         app.tool("add", "添加笔记", textSchema, risk = AppRisk.WRITE) { args, _ ->
             mapOf("saved" to args["text"]!!.jsonPrimitive.content)
@@ -155,7 +155,7 @@ class HubIntegrationTest {
     @Test
     fun dormantAppWokenByCustomWaker() = runBlocking {
         val hub = Hub.start(
-            HubConfig(wsAddr = "127.0.0.1:0", enableIpc = false, leaseTtlMs = 0uL, wakeTimeoutMs = 10_000uL, listChangedDebounceMs = 20uL),
+            HubConfig(listen = "127.0.0.1:0", enableIpc = false, leaseTtlMs = 0uL, wakeTimeoutMs = 10_000uL, listChangedDebounceMs = 20uL),
         )
         val events = Channel<HubEvent>(Channel.UNLIMITED)
         val collector = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
@@ -164,7 +164,7 @@ class HubIntegrationTest {
         val app = AppMcp.create(
             AppMcpConfig(
                 "sleepy", "会睡觉的 App",
-                hostUrl = "ws://${hub.wsAddr}",
+                hostUrl = "ws://${hub.listenAddr}/app",
                 instanceId = "s1",
                 dispatcher = Dispatchers.Default,
                 lifecycle = AppLifecyclePolicy(
@@ -225,8 +225,8 @@ class HubIntegrationTest {
     fun parseFormatAndShutdown() {
         assertEquals(ToolFormat.ANTHROPIC, Hub.parseFormat("anthropic"))
         assertFailsWith<HubException> { Hub.parseFormat("nope") }
-        val hub = Hub.start(HubConfig(enableWs = false, enableIpc = false))
-        assertEquals(null, hub.wsAddr)
+        val hub = Hub.start(HubConfig(enableListen = false, enableIpc = false))
+        assertEquals(null, hub.listenAddr)
         assertEquals(null, hub.ipcEndpoint)
         assertEquals(setOf("apps.list", "apps.select", "apps.overview"), hub.tools().map { it.name }.toSet())
         hub.close()
@@ -237,7 +237,7 @@ class HubIntegrationTest {
     fun progressiveExposureConfig() {
         val hub = Hub.start(
             HubConfig(
-                enableWs = false,
+                enableListen = false,
                 enableIpc = false,
                 toolExposure = ToolExposure.PROGRESSIVE,
                 toolExposureThreshold = 5u,
@@ -258,7 +258,7 @@ class HubIntegrationTest {
         val pid = ProcessHandle.current().pid()
         val dir = java.nio.file.Files.createTempDirectory("app-mcp-kt-ipc")
         val endpoint = if (windows) "pipe:\\\\.\\pipe\\app-mcp-kt-test-$pid" else "unix:${dir.resolve("run/hub.sock")}"
-        val hub = Hub.start(HubConfig(enableWs = false, ipcEndpoint = endpoint))
+        val hub = Hub.start(HubConfig(enableListen = false, ipcEndpoint = endpoint))
         assertEquals(endpoint, hub.ipcEndpoint)
         val app = AppMcp.create(AppMcpConfig("notes", "笔记", hostUrl = hub.ipcEndpoint!!, dispatcher = Dispatchers.Default))
         app.tool("add", "添加笔记", textSchema, risk = AppRisk.WRITE) { args, _ ->

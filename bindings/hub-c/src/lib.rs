@@ -43,8 +43,8 @@ use ffi_util::{
     write_out_str,
 };
 
-/// 与头文件 `AM_HUB_API_VERSION` 一致。v2：生命周期（Waker 回调、休眠相关配置）。
-pub const AM_HUB_API_VERSION: u32 = 2;
+/// 与头文件 `AM_HUB_API_VERSION` 一致。3：合并端口（`am_hub_listen_addr`、配置 `listen`）。
+pub const AM_HUB_API_VERSION: u32 = 3;
 
 /// Hub 停止时未完成的调用使用的错误说明。
 const STOPPED_MESSAGE: &str = "Hub 已停止，调用未完成。";
@@ -93,7 +93,7 @@ pub struct AmHub {
     hub: RwLock<Option<Arc<Hub>>>,
     /// 进行中的异步操作；停止时全部中止（结果回调以兜底结果触发）。
     ops: Mutex<JoinSet<()>>,
-    ws_addr: Option<SocketAddr>,
+    listen_addr: Option<SocketAddr>,
     ipc_endpoint: Option<String>,
     dispatcher: Dispatcher,
     events: Arc<Slot<AmHubEventFn>>,
@@ -492,7 +492,7 @@ fn start(config_json: Option<&str>) -> FfiResult<Box<AmHub>> {
     Ok(Box::new(AmHub {
         handle: rt.handle().clone(),
         rt: Mutex::new(Some(rt)),
-        ws_addr: hub.ws_addr(),
+        listen_addr: hub.listen_addr(),
         ipc_endpoint: hub.ipc_endpoint().map(str::to_owned),
         hub: RwLock::new(Some(Arc::new(hub))),
         ops: Mutex::new(JoinSet::new()),
@@ -546,12 +546,12 @@ pub unsafe extern "C" fn am_hub_free(hub: *mut AmHub) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn am_hub_ws_addr(hub: *const AmHub) -> *mut c_char {
+pub unsafe extern "C" fn am_hub_listen_addr(hub: *const AmHub) -> *mut c_char {
     guard_value(std::ptr::null_mut(), || {
         // SAFETY: 由调用方保证。
         let h = unsafe { hub_ref(hub) }?;
         h.hub()?;
-        Ok(h.ws_addr.map_or(std::ptr::null_mut(), |a| into_raw_cstring(&a.to_string())))
+        Ok(h.listen_addr.map_or(std::ptr::null_mut(), |a| into_raw_cstring(&a.to_string())))
     })
 }
 

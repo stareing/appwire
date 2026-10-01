@@ -8,7 +8,7 @@ import { basename, join, resolve } from 'node:path'
 import { Browser } from './browser'
 import { McpClient } from './mcp-client'
 import { E2E_ROOT, SHOP_DIR, SHOP_MANIFEST } from './paths'
-import { freePort, lineSplitter, waitFor } from './util'
+import { lineSplitter, waitFor } from './util'
 
 export interface ShopServer {
   url: string
@@ -16,38 +16,41 @@ export interface ShopServer {
   stop(): Promise<void>
 }
 
-/** 启动 shop 的 vite dev 服务器（VITE_* 环境变量在启动时生效）。 */
+/** 启动 shop 的 vite dev 服务器（VITE_* 环境变量在启动时生效）。端口 0，实际地址取自 vite 输出的 `Local:` 行。 */
 export async function startShop(env: Record<string, string>): Promise<ShopServer> {
-  const port = await freePort()
   const vite = resolve(SHOP_DIR, 'node_modules/vite/bin/vite.js')
   const log: string[] = []
-  const child = spawn(process.execPath, [vite, '--port', String(port), '--strictPort', '--host', '127.0.0.1'], {
+  let url: string | undefined
+  const child = spawn(process.execPath, [vite, '--port', '0', '--strictPort', '--host', '127.0.0.1'], {
     cwd: SHOP_DIR,
-    env: { ...process.env, ...env, BROWSER: 'none' },
+    env: { ...process.env, ...env, BROWSER: 'none', NO_COLOR: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const collect = lineSplitter((line) => {
     log.push(line)
+    const m = /Local:\s+(http:\/\/127\.0\.0\.1:\d+\/)/.exec(line.replace(/\x1b\[[0-9;]*m/g, ''))
+    if (m?.[1] && url === undefined) url = m[1]
     if (process.env.E2E_VITE_LOG === '1') process.stderr.write(`[vite] ${line}\n`)
   })
   child.stdout!.on('data', collect)
   child.stderr!.on('data', collect)
-  const url = `http://127.0.0.1:${port}/`
   try {
     await waitFor(async () => {
       if (child.exitCode !== null) throw new Error(`vite 已退出：\n${log.join('\n')}`)
+      if (url === undefined) return false
       const r = await fetch(url)
       return r.ok
-    }, `vite dev 启动（${url}）`, 60_000, 200)
+    }, 'vite dev 启动', 60_000, 200)
     // 预热入口模块，减少首次打开页面时的依赖预构建与重载
     await fetch(`${url}src/main.tsx`).catch(() => undefined)
   } catch (error) {
     await kill(child)
     throw error
   }
+  const ready = url as string
   return {
-    url,
-    port,
+    url: ready,
+    port: Number(new URL(ready).port),
     stop: () => kill(child),
   }
 }
@@ -64,6 +67,7 @@ async function kill(child: ChildProcess): Promise<void> {
 export interface HostHandle {
   /** 连接到该 Host 的 MCP 会话（Streamable HTTP）。 */
   mcp: McpClient
+  /** App 连接地址 `ws://127.0.0.1:<port>/app`（与 MCP 同一端口）。 */
   wsUrl: string
   /** MCP 端点 `http://127.0.0.1:<port>/mcp`。 */
   mcpUrl: string
@@ -86,8 +90,9 @@ export interface WakeRequest {
 /**
  * 启动常驻 Host（`app-mcp-host serve`），再以 Streamable HTTP 建立一个 MCP 会话。
  *
- * 隔离：临时配置目录（`--home`，不读取 ~/.app-mcp 的配置、令牌、清单）、随机的 WebSocket 与 HTTP 端口、
- * 临时目录中的本地 IPC 端点（`--ipc-endpoint`），不会与本机可能在运行的 Host 实例冲突。只加载 shop 的清单（`--manifest-dir` 指向空目录）。
+ * 隔离：临时配置目录（`--home`，不读取 ~/.app-mcp 的配置、令牌、清单；单实例锁与登记文件也在其中）、
+ * 监听端口 0（实际地址读登记文件 `<home>/run/endpoints.json`）、临时目录中的本地 IPC 端点（`--ipc-endpoint`），
+ * 不会与本机可能在运行的 Host 实例冲突。只加载 shop 的清单（`--manifest-dir` 指向空目录）。
  */
 export interface HostStartOptions {
   /**
@@ -99,8 +104,6 @@ export interface HostStartOptions {
 }
 
 export async function startHost(bin: string, extraArgs: string[] = [], options: HostStartOptions = {}): Promise<HostHandle> {
-  const wsPort = await freePort()
-  const httpPort = await freePort()
   const dir = mkdtempSync(join(tmpdir(), 'app-mcp-e2e-host-'))
   const home = join(dir, 'home')
   const manifestDir = join(dir, 'manifests')
@@ -117,14 +120,12 @@ export async function startHost(bin: string, extraArgs: string[] = [], options: 
       'serve',
       '--home',
       home,
-      '--ws-addr',
-      `127.0.0.1:${wsPort}`,
+      '--listen',
+      '127.0.0.1:0',
       '--ipc-endpoint',
       process.platform === 'win32'
         ? `pipe:\\\\.\\pipe\\app-mcp-e2e-${basename(dir)}`
         : `unix:${join(dir, 'run', 'hub.sock')}`,
-      '--http',
-      `127.0.0.1:${httpPort}`,
       '--manifest',
       SHOP_MANIFEST,
       '--manifest-dir',
@@ -149,25 +150,35 @@ export async function startHost(bin: string, extraArgs: string[] = [], options: 
   child.stdout!.on('data', collect)
   child.stderr!.on('data', collect)
   const log = (lines = 60) => logLines.slice(-lines).join('\n')
-  const base = `http://127.0.0.1:${httpPort}`
+  const registry = join(home, 'run', 'endpoints.json')
+  let listen: string | undefined
   try {
     await waitFor(async () => {
       if (child.exitCode !== null) throw new Error(`Host 已退出（code=${child.exitCode}）：\n${log()}`)
-      const r = await fetch(`${base}/healthz`)
-      const h = (await r.json()) as { service?: string; pid?: number }
-      return h.service === 'app-mcp' && h.pid === child.pid
-    }, `app-mcp-host serve 就绪（${base}/healthz）`, 20_000, 50)
+      let reg: { pid?: number; listen?: string }
+      try {
+        reg = JSON.parse(readFileSync(registry, 'utf8')) as { pid?: number; listen?: string }
+      } catch {
+        return false
+      }
+      if (reg.pid !== child.pid || !reg.listen) return false
+      const h = (await (await fetch(`http://${reg.listen}/healthz`)).json()) as { service?: string; pid?: number }
+      if (h.service !== 'app-mcp' || h.pid !== child.pid) return false
+      listen = reg.listen
+      return true
+    }, `app-mcp-host serve 就绪（${registry}）`, 20_000, 50)
   } catch (error) {
     await kill(child)
     rmSync(dir, { recursive: true, force: true })
     throw error
   }
+  const base = `http://${listen}`
   const mcpUrl = `${base}/mcp`
   const mcp = new McpClient({ url: mcpUrl, diagnostics: () => log() })
   await mcp.initialize()
   return {
     mcp,
-    wsUrl: `ws://127.0.0.1:${wsPort}`,
+    wsUrl: `ws://${listen}/app`,
     mcpUrl,
     wakeRequests: () =>
       readFileSync(wakeLog, 'utf8')

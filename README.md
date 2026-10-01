@@ -134,9 +134,11 @@ target/debug/app-mcp-host serve            # or: app-mcp-host service install  (
 pnpm --filter @app-mcp/example-shop dev
 ```
 
-The Host accepts web apps on `127.0.0.1:7717` (WebSocket) and native apps on a per-user local
-socket (Unix domain socket / Windows named pipe), and serves MCP over Streamable HTTP at
-`http://127.0.0.1:7718/mcp`. This repository's `.mcp.json` points Claude Code at that endpoint;
+The Host serves everything on one port, `127.0.0.1:7717`: web apps connect to `/app` (WebSocket),
+MCP clients use Streamable HTTP at `http://127.0.0.1:7717/mcp`, and `/healthz` reports the Host's
+identity. Native apps connect over a per-user local socket (Unix domain socket / Windows named
+pipe). A lock file keeps one Host per user, and the actual endpoints are recorded in
+`~/.app-mcp/run/endpoints.json`. This repository's `.mcp.json` points Claude Code at that endpoint;
 restart the session, open the demo page, and ask Claude to operate the shop. See
 [`crates/host/README.md`](crates/host/README.md) for configuration, the access token and other MCP
 clients.

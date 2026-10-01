@@ -19,36 +19,57 @@ SDK 用一个**端点字符串**指定 Host（原生 SDK 的 `host_url` / `hostU
 
 | 形式 | 传输 | 使用者 |
 |---|---|---|
-| `ws://<host>:<port>` / `wss://…` | WebSocket over TCP | 网页（只能用这种）；原生 App 显式配置时 |
+| `ws://<host>:<port>/app` / `wss://…` | WebSocket over TCP | 网页（只能用这种）；原生 App 显式配置时 |
 | `unix:<绝对路径>` | WebSocket over Unix 域套接字 | Linux、macOS 原生 App（默认） |
 | `pipe:\\.\pipe\<名称>` | WebSocket over Windows 命名管道 | Windows 原生 App（默认） |
 
-- 本地 IPC（`unix:` / `pipe:`）上跑的仍是 RFC 6455 WebSocket：连接建立后客户端发送 HTTP Upgrade 握手，
-  请求 URL 固定为 `ws://localhost/`（Host 不检查路径与 `Host` 头），不使用 TLS；之后的帧、心跳（`ping`）、
-  Close 与 TCP 上逐字节相同。这样 SDK 核心、Host 的消息处理与超时逻辑对所有传输只有一份实现。
+- TCP 与本地 IPC 上都是同一个 HTTP/1.1 服务（1.3），App 连接是其中路径 `/app` 上的 RFC 6455 WebSocket 升级。
+  本地 IPC（`unix:` / `pipe:`）上客户端发送的握手 URL 固定为 `ws://localhost/app`（Host 不检查 `Host` 头），
+  不使用 TLS；之后的帧、心跳（`ping`）、Close 与 TCP 上逐字节相同。这样 SDK 核心、Host 的消息处理与超时逻辑
+  对所有传输只有一份实现。
+- 兼容期：合并端口之前的 SDK 以根路径 `/` 升级（`ws://127.0.0.1:7717`、IPC 上 `ws://localhost/`），Host 仍按 `/app`
+  处理，并在首次出现时记录一条提示日志；新 SDK 一律使用 `/app`。
 - 格式不合法、或当前平台不支持该形式（如 Windows 上的 `unix:`）时，SDK 在创建客户端时报配置错误。
 - 实现：`app_mcp_protocol::endpoint`（解析、默认位置）。
 
 ### 1.3 默认端点
 
-Host 默认同时监听：
+Host 默认监听：
 
-- WebSocket：`127.0.0.1:7717`（网页与显式配置 `ws://` 的 App）。
-- 本地 IPC（平台默认 IPC 端点）：
+- **HTTP 服务** `127.0.0.1:7717`（回环 TCP），同一端口按路径分流：
+
+  | 路径 | 内容 | 校验 |
+  |---|---|---|
+  | `/app` | WebSocket 升级 → App 连接（本规范的消息） | `Origin` 在 `app/hello` 时按允许列表 / 配对处理（第 6 节） |
+  | `/mcp` | MCP Streamable HTTP（`app-mcp-host serve` 开启；嵌入式 Hub 可选） | `Origin` 允许列表（403）→ 本地访问令牌（401） |
+  | `/healthz` | `GET`：Host 身份与监听信息（1.6），不需要令牌 | `Origin` 允许列表（403） |
+
+  未显式配置监听地址且默认端口被占用时，Host 依次尝试**固定的备选端口** `7737`、`7757`，实际地址写入登记文件（1.7）。
+  合并之前的独立 MCP 端口 `7718` 不再默认监听；兼容期内可显式配置（`app-mcp-host` 的 `http.addr` / `--http`，
+  另开一个提供同样路径的监听器），启动时记录弃用提示。
+- **本地 IPC**（平台默认 IPC 端点）：
   - Linux：`$XDG_RUNTIME_DIR/app-mcp/hub.sock`；未设置 `XDG_RUNTIME_DIR` 时 `~/.app-mcp/run/hub.sock`；
   - macOS：`~/.app-mcp/run/hub.sock`（设置了 `XDG_RUNTIME_DIR` 时同 Linux）；
   - Windows：`\\.\pipe\app-mcp-<当前用户 SID>`（如 `\\.\pipe\app-mcp-S-1-5-21-…-1001`）；
-  - Android / iOS：无（App 沙箱之间不能共享套接字，这些平台用 WebSocket，如 Android 经 `adb reverse tcp:7717`）。
+  - Android / iOS：无（App 沙箱之间不能共享套接字，这些平台用 WebSocket，如 Android 经 `adb reverse tcp:7717 tcp:7717`）。
 
-原生 SDK 未配置端点时按以下顺序**确定**端点：
+  IPC 上目前只有 `/app` 与 `/healthz`（MCP over IPC 在 4b-B 中加入）。
+
+原生 SDK 未配置端点时按以下顺序**确定**端点（创建配置时解析一次）：
 
 1. 环境变量 `APP_MCP_ENDPOINT`（非空时原样使用，不合法则报配置错误）；
-2. 平台默认 IPC 端点（同上）；
-3. `ws://127.0.0.1:7717`（平台没有默认 IPC 端点时）。
+2. 登记文件（1.7）中运行中的 Host 写下的端点：有本地 IPC 端点时用它，否则 `ws://<listen>/app`；
+3. 平台默认 IPC 端点（同上）；
+4. `ws://127.0.0.1:7717/app`（平台没有默认 IPC 端点时）。
 
 这是配置的解析顺序，**不是连接失败后的回退**：选定的端点连不上时，SDK 按 5.6 退避重连同一个端点，
-不会自动换用其他传输。Host 关闭了 IPC 服务或改了 IPC 端点时，App 需设置 `APP_MCP_ENDPOINT` 或显式配置端点。
-网页 SDK 的默认端点始终是 `ws://127.0.0.1:7717`。
+不会自动换用其他传输。Host 关闭了 IPC 服务或改了 IPC 端点时，登记文件给出实际端点；也可设置 `APP_MCP_ENDPOINT`
+或显式配置端点。
+
+网页 SDK 的默认端点为 `ws://127.0.0.1:7717/app`。未显式指定 `hostUrl` 时按 Host 相同的顺序依次尝试
+`7717 → 7737 → 7757`：连接建立不了、或握手结果判定"不是 app-mcp"（1.6）时换下一个；成功握手后固定在该端口
+（之后断线先重试同一端口）；三个都不是 app-mcp 时停在 `HostMismatch`（5.8）。浏览器读不到登记文件，也不知道
+操作系统用户，因此网页只核对 `service`、不核对 `user`（多用户机器上应显式指定 `hostUrl`）。显式指定 `hostUrl` 时只连它。
 
 ### 1.4 连接鉴权
 
@@ -70,13 +91,53 @@ Host 默认同时监听：
 
 ### 1.5 单实例
 
-同一个端点只能有一个 Host 监听：
+- **单实例锁**：`app-mcp-host` 在任何监听之前以独占、非阻塞方式锁定 `<配置目录>/run/hub.lock`
+  （Unix `flock`，Windows `LockFileEx`；配置目录为 `--home` > `APP_MCP_HOME` > `~/.app-mcp`）。锁随进程退出由
+  操作系统释放，异常退出也不会残留。已被锁定时 `serve` 读登记文件（1.7），打印已运行实例的信息并以**退出码 0**
+  结束（可放心重复执行）；stdio 模式报错并给出该实例的 MCP 地址。嵌入式 Hub 经 `HubConfig.run_dir` 选择参与
+  （spec/hub-api.md 3.6）。
+- 同一个端点只能有一个监听者（不同配置目录的两个 Host，或其他程序）：
+  - Unix 套接字：路径上已有套接字时 Host 先尝试连接——能连上说明另一个 Host 正在监听，启动失败（`AddrInUse`）；
+    连接被拒绝说明是异常退出留下的文件，删除后重新绑定；路径上是普通文件时拒绝覆盖。Host 停止时删除自己创建的套接字文件。
+  - Windows：第一个管道实例以 `FILE_FLAG_FIRST_PIPE_INSTANCE` 创建，同名管道已存在时启动失败（`AddrInUse`）。
+  - TCP：显式配置的地址被占用即失败；`serve` 探测该地址的 `/healthz` 说明占用者（另一个 app-mcp Host 的 pid 与用户，
+    或"其他程序"），退出码 1。
 
-- Unix：路径上已有套接字时 Host 先尝试连接——能连上说明另一个 Host 正在监听，启动失败（`AddrInUse`）；
-  连接被拒绝说明是异常退出留下的文件，删除后重新绑定；路径上是普通文件时拒绝覆盖。Host 停止时删除自己创建的套接字文件。
-- Windows：第一个管道实例以 `FILE_FLAG_FIRST_PIPE_INSTANCE` 创建，同名管道已存在时启动失败（`AddrInUse`）。
-- `app-mcp-host serve` 遇到 `AddrInUse`（WebSocket 端口或 IPC 端点）时探测 MCP HTTP 端口的 `/healthz`：
-  是健康的 app-mcp 则视为已在运行、以退出码 0 结束，否则报错。
+### 1.6 Host 身份
+
+`app/hello` 的结果、`/healthz` 与登记文件都带 Host 身份（`app_mcp_protocol::identity::HostIdentity`）：
+
+| 字段 | 含义 |
+|---|---|
+| `service` | 固定 `"app-mcp"` |
+| `version` | Host 版本（握手结果中为既有字段 `hostVersion`） |
+| `user` | Host 进程的操作系统用户：Unix 为十进制有效 uid，Windows 为用户 SID |
+| `pid` | Host 进程号 |
+
+SDK 核心在处理握手结果之前核对（`app_mcp_protocol::identity::check_hello`）：
+
+- `service` 存在且不是 `"app-mcp"`、`app/hello` 返回 `-32601`（方法不存在）、或结果无法解析为 `HelloResult` →
+  对端不是 app-mcp Host；
+- 原生 SDK（桌面平台）以自己的用户为期望用户，结果中的 `user` 与之不同 → Host 属于其他用户（防止连到本机其他用户
+  占用的端口）。Android / iOS（Host 在另一台机器上）与网页不核对用户。
+
+两种情况都进入 `HostMismatch`（5.8）：断开、**不再自动重试**，原因写在状态的 `reason` 中；App 调用 `wake()` /
+`connectNow()` 时再试一次。旧 Host 不带这些字段：无法核对，按通过处理。
+
+### 1.7 登记文件
+
+持有单实例锁的 Host 在绑定完成后把实际监听位置原子写入 `<配置目录>/run/endpoints.json`
+（先写临时文件再改名；Unix 权限 `0600`，目录 `0700` 且必须属于当前用户），正常退出时删除；异常退出留下的旧文件
+由下一个取得锁的 Host 覆盖：
+
+```json
+{ "service": "app-mcp", "version": "0.1.0", "user": "1000", "pid": 4242,
+  "listen": "127.0.0.1:7717", "ipcEndpoint": "unix:/run/user/1000/app-mcp/hub.sock", "startedAtMs": 1790000000000 }
+```
+
+`listen` / `ipcEndpoint` 未开启时省略。读者：原生 SDK 的端点解析（1.3）、`app-mcp-host service status|start|stop`
+（登记文件 + `/healthz` 进程号一致才算"本配置目录的实例在运行"）、测试（监听端口 0，从登记文件取实际地址）。
+实现：`app_mcp_protocol::registry`（路径与读取）、`crates/hub/src/instance.rs`（加锁与写入）。
 
 ## 2. 消息一览
 
@@ -147,6 +208,9 @@ interface HelloResult {
   hostVersion: string
   reason?: string          // status 为 rejected 时的原因
   toolsCurrent?: boolean   // 缺省 false；true 时 SDK 跳过 tools/sync 与 resources/sync（第 8.3 节）
+  service?: string         // Host 身份（1.6）：固定 "app-mcp"
+  user?: string            // Host 进程的操作系统用户（Unix uid / Windows SID）
+  pid?: number             // Host 进程号
 }
 
 interface PairingResultParams { status: "paired" | "rejected"; token?: string; reason?: string }
@@ -229,7 +293,7 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 
 1. 连接建立后，SDK 立即发送 `app/hello`（在收到结果前不发送其他消息）。
    `handshakeTimeoutMs`（默认 10s，0 表示不限）内没有收到结果：关闭连接并进入重连（5.6）。
-   进入 `PendingPairing` 后不再受此限制。
+   进入 `PendingPairing` 后不再受此限制。收到结果后先核对 Host 身份（1.6），不通过则进入 `HostMismatch`。
 2. 结果为 `paired`：
    1. 保存 `token`（若返回）；与配置中的 token 不同时通知驱动层持久化。
    2. 依次发送 `tools/sync`、`resources/sync`（全量，只含已启用的工具）。
@@ -239,7 +303,7 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
    5. 清零重连计数。
 3. 结果为 `pending`：状态变为 `PendingPairing`，等待 `app/pairingResult`；
    收到 `paired` 后执行第 2 步，收到 `rejected` 按第 4 步处理。
-4. 结果为 `rejected`，或 `app/hello` 返回错误：状态变为 `Rejected`，关闭连接，不再自动重连。
+4. 结果为 `rejected`，或 `app/hello` 返回错误（`-32601` 除外，见 1.6）：状态变为 `Rejected`，关闭连接，不再自动重连。
 5. 握手期间 Host 发来的 `tools/invoke` 等请求返回 `UNAUTHORIZED` 错误。
 
 ### 5.2 注册变更
@@ -280,7 +344,7 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 
 ### 5.6 重连
 
-- 非 `Stopped` / `Rejected` / `Dormant` 状态下连接断开，进入 `Backoff`，
+- 非 `Stopped` / `Rejected` / `Dormant` / `HostMismatch` 状态下连接断开，进入 `Backoff`，
   延迟为 `min(initialDelayMs * multiplier^n, maxDelayMs)`（默认 500ms 起，×2，最大 30s），
   n 为自上次成功握手以来的重试次数。
 - 到期后请求驱动层重新连接。
@@ -301,6 +365,7 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 |---|---|
 | `Dormant` | 已与 Host 完成 `app/sleep` 握手后断开（或 `on-demand` 模式启动后尚未连接）。不重连、无定时器，注册表保留 |
 | `Waking` | 收到唤醒后正在建立连接（等同于 `Connecting`），之后进入 `Handshaking` |
+| `HostMismatch { reason }` | 对端不是期望的 Host（1.6）。已断开，不重连、无定时器；`wake()` / `connectNow()` 时再连一次。绑定中的名称：Rust `StateStatus::HostMismatch`、C `AM_STATE_HOST_MISMATCH`（10）、JS `'host-mismatch'` |
 
 `app/sleep` 发出到收到结果之间为内部过渡态 `sleeping`，对外仍为 `Connected`。
 

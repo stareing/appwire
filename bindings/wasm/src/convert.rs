@@ -363,6 +363,10 @@ pub enum JsState {
     Stopped,
     Dormant,
     Waking,
+    /// 对端不是 app-mcp Host（spec/protocol.md 1.6）。
+    HostMismatch {
+        reason: String,
+    },
 }
 
 impl JsState {
@@ -378,6 +382,7 @@ impl JsState {
             ConnectionState::Stopped => JsState::Stopped,
             ConnectionState::Dormant => JsState::Dormant,
             ConnectionState::Waking => JsState::Waking,
+            ConnectionState::HostMismatch { reason } => JsState::HostMismatch { reason: reason.clone() },
         }
     }
 }
@@ -526,6 +531,8 @@ mod tests {
         assert_eq!(s, json!({ "status": "pending-pairing" }));
         let s = serde_json::to_value(JsState::from_core(&ConnectionState::Rejected { reason: "r".into() })).unwrap();
         assert_eq!(s, json!({ "status": "rejected", "reason": "r" }));
+        let s = serde_json::to_value(JsState::from_core(&ConnectionState::HostMismatch { reason: "m".into() })).unwrap();
+        assert_eq!(s, json!({ "status": "host-mismatch", "reason": "m" }));
     }
 
     #[test]

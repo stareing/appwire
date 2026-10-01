@@ -107,6 +107,9 @@ pub enum StateStatus {
     Stopped,
     Dormant,
     Waking,
+    /// 对端不是期望的 Host（不是 app-mcp，或属于其他用户；spec/protocol.md 1.6）。不再自动重连，
+    /// `wake()` / `connect_now()` 时再试一次；原因见 `StateInfo.reason`。
+    HostMismatch,
 }
 
 /// 生命周期模式（spec/lifecycle.md 第 3 节）。
@@ -307,6 +310,7 @@ impl From<native::StateStatus> for StateStatus {
             native::StateStatus::Stopped => StateStatus::Stopped,
             native::StateStatus::Dormant => StateStatus::Dormant,
             native::StateStatus::Waking => StateStatus::Waking,
+            native::StateStatus::HostMismatch => StateStatus::HostMismatch,
         }
     }
 }
@@ -613,7 +617,7 @@ pub struct StateInfo {
     pub status: StateStatus,
     /// `Backoff` 时距下一次重连的毫秒数。
     pub retry_in_ms: Option<u64>,
-    /// `Rejected` 时的原因。
+    /// `Rejected` / `HostMismatch` 时的原因。
     pub reason: Option<String>,
 }
 

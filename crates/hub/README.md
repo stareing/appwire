@@ -43,16 +43,21 @@ serde_json = "1"
 use app_mcp_hub::{Hub, HubConfig};
 
 let hub = Hub::start(HubConfig {
-    ws_addr: Some("127.0.0.1:7717".into()), // 网页 App 连接服务（WebSocket）；None = 不开
+    listen: Some("127.0.0.1:7717".into()),  // HTTP 服务：/app（App 的 WebSocket 连接）、/healthz；None = 不开
+    // mcp_http: true,                       // 同一端口再提供 /mcp（MCP Streamable HTTP，令牌见 http）
+    // run_dir: Some(dir),                   // 单实例锁 + 登记文件 endpoints.json（spec/protocol.md 1.5、1.7）
     // 原生 App 默认连接的本地 IPC 端点（Unix 域套接字 / Windows 命名管道）；缺省为平台默认端点，None = 不开
     ..Default::default()
 })
 .await?;
 println!("原生 App 端点：{:?}", hub.ipc_endpoint()); // 如 Some("unix:/run/user/1000/app-mcp/hub.sock")
+println!("网页 App 端点：ws://{}/app", hub.listen_addr().unwrap()); // 端口 0 时为系统分配的实际端口
 ```
 
+默认 `listen` 被占用时依次尝试 `listen_alternates`（7737、7757，与网页 SDK 的候选端口一致）；显式指定地址时请清空它。
+
 端点格式、鉴权（同一用户）与单实例语义见 spec/protocol.md 第 1 节、spec/hub-api.md 3.8。
-同一台机器上只能有一个 Hub 使用默认端点：测试或第二个 Hub 请设 `ipc_endpoint: None` 或临时路径。
+同一台机器上只能有一个 Hub 使用默认端点：测试或第二个 Hub 请设 `listen: Some("127.0.0.1:0")`、`ipc_endpoint: None`（或临时路径）。
 
 `HubConfig` 还包括静态清单（`manifests`，未连接的 App 也能列出工具）、额外允许的 Origin、各类超时、
 上游 MCP 服务器（`upstreams`）、审批策略（`approval`）。所有 `async` 方法需要 tokio 多线程运行时。
@@ -151,9 +156,11 @@ loop {
 ### C. 对外开 MCP
 
 ```rust
-hub.serve_http("127.0.0.1:7718", false).await?; // Streamable HTTP：http://127.0.0.1:7718/mcp（多会话，另有 GET /healthz）
-// 带本地访问令牌：浏览器来源（带 Origin）必须携带 Authorization: Bearer <令牌>（spec/hub-api.md 3.6）
-// hub.serve_http_with("127.0.0.1:7718", HttpOptions { token: Some(t), ..Default::default() }).await?;
+// 推荐：HubConfig { mcp_http: true, http: HttpOptions { token: Some(t), .. }, .. } —— 与 App 连接同一端口的 /mcp
+// （多会话；浏览器来源必须携带 Authorization: Bearer <令牌>，spec/hub-api.md 3.6）。
+// 另开一个地址（同样的 /app、/mcp、/healthz）：
+hub.serve_http("127.0.0.1:0", false).await?;
+// hub.serve_http_with("127.0.0.1:0", HttpOptions { token: Some(t), ..Default::default() }).await?;
 hub.serve_stdio().await?;                         // 或 stdio（阻塞到客户端断开）
 // 自有传输：hub.mcp_session() 是 rmcp ServerHandler，可 .serve(任意 AsyncRead + AsyncWrite)
 ```

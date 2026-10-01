@@ -38,6 +38,11 @@
  * - v4（本地 IPC 传输，spec/protocol.md 1.2）：只做新增。
  *   · am_hub_start 配置新增可选字段 ipcEndpoint（缺省监听平台默认 IPC 端点）；函数 am_hub_ipc_endpoint。
  *   · JSON 中新增：InstanceInfo.pid（经本地 IPC 连接的实例进程号，缺省表示未知）。
+ * - v5（合并端口与单实例，spec/protocol.md 1.3–1.7）：不兼容变更，AM_HUB_API_VERSION 升为 3。
+ *   · am_hub_ws_addr 改名 am_hub_listen_addr；配置字段 wsAddr 改为 listen（同一端口承载 /app、/healthz，
+ *     mcpHttp 时另有 /mcp），旧名报 AM_HUB_ERR_INVALID_JSON。
+ *   · am_hub_start 配置新增可选字段 mcpHttp、runDir。
+ *   · am_hub_serve_http 的额外监听器与主服务路由相同（/app、/mcp、/healthz）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -50,8 +55,8 @@
 extern "C" {
 #endif
 
-/* v2：生命周期（唤醒回调、休眠相关配置），见文件头“版本”。 */
-#define AM_HUB_API_VERSION 2
+/* 3：v5 合并端口（am_hub_listen_addr、配置 listen），见文件头“版本”。 */
+#define AM_HUB_API_VERSION 3
 
 /* ---------------------------------------------------------------------------
  * 状态码与枚举
@@ -136,7 +141,12 @@ void am_hub_string_free(char *s);
  * ------------------------------------------------------------------------- */
 
 /* 创建 tokio 运行时与分发线程并启动 Hub。config_json 可为 NULL（全部默认）。字段（均可省略）：
- *   wsAddr               App 连接服务监听地址，默认 "127.0.0.1:7717"；端口 0 随机；null = 不开
+ *   listen               v5：HTTP 监听地址（/app 为 App 的 WebSocket 连接，另有 /healthz）。省略时为
+ *                        "127.0.0.1:7717"，被占用时依次尝试 7737、7757；显式给出时只绑定该地址；端口 0 随机；
+ *                        null = 不开。非回环地址报 AM_HUB_ERR_IO
+ *   mcpHttp              v5：是否在 listen 上提供 MCP Streamable HTTP（/mcp），默认 false
+ *   runDir               v5：单实例锁与登记文件目录（<runDir>/hub.lock、endpoints.json）；省略时不参与。
+ *                        锁已被其他 Hub 持有时报 AM_HUB_ERR_IO
  *   ipcEndpoint          v4：本地 IPC 端点（原生 App 默认连接这里，spec/protocol.md 1.2）："unix:<绝对路径>" /
  *                        "pipe:\\\\.\\pipe\\<名称>"（JSON 转义）；缺省为平台默认端点；null = 不开。
  *                        已有 Hub 在该端点监听时报 AM_HUB_ERR_IO
@@ -172,14 +182,15 @@ void am_hub_shutdown(AmHub *hub);
  * 未完成的审批 / 配对按拒绝处理。可以在回调中调用（此时不等待分发线程）。NULL 忽略。 */
 void am_hub_free(AmHub *hub);
 
-/* App 连接服务实际监听的地址（如 "127.0.0.1:52341"）；未开启或已停止时返回 NULL。需 am_hub_string_free。 */
-char *am_hub_ws_addr(const AmHub *hub);
+/* v5：HTTP 服务（/app、/healthz[、/mcp]）实际监听的地址（如 "127.0.0.1:52341"，App 端点为
+ * "ws://<地址>/app"）；未开启或已停止时返回 NULL。需 am_hub_string_free。 */
+char *am_hub_listen_addr(const AmHub *hub);
 
 /* v4：本地 IPC 连接服务的端点（如 "unix:/run/user/1000/app-mcp/hub.sock"，可直接作为原生 SDK 的 host_url）；
  * 未开启或已停止时返回 NULL。需 am_hub_string_free。 */
 char *am_hub_ipc_endpoint(const AmHub *hub);
 
-/* 额外启动 Streamable HTTP MCP 出口（路径 /mcp）。非回环地址需要 allow_remote。
+/* 额外启动一个 HTTP 监听器（路由与主服务相同：/app、/healthz，且总是提供 /mcp）。非回环地址需要 allow_remote。
  * out_addr 可为 NULL；否则写入实际监听地址（需 am_hub_string_free）。 */
 AmHubStatus am_hub_serve_http(AmHub *hub, const char *addr, bool allow_remote, char **out_addr);
 

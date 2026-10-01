@@ -45,6 +45,9 @@ public enum ClientStatus
     Dormant = 8,
     /// <summary>收到唤醒后正在回连。</summary>
     Waking = 9,
+    /// <summary>对端不是期望的 Host（不是 app-mcp，或属于其他用户；spec/protocol.md 1.6）。不再自动重连，
+    /// Wake / ConnectNow 时再试一次；原因见 <see cref="ClientState.Reason"/>。</summary>
+    HostMismatch = 10,
 }
 
 public enum LogLevel { Debug = 0, Info = 1, Warn = 2, Error = 3 }
@@ -154,7 +157,7 @@ public sealed class AppMcpClientOptions
     public string? InstanceId { get; init; }
     /// <summary>
     /// Host 端点："unix:&lt;绝对路径&gt;"、"pipe:\\.\pipe\&lt;名称&gt;"、"ws://…" 或 "wss://…"（spec/protocol.md 第 1 节）。
-    /// 为 null 时：环境变量 APP_MCP_ENDPOINT → 平台默认本地 IPC 端点（Windows 为 \\.\pipe\app-mcp-&lt;用户 SID&gt;）→ ws://127.0.0.1:7717。
+    /// 为 null 时：环境变量 APP_MCP_ENDPOINT → 登记文件 ~/.app-mcp/run/endpoints.json → 平台默认本地 IPC 端点（Windows 为 \\.\pipe\app-mcp-&lt;用户 SID&gt;）→ ws://127.0.0.1:7717/app。
     /// </summary>
     public string? HostUrl { get; init; }
     public string? AppVersion { get; init; }

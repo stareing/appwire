@@ -38,16 +38,22 @@ Hub 自带 tokio 多线程运行时（绑定层创建），Rust 用户可在自�
 
 ```rust
 pub struct HubConfig {
-    // 原 HostConfig 全部字段（ws_addr、manifests、allow_origins、各超时、upstreams）
-    pub ws_addr: Option<String>,            // None = 不开 WebSocket 服务（仅进程内 / 上游）
+    // 原 HostConfig 全部字段（manifests、allow_origins、各超时、upstreams）
+    pub listen: Option<String>,             // HTTP 服务（/app、/healthz、可选 /mcp），默认 127.0.0.1:7717；None = 不开（3.6）
+    pub listen_alternates: Vec<String>,     // listen 被占用时依次尝试，默认 127.0.0.1:7737、127.0.0.1:7757
+    pub http: HttpOptions,                  // 令牌（只作用于 /mcp）、allow_remote
+    pub mcp_http: bool,                     // listen 上是否提供 /mcp，默认 false
+    pub run_dir: Option<PathBuf>,           // 单实例锁 + 登记文件目录，默认 None（3.6）
     pub ipc_endpoint: Option<String>,       // 本地 IPC 端点，默认平台默认端点；None = 不开（3.8）
     pub approval: ApprovalPolicy,           // 见 3.3
 }
 
 impl Hub {
     pub async fn start(config: HubConfig) -> io::Result<Hub>;
-    pub fn ws_addr(&self) -> Option<SocketAddr>;
+    pub fn listen_addr(&self) -> Option<SocketAddr>;          // 实际监听地址（3.6）
     pub fn ipc_endpoint(&self) -> Option<&str>;               // 3.8
+    pub fn identity(&self) -> &HostIdentity;                  // service / version / user / pid
+    pub fn endpoint_registry(&self) -> EndpointRegistry;      // 登记文件内容（spec/protocol.md 1.7）
     pub async fn shutdown(self);
 
     // ---- 查询（同步，读快照）----
@@ -74,7 +80,7 @@ impl Hub {
     // ---- 对外出口 ----
     pub fn mcp_session(&self) -> McpSession;                  // rmcp ServerHandler
     pub async fn serve_stdio(&self) -> anyhow::Result<()>;
-    pub async fn serve_http(&self, addr: &str, allow_remote: bool) -> io::Result<SocketAddr>;
+    pub async fn serve_http(&self, addr: &str, allow_remote: bool) -> io::Result<SocketAddr>; // 额外监听器
     pub async fn serve_http_with(&self, addr: &str, options: HttpOptions) -> io::Result<SocketAddr>; // 3.6
 
     // ---- 工具格式导出（第 5 节）----
@@ -209,27 +215,59 @@ pub struct PairingRequest { pub app_id: String, pub app_name: String,
 - 所有公开数据类型实现 serde（camelCase）；`HubEvent` 以 `{"type": "appConnected", ...}` 形式序列化；
   `CallOutcome.result` 序列化为 `{"ok": …}` / `{"error": {kind, message, details}}`；`Duration` 以毫秒数表示。
 
-### 3.6 Streamable HTTP 出口：多会话、令牌、健康检查
+### 3.6 HTTP 服务：合并端口、单实例、多会话、令牌、健康检查
+
+一个 HTTP/1.1 服务按路径分流（spec/protocol.md 1.3），同一个路由（`crates/hub/src/http_server.rs` 的 `Router`）
+既服务 `listen` 的回环 TCP，也服务本地 IPC 端点（IPC 上目前没有 `/mcp`，4b-B 加入）：
+
+| 路径 | 内容 | 校验 |
+|---|---|---|
+| `/app`（及兼容期的 `/`） | WebSocket 升级 → App 连接 | `Origin` 在 `app/hello` 时按允许列表 / `PairingHandler` 处理（不在 HTTP 层 403） |
+| `/mcp` | MCP Streamable HTTP（`mcp_http` 或额外监听器） | `Origin` 允许列表（403）→ 令牌（401） |
+| `/healthz` | `GET` → `Health` JSON | `Origin` 允许列表（403），不需要令牌 |
 
 ```rust
 pub struct HttpOptions {
     pub allow_remote: bool,                  // 允许非回环地址并关闭 Host 头校验
-    pub token: Option<String>,               // 本地访问令牌；None = 不校验
+    pub token: Option<String>,               // 本地访问令牌（只作用于 /mcp）；None = 不校验
     pub require_token_without_origin: bool,  // 不带 Origin 的请求是否也必须带令牌
 }
-pub struct Health { service: "app-mcp", version, pid, ws_addr: Option<String>, mcp_path: "/mcp",
-                    token_required_for_browsers: bool }   // serde camelCase
+pub struct Health {                          // serde camelCase
+    #[serde(flatten)] identity: HostIdentity,      // service: "app-mcp", version, user, pid
+    listen: Option<String>, ipc_endpoint: Option<String>,
+    app_path: "/app", mcp_path: Option<String>,    // 本监听器未开 MCP 时为 None
+    token_required_for_browsers: bool,
+}
 ```
 
-- 路径：`/mcp`（MCP，rmcp `StreamableHttpService`，有状态会话）、`GET /healthz`（返回 `Health` JSON），其余 404。
+- **监听**：`listen` 默认 `127.0.0.1:7717`；`AddrInUse` 时依次绑定 `listen_alternates`（默认 7737、7757，与网页 SDK
+  依次握手的端口一致；显式指定 `listen` 时应清空——`app-mcp-host` 与各绑定在显式给出 `listen` 时都清空），
+  全部失败返回 `AddrInUse`（消息列出尝试过的地址）。非回环地址需要 `http.allow_remote`，否则 `PermissionDenied`。
+  端口 0 由系统分配，`Hub::listen_addr()` 给出实际地址。
+- **单实例与登记文件**（spec/protocol.md 1.5、1.7）：`run_dir` 为 `Some` 时，`Hub::start` 在任何绑定之前锁定
+  `<run_dir>/hub.lock`（已被锁定 → `ResourceBusy`，消息带持有者 pid 与地址），绑定完成后原子写
+  `<run_dir>/endpoints.json`（`Hub::endpoint_registry()` 的内容），`shutdown` / Drop 时删除并释放锁。
+  嵌入式 Hub 默认不参与（`None`）；`app-mcp-host` 为 `<配置目录>/run`。
+- **身份**：握手结果（`service` / `user` / `pid` 与 `hostVersion`）、`/healthz`、登记文件共用 `Hub::identity()`。
+- **额外监听器**：`serve_http_with(addr, options)` 另开一个提供同样路径的 HTTP 服务（总是提供 `/mcp`），用于额外的地址，
+  如 `app-mcp-host` 兼容期内显式配置的旧 MCP 端口 7718。可多次调用。
 - **多会话**：每个 `Mcp-Session-Id` 对应一个独立的 `McpSession`（会话键 `mcp:<n>`）：`apps.select` 选择、
   “已附带总览版本”、资源订阅按会话保存；App 连接、注册表、上游在所有会话间共享。会话结束（DELETE 或断开）时清理其状态。
-  服务器主动通知（`tools/list_changed` 等）经各会话的 GET SSE 流发送。同一 Hub 可多次调用 `serve_http_with`（多个监听地址）。
-- 校验顺序：`Origin`（与 WebSocket 侧相同的允许列表，不通过 403）→ 路径 → 令牌（仅 `/mcp`）。
+  服务器主动通知（`tools/list_changed` 等）经各会话的 GET SSE 流发送。
+- 校验顺序（`/mcp`、`/healthz`）：`Origin`（与 App 连接相同的允许列表，不通过 403）→ 路径 → 令牌（仅 `/mcp`）。
   令牌规则：`Authorization: Bearer <令牌>`；带 `Origin` 的请求必须携带；不带 `Origin` 的请求在
   `require_token_without_origin` 时必须携带；携带了错误令牌一律 401（带 `WWW-Authenticate: Bearer`）；空令牌视为未携带。常量时间比较。
-- `/healthz` 不需要令牌（仍受 Origin 校验），供单实例探测：`app-mcp-host serve` 端口被占用时据此判断“已在运行”（退出码 0）还是“被其他程序占用”（报错）。
+  `/app` 非升级请求 426，未知路径 404。
+- `/healthz` 不需要令牌（仍受 Origin 校验），供 `app-mcp-host service status` 等确认实例（与登记文件的 pid 一致）、
+  以及端口被占用时说明占用者。
 - Windows：Hub 启动的子进程（唤醒命令、上游）带 `CREATE_NO_WINDOW`，嵌入无控制台进程时不弹窗。
+
+绑定（`ws_addr` → `listen` 为不兼容改名，没有旧名别名）：C 配置 JSON `listen`（省略 = 默认地址含备选端口；显式地址或
+`null` = 只绑该地址 / 不开）、`mcpHttp`、`runDir`，`am_hub_ws_addr` → `am_hub_listen_addr`（`AM_HUB_API_VERSION 3`）；
+Node 配置 `listen` / `mcpHttp` / `runDir`，`Hub.wsAddr` → `Hub.listenAddr`（`@app-mcp/hub` 的 `wsUrl` 为 `ws://<listenAddr>/app`）；
+uniffi `HubConfig.listen` / `enable_listen` / `mcp_http` / `run_dir`，`ws_addr()` → `listen_addr()`；
+C# `HubOptions.Listen` / `DisableListen` / `McpHttp` / `RunDir`，`AppMcpHub.ListenAddress`；
+Kotlin / Swift `listenAddr`、Python `listen_addr`（配置参数 `listen` / `enableListen`，Python `enable_listen`）。
 
 ### 3.5 生命周期配合：休眠、唤醒、租约（spec/lifecycle.md §9）
 
@@ -359,7 +397,7 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
 - `HubConfig.ipc_endpoint: Option<String>`：`unix:<绝对路径>` / `pipe:\\.\pipe\<名称>`，默认
   `app_mcp_protocol::endpoint::default_ipc_endpoint()`（Android / iOS 为 `None`）；`None` = 不开。
   不是 IPC 形式、或本平台不支持时 `Hub::start` 返回 `InvalidInput`；端点已有 Hub 监听时返回 `AddrInUse`。
-  与 `ws_addr` 一样，默认值会占用本机唯一的端点：同机器上的第二个 Hub（含测试）应改用其他端点或设为 `None`。
+  与 `listen` 一样，默认值会占用本机唯一的端点：同机器上的第二个 Hub（含测试）应改用其他端点或设为 `None`。
 - `Hub::ipc_endpoint()`：实际监听的端点字符串，可直接作为原生 SDK 的 `host_url`。
 - `InstanceInfo.pid: Option<u32>`：IPC 连接的对端进程号（操作系统提供）；TCP 连接与休眠实例为 `None`。
   JSON 中为 `pid`，缺省时省略。
@@ -368,7 +406,7 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
 Node 配置 `ipcEndpoint`（同上）+ `Hub.ipcEndpoint`；uniffi `HubConfig.ipc_endpoint: String?` + `enable_ipc: bool`（默认 `true`）+
 `AppMcpHub.ipc_endpoint()` + `InstanceInfo.pid: u32?`；C# `HubOptions.IpcEndpoint` / `DisableIpc` + `AppMcpHub.IpcEndpoint`；
 Kotlin `Hub.ipcEndpoint`、Swift `Hub.ipcEndpoint`、Python `Hub.ipc_endpoint`。
-`app-mcp-host`：配置文件 `ipcEndpoint`（`"none"` 关闭）、命令行 `--ipc-endpoint <ENDPOINT|none>`。`/healthz` 不变。
+`app-mcp-host`：配置文件 `ipcEndpoint`（`"none"` 关闭）、命令行 `--ipc-endpoint <ENDPOINT|none>`。`/healthz` 带 `ipcEndpoint`。
 
 ## 4. 进程内 App（可选，M2）
 
@@ -401,7 +439,7 @@ Gemini 不支持的关键字（`additionalProperties`、`$ref` 等）在 `Gemini
 
 ## 6. C ABI 要点（`bindings/hub-c/include/app_mcp_hub.h`）
 
-- 前缀 `am_hub_`；`AM_HUB_API_VERSION 1`；与 `app_mcp.h` 相同的字符串所有权规则（回调中字符串由接收方 `am_string_free`）。
+- 前缀 `am_hub_`；`AM_HUB_API_VERSION 3`（v3：`am_hub_listen_addr`、配置 `listen`）；与 `app_mcp.h` 相同的字符串所有权规则（回调中字符串由接收方 `am_string_free`）。
 - 所有复杂结构以 JSON 字符串传递（`am_hub_tools_json(hub, format, filter_json)`、`am_hub_call(hub, request_json, cb, user_data)`），避免 ABI 膨胀。
 - 事件：`am_hub_set_event_cb(hub, cb(event_json, user_data))`。
 - 回调在 Hub 的分发线程上执行，不在调用方线程。

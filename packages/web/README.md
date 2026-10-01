@@ -9,6 +9,16 @@ export const appMcp = createAppMcp({ appId: 'shop', appName: '示例商城' })
 appMcp.tool('cart.clear', { description: '清空购物车', risk: 'destructive', handler: () => cart.clear() })
 ```
 
+## 连接地址与 Host 身份
+
+- 默认连接 `ws://127.0.0.1:7717/app`（Host 的 HTTP 端口：`/app` 是 App 连接，同一端口的 `/mcp` 给 MCP 客户端）。
+- 未指定 `hostUrl` 时按 Host 的备选顺序依次尝试 `7717 → 7737 → 7757`（Host 的默认端口被其他程序占用时会改用备选端口）：
+  连不上、或握手结果表明对端不是 app-mcp 时换下一个；连上后固定在该端口。显式指定 `hostUrl` 时只连它。
+- 握手结果带 Host 身份（`service: "app-mcp"`、`user`、`pid`，spec/protocol.md 1.6）。对端不是 app-mcp（候选端口都不是）时
+  进入 `{ status: 'host-mismatch', reason }`：不再定时重试，`wake()` / `connectNow()` 时再试一次。浏览器不知道操作系统用户，
+  网页不核对 `user`；多用户机器上请显式指定 `hostUrl`。
+- 旧地址 `ws://127.0.0.1:7717`（根路径）在兼容期内仍可用（Host 记录提示），请改为 `/app`。
+
 ## 惰性 handler
 
 只声明元数据，handler 在首次调用时加载（与 `handler` 二选一）。加载结果缓存；加载失败时本次调用返回
@@ -83,7 +93,7 @@ const appMcp = createAppMcp({
 |---|---|---|
 | `local-network-access` | Chrome 本地网络访问（LNA，Chrome 142 起 fetch、147 起 WebSocket）：公网 / 局域网页面连接本机需用户允许「本机上的应用」（权限 `loopback-network`，旧名 `local-network-access`），当前为拒绝 | 授权变为允许时（`navigator.permissions` 的 `change` 事件）立即重连；另每 60 秒低频探测一次 |
 | `insecure-context` | 非 HTTPS 的公网页面：Chrome 禁止其访问本机，也不会询问 | 改用 HTTPS 部署，或在 localhost 打开 |
-| `csp` | 页面（或 SharedWorker 脚本响应）的 CSP `connect-src` 不允许 Host 地址（`securitypolicyviolation` 事件） | 在 `connect-src` 中加入 `ws://127.0.0.1:7717` 后刷新页面 |
+| `csp` | 页面（或 SharedWorker 脚本响应）的 CSP `connect-src` 不允许 Host 地址（`securitypolicyviolation` 事件） | 在 `connect-src` 中加入 `ws://127.0.0.1:7717`（Host 改用备选端口时还需 7737、7757）后刷新页面 |
 
 - `appMcp.wake()` / `connectNow()` 在 `blocked` 时立即重试一次（LNA 下可重新弹出授权提示）。
 - 授权为「询问」（`prompt`）时不判定为拦截：授权提示只能由页面发起，因此经 SharedWorker 的连接失败后，

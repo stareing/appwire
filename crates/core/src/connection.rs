@@ -210,6 +210,14 @@ impl Client {
         self.set_state(ConnectionState::Rejected { reason });
     }
 
+    /// 对端不是期望的 Host：断开，不再自动重连（spec/protocol.md 1.6）。
+    fn host_mismatch(&mut self, reason: String) {
+        self.warn(reason.clone());
+        self.teardown(CancelReason::Disconnected, true);
+        self.events.push_back(Event::Disconnect);
+        self.set_state(ConnectionState::HostMismatch { reason });
+    }
+
     fn on_paired(&mut self, token: Option<String>, tools_current: bool, now: Millis) {
         if let Some(token) = token {
             if self.token.as_deref() != Some(token.as_str()) {
@@ -665,16 +673,25 @@ impl Client {
             Ok(v) => match serde_json::from_value::<HelloResult>(v) {
                 Ok(r) => r,
                 Err(e) => {
-                    self.warn(format!("app/hello 结果无效：{e}"));
-                    self.reject(format!("app/hello 结果无效：{e}"));
+                    self.host_mismatch(format!("对端不是 app-mcp Host：app/hello 结果无法解析（{e}）"));
                     return;
                 }
             },
+            Err(e) if e.code == app_mcp_protocol::RpcError::METHOD_NOT_FOUND => {
+                self.host_mismatch(format!("对端不是 app-mcp Host：不支持 app/hello（{}）", e.message));
+                return;
+            }
             Err(e) => {
                 self.reject(format!("握手失败：{}", e.message));
                 return;
             }
         };
+        if let Err(reason) =
+            app_mcp_protocol::identity::check_hello(&result, self.config.expected_host_user.as_deref())
+        {
+            self.host_mismatch(reason);
+            return;
+        }
         match result.status {
             PairingStatus::Paired => self.on_paired(result.token, result.tools_current, now),
             PairingStatus::Pending => {

@@ -14,7 +14,7 @@ function fakeBinding() {
     shutdown: false,
   }
   const native: NativeHub = {
-    get wsAddr() {
+    get listenAddr() {
       return '127.0.0.1:1234'
     },
     get ipcEndpoint() {
@@ -73,9 +73,10 @@ function fakeBinding() {
 describe('Hub 封装', () => {
   it('配置去掉封装层选项后传给原生层；JSON 往返', async () => {
     const { binding, state } = fakeBinding()
-    const hub = await Hub.start({ binding, keepAlive: false, wsAddr: null, approval: { requireAtOrAbove: 'payment' } })
-    expect(state.config).toEqual({ wsAddr: null, approval: { requireAtOrAbove: 'payment' } })
-    expect(hub.wsUrl).toBe('ws://127.0.0.1:1234')
+    const hub = await Hub.start({ binding, keepAlive: false, listen: null, approval: { requireAtOrAbove: 'payment' } })
+    expect(state.config).toEqual({ listen: null, approval: { requireAtOrAbove: 'payment' } })
+    expect(hub.wsUrl).toBe('ws://127.0.0.1:1234/app')
+    expect(hub.listenAddr).toBe('127.0.0.1:1234')
     expect(hub.ipcEndpoint).toBe('unix:/run/x/hub.sock')
     expect(hub.tools({ maxRisk: 'read' })).toEqual([{ name: 'a.b', filter: { maxRisk: 'read' } }])
     expect(hub.overview('a')).toEqual({ appId: 'a' })

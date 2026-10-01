@@ -89,7 +89,7 @@ impl Sdk {
 }
 
 async fn connect(hub: &Hub, spec: Spec) -> Sdk {
-    let url = format!("ws://{}", hub.ws_addr().expect("ws addr"));
+    let url = format!("ws://{}/app", hub.listen_addr().expect("listen addr"));
     let mut req = url.into_client_request().unwrap();
     if let Some(o) = spec.origin {
         req.headers_mut().insert("Origin", o.parse().unwrap());
@@ -182,7 +182,7 @@ async fn connect(hub: &Hub, spec: Spec) -> Sdk {
 
 fn config() -> HubConfig {
     HubConfig {
-        ws_addr: Some("127.0.0.1:0".into()),
+        listen: Some("127.0.0.1:0".into()),
         ipc_endpoint: None,
         response_timeout: Duration::from_secs(3),
         ..Default::default()
@@ -736,13 +736,13 @@ async fn pairing_handler_hook() {
 #[tokio::test]
 async fn no_ws_and_shutdown() {
     let hub = Hub::start(HubConfig {
-        ws_addr: None,
+        listen: None,
         ipc_endpoint: None,
         ..Default::default()
     })
     .await
     .unwrap();
-    assert!(hub.ws_addr().is_none());
+    assert!(hub.listen_addr().is_none());
     assert!(hub.apps().is_empty());
     assert_eq!(hub.tools(&ToolFilter::default()).len(), 3); // 内置
     assert!(hub.tools(&ToolFilter { include_builtin: false, ..Default::default() }).is_empty());

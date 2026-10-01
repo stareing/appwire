@@ -123,7 +123,7 @@ target/debug/app-mcp-host serve            # 或：app-mcp-host service install�
 pnpm --filter @app-mcp/example-shop dev
 ```
 
-Host 在 `127.0.0.1:7717`（WebSocket）接收网页 App、在当前用户专属的本地套接字（Unix 域套接字 / Windows 命名管道）接收原生 App，并在 `http://127.0.0.1:7718/mcp` 以 Streamable HTTP 提供 MCP。
+Host 只用一个端口 `127.0.0.1:7717`：网页 App 连接 `/app`（WebSocket），MCP 客户端以 Streamable HTTP 连接 `http://127.0.0.1:7717/mcp`，`/healthz` 给出 Host 身份；原生 App 经当前用户专属的本地套接字（Unix 域套接字 / Windows 命名管道）连接。单实例锁保证每个用户只有一个 Host，实际监听位置记录在 `~/.app-mcp/run/endpoints.json`。
 仓库的 `.mcp.json` 已让 Claude Code 连接该端点：重启会话、打开示例页面，就可以让 Claude 操作商城。
 配置文件、访问令牌与其他 MCP 客户端见 [`crates/host/README.md`](../crates/host/README.md)。
 

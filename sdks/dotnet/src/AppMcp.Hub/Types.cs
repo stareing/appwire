@@ -92,11 +92,20 @@ public class HubException : Exception
 /// </summary>
 public sealed class HubOptions
 {
-    /// <summary>App 连接服务监听地址（默认 "127.0.0.1:7717"；端口 0 随机）。</summary>
-    public string? WsAddress { get; set; }
+    /// <summary>
+    /// HTTP 监听地址：/app（App 的 WebSocket 连接）、/healthz，<see cref="McpHttp"/> 时另有 /mcp（spec/protocol.md 1.3）。
+    /// null 时为 "127.0.0.1:7717"（被占用时依次尝试 7737、7757）；显式给出时只绑定该地址；端口 0 随机。
+    /// </summary>
+    public string? Listen { get; set; }
 
-    /// <summary>为 true 时不开 App 连接服务（config 中 wsAddr = null），忽略 <see cref="WsAddress"/>。</summary>
-    public bool DisableWebSocket { get; set; }
+    /// <summary>为 true 时不开 HTTP 服务（config 中 listen = null），忽略 <see cref="Listen"/>。</summary>
+    public bool DisableListen { get; set; }
+
+    /// <summary>是否在 <see cref="Listen"/> 上提供 MCP Streamable HTTP（/mcp），默认 false。</summary>
+    public bool McpHttp { get; set; }
+
+    /// <summary>单实例锁与登记文件目录（&lt;RunDir&gt;/hub.lock、endpoints.json，spec/protocol.md 1.5、1.7）；null 时不参与。</summary>
+    public string? RunDir { get; set; }
 
     /// <summary>
     /// 本地 IPC 端点（原生 App 默认连接这里，spec/protocol.md 1.2）："unix:&lt;绝对路径&gt;" 或
@@ -176,8 +185,10 @@ public sealed class HubOptions
     public string ToConfigJson()
     {
         var o = new JsonObject();
-        if (DisableWebSocket) o["wsAddr"] = null;
-        else if (WsAddress is not null) o["wsAddr"] = WsAddress;
+        if (DisableListen) o["listen"] = null;
+        else if (Listen is not null) o["listen"] = Listen;
+        if (McpHttp) o["mcpHttp"] = true;
+        if (RunDir is not null) o["runDir"] = RunDir;
         if (DisableIpc) o["ipcEndpoint"] = null;
         else if (IpcEndpoint is not null) o["ipcEndpoint"] = IpcEndpoint;
         if (Manifests.Count > 0) o["manifests"] = new JsonArray(Manifests.Select(m => m.DeepClone()).ToArray());

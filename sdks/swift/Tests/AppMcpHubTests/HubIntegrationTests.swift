@@ -47,7 +47,7 @@ final class HubIntegrationTests: XCTestCase {
     }
 
     func testEndToEnd() async throws {
-        let hub = try Hub(config: HubConfig(wsAddr: "127.0.0.1:0", enableIpc: false, approvalMinRisk: .destructive))
+        let hub = try Hub(config: HubConfig(listen: "127.0.0.1:0", enableIpc: false, approvalMinRisk: .destructive))
         defer { hub.close() }
         let approvals = Approvals()
         hub.setApprovalHandler { req in
@@ -57,7 +57,7 @@ final class HubIntegrationTests: XCTestCase {
         var events = hub.events().makeAsyncIterator()
 
         let app = try AppMcpClient(config: AppMcpConfig(
-            appId: "notes", appName: "笔记", hostURL: "ws://\(hub.wsAddr ?? "")"
+            appId: "notes", appName: "笔记", hostURL: "ws://\(hub.listenAddr ?? "")/app"
         ))
         let schema = #"{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}"#
         try app.tool("add", description: "添加笔记", inputSchema: schema, risk: .write) { (args: NoteArgs, _) in
@@ -137,12 +137,12 @@ final class HubIntegrationTests: XCTestCase {
 
     func testDormantAppWokenByCustomWaker() async throws {
         let hub = try Hub(config: HubConfig(
-            wsAddr: "127.0.0.1:0", enableIpc: false, listChangedDebounceMs: 20, leaseTtlMs: 0, wakeTimeoutMs: 10_000
+            listen: "127.0.0.1:0", enableIpc: false, listChangedDebounceMs: 20, leaseTtlMs: 0, wakeTimeoutMs: 10_000
         ))
         defer { hub.close() }
         var events = hub.events().makeAsyncIterator()
         let app = try AppMcpClient(config: AppMcpConfig(
-            appId: "sleepy", appName: "会睡觉的 App", hostURL: "ws://\(hub.wsAddr ?? "")", instanceId: "s1",
+            appId: "sleepy", appName: "会睡觉的 App", hostURL: "ws://\(hub.listenAddr ?? "")/app", instanceId: "s1",
             lifecycle: LifecyclePolicy(
                 mode: .idle, idleTimeoutMs: 300,
                 wake: AppMcp.WakeDescriptor(kind: .androidIntent, target: "dev.example/.WakeReceiver", background: true)
@@ -191,7 +191,7 @@ final class HubIntegrationTests: XCTestCase {
 
     func testProgressiveExposureConfig() throws {
         let hub = try Hub(config: HubConfig(
-            enableWs: false, enableIpc: false, waker: .exec(argv: ["true"]), toolExposure: .progressive, toolExposureThreshold: 5
+            enableListen: false, enableIpc: false, waker: .exec(argv: ["true"]), toolExposure: .progressive, toolExposureThreshold: 5
         ))
         // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
         XCTAssertEqual(hub.tools(ToolFilter(session: "c1")).map(\.name),
@@ -202,8 +202,8 @@ final class HubIntegrationTests: XCTestCase {
     func testFormatsAndShutdown() async throws {
         XCTAssertEqual(try ToolFormat.parse("anthropic"), .anthropic)
         XCTAssertThrowsError(try ToolFormat.parse("nope"))
-        let hub = try Hub(config: HubConfig(enableWs: false, enableIpc: false))
-        XCTAssertNil(hub.wsAddr)
+        let hub = try Hub(config: HubConfig(enableListen: false, enableIpc: false))
+        XCTAssertNil(hub.listenAddr)
         XCTAssertNil(hub.ipcEndpoint)
         XCTAssertEqual(Set(hub.tools().map(\.name)), ["apps.list", "apps.select", "apps.overview"])
         hub.close()
@@ -219,7 +219,7 @@ final class HubIntegrationTests: XCTestCase {
             .appendingPathComponent("app-mcp-swift-ipc-\(ProcessInfo.processInfo.processIdentifier)")
         defer { try? FileManager.default.removeItem(at: dir) }
         let endpoint = "unix:\(dir.appendingPathComponent("run/hub.sock").path)"
-        let hub = try Hub(config: HubConfig(enableWs: false, ipcEndpoint: endpoint))
+        let hub = try Hub(config: HubConfig(enableListen: false, ipcEndpoint: endpoint))
         defer { hub.close() }
         XCTAssertEqual(hub.ipcEndpoint, endpoint)
         let app = try AppMcpClient(config: AppMcpConfig(appId: "notes", appName: "笔记", hostURL: endpoint))

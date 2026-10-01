@@ -483,14 +483,14 @@ fn reconnects_after_host_disconnect() {
 
 #[test]
 fn connect_failure_backs_off() {
-    // 找一个没人监听的端口
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    // 没人监听的临时 IPC 端点（不用"先绑定再释放"的 TCP 端口：释放后可能被其他进程占用）。
+    let unique = format!("app-mcp-missing-{}-{}", std::process::id(), rand_suffix());
     let mut c = NativeConfig::new("test-app", "测试");
-    c.host_url = format!("ws://127.0.0.1:{port}");
+    c.host_url = if cfg!(windows) {
+        format!(r"pipe:\\.\pipe\{unique}")
+    } else {
+        format!("unix:{}", std::env::temp_dir().join(format!("{unique}.sock")).display())
+    };
     let rec = Arc::new(Recorder::default());
     let client = NativeClient::new(c, Some(rec.clone())).unwrap();
     client.start();
@@ -576,4 +576,10 @@ fn last_clone_dropped_on_dispatch_thread() {
     host.invoke("c1", "t", json!({}));
     rx.recv_timeout(WAIT).unwrap();
     host.wait_closed();
+}
+
+/// 测试用的随机后缀。
+fn rand_suffix() -> u64 {
+    use std::hash::{BuildHasher, RandomState};
+    RandomState::new().hash_one(std::time::SystemTime::now())
 }

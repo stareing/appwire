@@ -156,4 +156,45 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     expect(core.pollTimeout()).toBe(500)
     core.free?.()
   })
+
+  it('握手结果的 service 不是 app-mcp → host-mismatch，不再定时重连', async () => {
+    const factory = await loadRealCore()
+    const core = factory({ appId: 'shop', appName: 's', instanceId: 'i' })
+    const drain = (): any[] => {
+      const out: any[] = []
+      for (let e = core.pollEvent(); e; e = core.pollEvent()) out.push(e)
+      return out
+    }
+    core.start(0)
+    core.handleConnected(0)
+    const hello = drain().find((e) => e.type === 'send')
+    const id = JSON.parse(hello.text).id
+    core.handleMessage(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        result: { status: 'paired', protocolVersion: '1', hostVersion: 'x', service: 'other' },
+      }),
+      1,
+    )
+    const state = core.state()
+    expect(state.status).toBe('host-mismatch')
+    expect((state as { reason: string }).reason).toMatch(/不是 app-mcp/)
+    expect(drain()).toContainEqual({ type: 'disconnect' })
+    expect(core.pollTimeout()).toBeUndefined()
+    // 网页不核对用户（浏览器不知道操作系统用户）：带 user 的 app-mcp 结果照常连接
+    core.connectNow(2)
+    core.handleConnected(2)
+    const hello2 = drain().find((e) => e.type === 'send')
+    core.handleMessage(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: JSON.parse(hello2.text).id,
+        result: { status: 'paired', protocolVersion: '1', hostVersion: 'x', service: 'app-mcp', user: '0', pid: 1 },
+      }),
+      3,
+    )
+    expect(core.state()).toEqual({ status: 'connected' })
+    core.free?.()
+  })
 })

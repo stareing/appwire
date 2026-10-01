@@ -11,7 +11,7 @@ use crate::config::{AuthMode, Overrides};
 /// 本地 MCP Host：聚合本机各 App 的工具并以 MCP 暴露给模型。
 ///
 /// 推荐：`app-mcp-host service install`（登录自启）或 `app-mcp-host serve`（前台常驻），
-/// MCP 客户端连接 http://127.0.0.1:7718/mcp。不带子命令时为 stdio 模式（兼容旧用法）。
+/// MCP 客户端连接 http://127.0.0.1:7717/mcp（App 连接同一端口的 /app）。不带子命令时为 stdio 模式（兼容旧用法）。
 #[derive(Debug, Parser)]
 #[command(
     name = "app-mcp-host",
@@ -30,8 +30,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// 常驻模式（推荐）：同时提供 App 连接服务（WebSocket）与 MCP Streamable HTTP，
-    /// 多个 MCP 客户端共享同一组 App 连接。已有健康实例在运行时直接退出（退出码 0）。
+    /// 常驻模式（推荐）：同一端口提供 App 连接（/app，WebSocket）、MCP Streamable HTTP（/mcp）与 /healthz，
+    /// 另有本地 IPC；多个 MCP 客户端共享同一组 App 连接。已有实例在运行时（单实例锁）打印其信息并退出（退出码 0）。
     Serve(ServeArgs),
     /// stdio 模式：单个 MCP 客户端以子进程方式启动（测试 / 无法安装服务的环境）。
     Stdio(StdioArgs),
@@ -74,8 +74,13 @@ pub struct HomeArg {
 /// stdio / serve 共用的 Hub 参数。都是可选的：未指定时用配置文件或默认值。
 #[derive(Debug, Clone, Default, Args)]
 pub struct HubArgs {
-    /// App 连接服务（WebSocket）监听地址，默认 127.0.0.1:7717。
+    /// HTTP 监听地址：同一端口承载 /app（App 的 WebSocket 连接）、/mcp（serve 模式）与 /healthz。
+    /// 默认 127.0.0.1:7717（被占用时依次尝试 7737、7757）；显式指定时只绑定该地址。
     #[arg(long, value_name = "ADDR")]
+    pub listen: Option<String>,
+
+    /// 已弃用：--listen 的旧名（按 --listen 使用并记录提示）。
+    #[arg(long, value_name = "ADDR", hide = true)]
     pub ws_addr: Option<String>,
 
     /// 本地 IPC 端点（原生 App 默认连接这里）：unix:<绝对路径>（Linux / macOS）或 pipe:\\.\pipe\<名称>
@@ -146,6 +151,7 @@ impl HubArgs {
             upstreams.insert(name, cfg);
         }
         Ok(Overrides {
+            listen: self.listen.clone(),
             ws_addr: self.ws_addr.clone(),
             ipc_endpoint: self.ipc_endpoint.clone(),
             manifests: self.manifests.clone(),
@@ -169,7 +175,8 @@ pub struct ServeArgs {
     #[command(flatten)]
     pub hub: HubArgs,
 
-    /// MCP Streamable HTTP 监听地址（端点 http://<ADDR>/mcp），默认 127.0.0.1:7718。
+    /// 已弃用（兼容期）：另开一个监听器提供 MCP（http://<ADDR>/mcp），如旧的 127.0.0.1:7718。
+    /// MCP 已合并到 --listen 的 /mcp；只在仍有客户端使用旧端口时设置。
     #[arg(long, value_name = "ADDR")]
     pub http: Option<String>,
 
@@ -309,6 +316,18 @@ mod tests {
         };
         assert_eq!(s.http.as_deref(), Some("127.0.0.1:1"));
         assert_eq!(s.auth, Some(AuthMode::All));
+
+        let cli = Cli::try_parse_from(["app-mcp-host", "serve", "--listen", "127.0.0.1:0"]).unwrap();
+        let Some(Command::Serve(s)) = cli.command else {
+            panic!()
+        };
+        assert_eq!(s.overrides().unwrap().listen.as_deref(), Some("127.0.0.1:0"));
+        // 旧名仍可解析（隐藏），由配置解析记录弃用提示
+        let cli = Cli::try_parse_from(["app-mcp-host", "serve", "--ws-addr", "127.0.0.1:1"]).unwrap();
+        let Some(Command::Serve(s)) = cli.command else {
+            panic!()
+        };
+        assert_eq!(s.overrides().unwrap().ws_addr.as_deref(), Some("127.0.0.1:1"));
 
         let cli = Cli::try_parse_from(["app-mcp-host", "--stdio", "--manifest", "a.json"]).unwrap();
         assert!(cli.command.is_none());

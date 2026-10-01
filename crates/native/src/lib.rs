@@ -47,9 +47,10 @@ pub struct NativeConfig {
     pub client_kind: ClientKind,
     /// Host 端点（spec/protocol.md 第 1 节）：`unix:<绝对路径>`、`pipe:\\.\pipe\<名称>`、`ws://…` 或 `wss://…`。
     ///
-    /// [`NativeConfig::new`] 的默认值：环境变量 `APP_MCP_ENDPOINT`（非空时）→ 平台默认 IPC 端点
-    /// （Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock`，否则 `~/.app-mcp/run/hub.sock`；macOS
-    /// `~/.app-mcp/run/hub.sock`；Windows `\\.\pipe\app-mcp-<用户 SID>`）→ `ws://127.0.0.1:7717`
+    /// [`NativeConfig::new`] 的默认值（创建配置时解析一次）：环境变量 `APP_MCP_ENDPOINT`（非空时）→
+    /// 登记文件 `~/.app-mcp/run/endpoints.json`（运行中的 Host 写下的实际端点；`APP_MCP_HOME` 可改配置目录）→
+    /// 平台默认 IPC 端点（Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock`，否则 `~/.app-mcp/run/hub.sock`；macOS
+    /// `~/.app-mcp/run/hub.sock`；Windows `\\.\pipe\app-mcp-<用户 SID>`）→ `ws://127.0.0.1:7717/app`
     /// （Android / iOS 等没有默认 IPC 端点的平台）。连不上时按退避重连同一端点，不换用其他传输。
     pub host_url: String,
     pub app_version: Option<String>,
@@ -188,6 +189,9 @@ pub enum StateStatus {
     Dormant,
     /// 收到唤醒后正在回连。
     Waking,
+    /// 对端不是期望的 Host（不是 app-mcp，或属于其他用户；spec/protocol.md 1.6）。不再自动重连，
+    /// [`NativeClient::wake`] / [`NativeClient::connect_now`] 时再试一次；原因见 [`StateInfo::reason`]。
+    HostMismatch,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -195,7 +199,7 @@ pub struct StateInfo {
     pub status: StateStatus,
     /// `Backoff` 时距下一次重连的毫秒数。
     pub retry_in_ms: Option<u64>,
-    /// `Rejected` 时的原因。
+    /// `Rejected` / `HostMismatch` 时的原因。
     pub reason: Option<String>,
 }
 
@@ -811,6 +815,7 @@ fn build_core_config(
     inner.launch_token = launch_token;
     inner.overview = config.overview;
     inner.lifecycle = config.lifecycle;
+    inner.expected_host_user = app_mcp_protocol::identity::expected_host_user();
     inner.max_concurrent_calls = usize::try_from(config.max_concurrent_calls).unwrap_or(usize::MAX);
     Ok((inner, endpoint))
 }
@@ -855,6 +860,7 @@ fn state_info(state: &ConnectionState, now: Millis) -> StateInfo {
         ConnectionState::Stopped => (StateStatus::Stopped, None, None),
         ConnectionState::Dormant => (StateStatus::Dormant, None, None),
         ConnectionState::Waking => (StateStatus::Waking, None, None),
+        ConnectionState::HostMismatch { reason } => (StateStatus::HostMismatch, None, Some(reason.clone())),
     };
     StateInfo {
         status,

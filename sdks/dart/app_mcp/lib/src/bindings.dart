@@ -76,6 +76,8 @@ abstract final class AmStateStatus {
   static const int stopped = 7;
   static const int dormant = 8;
   static const int waking = 9;
+  // v5：对端不是期望的 Host（spec/protocol.md 1.6）
+  static const int hostMismatch = 10;
 }
 
 abstract final class AmLogLevel {

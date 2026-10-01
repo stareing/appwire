@@ -85,12 +85,56 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - B MCP over IPC：同一 IPC 端点按首帧区分 App（WebSocket 升级 `/app`）与 MCP（HTTP `/mcp`），供厂商 Agent / 支持本地套接字的客户端使用
    - C 单实例与身份：`~/.app-mcp/run/hub.lock`（flock / LockFileEx）先于任何监听；握手结果与 `/healthz` 带 `service`、`version`、`user`、`pid`；SDK 对端不是 app-mcp 或不是本用户 → 明确错误、停止重试
    - D 登记文件 `~/.app-mcp/run/endpoints.json`（0600，原子写，退出删除）：实际 listen 地址、IPC 端点、pid、版本、启动时间；原生 SDK / CLI / 测试读取；网页端口被占时按固定短备选列表（7717 → 7737 → 7757）握手并核对身份
-   - E Socket 激活：systemd `.socket`（`LISTEN_FDS`）与 launchd `Sockets`（`launch_activate_socket`），`service install` 生成；Host 空闲（无 App、无 MCP 会话 N 分钟）可退出、由系统按连接拉起；Windows 保持登录自启 + 锁；安装时即检测端口占用并报占用进程
+   - E （2026-10-01 取消，由 4d 系统名字服务的按需激活取代）Socket 激活不做；"安装时即检测端口占用并报占用进程"保留，并入 F
    - F 诊断：`app-mcp-host doctor`（Host 运行 / 版本、IPC 权限、端口占用进程、Windows 排除端口段与防火墙、令牌 / 鉴权模式、浏览器 LNA / CSP 拦截上报、adb reverse、各 App 实例状态与最近错误，每项给结论 + 修复建议）；`app-mcp-host status`；连接 ID 贯穿 Hub 与 SDK 日志；SDK 错误统一错误码 + 中文原因 + 建议（spec/protocol.md 错误码表）
    - G 测试：TCP 一律绑定 0 并从监听器取实际端口（去掉 `free_port` 先绑后放），其余用临时 IPC 端点；消除 serve 偶发失败
+   - 结果（A / C / D / G，2026-10-01；B / E / F 未做，本项保持未勾选）：
+     - A：`HubConfig.ws_addr` → `listen`（默认 `127.0.0.1:7717`）+ `listen_alternates`（默认 7737、7757，仅缺省地址时使用）+ `http: HttpOptions` + `mcp_http`；`crates/hub/src/http_server.rs` 改为单一 `Router`（`/app` WebSocket 升级、`/mcp`、`/healthz`，同一路由服务 TCP 与 IPC，IPC 上暂无 `/mcp` 留给 B）；`app_server` 只处理升级后的 WebSocket；`Hub::listen_addr()`；`serve_http(_with)` 改为额外监听器（同样路由，总带 `/mcp`）。兼容：根路径 `/` 升级按 `/app` 处理（首次日志提示）；旧 MCP 端口 7718 仅显式 `http.addr` / `--http` 时另开（弃用提示），默认不开；`wsAddr` / `--ws-addr`（隐藏）按 `listen` 使用并提示，与 `listen` 冲突报错。Host `--listen`；`.mcp.json`、网页 SDK 默认、原生 ws 默认、IPC 握手 URL 均改为 `/app`；非回环 `listen` 需 `allow_remote`
+     - C：`<home>/run/hub.lock`（flock / LockFileEx，`crates/hub/src/instance.rs`，`HubConfig.run_dir`，Host 设 `<home>/run`，先于任何监听，被持有 → `ResourceBusy`）；`app_mcp_protocol::identity`（`HostIdentity {service, version, user, pid}`，`check_hello`）；`HelloResult` 增加 `service` / `user` / `pid`，`Health` 改为 flatten 身份 + `listen` / `ipcEndpoint` / `appPath` / `mcpPath?`；核心新状态 `ConnectionState::HostMismatch { reason }`（service 不符、`app/hello` 返回 -32601、结果无法解析、原生桌面 `expected_host_user` 不符）：断开不重试，`wake()` / `connectNow()` 再试；传播到 native `StateStatus::HostMismatch`、C `AM_STATE_HOST_MISMATCH = 10`、uniffi、node / web `'host-mismatch'`、C# / Dart / Kotlin / Swift / Python。serve 锁被持有 → 读登记文件打印并退出码 0；stdio 报错并给出 MCP 地址；端口被占 → 说明占用者（其他 app-mcp 的 pid / 用户，或其他程序）
+     - D：`app_mcp_protocol::registry`（`EndpointRegistry`，`~/.app-mcp/run/endpoints.json`，`APP_MCP_HOME` 可改），Hub 绑定后原子写（0600）、停止删除；原生端点解析 `APP_MCP_ENDPOINT` → 登记文件 → 平台 IPC → `ws://127.0.0.1:7717/app`；`service status|start|stop|uninstall` 以登记文件 + `/healthz` pid 一致判断；网页未指定 `hostUrl` 时依次 7717 → 7737 → 7757（连不上或 host-mismatch 换下一个，连上后固定，全不是时停在 host-mismatch）
+     - G：Rust 测试与 e2e 全部端口 0（hub `tests/listen.rs` 5 例新增；serve 测试改读登记文件；native / probe / systemd 去掉先绑后放；e2e Host `--listen 127.0.0.1:0`、vite `--port 0` 解析 `Local:`，`establishedTo` 排除本进程套接字），serve 测试连跑 13 次稳定
+     - 契约：protocol `HelloResult` 加字段、`IPC_WS_URL` 改为 `ws://localhost/app`、新增常量 `DEFAULT_LISTEN_ADDR` / `LISTEN_CANDIDATE_PORTS` / `APP_PATH` / `MCP_PATH` / `HEALTH_PATH` / `DEFAULT_WS_URL`；core `ClientConfig.expected_host_user` + 新状态；native `StateStatus::HostMismatch`；`app_mcp.h` 新枚举值（API 版本仍 3）；types.ts `host-mismatch` 状态；Hub Rust API `ws_addr` → `listen`（不兼容）；hub-c `AM_HUB_API_VERSION 3`（`am_hub_listen_addr`）及各 Hub 绑定改名
+     - Android：`generate.sh --android` 重编 jniLibs（app arm64-v8a / x86_64，hub 默认 ABI）；armeabi-v7a / x86 仍为旧版（见下方待办）
+     - 验证：cargo test --workspace 402 全过、clippy 0 警告；pnpm -r test（web 197、e2e 12/12 等）与 typecheck 全过；dotnet 37 + 10、dart 55、flutter 6、ctest 5/5、Python 41、Kotlin JVM 11 + Hub 5 + Robolectric 7、Swift 18 + 5 + 7；Windows（cargo.exe MSVC）protocol / core / hub / native / host 全过（含锁、合并端口、serve 单实例）+ clippy 0 警告；systemd `--ignored` 实装测试通过；本机默认配置实测（锁、7717 被占改用 7737、登记文件驱动的原生默认端点）
    - 验收：Linux / Windows 全量测试与 clippy；systemd socket 激活实装（`--ignored`）；Windows 经 interop 验证锁、合并端口与 doctor；e2e 改用合并端口；文档（spec/protocol.md 传输节、spec/hub-api.md、crates/host/README.md、README 两语、CLAUDE.md）同步
+4c. [ ] 界面级精准暴露 + 页面渐进披露（2026-10-01 加入；4b 完成后做）
+   - 原则：不依赖界面的能力是 `app` 工具（后台可调、可唤醒、进清单）；依赖界面的是 `view` 工具，只在"真正可见且处于最上层"时启用；非当前页面的能力经页面目录渐进披露，调用时以与唤醒同构的方式先导航再派发
+   - 现状缺口：挂载 ≠ 可见（keep-alive 路由、隐藏标签面板、屏外组件仍注册；仅 @app-mcp/dom 判可见）；无界面层级（弹窗不压制下层）；工具无 surface 区分；其他页面能力不可见、不可达
+   - A 协议（只增）：`ToolInfo.surface: "app" | "view"`（缺省 `app`，兼容旧 SDK）、`ToolInfo.page?`；Host→SDK 请求 `app/navigate {page, params?}` → `{ok}`，导航后工具注册 / `app/ready` 语义复用；握手能力协商 `capabilities.navigate`；错误码 `NAVIGATION_FAILED` / `NAVIGATION_DENIED`
+   - B 清单：`pages: [{name, title, description, route, params(JSON Schema), tools: [ToolInfo...], navigable(默认 true), activation}]`；manifest crate 解析 / 校验；codegen 原生意图只生成 `surface: app`
+   - C 构建插件：扫描路由模块（React Router / Vue Router 路由表 + `definePage()` 显式声明）内的 `useTool` / `@mcp`，生成 `pages`；无法静态确定时要求显式声明，不猜
+   - D Web SDK：`useTool` / `<ToolScope>` 可见性门控（锚点 `checkVisibility` + `IntersectionObserver` + `document.visibilityState`，可 `visibility: 'always'` 关闭）；层级栈 `<ToolLayer>`（弹窗 / 抽屉 / 模态压入，下层 `view` 工具暂停 = `enabled:false` → `tools/changed`，`inert` 自动识别）；路由适配 `@app-mcp/react` 的 React Router 适配与 Vue Router 适配（`onNavigate(page, params)`）；`@app-mcp/dom` 同步 surface/layer 规则
+   - E 原生：Kotlin（Fragment / Compose `LifecycleResumeEffect` 绑定 + Navigation Compose 适配）、Swift（`onAppear/onDisappear` + `scenePhase` 修饰器 + `NavigationPath` 适配）、C#（WPF `IsVisible`/窗口激活、WinUI）、Dart（`RouteAware` + `go_router` 适配）、Python/Qt（`showEvent/hideEvent`）；核心层提供通用 `navigate` 回调，封装层只做框架绑定
+   - F Hub：页面目录登记（清单 + SDK 上报的 `page` 字段）；渐进披露分层——L0 `apps.list`；L1 tools/list = 已接触 App 的 `app` 工具 + 焦点实例当前可见最上层的 `view` 工具；L2 `apps.tools(appId)` 含页面目录摘要；L3 新内置 `apps.page(appId, page)` 返回该页工具；调用非当前页工具 → （休眠则先唤醒）→ `app/navigate` → 等待该工具注册（复用唤醒排队 / 超时 / 取消）→ 派发；导航改变用户可见界面，按 `foreground` 处理：用户正在交互（最近输入 < N 秒）或策略要求时经 ApprovalHandler 确认；`navigable:false` 的页面拒绝；导出格式与 Hub 各语言绑定同步
+   - G 示例：shop 改为多页面（商品列表 / 购物车 / 订单），覆盖 keep-alive、弹窗层级、跨页调用
+   - 验收：cargo test / clippy 0；pnpm test + e2e 新增（切页后工具列表变化、弹窗压制、跨页调用自动导航、导航审批、休眠 App 唤醒后导航）；各语言 SDK 测试；Android 真机一轮（Compose 导航）；文档：spec/protocol.md、spec/manifest.md、spec/lifecycle.md、spec/hub-api.md、README 两语（原则 3 扩写）
+4d. [ ] 按名寻址 + 系统代理 + 连接即唤醒：原生 App 源头去端口（2026-10-01 加入；4c 完成后做）
+   - 原则：地址是 App 身份（`appmcp://<appId>[/<instance>]`），由各平台系统名字服务解析，不用数字端口；方向反转为 Hub 拨 App（App 在系统登记名字，不常驻重连 Hub，Hub 启动顺序无关、多个 Hub 可共存）；连接即唤醒（系统按需激活拉起进程），传输与唤醒合一。协议（JSON-RPC 消息）与 sans-IO 核心不变，只换"找到对方"这一层
+   - A 设计 `spec/naming.md`（权威）：地址格式；各平台名字映射；发现（枚举）；连接方向与角色（Hub 为连接发起方，核心仍是同一状态机：握手方向不变——连接建立后 SDK 先发 `app/hello`）；实例寻址（多窗口 / 多进程实例各自登记）；鉴权（系统身份：D-Bus 调用方 uid / Binder `getCallingUid` + 签名权限 / 管道 DACL / XPC 审计令牌）；与旧"App 拨 Hub"（IPC / WebSocket）并存与协商（App 可同时登记名字并在有 Hub 时直连，避免双连接的规则）；生命周期映射（休眠 = 关闭连接、名字保留；唤醒 = Hub 连接触发系统激活；`wakeToken` / WakeDescriptor 降为不支持激活平台的后备）
+     - 发现 / 更新 / 结束 / 回收（2026-10-01，写入 spec/naming.md 独立一节，全平台通用，并用测试强制）：
+       - 不变式：Hub 对 App 只保存数据（目录、快照、toolsHash），空闲宽限期过后不持有任何活引用（绑定、连接、fd、跨进程回调对象、定时器、WakeLock）；系统回收或杀进程是正常路径，不是异常
+       - 发现：只读安装期元数据，从不为发现而启动进程（Android 经 PackageManager 读 `<meta-data>` 指向的清单资源；Linux D-Bus `.service` + XDG 数据目录清单；Windows 登记文件；macOS plist）；时机：Hub 启动时一次扫描（Android `getChangedPackages(sequence)` 增量）+ Hub 活跃期间的系统变更事件（包安装 / 更新 / 卸载广播、inotify / ReadDirectoryChangesW、NameOwnerChanged）；无轮询
+       - 安装信息覆盖面（spec/naming.md 列表写明"能读到 / 读不到 / 补法"）：能读到——Android APK `<meta-data>` 清单资源（PackageManager）、Linux D-Bus `.service` + XDG 清单、Windows 打包 App 的 MSIX 清单（AppExtension / AppService，PackageManager API）、macOS 包内清单 + launchd 登记（沙盒 App 经系统接口）；均由 build 插件 / codegen 写入安装包，开发者不手写。读不到及补法：运行时注册的工具 → 连接时快照 + toolsHash 持久化；`view` 工具 → 仅连接时有效，页面目录走静态清单 `pages`；未打包 Windows / Linux 程序 → 安装程序或 `app-mcp-host app install` 写登记文件（从未安装登记的如实报告不可发现）；网页 → 扩展 / WebMCP 发现已打开页面，已安装 PWA 读 Web App Manifest 中的 app-mcp 清单链接；iOS → 沙盒不可读，只走 App Intents
+       - 安装信息是自我声明不是授权（原则 7）：Hub 核对包签名 / 发布者与包名 ↔ `appId` 的对应（首次见到时记录签名指纹，变化时提示），执行仍由风险与审批决定；Android 11+ 包可见性：Hub 清单用 `<queries><intent><action android:name="dev.appmcp.TOOLS"/></intent></queries>` 按动作查询，不申请 `QUERY_ALL_PACKAGES`
+       - 更新：三层——静态（随包版本更新）/ 动态快照（仅在已连接时获得，带 toolsHash 持久化到 Hub 本地，Hub 重启仍可列出）/ 实时（连接期间 `tools/changed` 推送）；不为刷新而连接，快照过期由下次连接的 toolsHash 比对纠正；`view` 工具不缓存为可调用，断开即撤下（页面目录走静态清单）
+       - 结束：调用完成 + 宽限期（默认 15 秒）且无进行中调用与持有 → 解绑 / 关闭；持有（hold）有上限租期，App 不能借 Hub 无限保活；同时绑定的 App 数上限（LRU，默认 4）；Hub 收到内存压力（`onTrimMemory`）立即解除全部空闲绑定；Hub 进程退出时系统自动解除全部绑定；App 被杀由 `linkToDeath` / EOF 发现，实例转为休眠快照
+       - 跨进程引用：不传递任何回调 Binder 对象（避免远端代理把对方对象钉住无法 GC），一次绑定只交换一个 socketpair fd，消息都走 fd，结束即关闭；Service 不保存客户端引用；每次使用前重新 bind（冻结中的进程由绑定解冻），不复用旧会话的代理
+       - App 内回收：SDK 不持有 Activity / View 的强引用，`view` 工具经 LifecycleOwner / 弱引用随界面销毁注销；休眠 / 解绑时释放 Rust 运行时线程与 FFI 句柄；不使用前台服务、`START_STICKY`、周期性闹钟 / Job、电池优化豁免
+       - 被杀时调用的结果：返回 `APP_NOT_RESPONDING` 并标注 `outcome: "unknown"`，只读工具可自动重试一次，写入类不自动重试（防重复执行）
+       - 测试强制：宽限期后断言绑定数 / fd / 定时器 / 线程数归零；Android 测试接入 LeakCanary；真机验收查进程状态回到 cached 并被冻结
+   - B 核心与原生运行时：新增"被连接方"驱动（接受一条连接后跑现有核心）；`crates/native` 提供 `NameServer` 抽象 + 各平台实现；C ABI / uniffi / node 只增不改（`AmClientOptions` 追加字段：登记名字 / 关闭）
+   - C Linux：D-Bus 会话总线名 `dev.appmcp.App.<appId>`（实例 `…/<instance>` 对象路径），方法 `Open() → fd`（传递 socketpair 的一端，消息走 fd 上同一帧格式，不经总线转发）；`.service` 激活文件由 `app-mcp-host app install` / codegen 生成；Hub 用 `ListActivatableNames` / `ListNames` 发现；Python（GApplication）、Qt、Rust、C/C++ 接入
+   - D Android：导出绑定式 Service，Intent 动作 `dev.appmcp.TOOLS`，`bindService` 即激活；`IBinder` 传 `ParcelFileDescriptor`（socketpair）后走同一帧格式；签名级权限 `dev.appmcp.permission.BIND_TOOLS`；手机端 Hub（`bindings/hub-uniffi` Kotlin）用 `queryIntentServices` 发现；替换 WakeReceiver + WorkManager 唤醒为 bind 激活（旧路径保留给 Android 端 Hub 不可用时）；真机验证一轮（冷启动 bind、进程被杀后 bind、多 App）
+     - 功耗约束（2026-10-01）：只在调用期间绑定，结果返回后经短暂宽限（默认 15 秒，合并连续调用）即 `unbindService`，进程回到缓存态由系统冻结 / 回收；绑定标志 `BIND_AUTO_CREATE | BIND_WAIVE_PRIORITY | BIND_ALLOW_OOM_MANAGEMENT | BIND_NOT_FOREGROUND`（Q+ 加 `BIND_NOT_PERCEPTIBLE`），不把 App 抬到 Hub 的优先级；Binder / fd 传输协商关闭心跳，存活检测改用 `linkToDeath` + fd EOF（零定时器）；Hub 不常驻前台服务，只在助手活跃时运行，发现用一次性 `queryIntentServices`（`<queries>` 声明）+ 缓存；App 侧 `onBind` 轻量、惰性初始化，解绑即释放运行时线程，不持 WakeLock（长任务走 `hold` + WorkManager）
+     - 功耗验收（真机）：调用 + 宽限后 App 进程状态回到 cached 且被冻结（`dumpsys activity processes` / freezer）；空闲 30 分钟 App 无唤醒与 CPU 时间增长（`dumpsys batterystats`、`dumpsys cpuinfo`，必要时 Perfetto）；与当前 WebSocket + 心跳路径对比；Flyme 等国产 ROM 的"关联启动 / 自启动"拦截：检测 bind 失败并在 doctor / 错误信息中给出设置指引
+   - E Windows：每 App 每用户命名管道 `\\.\pipe\appmcp-<SID>-<appId>[-<instance>]`（DACL 当前用户）+ 登记文件 `%LOCALAPPDATA%\app-mcp\apps\<appId>.json`（激活方式）；激活：打包 App 用 COM 本地服务器 / AppService，未打包用协议激活（拉起后由 App 建管道，Hub 等待管道出现）；C# / C++ / Rust / Python 接入；WSL interop 实测
+   - F macOS：launchd 用户 Agent 的 `MachServices` + XPC 连接（传 fd 后走同一帧格式），非沙盒先行；沙盒 App 经 App Group 容器内的 Unix 套接字 + `open -g` 激活作为后备；Swift / Rust 接入（无 Mac 实机：Linux 上编译与单元测试，实机验收列入待办）
+   - G Hub：`Connector` 抽象（发现 / 拨号 / 激活），注册表实例来源增加"由 Hub 发起"；按需拨号（调用时才连，用完按生命周期策略关闭）；多 Hub 共存规则；`apps.list` 合并系统发现的 App；Hub 各语言绑定同步
+   - H Web：浏览器扩展 + Native Messaging 作为网页主通道（`packages/extension`：MV3，content script ↔ service worker ↔ Native Messaging 宿主 = `app-mcp-host native-messaging`，宿主清单由 `service install` 写入）；页面 SDK 自动探测扩展（无需端口）；WebMCP 原生 `navigator.modelContext` 可用时经浏览器暴露；回环 WebSocket 改为默认关闭、用户显式开启（`listen` 配置），4b 的合并端口即为该可选项
+   - I 调试：`app-mcp-host doctor` 增加名字服务检查（D-Bus 名 / 激活文件、Android Service 声明、Windows 管道与登记、launchd 登记）；文档给出 `busctl` / `dbus-monitor`、`adb shell dumpsys activity services`、管道列表、`launchctl print` 用法
+   - 验收：Linux 全链路（D-Bus 激活冷启动 + 调用 + 休眠 + 再激活）e2e；Android 真机；Windows interop；扩展在 Chromium 实测（无端口完成网页工具调用）；原有 IPC / WebSocket 路径测试全部保留通过；clippy 0；文档：spec/naming.md（新）、spec/protocol.md、spec/lifecycle.md、spec/hub-api.md、README 两语（How it works 图更新）、CLAUDE.md
 5. [ ] WASM 瘦身：核心注册表去 BTreeMap、绑定改 JSON 交换（目标 gzip < 100 KB）
-6. [ ] Android：绑定式 Service（Binder）传输与 bindService 唤醒；R8 规则、ABI 拆包
+6. [ ] Android：R8 规则、ABI 拆包（Binder 传输与 bindService 唤醒已并入 4d）
 7. [x] Windows：`IApplicationActivationManager` 带参激活（AUMID 传令牌）
    - 结果（2026-10-01）：`SystemWaker` 的 aumid 改为 `ActivateApplication(aumid, "app-mcp-wake:<令牌>", AO_NONE)`（`windows` 0.62，COM STA，阻塞线程执行；`SystemWaker::action` 返回 `WakeAction`，去掉 explorer 与 `ignore_exit_code`）；Windows 实测：计算器空参数激活返回 PID 后结束（`--ignored activate_calculator`）；`wake-e2e.mjs` d 以令牌参数激活（计算器自身拒绝启动参数 0x80040904，判定为 Host 行为正确）；a/b 仍通过。打包 App 版的 d 需 MSIX 签名 + 开发者模式，本机未开启，未做
 8. [ ] 鸿蒙 HarmonyOS NEXT：ArkTS SDK（Node-API 兼容）+ 意图框架代码生成
@@ -125,11 +169,11 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
 - [x] App 端 SDK 工具名是局部名（注册 `add` → `notes.add`），文档写清——spec/protocol.md 3.1；以 `<appId>.` 开头时核心 / Host / 清单校验警告，build 注释扫描报错
 - [ ] Hub：API 会话无自动清理（需 `reset_session`）；导出名映射只增不删；`subscribe` 不区分厂商会话；MCP `serverInfo` 名仍为 app-mcp-host
 - [ ] Python `qt_dispatcher` 未测（本机无 Qt）
-- [ ] `crates/host/tests/serve.rs` `second_serve_exits_zero_when_healthy_instance_runs` 偶发失败（约 1/6；`free_port` 先绑后放的端口竞争，serve 启动即退出码 1）
+- [x] `crates/host/tests/serve.rs` `second_serve_exits_zero_when_healthy_instance_runs` 偶发失败（约 1/6；`free_port` 先绑后放的端口竞争，serve 启动即退出码 1）——已消除（4b-G）：监听端口 0、实际地址读登记文件，单实例改由锁判断；改名 `second_serve_exits_zero_when_instance_holds_lock`，连跑 7 次稳定
 - [x] hub-c / hub-node / hub-uniffi 的配置 JSON 尚未暴露 `waker`——已加（随优化队列第 2 项）；清除自定义回调时恢复配置的 waker（`Hub::reset_waker`）
 - [ ] Kotlin jar 发布前用 `--release` 生成（debug `.so` 约 100 MB）
 - [x] 全量验证：`cargo test --workspace`、`cargo clippy --workspace --all-targets`、`pnpm -r test/typecheck/build`、ctest、dotnet test、dart test（2026-09-30 全部通过，另含 Flutter / Python / Kotlin / Swift / codegen / e2e，见上方"全量验证"）
-- [ ] 在 Claude Code 中实际操作 Demo（已配置：`.mcp.json` → `http://127.0.0.1:7718/mcp`，先 `app-mcp-host service install` 或 `serve`；需重启会话并批准项目 MCP 服务器）
+- [ ] 在 Claude Code 中实际操作 Demo（已配置：`.mcp.json` → `http://127.0.0.1:7717/mcp`，先 `app-mcp-host service install` 或 `serve`；需重启会话并批准项目 MCP 服务器）
 - [x] 工具名重复前缀：shop 的注释工具 `shop.info` 全名变成 `shop.shop.info`——注释改为局部名 `@mcp info`；写成带 appId 前缀的全名时构建报错（不自动去前缀）
 
 ### 需在 Windows / macOS 上验证

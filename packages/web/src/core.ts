@@ -98,6 +98,7 @@ export type CoreState =
   | { status: 'stopped' }
   | { status: 'dormant' }
   | { status: 'waking' }
+  | { status: 'host-mismatch'; reason: string }
 
 export type CancelReason = 'requested' | 'timeout' | 'disconnected' | 'stopped'
 

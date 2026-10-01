@@ -293,6 +293,62 @@ fn hello_rejected_or_error_is_final() {
     assert_eq!(h.c.poll_timeout(), None);
 }
 
+/// 握手结果中的 Host 身份（spec/protocol.md 1.6）。
+#[test]
+fn host_identity_mismatch_stops_retrying() {
+    let mismatch = |h: &Harness| matches!(h.c.state(), ConnectionState::HostMismatch { .. });
+    let paired = |extra: Value| {
+        let mut v = json!({"status": "paired", "token": "tk", "protocolVersion": "1", "hostVersion": "0.1.0"});
+        if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+            o.extend(e.clone());
+        }
+        v
+    };
+
+    // service 不是 app-mcp
+    let mut h = Harness::new();
+    let hello = h.open();
+    let ev = h.hello_result(&hello, paired(json!({"service": "other"})));
+    assert!(ev.contains(&Event::Disconnect));
+    assert!(mismatch(&h), "{:?}", h.c.state());
+    assert_eq!(h.c.poll_timeout(), None, "不自动重试");
+    assert!(sends(&ev).is_empty(), "不发送 tools/sync");
+
+    // 不认识 app/hello（标准 -32601）、结果无法解析：同样判定不是 app-mcp
+    let mut h = Harness::new();
+    let hello = h.open();
+    h.recv(json!({"jsonrpc": "2.0", "id": hello["id"], "error": {"code": -32601, "message": "method not found"}}));
+    assert!(mismatch(&h));
+    let mut h = Harness::new();
+    let hello = h.open();
+    h.hello_result(&hello, json!({"hello": "world"}));
+    assert!(mismatch(&h));
+
+    // 用户不同；wake / connect_now 再试一次
+    let mut cfg = config();
+    cfg.expected_host_user = Some("1000".into());
+    let mut h = Harness::with(cfg);
+    let hello = h.open();
+    h.hello_result(&hello, paired(json!({"service": "app-mcp", "user": "1001", "pid": 9})));
+    let ConnectionState::HostMismatch { reason } = h.c.state() else { panic!("{:?}", h.c.state()) };
+    assert!(reason.contains("1001") && reason.contains("pid 9"), "{reason}");
+    assert!(h.c.wake(h.now));
+    assert!(h.drain().contains(&Event::Connect));
+    assert_eq!(h.c.state(), &ConnectionState::Connecting);
+    h.c.handle_connected(h.now);
+    let hello = sends(&h.drain()).remove(0);
+    h.hello_result(&hello, paired(json!({"service": "app-mcp", "user": "1000"})));
+    assert_eq!(h.c.state(), &ConnectionState::Connected);
+
+    // 旧 Host 不带身份字段：无法核对，照常连接
+    let mut cfg = config();
+    cfg.expected_host_user = Some("1000".into());
+    let mut h = Harness::with(cfg);
+    let hello = h.open();
+    h.hello_result(&hello, paired(json!({})));
+    assert_eq!(h.c.state(), &ConnectionState::Connected);
+}
+
 // ---------------------------------------------------------------------------
 // 注册变更
 // ---------------------------------------------------------------------------

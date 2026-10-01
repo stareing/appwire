@@ -85,6 +85,7 @@ ConnectionStatus statusFromNative(int status) => switch (status) {
       AmStateStatus.stopped => ConnectionStatus.stopped,
       AmStateStatus.dormant => ConnectionStatus.dormant,
       AmStateStatus.waking => ConnectionStatus.waking,
+      AmStateStatus.hostMismatch => ConnectionStatus.hostMismatch,
       _ => ConnectionStatus.idle,
     };
 
@@ -93,7 +94,7 @@ McpConnectionState stateFromNative(int status, int retryInMs, String? reason) {
   return McpConnectionState(
     s,
     retryIn: s == ConnectionStatus.backoff ? Duration(milliseconds: retryInMs) : null,
-    reason: s == ConnectionStatus.rejected ? (reason ?? '') : null,
+    reason: s == ConnectionStatus.rejected || s == ConnectionStatus.hostMismatch ? (reason ?? '') : null,
   );
 }
 

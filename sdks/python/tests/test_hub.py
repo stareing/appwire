@@ -22,7 +22,7 @@ pytestmark = pytest.mark.hub
 
 
 def start_notes_app(hub: Hub) -> AppMcp:
-    app = AppMcp("notes", "笔记", host_url=f"ws://{hub.ws_addr}", overview="测试笔记 App")
+    app = AppMcp("notes", "笔记", host_url=f"ws://{hub.listen_addr}/app", overview="测试笔记 App")
 
     @app.tool("add", description="添加笔记", risk="write")
     def add(text: str) -> dict:
@@ -51,7 +51,7 @@ def test_end_to_end_async() -> None:
             approvals.append((req, asyncio.get_running_loop()))
             return False
 
-        with Hub(ws_addr="127.0.0.1:0", enable_ipc=False, approval_min_risk="destructive") as hub:
+        with Hub(listen="127.0.0.1:0", enable_ipc=False, approval_min_risk="destructive") as hub:
             hub.set_approval_handler(approve)
             events = hub.events()
             app = start_notes_app(hub)
@@ -120,7 +120,7 @@ def test_sync_api_and_sync_approval() -> None:
     """非 asyncio 代码：*_sync 方法 + 同步审批回调（在线程池中执行，可阻塞）。"""
     seen: list[str] = []
     connected = threading.Event()
-    with Hub(ws_addr="127.0.0.1:0", enable_ipc=False, approval_min_risk="write") as hub:
+    with Hub(listen="127.0.0.1:0", enable_ipc=False, approval_min_risk="write") as hub:
         hub.on_event(lambda e: connected.set() if e.is_app_connected() else None)
         hub.set_approval_handler(lambda req: seen.append(req.tool) or req.tool.endswith("add"))
         app = start_notes_app(hub)
@@ -151,7 +151,7 @@ def test_async_handler_without_loop_and_no_monkeypatch() -> None:
         threads.append(threading.current_thread().name)
         return req.tool == "clear"
 
-    with Hub(ws_addr="127.0.0.1:0", enable_ipc=False, approval_min_risk="write") as hub:
+    with Hub(listen="127.0.0.1:0", enable_ipc=False, approval_min_risk="write") as hub:
         hub.set_approval_handler(approve)
         app = start_notes_app(hub)
         try:
@@ -175,8 +175,8 @@ def test_formats_and_shutdown() -> None:
     assert hub_mod.parse_format("gemini") == ToolFormat.GEMINI
     with pytest.raises(HubError):
         hub_mod.parse_format("nope")
-    hub = Hub(enable_ws=False, enable_ipc=False)
-    assert hub.ws_addr is None
+    hub = Hub(enable_listen=False, enable_ipc=False)
+    assert hub.listen_addr is None
     assert hub.ipc_endpoint is None
     assert {t.name for t in hub.tools()} == {"apps.list", "apps.select", "apps.overview"}
     gemini = hub.export_tools("gemini")
@@ -191,7 +191,7 @@ def test_progressive_exposure() -> None:
     from app_mcp.hub import ToolExposure, WakerConfig
 
     with Hub(
-        ws_addr="127.0.0.1:0", enable_ipc=False, tool_exposure=ToolExposure.PROGRESSIVE, waker=WakerConfig.DISABLED()
+        listen="127.0.0.1:0", enable_ipc=False, tool_exposure=ToolExposure.PROGRESSIVE, waker=WakerConfig.DISABLED()
     ) as hub:
         app = start_notes_app(hub)
         try:
@@ -222,12 +222,12 @@ def test_dormant_app_woken_by_custom_waker() -> None:
     from app_mcp import LifecyclePolicy, WakeDescriptor
 
     async def main() -> None:
-        with Hub(ws_addr="127.0.0.1:0", enable_ipc=False, lease_ttl_ms=0, wake_timeout_ms=10_000, list_changed_debounce_ms=20) as hub:
+        with Hub(listen="127.0.0.1:0", enable_ipc=False, lease_ttl_ms=0, wake_timeout_ms=10_000, list_changed_debounce_ms=20) as hub:
             events = hub.events()
             app = AppMcp(
                 "sleepy",
                 "会睡觉的 App",
-                host_url=f"ws://{hub.ws_addr}",
+                host_url=f"ws://{hub.listen_addr}/app",
                 instance_id="s1",
                 lifecycle=LifecyclePolicy(
                     mode="idle",
@@ -293,7 +293,7 @@ def test_native_app_over_ipc(tmp_path) -> None:
         endpoint = rf"pipe:\\.\pipe\app-mcp-py-test-{os.getpid()}"
     else:
         endpoint = f"unix:{tmp_path / 'run' / 'hub.sock'}"
-    with Hub(enable_ws=False, ipc_endpoint=endpoint) as hub:
+    with Hub(enable_listen=False, ipc_endpoint=endpoint) as hub:
         assert hub.ipc_endpoint == endpoint
         app = AppMcp("notes", "笔记", host_url=hub.ipc_endpoint)
 

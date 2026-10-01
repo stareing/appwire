@@ -25,7 +25,7 @@ const T: Duration = Duration::from_secs(10);
 
 fn config(lease_ms: u64) -> HubConfig {
     HubConfig {
-        ws_addr: Some("127.0.0.1:0".into()),
+        listen: Some("127.0.0.1:0".into()),
         ipc_endpoint: None,
         list_changed_debounce: Duration::from_millis(10),
         lease_ttl: Duration::from_millis(lease_ms),
@@ -79,7 +79,7 @@ impl ToolHandler for Add {
 
 fn native_client(hub: &Hub, instance_id: &str, idle_ms: u64) -> NativeClient {
     let mut c = NativeConfig::new("calc", "计算器");
-    c.host_url = format!("ws://{}", hub.ws_addr().unwrap());
+    c.host_url = format!("ws://{}/app", hub.listen_addr().unwrap());
     c.instance_id = Some(instance_id.to_owned());
     c.launch_token = Some(String::new());
     c.lifecycle.mode = LifecycleMode::Idle;
@@ -234,7 +234,7 @@ struct Raw {
 impl Raw {
     /// 连接并握手；`paired` 且 `sync` 时发送 tools/sync（未 toolsCurrent 时）、visibility、ready。
     async fn connect(hub: &Hub, instance_id: &str, extra: Value, tools: Value) -> Raw {
-        let url = format!("ws://{}", hub.ws_addr().unwrap());
+        let url = format!("ws://{}/app", hub.listen_addr().unwrap());
         let (ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
         let (mut sink, mut stream) = ws.split();
         let mut hello = json!({

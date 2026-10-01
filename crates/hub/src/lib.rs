@@ -16,6 +16,7 @@ pub mod connection;
 pub mod format;
 pub mod http_server;
 pub mod hub;
+mod instance;
 mod ipc;
 mod lifecycle;
 pub mod mcp;

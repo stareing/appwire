@@ -141,6 +141,12 @@ export class FakeCore implements CoreClient {
   }
   wakeWithReason(reason: WakeReason, now: number): boolean {
     this.rec('wakeWithReason', reason, now)
+    if (this.current.status === 'host-mismatch') {
+      // 与核心一致：不是 app-mcp 时不自动重试，wake / connectNow 再试一次
+      this.setState({ status: 'connecting' })
+      this.emit({ type: 'connect' })
+      return true
+    }
     if (this.current.status !== 'dormant') return false
     this.setState({ status: 'waking' })
     this.emit({ type: 'connect' })

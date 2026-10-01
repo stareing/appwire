@@ -65,9 +65,14 @@ export type ToolExposure = 'auto' | 'progressive' | 'all'
 /** `Hub.start` 的配置。时长均为毫秒。 */
 export interface HubConfig {
   /**
-   * App 连接服务（WebSocket）监听地址，缺省 `127.0.0.1:7717`；端口 0 = 随机；`null` = 不开。
+   * HTTP 监听地址：`/app`（App 的 WebSocket 连接）、`/healthz`，`mcpHttp` 时另有 `/mcp`（spec/protocol.md 1.3）。
+   * 缺省 `127.0.0.1:7717`（被占用时依次尝试 7737、7757）；显式给出时只绑定该地址；端口 0 = 随机；`null` = 不开。
    */
-  wsAddr?: string | null
+  listen?: string | null
+  /** 是否在 `listen` 上提供 MCP Streamable HTTP（`/mcp`），默认 false。 */
+  mcpHttp?: boolean
+  /** 单实例锁与登记文件目录（`<runDir>/hub.lock`、`endpoints.json`，spec/protocol.md 1.5、1.7）；缺省不参与。 */
+  runDir?: string
   /**
    * 本地 IPC 端点（原生 App 默认连接这里，spec/protocol.md 1.2）：`unix:<绝对路径>` 或 `pipe:\\.\pipe\<名称>`（JS 字符串中反斜杠需转义）；
    * 缺省为平台默认端点（Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock` 等）；`null` = 不开。

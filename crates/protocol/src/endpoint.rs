@@ -9,9 +9,10 @@
 //! 本地 IPC 两种形式上跑的仍是同一套 WebSocket 帧与 JSON-RPC 消息（握手请求的 URL 固定为
 //! [`IPC_WS_URL`]），与 TCP 上的协议逐字节相同。
 //!
-//! 默认端点（[`default_endpoint`]）：环境变量 [`ENDPOINT_ENV`] → 平台默认 IPC 端点
-//! （[`default_ipc_endpoint`]）→ `ws://127.0.0.1:7717`（平台没有默认 IPC 端点时，如 Android / iOS）。
-//! 这三步是**配置的解析顺序**，不是连接失败后的回退：选定的端点连不上时 SDK 按退避重连同一个端点。
+//! 默认端点（[`default_endpoint`]）：环境变量 [`ENDPOINT_ENV`] → 登记文件
+//! （[`crate::registry`]，运行中的 Host 写下的实际端点）→ 平台默认 IPC 端点（[`default_ipc_endpoint`]）→
+//! `ws://127.0.0.1:7717/app`（平台没有默认 IPC 端点时，如 Android / iOS）。
+//! 这四步是**配置的解析顺序**，不是连接失败后的回退：选定的端点连不上时 SDK 按退避重连同一个端点。
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -19,8 +20,8 @@ use std::path::{Path, PathBuf};
 /// 覆盖默认端点的环境变量（SDK 侧）。值为任一端点字符串。
 pub const ENDPOINT_ENV: &str = "APP_MCP_ENDPOINT";
 
-/// 本地 IPC 上 WebSocket 握手请求使用的 URL（Host 不检查路径与 Host 头）。
-pub const IPC_WS_URL: &str = "ws://localhost/";
+/// 本地 IPC 上 WebSocket 握手请求使用的 URL（Host 不检查 `Host` 头；路径与 TCP 相同为 `/app`）。
+pub const IPC_WS_URL: &str = "ws://localhost/app";
 
 /// Unix 域套接字的文件名。
 pub const UNIX_SOCKET_NAME: &str = "hub.sock";
@@ -143,19 +144,20 @@ pub fn unix_default_path(runtime_dir: Option<&Path>, home: Option<&Path>) -> Opt
 }
 
 /// SDK 的默认端点字符串：环境变量 [`ENDPOINT_ENV`]（非空时原样使用，由调用方校验）→
-/// [`default_ipc_endpoint`] → `ws://127.0.0.1:7717`。
+/// 登记文件中的端点（[`crate::registry::registered_app_endpoint`]）→ [`default_ipc_endpoint`] →
+/// `ws://127.0.0.1:7717/app`。
 pub fn default_endpoint() -> String {
     match std::env::var(ENDPOINT_ENV) {
         Ok(v) if !v.is_empty() => v,
-        _ => default_endpoint_without_env(),
+        _ => crate::registry::registered_app_endpoint().unwrap_or_else(default_endpoint_without_env),
     }
 }
 
-/// 不看环境变量的默认端点字符串。
+/// 不看环境变量与登记文件的默认端点字符串：平台默认 IPC 端点，没有时为 `ws://127.0.0.1:7717/app`。
 pub fn default_endpoint_without_env() -> String {
     match default_ipc_endpoint() {
         Some(e) => e.to_string(),
-        None => format!("ws://{}", crate::DEFAULT_WS_ADDR),
+        None => crate::DEFAULT_WS_URL.to_owned(),
     }
 }
 

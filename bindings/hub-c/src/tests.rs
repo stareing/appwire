@@ -171,10 +171,10 @@ struct App {
 
 fn start_app(hub: *mut AmHub) -> App {
     // SAFETY: 有效句柄。
-    let addr = unsafe { take(am_hub_ws_addr(hub)) };
+    let addr = unsafe { take(am_hub_listen_addr(hub)) };
     assert!(!addr.is_empty());
     let mut cfg = NativeConfig::new("notes", "笔记");
-    cfg.host_url = format!("ws://{addr}");
+    cfg.host_url = format!("ws://{addr}/app");
     cfg.instance_id = Some("n1".into());
     cfg.overview = Some(app_mcp_native::AppOverview {
         summary: "测试用笔记 App".into(),
@@ -231,7 +231,7 @@ fn version_errors_and_null_arguments() {
         assert_eq!(am_hub_approval_complete(ptr::null_mut(), true), AmHubStatus::InvalidArgument);
         am_hub_string_free(ptr::null_mut());
         am_hub_free(ptr::null_mut());
-        assert!(am_hub_ws_addr(ptr::null()).is_null());
+        assert!(am_hub_listen_addr(ptr::null()).is_null());
     }
     let bad = c(r#"{"nope": 1}"#);
     let mut hub = ptr::null_mut();
@@ -242,10 +242,10 @@ fn version_errors_and_null_arguments() {
 
 #[test]
 fn bind_failure_is_io_error() {
-    let hub = start_hub(r#"{"wsAddr":"127.0.0.1:0"}"#);
+    let hub = start_hub(r#"{"listen":"127.0.0.1:0"}"#);
     // SAFETY: 有效句柄。
-    let addr = unsafe { take(am_hub_ws_addr(hub)) };
-    let cfg = c(&json!({ "wsAddr": addr, "ipcEndpoint": null }).to_string());
+    let addr = unsafe { take(am_hub_listen_addr(hub)) };
+    let cfg = c(&json!({ "listen": addr, "ipcEndpoint": null }).to_string());
     let mut second = ptr::null_mut();
     // SAFETY: 有效参数。
     assert_eq!(unsafe { am_hub_start(cfg.as_ptr(), &mut second) }, AmHubStatus::Io);
@@ -265,7 +265,7 @@ fn ipc_endpoint_config_and_single_instance() {
         format!(r"pipe:\\.\pipe\app-mcp-hub-c-test-{}", std::process::id()),
         None::<std::path::PathBuf>,
     );
-    let config = json!({ "wsAddr": null, "ipcEndpoint": endpoint }).to_string();
+    let config = json!({ "listen": null, "ipcEndpoint": endpoint }).to_string();
     let hub = start_hub(&config);
     // SAFETY: 有效句柄。
     assert_eq!(unsafe { take(am_hub_ipc_endpoint(hub)) }, endpoint);
@@ -282,7 +282,7 @@ fn ipc_endpoint_config_and_single_instance() {
         am_hub_free(hub);
     }
     // 关闭时的默认值：未开启 → NULL。
-    let off = start_hub(r#"{"wsAddr":null}"#);
+    let off = start_hub(r#"{"listen":null}"#);
     // SAFETY: 有效句柄。
     unsafe {
         assert!(am_hub_ipc_endpoint(off).is_null());
@@ -297,7 +297,7 @@ fn ipc_endpoint_config_and_single_instance() {
 fn static_manifest_queries_export_and_errors() {
     let hub = start_hub(
         &json!({
-            "wsAddr": null,
+            "listen": null,
             "manifests": [{
                 "manifestVersion": 1, "appId": "shop", "name": "商城",
                 "overview": { "summary": "演示商城" },
@@ -311,7 +311,7 @@ fn static_manifest_queries_export_and_errors() {
     );
     // SAFETY: 以下均为有效参数。
     unsafe {
-        assert!(am_hub_ws_addr(hub).is_null());
+        assert!(am_hub_listen_addr(hub).is_null());
         let apps = query_json(|o| am_hub_apps_json(hub, o));
         assert_eq!(apps[0]["appId"], "shop");
         assert_eq!(apps[0]["connected"], false);
@@ -408,7 +408,7 @@ fn static_manifest_queries_export_and_errors() {
 #[test]
 fn app_round_trip_events_approval_and_shutdown() {
     let hub = start_hub(
-        r#"{"wsAddr":"127.0.0.1:0","approval":{"requireAtOrAbove":"destructive","timeout":3000}}"#,
+        r#"{"listen":"127.0.0.1:0","approval":{"requireAtOrAbove":"destructive","timeout":3000}}"#,
     );
     let freed_before = FREED.load(Ordering::SeqCst);
     let (ev_tx, ev_rx) = mpsc::channel::<String>();
@@ -529,7 +529,7 @@ fn app_round_trip_events_approval_and_shutdown() {
 #[test]
 fn approval_without_callback_and_timeout_reject() {
     let hub = start_hub(
-        r#"{"wsAddr":"127.0.0.1:0","approval":{"requireAtOrAbove":"write","timeout":200}}"#,
+        r#"{"listen":"127.0.0.1:0","approval":{"requireAtOrAbove":"write","timeout":200}}"#,
     );
     let app = start_app(hub);
     let deadline = Instant::now() + WAIT;
@@ -566,7 +566,7 @@ fn approval_without_callback_and_timeout_reject() {
 
 #[test]
 fn pairing_callback_accepts_and_rejects() {
-    let hub = start_hub(r#"{"wsAddr":"127.0.0.1:0"}"#);
+    let hub = start_hub(r#"{"listen":"127.0.0.1:0"}"#);
     let (tx, rx) = mpsc::channel::<(String, usize)>();
     // SAFETY: tx 比 Hub 活得久。
     assert_eq!(
@@ -595,7 +595,7 @@ fn pairing_callback_accepts_and_rejects() {
     // 拒绝：另一个 App
     let mut cfg = NativeConfig::new("other", "另一个");
     // SAFETY: 有效句柄。
-    cfg.host_url = format!("ws://{}", unsafe { take(am_hub_ws_addr(hub)) });
+    cfg.host_url = format!("ws://{}/app", unsafe { take(am_hub_listen_addr(hub)) });
     let other = NativeClient::new(cfg, None).expect("创建 App");
     other.start();
     let (req, h) = rx.recv_timeout(WAIT).expect("配对请求");
@@ -623,7 +623,7 @@ fn free_from_callback() {
         // SAFETY: 库分配的字符串。
         let _ = tx.send(unsafe { take(json) });
     }
-    let hub = start_hub(r#"{"wsAddr":null}"#);
+    let hub = start_hub(r#"{"listen":null}"#);
     let (tx, rx) = mpsc::channel();
     let ctx = (hub as usize, tx);
     let req = c(r#"{"name":"ghost.x"}"#);
@@ -654,7 +654,7 @@ fn header_matches_implementation() {
     }
     for f in [
         "am_hub_version", "am_hub_last_error_message", "am_hub_string_free", "am_hub_start",
-        "am_hub_shutdown", "am_hub_free", "am_hub_ws_addr", "am_hub_ipc_endpoint", "am_hub_serve_http",
+        "am_hub_shutdown", "am_hub_free", "am_hub_listen_addr", "am_hub_ipc_endpoint", "am_hub_serve_http",
         "am_hub_apps_json", "am_hub_tools_json", "am_hub_resources_json", "am_hub_overview_json",
         "am_hub_call", "am_hub_cancel_call", "am_hub_read_resource", "am_hub_subscribe",
         "am_hub_unsubscribe", "am_hub_select_instance", "am_hub_reset_session",
@@ -671,7 +671,7 @@ fn header_matches_implementation() {
 
 #[test]
 fn serve_http_on_loopback() {
-    let hub = start_hub(r#"{"wsAddr":null}"#);
+    let hub = start_hub(r#"{"listen":null}"#);
     let addr = c("127.0.0.1:0");
     let mut out = ptr::null_mut();
     // SAFETY: 有效参数。
@@ -703,9 +703,9 @@ unsafe extern "C" fn on_wake(ud: *mut c_void, json: *mut c_char, h: *mut AmHubWa
 
 fn start_idle_app(hub: *mut AmHub) -> (NativeClient, Box<dyn std::any::Any>) {
     // SAFETY: 有效句柄。
-    let addr = unsafe { take(am_hub_ws_addr(hub)) };
+    let addr = unsafe { take(am_hub_listen_addr(hub)) };
     let mut cfg = NativeConfig::new("sleepy", "会睡觉的 App");
-    cfg.host_url = format!("ws://{addr}");
+    cfg.host_url = format!("ws://{addr}/app");
     cfg.instance_id = Some("s1".into());
     cfg.lifecycle.mode = app_mcp_native::LifecycleMode::Idle;
     cfg.lifecycle.idle_timeout_ms = 300;
@@ -724,7 +724,7 @@ fn start_idle_app(hub: *mut AmHub) -> (NativeClient, Box<dyn std::any::Any>) {
 
 #[test]
 fn dormant_app_woken_by_custom_waker() {
-    let hub = start_hub(r#"{"wsAddr":"127.0.0.1:0","listChangedDebounceMs":20,"wakeTimeoutMs":8000,"leaseTtlMs":0}"#);
+    let hub = start_hub(r#"{"listen":"127.0.0.1:0","listChangedDebounceMs":20,"wakeTimeoutMs":8000,"leaseTtlMs":0}"#);
     let (etx, erx) = mpsc::channel::<String>();
     let (wtx, wrx) = mpsc::channel::<(String, usize)>();
     // SAFETY: 有效参数；Sender 归库所有（free_sender 释放）或由测试持有且比 Hub 活得久。
@@ -777,7 +777,7 @@ fn dormant_app_woken_by_custom_waker() {
 
 #[test]
 fn waker_failure_maps_error_kind() {
-    let hub = start_hub(r#"{"wsAddr":"127.0.0.1:0","listChangedDebounceMs":20,"leaseTtlMs":0}"#);
+    let hub = start_hub(r#"{"listen":"127.0.0.1:0","listChangedDebounceMs":20,"leaseTtlMs":0}"#);
     let (etx, erx) = mpsc::channel::<String>();
     let (wtx, wrx) = mpsc::channel::<(String, usize)>();
     // SAFETY: 同上。

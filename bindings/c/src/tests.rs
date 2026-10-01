@@ -421,6 +421,7 @@ fn header_consistency() {
         ),
         ("AM_STATE_DORMANT = 8", AmStateStatus::Dormant as i32 == 8),
         ("AM_STATE_WAKING = 9", AmStateStatus::Waking as i32 == 9),
+        ("AM_STATE_HOST_MISMATCH = 10", AmStateStatus::HostMismatch as i32 == 10),
         (
             "AM_LIFECYCLE_ON_DEMAND = 2",
             lifecycle_mode_from(2).ok() == Some(LifecycleMode::OnDemand),

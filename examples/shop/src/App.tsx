@@ -69,6 +69,7 @@ const STATUS_TEXT: Record<ConnectionState['status'], string> = {
   dormant: '休眠中',
   waking: '唤醒中',
   blocked: '被浏览器拦截',
+  'host-mismatch': '对端不是 app-mcp',
 }
 
 /** 连接状态指示。只有这个组件订阅状态，其他组件不因连接变化而重新渲染。 */

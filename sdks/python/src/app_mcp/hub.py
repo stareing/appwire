@@ -452,9 +452,9 @@ class Hub:
         self.close()
 
     @property
-    def ws_addr(self) -> str | None:
-        """App 连接服务的实际地址（端口 0 时为随机端口）；未开启时为 ``None``。"""
-        return self._inner.ws_addr()
+    def listen_addr(self) -> str | None:
+        """HTTP 服务（``/app``、``/healthz``）的实际地址（端口 0 时为随机端口；App 端点为 ``ws://<地址>/app``）；未开启时为 ``None``。"""
+        return self._inner.listen_addr()
 
     @property
     def ipc_endpoint(self) -> str | None:

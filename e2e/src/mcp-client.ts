@@ -35,7 +35,7 @@ export interface Notification {
 }
 
 export interface McpClientOptions {
-  /** MCP 端点，如 `http://127.0.0.1:7718/mcp`。 */
+  /** MCP 端点，如 `http://127.0.0.1:7717/mcp`。 */
   url: string
   /** 附加请求头（如 `Authorization: Bearer <令牌>`）。 */
   headers?: Record<string, string>

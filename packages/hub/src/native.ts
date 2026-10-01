@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export interface NativeHub {
-  readonly wsAddr: string | null
+  readonly listenAddr: string | null
   readonly ipcEndpoint: string | null
   readonly isShutdown: boolean
   shutdown(): Promise<void>

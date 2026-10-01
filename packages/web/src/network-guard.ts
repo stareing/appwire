@@ -137,7 +137,7 @@ export class NetworkGuard {
         cause: 'csp',
         message:
           `${where}的内容安全策略（CSP）不允许连接 ${this.hostUrl}：请在 connect-src 中加入 ${this.hostUrl}` +
-          '（如 `connect-src \'self\' ws://127.0.0.1:7717`）。修改策略后刷新页面生效。',
+          '（如 `connect-src \'self\' ws://127.0.0.1:7717`；Host 改用备选端口时还需 7737、7757）。修改策略后刷新页面生效。',
       }
     }
     if (!this.lnaApplies || this.permission === undefined) return undefined

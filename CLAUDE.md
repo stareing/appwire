@@ -79,6 +79,8 @@ e2e/                    端到端测试（集成阶段）
 - 每个模块都要有测试。Rust 用内置测试；TS 用 vitest。
 - 日志：Host 的 stdout 专用于 MCP 协议，所有日志写 stderr。
 - 测试里启动 Hub / Host 时不要占用默认 IPC 端点（常驻 Host 可能正在用）：设 `ipc_endpoint: None`（各绑定 `ipcEndpoint: null` / `enable_ipc = false` / `DisableIpc`）或临时路径。
+- 测试里的 TCP 监听一律绑定端口 0，从监听器（`Hub::listen_addr()`）或登记文件（`<home>/run/endpoints.json`）取实际地址；
+  不要"先绑定 0 取端口再释放"（释放后可能被其他进程占用）。启动 `app-mcp-host` 进程的测试用临时 `--home`（锁与登记文件在其中）。
 
 ## 常用命令
 
@@ -100,13 +102,13 @@ pnpm --filter @app-mcp/example-shop dev
 
 ## 在 Claude Code 中使用
 
-仓库根 `.mcp.json` 以 HTTP 连接常驻 Host：`http://127.0.0.1:7718/mcp`（网页 App 连接 WebSocket `127.0.0.1:7717`；原生 App 默认走本地 IPC：Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock` / Windows 命名管道，见 `spec/protocol.md` 第 1 节）。先让 Host 跑起来（二选一）：
+仓库根 `.mcp.json` 以 HTTP 连接常驻 Host：`http://127.0.0.1:7717/mcp`（同一端口的 `/app` 是网页 App 的 WebSocket 连接、`/healthz` 是健康检查；原生 App 默认走本地 IPC：Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock` / Windows 命名管道，见 `spec/protocol.md` 第 1 节）。单实例锁 `~/.app-mcp/run/hub.lock`，实际监听位置在 `~/.app-mcp/run/endpoints.json`（默认端口被占用时改用 7737 / 7757）。先让 Host 跑起来（二选一）：
 
 ```bash
 cargo build -p app-mcp-host
 # 登录自启（当前用户服务，写入 ~/.app-mcp/config.json）；卸载：service uninstall
 target/debug/app-mcp-host service install --manifest examples/shop/app-mcp.json
-# 或临时前台运行（已有实例在运行时直接退出）
+# 或临时前台运行（同一配置目录已有实例在运行时打印其信息并以退出码 0 退出）
 target/debug/app-mcp-host serve --manifest examples/shop/app-mcp.json
 ```
 

@@ -1,8 +1,9 @@
 //! app-mcp-host：Hub（`app-mcp-hub`）之上的命令行程序。
 //!
-//! - `serve`：常驻模式（推荐）。一个进程同时提供 App 连接服务（WebSocket，默认 7717）与
-//!   MCP Streamable HTTP（默认 `127.0.0.1:7718/mcp`）；多个 MCP 客户端各自建立 HTTP 会话，
-//!   共享同一组 App 连接（每个会话有独立的实例选择与总览附带状态）。
+//! - `serve`：常驻模式（推荐）。一个进程在同一端口（默认 `127.0.0.1:7717`）提供 App 连接（`/app`，WebSocket）、
+//!   MCP Streamable HTTP（`/mcp`）与 `/healthz`，另有本地 IPC；多个 MCP 客户端各自建立 HTTP 会话，
+//!   共享同一组 App 连接（每个会话有独立的实例选择与总览附带状态）。单实例由 `<home>/run/hub.lock` 保证，
+//!   实际监听位置写在 `<home>/run/endpoints.json`。
 //! - `service install|uninstall|status|start|stop`：当前用户的登录自启服务（[`service`]）。
 //! - `stdio` / 不带子命令：单客户端 stdio 模式（兼容旧用法）。
 //!
@@ -21,7 +22,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Context;
-use app_mcp_hub::{HttpOptions, Hub, HubConfig, load_manifests};
+use app_mcp_hub::{Health, HttpOptions, Hub, HubConfig, load_manifests};
+use app_mcp_protocol::registry::EndpointRegistry;
 use clap::Parser;
 
 use crate::cli::{Cli, Command, HomeArg, LegacyArgs, ServeArgs, ServiceAction};
@@ -93,15 +95,19 @@ fn load_file(
     }
 }
 
-fn hub_config(s: &Settings) -> HubConfig {
+fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
     let mut manifests = Vec::new();
     for (dir, required) in &s.manifest_dirs {
         manifests.extend(load_manifests(&[], Some(dir), *required));
     }
     manifests.extend(load_manifests(&s.manifests, None, false));
+    let defaults = HubConfig::default();
     HubConfig {
-        ws_addr: Some(s.ws_addr.clone()),
+        listen: Some(s.listen.clone()),
+        // 显式指定的地址只绑定它本身；缺省地址被占用时依次尝试备选端口（与网页 SDK 一致）。
+        listen_alternates: if s.listen_explicit { Vec::new() } else { defaults.listen_alternates },
         ipc_endpoint: s.ipc_endpoint.clone(),
+        run_dir: Some(home.run_dir()),
         manifests,
         allow_origins: s.allow_origins.clone(),
         upstreams: s.upstreams.clone(),
@@ -111,7 +117,14 @@ fn hub_config(s: &Settings) -> HubConfig {
         waker: s.waker.clone(),
         tool_exposure: s.tool_exposure,
         tool_exposure_threshold: s.tool_exposure_threshold,
-        ..Default::default()
+        ..defaults
+    }
+}
+
+/// 解析配置时产生的提示（弃用项等），在日志初始化之后记录。
+fn log_notices(s: &Settings) {
+    for n in &s.notices {
+        tracing::warn!("{n}");
     }
 }
 
@@ -128,9 +141,21 @@ async fn run_legacy(args: LegacyArgs) -> anyhow::Result<ExitCode> {
         level: &s.log_level,
         file: None,
     })?;
-    let hub = Hub::start(hub_config(&s))
-        .await
-        .with_context(|| format!("启动 App 连接服务 {} 失败", describe_app_endpoints(&s)))?;
+    log_notices(&s);
+    let hub = match Hub::start(hub_config(&s, &home)).await {
+        Ok(h) => h,
+        Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => {
+            let hint = running_instance(&home)
+                .await
+                .and_then(|r| r.mcp_url())
+                .map(|url| format!("；请让 MCP 客户端直接连接 {url}"))
+                .unwrap_or_default();
+            anyhow::bail!("{e}{hint}");
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("启动 App 连接服务 {} 失败", describe_app_endpoints(&s)));
+        }
+    };
     if let Some(addr) = &args.http {
         hub.serve_http(addr, args.http_allow_remote)
             .await
@@ -165,41 +190,79 @@ fn probe_addr(addr: &str) -> String {
 /// App 连接服务的监听位置（日志 / 错误信息用）。
 fn describe_app_endpoints(s: &Settings) -> String {
     match &s.ipc_endpoint {
-        Some(ipc) => format!("{}（本地 IPC {ipc}）", s.ws_addr),
-        None => s.ws_addr.clone(),
+        Some(ipc) => format!("{}（本地 IPC {ipc}）", s.listen),
+        None => s.listen.clone(),
     }
 }
 
-fn describe_running(h: &app_mcp_hub::Health, http_addr: &str) -> String {
+/// 运行中实例的说明（登记文件或 `/healthz` 的内容）。
+fn describe_registry(r: &EndpointRegistry) -> String {
+    let id = &r.identity;
+    let listen = r.listen.as_deref().map(probe_addr);
     format!(
-        "app-mcp-host 已在运行（pid {}，版本 {}）：MCP http://{}{}，App 连接 ws://{}",
-        h.pid,
-        h.version,
-        probe_addr(http_addr),
-        h.mcp_path,
-        h.ws_addr.as_deref().unwrap_or("-"),
+        "app-mcp-host 已在运行（pid {}，版本 {}）：MCP {}，App 连接 {}，本地 IPC {}",
+        id.pid,
+        id.version,
+        listen.as_deref().map(|a| format!("http://{a}/mcp")).unwrap_or_else(|| "-".into()),
+        listen.as_deref().map(|a| format!("ws://{a}/app")).unwrap_or_else(|| "-".into()),
+        r.ipc_endpoint.as_deref().unwrap_or("未开启"),
     )
 }
 
-/// 端口被占用时：若 HTTP 端口上是健康的 app-mcp → 视为已在运行（退出码 0），否则报错。
-async fn already_running_or(s: &Settings, what: String) -> anyhow::Result<ExitCode> {
-    // 两个 serve 同时启动时，另一个可能刚绑定端口、尚未开始服务 HTTP：稍等重试一次。
-    for attempt in 0..2 {
-        match probe::probe(&probe_addr(&s.http_addr)).await {
-            Probe::AppMcp(h) => {
-                let msg = describe_running(&h, &s.http_addr);
-                tracing::info!("{msg}；本进程退出");
-                println!("{msg}");
-                return Ok(ExitCode::SUCCESS);
-            }
-            Probe::Other(desc) => {
-                anyhow::bail!("{what}；{} 上是其他程序（{desc}）", s.http_addr)
-            }
-            Probe::Free if attempt == 0 => tokio::time::sleep(Duration::from_millis(500)).await,
-            Probe::Free => {}
-        }
+fn describe_health(h: &Health) -> String {
+    describe_registry(&EndpointRegistry {
+        identity: h.identity.clone(),
+        listen: h.listen.clone(),
+        ipc_endpoint: h.ipc_endpoint.clone(),
+        started_at_ms: 0,
+    })
+}
+
+/// 本配置目录下运行中的实例：读登记文件，并经 `/healthz` 确认它确实在服务（进程号一致）。
+/// 登记文件不存在、或其中的地址上不是该进程时返回 `None`。
+async fn running_instance(home: &AppHome) -> Option<EndpointRegistry> {
+    let reg = EndpointRegistry::read(&home.registry_file()).ok().flatten()?;
+    let Some(listen) = &reg.listen else {
+        // 没有 TCP 服务：只能以登记文件为准（单实例锁保证写它的进程仍持锁时才存在）。
+        return Some(reg);
+    };
+    match probe::probe(&probe_addr(listen)).await {
+        Probe::AppMcp(h) if h.identity.pid == reg.identity.pid => Some(reg),
+        _ => None,
     }
-    anyhow::bail!("{what}（可能是 stdio 模式的 app-mcp-host 或其他程序）")
+}
+
+/// 单实例锁已被持有：等待持锁实例写好登记文件（可能正在启动），打印其信息后以退出码 0 结束。
+async fn already_running(home: &AppHome, err: &std::io::Error) -> anyhow::Result<ExitCode> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(Some(reg)) = EndpointRegistry::read(&home.registry_file()) {
+            let msg = describe_registry(&reg);
+            tracing::info!("{msg}；本进程退出");
+            println!("{msg}");
+            return Ok(ExitCode::SUCCESS);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            // 锁被持有但一直没有登记文件：持锁进程卡在启动阶段，属于异常，如实报告。
+            anyhow::bail!("{err}；5 秒内未写出登记文件 {}", home.registry_file().display());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// 端口 / IPC 端点被占用（单实例锁已取得，因此不是同一配置目录的 Host）：说明占用者。
+async fn occupied_error(s: &Settings, e: std::io::Error) -> anyhow::Error {
+    let who = match probe::probe(&probe_addr(&s.listen)).await {
+        Probe::AppMcp(h) => format!(
+            "{} 上是另一个 app-mcp Host（pid {}，用户 {}）：它使用不同的配置目录（--home / APP_MCP_HOME），或属于其他用户",
+            s.listen,
+            h.identity.pid,
+            h.identity.user.as_deref().unwrap_or("未知"),
+        ),
+        Probe::Other(desc) => format!("{} 上是其他程序（{desc}）", s.listen),
+        Probe::Free => "监听地址空闲，被占用的是本地 IPC 端点".to_owned(),
+    };
+    anyhow::anyhow!("启动 App 连接服务 {} 失败：{e}；{who}", describe_app_endpoints(s))
 }
 
 async fn serve(args: ServeArgs) -> anyhow::Result<ExitCode> {
@@ -219,43 +282,42 @@ async fn serve(args: ServeArgs) -> anyhow::Result<ExitCode> {
         log = ?log_path,
         "app-mcp-host serve 启动"
     );
+    log_notices(&s);
 
     let token = match s.auth {
         AuthMode::Off => None,
         _ => Some(token::load_or_create(&home.token_file())?),
-    };
-
-    let hub = match Hub::start(hub_config(&s)).await {
-        Ok(h) => h,
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            let what = format!("App 连接端口 {} 已被占用：{e}", describe_app_endpoints(&s));
-            return already_running_or(&s, what).await;
-        }
-        Err(e) => {
-            return Err(e).with_context(|| format!("启动 App 连接服务 {} 失败", describe_app_endpoints(&s)));
-        }
     };
     let options = HttpOptions {
         allow_remote: s.http_allow_remote,
         token,
         require_token_without_origin: s.auth == AuthMode::All,
     };
-    let http = match hub.serve_http_with(&s.http_addr, options).await {
-        Ok(a) => a,
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            hub.shutdown().await;
-            return already_running_or(&s, format!("MCP HTTP 端口 {} 已被占用", s.http_addr)).await;
-        }
+    let config = HubConfig {
+        http: options.clone(),
+        mcp_http: true,
+        ..hub_config(&s, &home)
+    };
+    let hub = match Hub::start(config).await {
+        Ok(h) => h,
+        Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => return already_running(&home, &e).await,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => return Err(occupied_error(&s, e).await),
         Err(e) => {
-            hub.shutdown().await;
-            return Err(e).with_context(|| format!("启动 HTTP MCP 服务 {} 失败", s.http_addr));
+            return Err(e).with_context(|| format!("启动 App 连接服务 {} 失败", describe_app_endpoints(&s)));
         }
     };
+    if let Some(addr) = &s.compat_http_addr
+        && let Err(e) = hub.serve_http_with(addr, options).await
+    {
+        hub.shutdown().await;
+        return Err(e).with_context(|| format!("启动兼容期 MCP 端口 {addr}（http.addr / --http）失败"));
+    }
+    let listen = hub.listen_addr().map(|a| a.to_string()).unwrap_or_default();
     tracing::info!(
-        "app-mcp-host 已就绪：MCP http://{http}/mcp，App 连接 ws://{}，本地 IPC {}，令牌策略 {:?}",
-        hub.ws_addr().map(|a| a.to_string()).unwrap_or_default(),
+        "app-mcp-host 已就绪：MCP http://{listen}/mcp，App 连接 ws://{listen}/app，本地 IPC {}，令牌策略 {:?}，登记文件 {}",
         hub.ipc_endpoint().unwrap_or("未开启"),
-        s.auth
+        s.auth,
+        home.registry_file().display(),
     );
     shutdown_signal().await;
     tracing::info!("收到退出信号，停止");
@@ -296,18 +358,36 @@ fn service_settings(home: &AppHome) -> anyhow::Result<Settings> {
     Settings::resolve(&file, &Overrides::default(), home)
 }
 
-async fn wait_health(addr: &str, want_running: bool, timeout: Duration) -> Probe {
+/// 服务命令看到的运行状态。
+enum Status {
+    /// 本配置目录的实例在运行（登记文件 + `/healthz` 确认）。
+    Running(EndpointRegistry),
+    /// 未运行；附带说明（监听地址空闲 / 被其他程序占用）。
+    NotRunning(String),
+}
+
+async fn status_of(home: &AppHome, s: &Settings) -> Status {
+    if let Some(reg) = running_instance(home).await {
+        return Status::Running(reg);
+    }
+    match probe::probe(&probe_addr(&s.listen)).await {
+        // 端口上是 app-mcp，但不是本配置目录登记的实例（如手动以其他 --home 运行的 serve）。
+        Probe::AppMcp(h) => Status::NotRunning(format!(
+            "本配置目录没有登记运行中的实例；{} 上是另一个 app-mcp Host（{}）",
+            s.listen,
+            describe_health(&h)
+        )),
+        Probe::Free => Status::NotRunning(format!("{} 无监听", s.listen)),
+        Probe::Other(d) => Status::NotRunning(format!("{} 被其他程序占用（{d}）", s.listen)),
+    }
+}
+
+async fn wait_status(home: &AppHome, s: &Settings, want_running: bool, timeout: Duration) -> Status {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let p = probe::probe(addr).await;
-        // 进程退出过程中端口可能短暂处于“接受连接但不响应”的状态（Other），继续等待。
-        let done = match &p {
-            Probe::AppMcp(_) => want_running,
-            Probe::Free => !want_running,
-            Probe::Other(_) => false,
-        };
-        if done || tokio::time::Instant::now() >= deadline {
-            return p;
+        let st = status_of(home, s).await;
+        if matches!(st, Status::Running(_)) == want_running || tokio::time::Instant::now() >= deadline {
+            return st;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -320,11 +400,11 @@ fn spec_for(home: &AppHome) -> anyhow::Result<service::ServiceSpec> {
     })
 }
 
-fn print_client_hint(s: &Settings) {
-    let url = format!("http://{}/mcp", probe_addr(&s.http_addr));
+fn print_client_hint(listen: &str, auth: AuthMode) {
+    let url = format!("http://{}/mcp", probe_addr(listen));
     println!("MCP 端点：{url}");
     println!("  Claude Code：claude mcp add --transport http app-mcp {url}");
-    if s.auth == AuthMode::All {
+    if auth == AuthMode::All {
         println!("  已要求所有客户端携带令牌：请求头 Authorization: Bearer $(app-mcp-host token)");
     }
 }
@@ -344,6 +424,9 @@ async fn service_cmd(action: ServiceAction) -> anyhow::Result<ExitCode> {
             file.apply(&args.overrides()?)?;
             file.save(&home.config_file())?;
             let s = Settings::resolve(&file, &Overrides::default(), &home)?;
+            for n in &s.notices {
+                println!("提示：{n}");
+            }
             if s.auth != AuthMode::Off {
                 token::load_or_create(&home.token_file())?;
             }
@@ -354,25 +437,29 @@ async fn service_cmd(action: ServiceAction) -> anyhow::Result<ExitCode> {
             if cfg!(windows) {
                 service::start(&spec)?;
             }
-            match wait_health(&probe_addr(&s.http_addr), true, Duration::from_secs(10)).await {
-                Probe::AppMcp(h) => println!("{}", describe_running(&h, &s.http_addr)),
-                Probe::Free => println!(
-                    "服务尚未就绪；可用 `app-mcp-host service status` 查看，日志在 {}",
-                    home.log_dir().display()
-                ),
-                Probe::Other(d) => println!("警告：{} 被其他程序占用（{d}）", s.http_addr),
-            }
-            print_client_hint(&s);
+            let listen = match wait_status(&home, &s, true, Duration::from_secs(10)).await {
+                Status::Running(reg) => {
+                    println!("{}", describe_registry(&reg));
+                    reg.listen.unwrap_or_else(|| s.listen.clone())
+                }
+                Status::NotRunning(why) => {
+                    println!(
+                        "服务尚未就绪（{why}）；可用 `app-mcp-host service status` 查看，日志在 {}",
+                        home.log_dir().display()
+                    );
+                    s.listen.clone()
+                }
+            };
+            print_client_hint(&listen, s.auth);
             Ok(ExitCode::SUCCESS)
         }
         ServiceAction::Uninstall(HomeArg { home }) => {
             let home = AppHome::resolve(home.as_deref())?;
-            let s = service_settings(&home)?;
             let removed = service::uninstall()?;
             if !service::MANAGED_BY_OS {
                 // Windows：登录启动项不管理进程，结束当前运行的实例。
-                if let Probe::AppMcp(h) = probe::probe(&probe_addr(&s.http_addr)).await {
-                    service::kill_pid(h.pid)?;
+                if let Some(reg) = running_instance(&home).await {
+                    service::kill_pid(reg.identity.pid)?;
                 }
             }
             println!(
@@ -398,17 +485,13 @@ async fn service_cmd(action: ServiceAction) -> anyhow::Result<ExitCode> {
                 println!("{m}");
             }
             println!("配置目录：{}", home.dir.display());
-            match probe::probe(&probe_addr(&s.http_addr)).await {
-                Probe::AppMcp(h) => {
-                    println!("{}", describe_running(&h, &s.http_addr));
+            match status_of(&home, &s).await {
+                Status::Running(reg) => {
+                    println!("{}", describe_registry(&reg));
                     Ok(ExitCode::SUCCESS)
                 }
-                Probe::Free => {
-                    println!("未运行（{} 无监听）", s.http_addr);
-                    Ok(ExitCode::from(EXIT_NOT_RUNNING))
-                }
-                Probe::Other(d) => {
-                    println!("未运行：{} 被其他程序占用（{d}）", s.http_addr);
+                Status::NotRunning(why) => {
+                    println!("未运行（{why}）");
                     Ok(ExitCode::from(EXIT_NOT_RUNNING))
                 }
             }
@@ -416,9 +499,8 @@ async fn service_cmd(action: ServiceAction) -> anyhow::Result<ExitCode> {
         ServiceAction::Start(HomeArg { home }) => {
             let home = AppHome::resolve(home.as_deref())?;
             let s = service_settings(&home)?;
-            let addr = probe_addr(&s.http_addr);
-            if let Probe::AppMcp(h) = probe::probe(&addr).await {
-                println!("{}", describe_running(&h, &s.http_addr));
+            if let Some(reg) = running_instance(&home).await {
+                println!("{}", describe_registry(&reg));
                 return Ok(ExitCode::SUCCESS);
             }
             if !service::installed()? {
@@ -427,35 +509,32 @@ async fn service_cmd(action: ServiceAction) -> anyhow::Result<ExitCode> {
                 );
             }
             service::start(&spec_for(&home)?)?;
-            match wait_health(&addr, true, Duration::from_secs(10)).await {
-                Probe::AppMcp(h) => {
-                    println!("{}", describe_running(&h, &s.http_addr));
+            match wait_status(&home, &s, true, Duration::from_secs(10)).await {
+                Status::Running(reg) => {
+                    println!("{}", describe_registry(&reg));
                     Ok(ExitCode::SUCCESS)
                 }
-                _ => anyhow::bail!("启动后 10 秒内未就绪；日志见 {}", home.log_dir().display()),
+                Status::NotRunning(why) => {
+                    anyhow::bail!("启动后 10 秒内未就绪（{why}）；日志见 {}", home.log_dir().display())
+                }
             }
         }
         ServiceAction::Stop(HomeArg { home }) => {
             let home = AppHome::resolve(home.as_deref())?;
             let s = service_settings(&home)?;
-            let addr = probe_addr(&s.http_addr);
             if service::MANAGED_BY_OS && service::installed()? {
                 service::stop()?;
             }
             // 仍在运行：Windows（登录启动项不管理进程）或手动运行的 serve → 按 pid 结束。
-            if let Probe::AppMcp(h) = probe::probe(&addr).await {
-                service::kill_pid(h.pid)?;
+            if let Some(reg) = running_instance(&home).await {
+                service::kill_pid(reg.identity.pid)?;
             }
-            match wait_health(&addr, false, Duration::from_secs(10)).await {
-                Probe::Free => {
+            match wait_status(&home, &s, false, Duration::from_secs(10)).await {
+                Status::NotRunning(_) => {
                     println!("已停止");
                     Ok(ExitCode::SUCCESS)
                 }
-                Probe::AppMcp(h) => anyhow::bail!("实例（pid {}）仍在运行", h.pid),
-                Probe::Other(d) => {
-                    println!("app-mcp-host 未运行；{} 被其他程序占用（{d}）", s.http_addr);
-                    Ok(ExitCode::SUCCESS)
-                }
+                Status::Running(reg) => anyhow::bail!("实例（pid {}）仍在运行", reg.identity.pid),
             }
         }
     }

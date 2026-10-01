@@ -196,6 +196,7 @@ fn status_str(s: StateStatus) -> &'static str {
         StateStatus::Stopped => "stopped",
         StateStatus::Dormant => "dormant",
         StateStatus::Waking => "waking",
+        StateStatus::HostMismatch => "host-mismatch",
     }
 }
 

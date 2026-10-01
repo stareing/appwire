@@ -104,9 +104,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct ConfigJson {
-    /// 缺省 `127.0.0.1:7717`；显式 `null` = 不开 WebSocket 服务；端口 0 = 随机。
+    /// HTTP 监听地址（`/app`、`/healthz`，`mcpHttp` 时另有 `/mcp`）。缺省 `127.0.0.1:7717`（被占用时依次尝试
+    /// 7737、7757）；显式给出时只绑定该地址；显式 `null` = 不开；端口 0 = 随机。
     #[serde(deserialize_with = "present")]
-    ws_addr: Option<Option<String>>,
+    listen: Option<Option<String>>,
+    /// 是否在 `listen` 上提供 MCP Streamable HTTP（`/mcp`），默认 `false`。
+    mcp_http: Option<bool>,
+    /// 单实例锁与登记文件目录（`<runDir>/hub.lock`、`endpoints.json`）；缺省不参与。
+    run_dir: Option<PathBuf>,
     /// 本地 IPC 端点（`unix:…` / `pipe:…`，spec/protocol.md 1.2）；缺省为平台默认端点；显式 `null` = 不开。
     #[serde(deserialize_with = "present")]
     ipc_endpoint: Option<Option<String>>,
@@ -145,9 +150,15 @@ fn present<'de, D: Deserializer<'de>>(
 impl ConfigJson {
     fn into_config(self) -> HubConfig {
         let mut c = HubConfig::default();
-        if let Some(addr) = self.ws_addr {
-            c.ws_addr = addr;
+        if let Some(addr) = self.listen {
+            // 显式给出（或 null）：只绑定该地址，不尝试备选端口。
+            c.listen = addr;
+            c.listen_alternates = Vec::new();
         }
+        if let Some(v) = self.mcp_http {
+            c.mcp_http = v;
+        }
+        c.run_dir = self.run_dir;
         if let Some(endpoint) = self.ipc_endpoint {
             c.ipc_endpoint = endpoint;
         }
@@ -294,7 +305,7 @@ impl Waker for JsWaker {
 #[napi(js_name = "Hub")]
 pub struct JsHub {
     hub: Mutex<Option<Arc<Hub>>>,
-    ws_addr: Option<String>,
+    listen_addr: Option<String>,
     ipc_endpoint: Option<String>,
     /// 事件转发任务（`onEvent` 设置）。
     events: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -323,20 +334,20 @@ impl JsHub {
         let hub = Hub::start(cfg.into_config())
             .await
             .map_err(|e| err("START_FAILED", format!("Hub 启动失败：{e}")))?;
-        let ws_addr = hub.ws_addr().map(|a| a.to_string());
+        let listen_addr = hub.listen_addr().map(|a| a.to_string());
         let ipc_endpoint = hub.ipc_endpoint().map(str::to_owned);
         Ok(JsHub {
             hub: Mutex::new(Some(Arc::new(hub))),
-            ws_addr,
+            listen_addr,
             ipc_endpoint,
             events: Mutex::new(None),
         })
     }
 
-    /// App 连接服务实际监听的地址（`host:port`）；未开启时为 `null`。
+    /// HTTP 服务（`/app`、`/healthz`）实际监听的地址（`host:port`，App 端点为 `ws://<地址>/app`）；未开启时为 `null`。
     #[napi(getter)]
-    pub fn ws_addr(&self) -> Option<String> {
-        self.ws_addr.clone()
+    pub fn listen_addr(&self) -> Option<String> {
+        self.listen_addr.clone()
     }
 
     /// 本地 IPC 连接服务的端点（可直接作为原生 SDK 的 `hostUrl`）；未开启时为 `null`。

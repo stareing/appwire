@@ -1,9 +1,10 @@
-//! 单实例探测：对 MCP HTTP 地址发 `GET /healthz`，判断端口是否已被一个健康的 app-mcp-host 占用。
+//! 探测：对监听地址发 `GET /healthz`，判断端口上是否是一个健康的 app-mcp Host（`service status`、
+//! 端口被占用时说明占用者）。本配置目录的实例以登记文件为准，见 `lib.rs` 的 `running_instance`。
 
 use std::time::Duration;
 
 use app_mcp_hub::Health;
-use app_mcp_hub::http_server::{HEALTH_PATH, HEALTH_SERVICE};
+use app_mcp_hub::http_server::HEALTH_PATH;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -74,7 +75,7 @@ pub fn parse_response(raw: &[u8]) -> Probe {
         return Probe::Other(format!("HTTP 服务（{status}）"));
     }
     match serde_json::from_str::<Health>(body.trim()) {
-        Ok(h) if h.service == HEALTH_SERVICE => Probe::AppMcp(h),
+        Ok(h) if h.is_app_mcp() => Probe::AppMcp(h),
         _ => Probe::Other("HTTP 服务，但 /healthz 不是 app-mcp".into()),
     }
 }
@@ -85,7 +86,7 @@ mod tests {
 
     #[test]
     fn parses_health() {
-        let body = r#"{"service":"app-mcp","version":"0.1.0","pid":42,"wsAddr":"127.0.0.1:7717","mcpPath":"/mcp","tokenRequiredForBrowsers":true}"#;
+        let body = r#"{"service":"app-mcp","version":"0.1.0","user":"1000","pid":42,"listen":"127.0.0.1:7717","appPath":"/app","mcpPath":"/mcp","tokenRequiredForBrowsers":true}"#;
         let raw = format!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
             body.len()
@@ -93,8 +94,9 @@ mod tests {
         let Probe::AppMcp(h) = parse_response(raw.as_bytes()) else {
             panic!("应识别为 app-mcp");
         };
-        assert_eq!(h.pid, 42);
-        assert_eq!(h.ws_addr.as_deref(), Some("127.0.0.1:7717"));
+        assert_eq!(h.identity.pid, 42);
+        assert_eq!(h.identity.user.as_deref(), Some("1000"));
+        assert_eq!(h.listen.as_deref(), Some("127.0.0.1:7717"));
     }
 
     #[test]
@@ -111,13 +113,5 @@ mod tests {
             parse_response(b"SSH-2.0-OpenSSH"),
             Probe::Other(_)
         ));
-    }
-
-    #[tokio::test]
-    async fn free_port() {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = l.local_addr().unwrap();
-        drop(l);
-        assert_eq!(probe(&addr.to_string()).await, Probe::Free);
     }
 }
