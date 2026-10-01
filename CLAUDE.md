@@ -3,6 +3,7 @@
 把 App 内的业务动作以 MCP 工具暴露给模型。理念「万物皆工具」见 `README.md`（英文为主，其他语言在 `docs/README.<lang>.md`：zh-CN、zh-TW、ja、ko、es、pt-BR、fr、de、ru、it；修改理念或概览时各语言版本同步）；总体设计见 `app-mcp-plan.md`，当前阶段为 **M1**（第 15 节）。
 
 对外品牌名为 **AppWire**（仓库 `github.com/stareing/appwire`）；包名、crate 名、二进制与协议标识符仍沿用工作名 `app-mcp`。
+Logo 与社交卡片在 `docs/assets/`（`logo/appwire-mark.svg` 为主图形，各 README 页头用 `appwire-logo-{light,dark}.png`）。
 面向用户的文档与包描述（npm / crates.io / PyPI / NuGet / pub.dev）用英文、以 AppWire 称呼项目，便于检索；`llms.txt` 与 README 首段保持一致。
 
 ## 目录结构（M1）

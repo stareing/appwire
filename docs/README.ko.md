@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/appwire-logo-dark.png">
+    <img src="assets/logo/appwire-logo-light.png" alt="AppWire" width="380">
+  </picture>
+</p>
+
 # AppWire — 어떤 앱이든 AI 에이전트용 MCP 도구로
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#라이선스)

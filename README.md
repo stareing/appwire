@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo/appwire-logo-dark.png">
+    <img src="docs/assets/logo/appwire-logo-light.png" alt="AppWire" width="380">
+  </picture>
+</p>
+
 # AppWire — turn any app into MCP tools for AI agents
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)

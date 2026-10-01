@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="AppWire">
+  <defs>
+    <linearGradient id="appwire-g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="92" height="92" rx="22" fill="url(#appwire-g)"/>
+  <polyline points="24,34 37,70 50,46 63,70 76,34" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="24" cy="30" r="8" fill="#fff"/>
+  <circle cx="76" cy="30" r="8" fill="#fff"/>
+  <circle cx="24" cy="30" r="3.2" fill="#7c3aed"/>
+  <circle cx="76" cy="30" r="3.2" fill="#7c3aed"/>
+</svg>

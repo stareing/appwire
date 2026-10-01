@@ -7,7 +7,21 @@
   </defs>
   <rect width="1280" height="640" fill="url(#bg)"/>
   <g font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
-    <text x="96" y="210" font-size="104" font-weight="800" fill="#ffffff">AppWire</text>
+    <svg x="96" y="112" width="120" height="120" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="appwire-g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="92" height="92" rx="22" fill="url(#appwire-g)"/>
+  <polyline points="24,34 37,70 50,46 63,70 76,34" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="24" cy="30" r="8" fill="#fff"/>
+  <circle cx="76" cy="30" r="8" fill="#fff"/>
+  <circle cx="24" cy="30" r="3.2" fill="#7c3aed"/>
+  <circle cx="76" cy="30" r="3.2" fill="#7c3aed"/>
+</svg>
+    <text x="240" y="210" font-size="104" font-weight="800" fill="#ffffff">AppWire</text>
     <text x="96" y="290" font-size="44" font-weight="600" fill="#c4b5fd">Turn any app into MCP tools for AI agents</text>
     <text x="96" y="360" font-size="30" fill="#cbd5e1">Web · Desktop · Mobile — one Rust core, one local hub</text>
     <text x="96" y="404" font-size="30" fill="#cbd5e1">Claude · ChatGPT · Gemini · any MCP client</text>
