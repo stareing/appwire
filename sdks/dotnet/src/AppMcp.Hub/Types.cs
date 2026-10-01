@@ -537,6 +537,10 @@ public sealed record HubError(string Kind, string Message, JsonElement? Details)
     public const string PolicyDenied = "POLICY_DENIED";
     /// <summary>需要用户本人操作（登录、授权、切到前台、在 App 内确认）后才能继续。Details：reason?、uri?。</summary>
     public const string UserActionRequired = "USER_ACTION_REQUIRED";
+    /// <summary>导航没有完成（不支持 / 出错 / 超时 / 导航后工具未出现，spec/protocol.md 3.4）。Details：reason、appId、page。</summary>
+    public const string NavigationFailed = "NAVIGATION_FAILED";
+    /// <summary>导航被拒绝（App 拒绝或页面不可由 Agent 导航）。Details：reason（"app" / "not-navigable"）、appId、page。</summary>
+    public const string NavigationDenied = "NAVIGATION_DENIED";
 }
 
 /// <summary>App 声明的调用结果业务状态（spec/protocol.md 3.2）。</summary>

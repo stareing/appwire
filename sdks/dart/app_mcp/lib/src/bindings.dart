@@ -288,6 +288,11 @@ final class AmToolOptions extends Struct {
   external int struct_size;
   external Pointer<Utf8> annotations_json;
   external Pointer<Utf8> output_schema_json;
+  /// v14：所在页面名（第 4c 项；第二部分接入 SDK API 前恒为 NULL）。
+  external Pointer<Utf8> page;
+  /// v14：AmToolSurface（0 = APP，1 = VIEW）。
+  @Int32()
+  external int surface;
 }
 
 /// v9：`am_call_complete_ex` 的调用结果。

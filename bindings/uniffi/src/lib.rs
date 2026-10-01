@@ -48,6 +48,24 @@ pub enum Risk {
     OsSensitive,
 }
 
+/// 工具对界面的依赖（spec/protocol.md 3.4）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ToolSurface {
+    /// 不依赖界面：后台可调、可唤醒（缺省）。
+    App,
+    /// 依赖界面：只在所在界面可见且处于最上层时注册。
+    View,
+}
+
+impl From<ToolSurface> for native::ToolSurface {
+    fn from(s: ToolSurface) -> Self {
+        match s {
+            ToolSurface::App => native::ToolSurface::App,
+            ToolSurface::View => native::ToolSurface::View,
+        }
+    }
+}
+
 /// 调用结果的业务状态（spec/protocol.md 3.2）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum ResultStatus {
@@ -422,34 +440,8 @@ impl From<native::NativeError> for AppMcpError {
     }
 }
 
-/// 所有协议错误类别（FFI 上的字符串形式）。
-const ALL_ERROR_KINDS: [ErrorKind; 19] = [
-    ErrorKind::ToolNotFound,
-    ErrorKind::ToolDisabled,
-    ErrorKind::InvalidInput,
-    ErrorKind::UserRejected,
-    ErrorKind::Timeout,
-    ErrorKind::HandlerError,
-    ErrorKind::Cancelled,
-    ErrorKind::AppDisconnected,
-    ErrorKind::AppNotInstalled,
-    ErrorKind::LaunchFailed,
-    ErrorKind::AppNotResponding,
-    ErrorKind::InstanceFrozen,
-    ErrorKind::ResourceNotFound,
-    ErrorKind::Unauthorized,
-    ErrorKind::UnsupportedProtocol,
-    ErrorKind::RateLimited,
-    ErrorKind::PayloadTooLarge,
-    ErrorKind::PolicyDenied,
-    ErrorKind::UserActionRequired,
-];
-
 fn parse_error_kind(kind: &str) -> Result<ErrorKind, AppMcpError> {
-    ALL_ERROR_KINDS
-        .iter()
-        .copied()
-        .find(|k| k.as_str() == kind)
+    ErrorKind::parse(kind)
         .ok_or_else(|| AppMcpError::UnknownErrorKind {
             kind: kind.to_owned(),
         })
@@ -458,7 +450,7 @@ fn parse_error_kind(kind: &str) -> Result<ErrorKind, AppMcpError> {
 /// 返回所有合法的错误类别字符串（如 `"HANDLER_ERROR"`）。
 #[uniffi::export]
 pub fn error_kinds() -> Vec<String> {
-    ALL_ERROR_KINDS
+    ErrorKind::ALL
         .iter()
         .map(|k| k.as_str().to_owned())
         .collect()
@@ -693,6 +685,12 @@ pub struct ToolSpec {
     /// 结果的 JSON Schema 文本（MCP `outputSchema`）；为空 = 未声明。
     #[uniffi(default = None)]
     pub output_schema_json: Option<String>,
+    /// 对界面的依赖（spec/protocol.md 3.4）；为空 = `App`。
+    #[uniffi(default = None)]
+    pub surface: Option<ToolSurface>,
+    /// 所在页面名；Hub 在该工具未注册时据此导航（[`AppMcpClient::set_navigation_handler`]）。
+    #[uniffi(default = None)]
+    pub page: Option<String>,
 }
 
 /// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。均可选，为空 = 未声明。
@@ -741,6 +739,8 @@ impl From<ToolSpec> for (native::ToolSpec, native::ToolOptions) {
         let options = native::ToolOptions {
             annotations: s.annotations.map(Into::into),
             output_schema_json: s.output_schema_json,
+            surface: s.surface.map(Into::into).unwrap_or_default(),
+            page: s.page,
         };
         (n, options)
     }
@@ -874,6 +874,13 @@ pub trait CancelListener: Send + Sync {
     fn on_cancel(&self, reason: CancelReason);
 }
 
+/// 导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）。在分发线程上同步调用，必须尽快返回；
+/// 切换界面后通过 `request` 提交结果。
+#[uniffi::export(foreign)]
+pub trait NavigationHandler: Send + Sync {
+    fn navigate(&self, request: Arc<Navigate>);
+}
+
 /// 客户端事件。在分发线程上调用。
 #[uniffi::export(foreign)]
 pub trait ClientListener: Send + Sync {
@@ -913,6 +920,17 @@ impl native::ResourceReader for ResourceReaderAdapter {
         });
         if !guarded(|| self.0.read(wrapped)) {
             let _ = read.fail(ErrorKind::HandlerError, "资源读取抛出了未处理的异常");
+        }
+    }
+}
+
+struct NavigationHandlerAdapter(Arc<dyn NavigationHandler>);
+
+impl native::NavigationHandler for NavigationHandlerAdapter {
+    fn navigate(&self, request: native::NavigateHandle) {
+        let wrapped = Arc::new(Navigate { inner: request.clone() });
+        if !guarded(|| self.0.navigate(wrapped)) {
+            let _ = request.fail("导航回调抛出了未处理的异常");
         }
     }
 }
@@ -1091,6 +1109,36 @@ impl Read {
     }
 }
 
+/// 一次导航请求（[`NavigationHandler::navigate`]）。完成只能一次。
+#[derive(Debug, uniffi::Object)]
+pub struct Navigate {
+    inner: native::NavigateHandle,
+}
+
+#[uniffi::export]
+impl Navigate {
+    /// 目标页面名。
+    pub fn page(&self) -> String {
+        self.inner.page()
+    }
+    /// 页面参数 JSON 文本；Host 没有给出时为空。
+    pub fn params_json(&self) -> Option<String> {
+        self.inner.params_json()
+    }
+    /// 导航完成。
+    pub fn complete(&self) -> Result<(), AppMcpError> {
+        Ok(self.inner.complete()?)
+    }
+    /// 导航失败（`NAVIGATION_FAILED`）：页面不存在、参数不合法等。
+    pub fn fail(&self, message: String) -> Result<(), AppMcpError> {
+        Ok(self.inner.fail(&message)?)
+    }
+    /// 拒绝导航（`NAVIGATION_DENIED`），如用户正在输入。
+    pub fn deny(&self, message: String) -> Result<(), AppMcpError> {
+        Ok(self.inner.deny(&message)?)
+    }
+}
+
 /// 已注册的工具。`dispose` 幂等；丢弃对象**不会**注销工具。
 #[derive(Debug, uniffi::Object)]
 pub struct Tool {
@@ -1215,6 +1263,12 @@ impl AppMcpClient {
     pub fn stop(&self) {
         self.inner.stop()
     }
+    /// 设置导航回调（spec/protocol.md 3.4）；为空时清除（导航请求以 `NAVIGATION_FAILED` 回复）。
+    /// 握手时声明能力，建议在 `start` 之前设置。
+    pub fn set_navigation_handler(&self, handler: Option<Arc<dyn NavigationHandler>>) {
+        let handler = handler.map(|h| Arc::new(NavigationHandlerAdapter(h)) as Arc<dyn native::NavigationHandler>);
+        self.inner.set_navigation_handler(handler)
+    }
     pub fn set_visibility(&self, visibility: Visibility, focused: bool) {
         self.inner.set_visibility(visibility.into(), focused)
     }
@@ -1292,7 +1346,8 @@ mod tests {
     #[test]
     fn error_kinds_roundtrip() {
         let kinds = error_kinds();
-        assert_eq!(kinds.len(), 19);
+        assert_eq!(kinds.len(), 21);
+        assert!(kinds.contains(&"NAVIGATION_FAILED".to_owned()) && kinds.contains(&"NAVIGATION_DENIED".to_owned()));
         assert!(kinds.contains(&"RATE_LIMITED".to_owned()));
         assert!(kinds.contains(&"PAYLOAD_TOO_LARGE".to_owned()));
         assert!(kinds.contains(&"POLICY_DENIED".to_owned()));
@@ -1370,6 +1425,8 @@ mod tests {
             enabled: false,
             annotations: None,
             output_schema_json: None,
+            surface: None,
+            page: None,
         };
         let (n, options): (native::ToolSpec, native::ToolOptions) = spec.clone().into();
         assert_eq!(n.risk, native::Risk::Write);
@@ -1384,10 +1441,13 @@ mod tests {
                 ..ToolAnnotations::default()
             }),
             output_schema_json: Some(r#"{"type":"object"}"#.into()),
+            surface: Some(ToolSurface::View),
+            page: Some("cart".into()),
             ..spec
         }
         .into();
         assert_eq!(n.risk, native::Risk::OsSensitive);
+        assert_eq!((options.surface, options.page.as_deref()), (native::ToolSurface::View, Some("cart")));
         let a = options.annotations.expect("annotations");
         assert_eq!((a.read_only_hint, a.idempotent_hint, a.destructive_hint), (Some(false), Some(true), None));
         assert_eq!(options.output_schema_json.as_deref(), Some(r#"{"type":"object"}"#));
@@ -1636,6 +1696,8 @@ mod tests {
                 enabled: true,
                 annotations: None,
                 output_schema_json: None,
+                surface: None,
+                page: None,
             };
             keep.push(client.register_tool(spec, Arc::new(UserActionTool)).expect("tool"));
         }

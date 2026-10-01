@@ -203,3 +203,39 @@ fn cli_writes_files() {
         .expect("运行 CLI");
     assert!(!bad.status.success());
 }
+
+/// 原生意图 target 只生成 `surface: app` 的工具，`view` 工具记警告跳过；类型化接口不受影响；页面工具不参与生成。
+#[test]
+fn native_targets_skip_view_tools() {
+    let text = serde_json::json!({
+        "manifestVersion": 1, "appId": "shop", "name": "示例商城",
+        "tools": [
+            { "name": "orders.search", "description": "搜索订单", "inputSchema": { "type": "object" } },
+            { "name": "cart.highlight", "description": "高亮购物车条目", "inputSchema": { "type": "object" }, "surface": "view" }
+        ],
+        "pages": [{ "name": "cart", "tools": [
+            { "name": "cart.checkout", "description": "结算", "inputSchema": { "type": "object" }, "surface": "view" }
+        ] }]
+    })
+    .to_string();
+    let native = [
+        Target::SwiftAppIntents,
+        Target::KotlinAppFunctions,
+        Target::WindowsAppActions,
+        Target::HarmonyInsightIntents,
+    ];
+    for target in Target::ALL {
+        let (output, _) = generate_from_str(&text, target, &Options::default()).expect("清单合法");
+        let all: String = output.files.iter().map(|f| f.contents.as_str()).collect();
+        assert!(!all.contains("cart.checkout") && !all.contains("CartCheckout"), "{target}: 页面工具不参与生成");
+        let skipped = output.warnings.iter().any(|w| w.tool == "cart.highlight" && w.message.contains("view"));
+        if native.contains(&target) {
+            assert!(skipped, "{target}: view 工具应记警告");
+            assert!(!all.contains("CartHighlight"), "{target}: view 工具不生成意图");
+            assert!(all.contains("OrdersSearch"), "{target}: app 工具照常生成");
+        } else {
+            assert!(!skipped, "{target}: 类型化接口不过滤");
+            assert!(all.contains("CartHighlight") || all.contains("cart_highlight"), "{target}: 类型化接口含 view 工具");
+        }
+    }
+}

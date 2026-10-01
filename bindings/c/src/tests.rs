@@ -23,6 +23,10 @@ unsafe extern "C" fn count_free(_ud: *mut c_void) {
 
 unsafe extern "C" fn noop_tool(_ud: *mut c_void, _call: *mut AmCall) {}
 
+unsafe extern "C" fn noop_navigate(_ud: *mut c_void, navigate: *mut AmNavigate) {
+    unsafe { am_navigate_complete(navigate) };
+}
+
 fn freed() -> usize {
     FREED.with(Cell::get)
 }
@@ -324,6 +328,21 @@ fn user_data_freed_on_failure() {
     };
     assert_eq!(s, AmStatus::InvalidArgument);
     assert_eq!(freed(), before + 3);
+
+    let s = unsafe { am_client_set_navigation_handler(ptr::null_mut(), None, ptr::null_mut(), Some(count_free)) };
+    assert_eq!(s, AmStatus::InvalidArgument);
+    assert_eq!(freed(), before + 4);
+}
+
+#[test]
+fn navigate_null_pointers() {
+    unsafe {
+        assert!(am_navigate_page(ptr::null()).is_null());
+        assert!(am_navigate_params_json(ptr::null()).is_null());
+        assert_eq!(am_navigate_complete(ptr::null_mut()), AmStatus::InvalidArgument);
+        assert_eq!(am_navigate_fail(ptr::null_mut(), ptr::null()), AmStatus::InvalidArgument);
+        assert_eq!(am_navigate_deny(ptr::null_mut(), ptr::null()), AmStatus::InvalidArgument);
+    }
 }
 
 #[test]
@@ -409,6 +428,13 @@ fn header_consistency() {
         // v12
         "am_read_fail_with_details",
         "am_read_fail_user_action",
+        // v14
+        "am_client_set_navigation_handler",
+        "am_navigate_page",
+        "am_navigate_params_json",
+        "am_navigate_complete",
+        "am_navigate_fail",
+        "am_navigate_deny",
     ];
     // 收集头文件中形如 `am_xxx(` 的声明。
     let mut declared = Vec::new();
@@ -472,6 +498,7 @@ fn header_consistency() {
         ("AM_RESULT_PENDING = 1", result_status_from(1).ok() == Some(ResultStatus::Pending)),
         ("AM_RESULT_PARTIAL = 2", result_status_from(2).ok() == Some(ResultStatus::Partial)),
         ("AM_RESULT_NOOP = 3", result_status_from(3).ok() == Some(ResultStatus::Noop)),
+        ("AM_SURFACE_VIEW = 1", true),
         (
             "AM_SLEEP_REASON_APP = 3",
             sleep_reason_from(3).ok() == Some(SleepReason::App),
@@ -535,6 +562,17 @@ fn runtime_through_c_abi() {
     assert!(!iid.is_null());
     unsafe { am_string_free(iid) };
     assert!(unsafe { am_client_token(client) }.is_null());
+
+    // v14：设置 / 清除导航回调；被替换的回调释放其 user_data
+    let nav_before = freed();
+    assert_eq!(
+        unsafe { am_client_set_navigation_handler(client, Some(noop_navigate), ptr::null_mut(), Some(count_free)) },
+        AmStatus::Ok
+    );
+    assert_eq!(freed(), nav_before);
+    assert_eq!(unsafe { am_client_set_navigation_handler(client, None, ptr::null_mut(), None) }, AmStatus::Ok);
+    assert_eq!(freed(), nav_before + 1);
+    let before = before + 1;
     let mut text: *mut c_char = ptr::null_mut();
     assert_eq!(unsafe { am_client_state_code(client, &mut text) }, AmStatus::Ok);
     assert!(text.is_null(), "Idle 没有错误码");
@@ -1073,10 +1111,13 @@ fn resource_options_are_read_up_to_struct_size() {
 fn tool_options_are_read_up_to_struct_size() {
     let ann = CString::new(r#"{"readOnlyHint":true,"title":"查询"}"#).unwrap_or_default();
     let schema = CString::new(r#"{"type":"object"}"#).unwrap_or_default();
+    let page = CString::new("cart").unwrap_or_default();
     let full = AmToolOptions {
         struct_size: std::mem::size_of::<AmToolOptions>() as u32,
         annotations_json: ann.as_ptr(),
         output_schema_json: schema.as_ptr(),
+        page: page.as_ptr(),
+        surface: 1,
     };
     let options = unsafe { read_tool_options(&full) }.ok();
     assert_eq!(
@@ -1088,8 +1129,16 @@ fn tool_options_are_read_up_to_struct_size() {
                 ..ToolAnnotations::default()
             }),
             output_schema_json: Some(r#"{"type":"object"}"#.into()),
+            surface: app_mcp_native::ToolSurface::View,
+            page: Some("cart".into()),
         })
     );
+    // v13 调用方（不含 page / surface）：按未声明处理
+    let v13 = AmToolOptions { struct_size: std::mem::offset_of!(AmToolOptions, page) as u32, ..full };
+    let options = unsafe { read_tool_options(&v13) }.ok();
+    assert!(options.as_ref().is_some_and(|o| o.page.is_none() && o.surface == app_mcp_native::ToolSurface::App && o.output_schema_json.is_some()));
+    let bad_surface = AmToolOptions { surface: 7, ..full };
+    assert_eq!(unsafe { read_tool_options(&bad_surface) }.err().map(|e| e.status), Some(AmStatus::InvalidArgument));
     assert_eq!(unsafe { read_tool_options(ptr::null()) }.ok(), Some(ToolOptions::default()));
     // 只含到 annotations_json 的调用方：output_schema_json 按 NULL 处理
     let short = AmToolOptions {
@@ -1307,6 +1356,8 @@ fn tool_options_and_call_result_reach_host() {
         struct_size: std::mem::size_of::<AmToolOptions>() as u32,
         annotations_json: ann.as_ptr(),
         output_schema_json: schema.as_ptr(),
+        page: ptr::null(),
+        surface: 0,
     };
     let mut tool: *mut AmTool = ptr::null_mut();
     assert_eq!(

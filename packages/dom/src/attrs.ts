@@ -113,6 +113,8 @@ const ERROR_KINDS: readonly ErrorKind[] = [
   'PAYLOAD_TOO_LARGE',
   'POLICY_DENIED',
   'USER_ACTION_REQUIRED',
+  'NAVIGATION_FAILED',
+  'NAVIGATION_DENIED',
 ]
 
 export function isRisk(v: string): v is Risk {

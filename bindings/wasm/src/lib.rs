@@ -17,7 +17,9 @@ pub use convert::{
     FromJson, JsCallOutcome, JsConfig, JsEvent, JsLifecycle, JsResourceDef, JsState, JsToolDef, JsToolUpdate,
 };
 
-use app_mcp_core::{Client, ConnectionErrorCode, ConnectionIssue, HoldId, Millis, ReadId, ResourceId, ScopeId, ToolId, Visibility};
+use app_mcp_core::{
+    Client, ConnectionErrorCode, ConnectionIssue, HoldId, Millis, NavigateId, ReadId, ResourceId, ScopeId, ToolId, Visibility,
+};
 use wasm_bindgen::prelude::*;
 
 /// 把 JS 传入的时间转换为核心的单调毫秒数（负数与 NaN 视为 0）。
@@ -188,6 +190,21 @@ impl WasmClient {
     pub fn complete_read(&mut self, read: f64, outcome: &str) -> Result<(), JsError> {
         let outcome: JsCallOutcome = from_json(outcome, "读取结果")?;
         self.inner.complete_read(ReadId(handle(read)?), outcome.into_read()).map_err(core_err)
+    }
+
+    /// 导航完成（`navigate` 事件，spec/protocol.md 3.4）。`outcome` 为 JSON：`{}`（完成）或
+    /// `{ error: { kind, message, details? } }`（`NAVIGATION_FAILED` / `NAVIGATION_DENIED`）。
+    #[wasm_bindgen(js_name = completeNavigate)]
+    pub fn complete_navigate(&mut self, navigate: f64, outcome: &str) -> Result<(), JsError> {
+        let outcome: JsCallOutcome = from_json(outcome, "导航结果")?;
+        let outcome = outcome.into_read().map(drop);
+        self.inner.complete_navigate(NavigateId(handle(navigate)?), outcome).map_err(core_err)
+    }
+
+    /// 是否处理 Host 的 `app/navigate`（设置了导航回调时为 true）；握手时声明，连接后修改在下次连接生效。
+    #[wasm_bindgen(js_name = setNavigation)]
+    pub fn set_navigation(&mut self, enabled: bool) {
+        self.inner.set_navigation(enabled);
     }
 
     // ---- 驱动层输出 -----------------------------------------------------

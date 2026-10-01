@@ -7,7 +7,7 @@
 use app_mcp_core::{
     CallDedupPolicy, CallOutput, CancelReason, ClientConfig, ClientKind, ConnectionState, Event, HeartbeatMode,
     HeartbeatPolicy, LifecycleMode, LifecyclePolicy, ReconnectPolicy, Residency, ResourceDef, ScopeId, SleepReason, ToolDef, ToolError,
-    ToolUpdate, TransportKind, Visibility, WakeReason,
+    ToolSurface, ToolUpdate, TransportKind, Visibility, WakeReason,
 };
 use app_mcp_core::{
     Activation, AppOverview, Audience, ContentAnnotations, ResultStatus, Risk, ToolAnnotations, WakeDescriptor,
@@ -545,6 +545,9 @@ pub struct JsToolDef {
     pub title: Option<String>,
     pub annotations: Option<ToolAnnotations>,
     pub output_schema: Option<Value>,
+    /// `"app"`（缺省）/ `"view"`（spec/protocol.md 3.4）。
+    pub surface: Option<ToolSurface>,
+    pub page: Option<String>,
     /// 缺省 true。
     pub enabled: Option<bool>,
     pub scope: Option<f64>,
@@ -568,6 +571,8 @@ impl FromJson for JsToolDef {
             title: f.string("title"),
             annotations: f.object("annotations"),
             output_schema: f.value("outputSchema"),
+            surface: f.protocol("surface"),
+            page: f.string("page"),
             enabled: f.bool("enabled"),
             scope: f.f64("scope"),
         };
@@ -588,6 +593,8 @@ impl JsToolDef {
             scope: scope_handle(self.scope)?,
             annotations: self.annotations,
             output_schema: self.output_schema,
+            surface: self.surface.unwrap_or_default(),
+            page: self.page,
         })
     }
 }
@@ -658,6 +665,9 @@ pub struct JsToolUpdate {
     pub annotations: Option<Option<ToolAnnotations>>,
     /// `null` 清除声明的输出 schema。
     pub output_schema: Option<Option<Value>>,
+    pub surface: Option<ToolSurface>,
+    /// `null` 清除声明的页面。
+    pub page: Option<Option<String>>,
 }
 
 impl FromJson for JsToolUpdate {
@@ -688,7 +698,18 @@ impl FromJson for JsToolUpdate {
                 }
             },
         };
+        let page = match f.nullable("page") {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(Value::String(s))) => Some(Some(s)),
+            Some(Some(_)) => {
+                f.fail("字段 page 应为字符串".to_owned());
+                None
+            }
+        };
         let u = JsToolUpdate {
+            surface: f.protocol("surface"),
+            page,
             annotations,
             output_schema: f.nullable("outputSchema"),
             description: f.string("description"),
@@ -713,6 +734,8 @@ impl JsToolUpdate {
             enabled: self.enabled,
             annotations: self.annotations,
             output_schema: self.output_schema,
+            surface: self.surface,
+            page: self.page,
         }
     }
 }
@@ -906,6 +929,7 @@ pub enum JsEvent {
     InvokeTool { call_id: String, tool: u64, name: String, arguments: Value },
     CancelTool { call_id: String, reason: &'static str },
     ReadResource { read: u64, resource: u64, name: String },
+    Navigate { navigate: u64, page: String, params: Value },
     StateChanged { state: JsState },
     Paired { token: String },
     Warning { message: String },
@@ -925,6 +949,7 @@ impl JsEvent {
             Event::ReadResource { read, resource, name } => {
                 JsEvent::ReadResource { read: read.0, resource: resource.0, name }
             }
+            Event::Navigate { navigate, page, params } => JsEvent::Navigate { navigate: navigate.0, page, params },
             Event::StateChanged(state) => JsEvent::StateChanged { state: JsState::from_core(&state) },
             Event::Paired { token } => JsEvent::Paired { token },
             Event::Warning(message) => JsEvent::Warning { message },
@@ -953,6 +978,12 @@ impl JsEvent {
                 ("read", read.into()),
                 ("resource", resource.into()),
                 ("name", name.into()),
+            ]),
+            JsEvent::Navigate { navigate, page, params } => object(vec![
+                ("type", "navigate".into()),
+                ("navigate", navigate.into()),
+                ("page", page.into()),
+                ("params", params),
             ]),
             JsEvent::StateChanged { state } => object(vec![("type", "stateChanged".into()), ("state", state.to_value())]),
             JsEvent::Paired { token } => object(vec![("type", "paired".into()), ("token", token.into())]),
@@ -1050,6 +1081,23 @@ mod tests {
         assert_eq!(o.summary, "演示商城");
         assert_eq!(o.body.as_deref(), Some("## 能力范围"));
         assert_eq!(o.locale.as_deref(), Some("zh-CN"));
+    }
+
+    #[test]
+    fn tool_surface_and_page() {
+        let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "surface": "view", "page": "cart" }))
+            .unwrap()
+            .into_core()
+            .unwrap();
+        assert_eq!((d.surface, d.page.as_deref()), (ToolSurface::View, Some("cart")));
+        let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {} })).unwrap().into_core().unwrap();
+        assert_eq!((d.surface, d.page), (ToolSurface::App, None));
+        assert!(JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "surface": "page" })).is_err());
+        let u = JsToolUpdate::from_json(json!({ "page": null, "surface": "app" })).unwrap().into_core();
+        assert_eq!((u.surface, u.page), (Some(ToolSurface::App), Some(None)));
+        let u = JsToolUpdate::from_json(json!({ "page": "orders" })).unwrap().into_core();
+        assert_eq!((u.surface, u.page), (None, Some(Some("orders".into()))));
+        assert!(JsToolUpdate::from_json(json!({ "page": 1 })).is_err());
     }
 
     #[test]
@@ -1232,6 +1280,10 @@ mod tests {
             (Event::Paired { token: "tk".into() }, json!({ "type": "paired", "token": "tk" })),
             (Event::Warning("w".into()), json!({ "type": "warning", "message": "w" })),
             (Event::IdleExit, json!({ "type": "idleExit" })),
+            (
+                Event::Navigate { navigate: app_mcp_core::NavigateId(4), page: "cart".into(), params: Value::Null },
+                json!({ "type": "navigate", "navigate": 4, "page": "cart", "params": null }),
+            ),
             (
                 Event::StateChanged(ConnectionState::Dormant),
                 json!({ "type": "stateChanged", "state": { "status": "dormant" } }),

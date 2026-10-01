@@ -42,6 +42,8 @@ const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
   'PAYLOAD_TOO_LARGE',
   'POLICY_DENIED',
   'USER_ACTION_REQUIRED',
+  'NAVIGATION_FAILED',
+  'NAVIGATION_DENIED',
 ])
 
 /** createAsyncThunk dispatch 结果：带 `unwrap()` 的 Promise。 */

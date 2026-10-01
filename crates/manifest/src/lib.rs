@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub use app_mcp_protocol::{AppOverview, ResourceInfo, ToolInfo};
+pub use app_mcp_protocol::{Activation, AppOverview, ResourceInfo, ToolInfo};
 use app_mcp_protocol::{
     OVERVIEW_BODY_MAX_CHARS, OVERVIEW_SUMMARY_MAX_CHARS, is_valid_app_id, is_valid_name,
 };
@@ -52,6 +52,44 @@ pub struct Manifest {
     pub tools: Vec<ToolInfo>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<ResourceInfo>,
+    /// 页面目录（第 4c 项，spec/manifest.md 2.3）：各页面的说明与页面内工具；Hub 渐进披露并在调用时先导航再派发。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<Page>,
+}
+
+/// 页面条目（spec/manifest.md 2.3）。页面内工具不作为静态工具列出，只进入页面目录。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Page {
+    /// 页面名 `[a-zA-Z0-9_.-]{1,64}`，清单内唯一；即 `app/navigate` 的 `page`。
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// App 内路由（如 `/orders/:id`），供 App 与构建工具使用；Host 不解析。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    /// 导航参数的 JSON Schema（`type` 为 `"object"`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+    /// 页面内的工具（结构同协议 `ToolInfo`）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolInfo>,
+    /// 能否由 Agent 导航到该页面；缺省 `true`，`true` 时不序列化。
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub navigable: bool,
+    /// 导航到该页面需要的激活方式。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<Activation>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 /// 各平台唤醒方式，值为按顺序尝试的数组。未知平台键原样保留在 `other` 中。
@@ -381,54 +419,21 @@ impl Manifest {
             }
         }
 
+        // 工具名在 App 内唯一：顶层工具与各页面工具共用一个名称空间。
         let mut seen = HashSet::new();
         for (i, tool) in self.tools.iter().enumerate() {
             let path = format!("tools[{i}]");
-            if !is_valid_name(&tool.name) {
-                v.errors.push(Issue::new(
-                    format!("{path}.name"),
-                    format!(
-                        "工具名 \"{}\" 不合法，应满足 [a-zA-Z0-9_.-]{{1,64}}",
-                        tool.name
-                    ),
-                ));
-            } else if !seen.insert(tool.name.as_str()) {
-                v.errors.push(Issue::new(
-                    format!("{path}.name"),
-                    format!("工具名 \"{}\" 重复", tool.name),
-                ));
-            }
-            if app_mcp_protocol::has_app_id_prefix(&tool.name, &self.app_id) {
+            self.validate_tool(tool, &path, &mut seen, &mut v);
+            if let Some(page) = &tool.page
+                && self.page(page).is_none()
+            {
                 v.warnings.push(Issue::new(
-                    format!("{path}.name"),
-                    app_mcp_protocol::app_id_prefix_warning(&tool.name, &self.app_id),
+                    format!("{path}.page"),
+                    format!("页面 \"{page}\" 未在 pages 中声明"),
                 ));
-            }
-            if tool.description.is_empty() {
-                v.errors.push(Issue::new(
-                    format!("{path}.description"),
-                    "description 不能为空字符串",
-                ));
-            }
-            match tool.input_schema.as_object() {
-                None => v.errors.push(Issue::new(
-                    format!("{path}.inputSchema"),
-                    "inputSchema 必须是对象",
-                )),
-                Some(obj) => {
-                    if obj.get("type").and_then(Value::as_str) != Some("object") {
-                        v.errors.push(Issue::new(
-                            format!("{path}.inputSchema.type"),
-                            "inputSchema 的 type 必须为 \"object\"",
-                        ));
-                    }
-                }
-            }
-            // outputSchema 可以是任意根类型（非 object 时 Hub 按 MCP 要求包装，spec/protocol.md 3.2），但必须是 JSON Schema 对象。
-            if tool.output_schema.as_ref().is_some_and(|s| !s.is_object()) {
-                v.errors.push(Issue::new(format!("{path}.outputSchema"), "outputSchema 必须是对象（JSON Schema）"));
             }
         }
+        self.validate_pages(&mut seen, &mut v);
 
         let mut seen = HashSet::new();
         for (i, res) in self.resources.iter().enumerate() {
@@ -458,6 +463,81 @@ impl Manifest {
         self.validate_launch(&mut v);
         self.validate_wake(&mut v);
         v
+    }
+
+    /// 单个工具（顶层或页面内）的规则；`seen` 为已出现的工具名。
+    fn validate_tool<'a>(&self, tool: &'a ToolInfo, path: &str, seen: &mut HashSet<&'a str>, v: &mut Validation) {
+        if !is_valid_name(&tool.name) {
+            v.errors.push(Issue::new(
+                format!("{path}.name"),
+                format!("工具名 \"{}\" 不合法，应满足 [a-zA-Z0-9_.-]{{1,64}}", tool.name),
+            ));
+        } else if !seen.insert(tool.name.as_str()) {
+            v.errors.push(Issue::new(format!("{path}.name"), format!("工具名 \"{}\" 重复", tool.name)));
+        }
+        if app_mcp_protocol::has_app_id_prefix(&tool.name, &self.app_id) {
+            v.warnings.push(Issue::new(
+                format!("{path}.name"),
+                app_mcp_protocol::app_id_prefix_warning(&tool.name, &self.app_id),
+            ));
+        }
+        if tool.description.is_empty() {
+            v.errors.push(Issue::new(format!("{path}.description"), "description 不能为空字符串"));
+        }
+        match tool.input_schema.as_object() {
+            None => v.errors.push(Issue::new(format!("{path}.inputSchema"), "inputSchema 必须是对象")),
+            Some(obj) => {
+                if obj.get("type").and_then(Value::as_str) != Some("object") {
+                    v.errors.push(Issue::new(
+                        format!("{path}.inputSchema.type"),
+                        "inputSchema 的 type 必须为 \"object\"",
+                    ));
+                }
+            }
+        }
+        // outputSchema 可以是任意根类型（非 object 时 Hub 按 MCP 要求包装，spec/protocol.md 3.2），但必须是 JSON Schema 对象。
+        if tool.output_schema.as_ref().is_some_and(|s| !s.is_object()) {
+            v.errors.push(Issue::new(format!("{path}.outputSchema"), "outputSchema 必须是对象（JSON Schema）"));
+        }
+    }
+
+    /// 页面目录（spec/manifest.md 2.3）。
+    fn validate_pages<'a>(&'a self, seen_tools: &mut HashSet<&'a str>, v: &mut Validation) {
+        let mut seen = HashSet::new();
+        for (i, page) in self.pages.iter().enumerate() {
+            let path = format!("pages[{i}]");
+            if !is_valid_name(&page.name) {
+                v.errors.push(Issue::new(
+                    format!("{path}.name"),
+                    format!("页面名 \"{}\" 不合法，应满足 [a-zA-Z0-9_.-]{{1,64}}", page.name),
+                ));
+            } else if !seen.insert(page.name.as_str()) {
+                v.errors.push(Issue::new(format!("{path}.name"), format!("页面名 \"{}\" 重复", page.name)));
+            }
+            if page.description.as_deref() == Some("") {
+                v.errors.push(Issue::new(format!("{path}.description"), "description 不能为空字符串"));
+            }
+            if let Some(params) = &page.params
+                && params.get("type").and_then(Value::as_str) != Some("object")
+            {
+                v.errors.push(Issue::new(
+                    format!("{path}.params"),
+                    "params 必须是 type 为 \"object\" 的 JSON Schema 对象",
+                ));
+            }
+            for (j, tool) in page.tools.iter().enumerate() {
+                let tpath = format!("{path}.tools[{j}]");
+                self.validate_tool(tool, &tpath, seen_tools, v);
+                if let Some(p) = &tool.page
+                    && p != &page.name
+                {
+                    v.errors.push(Issue::new(
+                        format!("{tpath}.page"),
+                        format!("工具声明的页面 \"{p}\" 与所在页面 \"{}\" 不一致", page.name),
+                    ));
+                }
+            }
+        }
     }
 
     fn validate_wake(&self, v: &mut Validation) {
@@ -573,6 +653,15 @@ impl Manifest {
 
     pub fn resource(&self, name: &str) -> Option<&ResourceInfo> {
         self.resources.iter().find(|r| r.name == name)
+    }
+
+    pub fn page(&self, name: &str) -> Option<&Page> {
+        self.pages.iter().find(|p| p.name == name)
+    }
+
+    /// 在某个页面（`pages[].tools`）中声明的工具 → `(页面, 工具)`。
+    pub fn page_tool(&self, tool: &str) -> Option<(&Page, &ToolInfo)> {
+        self.pages.iter().find_map(|p| p.tools.iter().find(|t| t.name == tool).map(|t| (p, t)))
     }
 }
 
@@ -822,6 +911,117 @@ mod tests {
     fn with(mut base: Value, pointer: &str, value: Value) -> Manifest {
         *base.pointer_mut(pointer).expect("pointer exists") = value;
         serde_json::from_value(base).expect("parses")
+    }
+
+    fn with_pages(pages: Value) -> Manifest {
+        let mut base = example();
+        base["pages"] = pages;
+        serde_json::from_value(base).expect("parses")
+    }
+
+    fn page_tool(name: &str) -> Value {
+        json!({ "name": name, "description": "d", "inputSchema": { "type": "object" }, "surface": "view" })
+    }
+
+    fn error_paths(v: &Validation) -> Vec<&str> {
+        v.errors.iter().map(|e| e.path.as_str()).collect()
+    }
+
+    #[test]
+    fn pages_parse_roundtrip_and_lookup() {
+        let m = with_pages(json!([
+            { "name": "cart", "title": "购物车", "description": "购物车页面", "route": "/cart",
+              "tools": [page_tool("cart.checkout")] },
+            { "name": "orders.detail", "params": { "type": "object", "properties": { "id": { "type": "string" } } },
+              "navigable": false, "activation": "foreground" }
+        ]));
+        let v = m.validate();
+        assert!(v.is_ok(), "{:?}", v.errors);
+        assert!(v.warnings.is_empty(), "{:?}", v.warnings);
+        assert!(m.pages[0].navigable, "navigable 缺省 true");
+        assert!(!m.pages[1].navigable);
+        assert_eq!(m.pages[1].activation, Some(Activation::Foreground));
+        let (p, t) = m.page_tool("cart.checkout").unwrap();
+        assert_eq!((p.name.as_str(), t.surface), ("cart", app_mcp_protocol::ToolSurface::View));
+        assert!(m.page_tool("orders.search").is_none(), "顶层工具不是页面工具");
+        assert!(m.tool("cart.checkout").is_none(), "页面工具不是静态工具");
+        assert_eq!(m.page("orders.detail").unwrap().route, None);
+        let out = serde_json::to_value(&m).unwrap();
+        assert!(out["pages"][0].get("navigable").is_none(), "缺省 true 不序列化");
+        assert_eq!(out["pages"][1]["navigable"], json!(false));
+        assert_eq!(serde_json::from_value::<Manifest>(out).unwrap(), m);
+        // 没有 pages 时不序列化
+        let plain: Manifest = serde_json::from_value(example()).unwrap();
+        assert!(serde_json::to_value(&plain).unwrap().get("pages").is_none());
+    }
+
+    #[test]
+    fn page_name_rules() {
+        let v = with_pages(json!([{ "name": "bad name" }, { "name": "a" }, { "name": "a" }])).validate();
+        assert_eq!(error_paths(&v), vec!["pages[0].name", "pages[2].name"]);
+        let v = with_pages(json!([{ "name": "a", "description": "" }])).validate();
+        assert_eq!(error_paths(&v), vec!["pages[0].description"]);
+    }
+
+    #[test]
+    fn page_params_must_be_object_schema() {
+        for bad in [json!([]), json!({ "type": "string" }), json!({})] {
+            let v = with_pages(json!([{ "name": "a", "params": bad }])).validate();
+            assert_eq!(error_paths(&v), vec!["pages[0].params"]);
+        }
+    }
+
+    #[test]
+    fn page_tools_follow_tool_rules() {
+        let v = with_pages(json!([{ "name": "a", "tools": [
+            { "name": "x y", "description": "d", "inputSchema": { "type": "object" } },
+            { "name": "t1", "description": "", "inputSchema": { "type": "string" } },
+            { "name": "t2", "description": "d", "inputSchema": [] , "outputSchema": true }
+        ] }]))
+        .validate();
+        assert_eq!(
+            error_paths(&v),
+            vec![
+                "pages[0].tools[0].name",
+                "pages[0].tools[1].description",
+                "pages[0].tools[1].inputSchema.type",
+                "pages[0].tools[2].inputSchema",
+                "pages[0].tools[2].outputSchema"
+            ]
+        );
+        let v = with_pages(json!([{ "name": "a", "tools": [page_tool("shop.info")] }])).validate();
+        assert!(v.is_ok());
+        assert_eq!(v.warnings[0].path, "pages[0].tools[0].name");
+    }
+
+    #[test]
+    fn tool_names_unique_across_pages() {
+        // 与顶层工具重名、与其他页面的工具重名
+        let v = with_pages(json!([
+            { "name": "a", "tools": [page_tool("orders.search"), page_tool("t")] },
+            { "name": "b", "tools": [page_tool("t")] }
+        ]))
+        .validate();
+        assert_eq!(error_paths(&v), vec!["pages[0].tools[0].name", "pages[1].tools[0].name"]);
+    }
+
+    #[test]
+    fn tool_page_field_consistency() {
+        let mut t = page_tool("t");
+        t["page"] = json!("other");
+        let v = with_pages(json!([{ "name": "a", "tools": [t] }])).validate();
+        assert_eq!(error_paths(&v), vec!["pages[0].tools[0].page"]);
+        let mut t = page_tool("t");
+        t["page"] = json!("a");
+        assert!(with_pages(json!([{ "name": "a", "tools": [t] }])).validate().is_ok());
+        // 顶层工具引用未声明的页面：警告
+        let mut m = with_pages(json!([{ "name": "a" }]));
+        m.tools[0].page = Some("missing".into());
+        let v = m.validate();
+        assert!(v.is_ok());
+        assert_eq!(v.warnings[0].path, "tools[0].page");
+        m.tools[0].page = Some("a".into());
+        assert!(m.validate().warnings.is_empty());
     }
 
     #[test]

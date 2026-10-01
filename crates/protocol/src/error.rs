@@ -50,10 +50,55 @@ pub enum ErrorKind {
     /// 需要用户本人操作后才能继续（登录过期、系统权限未授予、需切到前台、需在 App 内确认等），由 App 的 handler 返回；
     /// `message` 面向用户，`data.reason` / `data.uri` 可选（见 [`ToolError::user_action_required`]）。
     UserActionRequired,
+    /// 导航失败（第 4c 项，spec/protocol.md 3.4）：App 不支持导航、导航出错或超时，或导航后目标工具没有出现；
+    /// `data.reason` 见 [`navigation_reason`]，`data.page` 为目标页面。
+    NavigationFailed,
+    /// 导航被拒绝：App 拒绝本次导航（如用户正在输入、页面需要登录），或清单声明该页面不可由 Agent 导航
+    /// （`navigable: false`）；`data.reason` 见 [`navigation_reason`]。重试不会改变结果，应请用户自行打开。
+    NavigationDenied,
 }
 
 impl ErrorKind {
-    /// JSON-RPC 错误码（实现自定义区间 -32000 ~ -32099）。
+    /// 全部类别（唯一列表；按字符串解析时使用 [`ErrorKind::parse`]）。
+    pub const ALL: [ErrorKind; 21] = [
+        ErrorKind::ToolNotFound,
+        ErrorKind::ToolDisabled,
+        ErrorKind::InvalidInput,
+        ErrorKind::UserRejected,
+        ErrorKind::Timeout,
+        ErrorKind::HandlerError,
+        ErrorKind::Cancelled,
+        ErrorKind::AppDisconnected,
+        ErrorKind::AppNotInstalled,
+        ErrorKind::LaunchFailed,
+        ErrorKind::AppNotResponding,
+        ErrorKind::InstanceFrozen,
+        ErrorKind::ResourceNotFound,
+        ErrorKind::Unauthorized,
+        ErrorKind::UnsupportedProtocol,
+        ErrorKind::RateLimited,
+        ErrorKind::PayloadTooLarge,
+        ErrorKind::PolicyDenied,
+        ErrorKind::UserActionRequired,
+        ErrorKind::NavigationFailed,
+        ErrorKind::NavigationDenied,
+    ];
+
+    /// 字符串形式（如 `"HANDLER_ERROR"`）→ 类别；未知值返回 `None`。
+    pub fn parse(s: &str) -> Option<ErrorKind> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+
+    /// 数字错误码 → 类别；不是本协议的错误码时返回 `None`。
+    pub fn from_code(code: i64) -> Option<ErrorKind> {
+        Self::ALL.into_iter().find(|k| k.code() == code)
+    }
+
+    /// JSON-RPC 错误码。
+    ///
+    /// @invariant 分区（spec/protocol.md 第 4 节）：-32001 ~ -32019 为既有类别（实现自定义区，保留不变）；
+    /// -32020 ~ -32099 归 MCP 规范（`HeaderMismatch` -32020 等），本协议不再使用；新增类别从 -31001 起
+    /// （JSON-RPC 保留区 -32768 ~ -32000 之外的应用定义区），避免与上游 MCP 服务器的错误码混淆。
     pub fn code(self) -> i64 {
         match self {
             ErrorKind::ToolNotFound => -32001,
@@ -75,6 +120,8 @@ impl ErrorKind {
             ErrorKind::PayloadTooLarge => -32017,
             ErrorKind::PolicyDenied => -32018,
             ErrorKind::UserActionRequired => -32019,
+            ErrorKind::NavigationFailed => -31001,
+            ErrorKind::NavigationDenied => -31002,
         }
     }
 
@@ -99,6 +146,8 @@ impl ErrorKind {
             ErrorKind::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
             ErrorKind::PolicyDenied => "POLICY_DENIED",
             ErrorKind::UserActionRequired => "USER_ACTION_REQUIRED",
+            ErrorKind::NavigationFailed => "NAVIGATION_FAILED",
+            ErrorKind::NavigationDenied => "NAVIGATION_DENIED",
         }
     }
 }
@@ -146,6 +195,38 @@ impl ToolError {
         let err = Self::new(ErrorKind::UserActionRequired, message);
         if details.is_empty() { err } else { err.with_details(Value::Object(details)) }
     }
+}
+
+impl ToolError {
+    /// `NAVIGATION_DENIED`（spec/protocol.md 3.4）：App 拒绝本次导航（`data.reason` = `app`）。各语言 SDK 的导航回调据此拒绝。
+    ///
+    /// @input message 面向模型 / 用户的说明，如"正在编辑草稿，请先保存后再切换页面"。
+    pub fn navigation_denied(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::NavigationDenied, message).with_details(json!({ "reason": navigation_reason::APP }))
+    }
+
+    /// `NAVIGATION_FAILED`（spec/protocol.md 3.4）：导航没有完成。
+    ///
+    /// @input reason [`navigation_reason`] 中的值。
+    pub fn navigation_failed(message: impl Into<String>, reason: &str) -> Self {
+        Self::new(ErrorKind::NavigationFailed, message).with_details(json!({ "reason": reason }))
+    }
+}
+
+/// `NAVIGATION_FAILED` / `NAVIGATION_DENIED` 的 `data.reason` 取值（spec/protocol.md 3.4）。
+pub mod navigation_reason {
+    /// App（实例）不支持导航：握手没有声明 `capabilities.navigate`，或没有设置导航回调。
+    pub const UNSUPPORTED: &str = "unsupported";
+    /// App 的导航回调出错（页面不存在、参数不合法等）。
+    pub const ERROR: &str = "error";
+    /// App 在时限内没有回复导航请求。
+    pub const TIMEOUT: &str = "timeout";
+    /// 导航完成，但时限内目标工具没有注册（页面没有提供该工具或界面未就绪）。
+    pub const TOOL_NOT_REGISTERED: &str = "tool-not-registered";
+    /// App 拒绝本次导航（`NAVIGATION_DENIED`）。
+    pub const APP: &str = "app";
+    /// 清单声明该页面不可由 Agent 导航（`navigable: false`，`NAVIGATION_DENIED`）。
+    pub const NOT_NAVIGABLE: &str = "not-navigable";
 }
 
 /// `USER_ACTION_REQUIRED` 的 `data.reason` 建议取值（spec/protocol.md 第 4 节；接收方遇到其他值按原样展示）。
@@ -223,6 +304,35 @@ mod tests {
         assert_eq!((ErrorKind::PolicyDenied.code(), ErrorKind::UserActionRequired.code()), (-32018, -32019));
         assert_eq!(serde_json::to_value(ErrorKind::PolicyDenied).unwrap(), json!("POLICY_DENIED"));
         assert_eq!(ErrorKind::UserActionRequired.as_str(), "USER_ACTION_REQUIRED");
+        assert_eq!((ErrorKind::NavigationFailed.code(), ErrorKind::NavigationDenied.code()), (-31001, -31002));
+        assert_eq!(serde_json::to_value(ErrorKind::NavigationDenied).unwrap(), json!("NAVIGATION_DENIED"));
+    }
+
+    #[test]
+    fn all_kinds_unique_and_parse() {
+        let mut codes: Vec<i64> = ErrorKind::ALL.iter().map(|k| k.code()).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), ErrorKind::ALL.len(), "错误码不重复");
+        // MCP 规范占用的 -32020 ~ -32099 不使用
+        assert!(ErrorKind::ALL.iter().all(|k| !(-32099..=-32020).contains(&k.code())));
+        for k in ErrorKind::ALL {
+            assert_eq!(ErrorKind::parse(k.as_str()), Some(k));
+            assert_eq!(ErrorKind::from_code(k.code()), Some(k));
+            assert_eq!(serde_json::to_value(k).unwrap(), json!(k.as_str()));
+        }
+        assert_eq!(ErrorKind::parse("NOPE"), None);
+        assert_eq!(ErrorKind::from_code(-32020), None);
+    }
+
+    #[test]
+    fn navigation_errors() {
+        let rpc: RpcError = ToolError::navigation_denied("正在编辑").into();
+        assert_eq!(rpc.code, -31002);
+        assert_eq!(rpc.data, Some(json!({"kind": "NAVIGATION_DENIED", "reason": "app"})));
+        let rpc: RpcError = ToolError::navigation_failed("没有该页面", navigation_reason::ERROR).into();
+        assert_eq!(rpc.data, Some(json!({"kind": "NAVIGATION_FAILED", "reason": "error"})));
+        assert_eq!(rpc.to_tool_error().kind, ErrorKind::NavigationFailed);
     }
 
     #[test]

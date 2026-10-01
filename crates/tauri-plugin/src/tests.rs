@@ -352,6 +352,7 @@ async fn annotations_output_schema_and_structured_results() {
                     ..ToolAnnotations::default()
                 }),
                 output_schema_json: Some(r#"{"type":"array"}"#.to_owned()),
+                ..ToolOptions::default()
             },
             Arc::new(Native),
         )

@@ -31,7 +31,7 @@ use napi_derive::napi;
 use native::{
     Activation, Audience, CancelReason, ClientKind, ContentAnnotations, ErrorKind, HeartbeatMode, LifecycleMode,
     LifecyclePolicy, LogLevel, NativeError, Residency, ResultStatus, Risk, SleepReason, StateInfo, StateStatus,
-    ToolAnnotations, Visibility, WakeDescriptor, WakeKind, WakeReason,
+    ToolAnnotations, ToolSurface, Visibility, WakeDescriptor, WakeKind, WakeReason,
 };
 
 /// 本绑定抛出的错误：`status` 字符串成为 JS 错误的 `code`（napi-derive 按名称 `Result` 识别返回类型）。
@@ -105,27 +105,14 @@ fn parse_client_kind(s: &str) -> Result<ClientKind, String> {
 }
 
 fn parse_error_kind(s: &str) -> Result<ErrorKind, String> {
+    ErrorKind::parse(s).ok_or_else(|| invalid_arg(format!("未知的错误类别：{s:?}")))
+}
+
+fn parse_surface(s: &str) -> Result<ToolSurface, String> {
     Ok(match s {
-        "TOOL_NOT_FOUND" => ErrorKind::ToolNotFound,
-        "TOOL_DISABLED" => ErrorKind::ToolDisabled,
-        "INVALID_INPUT" => ErrorKind::InvalidInput,
-        "USER_REJECTED" => ErrorKind::UserRejected,
-        "TIMEOUT" => ErrorKind::Timeout,
-        "HANDLER_ERROR" => ErrorKind::HandlerError,
-        "CANCELLED" => ErrorKind::Cancelled,
-        "APP_DISCONNECTED" => ErrorKind::AppDisconnected,
-        "APP_NOT_INSTALLED" => ErrorKind::AppNotInstalled,
-        "LAUNCH_FAILED" => ErrorKind::LaunchFailed,
-        "APP_NOT_RESPONDING" => ErrorKind::AppNotResponding,
-        "INSTANCE_FROZEN" => ErrorKind::InstanceFrozen,
-        "RESOURCE_NOT_FOUND" => ErrorKind::ResourceNotFound,
-        "UNAUTHORIZED" => ErrorKind::Unauthorized,
-        "UNSUPPORTED_PROTOCOL" => ErrorKind::UnsupportedProtocol,
-        "RATE_LIMITED" => ErrorKind::RateLimited,
-        "PAYLOAD_TOO_LARGE" => ErrorKind::PayloadTooLarge,
-        "POLICY_DENIED" => ErrorKind::PolicyDenied,
-        "USER_ACTION_REQUIRED" => ErrorKind::UserActionRequired,
-        other => return Err(invalid_arg(format!("未知的错误类别：{other:?}"))),
+        "app" => ToolSurface::App,
+        "view" => ToolSurface::View,
+        other => return Err(invalid_arg(format!("未知的 surface：{other:?}"))),
     })
 }
 
@@ -434,6 +421,10 @@ pub struct ToolSpecInit {
     pub annotations: Option<ToolAnnotationsInit>,
     /// 结果的 JSON Schema 文本（MCP `outputSchema`，根类型不限）。
     pub output_schema_json: Option<String>,
+    /// `'app'`（缺省）/ `'view'`：对界面的依赖（spec/protocol.md 3.4）。
+    pub surface: Option<String>,
+    /// 所在页面名；Hub 在该工具未注册时据此导航。
+    pub page: Option<String>,
 }
 
 /// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。
@@ -513,6 +504,8 @@ impl ToolSpecInit {
         let options = native::ToolOptions {
             annotations: self.annotations.take().map(ToolAnnotations::from),
             output_schema_json: self.output_schema_json.take(),
+            surface: self.surface.take().as_deref().map(parse_surface).transpose()?.unwrap_or_default(),
+            page: self.page.take(),
         };
         Ok((self.into_spec()?, options))
     }
@@ -580,6 +573,19 @@ impl native::ResourceReader for JsResourceReader {
         let status = self.tsfn.call(Read { inner: read.clone() }, ThreadsafeFunctionCallMode::NonBlocking);
         if status != Status::Ok {
             let _ = read.fail(ErrorKind::AppNotResponding, "Node 事件循环不可用");
+        }
+    }
+}
+
+struct JsNavigationHandler {
+    tsfn: WeakTsfn<Navigate>,
+}
+
+impl native::NavigationHandler for JsNavigationHandler {
+    fn navigate(&self, request: native::NavigateHandle) {
+        let status = self.tsfn.call(Navigate { inner: request.clone() }, ThreadsafeFunctionCallMode::NonBlocking);
+        if status != Status::Ok {
+            let _ = request.fail("Node 事件循环不可用");
         }
     }
 }
@@ -778,6 +784,43 @@ impl Read {
     }
 }
 
+/// 一次导航请求（Host 的 `app/navigate`，spec/protocol.md 3.4）。完成只能一次。
+#[napi]
+pub struct Navigate {
+    inner: native::NavigateHandle,
+}
+
+#[napi]
+impl Navigate {
+    #[napi(getter)]
+    pub fn page(&self) -> String {
+        self.inner.page()
+    }
+
+    /// 页面参数 JSON 文本；Host 没有给出时为 `undefined`。
+    #[napi(getter)]
+    pub fn params_json(&self) -> Option<String> {
+        self.inner.params_json()
+    }
+
+    #[napi]
+    pub fn complete(&self) -> Result<(), String> {
+        self.inner.complete().map_err(to_js_error)
+    }
+
+    /// 导航失败（`NAVIGATION_FAILED`）。
+    #[napi]
+    pub fn fail(&self, message: String) -> Result<(), String> {
+        self.inner.fail(&message).map_err(to_js_error)
+    }
+
+    /// 拒绝导航（`NAVIGATION_DENIED`）。
+    #[napi]
+    pub fn deny(&self, message: String) -> Result<(), String> {
+        self.inner.deny(&message).map_err(to_js_error)
+    }
+}
+
 /// 已注册的工具。
 #[napi]
 pub struct Tool {
@@ -952,6 +995,13 @@ impl JsNativeClient {
     #[napi]
     pub fn start(&self) {
         self.inner.start();
+    }
+
+    /// 设置导航回调（spec/protocol.md 3.4）；`null` 清除。握手时声明能力，建议在 `start()` 之前设置。
+    #[napi]
+    pub fn set_navigation_handler(&self, handler: Option<WeakTsfn<Navigate>>) {
+        let handler = handler.map(|tsfn| Arc::new(JsNavigationHandler { tsfn }) as Arc<dyn native::NavigationHandler>);
+        self.inner.set_navigation_handler(handler);
     }
 
     /// 停止：取消所有调用、断开连接、不再重连，并释放监听器的 ThreadsafeFunction。

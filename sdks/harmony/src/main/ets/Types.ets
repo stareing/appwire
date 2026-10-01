@@ -22,7 +22,9 @@ export type ErrorKind =
   // Host 产生（限流 / 超过大小上限 / 策略拒绝），App 一般不抛
   'RATE_LIMITED' | 'PAYLOAD_TOO_LARGE' | 'POLICY_DENIED' |
   // 需要用户本人操作后才能继续，由 handler 抛出（见 ToolCallError.userActionRequired）
-  'USER_ACTION_REQUIRED';
+  'USER_ACTION_REQUIRED' |
+  // 导航没有完成（不支持 / 出错 / 超时 / 导航后工具未出现，spec/protocol.md 3.4）；导航被拒绝（App 拒绝或页面不可由 Agent 导航）
+  'NAVIGATION_FAILED' | 'NAVIGATION_DENIED';
 
 /** `ToolCallError.userActionRequired` 的可选项；未给出的字段不出现在错误详情中。 */
 export interface UserActionRequiredOptions {

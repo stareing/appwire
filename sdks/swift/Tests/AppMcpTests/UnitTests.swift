@@ -9,7 +9,7 @@ final class UnitTests: XCTestCase {
             ErrorKind.appNotInstalled, ErrorKind.launchFailed, ErrorKind.appNotResponding,
             ErrorKind.instanceFrozen, ErrorKind.resourceNotFound, ErrorKind.unauthorized,
             ErrorKind.unsupportedProtocol, ErrorKind.rateLimited, ErrorKind.payloadTooLarge,
-            ErrorKind.policyDenied, ErrorKind.userActionRequired,
+            ErrorKind.policyDenied, ErrorKind.userActionRequired, ErrorKind.navigationFailed, ErrorKind.navigationDenied,
         ]
         XCTAssertEqual(ErrorKind.all, declared)
     }

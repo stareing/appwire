@@ -37,8 +37,8 @@ use serde_json::Value;
 
 pub use proto::{
     Activation, AppOverview, Audience, ClientKind, ConnectionErrorCode, ConnectionIssue, ContentAnnotations,
-    DiagnosticParams, LifecycleMode, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolError, TransportKind, Visibility,
-    WakeDescriptor, WakeKind, WakeReason,
+    DiagnosticParams, LifecycleMode, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolError, ToolSurface, TransportKind,
+    Visibility, WakeDescriptor, WakeKind, WakeReason, navigation_reason,
 };
 pub use dedup::CallDedupPolicy;
 pub use lifecycle::parse_wake_token;
@@ -89,6 +89,10 @@ pub struct ClientConfig {
     /// 调用去重（spec/protocol.md 3.3）：同一 `callId` 在有效期内只执行一次、重复请求得到首次结果。
     /// 默认保留 5 分钟、最多 64 条；[`CallDedupPolicy::OFF`] 关闭。
     pub call_dedup: CallDedupPolicy,
+    /// 能处理 Host 的 `app/navigate`（spec/protocol.md 3.4）：握手时声明 `capabilities.navigate`，收到导航请求时产生
+    /// [`Event::Navigate`]。默认 `false`：不声明，收到的导航请求直接以 `NAVIGATION_FAILED`（`unsupported`）回复。
+    /// 驱动层在 App 设置了导航回调时置为 `true`（[`Client::set_navigation`]）。
+    pub navigation: bool,
 }
 
 impl ClientConfig {
@@ -121,6 +125,7 @@ impl ClientConfig {
             expected_host_user: None,
             transport: TransportKind::Unknown,
             call_dedup: CallDedupPolicy::default(),
+            navigation: false,
         }
     }
 }
@@ -249,6 +254,10 @@ pub struct ScopeId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ReadId(pub u64);
 
+/// 进行中的导航请求（[`Event::Navigate`]），用 [`Client::complete_navigate`] 完成。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NavigateId(pub u64);
+
 /// 阻止休眠的持有句柄（[`Client::hold`]），用 [`Client::release_hold`] 释放。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct HoldId(pub u64);
@@ -267,6 +276,10 @@ pub struct ToolDef {
     pub annotations: Option<ToolAnnotations>,
     /// 结果的 JSON Schema（MCP `outputSchema`）；`None` = 未声明。
     pub output_schema: Option<Value>,
+    /// 对界面的依赖（spec/protocol.md 3.4）：`App`（缺省）或 `View`。只做声明，是否注册由封装层按可见性决定。
+    pub surface: ToolSurface,
+    /// 所在页面（`[a-zA-Z0-9_.-]{1,64}`）；Hub 在该工具未注册时据此先导航。`None` = 未声明。
+    pub page: Option<String>,
     /// 为 false 时不同步给 Host（等同于从 Host 的角度看不存在）。
     pub enabled: bool,
     /// 所属 scope；scope 被销毁时工具自动注销。
@@ -286,6 +299,9 @@ pub struct ToolUpdate {
     pub annotations: Option<Option<ToolAnnotations>>,
     /// `Some(None)` 清除声明的输出 schema。
     pub output_schema: Option<Option<Value>>,
+    pub surface: Option<ToolSurface>,
+    /// `Some(None)` 清除声明的页面。
+    pub page: Option<Option<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -409,6 +425,9 @@ pub enum Event {
     CancelTool { call_id: String, reason: CancelReason },
     /// 读取资源。完成后调用 [`Client::complete_read`]。
     ReadResource { read: ReadId, resource: ResourceId, name: String },
+    /// Host 请求导航到页面（`app/navigate`，spec/protocol.md 3.4；仅在 [`ClientConfig::navigation`] 为 true 时产生）。
+    /// `params` 缺省为 `null`。完成后调用 [`Client::complete_navigate`]；连接断开后完成返回 [`CoreError::UnknownNavigate`]。
+    Navigate { navigate: NavigateId, page: String, params: Value },
     /// 连接状态变化。
     StateChanged(ConnectionState),
     /// 配对成功并获得新 token，驱动层应持久化，下次创建 Client 时放入配置。
@@ -449,6 +468,8 @@ pub enum CoreError {
     UnknownCall(String),
     #[error("unknown or finished read {0:?}")]
     UnknownRead(ReadId),
+    #[error("unknown or finished navigation {0:?}")]
+    UnknownNavigate(NavigateId),
 }
 
 impl ConnectionState {
@@ -487,6 +508,7 @@ pub struct Client {
     focused: bool,
     next_request_id: i64,
     next_read_id: u64,
+    next_navigate_id: u64,
     /// 自上次成功握手以来的重试次数。
     retry_count: u32,
     /// 生命周期的跨连接状态（持有、恢复令牌、唤醒原因等）。
@@ -513,6 +535,7 @@ impl Client {
             focused: true,
             next_request_id: 0,
             next_read_id: 0,
+            next_navigate_id: 0,
             retry_count: 0,
             diagnostics: Vec::new(),
         }
@@ -788,6 +811,21 @@ impl Client {
         // 没有时间参数：请驱动层尽快调用 handle_timeout，届时重新判定空闲。
         self.request_idle_recheck();
         Ok(())
+    }
+
+    /// 导航完成（[`Event::Navigate`]）：`Ok` 回复 `{ok: true}`；失败用 `NAVIGATION_FAILED` / `NAVIGATION_DENIED`
+    /// （[`ToolError::navigation_failed`] / [`ToolError::navigation_denied`]），其他类别原样回复。
+    pub fn complete_navigate(&mut self, navigate: NavigateId, outcome: Result<(), ToolError>) -> Result<(), CoreError> {
+        let request_id = self.session.navigations.remove(&navigate).ok_or(CoreError::UnknownNavigate(navigate))?;
+        self.finish_navigate(request_id, outcome);
+        self.request_idle_recheck();
+        Ok(())
+    }
+
+    /// 是否处理 Host 的 `app/navigate`（[`ClientConfig::navigation`]）。握手时声明，已连接时修改在下次连接生效；
+    /// 关闭后新到的导航请求以 `NAVIGATION_FAILED`（`unsupported`）回复，进行中的不受影响。
+    pub fn set_navigation(&mut self, enabled: bool) {
+        self.config.navigation = enabled;
     }
 
     /// 调试用：正在执行的调用数。

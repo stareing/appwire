@@ -48,6 +48,24 @@
   ],
   "resources": [
     { "name": "cart.state", "description": "当前购物车内容与总价", "annotations": { "audience": ["assistant"] } }
+  ],
+  "pages": [
+    {
+      "name": "cart",
+      "title": "购物车",
+      "description": "查看与结算购物车",
+      "route": "/cart",
+      "tools": [
+        { "name": "cart.checkout", "description": "结算当前购物车", "inputSchema": { "type": "object" }, "surface": "view" }
+      ]
+    },
+    {
+      "name": "orders.detail",
+      "title": "订单详情",
+      "route": "/orders/:id",
+      "params": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] },
+      "navigable": false
+    }
   ]
 }
 ```
@@ -64,7 +82,8 @@
 | `overview` | object | 否 | App 总览：`summary`（≤ 100 字符）、`body`（Markdown，≤ 2000 字符）、`locale`；模型首次接触该 App 时由 Host 附带，规则见 spec/protocol.md 第 7 节 |
 | `launch` | object | 否 | 各平台启动方式（冷启动，不带令牌），键为 `web` / `windows` / `macos` / `linux`，值为按顺序尝试的数组 |
 | `wake` | object | 否 | 各平台唤醒描述（spec/lifecycle.md 第 5 节），键为 `web` / `windows` / `macos` / `linux` / `android` / `ios`，值为按顺序尝试的 WakeDescriptor 数组；规则见 2.2 节 |
-| `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo`：含可选 `annotations`（标准 MCP 工具注解）与 `outputSchema`（结果的 JSON Schema），语义见 spec/protocol.md 3.2；`risk` 为旧写法（与 `annotations` 同时出现时声明的注解字段优先） |
+| `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo`：含可选 `annotations`（标准 MCP 工具注解）与 `outputSchema`（结果的 JSON Schema），语义见 spec/protocol.md 3.2；`risk` 为旧写法（与 `annotations` 同时出现时声明的注解字段优先）；可选 `surface`（`app` / `view`）与 `page`（所在页面名），语义见 spec/protocol.md 3.4 |
+| `pages` | array | 否 | 页面目录（第 4c 项）：App 内各页面的说明、导航参数与页面内工具，结构见 2.3 节 |
 | `resources` | array | 否 | 静态资源，结构同协议中的 `ResourceInfo`（含可选 `realtime`：需实时推送，被订阅时 App 保持连接，spec/lifecycle.md 第 13 节 B3；可选 `annotations`：标准 MCP 内容注解，spec/protocol.md 3.2） |
 
 ### 2.1 `launch` 条目
@@ -105,11 +124,30 @@
 - 解析顺序（Host）：运行时上报的 `wake` → 清单 `wake.<平台>` → 清单 `launch.<平台>`（冷启动新实例）。
 - 未知 `kind` / 未知平台键原样保留，校验时给出警告；已知 `kind` 的字段类型错误（`target` 非字符串、`background` 非布尔）为错误。
 
+### 2.3 `pages` 条目
+
+页面目录描述"App 内有哪些页面、各页面上有哪些工具、能否由 Agent 导航过去"。导航请求 `app/navigate` 与工具的
+`surface` / `page` 语义见 spec/protocol.md 3.4；Hub 如何披露页面目录、调用页面工具时如何导航见 spec/hub-api.md 3.14。
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `name` | string | 是 | 页面名 `[a-zA-Z0-9_.-]{1,64}`，清单内唯一；即 `app/navigate` 的 `page` |
+| `title` | string | 否 | 显示标题 |
+| `description` | string | 否 | 页面说明（给模型读） |
+| `route` | string | 否 | App 内路由（如 `/orders/:id`），供 App 与构建工具使用；Host 不解析 |
+| `params` | object | 否 | 导航参数的 JSON Schema，`type` 必须为 `"object"` |
+| `tools` | array | 否 | 页面内的工具，结构同 `ToolInfo`（通常 `surface: "view"`）；可写 `page`，写了必须等于所在页面名 |
+| `navigable` | boolean | 否 | 能否由 Agent 导航到该页面，缺省 `true`；`false` 时 Hub 不导航（只能由用户自己打开） |
+| `activation` | string | 否 | 导航到该页面需要的激活方式（`headless` / `background` / `foreground`），同 `ToolInfo.activation` |
+
 ## 3. 校验规则
 
 - `manifestVersion` 必须为 `1`。
 - `appId` 格式合法，且不能是保留名 `apps`、`os`、`ax`、`host`。
-- 工具名、资源名满足 `[a-zA-Z0-9_.-]{1,64}`，各自在清单内唯一。
+- 工具名、资源名满足 `[a-zA-Z0-9_.-]{1,64}`，各自在清单内唯一；工具名在顶层 `tools` 与所有 `pages[].tools` 之间同样唯一
+  （工具名在 App 内唯一）。页面内工具与顶层工具适用相同的工具规则（名称、`inputSchema`、`outputSchema`、`description`、appId 前缀警告）。
+- `pages`：页面名满足 `[a-zA-Z0-9_.-]{1,64}` 且唯一；`description` 若给出不能为空字符串；`params` 若给出必须是 `type` 为 `"object"`
+  的对象；页面内工具的 `page` 若给出必须等于所在页面名（以上违反为错误）。顶层工具的 `page` 指向未声明的页面给出警告。
 - 工具 `inputSchema` 必须是对象且 `type` 为 `"object"`；`outputSchema` 若给出必须是对象（根类型不限）。
 - `annotations` 各字段类型不对（如 `readOnlyHint` 不是布尔、`audience` 取值不是 `user` / `assistant`）时清单解析失败。
 - `description` 不能为空字符串。
@@ -130,5 +168,9 @@
   校验给出警告。
 - App 未连接时：静态工具出现在 MCP 工具列表中（名称 `<appId>.<name>`），调用返回 `APP_DISCONNECTED`，
   错误信息中给出 `launch.web` 的地址等唤醒提示（M2 起改为自动唤醒）。
+- `pages[].tools` 中的页面工具**不作为静态工具列出**，只进入页面目录：Hub 经 `apps.tools` / `apps.page` 渐进披露，
+  调用时先导航到所在页面再派发（spec/protocol.md 3.4、spec/hub-api.md 3.14）。`app-mcp-codegen` 的原生意图 target
+  （App Intents、AppFunctions、Windows App Actions、鸿蒙意图）只生成 `surface: "app"` 的顶层工具，`view` 工具跳过并给出警告；
+  页面工具不参与代码生成。
 - App 已连接时：以运行中实例实际注册的工具为准；静态工具中未注册的，在列表中保留但描述前加
   `[当前不可用]`，调用返回 `TOOL_NOT_FOUND`，信息说明需要先打开对应界面。

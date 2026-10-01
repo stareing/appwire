@@ -41,6 +41,10 @@ export type ErrorKind =
    * 见 {@link ToolCallError.userActionRequired}。
    */
   | 'USER_ACTION_REQUIRED'
+  /** 导航没有完成（不支持 / 出错 / 超时 / 导航后工具未出现，spec/protocol.md 3.4）。 */
+  | 'NAVIGATION_FAILED'
+  /** 导航被拒绝（App 拒绝或页面不可由 Agent 导航）。 */
+  | 'NAVIGATION_DENIED'
 
 /** JSON Schema 对象（只要求顶层 type 为 object）。 */
 export type JsonSchema = { type: 'object'; [key: string]: unknown }

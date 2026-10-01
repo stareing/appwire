@@ -22,16 +22,17 @@ use std::sync::Arc;
 use app_mcp_native::{
     Activation, AppOverview, CallDedupPolicy, CallResult, ClientKind, ClientListener, ContentAnnotations, ErrorKind, HeartbeatMode,
     LifecycleMode, LifecyclePolicy, NativeClient, NativeConfig, Residency, ResourceOptions, ResourceSpec, ResultStatus,
-    Risk, SleepReason, ToolAnnotations, ToolOptions, ToolSpec, Visibility, WakeDescriptor, WakeKind, WakeReason,
+    Risk, SleepReason, ToolAnnotations, ToolOptions, ToolSpec, ToolSurface, Visibility, WakeDescriptor, WakeKind,
+    WakeReason,
 };
 
 pub use callbacks::{
-    AmCancelFn, AmCancelReason, AmFreeFn, AmIdleExitFn, AmLogFn, AmLogLevel, AmPairedFn, AmReadFn,
+    AmCancelFn, AmCancelReason, AmFreeFn, AmIdleExitFn, AmLogFn, AmLogLevel, AmNavigateFn, AmPairedFn, AmReadFn,
     AmStateFn, AmStateStatus, AmToolFn,
 };
-use callbacks::{CCancelListener, CClientListener, CResourceReader, CToolHandler, UserData};
+use callbacks::{CCancelListener, CClientListener, CNavigationHandler, CResourceReader, CToolHandler, UserData};
 use handles::ScopeKind;
-pub use handles::{AmCall, AmClient, AmHold, AmRead, AmResource, AmScope, AmTool};
+pub use handles::{AmCall, AmClient, AmHold, AmNavigate, AmRead, AmResource, AmScope, AmTool};
 pub use status::AmStatus;
 use status::{FfiError, FfiResult, guard, guard_value, last_error_ptr};
 use strings::{into_raw_cstring, lossy_str, opt_str, req_str};
@@ -135,6 +136,10 @@ pub struct AmToolOptions {
     pub annotations_json: *const c_char,
     /// 结果的 JSON Schema 文本（MCP `outputSchema`）；NULL = 未声明。
     pub output_schema_json: *const c_char,
+    /// v14：所在页面名；NULL = 未声明。
+    pub page: *const c_char,
+    /// v14：`AmToolSurface`（0 = APP，1 = VIEW）。
+    pub surface: c_int,
 }
 
 /// v9：`am_call_complete_ex` 的调用结果（带 `struct_size`，按调用方给出的大小读取；`status` 用 c_int 接收）。
@@ -463,6 +468,18 @@ unsafe fn read_tool_options(p: *const AmToolOptions) -> FfiResult<ToolOptions> {
         options.output_schema_json =
             unsafe { opt_str(text, "options->output_schema_json") }?.map(str::to_owned);
     }
+    if has(offset_of!(AmToolOptions, page)) {
+        let text = unsafe { std::ptr::addr_of!((*p).page).read() };
+        options.page = unsafe { opt_str(text, "options->page") }?.map(str::to_owned);
+    }
+    if size >= offset_of!(AmToolOptions, surface) + size_of::<c_int>() {
+        let surface = unsafe { std::ptr::addr_of!((*p).surface).read() };
+        options.surface = match surface {
+            0 => ToolSurface::App,
+            1 => ToolSurface::View,
+            other => return Err(FfiError::invalid_argument(format!("options->surface 取值无效：{other}"))),
+        };
+    }
     Ok(options)
 }
 
@@ -770,6 +787,23 @@ pub unsafe extern "C" fn am_client_set_visibility(
         let c = unsafe { client_ref(client) }?;
         let v = visibility_from(visibility)?;
         c.shared.client()?.set_visibility(v, focused);
+        Ok(())
+    })
+}
+
+/// v14：设置导航回调；`handler` 为 NULL 时清除。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_client_set_navigation_handler(
+    client: *mut AmClient,
+    handler: Option<AmNavigateFn>,
+    user_data: *mut c_void,
+    free_user_data: Option<AmFreeFn>,
+) -> AmStatus {
+    guard(|| {
+        let ud = UserData::new(user_data, free_user_data);
+        let c = unsafe { client_ref(client) }?;
+        let handler = handler.map(|f| Arc::new(CNavigationHandler { f, user_data: ud }) as Arc<dyn app_mcp_native::NavigationHandler>);
+        c.shared.client()?.set_navigation_handler(handler);
         Ok(())
     })
 }
@@ -1574,6 +1608,55 @@ pub unsafe extern "C" fn am_read_fail_user_action(
     });
     unsafe { consume(read) };
     status
+}
+
+// ---------------------------------------------------------------------------
+// 导航（v14）
+// ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_navigate_page(navigate: *const AmNavigate) -> *const c_char {
+    unsafe { navigate.as_ref() }.map_or(std::ptr::null(), |n| n.page.as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_navigate_params_json(navigate: *const AmNavigate) -> *const c_char {
+    unsafe { navigate.as_ref() }
+        .and_then(|n| n.params_json.as_ref())
+        .map_or(std::ptr::null(), |p| p.as_ptr())
+}
+
+/// 完成并消费 `navigate`：`f` 对句柄提交结果。
+unsafe fn finish_navigate(
+    navigate: *mut AmNavigate,
+    f: impl FnOnce(&AmNavigate) -> Result<(), app_mcp_native::NativeError>,
+) -> AmStatus {
+    if navigate.is_null() {
+        return guard(|| Err(FfiError::null("navigate")));
+    }
+    let status = guard(|| {
+        f(unsafe { &*navigate })?;
+        Ok(())
+    });
+    unsafe { consume(navigate) };
+    status
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_navigate_complete(navigate: *mut AmNavigate) -> AmStatus {
+    unsafe { finish_navigate(navigate, |n| n.handle.complete()) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_navigate_fail(navigate: *mut AmNavigate, message: *const c_char) -> AmStatus {
+    let message = unsafe { lossy_str(message) }.unwrap_or_default();
+    unsafe { finish_navigate(navigate, |n| n.handle.fail(&message)) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_navigate_deny(navigate: *mut AmNavigate, message: *const c_char) -> AmStatus {
+    let message = unsafe { lossy_str(message) }.unwrap_or_default();
+    unsafe { finish_navigate(navigate, |n| n.handle.deny(&message)) }
 }
 
 #[cfg(test)]

@@ -45,6 +45,8 @@ fn tool_info(def: &ToolDef) -> ToolInfo {
         title: def.title.clone(),
         annotations: def.annotations.clone(),
         output_schema: def.output_schema.clone(),
+        surface: def.surface,
+        page: def.page.clone(),
     }
 }
 
@@ -137,6 +139,9 @@ impl Registry {
 
     pub fn register_tool(&mut self, def: ToolDef) -> Result<ToolId, CoreError> {
         validate_name(&def.name)?;
+        if let Some(page) = &def.page {
+            validate_name(page)?;
+        }
         validate_schema(&def.input_schema)?;
         self.check_scope(def.scope)?;
         if self.tool_names.contains_key(&def.name) {
@@ -153,8 +158,12 @@ impl Registry {
         if let Some(schema) = &update.input_schema {
             validate_schema(schema)?;
         }
+        if let Some(Some(page)) = &update.page {
+            validate_name(page)?;
+        }
         let def = self.tools.get_mut(&tool).ok_or(CoreError::UnknownTool(tool))?;
-        let ToolUpdate { description, input_schema, risk, activation, title, enabled, annotations, output_schema } = update;
+        let ToolUpdate { description, input_schema, risk, activation, title, enabled, annotations, output_schema, surface, page } =
+            update;
         if let Some(v) = description {
             def.description = v;
         }
@@ -178,6 +187,12 @@ impl Registry {
         }
         if let Some(v) = output_schema {
             def.output_schema = v;
+        }
+        if let Some(v) = surface {
+            def.surface = v;
+        }
+        if let Some(v) = page {
+            def.page = v;
         }
         let name = def.name.clone();
         self.mark_tool(&name);
@@ -345,6 +360,8 @@ mod tests {
             scope,
             annotations: None,
             output_schema: None,
+            surface: crate::ToolSurface::App,
+            page: None,
         }
     }
 

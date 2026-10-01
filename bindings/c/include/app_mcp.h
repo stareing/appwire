@@ -62,7 +62,13 @@
  *   · AmClientOptions：call_dedup_ttl_ms、call_dedup_max_entries（调用去重的保留时长与条数；0 = 默认 300000 ms / 64 条，
  *     负数 = 关闭去重）。
  *   · AmResourceOptions：annotations_json（资源内容的标注，MCP 内容注解；Hub 放到 resources/list 的资源注解上）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v13 仍为 3。）
+ * - v14（第 4c 项，spec/protocol.md 3.4）：只做新增，已有结构体布局与函数签名不变。
+ *   · AmToolOptions 末尾追加 page（所在页面名）与 surface（AmToolSurface：APP 缺省 / VIEW 依赖界面），按 struct_size 读取。
+ *   · 导航：AmNavigate（一次导航请求）、AmNavigateFn、am_client_set_navigation_handler（设置后握手声明
+ *     capabilities.navigate）、am_navigate_page / am_navigate_params_json、am_navigate_complete / am_navigate_fail /
+ *     am_navigate_deny（消费 AmNavigate）。未设置回调时 Host 的导航请求以 NAVIGATION_FAILED 回复。
+ *   · 错误类别新增 "NAVIGATION_FAILED"、"NAVIGATION_DENIED"（-31001 / -31002）。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v14 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -123,6 +129,9 @@ typedef enum AmActivation {
 } AmActivation;
 
 typedef enum AmVisibility { AM_VISIBLE = 0, AM_HIDDEN = 1, AM_FROZEN = 2 } AmVisibility;
+
+/* v14：工具对界面的依赖（spec/protocol.md 3.4）。 */
+typedef enum AmToolSurface { AM_SURFACE_APP = 0, AM_SURFACE_VIEW = 1 } AmToolSurface;
 
 typedef enum AmCancelReason {
     AM_CANCEL_REQUESTED = 0,
@@ -215,6 +224,7 @@ typedef struct AmResource AmResource;
 typedef struct AmCall AmCall;   /* 一次调用；由 am_call_complete / am_call_fail 消费 */
 typedef struct AmRead AmRead;   /* 一次读取；由 am_read_complete / am_read_fail 消费 */
 typedef struct AmHold AmHold;   /* v3：阻止自动休眠的持有；由 am_hold_release 释放 */
+typedef struct AmNavigate AmNavigate; /* v14：一次导航请求；由 am_navigate_complete / _fail / _deny 消费 */
 
 /* ---------------------------------------------------------------------------
  * 回调
@@ -241,6 +251,9 @@ typedef void (*AmCancelFn)(void *user_data, AmCancelReason reason);
 /* v3：已进入休眠，且驻留策略允许退出进程（residency 为 EXIT_WHEN_IDLE / EXIT_ALWAYS）。
  * App 自行决定是否退出；不要在回调中同步调用 am_client_free（先切换到其他线程）。 */
 typedef void (*AmIdleExitFn)(void *user_data);
+/* v14：导航请求（Host 的 app/navigate，spec/protocol.md 3.4）。navigate 的所有权转移给回调方，必须最终调用
+ * am_navigate_complete / am_navigate_fail / am_navigate_deny 恰好一次。 */
+typedef void (*AmNavigateFn)(void *user_data, AmNavigate *navigate);
 
 /* ---------------------------------------------------------------------------
  * 配置与定义
@@ -321,6 +334,10 @@ typedef struct AmToolOptions {
     const char *annotations_json;
     /* 可为 NULL：未声明。结果的 JSON Schema 文本（MCP outputSchema）。 */
     const char *output_schema_json;
+    /* v14：可为 NULL：未声明。所在页面名 [a-zA-Z0-9_.-]{1,64}；Hub 在该工具未注册时据此导航。 */
+    const char *page;
+    /* v14：AmToolSurface（AM_SURFACE_APP 缺省 / AM_SURFACE_VIEW）。旧调用方的 struct_size 不含以下字段时为 APP。 */
+    int surface;
 } AmToolOptions;
 
 typedef struct AmResourceSpec {
@@ -376,6 +393,11 @@ void am_client_free(AmClient *client);
 AmStatus am_client_start(AmClient *client);
 AmStatus am_client_stop(AmClient *client);
 AmStatus am_client_set_visibility(AmClient *client, AmVisibility visibility, bool focused);
+/* v14：设置导航回调（spec/protocol.md 3.4）；handler 为 NULL 时清除（之后的导航请求以 NAVIGATION_FAILED 回复）。
+ * 能力在握手时声明，建议在 am_client_start 之前设置。user_data 的所有权规则同其他回调（替换 / 清除 / 释放客户端时
+ * 调用旧的 free_user_data）。 */
+AmStatus am_client_set_navigation_handler(AmClient *client, AmNavigateFn handler, void *user_data,
+                                          AmFreeFn free_user_data);
 /* 当前状态；retry_in_ms、reason 可为 NULL。*reason 需用 am_string_free 释放（REJECTED / HOST_MISMATCH 时非 NULL；
  * v6 起 BACKOFF 有原因时也非 NULL；其他状态为 NULL）。 */
 AmStatus am_client_state(const AmClient *client, AmStateStatus *status, uint64_t *retry_in_ms, char **reason);
@@ -530,6 +552,21 @@ AmStatus am_read_fail_with_details(AmRead *read, const char *kind, const char *m
 /* v12：以 USER_ACTION_REQUIRED 失败完成并消费 read（同 am_call_fail_user_action：reason / uri 为 NULL 时不出现在
  * 错误的 data 中；非法 UTF-8 按替换字符处理）。总是消费 read。read 为 NULL 时返回 AM_ERR_INVALID_ARGUMENT。 */
 AmStatus am_read_fail_user_action(AmRead *read, const char *message, const char *reason, const char *uri);
+
+/* ---------------------------------------------------------------------------
+ * 导航（v14，spec/protocol.md 3.4）
+ * ------------------------------------------------------------------------- */
+
+/* 目标页面名；指针在 navigate 被消费前有效。 */
+const char *am_navigate_page(const AmNavigate *navigate);
+/* 页面参数 JSON 文本；Host 没有给出时为 NULL。指针在 navigate 被消费前有效。 */
+const char *am_navigate_params_json(const AmNavigate *navigate);
+/* 导航完成并消费 navigate。 */
+AmStatus am_navigate_complete(AmNavigate *navigate);
+/* 导航失败（NAVIGATION_FAILED，data.reason = "error"）并消费 navigate。message 可为 NULL。 */
+AmStatus am_navigate_fail(AmNavigate *navigate, const char *message);
+/* 拒绝导航（NAVIGATION_DENIED，如用户正在输入）并消费 navigate。message 面向模型 / 用户，可为 NULL。 */
+AmStatus am_navigate_deny(AmNavigate *navigate, const char *message);
 
 #ifdef __cplusplus
 }

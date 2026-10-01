@@ -5,7 +5,7 @@ use std::ffi::CString;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use app_mcp_native::{
-    CallHandle, HoldHandle, NativeClient, ReadHandle, ResourceHandle, ScopeHandle, ToolHandle,
+    CallHandle, HoldHandle, NativeClient, NavigateHandle, ReadHandle, ResourceHandle, ScopeHandle, ToolHandle,
 };
 
 use crate::status::{FfiError, FfiResult};
@@ -157,6 +157,21 @@ impl AmRead {
             handle,
             resource_name,
         }
+    }
+}
+
+/// 一次导航请求（v14）。由 `am_navigate_complete` / `_fail` / `_deny` 消费。
+pub struct AmNavigate {
+    pub(crate) handle: NavigateHandle,
+    pub(crate) page: CString,
+    pub(crate) params_json: Option<CString>,
+}
+
+impl AmNavigate {
+    pub(crate) fn new(handle: NavigateHandle) -> Self {
+        let page = to_cstring_lossy(&handle.page());
+        let params_json = handle.params_json().map(|p| to_cstring_lossy(&p));
+        Self { handle, page, params_json }
     }
 }
 

@@ -56,6 +56,10 @@ public enum ErrorKind {
     public static let policyDenied = "POLICY_DENIED"
     /// 需要用户本人操作后才能继续（用 `ToolCallError.userActionRequired(message:reason:uri:)` 构造）。
     public static let userActionRequired = "USER_ACTION_REQUIRED"
+    /// 导航没有完成（不支持 / 出错 / 超时 / 导航后工具未出现，spec/protocol.md 3.4）。
+    public static let navigationFailed = "NAVIGATION_FAILED"
+    /// 导航被拒绝（App 拒绝或页面不可由 Agent 导航）。
+    public static let navigationDenied = "NAVIGATION_DENIED"
 
     /// 原生库认可的全部类别。
     public static var all: Set<String> { Set(AppMcpBindings.errorKinds()) }

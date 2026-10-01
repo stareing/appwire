@@ -23,6 +23,8 @@ mod lease;
 mod lifecycle;
 mod limits;
 mod mcp_convert;
+mod navigate;
+pub mod pages;
 pub mod policy;
 mod power;
 pub mod progress;

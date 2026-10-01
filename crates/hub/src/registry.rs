@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use crate::connection::Connection;
 use crate::overview::{AppSummary, Overview, OverviewSource};
+use crate::pages::{self, LearnedPages, PageEntry};
 use crate::routing::{self, Candidate};
 use crate::types::{AppInfo, AppKind, InstanceInfo};
 
@@ -32,6 +33,8 @@ pub struct NewInstance {
     pub overview: Option<AppOverview>,
     /// 对端进程号（本地 IPC 连接由操作系统提供；TCP 连接为 `None`）。
     pub pid: Option<u32>,
+    /// 握手声明了 `capabilities.navigate`（spec/protocol.md 3.4）。
+    pub navigate: bool,
     pub conn: Arc<Connection>,
 }
 
@@ -47,6 +50,8 @@ pub struct Instance {
     pub overview: Option<AppOverview>,
     /// 对端进程号（本地 IPC 连接）。
     pub pid: Option<u32>,
+    /// 能处理 `app/navigate`（握手声明了 `capabilities.navigate`）。
+    pub navigate: bool,
     pub conn: Arc<Connection>,
     /// 尚未收到 `app/visibility` 时为 `None`。
     pub visibility: Option<Visibility>,
@@ -153,6 +158,8 @@ struct AppEntry {
     instances: Vec<Instance>,
     /// 按休眠顺序排列。
     dormant: Vec<DormantInstance>,
+    /// SDK 上报过的页面工具（页面目录的运行时部分，随 App 记录保留）。
+    learned_pages: LearnedPages,
 }
 
 impl AppEntry {
@@ -321,6 +328,7 @@ impl Registry {
             url: new.url,
             overview: new.overview,
             pid: new.pid,
+            navigate: new.navigate,
             conn: new.conn,
             visibility: None,
             focused: false,
@@ -428,6 +436,7 @@ impl Registry {
 
     /// 快速恢复：把休眠快照作为新连接实例的工具 / 资源（SDK 跳过了 `tools/sync`）。
     pub fn restore_snapshot(&mut self, app_id: &str, conn_id: u64, snapshot: &DormantInstance) {
+        self.learn_pages(app_id, snapshot.tools.values());
         if let Some(inst) = self.instance_mut(app_id, conn_id) {
             inst.tools = snapshot.tools.clone();
             inst.resources = snapshot.resources.clone();
@@ -558,6 +567,9 @@ impl Registry {
     /// 全量替换工具列表。返回列表是否变化。
     pub fn sync_tools(&mut self, app_id: &str, conn_id: u64, tools: Vec<ToolInfo>) -> bool {
         let tools = sanitize_tools(app_id, tools);
+        if self.instance_mut(app_id, conn_id).is_some() {
+            self.learn_pages(app_id, tools.iter());
+        }
         let Some(inst) = self.instance_mut(app_id, conn_id) else {
             return false;
         };
@@ -577,6 +589,9 @@ impl Registry {
         removed: Vec<String>,
     ) -> bool {
         let upserted = sanitize_tools(app_id, upserted);
+        if self.instance_mut(app_id, conn_id).is_some() {
+            self.learn_pages(app_id, upserted.iter());
+        }
         let Some(inst) = self.instance_mut(app_id, conn_id) else {
             return false;
         };
@@ -701,6 +716,68 @@ impl Registry {
         ToolError::new(ErrorKind::AppDisconnected, message).with_details(details)
     }
 
+    // ------------------------------------------------------------------
+    // 页面目录与导航（第 4c 项，spec/hub-api.md 3.14）
+    // ------------------------------------------------------------------
+
+    /// 记下 SDK 上报的页面工具。
+    fn learn_pages<'a>(&mut self, app_id: &str, tools: impl IntoIterator<Item = &'a ToolInfo>) {
+        if let Some(entry) = self.apps.get_mut(app_id) {
+            entry.learned_pages.learn(app_id, tools);
+        }
+    }
+
+    /// 某 App 的页面目录（清单 + 运行时上报），按页面名排序；App 未知时为空。
+    pub fn pages(&self, app_id: &str) -> Vec<PageEntry> {
+        self.apps
+            .get(app_id)
+            .map(|e| pages::catalog(e.manifest.as_ref(), &e.learned_pages))
+            .unwrap_or_default()
+    }
+
+    /// 是否有已连接实例注册了该工具（即工具在某个实例的当前界面上）。
+    pub fn tool_registered(&self, app_id: &str, tool: &str) -> bool {
+        self.apps.get(app_id).is_some_and(|e| e.instances.iter().any(|i| i.tools.contains_key(tool)))
+    }
+
+    /// 指定实例是否注册了该工具。
+    pub fn instance_has_tool(&self, app_id: &str, instance_id: &str, tool: &str) -> bool {
+        self.instance(app_id, instance_id).is_some_and(|i| i.tools.contains_key(tool))
+    }
+
+    /// 所有已知 appId（静态清单、已连接与休眠实例）。
+    pub fn app_ids(&self) -> Vec<String> {
+        self.apps.keys().cloned().collect()
+    }
+
+    /// 是否有已连接实例。
+    pub fn has_connected(&self, app_id: &str) -> bool {
+        self.apps.get(app_id).is_some_and(|e| !e.instances.is_empty())
+    }
+
+    /// 导航目标：已就绪且声明了导航能力的实例，按路由优先级（`prefer` 优先，其次焦点 / 最近活跃）。
+    pub fn navigation_target(&self, app_id: &str, prefer: Option<&str>) -> Option<(String, Arc<Connection>)> {
+        let entry = self.apps.get(app_id)?;
+        entry
+            .ordered(prefer, |i| i.navigate && i.ready && i.visibility != Some(Visibility::Frozen))
+            .first()
+            .map(|i| (i.instance_id.clone(), i.conn.clone()))
+    }
+
+    /// App 没有已连接实例时的唤醒计划（不针对具体工具）：最近活跃（或选定）的休眠实例，否则按清单冷启动。
+    /// 已有连接时为 `None`。
+    pub fn wake_plan_app(&self, app_id: &str, selected: Option<&str>) -> Option<WakePlan> {
+        let entry = self.apps.get(app_id)?;
+        if !entry.instances.is_empty() {
+            return None;
+        }
+        if let Some(d) = entry.dormant_ordered(selected, |_| true).first() {
+            return Some(self.plan_for(app_id, d, None));
+        }
+        entry.manifest.as_ref()?;
+        Some(WakePlan { app_id: app_id.to_owned(), instance_id: None, descriptor: None, tool: None })
+    }
+
     /// 按路由规则选出调用 `tool_name` 的目标实例。
     pub fn route_tool(
         &self,
@@ -816,9 +893,10 @@ impl Registry {
         for (app_id, entry) in &self.apps {
             let mut seen: HashSet<&str> = HashSet::new();
             if !entry.instances.is_empty() {
-                for inst in entry.ordered(None, |_| true) {
+                // `view` 工具只列首选实例（焦点 / 最近活跃）当前界面上的（spec/hub-api.md 3.14 L1）。
+                for (rank, inst) in entry.ordered(None, |_| true).into_iter().enumerate() {
                     for (name, info) in &inst.tools {
-                        if seen.insert(name) {
+                        if (rank == 0 || info.surface.is_app()) && seen.insert(name) {
                             out.push(ListedTool {
                                 app_id: app_id.clone(),
                                 info: info.clone(),
@@ -829,7 +907,7 @@ impl Registry {
                 }
             }
             for d in entry.dormant_ordered(None, |_| true) {
-                for (name, info) in &d.tools {
+                for (name, info) in d.tools.iter().filter(|(_, t)| t.surface.is_app()) {
                     if seen.insert(name) {
                         out.push(ListedTool {
                             app_id: app_id.clone(),
@@ -1058,6 +1136,7 @@ impl Registry {
                             "lastActiveAt": i.last_active_at.map(unix_ms),
                             "tools": i.tools.keys().collect::<Vec<_>>(),
                             "resources": i.resources.keys().collect::<Vec<_>>(),
+                            "navigation": i.navigate,
                         })
                     })
                     .collect();
@@ -1093,6 +1172,7 @@ impl Registry {
                     "selectedInstanceId": sel,
                     "defaultInstanceId": default_target,
                     "staticToolCount": m.map(|m| m.tools.len()).unwrap_or(0),
+                    "pageCount": pages::catalog(m, &entry.learned_pages).len(),
                     "launchUrl": m.and_then(Manifest::web_url),
                 })
             })
@@ -1156,6 +1236,7 @@ mod tests {
                 url: None,
                 overview: None,
                 pid: None,
+                navigate: false,
                 conn: conn.clone(),
             },
         );
@@ -1196,6 +1277,7 @@ mod tests {
                     locale: None,
                 }),
                 pid: None,
+                navigate: false,
                 conn: conn.clone(),
             },
         );
@@ -1333,6 +1415,72 @@ mod tests {
             reg.route_tool("app", "t", Some("b")).unwrap().instance_id,
             "b"
         );
+    }
+
+    #[test]
+    fn view_tools_listed_from_primary_instance_and_pages_learned() {
+        let view = |name: &str, page: &str| ToolInfo {
+            surface: app_mcp_protocol::ToolSurface::View,
+            page: Some(page.into()),
+            ..tool(name)
+        };
+        let mut reg = Registry::new();
+        let (a, _) = add(&mut reg, "app", "a", 1);
+        let (b, _) = add(&mut reg, "app", "b", 2);
+        reg.sync_tools("app", a.id, vec![tool("bg"), view("a.view", "pa")]);
+        reg.sync_tools("app", b.id, vec![view("b.view", "pb")]);
+        reg.set_visibility("app", b.id, Visibility::Visible, true);
+        let names = |reg: &Registry| reg.tools().into_iter().map(|t| t.info.name).collect::<Vec<_>>();
+        // b 聚焦：只列 b 的 view 工具，a 的 app 工具照常
+        assert_eq!(names(&reg), ["b.view", "bg"]);
+        reg.set_visibility("app", a.id, Visibility::Visible, true);
+        reg.set_visibility("app", b.id, Visibility::Hidden, false);
+        assert_eq!(names(&reg), ["a.view", "bg"]);
+        // 页面目录记下两个实例上报的页面；工具注销后仍在目录中
+        reg.sync_tools("app", b.id, vec![]);
+        let pages: Vec<String> = reg.pages("app").into_iter().map(|p| p.name).collect();
+        assert_eq!(pages, ["pa", "pb"]);
+        assert!(!reg.tool_registered("app", "b.view") && reg.tool_registered("app", "a.view"));
+        assert!(reg.instance_has_tool("app", "a", "a.view") && !reg.instance_has_tool("app", "b", "a.view"));
+        // 休眠快照中的 view 工具不列出
+        reg.make_dormant("app", a.id, "r".into(), "h".into(), None);
+        assert_eq!(names(&reg), ["bg"]);
+        // 导航目标：只选声明了导航能力且已就绪的实例
+        assert!(reg.navigation_target("app", None).is_none());
+        assert!(reg.wake_plan_app("app", None).is_none(), "仍有已连接实例");
+        reg.remove_instance("app", b.id);
+        let plan = reg.wake_plan_app("app", None).expect("休眠实例");
+        assert_eq!((plan.instance_id.as_deref(), plan.tool.is_none()), (Some("a"), true));
+    }
+
+    #[test]
+    fn navigation_target_prefers_ready_capable_instances() {
+        let mut reg = Registry::new();
+        let (conn, rx) = Connection::new(9, "t-9");
+        std::mem::forget(rx);
+        let new = |id: &str, navigate: bool, conn: Arc<Connection>| NewInstance {
+            instance_id: id.into(),
+            app_name: "Shop".into(),
+            client_kind: ClientKind::Native,
+            app_version: None,
+            title: None,
+            url: None,
+            overview: None,
+            pid: None,
+            navigate,
+            conn,
+        };
+        reg.add_instance("app", new("x", true, conn.clone()));
+        assert!(reg.navigation_target("app", None).is_none(), "未就绪");
+        reg.set_ready("app", conn.id);
+        assert_eq!(reg.navigation_target("app", None).map(|(id, _)| id).as_deref(), Some("x"));
+        let (c2, rx) = Connection::new(10, "t-10");
+        std::mem::forget(rx);
+        reg.add_instance("app", new("y", false, c2.clone()));
+        reg.set_ready("app", c2.id);
+        assert_eq!(reg.navigation_target("app", Some("y")).map(|(id, _)| id).as_deref(), Some("x"), "y 不支持导航");
+        reg.set_visibility("app", conn.id, Visibility::Frozen, false);
+        assert!(reg.navigation_target("app", None).is_none(), "冻结的实例不导航");
     }
 
     #[test]

@@ -27,6 +27,8 @@ fn tool(name: &str) -> ToolDef {
         scope: None,
         annotations: None,
         output_schema: None,
+        surface: ToolSurface::App,
+        page: None,
     }
 }
 
@@ -301,6 +303,30 @@ fn resource_read_blocks_idle_and_completion_rechecks() {
     let done = h.now;
     let (_, at) = h.wait_sleep(3 * IDLE).unwrap();
     assert_eq!(at, done + MERGE, "读取也算处理过调用：合并窗口");
+}
+
+#[test]
+fn navigation_blocks_idle_and_completion_rechecks() {
+    let mut cfg = config(LifecycleMode::Idle);
+    cfg.navigation = true;
+    let mut h = Harness::with(cfg);
+    h.connect();
+    let ev = h.request("app/navigate", json!({"page": "cart"}));
+    let nav = ev
+        .iter()
+        .find_map(|e| match e {
+            Event::Navigate { navigate, .. } => Some(*navigate),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(h.wait_sleep(3 * IDLE), None, "导航进行中不休眠");
+    h.c.complete_navigate(nav, Ok(())).unwrap();
+    h.drain();
+    assert_eq!(h.c.poll_timeout(), Some(h.now), "完成后立即重新判定");
+    h.advance(0);
+    let done = h.now;
+    let (_, at) = h.wait_sleep(3 * IDLE).unwrap();
+    assert_eq!(at, done + MERGE, "导航也算处理过请求：合并窗口");
 }
 
 fn realtime(name: &str) -> ResourceDef {
@@ -853,6 +879,8 @@ fn tools_hash_fixed_vector() {
         scope: None,
         annotations: None,
         output_schema: None,
+        surface: ToolSurface::App,
+        page: None,
     })
     .unwrap();
     let checkout = h
@@ -868,6 +896,8 @@ fn tools_hash_fixed_vector() {
             scope: None,
             annotations: None,
             output_schema: None,
+            surface: ToolSurface::App,
+            page: None,
         })
         .unwrap();
     h.c.register_resource(ResourceDef {

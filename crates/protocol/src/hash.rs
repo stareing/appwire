@@ -83,7 +83,7 @@ pub fn tools_hash(tools: &ToolsSyncParams, resources: &ResourcesSyncParams) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Activation, Risk};
+    use crate::{Activation, Risk, ToolSurface};
     use serde_json::json;
 
     /// 固定测试向量：各语言 / Host 的一致性测试使用同一组输入与期望值。
@@ -99,6 +99,8 @@ mod tests {
                     title: None,
                     annotations: None,
                     output_schema: None,
+                    surface: ToolSurface::App,
+                    page: None,
                 },
                 ToolInfo {
                     name: "cart.checkout".into(),
@@ -109,6 +111,8 @@ mod tests {
                     title: Some("Checkout".into()),
                     annotations: None,
                     output_schema: None,
+                    surface: ToolSurface::App,
+                    page: None,
                 },
             ],
         }

@@ -45,6 +45,10 @@ export type ErrorKind =
    * 见 `ToolCallError.userActionRequired`。
    */
   | 'USER_ACTION_REQUIRED'
+  /** 导航没有完成（不支持 / 出错 / 超时 / 导航后工具未出现，spec/protocol.md 3.4）。 */
+  | 'NAVIGATION_FAILED'
+  /** 导航被拒绝（App 拒绝或页面不可由 Agent 导航）。 */
+  | 'NAVIGATION_DENIED'
 
 /** `USER_ACTION_REQUIRED` 的 `reason` 建议取值（spec/protocol.md 第 4 节）；也可以是其他字符串。 */
 export type UserActionReason = 'login' | 'permission' | 'foreground' | 'confirm' | (string & {})

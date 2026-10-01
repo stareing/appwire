@@ -6,8 +6,8 @@ use crate::vec_map::VecMap;
 
 use app_mcp_protocol as proto;
 use proto::{
-    ErrorKind, HelloParams, HelloResult, Message, Notification, PairingResultParams, PairingStatus, Request,
-    RequestId, ResourceSubscribeParams, ResourceUpdatedParams, ResourcesReadParams, ResourcesReadResult, Response,
+    ErrorKind, HelloParams, HelloResult, Message, NavigateParams, NavigateResult, Notification, PairingResultParams,
+    PairingStatus, Request, RequestId, ResourceSubscribeParams, ResourceUpdatedParams, ResourcesReadParams, ResourcesReadResult, Response,
     RpcError, ToolError, ToolsCancelParams, ToolsInvokeParams, ToolsInvokeResult, ToolsProgressParams, VisibilityParams,
     method,
 };
@@ -19,7 +19,7 @@ use crate::calls::Call;
 use crate::dedup::Outcome;
 use crate::{
     CallOutput, CancelReason, Client, ConnectionErrorCode, ConnectionIssue, ConnectionState, Event, LifecycleMode,
-    Millis, ReadId, ResourceId, SleepReason, Visibility,
+    Millis, NavigateId, ReadId, ResourceId, SleepReason, Visibility,
 };
 
 /// Client 发出、等待响应的请求。
@@ -60,6 +60,8 @@ pub(crate) struct Session {
     pub pending_requests: VecMap<i64, Outgoing>,
     pub heartbeat: Heartbeat,
     pub reads: VecMap<ReadId, PendingRead>,
+    /// 进行中的导航（[`Event::Navigate`]）→ Host 的请求 ID。
+    pub navigations: VecMap<NavigateId, RequestId>,
     pub subscriptions: VecMap<String, Subscription>,
     /// 握手超时时刻（`Handshaking` 期间）。
     pub handshake_deadline: Option<Millis>,
@@ -183,6 +185,7 @@ impl Client {
             // 旧行为（legacy_timers）不声明：Host 照旧发 ping 并按无消息断开（spec/lifecycle.md 第 11 节）。
             heartbeat_ms: (!c.lifecycle.legacy_timers).then(|| self.heartbeat_interval().unwrap_or(0)),
             lifecycle_mode: Some(c.lifecycle.mode),
+            capabilities: c.navigation.then_some(proto::SdkCapabilities { navigate: true }),
         };
         let params = match self.life.resume_token.clone() {
             Some(resume) => HelloParams { resume_token: Some(resume), tools_hash: Some(self.tools_hash()), ..params },
@@ -615,6 +618,33 @@ impl Client {
         self.respond(pending.request_id, outcome);
     }
 
+    // ---- 导航（spec/protocol.md 3.4）------------------------------------
+
+    fn on_navigate(&mut self, id: RequestId, p: NavigateParams) {
+        if !self.config.navigation {
+            let err = ToolError::navigation_failed(
+                format!("App 不支持由 Agent 导航（页面「{}」），请让用户自行打开该页面。", p.page),
+                proto::navigation_reason::UNSUPPORTED,
+            );
+            self.respond(id, Err(err.into()));
+            return;
+        }
+        if !proto::is_valid_name(&p.page) {
+            self.respond(id, Err(RpcError::invalid_params(format!("app/navigate 的页面名不合法：{:?}", p.page))));
+            return;
+        }
+        self.session.served_call = true;
+        self.next_navigate_id += 1;
+        let navigate = NavigateId(self.next_navigate_id);
+        self.session.navigations.insert(navigate, id);
+        self.events.push_back(Event::Navigate { navigate, page: p.page, params: p.params.unwrap_or(Value::Null) });
+    }
+
+    pub(crate) fn finish_navigate(&mut self, request_id: RequestId, outcome: Result<(), ToolError>) {
+        let outcome = outcome.map(|()| to_value(&NavigateResult { ok: true })).map_err(RpcError::from);
+        self.respond(request_id, outcome);
+    }
+
     fn on_subscribe(&mut self, id: RequestId, p: ResourceSubscribeParams, subscribe: bool, now: Millis) {
         if self.registry.resource_by_name(&p.name).is_none() {
             self.respond(id, Err(Self::resource_not_found(&p.name)));
@@ -705,6 +735,7 @@ impl Client {
             | method::RESOURCES_SUBSCRIBE
             | method::RESOURCES_UNSUBSCRIBE
             | method::ACTIVATE
+            | method::NAVIGATE
                 if !self.connected() =>
             {
                 let err = tool_error(ErrorKind::Unauthorized, "App 尚未完成配对与同步，请稍后重试。");
@@ -729,6 +760,11 @@ impl Client {
                 if let Some(p) = self.parse_params::<proto::ActivateParams>(&id, &m, params) {
                     self.respond(id, Ok(json!({})));
                     self.warn(format!("app/activate（mode = {:?}）在 M1 中尚未实现，已直接返回成功", p.mode));
+                }
+            }
+            method::NAVIGATE => {
+                if let Some(p) = self.parse_params(&id, &m, params) {
+                    self.on_navigate(id, p);
                 }
             }
             _ => {

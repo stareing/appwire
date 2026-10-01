@@ -46,6 +46,9 @@ pub mod method {
     pub const RESOURCES_UNSUBSCRIBE: &str = "resources/unsubscribe";
     /// 请求实例切换前台 / 后台。参数 [`super::ActivateParams`]，结果 `{}`。
     pub const ACTIVATE: &str = "app/activate";
+    /// 请求实例导航到某个页面（第 4c 项，spec/protocol.md 3.4）。参数 [`super::NavigateParams`]，结果 [`super::NavigateResult`]。
+    /// 只发给握手声明了 `capabilities.navigate` 的实例。
+    pub const NAVIGATE: &str = "app/navigate";
 
     // ---- Host → SDK：通知 ----
     /// 取消进行中的调用。参数 [`super::ToolsCancelParams`]。
@@ -160,6 +163,18 @@ pub struct HelloParams {
     /// SDK 的生命周期模式（spec/lifecycle.md 第 3 节），供 Host 观测"未能休眠的原因"；省略 = 未知（旧 SDK）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_mode: Option<LifecycleMode>,
+    /// SDK 支持的可选能力（spec/protocol.md 3.4）；省略 = 都不支持（旧 SDK）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<SdkCapabilities>,
+}
+
+/// SDK 在握手中声明的可选能力（`app/hello.capabilities`）。缺省字段为 `false`，`false` 时不序列化。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SdkCapabilities {
+    /// 能处理 Host 的 `app/navigate`（App 设置了导航回调）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub navigate: bool,
 }
 
 impl Default for HelloParams {
@@ -183,6 +198,7 @@ impl Default for HelloParams {
             wake_reason: None,
             heartbeat_ms: None,
             lifecycle_mode: None,
+            capabilities: None,
         }
     }
 }
@@ -307,6 +323,25 @@ pub struct VisibilityParams {
 #[serde(rename_all = "camelCase")]
 pub struct ActivateParams {
     pub mode: Activation,
+}
+
+/// `app/navigate`（Host → SDK，请求）参数：导航到 App 内的页面（spec/protocol.md 3.4）。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NavigateParams {
+    /// 页面名（清单 `pages[].name` 或工具上报的 [`ToolInfo::page`]），`[a-zA-Z0-9_.-]{1,64}`。
+    pub page: String,
+    /// 页面参数（清单 `pages[].params` 描述的对象）；省略 = 无参数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+}
+
+/// `app/navigate` 结果。失败（不支持、出错、拒绝）用 JSON-RPC 错误返回（`NAVIGATION_FAILED` / `NAVIGATION_DENIED`）；
+/// `ok: false` 按 `NAVIGATION_FAILED` 处理。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NavigateResult {
+    pub ok: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +481,30 @@ pub struct ToolInfo {
     /// （spec/protocol.md 3.2）。未声明时不序列化（`toolsHash` 不变）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
+    /// 工具是否依赖界面（spec/protocol.md 3.4）：`app`（缺省）后台可调、可唤醒；`view` 只在所在界面可见且处于最上层时注册。
+    /// 缺省时不序列化（`toolsHash` 不变）。
+    #[serde(default, skip_serializing_if = "ToolSurface::is_app")]
+    pub surface: ToolSurface,
+    /// 工具所在页面（页面目录的键，[`NavigateParams::page`]）；Hub 据此在工具未注册时先导航再派发。未声明时不序列化。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
+}
+
+/// 工具对界面的依赖（spec/protocol.md 3.4）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolSurface {
+    /// 不依赖界面：后台可调、可唤醒、进清单与原生意图（缺省，兼容旧 SDK）。
+    #[default]
+    App,
+    /// 依赖界面：只在所在界面真正可见且处于最上层时启用。
+    View,
+}
+
+impl ToolSurface {
+    pub fn is_app(&self) -> bool {
+        *self == ToolSurface::App
+    }
 }
 
 impl ToolInfo {
@@ -763,6 +822,7 @@ mod tests {
             wake_reason: None,
             heartbeat_ms: None,
             lifecycle_mode: None,
+            capabilities: None,
         };
         let v = serde_json::to_value(&p).unwrap();
         assert_eq!(
@@ -984,6 +1044,33 @@ mod tests {
         assert!(!is_valid_app_id("Shop"));
         assert!(!is_valid_app_id("2shop"));
         assert!(!is_valid_app_id(""));
+    }
+
+    #[test]
+    fn navigation_messages() {
+        // 旧 SDK：没有 surface / page，序列化不变（toolsHash 不变）
+        let t: ToolInfo = serde_json::from_value(json!({"name": "n", "description": "d", "inputSchema": {"type": "object"}})).unwrap();
+        assert_eq!((t.surface, t.page.as_deref()), (ToolSurface::App, None));
+        let v = serde_json::to_value(&t).unwrap();
+        assert!(v.get("surface").is_none() && v.get("page").is_none());
+        let t = ToolInfo { surface: ToolSurface::View, page: Some("cart".into()), ..t };
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!((v["surface"].as_str(), v["page"].as_str()), (Some("view"), Some("cart")));
+        assert_eq!(serde_json::from_value::<ToolInfo>(v).unwrap(), t);
+
+        // 能力协商：缺省不序列化
+        let h = HelloParams::default();
+        assert!(serde_json::to_value(&h).unwrap().get("capabilities").is_none());
+        let h = HelloParams { capabilities: Some(SdkCapabilities { navigate: true }), ..h };
+        let v = serde_json::to_value(&h).unwrap();
+        assert_eq!(v["capabilities"], json!({"navigate": true}));
+        assert_eq!(serde_json::from_value::<HelloParams>(v).unwrap(), h);
+        assert_eq!(serde_json::to_value(SdkCapabilities::default()).unwrap(), json!({}));
+
+        let p: NavigateParams = serde_json::from_value(json!({"page": "orders.detail", "params": {"id": "o1"}})).unwrap();
+        assert_eq!(p.params, Some(json!({"id": "o1"})));
+        assert_eq!(serde_json::to_value(NavigateParams { page: "cart".into(), params: None }).unwrap(), json!({"page": "cart"}));
+        assert_eq!(serde_json::to_value(NavigateResult { ok: true }).unwrap(), json!({"ok": true}));
     }
 
     #[test]

@@ -55,6 +55,10 @@ object ErrorKind {
     const val POLICY_DENIED = "POLICY_DENIED"
     /** 需要用户本人操作后才能继续（用 [ToolCallException.userActionRequired] 构造）。 */
     const val USER_ACTION_REQUIRED = "USER_ACTION_REQUIRED"
+    /** 导航没有完成（不支持 / 出错 / 超时 / 导航后工具未出现，spec/protocol.md 3.4）。 */
+    const val NAVIGATION_FAILED = "NAVIGATION_FAILED"
+    /** 导航被拒绝（App 拒绝或页面不可由 Agent 导航）。 */
+    const val NAVIGATION_DENIED = "NAVIGATION_DENIED"
 
     /** 原生库认可的全部类别。 */
     val all: Set<String> by lazy { dev.appmcp.ffi.errorKinds().toSet() }

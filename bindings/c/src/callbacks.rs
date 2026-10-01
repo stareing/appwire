@@ -3,11 +3,11 @@
 use std::ffi::{c_char, c_void};
 
 use app_mcp_native::{
-    CallHandle, CancelListener, CancelReason, ClientListener, LogLevel, ReadHandle, ResourceReader,
-    StateInfo, StateStatus, ToolHandler,
+    CallHandle, CancelListener, CancelReason, ClientListener, LogLevel, NavigateHandle, NavigationHandler, ReadHandle,
+    ResourceReader, StateInfo, StateStatus, ToolHandler,
 };
 
-use crate::handles::{AmCall, AmRead};
+use crate::handles::{AmCall, AmNavigate, AmRead};
 use crate::strings::into_raw_cstring;
 
 // ---------------------------------------------------------------------------
@@ -109,6 +109,8 @@ pub type AmToolFn = unsafe extern "C" fn(user_data: *mut c_void, call: *mut AmCa
 pub type AmReadFn = unsafe extern "C" fn(user_data: *mut c_void, read: *mut AmRead);
 pub type AmCancelFn = unsafe extern "C" fn(user_data: *mut c_void, reason: AmCancelReason);
 pub type AmIdleExitFn = unsafe extern "C" fn(user_data: *mut c_void);
+/// v14：导航请求；`navigate` 的所有权转移给回调方。
+pub type AmNavigateFn = unsafe extern "C" fn(user_data: *mut c_void, navigate: *mut AmNavigate);
 
 // ---------------------------------------------------------------------------
 // user_data
@@ -172,6 +174,19 @@ impl ResourceReader for CResourceReader {
     fn read(&self, read: ReadHandle) {
         let raw = Box::into_raw(Box::new(AmRead::new(read)));
         // SAFETY: 调用方注册的回调；read 的所有权转移给回调方。
+        unsafe { (self.f)(self.user_data.ptr(), raw) };
+    }
+}
+
+pub(crate) struct CNavigationHandler {
+    pub f: AmNavigateFn,
+    pub user_data: UserData,
+}
+
+impl NavigationHandler for CNavigationHandler {
+    fn navigate(&self, request: NavigateHandle) {
+        let raw = Box::into_raw(Box::new(AmNavigate::new(request)));
+        // SAFETY: 调用方注册的回调；navigate 的所有权转移给回调方。
         unsafe { (self.f)(self.user_data.ptr(), raw) };
     }
 }

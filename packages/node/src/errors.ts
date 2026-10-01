@@ -20,6 +20,8 @@ const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
   'PAYLOAD_TOO_LARGE',
   'POLICY_DENIED',
   'USER_ACTION_REQUIRED',
+  'NAVIGATION_FAILED',
+  'NAVIGATION_DENIED',
 ])
 
 export function isErrorKind(value: unknown): value is ErrorKind {

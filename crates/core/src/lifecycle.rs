@@ -290,6 +290,7 @@ impl Client {
         self.calls.running_len() == 0
             && self.calls.queued_len() == 0
             && self.session.reads.is_empty()
+            && self.session.navigations.is_empty()
             && !self.subscriptions_block_idle()
             && self.life.holds.is_empty()
             && self.session.sleeping.is_none()

@@ -249,6 +249,16 @@ pub fn reserved_type_names(module: &str) -> Vec<String> {
 /// `order` 为清单原文的键顺序树（见 [`crate::ordered`]）；给出时字段按清单中声明的顺序排列，
 /// 否则按键名排序。
 pub fn build(manifest: &Manifest, module: Option<&str>, order: Option<&Node>) -> Model {
+    build_filtered(manifest, module, order, |_| true)
+}
+
+/// 同 [`build`]，只为 `keep` 为真的工具建模（被跳过工具的参数类型不生成）。
+pub fn build_filtered(
+    manifest: &Manifest,
+    module: Option<&str>,
+    order: Option<&Node>,
+    keep: impl Fn(&ToolInfo) -> bool,
+) -> Model {
     let module = match module {
         Some(m) if !m.is_empty() => ident::pascal(m, "App"),
         _ => ident::pascal(&manifest.app_id, "App"),
@@ -264,7 +274,7 @@ pub fn build(manifest: &Manifest, module: Option<&str>, order: Option<&Node>) ->
 
     let mut method_names = NameScope::new();
     let mut tools = Vec::new();
-    for (index, info) in manifest.tools.iter().enumerate() {
+    for (index, info) in manifest.tools.iter().enumerate().filter(|(_, t)| keep(t)) {
         let tool_order = order
             .and_then(|n| n.get("tools"))
             .and_then(|t| t.index(index))

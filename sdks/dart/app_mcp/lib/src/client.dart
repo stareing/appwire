@@ -1010,7 +1010,9 @@ Pointer<AmToolOptions> _toolOptions(ToolSpec spec, Allocator arena) {
   o.ref
     ..struct_size = sizeOf<AmToolOptions>()
     ..annotations_json = _optStr(encodeToolAnnotations(spec.annotations), arena)
-    ..output_schema_json = _optStr(encodeSchema(spec.outputSchema), arena);
+    ..output_schema_json = _optStr(encodeSchema(spec.outputSchema), arena)
+    ..page = nullptr
+    ..surface = 0;
   return o;
 }
 

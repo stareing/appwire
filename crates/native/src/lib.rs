@@ -29,10 +29,10 @@ use std::sync::Arc;
 
 pub use app_mcp_core::{
     Activation, AppOverview, Audience, CallDedupPolicy, ClientKind, ContentAnnotations, HeartbeatMode, LifecycleMode, LifecyclePolicy,
-    Residency, ResultStatus, Risk, SleepReason, ToolAnnotations, TransportKind, Visibility, WakeDescriptor, WakeKind,
-    WakeReason, parse_wake_token,
+    Residency, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolSurface, TransportKind, Visibility, WakeDescriptor,
+    WakeKind, WakeReason, parse_wake_token,
 };
-pub use app_mcp_protocol::{ConnectionErrorCode, ErrorKind, user_action_reason};
+pub use app_mcp_protocol::{ConnectionErrorCode, ErrorKind, navigation_reason, user_action_reason};
 
 // ---------------------------------------------------------------------------
 // 配置
@@ -145,6 +145,10 @@ pub struct ToolOptions {
     pub annotations: Option<ToolAnnotations>,
     /// 结果的 JSON Schema 文本（MCP `outputSchema`）；`None` = 未声明。
     pub output_schema_json: Option<String>,
+    /// 对界面的依赖（spec/protocol.md 3.4）：缺省 `App`；`View` 表示只在所在界面可见且处于最上层时注册（由封装层决定注册时机）。
+    pub surface: ToolSurface,
+    /// 所在页面名（`[a-zA-Z0-9_.-]{1,64}`）；Hub 在该工具未注册时据此导航（[`NativeClient::set_navigation_handler`]）。
+    pub page: Option<String>,
 }
 
 /// 调用成功的完整结果（[`CallHandle::complete_with`]，spec/protocol.md 3.2）。`Default` = 无返回值、`done`。
@@ -187,6 +191,12 @@ pub trait ToolHandler: Send + Sync + 'static {
 /// 资源读取。在分发线程上调用，结果通过 `read` 异步提交。
 pub trait ResourceReader: Send + Sync + 'static {
     fn read(&self, read: ReadHandle);
+}
+
+/// 导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）。在分发线程上调用，必须尽快返回；
+/// 切换界面后通过 `request` 提交结果（界面切换完成、新页面的工具注册之后再 `complete` 更好，Hub 会等待目标工具出现）。
+pub trait NavigationHandler: Send + Sync + 'static {
+    fn navigate(&self, request: NavigateHandle);
 }
 
 /// 调用被取消时通知（Host 取消、超时、断线、停止）。在分发线程上调用。
@@ -488,6 +498,35 @@ fn tool_error_with_details(
     Ok(err.with_details(details))
 }
 
+/// 一次导航请求（[`NavigationHandler::navigate`]）。可克隆、可跨线程传递；完成只能一次。
+#[derive(Clone, Debug)]
+pub struct NavigateHandle {
+    inner: Arc<NavigateInner>,
+}
+
+impl NavigateHandle {
+    /// 目标页面名。
+    pub fn page(&self) -> String {
+        self.inner.page.clone()
+    }
+    /// 页面参数（JSON 文本）；Host 没有给出时为 `None`。
+    pub fn params_json(&self) -> Option<String> {
+        self.inner.params_json.clone()
+    }
+    /// 导航完成。
+    pub fn complete(&self) -> Result<(), NativeError> {
+        self.inner.finish(Ok(()))
+    }
+    /// 导航失败（`NAVIGATION_FAILED`，`data.reason` = `error`）：页面不存在、参数不合法等。
+    pub fn fail(&self, message: &str) -> Result<(), NativeError> {
+        self.inner.finish(Err(ToolError::navigation_failed(message, navigation_reason::ERROR)))
+    }
+    /// 拒绝本次导航（`NAVIGATION_DENIED`）：如用户正在输入。`message` 面向模型 / 用户。
+    pub fn deny(&self, message: &str) -> Result<(), NativeError> {
+        self.inner.finish(Err(ToolError::navigation_denied(message)))
+    }
+}
+
 /// 已注册的工具。可克隆；`dispose` 幂等。丢弃句柄**不会**注销工具。
 #[derive(Clone, Debug)]
 pub struct ToolHandle {
@@ -508,6 +547,8 @@ impl ToolHandle {
         self.apply(ToolUpdate {
             annotations: Some(options.annotations),
             output_schema: Some(output_schema),
+            surface: Some(options.surface),
+            page: Some(options.page),
             ..spec_update(spec)?
         })
     }
@@ -691,6 +732,7 @@ impl NativeClient {
                 resources: HashMap::new(),
                 scopes: HashMap::new(),
                 calls: HashMap::new(),
+                navigation: None,
             }),
             wake: tokio::sync::Notify::new(),
             park: Mutex::new(0),
@@ -736,6 +778,15 @@ impl NativeClient {
             }),
         })
     }
+    /// 设置导航回调（spec/protocol.md 3.4）：`Some` 时握手声明 `capabilities.navigate`，Host 的 `app/navigate` 交给回调；
+    /// `None` 时导航请求以 `NAVIGATION_FAILED`（`unsupported`）回复。能力在握手时声明——连接后才设置的回调在下次连接
+    /// （回连 / 唤醒）时生效，建议在 `start` 之前设置。
+    pub fn set_navigation_handler(&self, handler: Option<Arc<dyn NavigationHandler>>) {
+        let mut st = self.owner.shared.lock();
+        st.client.set_navigation(handler.is_some());
+        st.navigation = handler;
+    }
+
     pub fn instance_id(&self) -> String {
         self.owner.shared.instance_id.clone()
     }
@@ -901,7 +952,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 use app_mcp_core::{
-    CallOutput, Client, ClientConfig, ConnectionState, CoreError, Event, HoldId, Millis, ReadId,
+    CallOutput, Client, ClientConfig, ConnectionState, CoreError, Event, HoldId, Millis, NavigateId, ReadId,
     ResourceDef, ResourceId, ScopeId, ToolDef, ToolError, ToolId, ToolUpdate,
 };
 use serde_json::{Value, json};
@@ -1010,7 +1061,9 @@ fn core_error(e: CoreError) -> NativeError {
         CoreError::UnknownTool(_) | CoreError::UnknownResource(_) | CoreError::UnknownScope(_) => {
             NativeError::Disposed
         }
-        CoreError::UnknownCall(_) | CoreError::UnknownRead(_) => NativeError::AlreadyCompleted,
+        CoreError::UnknownCall(_) | CoreError::UnknownRead(_) | CoreError::UnknownNavigate(_) => {
+            NativeError::AlreadyCompleted
+        }
     }
 }
 
@@ -1147,6 +1200,8 @@ struct CoreState {
     scopes: HashMap<ScopeId, Option<ScopeId>>,
     /// 进行中的调用（用于取消通知）。
     calls: HashMap<String, Arc<CallInner>>,
+    /// 导航回调（[`NativeClient::set_navigation_handler`]）；`None` = 不支持导航。
+    navigation: Option<Arc<dyn NavigationHandler>>,
 }
 
 /// 运行时线程取出事件后要执行的动作。
@@ -1172,6 +1227,7 @@ impl CoreState {
         self.shutdown |= shutdown;
         self.client.stop(now_ms());
         // 释放 handler，打破「handler 持有 NativeClient」形成的引用环。
+        self.navigation = None;
         self.tools.clear();
         self.resources.clear();
         self.scopes.clear();
@@ -1240,6 +1296,8 @@ impl Shared {
                 scope,
                 annotations: options.annotations,
                 output_schema,
+                surface: options.surface,
+                page: options.page,
             })
             .map_err(core_error)?;
         st.tools.insert(id, ToolEntry { handler, scope });
@@ -1398,6 +1456,32 @@ impl Shared {
                         }
                     })));
                 }
+                Event::Navigate { navigate, page, params } => {
+                    let Some(handler) = st.navigation.clone() else {
+                        // 回调在请求到达后被清除：按不支持回复。
+                        let err = ToolError::navigation_failed(
+                            format!("App 不支持由 Agent 导航（页面「{page}」）。"),
+                            navigation_reason::UNSUPPORTED,
+                        );
+                        let _ = st.client.complete_navigate(navigate, Err(err));
+                        continue;
+                    };
+                    let handle = NavigateHandle {
+                        inner: Arc::new(NavigateInner {
+                            shared: self.clone(),
+                            navigate,
+                            page,
+                            params_json: (!params.is_null()).then(|| params.to_string()),
+                            done: AtomicBool::new(false),
+                        }),
+                    };
+                    actions.push(Action::Dispatch(Box::new(move || {
+                        let fallback = handle.clone();
+                        if std::panic::catch_unwind(AssertUnwindSafe(|| handler.navigate(handle))).is_err() {
+                            let _ = fallback.fail("导航回调执行时发生 panic");
+                        }
+                    })));
+                }
                 Event::StateChanged(state) => {
                     if state == ConnectionState::Connected {
                         let message = match st.client.connection_id() {
@@ -1507,6 +1591,34 @@ impl ReadInner {
             return Err(NativeError::AlreadyCompleted);
         }
         let result = self.shared.lock().client.complete_read(self.read, outcome);
+        self.shared.wake();
+        result.map_err(core_error)
+    }
+}
+
+struct NavigateInner {
+    shared: Arc<Shared>,
+    navigate: NavigateId,
+    page: String,
+    params_json: Option<String>,
+    done: AtomicBool,
+}
+
+impl std::fmt::Debug for NavigateInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NavigateInner")
+            .field("navigate", &self.navigate)
+            .field("page", &self.page)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NavigateInner {
+    fn finish(&self, outcome: Result<(), ToolError>) -> Result<(), NativeError> {
+        if self.done.swap(true, Ordering::SeqCst) {
+            return Err(NativeError::AlreadyCompleted);
+        }
+        let result = self.shared.lock().client.complete_navigate(self.navigate, outcome);
         self.shared.wake();
         result.map_err(core_error)
     }

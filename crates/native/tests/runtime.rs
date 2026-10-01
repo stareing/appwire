@@ -699,3 +699,58 @@ fn rand_suffix() -> u64 {
     use std::hash::{BuildHasher, RandomState};
     RandomState::new().hash_one(std::time::SystemTime::now())
 }
+
+/// 导航回调：`cart` 完成、`edit` 拒绝、其他失败。
+struct Navigator(Mutex<Vec<(String, Option<String>)>>);
+impl app_mcp_native::NavigationHandler for Navigator {
+    fn navigate(&self, request: app_mcp_native::NavigateHandle) {
+        assert_eq!(std::thread::current().name(), Some("app-mcp-dispatch"));
+        self.0.lock().unwrap().push((request.page(), request.params_json()));
+        match request.page().as_str() {
+            "cart" => request.complete().unwrap(),
+            "edit" => request.deny("正在编辑").unwrap(),
+            _ => request.fail("没有该页面").unwrap(),
+        }
+        assert_eq!(request.complete(), Err(NativeError::AlreadyCompleted));
+    }
+}
+
+#[test]
+fn navigation_handler_and_capability() {
+    let host = MockHost::start();
+    let client = NativeClient::new(config(&host), None).unwrap();
+    let options = app_mcp_native::ToolOptions {
+        surface: app_mcp_native::ToolSurface::View,
+        page: Some("cart".into()),
+        ..Default::default()
+    };
+    client
+        .register_tool_with(ToolSpec::new("cart.checkout", "结算"), options, Arc::new(Echo))
+        .unwrap();
+    let nav = Arc::new(Navigator(Mutex::new(Vec::new())));
+    client.set_navigation_handler(Some(nav.clone()));
+    client.start();
+    let hello = host.wait_request(method::HELLO);
+    assert_eq!(hello["capabilities"], json!({ "navigate": true }));
+    let sync = host.wait_notification(method::TOOLS_SYNC);
+    assert_eq!((sync["tools"][0]["surface"].as_str(), sync["tools"][0]["page"].as_str()), (Some("view"), Some("cart")));
+    host.wait_ready();
+
+    let id = host.request(method::NAVIGATE, json!({ "page": "cart", "params": { "tab": 1 } }));
+    assert_eq!(host.wait_response(&id).unwrap(), json!({ "ok": true }));
+    let id = host.request(method::NAVIGATE, json!({ "page": "edit" }));
+    assert_eq!(host.wait_response(&id).unwrap_err().kind(), Some(ErrorKind::NavigationDenied));
+    let id = host.request(method::NAVIGATE, json!({ "page": "nope" }));
+    let err = host.wait_response(&id).unwrap_err();
+    assert_eq!((err.kind(), err.data.as_ref().map(|d| d["reason"].clone())), (Some(ErrorKind::NavigationFailed), Some(json!("error"))));
+    assert_eq!(
+        nav.0.lock().unwrap().clone(),
+        vec![("cart".to_owned(), Some(r#"{"tab":1}"#.to_owned())), ("edit".to_owned(), None), ("nope".to_owned(), None)]
+    );
+
+    // 清除回调：之后的请求按不支持回复
+    client.set_navigation_handler(None);
+    let id = host.request(method::NAVIGATE, json!({ "page": "cart" }));
+    let err = host.wait_response(&id).unwrap_err();
+    assert_eq!(err.data.as_ref().map(|d| d["reason"].clone()), Some(json!("unsupported")));
+}

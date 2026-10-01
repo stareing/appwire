@@ -685,6 +685,7 @@ fn limits_annotations_and_structured_result() {
     let options = native::ToolOptions {
         annotations: Some(native::ToolAnnotations { idempotent_hint: Some(false), ..Default::default() }),
         output_schema_json: Some(r#"{"type":"object","properties":{"orderId":{"type":"string"}}}"#.into()),
+        ..native::ToolOptions::default()
     };
     app.register_tool_with(native::ToolSpec::new("order.submit", "下单"), options, Arc::new(SubmitOrder))
         .expect("注册");

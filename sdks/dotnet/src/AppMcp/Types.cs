@@ -80,6 +80,10 @@ public enum ToolErrorKind
     /// <summary>需要用户本人操作后才能继续（登录过期、系统权限未授予、需切到前台、需在 App 内确认等）；
     /// 用 <see cref="UserActionRequiredException"/> 抛出可附带 reason / uri。</summary>
     UserActionRequired,
+    /// <summary>导航没有完成（不支持 / 出错 / 超时 / 导航后工具未出现，spec/protocol.md 3.4）。</summary>
+    NavigationFailed,
+    /// <summary>导航被拒绝（App 拒绝或页面不可由 Agent 导航）。</summary>
+    NavigationDenied,
 }
 
 public static class ToolErrorKinds
@@ -106,6 +110,8 @@ public static class ToolErrorKinds
         ToolErrorKind.PayloadTooLarge => "PAYLOAD_TOO_LARGE",
         ToolErrorKind.PolicyDenied => "POLICY_DENIED",
         ToolErrorKind.UserActionRequired => "USER_ACTION_REQUIRED",
+        ToolErrorKind.NavigationFailed => "NAVIGATION_FAILED",
+        ToolErrorKind.NavigationDenied => "NAVIGATION_DENIED",
         _ => "HANDLER_ERROR",
     };
 }

@@ -835,6 +835,7 @@ fn register_instance_with(
             url: hello.instance_url.clone(),
             overview: hello.overview.clone(),
             pid: peer.pid(),
+            navigate: hello.capabilities.as_ref().is_some_and(|c| c.navigate),
             conn: conn.clone(),
         },
     );

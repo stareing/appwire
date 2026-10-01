@@ -145,6 +145,7 @@ fn tool_options_and_call_result_reach_host() {
     let options = ToolOptions {
         annotations: Some(ToolAnnotations { idempotent_hint: Some(false), open_world_hint: Some(true), ..Default::default() }),
         output_schema_json: Some(r#"{"type":"object","properties":{"orderId":{"type":"string"}}}"#.into()),
+        ..ToolOptions::default()
     };
     let tool = client.register_tool_with(ToolSpec::new("order.submit", "下单"), options, Arc::new(Submit)).unwrap();
     // 非法 outputSchema：注册失败，不影响已注册的工具

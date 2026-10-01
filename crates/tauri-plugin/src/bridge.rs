@@ -23,7 +23,7 @@ use app_mcp_native::{
     Activation, CallHandle, CallResult, CancelListener, CancelReason, ContentAnnotations,
     ErrorKind, HoldHandle, NativeClient, NativeError, ReadHandle, ResourceHandle, ResourceOptions,
     ResourceReader, ResourceSpec, ResultStatus, Risk, ScopeHandle, StateInfo, StateStatus,
-    ToolAnnotations, ToolHandle, ToolHandler, ToolOptions, ToolSpec,
+    ToolAnnotations, ToolHandle, ToolHandler, ToolOptions, ToolSpec, ToolSurface,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -62,6 +62,12 @@ struct ToolSpecMessage {
     /// 结果的 JSON Schema；`tool.update` 时缺省表示清除。
     #[serde(default, rename = "outputSchema")]
     output_schema: Option<Value>,
+    /// 对界面的依赖（spec/protocol.md 3.4）；缺省 `app`。
+    #[serde(default)]
+    surface: ToolSurface,
+    /// 所在页面名；`tool.update` 时缺省表示清除。
+    #[serde(default)]
+    page: Option<String>,
 }
 
 impl ToolSpecMessage {
@@ -70,6 +76,8 @@ impl ToolSpecMessage {
         let options = ToolOptions {
             annotations: self.annotations.take(),
             output_schema_json: self.output_schema.take().map(|s| s.to_string()),
+            surface: self.surface,
+            page: self.page.take(),
         };
         (self.into_spec(name), options)
     }

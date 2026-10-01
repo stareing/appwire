@@ -50,6 +50,15 @@ impl Target {
         Target::Dart,
     ];
 
+    /// 原生意图框架 target：只暴露不依赖界面的工具（`surface: app`，spec/protocol.md 3.4）——系统可在 App 未显示任何
+    /// 界面时调用意图，`view` 工具此时不存在。
+    pub fn is_native_intents(self) -> bool {
+        matches!(
+            self,
+            Target::SwiftAppIntents | Target::KotlinAppFunctions | Target::WindowsAppActions | Target::HarmonyInsightIntents
+        )
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Target::SwiftAppIntents => "swift-app-intents",
@@ -141,8 +150,16 @@ fn generate_ordered(
     target: Target,
     options: &Options,
 ) -> Output {
-    let model = schema::build(manifest, options.module.as_deref(), order);
+    let native = target.is_native_intents();
+    let model = schema::build_filtered(manifest, options.module.as_deref(), order, |t| !native || t.surface.is_app());
     let mut warnings = model.warnings.clone();
+    if native {
+        warnings.extend(manifest.tools.iter().filter(|t| !t.surface.is_app()).map(|t| Warning {
+            tool: t.name.clone(),
+            path: String::new(),
+            message: "surface 为 view（依赖界面），不生成原生意图".to_string(),
+        }));
+    }
     let files = targets::generate(&model, target, options, &mut warnings);
     Output { files, warnings }
 }

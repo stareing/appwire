@@ -303,6 +303,8 @@ pub struct HubShared {
     pub(crate) rates: Mutex<RateBook>,
     /// 生效的策略规则、命中计数与最近的加载错误（spec/hub-api.md 3.13）。
     pub(crate) policy: Mutex<PolicyState>,
+    /// 工具注册的变化序号（每次 [`Self::mark_tools_changed`] 加一）；导航后等待目标工具注册时订阅（spec/hub-api.md 3.14）。
+    pub(crate) tools_rev: tokio::sync::watch::Sender<u64>,
 }
 
 /// 一次调用的进度路由（[`HubShared::progress_routes`]）。
@@ -373,6 +375,7 @@ impl HubShared {
             lease_changed: Notify::new(),
             rates: Mutex::new(RateBook::default()),
             policy: Mutex::new(policy),
+            tools_rev: tokio::sync::watch::Sender::new(0),
         }
     }
 
@@ -563,6 +566,7 @@ impl HubShared {
     }
 
     pub(crate) fn mark_tools_changed(&self) {
+        self.tools_rev.send_modify(|v| *v = v.wrapping_add(1));
         self.tools_dirty.store(true, Ordering::SeqCst);
         self.dirty.notify_one();
     }
@@ -752,7 +756,7 @@ impl HubShared {
         let exposed = self.exposed_apps(key);
         let listed = |app_id: &str| exposed.as_ref().is_none_or(|e| e.contains(app_id));
         let policy = self.policy();
-        let mut tools = call::builtin_tools(exposed.is_some());
+        let mut tools = call::builtin_tools(exposed.is_some(), self.has_pages());
         tools.extend(
             self.registry()
                 .tools()
@@ -846,11 +850,43 @@ impl HubShared {
                 .find(|t| t.name == tool)
                 .map(|t| call::upstream_hub_tool(app_id, t).annotations);
         }
-        self.registry()
-            .tools()
+        let reg = self.registry();
+        reg.tools()
             .into_iter()
             .find(|t| t.app_id == app_id && t.info.name == tool)
             .map(|t| t.info.effective_annotations())
+            // 页面目录中的工具（不在当前页面）：规则同样按其声明的注解匹配（spec/hub-api.md 3.14）。
+            .or_else(|| {
+                let catalog = reg.pages(app_id);
+                crate::pages::find_tool(&catalog, tool).map(|(_, t)| t.effective_annotations())
+            })
+    }
+
+    /// Agent 可见的页面目录（spec/hub-api.md 3.14）：去掉被 `hide` 规则隐藏的工具，工具全部被隐藏的页面不列出；
+    /// App 整体隐藏或未知时为空。
+    pub(crate) fn page_catalog(&self, app_id: &str) -> Vec<crate::pages::PageEntry> {
+        let policy = self.policy();
+        if policy.app_hidden(app_id).is_some() {
+            return Vec::new();
+        }
+        let mut pages = self.registry().pages(app_id);
+        if policy.has_hide() {
+            for p in &mut pages {
+                let had_tools = !p.tools.is_empty();
+                p.tools.retain(|name, t| policy.tool_hidden(app_id, name, Some(&t.effective_annotations())).is_none());
+                if had_tools && p.tools.is_empty() {
+                    p.name.clear();
+                }
+            }
+            pages.retain(|p| !p.name.is_empty());
+        }
+        pages
+    }
+
+    /// 是否有 Agent 可见的页面目录（决定是否列出内置工具 `apps.page`）。
+    pub(crate) fn has_pages(&self) -> bool {
+        let apps: Vec<String> = self.registry().app_ids();
+        apps.iter().any(|a| !self.page_catalog(a).is_empty())
     }
 
     /// App 是否被 `hide` 规则整体隐藏（列表与名称解析都按不存在处理）。
@@ -1179,6 +1215,7 @@ impl HubShared {
                 .manifest(&app_id)
                 .map_or(0, |m| m.tools.iter().filter(|t| visible(&app_id, &t.name)).count());
             app["staticToolCount"] = json!(static_count);
+            app["pageCount"] = json!(self.page_catalog(&app_id).len());
         }
     }
 
@@ -1328,8 +1365,8 @@ impl HubShared {
 
     /// 全部工具：`(工具, 是否内置)`，顺序为内置、App（按 appId）、上游。
     /// `with_apps_tools`：内置工具是否包含 `apps.tools`（渐进暴露生效时才列出）。
-    pub(crate) fn all_tools(&self, with_apps_tools: bool) -> Vec<(HubTool, bool)> {
-        let mut out: Vec<(HubTool, bool)> = call::builtin_hub_tools(with_apps_tools)
+    pub(crate) fn all_tools(&self, with_apps_tools: bool, with_apps_page: bool) -> Vec<(HubTool, bool)> {
+        let mut out: Vec<(HubTool, bool)> = call::builtin_hub_tools(with_apps_tools, with_apps_page)
             .into_iter()
             .map(|t| (t, true))
             .collect();
@@ -1351,7 +1388,7 @@ impl HubShared {
     /// [`Self::all_tools`] 去掉被 `hide` 规则隐藏的 App 工具与上游工具（Agent 可见的列表）。
     pub(crate) fn visible_tools(&self, with_apps_tools: bool) -> Vec<(HubTool, bool)> {
         let policy = self.policy();
-        let mut tools = self.all_tools(with_apps_tools);
+        let mut tools = self.all_tools(with_apps_tools, self.has_pages());
         if policy.has_hide() {
             tools.retain(|(t, builtin)| *builtin || policy.tool_hidden(&t.app_id, &t.tool, Some(&t.annotations)).is_none());
         }
@@ -1361,7 +1398,7 @@ impl HubShared {
     /// 按当前全部工具计算导出名，并并入历史映射。
     pub(crate) fn name_codec(&self) -> NameCodec {
         // 导出名按全部工具（含 apps.tools）计算，与渐进暴露无关，保证名称稳定。
-        let tools = self.all_tools(true);
+        let tools = self.all_tools(true, true);
         let codec = NameCodec::new(tools.iter().map(|(t, _)| t.name.as_str()));
         lock(&self.export_names).extend(codec.pairs().map(|(full, export)| (export.to_owned(), full.to_owned())));
         codec

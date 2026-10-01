@@ -453,7 +453,7 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
 - **是否生效**：`All` 从不；`Progressive` 总是；`Auto` 在 App 工具（注册表列出的，含静态、休眠）与上游工具总数
   **大于** `tool_exposure_threshold` 时生效。每次列出时重新判断（App 连接 / 断开会使结果变化，已有 `ToolsChanged` 覆盖）。
 - **生效时的列表**（MCP `tools/list`、`Hub::tools`、`Hub::export_tools`）：内置工具 `apps.list`、`apps.select`、`apps.overview`、
-  `apps.tools`，加上**会话已列出的 App** 的全部工具。会话已列出的 App =
+  `apps.tools`（有页面目录时另有 `apps.page`，3.14），加上**会话已列出的 App** 的全部工具。会话已列出的 App =
   本会话调用过 `apps.tools` 的 App ∪ 本会话调用过其工具的 App（含上游；无论结果成功与否）∪ 本会话 `apps.select` 选定实例的 App ∪
   `Hub::select_instance` 全局选定实例的 App。
 - **未生效时**：列表与之前完全相同（不含 `apps.tools`）；已列出的 App 仍照常记录，切换为生效时沿用。
@@ -663,7 +663,7 @@ App 报告进度的消息与 SDK 行为见 spec/protocol.md 3.3（唯一定义�
 
 | 执行点 | 位置 | 使用的动作 |
 |---|---|---|
-| `list` | MCP `tools/list`、`resources/list`、`instructions` 中的 App 简介；`apps.list` / `apps.tools` / `apps.overview`；Hub API `apps()` / `tools()` / `export_tools()` / `resources()` / `overview()` | `hide` |
+| `list` | MCP `tools/list`、`resources/list`、`instructions` 中的 App 简介；`apps.list` / `apps.tools` / `apps.overview` / `apps.page`（页面目录：去掉被隐藏的工具，工具全部被隐藏的页面不列出，3.14）；Hub API `apps()` / `tools()` / `export_tools()` / `resources()` / `overview()` | `hide` |
 | `call` | 名称解析之后，资源保护（3.11）、审批（3.3）、唤醒之前；App 工具与上游工具（内置 `apps.*` 不受影响） | `hide`、`deny` |
 | `wake` | 调用 / 资源读取需要唤醒休眠或未运行的 App 时，发起唤醒之前（3.5） | `deny` |
 | `handle` | 数据句柄访问（第 17 项）：只定义执行点，尚未接入；规则写 `handle` 时校验报错 | — |
@@ -718,6 +718,47 @@ App 报告进度的消息与 SDK 行为见 spec/protocol.md 3.3（唯一定义�
 
 **绑定**：hub-c 配置 JSON `policy` 与 `am_hub_set_policy(hub, policy_json)`；hub-node 配置 `policy` 与 `setPolicy`；uniffi `HubConfig.policy`、
 `Hub.set_policy`；各语言封装同名（`Policy` / `SetPolicy`、`policy` / `set_policy`）。生效规则与命中次数在各绑定的状态（`HubStatus.policy`）中。
+
+### 3.14 页面目录、渐进披露与导航（第 4c 项）
+
+协议部分（`ToolInfo.surface` / `page`、`app/navigate`、`capabilities.navigate`、`NAVIGATION_FAILED` / `NAVIGATION_DENIED`）的唯一
+定义见 spec/protocol.md 3.4，清单 `pages` 见 spec/manifest.md 2.3。Hub 只提供机制：页面目录、披露、导航与等待；是否允许导航由
+App 决定（拒绝即 `NAVIGATION_DENIED`），Hub 不经 `ApprovalHandler` 另加确认（工具本身的审批照常，3.3）。
+实现：`crates/hub/src/pages.rs`（目录，纯数据）、`crates/hub/src/navigate.rs`（导航与等待）。
+
+**页面目录**（每个 App 一份）：清单 `pages`（含 `pages[].tools`，以及顶层 `tools` 中带 `page` 的工具）∪ SDK 上报过的带 `page` 的工具
+（工具因切页注销后仍保留；运行时定义覆盖清单中的同名定义；同一工具只属于一个页面）。运行时上报部分有上限：每个 App 最多
+`MAX_LEARNED_PAGES`（64）个页面、每页 `MAX_LEARNED_PAGE_TOOLS`（128）个工具，超出的忽略并记 warn 日志。目录随 App 记录保留
+（App 既无清单也无实例时清除）。页面"当前"= 有已连接实例注册了该页面的某个工具。
+
+**渐进披露**：
+
+| 层 | 入口 | 内容 |
+|---|---|---|
+| L0 | `apps.list` | 各 App 新增 `pageCount`（Agent 可见的页面数），各实例新增 `navigation`（是否声明了导航能力） |
+| L1 | MCP `tools/list`、`Hub::tools`、`export_tools` | 与之前相同（含 3.7 的渐进暴露），另：`surface: view` 的工具只列**首选实例**（按路由优先级：焦点 / 最近活跃）当前注册的，休眠快照中的 `view` 工具不列；页面目录中未注册的工具**不列**。有 Agent 可见的页面目录时内置工具多一个 `apps.page` |
+| L2 | `apps.tools(appId)` | 结果新增 `pages: [{name, title?, description?, navigable, current, toolCount}]` |
+| L3 | `apps.page({appId, page})`（只读，任何时候可调用） | `{appId, page: {name, title?, description?, route?, params?, navigable, current}, tools: HubTool[], message}`；未注册的工具 `availability` 为 `notRegistered`。appId 未知 / 被隐藏 → `TOOL_NOT_FOUND`；页面不存在 → `TOOL_NOT_FOUND` |
+
+**调用不在当前页面的工具**（App 工具调用路径，3.2）：名称解析 → 策略 `call` 执行点（3.13；按目录中声明的注解匹配，`hide` 的工具
+与不存在相同、不导航）→ 资源保护（3.11，被限流的调用不导航）→ 已有实例注册该工具则照常派发；否则休眠快照中有则先唤醒（3.5）；
+仍未注册而目录中有：
+
+1. 页面 `navigable: false` → `NAVIGATION_DENIED`（`not-navigable`），不发请求。
+2. 按目录定义校验参数（`INVALID_INPUT`）并审批（3.3，未审批过时）。
+3. App 没有已连接实例：按唤醒规则唤醒（选定 / 最近活跃的休眠实例，否则按清单冷启动；`wake` 执行点、唤醒速率上限、`waker: none`
+   与资源读取触发的唤醒相同）。唤醒后实例已注册该工具则直接派发。
+4. 选导航目标：已就绪、声明了 `capabilities.navigate`、未冻结的实例，按路由优先级（调用方指定的 `instanceId` 严格、唤醒的实例、
+   会话选定的实例优先）。没有 → `NAVIGATION_FAILED`（`unsupported`）。
+5. 发 `app/navigate {page}`（自动导航不带 `params`），等待回复；回复后等待该实例注册目标工具（`tools/sync` / `tools/changed`）。
+   回复与等待合计受 `HubConfig::wake_timeout` 约束（超时分别为 `timeout` / `tool-not-registered`），调用取消（3.12）随时结束等待；
+   期间该连接记为有进行中的工作（`app/sleep` 被拒绝）。旧 SDK 回 `-32601` 按 `unsupported`；App 回 `NAVIGATION_*` 原样；其他
+   错误归为 `NAVIGATION_FAILED`（`error`）。错误另带 `appId`、`page`。
+6. 路由到该实例并派发（不再审批）。
+
+**绑定**：内置工具与结果形状对所有入口一致（MCP 出口、Hub API、各格式导出与分派、hub-c / hub-uniffi / hub-node），各绑定无需新增
+接口；导出名按全部内置工具（含 `apps.tools`、`apps.page`）计算，展开前后稳定。`HubTool` 结构不变（`surface` / `page` 暂不进入
+`HubTool`）。
 
 ## 4. 进程内 App（可选，M2）
 

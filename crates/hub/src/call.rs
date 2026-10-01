@@ -29,6 +29,7 @@ use crate::hub::{
 use crate::progress::{ProgressThrottle, ProgressUpdate};
 use crate::limits::{OutputValidation, Payload};
 use crate::mcp_convert::{self, OutputShape};
+use crate::navigate::PageTool;
 use crate::overview::Overview;
 use crate::schema::{self, SchemaCheck};
 use crate::types::{
@@ -42,6 +43,9 @@ pub const TOOL_APPS_SELECT: &str = "apps.select";
 pub const TOOL_APPS_OVERVIEW: &str = "apps.overview";
 /// 渐进暴露（spec/hub-api.md 3.7）：查看某个 App 的工具并加入本会话的工具列表。
 pub const TOOL_APPS_TOOLS: &str = "apps.tools";
+
+/// 页面渐进披露（spec/hub-api.md 3.14 L3）：查看某个 App 某个页面上的工具（不在当前页面的工具调用时 Hub 先导航）。
+pub const TOOL_APPS_PAGE: &str = "apps.page";
 
 /// 内置工具的 appId（保留名）。
 pub const BUILTIN_APP_ID: &str = "apps";
@@ -160,7 +164,7 @@ impl Invocation {
     }
 }
 
-type CancelFut<'a> = Pin<&'a mut (dyn Future<Output = ()> + Send)>;
+pub(crate) type CancelFut<'a> = Pin<&'a mut (dyn Future<Output = ()> + Send)>;
 
 /// 一次调用的进度接收与合并（[`HubShared::watch_progress`]）；丢弃时注销路由。
 pub(crate) struct ProgressWatch {
@@ -508,7 +512,7 @@ impl HubShared {
 
     /// App 返回的错误：与结果一样受结果大小上限约束（`USER_ACTION_REQUIRED` 等错误的说明来自 App，spec/protocol.md 第 4 节），
     /// 超出时返回 `PAYLOAD_TOO_LARGE`；否则原样转为 [`ToolError`]。
-    fn accept_error(&self, app_id: &str, tool: &str, rpc: &app_mcp_protocol::RpcError) -> ToolError {
+    pub(crate) fn accept_error(&self, app_id: &str, tool: &str, rpc: &app_mcp_protocol::RpcError) -> ToolError {
         let size = serde_json::to_vec(rpc).map_or(0, |b| b.len());
         match self.guard_payload(app_id, Payload::Result, size, &format!("工具「{app_id}.{tool}」")) {
             Err(e) => e,
@@ -544,6 +548,8 @@ impl HubShared {
         let plan =
             plan.filter(|p| p.instance_id.is_some() || self.resolve_wake_descriptor(p).is_some());
         let mut woken = None;
+        // 已按快照 / 目录定义审批过（之后路由到实例时不再审批）。
+        let mut approved = false;
         if let Some(plan) = plan {
             // 不唤醒（`waker: none`）：不做审批，直接按未连接返回（带 launchUrl）。
             if !self.wake_enabled() {
@@ -567,10 +573,24 @@ impl HubShared {
                 if let Err(e) = self.approve(req, cancel.as_mut()).await {
                     return (Err(e), plan.instance_id.clone());
                 }
+                approved = true;
             }
             match self.wake_and_wait(&plan, cancel.as_mut()).await {
                 Ok(id) => woken = Some(id),
                 Err(e) => return (Err(e), plan.instance_id.clone()),
+            }
+        }
+        // 页面目录（spec/hub-api.md 3.14）：没有实例注册该工具、而目录中有 →（休眠则先唤醒）→ 导航 → 等待注册。
+        if let Some(target) = self.page_of_tool(app_id, tool_name) {
+            match self
+                .reach_page_tool(call_id, app_id, &target, &arguments, ctx, selected.as_deref(), woken.clone(), approved, cancel.as_mut())
+                .await
+            {
+                Ok(id) => {
+                    woken = Some(id);
+                    approved = true;
+                }
+                Err(e) => return (Err(e), woken),
             }
         }
         let prefer = woken.clone().or(selected);
@@ -614,7 +634,7 @@ impl HubShared {
             SchemaCheck::Unchecked => {}
         }
 
-        if woken.is_none() {
+        if !approved {
             let hub_tool = app_hub_tool(app_id, target.tool.clone(), Availability::Available);
             let req = self.approval_request(call_id, &hub_tool, &arguments, ctx);
             if let Err(e) = self.approve(req, cancel.as_mut()).await {
@@ -707,6 +727,114 @@ impl HubShared {
         self.registry().touch(app_id, &target.instance_id);
         self.grant_lease(&ctx.session_key, app_id, &conn);
         (result, instance)
+    }
+
+    /// 页面工具的到达：`navigable: false` 拒绝 → 按目录定义校验并审批（未审批时）→ App 没有连接时唤醒 → 导航并等待
+    /// 工具注册。返回注册了该工具的实例。
+    #[allow(clippy::too_many_arguments)]
+    async fn reach_page_tool(
+        self: &Arc<Self>,
+        call_id: &str,
+        app_id: &str,
+        target: &PageTool,
+        arguments: &Value,
+        ctx: &CallCtx,
+        selected: Option<&str>,
+        woken: Option<String>,
+        approved: bool,
+        mut cancel: CancelFut<'_>,
+    ) -> Result<String, ToolError> {
+        let tool_name = target.tool.name.as_str();
+        if !target.navigable {
+            return Err(HubShared::not_navigable(app_id, tool_name, &target.page));
+        }
+        if !approved {
+            if let SchemaCheck::Invalid(msg) = schema::check(&target.tool.input_schema, arguments) {
+                return Err(ToolError::new(
+                    ErrorKind::InvalidInput,
+                    format!("参数不符合工具「{app_id}.{tool_name}」的 inputSchema：{msg}"),
+                ));
+            }
+            let hub_tool = app_hub_tool(app_id, target.tool.clone(), Availability::NotRegistered);
+            let req = self.approval_request(call_id, &hub_tool, arguments, ctx);
+            self.approve(req, cancel.as_mut()).await?;
+        }
+        let mut woken = woken;
+        if !self.registry().has_connected(app_id) {
+            let plan = self
+                .registry()
+                .wake_plan_app(app_id, selected)
+                .filter(|p| p.instance_id.is_some() || self.resolve_wake_descriptor(p).is_some());
+            let Some(plan) = plan.filter(|_| self.wake_enabled()) else {
+                return Err(self.registry().disconnected_error(app_id));
+            };
+            self.check_wake_policy(app_id, Some(tool_name))?;
+            woken = Some(self.wake_and_wait(&plan, cancel.as_mut()).await?);
+        }
+        // 唤醒后实例可能已停在该页面。
+        if let Some(id) = woken.as_deref().filter(|id| self.registry().instance_has_tool(app_id, id, tool_name)) {
+            return Ok(id.to_owned());
+        }
+        let strict = ctx.instance_id.is_some();
+        let prefer = ctx.instance_id.as_deref().or(woken.as_deref()).or(selected);
+        self.navigate_for_tool(app_id, &target.page, tool_name, prefer, strict, cancel).await
+    }
+
+    /// `apps.tools` 的页面摘要（spec/hub-api.md 3.14 L2）：`{name, title?, description?, navigable, current, toolCount}`。
+    fn page_summaries(&self, app_id: &str) -> Vec<Value> {
+        let pages = self.page_catalog(app_id);
+        let reg = self.registry();
+        pages
+            .iter()
+            .map(|p| {
+                json!({
+                    "name": p.name,
+                    "title": p.title,
+                    "description": p.description,
+                    "navigable": p.navigable,
+                    "current": p.tools.keys().any(|t| reg.tool_registered(app_id, t)),
+                    "toolCount": p.tools.len(),
+                })
+            })
+            .collect()
+    }
+
+    /// `apps.page` 的结果（L3）；页面不存在（或其工具全部被隐藏）时为 `None`。
+    fn page_detail(&self, app_id: &str, page: &str) -> Option<Value> {
+        let p = self.page_catalog(app_id).into_iter().find(|p| p.name == page)?;
+        let reg = self.registry();
+        let current = p.tools.keys().any(|t| reg.tool_registered(app_id, t));
+        let tools: Vec<HubTool> = p
+            .tools
+            .values()
+            .map(|t| {
+                let availability =
+                    if reg.tool_registered(app_id, &t.name) { Availability::Available } else { Availability::NotRegistered };
+                app_hub_tool(app_id, t.clone(), availability)
+            })
+            .collect();
+        drop(reg);
+        let message = if !p.navigable {
+            format!("页面「{page}」不允许由 Agent 导航：其上的工具只在用户自行打开该页面后可用。")
+        } else if current {
+            format!("页面「{page}」当前已打开，其上的工具可直接按全名调用。")
+        } else {
+            format!("可直接按全名调用这些工具：Hub 会先让 App 切换到页面「{page}」（改变用户看到的界面；App 可能拒绝）。")
+        };
+        Some(json!({
+            "appId": app_id,
+            "page": {
+                "name": p.name,
+                "title": p.title,
+                "description": p.description,
+                "route": p.route,
+                "params": p.params,
+                "navigable": p.navigable,
+                "current": current,
+            },
+            "tools": tools,
+            "message": message,
+        }))
     }
 
     /// 登记一次调用的进度路由：此后该连接发来的同 callId `tools/progress` 经合并后发往 `sink`；返回值被丢弃时注销。
@@ -866,11 +994,34 @@ impl HubShared {
                 } else {
                     format!("App「{app_id}」的工具都已在工具列表中，可直接按全名调用。")
                 };
+                let pages = self.page_summaries(&app_id);
+                let message = if pages.is_empty() {
+                    message
+                } else {
+                    format!("{message} 另有 {} 个页面（pages），其上的工具用 apps.page 查看。", pages.len())
+                };
                 Ok(json_result(json!({
                     "appId": app_id,
                     "tools": tools,
+                    "pages": pages,
                     "message": message,
                 })))
+            }
+            TOOL_APPS_PAGE => {
+                let (app_id, page) = (arg("appId"), arg("page"));
+                let known = self.registry().has_app(&app_id);
+                if !known || self.app_hidden(&app_id) {
+                    return Some(Err(unknown_app(&app_id)));
+                }
+                Ok(match self.page_detail(&app_id, &page) {
+                    Some(v) => json_result(v),
+                    None => {
+                        return Some(Err(ToolError::new(
+                            ErrorKind::ToolNotFound,
+                            format!("App「{app_id}」没有页面「{page}」。可调用 apps.tools 查看该 App 的页面（pages）。"),
+                        )));
+                    }
+                })
             }
             _ => return None,
         })
@@ -1029,12 +1180,11 @@ fn obj(v: Value) -> Map<String, Value> {
     }
 }
 
-/// 内置工具（MCP 形式）。`with_apps_tools`：是否包含 `apps.tools`（只在渐进暴露生效时列出；任何时候都可调用）。
-pub(crate) fn builtin_tools(with_apps_tools: bool) -> Vec<Tool> {
+/// 内置工具（MCP 形式）。`with_apps_tools`：是否包含 `apps.tools`（只在渐进暴露生效时列出）；`with_apps_page`：是否包含
+/// `apps.page`（只在有页面目录时列出）。两者任何时候都可调用。
+pub(crate) fn builtin_tools(with_apps_tools: bool, with_apps_page: bool) -> Vec<Tool> {
     let mut tools = all_builtin_tools();
-    if !with_apps_tools {
-        tools.retain(|t| t.name != TOOL_APPS_TOOLS);
-    }
+    tools.retain(|t| (with_apps_tools || t.name != TOOL_APPS_TOOLS) && (with_apps_page || t.name != TOOL_APPS_PAGE));
     tools
 }
 
@@ -1075,13 +1225,28 @@ fn all_builtin_tools() -> Vec<Tool> {
         .with_annotations(ToolAnnotations::new().read_only(true)),
         Tool::new(
             TOOL_APPS_TOOLS,
-            "列出某个 App 的全部工具（全名、说明、参数 inputSchema、风险、可用性）。工具较多时工具列表只含 apps.* 与本会话\
-             用过的 App；调用本工具后该 App 的工具会加入本会话的工具列表，也可以直接按全名 <appId>.<工具名> 调用。\
-             appId 可从 apps.list 获取。",
+            "列出某个 App 的全部工具（全名、说明、参数 inputSchema、风险、可用性）与页面目录摘要（pages）。工具较多时工具列表\
+             只含 apps.* 与本会话用过的 App；调用本工具后该 App 的工具会加入本会话的工具列表，也可以直接按全名 \
+             <appId>.<工具名> 调用。不在当前页面的工具用 apps.page 查看。appId 可从 apps.list 获取。",
             obj(json!({
                 "type": "object",
                 "properties": { "appId": { "type": "string", "description": "App 标识" } },
                 "required": ["appId"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(ToolAnnotations::new().read_only(true)),
+        Tool::new(
+            TOOL_APPS_PAGE,
+            "查看某个 App 某个页面上的工具（全名、说明、参数 inputSchema）。页面名见 apps.tools 的 pages。这些工具可以直接\
+             按全名调用：不在当前页面时 Hub 会先让 App 切换到该页面再执行（会改变用户看到的界面；App 可以拒绝）。",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "appId": { "type": "string", "description": "App 标识" },
+                    "page": { "type": "string", "description": "页面名（见 apps.tools 的 pages）" }
+                },
+                "required": ["appId", "page"],
                 "additionalProperties": false
             })),
         )
@@ -1096,8 +1261,8 @@ fn builtin_schema(name: &str) -> Option<Value> {
         .map(|t| Value::Object((*t.input_schema).clone()))
 }
 
-pub(crate) fn builtin_hub_tools(with_apps_tools: bool) -> Vec<HubTool> {
-    builtin_tools(with_apps_tools)
+pub(crate) fn builtin_hub_tools(with_apps_tools: bool, with_apps_page: bool) -> Vec<HubTool> {
+    builtin_tools(with_apps_tools, with_apps_page)
         .into_iter()
         .map(|t| {
             let name = t.name.to_string();
@@ -1331,12 +1496,7 @@ pub(crate) fn mcp_error_to_tool(e: &McpError) -> ToolError {
         .and_then(|d| d.get("kind"))
         .and_then(|k| serde_json::from_value::<ErrorKind>(k.clone()).ok());
     let kind = from_data
-        .or_else(|| {
-            ALL_KINDS
-                .iter()
-                .copied()
-                .find(|k| k.code() == i64::from(e.code.0))
-        })
+        .or_else(|| ErrorKind::from_code(i64::from(e.code.0)))
         .unwrap_or(if e.code == ErrorCode::RESOURCE_NOT_FOUND {
             ErrorKind::ResourceNotFound
         } else {
@@ -1354,27 +1514,6 @@ pub(crate) fn mcp_error_to_tool(e: &McpError) -> ToolError {
     }
 }
 
-const ALL_KINDS: [ErrorKind; 19] = [
-    ErrorKind::ToolNotFound,
-    ErrorKind::ToolDisabled,
-    ErrorKind::InvalidInput,
-    ErrorKind::UserRejected,
-    ErrorKind::Timeout,
-    ErrorKind::HandlerError,
-    ErrorKind::Cancelled,
-    ErrorKind::AppDisconnected,
-    ErrorKind::AppNotInstalled,
-    ErrorKind::LaunchFailed,
-    ErrorKind::AppNotResponding,
-    ErrorKind::InstanceFrozen,
-    ErrorKind::ResourceNotFound,
-    ErrorKind::Unauthorized,
-    ErrorKind::UnsupportedProtocol,
-    ErrorKind::RateLimited,
-    ErrorKind::PayloadTooLarge,
-    ErrorKind::PolicyDenied,
-    ErrorKind::UserActionRequired,
-];
 
 /// 把协议错误转为 MCP 协议错误（资源读取等非工具调用路径）。
 pub(crate) fn to_mcp_error(e: &ToolError) -> McpError {
@@ -1569,11 +1708,11 @@ mod tests {
 
     #[test]
     fn builtins_and_upstream_risk() {
-        let b = builtin_hub_tools(false);
+        let b = builtin_hub_tools(false, false);
         assert_eq!(b.len(), 3);
         assert_eq!(b[0].name, "apps.list");
         assert_eq!(b[0].tool, "list");
-        let b = builtin_hub_tools(true);
+        let b = builtin_hub_tools(true, false);
         assert_eq!(b.len(), 4);
         assert_eq!(b[3].name, "apps.tools");
         assert!(builtin_schema("apps.select").is_some());

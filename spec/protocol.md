@@ -171,6 +171,7 @@ SDK 核心在处理握手结果之前核对（`app_mcp_protocol::identity::check
 | Host → SDK | `resources/subscribe` | 请求 | `ResourceSubscribeParams` → `{}` |
 | Host → SDK | `resources/unsubscribe` | 请求 | `ResourceSubscribeParams` → `{}` |
 | Host → SDK | `app/activate` | 请求 | `ActivateParams` → `{}` |
+| Host → SDK | `app/navigate` | 请求 | `NavigateParams` → `NavigateResult`（3.4；只发给声明了 `capabilities.navigate` 的实例） |
 | Host → SDK | `app/pairingResult` | 通知 | `PairingResultParams` |
 | Host → SDK | `app/lease` | 通知 | `LeaseParams`（第 8 节） |
 | 双向 | `ping` | 请求 | 无参数 → `{}` |
@@ -205,6 +206,11 @@ interface HelloParams {
   wakeReason?: WakeReason  // 本次连接的原因
   heartbeatMs?: number     // SDK 心跳声明（5.5）：0 = 不发心跳、靠连接断开感知；> 0 = 每隔该毫秒数发 ping；省略 = 旧行为
   lifecycleMode?: LifecycleMode // SDK 的生命周期模式（8.5），供 Host 观测；省略 = 未知
+  capabilities?: SdkCapabilities // 可选能力（3.4）；省略 = 都不支持（旧 SDK）
+}
+
+interface SdkCapabilities {
+  navigate?: boolean       // 能处理 app/navigate（App 设置了导航回调）；缺省 false，false 时不序列化
 }
 
 type WakeReason = "os-activation" | "app" | "visible" | "cold-start"
@@ -241,7 +247,11 @@ interface ToolInfo {
   title?: string
   annotations?: ToolAnnotations  // 标准 MCP 工具注解（3.2）
   outputSchema?: object    // 结果的 JSON Schema（MCP outputSchema），根类型任意（3.2）
+  surface?: ToolSurface    // 对界面的依赖（3.4），缺省 "app"，"app" 时不序列化
+  page?: string            // 所在页面名（3.4），[a-zA-Z0-9_.-]{1,64}
 }
+
+type ToolSurface = "app" | "view"
 
 // 标准 MCP 工具注解，Host 原样转发给 Agent（3.2）
 interface ToolAnnotations {
@@ -300,6 +310,10 @@ interface WakeDescriptor {
 interface SleepParams { reason: SleepReason; wake?: WakeDescriptor; toolsHash: string }
 interface SleepResult { accepted: boolean; resumeToken?: string; retryAfterMs?: number }
 interface LeaseParams { ttlMs: number }   // 0 表示取消租约
+
+// 导航（3.4）
+interface NavigateParams { page: string; params?: object }
+interface NavigateResult { ok: boolean }   // 成功为 { ok: true }；失败用 JSON-RPC 错误（NAVIGATION_FAILED / NAVIGATION_DENIED）
 ```
 
 ### 3.1 名称规则：局部名与全名
@@ -362,6 +376,36 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
   没有接收方时丢弃。调用结束后到达的进度被忽略。
 - **取消**：Agent 取消（MCP `notifications/cancelled`、Hub API `cancel_call`）→ Host 发 `tools/cancel` → SDK 取消 handler（5.3）。
 
+### 3.4 界面级暴露与导航（第 4c 项）
+
+本节是 `surface` / `page` / `app/navigate` 的唯一定义；Hub 侧的页面目录与渐进披露见 spec/hub-api.md 3.14，清单的 `pages`
+见 spec/manifest.md 2.3。以下均为新增：字段缺省时消息与之前完全相同（`toolsHash` 不变），旧 SDK 不声明能力、Host 不向其发导航。
+
+- **`surface`**：`app`（缺省）= 不依赖界面，后台可调、可唤醒、进清单与原生意图（`app-mcp-codegen` 只为它生成）；`view` =
+  依赖界面，只在所在界面**真正可见且处于最上层**时注册（启用）。是否注册由 App / 封装层按可见性决定（第 4c 项 D / E），协议与
+  核心只如实传递声明。
+- **`page`**：工具所在页面（页面目录的键，与清单 `pages[].name` 同一命名空间）。Hub 记下 SDK 上报过的 `page`，工具因切页注销后
+  仍知道它在哪个页面；调用不在当前页面的工具时据此导航。
+- **能力协商**：App 设置了导航回调时，SDK 在 `app/hello.capabilities.navigate` 声明 `true`；能力只在握手时声明，连接后才设置 /
+  清除的回调在下次连接时生效（之前到达的请求按当时的回调处理）。
+- **`app/navigate`（Host → SDK，请求）**：`{page, params?}` → `{ok: true}`。SDK 行为（`app-mcp-core` 实现，所有语言一致）：
+  - 未完成握手 → `UNAUTHORIZED`（同 5.1 第 5 步）；参数无法解析或 `page` 不合法 → `-32602`。
+  - 没有导航回调（`capabilities.navigate` 为 false）→ `NAVIGATION_FAILED`，`data.reason = "unsupported"`。
+  - 否则交给导航回调（核心事件 `Navigate`），回调切换界面后完成：成功回复 `{ok: true}`；页面不存在 / 参数不合法等以
+    `NAVIGATION_FAILED`（`reason: "error"`）失败；不愿切换（用户正在输入、页面需要登录等）以 `NAVIGATION_DENIED`
+    （`reason: "app"`）拒绝，`message` 面向模型 / 用户。导航改变用户可见界面：是否允许由 App 决定，本库不加确认。
+  - 进行中的导航阻止空闲休眠（与进行中的资源读取相同，spec/lifecycle.md 第 3 节）；连接断开时丢弃，不回复。
+  - 导航后的工具注册 / 注销照常经 `tools/changed` 同步（5.2）；回调最好在新页面的工具注册之后再完成，Host 会等待目标工具出现。
+- **`data.reason`**（`NAVIGATION_FAILED` / `NAVIGATION_DENIED`，第 4 节）：`unsupported`（不支持导航）、`error`（回调出错）、
+  `timeout`（Host 在时限内没有收到回复）、`tool-not-registered`（导航完成但时限内目标工具没有注册）、`app`（App 拒绝）、
+  `not-navigable`（清单声明该页面不可导航，Host 不发请求）。Host 产生的错误另带 `appId`、`page`。
+- 各语言入口（第 4c 项第一部分只提供底层接口，框架绑定在第二部分）：Rust `ClientConfig.navigation` / `Client::set_navigation`、
+  `Event::Navigate`、`Client::complete_navigate`；原生运行时 `NativeClient::set_navigation_handler(NavigationHandler)`、
+  `NavigateHandle`（`complete` / `fail` / `deny`）、`ToolOptions.surface` / `page`；C ABI v14 `am_client_set_navigation_handler`、
+  `AmNavigate`、`AmToolOptions.page` / `surface`；uniffi `AppMcpClient.set_navigation_handler`、`NavigationHandler`、`Navigate`、
+  `ToolSpec.surface` / `page`；Node 原生模块 `setNavigationHandler`、`Navigate`、`ToolSpecInit.surface` / `page`；WASM
+  `setNavigation`、`navigate` 事件、`completeNavigate`、工具定义 `surface` / `page`。
+
 ## 4. 错误
 
 失败统一用 JSON-RPC 错误对象返回，`data.kind` 为错误类别：
@@ -387,6 +431,13 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
 | `PAYLOAD_TOO_LARGE` | -32017 | Host 大小上限：调用参数、调用结果或资源内容超过上限，未转发 / 未返回（不截断）。`data`：`part`（`arguments` / `result` / `resource`）、`sizeBytes`、`limitBytes`。`result` 超限时调用可能已在 App 内执行 |
 | `POLICY_DENIED` | -32018 | 调用被用户 / 厂商写的策略规则拒绝（`deny`，spec/hub-api.md 3.13），未转发、未唤醒；与 `USER_REJECTED`（用户当场拒绝）不同，重试不会改变结果。`data`：`ruleId`（命中规则的标识，不含规则内容）、`hook`（`call` / `wake`）、`appId`、`tool` |
 | `USER_ACTION_REQUIRED` | -32019 | 需要用户本人操作后才能继续：登录过期、系统权限未授予、需切到前台、需在 App 内确认等。由 App 的 handler 返回（各语言 SDK 提供构造方法）；调用未完成，用户操作后可重试。`message` 面向用户（Agent 应转告用户），`data`：`reason`（可选，建议取值 `login` / `permission` / `foreground` / `confirm`，其他字符串按原样展示）、`uri`（可选，App 内入口，如深链接）。Host 原样转为 MCP 错误结果，不据此做任何决定；错误消息与结果一样计入结果大小上限（spec/hub-api.md 3.11） |
+| `NAVIGATION_FAILED` | -31001 | 导航没有完成（3.4）：App 不支持导航、导航回调出错、超时，或导航后时限内目标工具没有注册。调用未执行。`data`：`reason`（`unsupported` / `error` / `timeout` / `tool-not-registered`）、`appId`、`page` |
+| `NAVIGATION_DENIED` | -31002 | 导航被拒绝（3.4）：App 拒绝本次导航（`reason: "app"`，`message` 来自 App），或清单声明该页面不可由 Agent 导航（`reason: "not-navigable"`）。调用未执行；重试不会改变结果，应请用户自行打开该页面 |
+
+**错误码分区**（`ErrorKind::code`，唯一定义）：-32001 ~ -32019 为既有类别（JSON-RPC 实现自定义区，保留不变）；-32020 ~ -32099
+归 MCP 规范（`HeaderMismatch` -32020、`MissingRequiredClientCapability` -32021、`UnsupportedProtocolVersion` -32022 等，
+docs/plans/12-mcp-2026-07-28.md m10），本协议不使用；此后新增的类别从 -31001 起编号（JSON-RPC 保留区 -32768 ~ -32000 之外的应用
+定义区），避免 Hub 把上游 MCP 服务器的错误码误认作本协议的类别。接收方以 `data.kind` 为准，数字码只作后备。
 
 `message` 面向模型，应说明原因和建议的下一步。`data` 中除 `kind` 外可携带其他字段。
 标准 JSON-RPC 错误码（-32700、-32600、-32601、-32602、-32603）用于协议层错误。

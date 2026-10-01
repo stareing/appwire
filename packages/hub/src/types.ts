@@ -42,6 +42,10 @@ export type ErrorKind =
   | 'POLICY_DENIED'
   /** 需要用户本人操作（登录、授权、切到前台、在 App 内确认）后才能继续。`details`：`reason?`（`login` / `permission` / `foreground` / `confirm` 等）、`uri?`。 */
   | 'USER_ACTION_REQUIRED'
+  /** 导航没有完成（不支持 / 出错 / 超时 / 导航后工具未出现，spec/protocol.md 3.4）。`details`：`reason`、`appId`、`page`。 */
+  | 'NAVIGATION_FAILED'
+  /** 导航被拒绝（App 拒绝或页面不可由 Agent 导航）。`details`：`reason`（`app` / `not-navigable`）、`appId`、`page`。 */
+  | 'NAVIGATION_DENIED'
 
 /**
  * 标准 MCP 工具注解（spec/protocol.md 第 3 节）。Hub 原样传递 App 的声明，不据此做判断；

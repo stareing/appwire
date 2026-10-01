@@ -928,6 +928,7 @@ fn limits_annotations_and_structured_result() {
     let options = ToolOptions {
         annotations: Some(ToolAnnotations { idempotent_hint: Some(false), ..ToolAnnotations::default() }),
         output_schema_json: Some(r#"{"type":"object","properties":{"orderId":{"type":"string"}}}"#.into()),
+        ..ToolOptions::default()
     };
     let _tool = client
         .register_tool_with(ToolSpec::new("order.submit", "下单"), options, Arc::new(Submit))

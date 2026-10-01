@@ -69,7 +69,13 @@ enum ErrorKind {
 
   /// 需要用户本人操作后才能继续（登录过期、系统权限未授予、需切到前台、需在 App 内确认等）；
   /// 用 [UserActionRequiredError] 抛出可附带 reason / uri。
-  userActionRequired('USER_ACTION_REQUIRED');
+  userActionRequired('USER_ACTION_REQUIRED'),
+
+  /// 导航没有完成（不支持 / 出错 / 超时 / 导航后工具未出现，spec/protocol.md 3.4）。
+  navigationFailed('NAVIGATION_FAILED'),
+
+  /// 导航被拒绝（App 拒绝或页面不可由 Agent 导航）。
+  navigationDenied('NAVIGATION_DENIED');
 
   const ErrorKind(this.wireName);
 
