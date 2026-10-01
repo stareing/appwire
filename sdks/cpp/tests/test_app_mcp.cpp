@@ -339,7 +339,9 @@ void test_annotations() {
     ta.title = "下\"单";
     ta.read_only_hint = false;
     ta.open_world_hint = true;
-    EXPECT(app_mcp::detail::to_json(ta) == R"({"title":"下\"单","readOnlyHint":false,"openWorldHint":true})");
+    // @why MSVC 对宏参数中含反斜杠的原始字符串字面量做 # 字符串化时报 C2017，先放进变量
+    const std::string expected_ta = R"({"title":"下\"单","readOnlyHint":false,"openWorldHint":true})";
+    EXPECT(app_mcp::detail::to_json(ta) == expected_ta);
 
     app_mcp::ContentAnnotations ca;
     ca.audience = std::vector<app_mcp::Audience>{app_mcp::Audience::User, app_mcp::Audience::Assistant};
