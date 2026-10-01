@@ -95,7 +95,9 @@ mcp.tool<OrderParams, Object | null>('order.submit', {
 - 返回普通数据即 `done` 结果；需要业务状态、摘要或内容标注（`ContentAnnotations`：`audience` / `priority` / `lastModified`）时返回
   `new ToolResult(data, stateHints, options)`（`ToolResultOptions`）。无返回值（`data` 为 `null` / `undefined` 且无 `summary`、
   状态 `done`）时 Hub 对模型输出固定文本"已完成"。
-- `ToolHandle.update` 的 `annotations` / `outputSchema` 整体替换，不支持清除。
+- `ToolHandle.update`：未提供（或 `undefined`）的字段保持不变，显式给出 `null` 清除该声明（`title` / `annotations` /
+  `outputSchema` / `activation` 删除，`inputSchema` 变为无参数，`risk` 恢复 `write`，`enabled` 恢复 true；`description`
+  不可清除）；给出值则整体替换该字段。
 
 ### 线程
 

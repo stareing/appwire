@@ -105,6 +105,51 @@ test('注解与 outputSchema 随注册下发；update 整体替换', () => {
   assert.equal(next.description, '下单2');
 });
 
+test('update：未提供的字段保持不变，显式 null 清除，给值则替换', () => {
+  const { mcp, client } = create();
+  const h = mcp.tool('doc.save', {
+    description: '保存',
+    title: '保存文档',
+    inputSchema: '{"type":"object","properties":{}}',
+    risk: 'destructive',
+    annotations: { readOnlyHint: false },
+    outputSchema: '{"type":"object"}',
+    activation: 'foreground',
+    enabled: false,
+    handler: () => null,
+  });
+  const fields = () => {
+    const s = client.tools.get('doc.save').spec;
+    return {
+      description: s.description,
+      title: s.title,
+      inputSchemaJson: s.inputSchemaJson,
+      risk: s.risk,
+      readOnlyHint: s.annotations === undefined ? undefined : s.annotations.readOnlyHint,
+      outputSchemaJson: s.outputSchemaJson,
+      activation: s.activation,
+      enabled: s.enabled,
+    };
+  };
+  const before = fields();
+  h.update({ description: '保存2', title: undefined });
+  assert.deepEqual(fields(), { ...before, description: '保存2' }, '未提供 / undefined 的字段保持不变');
+
+  h.update({ title: '另存', activation: 'background', outputSchema: '{"type":"array"}' });
+  assert.deepEqual(fields(), {
+    ...before, description: '保存2', title: '另存', activation: 'background', outputSchemaJson: '{"type":"array"}',
+  });
+
+  h.update({
+    description: null, title: null, inputSchema: null, risk: null, annotations: null, outputSchema: null,
+    activation: null, enabled: null,
+  });
+  assert.deepEqual(fields(), {
+    description: '保存2', title: undefined, inputSchemaJson: undefined, risk: undefined, readOnlyHint: undefined,
+    outputSchemaJson: undefined, activation: undefined, enabled: true,
+  }, 'null 清除声明，description 不可清除');
+});
+
 test('结构化结果：pending + stateResource + summary + 内容注解；普通返回值不变', async () => {
   const { mcp, client } = create();
   mcp.tool('order.pay', {

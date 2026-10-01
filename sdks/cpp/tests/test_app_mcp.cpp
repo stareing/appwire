@@ -70,6 +70,8 @@ void test_basics() {
     // C 层：状态码与头文件一致。
     EXPECT(am_call_complete(nullptr, "null", nullptr, 0) == AM_ERR_INVALID_ARGUMENT);
     EXPECT(am_read_fail(nullptr, "HANDLER_ERROR", "x") == AM_ERR_INVALID_ARGUMENT);
+    EXPECT(am_read_fail_with_details(nullptr, "HANDLER_ERROR", "x", "{}") == AM_ERR_INVALID_ARGUMENT);
+    EXPECT(am_read_fail_user_action(nullptr, "x", nullptr, nullptr) == AM_ERR_INVALID_ARGUMENT);
 }
 
 void test_runtime() {

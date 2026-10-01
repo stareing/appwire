@@ -173,8 +173,9 @@ schema 校验 → 策略审批（3.3）→ 路由（selected → focused → 最
 只有休眠实例注册了该工具（或 App 未运行而清单声明了 `wake`）时先唤醒（3.5）；无法唤醒的静态工具且 App 未连接时返回
 `APP_DISCONNECTED`（details 含 `launchUrl`）→ 转发、超时、取消。
 
-App 工具与上游工具在路由 / 审批之前先过资源保护（3.11）：参数大小 → 限流；结果到达后检查结果大小，再按 `output_validation`
-核对 `outputSchema`。内置工具 `apps.*` 不受限。
+App 工具与上游工具在路由 / 审批之前先过资源保护（3.11）：参数大小 → 限流；结果到达后检查结果大小。App 工具的结果再按
+`output_validation` 核对 `outputSchema`；上游工具的结果只检查大小、不核对 `outputSchema`（上游 MCP 服务器自己负责其 schema，
+结果原样转发）。内置工具 `apps.*` 不受限。
 
 **MCP 出口的工具与结果**（spec/protocol.md 3.2 为唯一定义，此处只列映射）：`tools/list` 的 `annotations` = `HubTool.annotations`，
 `outputSchema` = 声明的 schema（根类型非 object 时包装为 `{result}`）；成功结果的内容块依次为：状态说明（`status` 非 `done`）→
@@ -608,14 +609,14 @@ rmcp 的 `server` / `client` 始终开启（模型类型与 `Peer`）。
 | `limits.max_arguments_bytes: u64` | 1 MiB | 调用参数序列化后的字节上限；0 不限 | `--max-arguments-bytes` / `limits.maxArgumentsBytes` | 同左 |
 | `limits.max_result_bytes: u64` | 4 MiB | App 回给 Hub 的整个结果（含 `summary`）序列化后的字节上限；上游结果同样适用；0 不限 | `--max-result-bytes` / `limits.maxResultBytes` | 同左 |
 | `limits.max_resource_bytes: u64` | 4 MiB | 资源内容（文本 / base64）的字节上限；0 不限 | `--max-resource-bytes` / `limits.maxResourceBytes` | 同左 |
-| `output_validation: OutputValidation` | `Log` | 结果与声明的 `outputSchema` 不符时：`Off` 不校验 / `Log` 只记 warn 日志、照常返回 / `Reject` 调用以 `HANDLER_ERROR` 结束（`details.outputSchemaError`）。无返回值不校验；未启用 `schema-validation` 时不校验 | `--output-validation off\|log\|reject` / `tools.outputValidation` | `outputValidation` |
+| `output_validation: OutputValidation` | `Log` | App 工具的结果与声明的 `outputSchema` 不符时（上游工具不核对）：`Off` 不校验 / `Log` 只记 warn 日志、照常返回 / `Reject` 调用以 `HANDLER_ERROR` 结束（`details.outputSchemaError`）。无返回值不校验；未启用 `schema-validation` 时不校验 | `--output-validation off\|log\|reject` / `tools.outputValidation` | `outputValidation` |
 
 - JSON 形式 `LimitOverrides`（`{toolRatePerMinute, toolRateBurst, appRatePerMinute, appRateBurst, maxArgumentsBytes, maxResultBytes,
   maxResourceBytes}`，缺省字段取默认，未知字段报错）为各绑定与配置文件共用；`per_minute > 0` 而 `burst = 0` 时 `Hub::start` 返回
   `InvalidInput`（host：配置无效；hub-c：`AM_HUB_ERR_INVALID_CONFIG`）。默认值宽松：只拦失控循环与异常数据，均低于 WebSocket
   单条消息 64 MiB 的上限（tungstenite 默认，超过时连接被断开而不是返回错误）。
 - 检查顺序：参数大小 → 两级限流（两级都有令牌才各扣一个；任一级不足都不扣，`retryAfterMs` 取较长的等待）→ 路由 / 审批 / 唤醒
-  （被限流的调用不会唤醒 App、不会触发审批）→ 转发 → 结果大小 → `outputSchema` 核对。`result` 超限时调用可能已在 App 内执行（错误信息如实说明）。
+  （被限流的调用不会唤醒 App、不会触发审批）→ 转发 → 结果大小 → `outputSchema` 核对（只对 App 工具；上游工具的结果只检查大小）。`result` 超限时调用可能已在 App 内执行（错误信息如实说明）。
 - 计数：`AppStatus.rate_limited` / `too_large`（Hub 启动以来被拒绝的次数）；`HubStatus.limits`（`LimitOverrides`，全部字段给出）与
   `HubStatus.output_validation`。令牌桶表最多 4096 个、计数表最多 1024 个 App（超出时淘汰，见 `crates/hub/src/limits.rs`）。
 - `app-mcp-host doctor`：「资源保护」检查显示策略与各 App 被拒绝次数（有拒绝时为注意）；「工具声明」检查逐个列出每个工具的

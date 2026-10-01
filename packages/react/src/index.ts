@@ -17,6 +17,8 @@ export { useHold } from './use-hold'
 export type {
   AppMcp,
   ConnectionState,
+  ConnectionBlockCause,
+  ConnectionBlockCode,
   HoldHandle,
   LifecycleOptions,
   ResourceDefinition,
@@ -28,8 +30,24 @@ export type {
   ToolContext,
   ToolDefinition,
   LazyToolDefinition,
+  AnyToolDefinition,
   ToolHandler,
   ToolHandlerLoader,
   ToolHandle,
   ToolResult,
+  // 声明与结果契约（spec/protocol.md 3.2）
+  ToolAnnotations,
+  ContentAnnotations,
+  Audience,
+  ResultStatus,
+  ToolResultEnvelope,
+  InputDefinition,
+  OutputDefinition,
+  OutputSchema,
+  JsonSchema,
+  ZodLike,
+  // 错误（含 USER_ACTION_REQUIRED，spec/protocol.md 第 4 节）
+  ErrorKind,
+  UserActionReason,
+  UserActionRequiredOptions,
 } from '@app-mcp/web'

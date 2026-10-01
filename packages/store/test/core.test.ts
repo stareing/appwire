@@ -1,3 +1,4 @@
+import { isToolResultEnvelope } from '@app-mcp/web'
 import { describe, expect, it } from 'vitest'
 import { exposeStore, shallowEqual, type StoreAdapter } from '../src/index'
 import { FakeRegistrar, flush } from './fake'
@@ -130,5 +131,80 @@ describe('exposeStore', () => {
     expect(shallowEqual([1, 2], [1, 2])).toBe(true)
     expect(shallowEqual([1, 2], { 0: 1, 1: 2 })).toBe(false)
     expect(shallowEqual(null, {})).toBe(false)
+  })
+})
+
+describe('resultEnvelope', () => {
+  const actions = {
+    done: () => undefined,
+    ship: () => ({ data: { id: 'o1' }, status: 'pending' as const, stateResource: 'order.state', stateHints: ['order.list'] }),
+    plain: () => ({ data: 1, other: 2 }),
+    bare: () => ({ data: 1 }),
+    partial: () => ({ data: null, status: 'partial' as const, summary: '完成 2/3' }),
+  }
+
+  it('默认关闭：保持 { data } 包装与 { ok: true }', async () => {
+    const reg = new FakeRegistrar()
+    const { adapter } = makeAdapter(actions)
+    exposeStore(reg, adapter, { actions: { done: { description: 'd' }, bare: { description: 'b' } } })
+    expect(await reg.call('done')).toEqual({ data: { ok: true } })
+    expect(await reg.call('bare')).toEqual({ data: { data: 1 } })
+  })
+
+  it('开启：无返回值为 { data: undefined }（Hub 输出"已完成"），不再是 { ok: true }', async () => {
+    const reg = new FakeRegistrar()
+    const { adapter } = makeAdapter(actions)
+    exposeStore(reg, adapter, { resultEnvelope: true, actions: { done: { description: 'd' } } })
+    const res = await reg.call('done')
+    expect(res).toEqual({ data: undefined })
+    expect(isToolResultEnvelope(res)).toBe(true)
+  })
+
+  it('开启：信封原样透传，hints 去重并入 stateHints', async () => {
+    const reg = new FakeRegistrar()
+    const { adapter } = makeAdapter(actions)
+    exposeStore(reg, adapter, {
+      resultEnvelope: true,
+      actions: {
+        ship: { description: 's', hints: ['order.list', 'cart.items'] },
+        partial: { description: 'p' },
+      },
+    })
+    expect(await reg.call('ship')).toEqual({
+      data: { id: 'o1' },
+      status: 'pending',
+      stateResource: 'order.state',
+      stateHints: ['order.list', 'cart.items'],
+    })
+    expect(await reg.call('partial')).toEqual({ data: null, status: 'partial', summary: '完成 2/3' })
+  })
+
+  it('开启：非信封值作为 data，附带 hints', async () => {
+    const reg = new FakeRegistrar()
+    const { adapter } = makeAdapter(actions)
+    exposeStore(reg, adapter, { resultEnvelope: true, actions: { plain: { description: 'p', hints: ['x'] } } })
+    expect(await reg.call('plain')).toEqual({ data: { data: 1, other: 2 }, stateHints: ['x'] })
+  })
+
+  it('result 选择器可返回信封；单个 action 的 resultEnvelope 覆盖全局', async () => {
+    const reg = new FakeRegistrar()
+    const { adapter } = makeAdapter({ ...actions, n: 3 })
+    exposeStore(reg, adapter, {
+      actions: {
+        done: {
+          description: 'd',
+          resultEnvelope: true,
+          result: (st) => ({ data: st.n, summary: `剩余 ${st.n} 件` }),
+        },
+      },
+    })
+    expect(await reg.call('done')).toEqual({ data: 3, summary: '剩余 3 件' })
+
+    const reg2 = new FakeRegistrar()
+    exposeStore(reg2, makeAdapter(actions).adapter, {
+      resultEnvelope: true,
+      actions: { done: { description: 'd', resultEnvelope: false } },
+    })
+    expect(await reg2.call('done')).toEqual({ data: { ok: true } })
   })
 })

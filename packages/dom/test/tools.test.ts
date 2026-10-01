@@ -376,3 +376,36 @@ describe('toErrorKind', () => {
     expect(toErrorKind('NOPE')).toBe('HANDLER_ERROR')
   })
 })
+
+describe('resultEnvelope', () => {
+  it('默认关闭：无结果仍为 { ok: true }；data-mcp-summary 附加为 summary', async () => {
+    document.body.innerHTML = `<button data-mcp-tool="x" data-mcp-desc="x" data-mcp-summary="已清空购物车">x</button>`
+    detach = attachDom(app, { settleMs: 0 })
+    await expect(app.call('x')).resolves.toEqual({ data: { ok: true }, summary: '已清空购物车' })
+  })
+
+  it('开启：无结果为无返回值（Hub 输出"已完成"）', async () => {
+    document.body.innerHTML = `<button data-mcp-tool="x" data-mcp-desc="x" data-mcp-hints="cart.state">x</button>`
+    detach = attachDom(app, { settleMs: 0, resultEnvelope: true })
+    await expect(app.call('x')).resolves.toEqual({ data: undefined, stateHints: ['cart.state'] })
+  })
+
+  it('开启：data-mcp-result 事件给出的信封透传', async () => {
+    document.body.innerHTML = `<button data-mcp-tool="x" data-mcp-desc="x" data-mcp-result="done" data-mcp-hints="order.list">x</button>`
+    const btn = document.querySelector('button')!
+    btn.addEventListener('click', () => {
+      queueMicrotask(() =>
+        btn.dispatchEvent(
+          new CustomEvent('done', { detail: { data: { id: 'o1' }, status: 'pending', stateResource: 'order.state' } }),
+        ),
+      )
+    })
+    detach = attachDom(app, { resultEnvelope: true })
+    await expect(app.call('x')).resolves.toEqual({
+      data: { id: 'o1' },
+      status: 'pending',
+      stateResource: 'order.state',
+      stateHints: ['order.list'],
+    })
+  })
+})

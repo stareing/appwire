@@ -11,6 +11,7 @@
  */
 
 import {
+  isToolResultEnvelope,
   ToolCallError,
   type Activation,
   type InputDefinition,
@@ -80,10 +81,15 @@ export interface ActionOptions<S> {
   args?: (input: any) => unknown[]
   /** 根据 state 决定工具是否可用；状态变化时重新计算，只有结果变化才会更新。 */
   enabled?: (state: S) => boolean
-  /** 结果选择器：action 完成后以最新 state 与 action 返回值计算结果。缺省返回 action 返回值（undefined 时为 `{ ok: true }`）。 */
+  /**
+   * 结果选择器：action 完成后以最新 state 与 action 返回值计算结果。缺省返回 action 返回值
+   * （undefined 时：默认为 `{ ok: true }`；`resultEnvelope` 开启时为无返回值）。
+   */
   result?: (state: S, returned: unknown) => unknown
   /** 附带在结果中的 stateHints。 */
   hints?: string[]
+  /** 覆盖 {@link ExposeOptions.resultEnvelope}。 */
+  resultEnvelope?: boolean
 }
 
 export interface ResourceOptions<S> {
@@ -99,6 +105,14 @@ export interface ExposeOptions<S> {
   namespace?: string
   actions: Record<string, ActionOptions<S>>
   resources?: Record<string, ResourceOptions<S>>
+  /**
+   * 结果（action 返回值或 `result` 选择器的返回值）按结构化结果解释，默认 false。
+   * - 开启：形如 `ToolResultEnvelope`（`{ data, status?, summary?, … }`，判定同 `isToolResultEnvelope`）的结果原样透传，
+   *   `hints` 并入其 `stateHints`；`undefined` 为无返回值（Hub 对模型输出"已完成"）；其他值作为 `data`。
+   * - 关闭：结果始终整体作为 `data`，无返回值时为 `{ ok: true }`。
+   * @compat 默认关闭以保持既有行为（结果 `{ data }` 包装、无返回值时 `{ ok: true }`）。
+   */
+  resultEnvelope?: boolean
 }
 
 /** 注销全部工具与资源并取消订阅。可重复调用。 */
@@ -132,6 +146,25 @@ export function shallowEqual(a: unknown, b: unknown): boolean {
   const ra = a as Record<string, unknown>
   const rb = b as Record<string, unknown>
   return ka.every((k) => Object.prototype.hasOwnProperty.call(rb, k) && Object.is(ra[k], rb[k]))
+}
+
+function withHints(hints: string[] | undefined, extra: string[] | undefined): string[] | undefined {
+  if (!extra || extra.length === 0) return hints
+  return [...new Set([...(hints ?? []), ...extra])]
+}
+
+/** 结构化结果模式：信封原样透传（并入 hints），其他值（含 undefined）作为 `data`。 */
+function envelopeResult(value: unknown, hints: string[] | undefined): unknown {
+  if (isToolResultEnvelope(value)) {
+    const stateHints = withHints(value.stateHints, hints)
+    return stateHints === value.stateHints ? value : { ...value, stateHints }
+  }
+  return wrappedResult(value, hints)
+}
+
+/** 默认模式：始终用 `{ data }` 包装，避免返回值本身形如 `{ data }` 时被 SDK 拆开。 */
+function wrappedResult(value: unknown, hints: string[] | undefined): unknown {
+  return hints && hints.length > 0 ? { data: value, stateHints: hints } : { data: value }
 }
 
 function joinName(namespace: string | undefined, name: string): string {
@@ -227,6 +260,7 @@ export function exposeStore<S>(registrar: Registrar, adapter: StoreAdapter<S>, o
       const name = joinName(options.namespace, toolName)
       const action = actionNameOf(toolName, config)
       const enabledFn = config.enabled
+      const useEnvelope = config.resultEnvelope ?? options.resultEnvelope ?? false
       const initiallyEnabled = enabledFn ? evalEnabled(enabledFn, initial) : true
 
       const definition: ToolDefinition<unknown, unknown> = {
@@ -238,13 +272,16 @@ export function exposeStore<S>(registrar: Registrar, adapter: StoreAdapter<S>, o
           const args = config.args ? config.args(input) : config.input !== undefined ? [input] : []
           let returned = invoke({ tool: name, action, args, input, config })
           if (isPromiseLike(returned)) returned = await returned
+          if (useEnvelope) {
+            const value = config.result ? config.result(adapter.getState(), returned) : returned
+            return envelopeResult(value, config.hints)
+          }
           const data = config.result
             ? config.result(adapter.getState(), returned)
             : returned === undefined
               ? { ok: true }
               : returned
-          // 始终用 { data } 包装，避免返回值本身形如 { data } 时被 SDK 误拆。
-          return config.hints && config.hints.length > 0 ? { data, stateHints: config.hints } : { data }
+          return wrappedResult(data, config.hints)
         },
       }
       if (config.title !== undefined) definition.title = config.title

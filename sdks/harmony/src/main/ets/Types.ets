@@ -212,16 +212,20 @@ export interface ToolDefinition<I, O> {
   handler: ToolHandler<I, O>;
 }
 
-/** `ToolHandle.update` 的变更；未提供的字段保持不变（`annotations` / `outputSchema` 整体替换，不支持清除）。 */
+/**
+ * `ToolHandle.update` 的变更：未提供（或 `undefined`）的字段保持不变；显式给出 `null` 清除该声明
+ * （`title` / `annotations` / `outputSchema` / `activation` 删除，`inputSchema` 变为无参数，`risk` 恢复 `write`，
+ * `enabled` 恢复 true）。`description` 不可清除，`null` 时保持不变。
+ */
 export interface ToolChanges {
-  description?: string;
-  title?: string;
-  inputSchema?: string;
-  risk?: Risk;
-  annotations?: ToolAnnotations;
-  outputSchema?: string;
-  activation?: Activation;
-  enabled?: boolean;
+  description?: string | null;
+  title?: string | null;
+  inputSchema?: string | null;
+  risk?: Risk | null;
+  annotations?: ToolAnnotations | null;
+  outputSchema?: string | null;
+  activation?: Activation | null;
+  enabled?: boolean | null;
 }
 
 export interface ToolHandle {

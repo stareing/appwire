@@ -216,6 +216,39 @@ async fn upstream_is_aggregated_and_callable() {
     assert_eq!(texts(&r).last().unwrap(), "echo: back");
 }
 
+/// spec/hub-api.md 3.2：上游工具的结果只检查大小、不核对 `outputSchema`（即使 `output_validation = Reject`）。
+#[tokio::test]
+async fn upstream_results_are_size_checked_but_not_schema_checked() {
+    let host = Host::start(HostConfig {
+        upstreams: upstreams(&["echo"]),
+        limits: app_mcp_hub::LimitPolicy {
+            max_result_bytes: 1024,
+            ..app_mcp_hub::LimitPolicy::default()
+        },
+        output_validation: app_mcp_hub::OutputValidation::Reject,
+        ..config()
+    })
+    .await
+    .unwrap();
+    let client = duplex_client(&host).await;
+    wait_tools(&client, |n| has(n, "echo.typed") && has(n, "echo.blob")).await;
+
+    // 不符合声明的 outputSchema，仍原样转发
+    let r = call(&client, "echo.typed", json!({})).await.unwrap();
+    assert_ne!(r.is_error, Some(true), "{r:?}");
+    assert_eq!(r.structured_content, Some(json!({"n": "不是数字"})));
+
+    // 小结果照常返回，超过 max_result_bytes 时为 PAYLOAD_TOO_LARGE
+    let r = call(&client, "echo.blob", json!({"bytes": 10})).await.unwrap();
+    assert_ne!(r.is_error, Some(true), "{r:?}");
+    assert_eq!(texts(&r).last().map(String::len), Some(10));
+    let r = call(&client, "echo.blob", json!({"bytes": 4096})).await.unwrap();
+    assert_eq!(r.is_error, Some(true));
+    assert!(texts(&r).iter().any(|t| t.starts_with("PAYLOAD_TOO_LARGE")), "{:?}", texts(&r));
+    let echo = host.status().apps.into_iter().find(|a| a.app_id == "echo").unwrap();
+    assert_eq!(echo.too_large, 1);
+}
+
 #[tokio::test]
 async fn invalid_or_conflicting_upstream_names_are_skipped() {
     let manifest =

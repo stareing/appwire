@@ -51,6 +51,16 @@ describe('W3C WebMCP 声明式表单', () => {
     expect(agent).toBe(true)
   })
 
+  it('resultEnvelope：respondWith 的信封透传', async () => {
+    document.body.innerHTML = `<form toolname="send" tooldescription="发送" toolautosubmit></form>`
+    const form = document.querySelector('form')!
+    form.addEventListener('submit', (e) => {
+      ;(e as AgentSubmitEvent).respondWith(Promise.resolve({ data: null, status: 'noop', summary: '没有需要发送的内容' }))
+    })
+    detach = attachDom(app, { resultEnvelope: true })
+    await expect(app.call('send', {})).resolves.toEqual({ data: null, status: 'noop', summary: '没有需要发送的内容' })
+  })
+
   it('respondWith 的 promise 失败 → HANDLER_ERROR / 指定类别', async () => {
     document.body.innerHTML = `<form toolname="x" tooldescription="x" toolautosubmit></form>`
     const form = document.querySelector('form')!

@@ -60,6 +60,44 @@ void main() {
       expect(fake.toolOptions('order.submit'), 'null|null');
     });
 
+    test('update：未提供的字段保持不变，显式 null 清除，给值则替换', () {
+      final t = client.tool('doc.save',
+          description: '保存',
+          inputSchema: {'type': 'object', 'properties': <String, Object?>{}},
+          risk: Risk.destructive,
+          activation: Activation.foreground,
+          title: '保存文档',
+          annotations: const ToolAnnotations(readOnlyHint: false),
+          outputSchema: {'type': 'object'},
+          handler: (args, ctx) => null);
+      final before = t.spec;
+      t.update(description: '保存（新）');
+      expect(fake.toolDescription('doc.save'), '保存（新）');
+      expect(fake.toolOptions('doc.save'), '{"readOnlyHint":false}|{"type":"object"}');
+      expect(t.spec.inputSchema, before.inputSchema);
+      expect(
+          [t.spec.risk, t.spec.activation, t.spec.title, t.spec.annotations],
+          [before.risk, before.activation, before.title, before.annotations]);
+
+      t.update(title: '另存', activation: Activation.background, outputSchema: {'type': 'array'});
+      expect(t.spec.title, '另存');
+      expect(t.spec.activation, Activation.background);
+      expect(fake.toolOptions('doc.save'), '{"readOnlyHint":false}|{"type":"array"}');
+
+      t.update(title: null, activation: null, annotations: null, outputSchema: null, inputSchema: null, risk: null);
+      expect(fake.toolOptions('doc.save'), 'null|null');
+      expect(
+          [t.spec.title, t.spec.activation, t.spec.annotations, t.spec.outputSchema, t.spec.inputSchema],
+          [null, null, null, null, null]);
+      expect(t.spec.risk, Risk.write);
+      expect(t.spec.description, '保存（新）');
+
+      t.update(description: null); // description 不可清除
+      expect(t.spec.description, '保存（新）');
+      expect(() => t.update(title: 1), throwsArgumentError);
+      expect(t.spec.title, isNull);
+    });
+
     test('返回带业务状态的 ToolResult 经 am_call_complete_ex 完成', () async {
       client.tool('order.submit',
           description: '下单',
@@ -431,6 +469,34 @@ void main() {
     client.resource('broken', description: 'x', read: () => throw StateError('no'));
     idx = fake.read('broken');
     expect((jsonDecode(await fake.waitResult(idx)) as Map)['kind'], 'HANDLER_ERROR');
+  });
+
+  test('资源读取失败：UserActionRequiredError 带 reason / uri，ToolCallError 带详情（v12）', () async {
+    client.resource('session',
+        description: '会话',
+        read: () => throw UserActionRequiredError('登录已过期', reason: UserActionReason.login, uri: 'shop://login'));
+    client.resource('front', description: '前台', read: () async => throw UserActionRequiredError('请切到前台'));
+    client.resource('quota',
+        description: '额度', read: () => throw ToolCallError(ErrorKind.userRejected, '额度不足', details: {'quota': 0}));
+    client.resource('quota2',
+        description: '额度', read: () => throw ToolCallError(ErrorKind.userRejected, '坏详情', details: Object()));
+    expect(jsonDecode(await fake.waitResult(fake.read('session'))), {
+      'ok': false,
+      'kind': 'USER_ACTION_REQUIRED',
+      'message': '登录已过期',
+      'reason': 'login',
+      'uri': 'shop://login'
+    });
+    expect(jsonDecode(await fake.waitResult(fake.read('front'))),
+        {'ok': false, 'kind': 'USER_ACTION_REQUIRED', 'message': '请切到前台'});
+    expect(jsonDecode(await fake.waitResult(fake.read('quota'))), {
+      'ok': false,
+      'kind': 'USER_REJECTED',
+      'message': '额度不足',
+      'details': {'quota': 0}
+    });
+    expect(jsonDecode(await fake.waitResult(fake.read('quota2'))),
+        {'ok': false, 'kind': 'USER_REJECTED', 'message': '坏详情'});
   });
 
   test('scope dispose 注销其下全部工具', () async {

@@ -85,7 +85,7 @@ inline constexpr const char* foreground = "foreground";  ///< 需要把 App 切�
 inline constexpr const char* confirm = "confirm";        ///< 需要用户在 App 内确认
 }  // namespace user_action_reason
 
-/// handler 中抛出，以 USER_ACTION_REQUIRED 失败（app_mcp.h v11）：需要用户本人操作后才能继续。
+/// handler 中抛出，以 USER_ACTION_REQUIRED 失败（app_mcp.h v11；reader 中抛出同样带 reason / uri，v12）：需要用户本人操作后才能继续。
 /// message 面向用户；reason（见 user_action_reason）与 uri（App 内入口，如深链接）可选，缺省时不出现在错误的 data 中。
 class UserActionRequired : public ToolCallError {
 public:
@@ -670,6 +670,22 @@ public:
         detail::check(am_read_fail(r, kind.c_str(), message.c_str()));
     }
 
+    /// 失败完成并附带结构化详情（JSON 文本，app_mcp.h v12）。非法 JSON 抛出 Error 且读取仍待完成。
+    void fail(const std::string& kind, const std::string& message, const std::string& details_json) {
+        AmRead* r = take();
+        AmStatus s = am_read_fail_with_details(r, kind.c_str(), message.c_str(), details_json.c_str());
+        if (s == AM_ERR_INVALID_JSON) state_->put_back(r);
+        detail::check(s);
+    }
+
+    /// 以 USER_ACTION_REQUIRED 失败完成（app_mcp.h v12）；reason / uri 缺省时不出现在错误的 data 中。
+    void fail_user_action(const std::string& message, const std::optional<std::string>& reason = std::nullopt,
+                          const std::optional<std::string>& uri = std::nullopt) {
+        AmRead* r = take();
+        detail::check(am_read_fail_user_action(r, message.c_str(), detail::c_str_or_null(reason),
+                                               detail::c_str_or_null(uri)));
+    }
+
 private:
     AmRead* take() {
         AmRead* r = state_ ? state_->take() : nullptr;
@@ -692,40 +708,48 @@ using ResourceReader = std::function<void(Read)>;
 
 namespace detail {
 
-inline void tool_trampoline(void* ud, AmCall* raw) {
-    auto state = std::make_shared<Pending<AmCall>>(raw);
+/// 调用 / 读取共用的失败函数（C ABI 的 am_call_fail* 与 am_read_fail* 同签名、同语义）。
+template <typename Raw>
+struct FailOps {
+    AmStatus (*fail)(Raw*, const char*, const char*);
+    AmStatus (*fail_with_details)(Raw*, const char*, const char*, const char*);
+    AmStatus (*fail_user_action)(Raw*, const char*, const char*, const char*);
+};
+
+/// 运行 handler / reader；抛出异常时按类型失败完成（未完成的）调用或读取。
+/// @invariant UserActionRequired → *_fail_user_action；ToolCallError → *_fail_with_details（详情非法时退回不带详情）；
+///            其他异常 → HANDLER_ERROR。
+template <typename Raw, typename Invoke>
+void run_with_failure(const std::shared_ptr<Pending<Raw>>& state, const FailOps<Raw>& ops, Invoke&& invoke) {
     try {
-        (*static_cast<ToolHandler*>(ud))(Call(state));
+        invoke();
     } catch (const UserActionRequired& e) {
-        if (AmCall* c = state->take())
-            am_call_fail_user_action(c, e.what(), c_str_or_null(e.reason()), c_str_or_null(e.uri()));
+        if (Raw* r = state->take()) ops.fail_user_action(r, e.what(), c_str_or_null(e.reason()), c_str_or_null(e.uri()));
     } catch (const ToolCallError& e) {
-        if (AmCall* c = state->take()) {
+        if (Raw* r = state->take()) {
             const char* details = e.details_json() ? e.details_json()->c_str() : nullptr;
-            // 详情不是合法 JSON 时 call 不被消费：改为不带详情失败。
-            if (am_call_fail_with_details(c, e.kind().c_str(), e.what(), details) == AM_ERR_INVALID_JSON)
-                am_call_fail(c, e.kind().c_str(), e.what());
+            // 详情不是合法 JSON 时 call / read 不被消费：改为不带详情失败。
+            if (ops.fail_with_details(r, e.kind().c_str(), e.what(), details) == AM_ERR_INVALID_JSON)
+                ops.fail(r, e.kind().c_str(), e.what());
         }
     } catch (const std::exception& e) {
-        if (AmCall* c = state->take()) am_call_fail(c, "HANDLER_ERROR", e.what());
+        if (Raw* r = state->take()) ops.fail(r, "HANDLER_ERROR", e.what());
     } catch (...) {
-        if (AmCall* c = state->take()) am_call_fail(c, "HANDLER_ERROR", "未知异常");
+        if (Raw* r = state->take()) ops.fail(r, "HANDLER_ERROR", "未知异常");
     }
     state->dispatching.store(false);
 }
 
+inline void tool_trampoline(void* ud, AmCall* raw) {
+    auto state = std::make_shared<Pending<AmCall>>(raw);
+    static const FailOps<AmCall> ops{am_call_fail, am_call_fail_with_details, am_call_fail_user_action};
+    run_with_failure(state, ops, [&] { (*static_cast<ToolHandler*>(ud))(Call(state)); });
+}
+
 inline void read_trampoline(void* ud, AmRead* raw) {
     auto state = std::make_shared<Pending<AmRead>>(raw);
-    try {
-        (*static_cast<ResourceReader*>(ud))(Read(state));
-    } catch (const ToolCallError& e) {
-        if (AmRead* r = state->take()) am_read_fail(r, e.kind().c_str(), e.what());
-    } catch (const std::exception& e) {
-        if (AmRead* r = state->take()) am_read_fail(r, "HANDLER_ERROR", e.what());
-    } catch (...) {
-        if (AmRead* r = state->take()) am_read_fail(r, "HANDLER_ERROR", "未知异常");
-    }
-    state->dispatching.store(false);
+    static const FailOps<AmRead> ops{am_read_fail, am_read_fail_with_details, am_read_fail_user_action};
+    run_with_failure(state, ops, [&] { (*static_cast<ResourceReader*>(ud))(Read(state)); });
 }
 
 }  // namespace detail

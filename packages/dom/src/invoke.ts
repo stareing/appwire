@@ -4,12 +4,13 @@
  * 结果来源（先到先得）：
  * 1. 表单 submit 事件上的 `respondWith(promise)`（W3C WebMCP 声明式 API）；
  * 2. `data-mcp-result="事件名"`：元素上派发的 CustomEvent 的 `detail`；
- * 3. 以上都没有时，等待 settleMs 后返回 `{ ok: true }`。
+ * 3. 以上都没有时，等待 settleMs 后结束，结果为 `settled`（没有结果；如何呈现见 result.ts）。
  * 任何时候元素上派发 `mcp:error` 都会让调用失败。
  */
 
 import { ToolCallError } from '@app-mcp/web'
 import { ATTR, toErrorKind } from './attrs'
+import type { PageOutcome } from './result'
 
 export const ERROR_EVENT = 'mcp:error'
 
@@ -52,9 +53,9 @@ function customEvent(el: Element, type: string, detail: unknown): Event {
   return new Ctor(type, { bubbles: true, detail })
 }
 
-export function invoke(opts: InvokeOptions): Promise<unknown> {
+export function invoke(opts: InvokeOptions): Promise<PageOutcome> {
   const { element, action, resultEvent, signal, toolName } = opts
-  return new Promise<unknown>((resolve, reject) => {
+  return new Promise<PageOutcome>((resolve, reject) => {
     let done = false
     const cleanups: Array<() => void> = []
     const finish = (fn: () => void): void => {
@@ -63,7 +64,8 @@ export function invoke(opts: InvokeOptions): Promise<unknown> {
       for (const c of cleanups.splice(0)) c()
       fn()
     }
-    const ok = (v: unknown): void => finish(() => resolve(v))
+    const ok = (value: unknown): void => finish(() => resolve({ kind: 'result', value }))
+    const settled = (): void => finish(() => resolve({ kind: 'settled' }))
     const fail = (e: unknown): void => finish(() => reject(toToolError(e)))
     const listen = (target: EventTarget, type: string, fn: (e: Event) => void, capture = false): void => {
       target.addEventListener(type, fn, capture)
@@ -97,7 +99,7 @@ export function invoke(opts: InvokeOptions): Promise<unknown> {
         responded.then(ok, fail)
         return
       }
-      if (!resultEvent) later(() => ok({ ok: true }), opts.settleMs)
+      if (!resultEvent) later(settled, opts.settleMs)
     }
 
     if (action.kind === 'click') {

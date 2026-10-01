@@ -738,7 +738,8 @@ impl HubShared {
         }
     }
 
-    /// 转发给上游 MCP 服务器；结果原样返回，协议错误原样透传。
+    /// 转发给上游 MCP 服务器；结果只检查大小（不核对 `outputSchema`，上游自己负责其 schema，spec/hub-api.md 3.2）后原样返回，
+    /// 协议错误原样透传。
     async fn call_upstream(
         &self,
         name: &str,

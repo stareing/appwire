@@ -350,16 +350,7 @@ impl CallHandle {
         message: &str,
         details_json: Option<&str>,
     ) -> Result<(), NativeError> {
-        let err = ToolError::new(kind, message);
-        let err = match details_json {
-            None => err,
-            Some(text) => {
-                let details: Value = serde_json::from_str(text)
-                    .map_err(|e| NativeError::InvalidJson(e.to_string()))?;
-                err.with_details(details)
-            }
-        };
-        self.inner.finish(Err(err))
+        self.inner.finish(Err(tool_error_with_details(kind, message, details_json)?))
     }
     /// 以 `USER_ACTION_REQUIRED` 失败完成（spec/protocol.md 第 4 节）：需要用户本人操作后才能继续
     /// （登录过期、系统权限未授予、需切到前台、需在 App 内确认等）。
@@ -459,6 +450,41 @@ impl ReadHandle {
     pub fn fail(&self, kind: ErrorKind, message: &str) -> Result<(), NativeError> {
         self.inner.finish(Err(ToolError::new(kind, message)))
     }
+    /// 失败完成，附带结构化详情；语义同 [`CallHandle::fail_with_details`]（非法 JSON 返回
+    /// [`NativeError::InvalidJson`]，读取仍未完成）。
+    pub fn fail_with_details(
+        &self,
+        kind: ErrorKind,
+        message: &str,
+        details_json: Option<&str>,
+    ) -> Result<(), NativeError> {
+        self.inner.finish(Err(tool_error_with_details(kind, message, details_json)?))
+    }
+    /// 以 `USER_ACTION_REQUIRED` 失败完成；语义同 [`CallHandle::fail_user_action`]（`None` 的字段不出现在错误的 `data` 中）。
+    pub fn fail_user_action(
+        &self,
+        message: &str,
+        reason: Option<&str>,
+        uri: Option<&str>,
+    ) -> Result<(), NativeError> {
+        self.inner
+            .finish(Err(ToolError::user_action_required(message, reason, uri)))
+    }
+}
+
+/// 带可选详情（JSON 文本）的错误；`details_json` 非法时返回 [`NativeError::InvalidJson`]。
+fn tool_error_with_details(
+    kind: ErrorKind,
+    message: &str,
+    details_json: Option<&str>,
+) -> Result<ToolError, NativeError> {
+    let err = ToolError::new(kind, message);
+    let Some(text) = details_json else {
+        return Ok(err);
+    };
+    let details: Value =
+        serde_json::from_str(text).map_err(|e| NativeError::InvalidJson(e.to_string()))?;
+    Ok(err.with_details(details))
 }
 
 /// 已注册的工具。可克隆；`dispose` 幂等。丢弃句柄**不会**注销工具。
@@ -862,6 +888,10 @@ impl std::fmt::Debug for NativeClient {
 // 锁时再去拿 `CoreState` 锁，也不会在持锁时调用用户回调。
 
 mod runtime;
+/// 测试支持（只供本仓库测试，不属于公开 API 契约）。
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod test_support;
 
 use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;

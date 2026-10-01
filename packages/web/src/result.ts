@@ -2,7 +2,7 @@
  * handler 返回值 → 调用结果（spec/protocol.md 3.2）。驱动层（WASM 核心）与 Electron 渲染进程桥接共用。
  */
 
-import type { ContentAnnotations, ResultStatus } from './types'
+import type { ContentAnnotations, ResultStatus, ToolResultEnvelope } from './types'
 
 /** 规范化后的成功结果；可选字段只在给出时出现。 */
 export interface NormalizedResult {
@@ -33,7 +33,11 @@ const ENVELOPE_FIELDS: Readonly<Record<keyof NormalizedResult, (v: unknown) => b
   annotations: isOptional(isPlainObject),
 }
 
-function isEnvelope(result: unknown): result is NormalizedResult {
+/**
+ * 判断 handler 返回值是否按结构化结果（{@link ToolResultEnvelope}）解释：普通对象、含 `data` 键、其余键都属于信封且取值合法。
+ * 封装层（如 @app-mcp/store、@app-mcp/dom）据此决定原样透传还是整体包装为 `data`，与 SDK 的拆分规则保持一致。
+ */
+export function isToolResultEnvelope(result: unknown): result is ToolResultEnvelope<unknown> {
   if (!isPlainObject(result) || !('data' in (result as object))) return false
   return Object.entries(result as Record<string, unknown>).every(([key, value]) => {
     const check = ENVELOPE_FIELDS[key as keyof NormalizedResult] as ((v: unknown) => boolean) | undefined
@@ -55,7 +59,7 @@ export function toJsonValue(value: unknown): unknown {
  * @error 返回值无法序列化为 JSON 时抛出（调用方转为 `HANDLER_ERROR`）。
  */
 export function normalizeToolResult(result: unknown): NormalizedResult {
-  if (!isEnvelope(result)) return { data: toJsonValue(result) }
+  if (!isToolResultEnvelope(result)) return { data: toJsonValue(result) }
   const out: NormalizedResult = { data: toJsonValue(result.data) }
   if (result.stateHints && result.stateHints.length > 0) out.stateHints = result.stateHints.map(String)
   if (result.status !== undefined) out.status = result.status

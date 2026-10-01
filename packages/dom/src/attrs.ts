@@ -18,6 +18,8 @@ export const ATTR = {
   result: 'data-mcp-result',
   timeout: 'data-mcp-timeout',
   hints: 'data-mcp-hints',
+  /** 调用成功后的一句结论（结果的 `summary`），调用时读取。 */
+  summary: 'data-mcp-summary',
   key: 'data-mcp-key',
   label: 'data-mcp-label',
   row: 'data-mcp-row',

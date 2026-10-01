@@ -27,6 +27,8 @@ public class IntegrationTests(ITestOutputHelper output)
             "--invoke", "need.login", "--args", "{}",
             "--invoke", "need.front", "--args", "{}",
             "--read", "app.info",
+            "--read", "session",
+            "--read", "quota",
             "--timeout-ms", "20000");
         var addr = await host.ReadListeningAsync();
 
@@ -68,6 +70,11 @@ public class IntegrationTests(ITestOutputHelper output)
         using var needFront = client.RegisterTool("need.front", "需前台", (_, _) =>
             Task.FromException<object?>(new UserActionRequiredException("请切到前台")));
         using var info = client.RegisterResource("app.info", "信息", _ => Task.FromResult<object?>(new { app = "dotnet", lang = "c#" }));
+        // v12：reader 抛出 UserActionRequiredException / 带详情的 ToolCallException 时，reason / uri / 详情同样到达 Host
+        using var session = client.RegisterResource("session", "会话", _ =>
+            throw new UserActionRequiredException("登录已过期", UserActionReason.Login, "shop://login"));
+        using var quota = client.RegisterResource("quota", "额度", _ =>
+            Task.FromException<object?>(new ToolCallException(ToolErrorKind.UserRejected, "额度不足", new { quota = 0 })));
 
         client.Start();
         var lines = await host.WaitForExitAsync(TimeSpan.FromSeconds(30));
@@ -103,8 +110,13 @@ public class IntegrationTests(ITestOutputHelper output)
         Assert.Equal(-32019, (int?)front["code"]);
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""{"kind":"USER_ACTION_REQUIRED"}"""), front["data"]));
 
-        var read = json.Single(j => (string?)j["type"] == "read");
-        Assert.Equal("c#", (string?)read["result"]!["contents"]!["lang"]);
+        var reads = json.Where(j => (string?)j["type"] == "read").ToList();
+        Assert.Equal(3, reads.Count);
+        Assert.Equal("c#", (string?)reads[0]["result"]!["contents"]!["lang"]);
+        Assert.Equal(-32019, (int?)reads[1]["error"]!["code"]);
+        Assert.True(JsonNode.DeepEquals(
+            JsonNode.Parse("""{"kind":"USER_ACTION_REQUIRED","reason":"login","uri":"shop://login"}"""), reads[1]["error"]!["data"]));
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""{"kind":"USER_REJECTED","quota":0}"""), reads[2]["error"]!["data"]));
 
         Assert.NotEmpty(handlerThreads);
         Assert.All(handlerThreads, id => Assert.Equal(ui.ThreadId, id));

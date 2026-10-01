@@ -19,6 +19,7 @@ const detach = attachDom(appMcp /* 或任意 Registrar / Scope */, {
   root: document.body, // 观察范围，默认 document.body
   snapshot: true, // 是否登记精简快照资源；可写 { name: 'page.snapshot' } 改名，默认 'ui.snapshot'
   settleMs: 50, // 点击 / 提交后等待页面稳定的时间，默认 50 ms
+  resultEnvelope: false, // 页面结果按结构化结果解释（status / summary 等），默认 false，见"结果"
 })
 
 detach() // 断开观察并注销全部由 DOM 声明的工具、资源与 scope
@@ -42,6 +43,7 @@ detach() // 断开观察并注销全部由 DOM 声明的工具、资源与 scope
 | `data-mcp-result="事件名"` | 等待元素上派发的 `CustomEvent(事件名)`，以 `event.detail` 作为结果。 |
 | `data-mcp-timeout="毫秒"` | 等待结果的超时，默认 10000，超时返回 `TIMEOUT`。 |
 | `data-mcp-hints="a,b"` | 调用成功后作为 `stateHints` 返回（提示模型哪些资源可能已变化）。 |
+| `data-mcp-summary="已清空购物车"` | 调用成功后作为结果的 `summary` 返回（一句结论）；页面给出的结构化结果自带 `summary` 时以页面为准。 |
 | `data-mcp-key` / `data-mcp-label` | 集合条目，见下文。 |
 
 ### 工具注解与结果 schema
@@ -134,7 +136,24 @@ el.dispatchEvent(new CustomEvent('mcp:error', { detail: { kind: 'UNAUTHORIZED', 
 `kind` 为协议错误类别（`INVALID_INPUT`、`USER_REJECTED`、`UNAUTHORIZED` 等），未知类别归为 `HANDLER_ERROR`。
 `respondWith` 的 promise 以 `{ kind, message }` 拒绝时同样按类别返回。
 
-工具返回值总是 `{ data, stateHints? }` 形式（`stateHints` 来自 `data-mcp-hints`）。
+默认情况下工具返回值总是 `{ data, stateHints?, summary? }` 形式（`stateHints` 来自 `data-mcp-hints`，`summary` 来自
+`data-mcp-summary`），页面结果整体作为 `data`，即使它本身带 `data` 字段。
+
+`attachDom(app, { resultEnvelope: true })` 后，页面结果（`detail` 或 `respondWith` 的值）按结构化结果解释：
+
+- 形如 `{ data, status?, summary?, stateResource?, stateHints?, annotations? }`（判定同 `@app-mcp/web` 的
+  `isToolResultEnvelope`：含 `data` 键、其余键都属于信封且取值合法）→ 原样透传，`data-mcp-hints` 去重并入其 `stateHints`；
+- 没有结果（未声明 `data-mcp-result`、也没有调用 `respondWith`）→ 无返回值：没有 `summary` 且 `status` 为 `done` 时 Hub 对模型
+  输出"已完成"（不再是 `{ ok: true }`）；
+- 其他值 → 整体作为 `data`。
+
+```js
+btn.dispatchEvent(new CustomEvent('order-placed', {
+  detail: { data: { id }, status: 'pending', stateResource: 'order.state', summary: '订单已提交，等待支付' },
+}))
+```
+
+`status` 没有对应的属性：`pending` 需要配合 `stateResource`、`partial` / `noop` 取决于本次调用的实际情况，都应由页面在结果中给出。
 
 ### 集合（列表中的重复工具）
 

@@ -55,7 +55,10 @@
  * - v11（spec/protocol.md 第 4 节）：只新增函数 am_call_fail_user_action（以 USER_ACTION_REQUIRED 结束调用：需要用户
  *   本人操作，可带 reason / uri）。am_call_fail 的错误类别新增 "USER_ACTION_REQUIRED"（App 返回）与
  *   "POLICY_DENIED"（由 Host 的策略规则产生，App 一般不用）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v11 仍为 3。）
+ * - v12（spec/protocol.md 第 4 节）：只新增函数 am_read_fail_with_details、am_read_fail_user_action（资源读取失败时附带
+ *   结构化详情 / 以 USER_ACTION_REQUIRED 结束并带 reason / uri，语义与 am_call_fail_with_details、
+ *   am_call_fail_user_action 相同）。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v12 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -509,6 +512,13 @@ const char *am_read_resource_name(const AmRead *read);
 /* 成功完成并消费 read。返回 AM_ERR_INVALID_JSON 时不消费。 */
 AmStatus am_read_complete(AmRead *read, const char *contents_json);
 AmStatus am_read_fail(AmRead *read, const char *kind, const char *message);
+/* v12：失败完成并消费 read，附带结构化详情（同 am_call_fail_with_details：对象的字段合并进错误的 data，其他值放在
+ * data.details）。details_json 为 NULL 等同 am_read_fail；details_json 非法时返回 AM_ERR_INVALID_JSON 且不消费 read
+ * （可以重试）。read 为 NULL 时返回 AM_ERR_INVALID_ARGUMENT。 */
+AmStatus am_read_fail_with_details(AmRead *read, const char *kind, const char *message, const char *details_json);
+/* v12：以 USER_ACTION_REQUIRED 失败完成并消费 read（同 am_call_fail_user_action：reason / uri 为 NULL 时不出现在
+ * 错误的 data 中；非法 UTF-8 按替换字符处理）。总是消费 read。read 为 NULL 时返回 AM_ERR_INVALID_ARGUMENT。 */
+AmStatus am_read_fail_user_action(AmRead *read, const char *message, const char *reason, const char *uri);
 
 #ifdef __cplusplus
 }

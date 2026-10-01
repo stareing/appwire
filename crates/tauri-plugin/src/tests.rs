@@ -411,7 +411,34 @@ async fn annotations_output_schema_and_structured_results() {
     assert_eq!(native.status, ResultStatus::Noop);
     assert_eq!(native.summary.as_deref(), Some("没有需要清理的项"));
 
-    // 取值不合法的 status：调用以 HANDLER_ERROR 结束，页面收到 INVALID_RESULT。
+    // 信封字段取值不合法（@app-mcp/web 的 isToolResultEnvelope 规则）：与 web / node 一致，整个结果作为 data、状态 done。
+    let invalid = [
+        json!({ "data": 1, "status": "bogus" }),
+        json!({ "data": 1, "summary": null }),
+        json!({ "data": 1, "stateResource": 2 }),
+        json!({ "data": 1, "stateHints": "x" }),
+        json!({ "data": 1, "annotations": [] }),
+        json!({ "data": 1, "status": "pending", "summary": 5 }),
+    ];
+    for envelope in invalid {
+        let hub = fx.hub.clone();
+        let pending = tokio::spawn(async move {
+            hub.call_tool(CallRequest::new("annot.page.order", json!({})))
+                .await
+        });
+        let call = wait_event(&page, "call").await;
+        let mut op = json!({ "op": "call.result", "callId": call["callId"], "ok": true });
+        for (k, v) in envelope.as_object().into_iter().flatten() {
+            op[k] = v.clone();
+        }
+        assert_eq!(fx.op(&page, "main", "main", op), json!({ "ok": true }), "{envelope}");
+        let out = pending.await.expect("join").expect("调用");
+        assert_eq!(out.status, ResultStatus::Done, "{envelope}");
+        assert_eq!(out.summary, None, "{envelope}");
+        assert_eq!(out.result.expect("成功"), envelope);
+    }
+
+    // annotations 是对象但字段不合法：调用以 HANDLER_ERROR 结束，页面收到 INVALID_RESULT。
     let hub = fx.hub.clone();
     let pending = tokio::spawn(async move {
         hub.call_tool(CallRequest::new("annot.page.order", json!({})))
@@ -422,7 +449,7 @@ async fn annotations_output_schema_and_structured_results() {
         &page,
         "main",
         "main",
-        json!({ "op": "call.result", "callId": call["callId"], "ok": true, "data": 1, "status": "bogus" }),
+        json!({ "op": "call.result", "callId": call["callId"], "ok": true, "data": 1, "annotations": { "priority": "x" } }),
     );
     assert_eq!(reply["code"], "INVALID_RESULT");
     let err = pending.await.expect("join").expect("调用").result.expect_err("失败");
@@ -566,7 +593,8 @@ async fn scopes_resources_and_updates() {
     })
     .await;
     let hub = fx.hub.clone();
-    let reading = tokio::spawn(async move { hub.read_resource(&uri).await });
+    let uri1 = uri.clone();
+    let reading = tokio::spawn(async move { hub.read_resource(&uri1).await });
     let read = wait_event(&page, "read").await;
     assert_eq!(read["resourceId"], 20);
     let reply = fx.op(
@@ -579,6 +607,20 @@ async fn scopes_resources_and_updates() {
     let content = reading.await.expect("join").expect("读取");
     let text = content.text.unwrap_or_default();
     assert!(text.contains("\"items\":3"), "{text}");
+    // 读取失败：类别与详情（如 USER_ACTION_REQUIRED 的 reason / uri）原样传给 Host（app_mcp.h v12 / ReadHandle::fail_with_details）。
+    let hub = fx.hub.clone();
+    let reading = tokio::spawn(async move { hub.read_resource(&uri).await });
+    let read = wait_event(&page, "read").await;
+    fx.op(
+        &page,
+        "main",
+        "main",
+        json!({ "op": "read.result", "readId": read["readId"], "ok": false, "kind": "USER_ACTION_REQUIRED",
+                "message": "登录已过期", "details": { "reason": "login", "uri": "shop://login" } }),
+    );
+    let err = reading.await.expect("join").expect_err("读取失败").0;
+    assert_eq!((err.kind, err.message.as_str()), (ErrorKind::UserActionRequired, "登录已过期"));
+    assert_eq!(err.details, Some(json!({ "reason": "login", "uri": "shop://login" })));
     assert_eq!(
         fx.op(
             &page,

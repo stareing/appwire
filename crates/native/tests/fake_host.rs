@@ -10,6 +10,9 @@ use app_mcp_native::{
 };
 use serde_json::{Value, json};
 
+#[path = "../src/test_support.rs"]
+mod test_support;
+
 struct Add;
 impl ToolHandler for Add {
     fn invoke(&self, call: CallHandle) {
@@ -38,22 +41,14 @@ impl ResourceReader for State {
     }
 }
 
-fn fake_host_path() -> Option<std::path::PathBuf> {
-    // target/<profile>/deps/<test> → target/<profile>/examples/fake_host
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?.parent()?;
-    let path = dir
-        .join("examples")
-        .join(format!("fake_host{}", std::env::consts::EXE_SUFFIX));
-    path.exists().then_some(path)
+/// 新构建的 fake_host（`cargo test` 不刷新 examples/fake_host，见 src/test_support.rs）。
+fn fake_host() -> std::path::PathBuf {
+    test_support::fake_host_path().unwrap_or_else(|e| panic!("{e}"))
 }
 
 #[test]
 fn native_client_against_fake_host() {
-    let Some(bin) = fake_host_path() else {
-        eprintln!("未找到 fake_host 可执行文件，跳过（先运行 cargo build --example fake_host）");
-        return;
-    };
+    let bin = fake_host();
     let mut child = Command::new(bin)
         .args(["--invoke", "math.add", "--args", r#"{"a":2,"b":3}"#])
         .args([
@@ -136,10 +131,7 @@ impl ToolHandler for Submit {
 /// 工具选项（MCP 注解、输出 schema）与完整结果（状态、摘要、内容标注）原样到达 Host。
 #[test]
 fn tool_options_and_call_result_reach_host() {
-    let Some(bin) = fake_host_path() else {
-        eprintln!("未找到 fake_host 可执行文件，跳过（先运行 cargo build --example fake_host）");
-        return;
-    };
+    let bin = fake_host();
     let mut child = Command::new(bin)
         .args(["--tool-info", "--invoke", "order.submit", "--timeout-ms", "8000"])
         .stdout(Stdio::piped())

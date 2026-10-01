@@ -1,6 +1,8 @@
 //! 生命周期集成测试：休眠释放运行时、唤醒快速恢复、on-demand、连接超时、handler 持有与错误详情。
 
 mod common;
+#[path = "../src/test_support.rs"]
+mod test_support;
 
 use std::io::{BufRead, BufReader, Lines};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -50,20 +52,9 @@ impl ClientListener for Listener {
     }
 }
 
-fn fake_host_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?.parent()?;
-    let path = dir
-        .join("examples")
-        .join(format!("fake_host{}", std::env::consts::EXE_SUFFIX));
-    path.exists().then_some(path)
-}
-
-fn spawn_fake_host(args: &[&str]) -> Option<(Child, Lines<BufReader<ChildStdout>>, String)> {
-    let Some(bin) = fake_host_path() else {
-        eprintln!("未找到 fake_host 可执行文件，跳过（先运行 cargo build --example fake_host）");
-        return None;
-    };
+fn spawn_fake_host(args: &[&str]) -> (Child, Lines<BufReader<ChildStdout>>, String) {
+    // 新构建的 fake_host（`cargo test` 不刷新 examples/fake_host，见 src/test_support.rs）。
+    let bin = test_support::fake_host_path().unwrap_or_else(|e| panic!("{e}"));
     let mut child = Command::new(bin)
         .args(args)
         .stdout(Stdio::piped())
@@ -75,7 +66,7 @@ fn spawn_fake_host(args: &[&str]) -> Option<(Child, Lines<BufReader<ChildStdout>
         .strip_prefix("LISTENING ")
         .expect("LISTENING 行")
         .to_owned();
-    Some((child, lines, addr))
+    (child, lines, addr)
 }
 
 fn next_json(lines: &mut Lines<BufReader<ChildStdout>>) -> Value {
@@ -85,7 +76,7 @@ fn next_json(lines: &mut Lines<BufReader<ChildStdout>>) -> Value {
 
 #[test]
 fn idle_sleep_wake_resume_and_sleep_again() {
-    let Some((mut child, mut lines, addr)) = spawn_fake_host(&[
+    let (mut child, mut lines, addr) = spawn_fake_host(&[
         "--invoke",
         "math.add",
         "--args",
@@ -101,9 +92,7 @@ fn idle_sleep_wake_resume_and_sleep_again() {
         "100",
         "--timeout-ms",
         "15000",
-    ]) else {
-        return;
-    };
+    ]);
 
     let mut config = NativeConfig::new("fake-test", "Fake");
     config.host_url = format!("ws://{addr}");
@@ -165,11 +154,8 @@ fn idle_sleep_wake_resume_and_sleep_again() {
 
 #[test]
 fn rejected_sleep_is_retried() {
-    let Some((mut child, mut lines, addr)) =
-        spawn_fake_host(&["--await-sleep", "--reject-sleep", "100", "--timeout-ms", "10000"])
-    else {
-        return;
-    };
+    let (mut child, mut lines, addr) =
+        spawn_fake_host(&["--await-sleep", "--reject-sleep", "100", "--timeout-ms", "10000"]);
     let mut config = NativeConfig::new("fake-test", "Fake");
     config.host_url = format!("ws://{addr}");
     config.lifecycle.mode = LifecycleMode::Idle;

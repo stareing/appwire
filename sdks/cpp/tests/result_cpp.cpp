@@ -3,7 +3,8 @@
 // 用法：result_cpp_test <fake_host 可执行文件>
 // 检查：带注解 + outputSchema 注册后 Host 收到的 ToolInfo（fake_host --tool-info）；
 //       以 pending + state_resource + summary + 内容注解完成后 Host 收到的结果；普通返回值不变（回归）；
-//       USER_ACTION_REQUIRED（v11）：抛出 UserActionRequired 带 reason / uri、Call::fail_user_action 不带时 data 只有 kind。
+//       USER_ACTION_REQUIRED（v11）：抛出 UserActionRequired 带 reason / uri、Call::fail_user_action 不带时 data 只有 kind；
+//       资源读取失败（v12）：reader 抛出 UserActionRequired 带 reason / uri、Read::fail 带详情（非法详情可重试）。
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -38,7 +39,7 @@ int main(int argc, char** argv) {
     }
     std::string cmd = std::string("\"") + argv[1] +
                       "\" --addr 127.0.0.1:0 --tool-info --invoke order.submit --invoke plain"
-                      " --invoke login --invoke front --timeout-ms 15000";
+                      " --invoke login --invoke front --read session --read quota --timeout-ms 15000";
     FILE* host = popen(cmd.c_str(), "r");
     if (!host) return 1;
 
@@ -90,8 +91,20 @@ int main(int argc, char** argv) {
     auto front = client.register_tool("front", "需前台", [](app_mcp::Call call) {
         call.fail_user_action("请切到前台");
     }, plain_options);
+    auto session = client.register_resource("session", "会话", [](app_mcp::Read) {
+        throw app_mcp::UserActionRequired("登录已过期", std::string(app_mcp::user_action_reason::login),
+                                          std::string("shop://login"));
+    });
+    auto quota = client.register_resource("quota", "额度", [](app_mcp::Read read) {
+        try {
+            read.fail("USER_REJECTED", "额度不足", "{bad");
+        } catch (const app_mcp::Error&) {
+            read.fail("USER_REJECTED", "额度不足", R"({"quota":0})");
+        }
+    });
     client.start();
 
+    bool session_ok = false, quota_ok = false;
     bool info_ok = false, plain_info_ok = false, result_ok = false, plain_ok = false, login_ok = false, front_ok = false;
     int progress_lines = 0;
     bool progress_ok = false;
@@ -120,6 +133,13 @@ int main(int argc, char** argv) {
             login_ok = has(R"("error":{"code":-32019,"data":{"kind":"USER_ACTION_REQUIRED","reason":"login",)"
                            R"("uri":"shop://login"},"message":"登录已过期"})");
         }
+        if (has("\"type\":\"read\"") && has("\"session\"")) {
+            session_ok = has(R"("error":{"code":-32019,"data":{"kind":"USER_ACTION_REQUIRED","reason":"login",)"
+                             R"("uri":"shop://login"},"message":"登录已过期"})");
+        }
+        if (has("\"type\":\"read\"") && has("\"quota\"")) {
+            quota_ok = has(R"("data":{"kind":"USER_REJECTED","quota":0})") && has(R"("message":"额度不足")");
+        }
         if (has("\"type\":\"invoke\"") && has("\"front\"")) {
             front_ok = has(R"("error":{"code":-32019,"data":{"kind":"USER_ACTION_REQUIRED"},"message":"请切到前台"})");
         }
@@ -135,6 +155,8 @@ int main(int argc, char** argv) {
     EXPECT(plain_ok);
     EXPECT(login_ok);
     EXPECT(front_ok);
+    EXPECT(session_ok);
+    EXPECT(quota_ok);
     EXPECT(progress_ok);
     EXPECT(progress_lines == 2);
     int rc = g_failed == 0 ? 0 : 1;

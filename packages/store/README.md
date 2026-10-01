@@ -158,6 +158,7 @@ exposeStore(appMcp, { getState: () => state, subscribe: (l) => emitter.on('chang
 | `actions[name].enabled` | `(state) => boolean`，状态变化时重算，只有结果变化才 `update({ enabled })` |
 | `actions[name].result` | `(state, returned) => 结果`，state 为 action 执行后的最新状态 |
 | `actions[name].hints` | 结果附带的 stateHints |
+| `resultEnvelope` | 可选，默认 `false`。为 `true` 时结果按结构化结果解释（见下文"结构化结果"）；`actions[name].resultEnvelope` 可逐个覆盖 |
 | `resources[name].select` | 从 state 选出资源内容 |
 | `resources[name].equals` | 自定义相等判断；缺省浅比较（Pinia 为 JSON 快照比较） |
 
@@ -171,7 +172,34 @@ exposeStore(appMcp, { getState: () => state, subscribe: (l) => emitter.on('chang
 - 调用时会再次检查 `enabled(state)`，为 false 则抛出 `TOOL_DISABLED`（防止 Host 尚未收到禁用通知时的竞态）。
   `enabled` 自身抛出异常时视为不可用。
 - action 抛出的 `ToolCallError` 原样透传；其他异常由 SDK 归为 `HANDLER_ERROR`。
-- 默认结果为 action 的返回值（`undefined` 时为 `{ ok: true }`）。结果（含 `result` 选择器的返回值）始终整体作为 `data`、附带 `hints`，不会被当作结构化结果拆开。**结果必须可 JSON 序列化**：若 action 返回函数、
+- 默认结果为 action 的返回值（`undefined` 时为 `{ ok: true }`）。结果（含 `result` 选择器的返回值）始终整体作为 `data`、附带 `hints`，不会被当作结构化结果拆开（开启 `resultEnvelope` 时除外，见下文）。**结果必须可 JSON 序列化**：若 action 返回函数、
   类实例、循环引用等（例如 Zustand 的 action 返回一个 unsubscribe 函数，或 Pinia 返回响应式对象），
   请用 `result` 选项挑出需要的数据，否则 SDK 会以 `HANDLER_ERROR` 报告序列化失败或丢失字段。
 - 注册名称重复等错误会在 `expose*` 时同步抛出，已注册的部分会被回滚；action 名在 state / store 上不存在时同样立即报错。
+
+## 结构化结果（`resultEnvelope`）
+
+默认行为保持不变。设 `resultEnvelope: true`（整个 `expose*` 或单个 action）后，action 返回值或 `result` 选择器的返回值：
+
+- 形如结构化结果 `{ data, status?, summary?, stateResource?, stateHints?, annotations? }`（判定规则与 `@app-mcp/web` 的
+  `isToolResultEnvelope` 相同：含 `data` 键、其余键都属于信封且取值合法）→ 原样交给 SDK，`hints` 去重并入其 `stateHints`；
+- `undefined` → 无返回值：没有 `summary` 且 `status` 为 `done` 时 Hub 对模型输出"已完成"（不再是 `{ ok: true }`）；
+- 其他值 → 整体作为 `data`。
+
+注意：开启后返回值本身恰好形如 `{ data }`（如 `{ data: 1 }`）会被当作信封拆开，此时请用 `result` 选择器包一层 `{ data: 原值 }`。
+
+```ts
+exposeZustand(appMcp, useCart, {
+  namespace: 'cart',
+  resultEnvelope: true,
+  actions: {
+    clear: { description: '清空购物车' },                          // 无返回值 → "已完成"
+    checkout: {
+      description: '提交订单',
+      result: (_s, order) => ({ data: order, status: 'pending', stateResource: 'cart.order', summary: '订单已提交，等待支付' }),
+    },
+  },
+})
+```
+
+字段含义见 [`spec/protocol.md` 3.2](https://github.com/stareing/appwire/blob/main/spec/protocol.md)。

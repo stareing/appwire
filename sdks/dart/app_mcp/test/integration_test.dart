@@ -2,8 +2,8 @@
 //
 // 先构建：
 //   cargo build -p app-mcp-c
-//   cargo build -p app-mcp-native --example fake_host
-// 路径可用环境变量 APP_MCP_NATIVE_PATH、APP_MCP_FAKE_HOST 覆盖；找不到时跳过。
+// fake_host 由测试先用 cargo 构建（与 Python / .NET / C++ 测试一致，避免用到旧的 examples/fake_host）。
+// 路径可用环境变量 APP_MCP_NATIVE_PATH、APP_MCP_FAKE_HOST（跳过构建）覆盖；找不到或无法构建时跳过。
 @Tags(['integration'])
 library;
 
@@ -22,8 +22,26 @@ String? _existing(String? path) => path != null && File(path).existsSync() ? pat
 
 final String? nativePath = _existing(Platform.environment['APP_MCP_NATIVE_PATH']) ??
     _existing('$_targetDir/debug/${defaultNativeLibraryName()}');
-final String? fakeHostPath = _existing(Platform.environment['APP_MCP_FAKE_HOST']) ??
-    _existing('$_targetDir/debug/examples/fake_host${Platform.isWindows ? '.exe' : ''}');
+final String? fakeHostPath = _existing(Platform.environment['APP_MCP_FAKE_HOST']) ?? _buildFakeHost();
+
+/// 构建 fake_host 并返回路径；cargo 不可用或构建失败时返回 null（测试跳过，原因写到 stderr）。
+/// @why 只找已有的 examples/fake_host 可能拿到旧版本（cargo test 不刷新它），协议更新后测试莫名失败。
+String? _buildFakeHost() {
+  final ProcessResult r;
+  try {
+    r = Process.runSync('cargo', ['build', '-q', '-p', 'app-mcp-native', '--example', 'fake_host'],
+        workingDirectory: '${Directory.current.path}/../../..',
+        environment: {'CARGO_TARGET_DIR': _targetDir});
+  } on ProcessException catch (e) {
+    stderr.writeln('无法运行 cargo 构建 fake_host：$e');
+    return null;
+  }
+  if (r.exitCode != 0) {
+    stderr.writeln('cargo 构建 fake_host 失败：${r.stderr}');
+    return null;
+  }
+  return _existing('$_targetDir/debug/examples/fake_host${Platform.isWindows ? '.exe' : ''}');
+}
 
 /// 运行中的 fake host。
 final class FakeHost {
@@ -83,7 +101,7 @@ void main() {
   final skip = nativePath == null
       ? '找不到原生库（先 cargo build -p app-mcp-c）'
       : fakeHostPath == null
-          ? '找不到 fake_host（先 cargo build -p app-mcp-native --example fake_host）'
+          ? '找不到 fake_host（cargo build -p app-mcp-native --example fake_host 失败，见 stderr）'
           : false;
 
   test('注册工具与资源，由 fake host 调用', () async {

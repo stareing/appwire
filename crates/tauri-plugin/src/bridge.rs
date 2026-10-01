@@ -181,22 +181,22 @@ enum PageOp {
 /// `{ok: false, kind, message, details?}`（`details` 为对象时随错误的 `data` 发给 Host，如 `USER_ACTION_REQUIRED` 的
 /// `reason` / `uri`）。
 ///
-/// @compat `status` / `annotations` 先按原始 JSON 接收、在 [`Outcome::call_result`] 中转换：取值不合法时
-/// 调用以 `HANDLER_ERROR` 结束，而不是整条消息解析失败（那样调用会一直挂到超时）。
+/// @compat 信封字段先按原始 JSON 接收（出现的 `null` 也保留），在 [`Outcome::call_result`] 中按 @app-mcp/web 的规则判断：
+/// 取值不合法时整个结果作为 `data`（与 web / node 一致），而不是整条消息解析失败（那样调用会一直挂到超时）。
 #[derive(Debug, Deserialize)]
 struct Outcome {
     ok: bool,
     #[serde(default)]
     data: Option<Value>,
-    #[serde(default, rename = "stateHints")]
-    state_hints: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, rename = "stateHints", deserialize_with = "present")]
+    state_hints: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
     status: Option<Value>,
-    #[serde(default, rename = "stateResource")]
-    state_resource: Option<String>,
-    #[serde(default)]
-    summary: Option<String>,
-    #[serde(default)]
+    #[serde(default, rename = "stateResource", deserialize_with = "present")]
+    state_resource: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    summary: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
     annotations: Option<Value>,
     #[serde(default)]
     kind: Option<String>,
@@ -207,33 +207,89 @@ struct Outcome {
     details: Option<Value>,
 }
 
+/// 出现的字段（含 `null`）为 `Some`；缺省（`#[serde(default)]`）为 `None`。
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
+}
+
+/// 结果状态的合法取值（spec/protocol.md 3.2）。
+const RESULT_STATUSES: [&str; 4] = ["done", "pending", "partial", "noop"];
+
+/// 信封字段的取值是否合法；与 @app-mcp/web 的 `ENVELOPE_FIELDS`（packages/web/src/result.ts，`isToolResultEnvelope`）
+/// 为同一规则：缺省或 stateHints 为数组、status 为合法取值、stateResource / summary 为字符串、annotations 为对象。
+fn envelope_field_valid(key: &str, value: Option<&Value>) -> bool {
+    let Some(v) = value else { return true };
+    match key {
+        "stateHints" => v.is_array(),
+        "status" => v.as_str().is_some_and(|s| RESULT_STATUSES.contains(&s)),
+        "stateResource" | "summary" => v.is_string(),
+        "annotations" => v.is_object(),
+        _ => false,
+    }
+}
+
 impl Outcome {
     fn data_json(&self) -> String {
         self.data.as_ref().unwrap_or(&Value::Null).to_string()
     }
 
-    /// 成功结果。
+    /// 信封字段（键名 → 原始值）。
+    fn envelope_fields(&self) -> [(&'static str, Option<&Value>); 5] {
+        [
+            ("stateHints", self.state_hints.as_ref()),
+            ("status", self.status.as_ref()),
+            ("stateResource", self.state_resource.as_ref()),
+            ("summary", self.summary.as_ref()),
+            ("annotations", self.annotations.as_ref()),
+        ]
+    }
+
+    /// 成功结果：信封合法时拆开；任一字段取值不合法时整个结果（`data` 与出现的信封字段）作为 `data`、状态 `done`。
     ///
-    /// @error `status` / `annotations` 取值不合法时返回说明。
+    /// @error `annotations` 是对象但字段不合法时返回说明（与 node 原生层拒绝时一样以 `HANDLER_ERROR` 结束）。
     fn call_result(self) -> Result<CallResult, String> {
-        let status = match self.status {
-            None | Some(Value::Null) => ResultStatus::Done,
-            Some(v) => serde_json::from_value::<ResultStatus>(v)
+        let fields = self.envelope_fields();
+        if !fields.iter().all(|(k, v)| envelope_field_valid(k, *v)) {
+            let mut whole = serde_json::Map::new();
+            whole.insert("data".into(), self.data.clone().unwrap_or(Value::Null));
+            for (k, v) in fields {
+                if let Some(v) = v {
+                    whole.insert(k.into(), v.clone());
+                }
+            }
+            return Ok(CallResult { data_json: Some(Value::Object(whole).to_string()), ..CallResult::default() });
+        }
+        let status = match self.status.as_ref().and_then(Value::as_str) {
+            None => ResultStatus::Done,
+            Some(s) => serde_json::from_value::<ResultStatus>(Value::String(s.to_owned()))
                 .map_err(|e| format!("结果的 status 不合法（应为 done / pending / partial / noop）：{e}"))?,
         };
-        let annotations = match self.annotations {
-            None | Some(Value::Null) => None,
-            Some(v) => Some(
-                serde_json::from_value::<ContentAnnotations>(v)
-                    .map_err(|e| format!("结果的 annotations 不合法：{e}"))?,
-            ),
+        let annotations = self
+            .annotations
+            .map(|v| {
+                serde_json::from_value::<ContentAnnotations>(v).map_err(|e| format!("结果的 annotations 不合法：{e}"))
+            })
+            .transpose()?;
+        let state_hints = match self.state_hints {
+            Some(Value::Array(items)) => items
+                .into_iter()
+                .map(|h| match h {
+                    Value::String(s) => s,
+                    other => other.to_string(),
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let text = |v: Option<Value>| match v {
+            Some(Value::String(s)) => Some(s),
+            _ => None,
         };
         Ok(CallResult {
             data_json: Some(self.data.unwrap_or(Value::Null).to_string()),
-            state_hints: self.state_hints.unwrap_or_default(),
+            state_hints,
             status,
-            state_resource: self.state_resource,
-            summary: self.summary,
+            state_resource: text(self.state_resource),
+            summary: text(self.summary),
             annotations,
         })
     }
@@ -763,7 +819,7 @@ impl Session {
                     read.complete(&outcome.data_json())
                 } else {
                     let (kind, message) = outcome.error();
-                    read.fail(kind, &message)
+                    read.fail_with_details(kind, &message, outcome.details_json().as_deref())
                 };
                 match done {
                     Err(NativeError::InvalidJson(e)) => {

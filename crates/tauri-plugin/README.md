@@ -80,7 +80,9 @@ appMcp.tool('cart.clear', { description: '清空购物车', handler: () => cart.
   `status` 为 `ResultStatus::{Done, Pending, Partial, Noop}`（缺省 `Done`），`annotations` 为 `ContentAnnotations`。
   `data_json` 为 `None`（无返回值）且没有 `summary`、状态为 `Done` 时，Hub 对模型输出固定文本"已完成"。
 - **页面工具**：与 `@app-mcp/web` 相同（`annotations`、`outputSchema`，handler 返回 `{ data, status?, stateResource?, summary?, annotations? }`），
-  插件原样转给 Rust 侧；结果中的 `status` / `annotations` 取值不合法时该次调用以 `HANDLER_ERROR` 结束。
+  插件原样转给 Rust 侧；信封字段取值不合法（如未知的 `status`）时与 web / node 一致，整个返回值作为 `data`（状态 `done`）；
+  `annotations` 是对象但字段不合法时该次调用以 `HANDLER_ERROR` 结束。资源读取失败时页面错误的 `details`（如
+  `USER_ACTION_REQUIRED` 的 `reason` / `uri`）同样随错误发给 Host。
 
 ```rust
 use tauri_plugin_app_mcp::{CallResult, ResultStatus, ToolAnnotations, ToolOptions};

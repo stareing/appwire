@@ -56,6 +56,9 @@ def submit() -> ToolResult:
   when `risk` is also given, each declared field wins and missing ones are derived from `risk`. AppWire does not
   allow or block calls based on them.
 - `output_schema` (dict or JSON text) is the result's JSON Schema; the Hub wraps a non-object root as `{result: …}`.
+- `handle.update(...)` changes the declaration: an omitted keyword keeps the current value, an explicit `None` clears
+  it (`title`, `activation`, `annotations`, `output_schema` are removed; `risk=None` restores the default,
+  `input_schema=None` means no parameters). `description` cannot be cleared.
 - Returning a plain value is a `done` result. Return `ToolResult` for a status, summary or content annotations
   (`ContentAnnotations`, or a dict with `audience` / `priority` / `last_modified`). With no return value (`None`,
   no `summary`, status `done`) the Hub shows the model the fixed text "已完成" ("done") instead of `null`.

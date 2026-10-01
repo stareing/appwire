@@ -54,7 +54,7 @@ appMcp.tool('order.cancel', {
 - **结构化结果**：handler 返回的对象含 `data` 键、且其余键都属于 `stateHints` / `status` / `stateResource` / `summary` / `annotations`
   并取值合法时，按结构化结果拆开；否则整个返回值作为 `data`。`status`：`done`（缺省）/ `pending`（已受理、尚未完成，附
   `stateResource`）/ `partial`（只完成一部分，用 `summary` 说明）/ `noop`（没有改动）。`annotations` 是结果内容的标注
-  （`audience` / `priority` / `lastModified`）。
+  （`audience` / `priority` / `lastModified`）。封装层可用导出的 `isToolResultEnvelope(value)` 按同一规则判断。
 - **无返回值**（`undefined` / `null`）且没有 `summary` 时，Host 对模型输出"已完成"，而不是 `null`。
 - Host 还会对调用限流、限制参数 / 结果 / 资源大小，超出时 Agent 收到 `RATE_LIMITED` / `PAYLOAD_TOO_LARGE`
   （参数超限与被限流的调用不会转发到页面；结果超限时 handler 已执行，结果不返回）。上限见 crates/host/README.md。

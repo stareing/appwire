@@ -242,6 +242,57 @@ def test_tool_annotations_and_output_schema(client):
         client.add_tool(lambda: None, "bad2", "坏", output_schema="{")
 
 
+def test_update_omitted_keeps_none_clears(client):
+    handle = client.add_tool(
+        lambda: None,
+        "doc.save",
+        "保存",
+        input_schema={"type": "object", "properties": {"x": {"type": "string"}}},
+        risk="destructive",
+        activation="foreground",
+        title="保存文档",
+        annotations={"read_only_hint": False},
+        output_schema={"type": "object"},
+    )
+    before = handle._spec
+    # 未给出的字段保持不变
+    handle.update(description="保存（新）")
+    s = handle._spec
+    assert s.description == "保存（新）"
+    assert (s.input_schema_json, s.risk, s.activation, s.title, s.annotations, s.output_schema_json) == (
+        before.input_schema_json,
+        before.risk,
+        before.activation,
+        before.title,
+        before.annotations,
+        before.output_schema_json,
+    )
+    # 给出值则替换
+    handle.update(title="另存", activation="background", risk="read", annotations={"idempotent_hint": True})
+    s = handle._spec
+    assert (s.title, s.activation, s.risk) == ("另存", ffi.Activation.BACKGROUND, ffi.Risk.READ)
+    assert s.annotations == ffi.ToolAnnotations(idempotent_hint=True)
+    # 显式 None 清除声明
+    handle.update(title=None, activation=None, risk=None, annotations=None, output_schema=None, input_schema=None)
+    s = handle._spec
+    assert (s.title, s.activation, s.risk, s.annotations, s.output_schema_json, s.input_schema_json) == (
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    assert s.description == "保存（新）"
+
+
+def test_update_keeps_enabled_state(client):
+    handle = client.add_tool(lambda: None, "doc.close", "关闭")
+    handle.set_enabled(False)
+    handle.update(title="关闭文档")
+    assert handle._spec.enabled is False
+
+
 def test_none_result_is_null(client):
     call = FakeCall({})
     adapter(client, lambda: None).invoke(call)

@@ -270,6 +270,14 @@ fn null_pointers_are_invalid_argument() {
         unsafe { am_read_fail(ptr::null_mut(), ptr::null(), ptr::null()) },
         AmStatus::InvalidArgument
     );
+    assert_eq!(
+        unsafe { am_read_fail_with_details(ptr::null_mut(), ptr::null(), ptr::null(), ptr::null()) },
+        AmStatus::InvalidArgument
+    );
+    assert_eq!(
+        unsafe { am_read_fail_user_action(ptr::null_mut(), ptr::null(), ptr::null(), ptr::null()) },
+        AmStatus::InvalidArgument
+    );
     assert!(last_error().contains("read"));
     // 释放函数接受 NULL。
     unsafe {
@@ -398,6 +406,9 @@ fn header_consistency() {
         "am_call_progress",
         // v11
         "am_call_fail_user_action",
+        // v12
+        "am_read_fail_with_details",
+        "am_read_fail_user_action",
     ];
     // 收集头文件中形如 `am_xxx(` 的声明。
     let mut declared = Vec::new();
@@ -1114,13 +1125,6 @@ fn call_result_is_read_up_to_struct_size() {
     assert_eq!(unsafe { am_call_complete_ex(ptr::null_mut(), &full) }, AmStatus::InvalidArgument);
 }
 
-fn fake_host_path() -> Option<std::path::PathBuf> {
-    // target/<profile>/deps/<test> → target/<profile>/examples/fake_host
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?.parent()?;
-    let path = dir.join("examples").join(format!("fake_host{}", std::env::consts::EXE_SUFFIX));
-    path.exists().then_some(path)
-}
 
 /// `order.submit`：以 pending + stateResource + summary + 内容注解完成；`plain`：普通返回值（回归）。
 unsafe extern "C" fn submit_tool(_ud: *mut c_void, call: *mut AmCall) {
@@ -1177,20 +1181,39 @@ unsafe extern "C" fn submit_tool(_ud: *mut c_void, call: *mut AmCall) {
     let _ = unsafe { am_call_complete_ex(call, &result) };
 }
 
+/// `session`：读取以 USER_ACTION_REQUIRED（reason / uri）失败；`quota`：带详情失败（非法详情不消费 read，可重试）。
+unsafe extern "C" fn failing_reader(_ud: *mut c_void, read: *mut AmRead) {
+    let name = unsafe { CStr::from_ptr(am_read_resource_name(read)) }.to_string_lossy().into_owned();
+    if name == "session" {
+        let msg = CString::new("登录已过期，请在 App 内重新登录").unwrap_or_default();
+        let reason = CString::new("login").unwrap_or_default();
+        let uri = CString::new("shop://login").unwrap_or_default();
+        let _ = unsafe { am_read_fail_user_action(read, msg.as_ptr(), reason.as_ptr(), uri.as_ptr()) };
+        return;
+    }
+    let kind = CString::new("USER_REJECTED").unwrap_or_default();
+    let msg = CString::new("额度不足").unwrap_or_default();
+    let bad = CString::new("{bad").unwrap_or_default();
+    if unsafe { am_read_fail_with_details(read, kind.as_ptr(), msg.as_ptr(), bad.as_ptr()) } != AmStatus::InvalidJson {
+        let _ = unsafe { am_read_fail(read, ptr::null(), ptr::null()) };
+        return;
+    }
+    let details = CString::new(r#"{"quota":0}"#).unwrap_or_default();
+    let _ = unsafe { am_read_fail_with_details(read, kind.as_ptr(), msg.as_ptr(), details.as_ptr()) };
+}
+
 /// 端到端：经 C 接口注册带注解 + outputSchema 的工具、以结构化结果完成调用，核对 fake_host 收到的内容。
 #[test]
 fn tool_options_and_call_result_reach_host() {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
 
-    let Some(bin) = fake_host_path() else {
-        eprintln!("未找到 fake_host 可执行文件，跳过（先运行 cargo build -p app-mcp-native --example fake_host）");
-        return;
-    };
+    // 新构建的 fake_host（`cargo test` 不刷新 examples/fake_host，见 crates/native/src/test_support.rs）。
+    let bin = app_mcp_native::test_support::fake_host_path().unwrap_or_else(|e| panic!("{e}"));
     let Ok(mut child) = Command::new(bin)
         .args([
             "--tool-info", "--invoke", "order.submit", "--invoke", "plain", "--invoke", "login", "--invoke", "front",
-            "--timeout-ms", "8000",
+            "--read", "session", "--read", "quota", "--timeout-ms", "8000",
         ])
         .stdout(Stdio::piped())
         .spawn()
@@ -1274,6 +1297,17 @@ fn tool_options_and_call_result_reach_host() {
         );
         ua_tools.push(t);
     }
+    let mut resources = Vec::new();
+    for n in ["session", "quota"] {
+        let n = CString::new(n).unwrap_or_default();
+        let rspec = AmResourceSpec { name: n.as_ptr(), description: desc.as_ptr(), mime_type: ptr::null() };
+        let mut r: *mut AmResource = ptr::null_mut();
+        assert_eq!(
+            unsafe { am_resource_register(root, &rspec, Some(failing_reader), ptr::null_mut(), None, &mut r) },
+            AmStatus::Ok
+        );
+        resources.push(r);
+    }
     assert_eq!(unsafe { am_client_start(client) }, AmStatus::Ok);
 
     let out: Vec<serde_json::Value> =
@@ -1284,6 +1318,9 @@ fn tool_options_and_call_result_reach_host() {
         am_tool_free(plain);
         for t in ua_tools {
             am_tool_free(t);
+        }
+        for r in resources {
+            am_resource_free(r);
         }
         am_scope_free(root);
         am_client_free(client);
@@ -1319,4 +1356,13 @@ fn tool_options_and_call_result_reach_host() {
         out[6]["error"],
         serde_json::json!({ "code": -32019, "message": "请把 App 切到前台", "data": { "kind": "USER_ACTION_REQUIRED" } })
     );
+    // v12：资源读取失败也带 reason / uri 与详情
+    assert_eq!(
+        out[7]["error"],
+        serde_json::json!({
+            "code": -32019, "message": "登录已过期，请在 App 内重新登录",
+            "data": { "kind": "USER_ACTION_REQUIRED", "reason": "login", "uri": "shop://login" }
+        })
+    );
+    assert_eq!(out[8]["error"]["data"], serde_json::json!({ "kind": "USER_REJECTED", "quota": 0 }));
 }

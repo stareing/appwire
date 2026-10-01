@@ -101,7 +101,11 @@ the hooks are no-ops. A tool can also be loaded lazily: pass `load: () => import
 - `useConnectionState()` - subscribes to the Hub connection state (re-renders on change).
 - `useAppMcp()` - returns the provided `AppMcp` instance.
 - Re-exported types: `ToolDefinition`, `LazyToolDefinition`, `ToolHandle`, `ToolResult`, `ResourceDefinition`,
-  `Risk`, `Activation`, `ConnectionState` and more from `@app-mcp/web`.
+  `Risk`, `Activation`, `ConnectionState` and more from `@app-mcp/web`, including the declaration and result contract
+  types (`ToolAnnotations`, `ContentAnnotations`, `ResultStatus`, `ToolResultEnvelope`, `InputDefinition`,
+  `OutputDefinition`) and error types (`ErrorKind`, `UserActionReason`, `UserActionRequiredOptions`). A handler may
+  return a `ToolResultEnvelope` (`{ data, status?, summary?, stateResource?, stateHints?, annotations? }`); runtime
+  values such as `ToolCallError` (including `ToolCallError.userActionRequired`) are imported from `@app-mcp/web`.
 
 See the [AppWire README](https://github.com/stareing/appwire#readme) for how the local Hub and MCP clients fit together.
 

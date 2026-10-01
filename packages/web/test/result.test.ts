@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeToolResult } from '../src/result'
+import { isToolResultEnvelope, normalizeToolResult } from '../src/result'
+import * as web from '../src/index'
 
 describe('normalizeToolResult', () => {
   it.each([
@@ -40,5 +41,26 @@ describe('normalizeToolResult', () => {
     const cyclic: Record<string, unknown> = {}
     cyclic.self = cyclic
     expect(() => normalizeToolResult({ data: cyclic })).toThrow()
+  })
+})
+
+describe('isToolResultEnvelope', () => {
+  it('从包入口导出，与 normalizeToolResult 的拆分规则一致', () => {
+    expect(web.isToolResultEnvelope).toBe(isToolResultEnvelope)
+  })
+
+  it.each([
+    ['只有 data', { data: 1 }, true],
+    ['data 为 undefined', { data: undefined }, true],
+    ['完整信封', { data: null, status: 'pending', stateResource: 'o.state', summary: 's', stateHints: ['a'] }, true],
+    ['普通值', 5, false],
+    ['undefined', undefined, false],
+    ['null', null, false],
+    ['数组', [{ data: 1 }], false],
+    ['缺少 data 键', { summary: 's' }, false],
+    ['未知键', { data: 1, other: 2 }, false],
+    ['status 取值未知', { data: 1, status: 'ok' }, false],
+  ])('%s', (_name, input, expected) => {
+    expect(isToolResultEnvelope(input)).toBe(expected)
   })
 })

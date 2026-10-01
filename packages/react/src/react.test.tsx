@@ -11,6 +11,11 @@ import {
   useHold,
   useResource,
   useTool,
+  type ContentAnnotations,
+  type ResultStatus,
+  type ToolAnnotations,
+  type ToolResultEnvelope,
+  type UserActionRequiredOptions,
 } from './index'
 import { FakeAppMcp } from './testing/fake-app-mcp'
 
@@ -478,5 +483,36 @@ describe('useHold', () => {
     expect(app.activeHolds).toBe(1)
     rerender(<div />)
     expect(app.activeHolds).toBe(0)
+  })
+})
+
+describe('重新导出的声明与结果类型', () => {
+  it('handler 可用 ToolResultEnvelope 返回 status / summary，注解类型可从本包取得', async () => {
+    const annotations: ToolAnnotations = { readOnlyHint: false, idempotentHint: true }
+    const contentAnnotations: ContentAnnotations = { audience: ['assistant'] }
+    const status: ResultStatus = 'partial'
+    const userAction: UserActionRequiredOptions = { reason: 'login' }
+    function Sync() {
+      useTool<unknown, { synced: number }>('items.sync', {
+        description: '同步',
+        annotations,
+        handler: (): ToolResultEnvelope<{ synced: number }> => ({
+          data: { synced: 2 },
+          status,
+          summary: '同步了 2/3 项',
+          annotations: contentAnnotations,
+        }),
+      })
+      return null
+    }
+    const { app } = setup(<Sync />)
+    expect(app.getTool('items.sync')?.annotations).toEqual(annotations)
+    expect(await app.call('items.sync')).toEqual({
+      data: { synced: 2 },
+      status: 'partial',
+      summary: '同步了 2/3 项',
+      annotations: { audience: ['assistant'] },
+    })
+    expect(userAction.reason).toBe('login')
   })
 })

@@ -170,7 +170,7 @@ public sealed class ToolScope : IDisposable
     {
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(description);
-        var invoker = new ResourceInvoker(raw, _client.Dispatcher);
+        var invoker = new ResourceInvoker(raw, _client.Dispatcher, _client.SerializerOptions);
         using var strings = new Utf8Strings();
         var spec = new AmResourceSpec
         {

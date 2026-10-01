@@ -161,7 +161,7 @@ var client = AppMcpClient.Create(new AppMcpClientOptions
 | `IdleExit` 事件 | 休眠完成且 `Residency` 允许退出时触发（在 Dispatcher 上），App 自行决定是否退出 |
 | `ClientStatus.Dormant` / `Waking` | 新增状态 |
 | `ToolCallException(kind, message, details)` | 带结构化详情失败：对象字段合并进错误 `data`，其他值放在 `data.details` |
-| `UserActionRequiredException(message, reason, uri)` | 需要用户本人操作（登录过期、权限未授予、需切到前台等）：以 `USER_ACTION_REQUIRED` 失败，`reason`（`UserActionReason.Login` 等）与 `uri`（App 内入口）可选 |
+| `UserActionRequiredException(message, reason, uri)` | 需要用户本人操作（登录过期、权限未授予、需切到前台等）：以 `USER_ACTION_REQUIRED` 失败，`reason`（`UserActionReason.Login` 等）与 `uri`（App 内入口）可选；资源 reader 中抛出同样生效（`ToolCallException` 的 `details` 也随读取错误发出） |
 
 ### 功耗选项（spec/lifecycle.md 第 11、13 节）
 

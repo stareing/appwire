@@ -40,6 +40,7 @@ import {
 } from './attrs'
 import { assertValid, collectFields, fieldsToSchema, fillForm } from './form'
 import { invoke } from './invoke'
+import { toToolResult } from './result'
 import { disabledReason } from './state'
 import { truncate, visibleText } from './text'
 
@@ -50,6 +51,13 @@ export interface AttachDomOptions {
   snapshot?: boolean | { name?: string }
   /** 点击 / 提交后等待页面稳定的时间（毫秒），默认 50。 */
   settleMs?: number
+  /**
+   * 页面结果（`data-mcp-result` 事件的 `detail`、`respondWith` 的值）按结构化结果解释，默认 false。
+   * 开启时形如 `ToolResultEnvelope` 的结果原样透传（判定同 `isToolResultEnvelope`），没有结果时为无返回值
+   * （Hub 输出"已完成"）；关闭时结果始终整体作为 `data`，没有结果时为 `{ ok: true }`。
+   * @compat 默认关闭以保持既有行为。
+   */
+  resultEnvelope?: boolean
 }
 
 /** 断开观察并注销全部由 DOM 声明的工具与资源。 */
@@ -144,6 +152,7 @@ class DomBinding {
   private readonly doc: Document
   private readonly root: Element
   private readonly settleMs: number
+  private readonly resultEnvelope: boolean
   private readonly observer: MutationObserver
   private readonly scopes = new Map<Element, ScopeRec>()
   private readonly tools = new Map<string, ToolRec>()
@@ -165,6 +174,7 @@ class DomBinding {
     this.root = root
     this.doc = root.ownerDocument
     this.settleMs = options.settleMs ?? 50
+    this.resultEnvelope = options.resultEnvelope ?? false
 
     const win = this.doc.defaultView
     const MO = (win as (Window & typeof globalThis) | null)?.MutationObserver ?? MutationObserver
@@ -587,7 +597,7 @@ class DomBinding {
     }
 
     const timeoutAttr = Number(attr(el, ATTR.timeout) ?? NaN)
-    const data = await invoke({
+    const outcome = await invoke({
       toolName: name,
       element: el,
       action,
@@ -596,9 +606,8 @@ class DomBinding {
       settleMs: this.settleMs,
       signal: ctx.signal,
     })
-    const hints = parseList(attr(el, ATTR.hints))
-    // 始终用 { data } 包装，避免页面结果本身带 data 字段时被误拆
-    return hints.length > 0 ? { data, stateHints: hints } : { data }
+    const fields = { hints: parseList(attr(el, ATTR.hints)), summary: attr(el, ATTR.summary) }
+    return toToolResult(outcome, fields, this.resultEnvelope)
   }
 
   // ---- 资源 -----------------------------------------------------------

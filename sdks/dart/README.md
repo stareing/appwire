@@ -40,6 +40,9 @@ client.tool('order.submit',
 - 返回普通值即 `done` 结果；需要业务状态、摘要或内容标注（`ContentAnnotations`：`audience` / `priority` / `lastModified`）时返回
   `ToolResult`。无返回值（`null` 且无 `summary`、状态 `done`）时 Hub 对模型输出固定文本"已完成"。
 - `McpTool`、`useMcpTool`、`McpScope.tool`、`ToolHandle.update` 接受同样的 `annotations` / `outputSchema` 参数。
+- `ToolHandle.update`：未提供的参数保持不变，显式传 `null` 清除该声明（`title` / `activation` / `annotations` / `outputSchema`
+  删除，`inputSchema` 变为无参数，`risk` 恢复 `Risk.write`，`enabled` 恢复 `true`；`description` 不可清除）。参数类型不符时抛
+  `ArgumentError`。`ToolHandle.replace(spec)` 按 `ToolSpec` 整体替换。
 
 ## 生命周期（休眠与唤醒，spec/lifecycle.md）
 
@@ -87,6 +90,7 @@ client.onIdleExit.listen((_) { /* residency 允许时：App 自行决定是否�
   对象字段合并进协议错误的 `data`。
 - `throw UserActionRequiredError(message, reason: UserActionReason.login, uri: 'myapp://login')`：需要用户本人操作
   （登录过期、权限未授予、需切到前台等），以 `USER_ACTION_REQUIRED` 失败；`reason` / `uri` 可选，缺省时不出现在 `data` 中。
+  资源的 `read` 中抛出同样生效（`ToolCallError` 的 `details` 也随读取错误发出）。
 - `ConnectionStatus` 新增 `dormant`（已休眠，无连接无定时器）与 `waking`（正在回连）。
 
 ### Flutter：可见性与回到前台

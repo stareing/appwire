@@ -14,9 +14,9 @@ import type {
 } from 'libapp_mcp_harmony.so';
 import { Failure, ToolCallError, nativeErrorCode, toFailure } from './Errors';
 import {
-  AppMcpOptions, CancelReason, ConnectionState, ConnectionStatus, ContentAnnotations, HoldHandle, LifecycleOptions,
-  Logger, Registrar, ResourceDefinition, ResourceHandle, Scope, ToolAnnotations, ToolChanges, ToolContext,
-  ToolDefinition, ToolHandle, ToolResult, Visibility, WakeReason,
+  Activation, AppMcpOptions, CancelReason, ConnectionState, ConnectionStatus, ContentAnnotations, HoldHandle,
+  LifecycleOptions, Logger, Registrar, ResourceDefinition, ResourceHandle, Risk, Scope, ToolAnnotations, ToolChanges,
+  ToolContext, ToolDefinition, ToolHandle, ToolResult, Visibility, WakeReason,
 } from './Types';
 
 /** 原生客户端工厂：`(config, listener) => new native.NativeClient(config, listener)`。 */
@@ -241,6 +241,17 @@ function callResultInit<O>(json: string, r: ToolResult<O>): CallResultInit {
   return init;
 }
 
+/**
+ * `ToolHandle.update` 单个字段的合并规则。
+ * @output `undefined`（未提供）→ 当前值；`null` → `undefined`（清除，回到缺省）；其他 → 新值。
+ */
+function patchField<T>(change: T | null | undefined, current: T | undefined): T | undefined {
+  if (change === undefined) {
+    return current;
+  }
+  return change === null ? undefined : change;
+}
+
 class ToolEntry<I, O> implements ToolHandle, Child {
   readonly name: string;
   private def: ToolDefinition<I, O>;
@@ -287,13 +298,13 @@ class ToolEntry<I, O> implements ToolHandle, Child {
     const d = this.def;
     const next: ToolDefinition<I, O> = {
       description: changes.description ?? d.description,
-      title: changes.title ?? d.title,
-      inputSchema: changes.inputSchema ?? d.inputSchema,
-      risk: changes.risk ?? d.risk,
-      annotations: changes.annotations ?? d.annotations,
-      outputSchema: changes.outputSchema ?? d.outputSchema,
-      activation: changes.activation ?? d.activation,
-      enabled: changes.enabled ?? d.enabled,
+      title: patchField<string>(changes.title, d.title),
+      inputSchema: patchField<string>(changes.inputSchema, d.inputSchema),
+      risk: patchField<Risk>(changes.risk, d.risk),
+      annotations: patchField<ToolAnnotations>(changes.annotations, d.annotations),
+      outputSchema: patchField<string>(changes.outputSchema, d.outputSchema),
+      activation: patchField<Activation>(changes.activation, d.activation),
+      enabled: patchField<boolean>(changes.enabled, d.enabled),
       handler: d.handler,
     };
     this.def = next;

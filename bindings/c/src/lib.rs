@@ -1492,5 +1492,55 @@ pub unsafe extern "C" fn am_read_fail(
     status
 }
 
+/// v12：失败完成并消费 read，附带结构化详情；语义同 [`am_call_fail_with_details`]（`details_json` 为 NULL 等同
+/// [`am_read_fail`]；非法时返回 `AM_ERR_INVALID_JSON` 且不消费 read）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_read_fail_with_details(
+    read: *mut AmRead,
+    kind: *const c_char,
+    message: *const c_char,
+    details_json: *const c_char,
+) -> AmStatus {
+    if read.is_null() {
+        return guard(|| Err(FfiError::null("read")));
+    }
+    let status = guard(|| {
+        let r = unsafe { &*read };
+        let kind = error_kind_from(unsafe { lossy_str(kind) }.as_deref());
+        let message = unsafe { lossy_str(message) }.unwrap_or_default();
+        let details = unsafe { opt_str(details_json, "details_json") }
+            .map_err(|_| FfiError::new(AmStatus::InvalidJson, "details_json 不是合法的 UTF-8"))?;
+        r.handle.fail_with_details(kind, &message, details)?;
+        Ok(())
+    });
+    if status != AmStatus::InvalidJson {
+        unsafe { consume(read) };
+    }
+    status
+}
+
+/// v12：以 `USER_ACTION_REQUIRED` 失败完成并消费 read；语义同 [`am_call_fail_user_action`]。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_read_fail_user_action(
+    read: *mut AmRead,
+    message: *const c_char,
+    reason: *const c_char,
+    uri: *const c_char,
+) -> AmStatus {
+    if read.is_null() {
+        return guard(|| Err(FfiError::null("read")));
+    }
+    let status = guard(|| {
+        let r = unsafe { &*read };
+        let message = unsafe { lossy_str(message) }.unwrap_or_default();
+        let reason = unsafe { lossy_str(reason) };
+        let uri = unsafe { lossy_str(uri) };
+        r.handle.fail_user_action(&message, reason.as_deref(), uri.as_deref())?;
+        Ok(())
+    });
+    unsafe { consume(read) };
+    status
+}
+
 #[cfg(test)]
 mod tests;

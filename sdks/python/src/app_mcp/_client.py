@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import enum
 import inspect
 import json
 import logging
@@ -54,6 +55,15 @@ ActivationLike = Union[str, ffi.Activation]
 ToolAnnotationsLike = Union[ffi.ToolAnnotations, Mapping[str, Any]]
 ContentAnnotationsLike = Union[ffi.ContentAnnotations, Mapping[str, Any]]
 ResultStatusLike = Union[str, ffi.ResultStatus]
+
+
+class _Unset(enum.Enum):
+    """``ToolHandle.update`` 参数的缺省标记：区分"未给出"（保持不变）与显式 ``None``（清除）。"""
+
+    UNSET = enum.auto()
+
+
+_UNSET = _Unset.UNSET
 
 _RISKS = {
     "read": ffi.Risk.READ,
@@ -590,35 +600,58 @@ class ToolHandle:
 
     def set_enabled(self, enabled: bool) -> None:
         self._inner.set_enabled(enabled)
+        # @why update() 整体替换定义，须记住当前启用状态，否则之后的 update 会把它改回去
+        self._spec = _replace_spec(self._spec, enabled=enabled)
 
     def update(
         self,
         *,
-        description: str | None = None,
-        input_schema: dict[str, Any] | None = None,
-        risk: RiskLike | None = None,
-        title: str | None = None,
-        annotations: ToolAnnotationsLike | None = None,
-        output_schema: dict[str, Any] | str | None = None,
+        description: str | _Unset = _UNSET,
+        input_schema: dict[str, Any] | str | None | _Unset = _UNSET,
+        risk: RiskLike | None | _Unset = _UNSET,
+        activation: ActivationLike | None | _Unset = _UNSET,
+        title: str | None | _Unset = _UNSET,
+        annotations: ToolAnnotationsLike | None | _Unset = _UNSET,
+        output_schema: dict[str, Any] | str | None | _Unset = _UNSET,
     ) -> None:
-        """修改定义（未给出的字段保持不变）。"""
+        """修改定义：未给出的字段保持不变；显式传 ``None`` 清除该声明（恢复注册时的缺省）。
+
+        ``input_schema=None`` 为无参数，``risk=None`` 为缺省风险，``title`` / ``activation`` /
+        ``annotations`` / ``output_schema`` 为 ``None`` 时清除声明。``description`` 不可清除。
+        """
         s = self._spec
-        spec = ffi.ToolSpec(
-            name=s.name,
-            description=description if description is not None else s.description,
-            input_schema_json=json.dumps(input_schema) if input_schema is not None else s.input_schema_json,
-            risk=_risk(risk) if risk is not None else s.risk,
-            activation=s.activation,
-            title=title if title is not None else s.title,
-            enabled=s.enabled,
-            annotations=_tool_annotations(annotations) if annotations is not None else s.annotations,
-            output_schema_json=_schema_json(output_schema) if output_schema is not None else s.output_schema_json,
+        spec = _replace_spec(
+            s,
+            description=s.description if description is _UNSET else description,
+            input_schema_json=s.input_schema_json if input_schema is _UNSET else _schema_json(input_schema),
+            risk=s.risk if risk is _UNSET else _risk(risk),
+            activation=s.activation if activation is _UNSET else _activation(activation),
+            title=s.title if title is _UNSET else title,
+            annotations=s.annotations if annotations is _UNSET else _tool_annotations(annotations),
+            output_schema_json=s.output_schema_json if output_schema is _UNSET else _schema_json(output_schema),
         )
         self._inner.update(spec)
         self._spec = spec
 
     def dispose(self) -> None:
         self._inner.dispose()
+
+
+def _replace_spec(spec: ffi.ToolSpec, **changes: Any) -> ffi.ToolSpec:
+    """复制 ``ToolSpec`` 并替换给出的字段（uniffi 记录不是 dataclass）。"""
+    fields = {
+        "name": spec.name,
+        "description": spec.description,
+        "input_schema_json": spec.input_schema_json,
+        "risk": spec.risk,
+        "activation": spec.activation,
+        "title": spec.title,
+        "enabled": spec.enabled,
+        "annotations": spec.annotations,
+        "output_schema_json": spec.output_schema_json,
+    }
+    fields.update(changes)
+    return ffi.ToolSpec(**fields)
 
 
 class ResourceHandle:

@@ -178,10 +178,36 @@ internal sealed unsafe class PendingRead
 
     public void Fail(string kind, string message)
     {
-        if (Interlocked.Exchange(ref _done, 1) != 0) return;
+        var read = Take();
+        if (read == 0) return;
+        FailRaw(read, kind, message);
+    }
+
+    /// <summary>失败完成并附带结构化详情（JSON 文本，v12）。详情非法时退化为不带详情的失败。</summary>
+    public void FailWithDetails(string kind, string message, string? detailsJson)
+    {
+        var read = Take();
+        if (read == 0) return;
+        using var strings = new Utf8Strings();
+        var status = NativeMethods.am_read_fail_with_details(read, strings.AddPtr(kind), strings.AddPtr(message), strings.AddPtr(detailsJson));
+        if (status == AmStatus.InvalidJson) FailRaw(read, kind, message);
+    }
+
+    /// <summary>以 USER_ACTION_REQUIRED 失败完成（v12）；reason / uri 为 null 时不出现在错误的 data 中。</summary>
+    public void FailUserAction(string message, string? reason, string? uri)
+    {
+        var read = Take();
+        if (read == 0) return;
+        using var strings = new Utf8Strings();
+        NativeMethods.am_read_fail_user_action(read, strings.AddPtr(message), strings.AddPtr(reason), strings.AddPtr(uri));
+    }
+
+    private nint Take()
+    {
+        if (Interlocked.Exchange(ref _done, 1) != 0) return 0;
         var read = _read;
         _read = 0;
-        FailRaw(read, kind, message);
+        return read;
     }
 
     internal static void FailRaw(nint read, string kind, string message)
@@ -222,10 +248,7 @@ internal sealed class ToolInvoker(RawToolHandler handler, SynchronizationContext
         }
         catch (ToolCallException e) when (e.Details is not null)
         {
-            string? details;
-            try { details = JsonSerializer.Serialize(e.Details, e.Details.GetType(), json ?? JsonSerializerOptions.Web); }
-            catch (Exception) { details = null; }
-            pending.FailWithDetails(e.Kind.ToProtocolString(), e.Message, details);
+            pending.FailWithDetails(e.Kind.ToProtocolString(), e.Message, ErrorDetails.Serialize(e.Details, json));
         }
         catch (ToolCallException e)
         {
@@ -242,7 +265,18 @@ internal sealed class ToolInvoker(RawToolHandler handler, SynchronizationContext
     }
 }
 
-internal sealed class ResourceInvoker(RawResourceReader reader, SynchronizationContext? dispatcher)
+/// <summary><see cref="ToolCallException.Details"/> 的 JSON 文本（调用与读取共用）。</summary>
+internal static class ErrorDetails
+{
+    /// <summary>@error 无法序列化时返回 null（调用方退化为不带详情的失败）。</summary>
+    public static string? Serialize(object details, JsonSerializerOptions? json)
+    {
+        try { return JsonSerializer.Serialize(details, details.GetType(), json ?? JsonSerializerOptions.Web); }
+        catch (Exception) { return null; }
+    }
+}
+
+internal sealed class ResourceInvoker(RawResourceReader reader, SynchronizationContext? dispatcher, JsonSerializerOptions? json = null)
 {
     public void Invoke(nint read)
     {
@@ -256,6 +290,14 @@ internal sealed class ResourceInvoker(RawResourceReader reader, SynchronizationC
         {
             var contents = await reader(CancellationToken.None).ConfigureAwait(false);
             pending.Complete(contents);
+        }
+        catch (UserActionRequiredException e)
+        {
+            pending.FailUserAction(e.Message, e.Reason, e.Uri);
+        }
+        catch (ToolCallException e) when (e.Details is not null)
+        {
+            pending.FailWithDetails(e.Kind.ToProtocolString(), e.Message, ErrorDetails.Serialize(e.Details, json));
         }
         catch (ToolCallException e)
         {

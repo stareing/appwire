@@ -2,6 +2,8 @@
 //! - 工具 `echo({text})`：原样返回文本；
 //! - 工具 `add_tool({name})`：新增一个工具并发送 tools/list_changed；
 //! - 工具 `crash()`：进程立即退出（用于测试 Host 的重启）；
+//! - 工具 `typed()`：声明 `outputSchema`（`{n: number}`），但返回不符合的 `structuredContent`（Hub 不核对上游结果的 schema）；
+//! - 工具 `blob({bytes})`：返回指定字节数的文本（用于测试结果大小上限）；
 //! - 资源 `demo://greeting`；
 //! - `instructions` 超过 100 字符，用于测试上游总览。
 //!
@@ -58,6 +60,17 @@ impl ServerHandler for Echo {
                 schema(json!({"type": "object", "properties": {"name": {"type": "string"}}})),
             ),
             Tool::new("crash", "立即退出进程", schema(json!({"type": "object"}))),
+            Tool::new("typed", "返回不符合 outputSchema 的结果", schema(json!({"type": "object"})))
+                .with_raw_output_schema(Arc::new(schema(json!({
+                    "type": "object",
+                    "properties": {"n": {"type": "number"}},
+                    "required": ["n"]
+                })))),
+            Tool::new(
+                "blob",
+                "返回指定字节数的文本",
+                schema(json!({"type": "object", "properties": {"bytes": {"type": "integer"}}})),
+            ),
         ];
         let extra = self.extra.lock().map(|e| e.clone()).unwrap_or_default();
         for name in extra {
@@ -94,6 +107,12 @@ impl ServerHandler for Echo {
                 CallToolResult::success(vec![ContentBlock::text("ok")])
             }
             "crash" => std::process::exit(3),
+            "typed" => CallToolResult::structured(json!({"n": "不是数字"})),
+            "blob" => {
+                let bytes = args.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+                let len = usize::try_from(bytes).unwrap_or(0);
+                CallToolResult::success(vec![ContentBlock::text("x".repeat(len))])
+            }
             other => {
                 return Err(ErrorData::invalid_params(
                     format!("unknown tool {other}"),

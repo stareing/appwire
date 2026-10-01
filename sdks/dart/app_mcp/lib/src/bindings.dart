@@ -549,6 +549,15 @@ final class AppMcpBindings {
   late final am_read_fail = library.lookupFunction<
       Int32 Function(Pointer<AmRead>, Pointer<Utf8>, Pointer<Utf8>),
       int Function(Pointer<AmRead>, Pointer<Utf8>, Pointer<Utf8>)>('am_read_fail');
+  // v12
+  late final am_read_fail_with_details = library.lookupFunction<
+      Int32 Function(Pointer<AmRead>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>),
+      int Function(Pointer<AmRead>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>)>('am_read_fail_with_details');
+  late final am_read_fail_user_action = library.lookupFunction<
+      Int32 Function(Pointer<AmRead>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>),
+      int Function(Pointer<AmRead>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>)>('am_read_fail_user_action');
 }
 
 /// 原生库默认文件名。

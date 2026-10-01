@@ -865,6 +865,41 @@ AmStatus am_read_fail(AmRead *read, const char *kind, const char *message) {
     return AM_OK;
 }
 
+static void finish_read(AmRead *read, char *buf) {
+    lock_global();
+    g_results[read->index] = buf;
+    unlock_global();
+    free(read->name);
+    free(read);
+}
+
+/* v12：结果记为 {"ok":false,"kind","message","details"}；"{bad" 视为非法 JSON（不消费 read）。 */
+AmStatus am_read_fail_with_details(AmRead *read, const char *kind, const char *message, const char *details_json) {
+    if (!read || !kind || !message) return AM_ERR_INVALID_ARGUMENT;
+    if (!details_json) return am_read_fail(read, kind, message);
+    if (strcmp(details_json, "{bad") == 0) { set_error("非法 JSON"); return AM_ERR_INVALID_JSON; }
+    size_t cap = 96 + strlen(kind) + strlen(message) + strlen(details_json);
+    char *buf = malloc(cap);
+    snprintf(buf, cap, "{\"ok\":false,\"kind\":\"%s\",\"message\":\"%s\",\"details\":%s}", kind, message,
+             details_json);
+    finish_read(read, buf);
+    return AM_OK;
+}
+
+/* v12：结果记为 {"ok":false,"kind":"USER_ACTION_REQUIRED","message",["reason"],["uri"]}（NULL 的字段省略）。 */
+AmStatus am_read_fail_user_action(AmRead *read, const char *message, const char *reason, const char *uri) {
+    if (!read) return AM_ERR_INVALID_ARGUMENT;
+    if (!message) message = "";
+    size_t cap = 128 + strlen(message) + (reason ? strlen(reason) : 0) + (uri ? strlen(uri) : 0);
+    char *buf = malloc(cap);
+    int n = snprintf(buf, cap, "{\"ok\":false,\"kind\":\"USER_ACTION_REQUIRED\",\"message\":\"%s\"", message);
+    if (reason) n += snprintf(buf + n, cap - n, ",\"reason\":\"%s\"", reason);
+    if (uri) n += snprintf(buf + n, cap - n, ",\"uri\":\"%s\"", uri);
+    snprintf(buf + n, cap - n, "}");
+    finish_read(read, buf);
+    return AM_OK;
+}
+
 /* ------------------------------------------------------------------ 测试驱动 */
 
 typedef struct { ToolRec *t; AmCall *call; } InvokeJob;

@@ -162,6 +162,35 @@ final class _Runtime {
   }
 }
 
+/// 按错误类型失败完成调用或读取（C ABI 的 am_call_fail* 与 am_read_fail* 同签名、同语义），总是消费 [ptr]。
+///
+/// @invariant [UserActionRequiredError] → failUserAction（reason / uri）；带详情 → failWithDetails（详情非法时
+/// 未被消费，退回不带详情的 fail）；其他 → fail。
+void _failNative<T extends NativeType>(
+  Pointer<T> ptr,
+  Object error, {
+  required int Function(Pointer<T>, Pointer<Utf8>, Pointer<Utf8>) fail,
+  required int Function(Pointer<T>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>) failWithDetails,
+  required int Function(Pointer<T>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>) failUserAction,
+}) {
+  if (error is UserActionRequiredError) {
+    using((arena) => failUserAction(ptr, error.message.toNativeUtf8(allocator: arena),
+        _optStr(error.reason, arena), _optStr(error.uri, arena)));
+    return;
+  }
+  final f = failureFromError(error);
+  final details = f.detailsJson;
+  if (details != null) {
+    final status = using((arena) => failWithDetails(
+        ptr,
+        f.kind.toNativeUtf8(allocator: arena),
+        f.message.toNativeUtf8(allocator: arena),
+        details.toNativeUtf8(allocator: arena)));
+    if (status != AmStatus.invalidJson) return;
+  }
+  _withStrings2(f.kind, f.message, (k, m) => fail(ptr, k, m));
+}
+
 T _withStrings2<T>(String a, String b, T Function(Pointer<Utf8>, Pointer<Utf8>) f) {
   return using((arena) => f(a.toNativeUtf8(allocator: arena), b.toNativeUtf8(allocator: arena)));
 }
@@ -725,27 +754,10 @@ final class AppMcp {
 
   void _failCall(_PendingCall call, Object error) {
     if (call.consumed) return;
-    if (error is UserActionRequiredError) {
-      using((arena) => _b.am_call_fail_user_action(call.ptr, error.message.toNativeUtf8(allocator: arena),
-          _optStr(error.reason, arena), _optStr(error.uri, arena)));
-      _finishCall(call);
-      return;
-    }
-    final f = failureFromError(error);
-    final details = f.detailsJson;
-    if (details != null) {
-      final status = using((arena) => _b.am_call_fail_with_details(
-          call.ptr,
-          f.kind.toNativeUtf8(allocator: arena),
-          f.message.toNativeUtf8(allocator: arena),
-          details.toNativeUtf8(allocator: arena)));
-      // 详情非法时 call 未被消费：退回不带详情的失败。
-      if (status != AmStatus.invalidJson) {
-        _finishCall(call);
-        return;
-      }
-    }
-    _withStrings2(f.kind, f.message, (k, m) => _b.am_call_fail(call.ptr, k, m));
+    _failNative(call.ptr, error,
+        fail: _b.am_call_fail,
+        failWithDetails: _b.am_call_fail_with_details,
+        failUserAction: _b.am_call_fail_user_action);
     _finishCall(call);
   }
 
@@ -786,8 +798,10 @@ final class AppMcp {
 
   void _failRead(_PendingRead read, Object error) {
     if (read.consumed) return;
-    final f = failureFromError(error);
-    _withStrings2(f.kind, f.message, (k, m) => _b.am_read_fail(read.ptr, k, m));
+    _failNative(read.ptr, error,
+        fail: _b.am_read_fail,
+        failWithDetails: _b.am_read_fail_with_details,
+        failUserAction: _b.am_read_fail_user_action);
     read.consumed = true;
     _reads.remove(read);
   }
@@ -993,6 +1007,11 @@ Pointer<AmToolOptions> _toolOptions(ToolSpec spec, Allocator arena) {
 // 句柄
 // ---------------------------------------------------------------------------
 
+/// [ToolHandle.update] 的缺省标记类型（区分“未提供”与 null）。
+final class _KeepField {
+  const _KeepField();
+}
+
 /// 已注册的工具。
 final class ToolHandle {
   ToolHandle._(this._scope, this._ptr, this._entry, this._spec);
@@ -1007,26 +1026,49 @@ final class ToolHandle {
   ToolSpec get spec => _spec;
   bool get isDisposed => _released || _scope._client._disposed;
 
-  /// 更新定义；未提供的字段保持不变。
+  /// 更新定义：未提供的字段保持不变；显式传 null 清除该声明（与 @app-mcp/web 一致）。
+  ///
+  /// 各参数类型同 [ToolSpec] 对应字段（`description` String、`inputSchema` / `outputSchema`
+  /// `Map<String, Object?>`、`risk` [Risk]、`activation` [Activation]、`title` String、`enabled` bool、
+  /// `annotations` [ToolAnnotations]）。null 的含义：`title` / `activation` / `annotations` /
+  /// `outputSchema` 清除声明，`inputSchema` 为无参数，`risk` 恢复 [Risk.write]，`enabled` 恢复 true，
+  /// `description` 保持不变。
+  ///
+  /// @error 类型不符时抛 [ArgumentError]，不产生协议消息。
+  /// @compat 参数声明为 `Object?` 以区分“未提供”与 null；原有按类型传值的调用不受影响。
   void update({
-    String? description,
-    Map<String, Object?>? inputSchema,
-    Risk? risk,
-    Activation? activation,
-    String? title,
-    bool? enabled,
-    ToolAnnotations? annotations,
-    Map<String, Object?>? outputSchema,
-  }) =>
-      replace(_spec.copyWith(
-          description: description,
-          inputSchema: inputSchema,
-          risk: risk,
-          activation: activation,
-          title: title,
-          enabled: enabled,
-          annotations: annotations,
-          outputSchema: outputSchema));
+    Object? description = _keep,
+    Object? inputSchema = _keep,
+    Object? risk = _keep,
+    Object? activation = _keep,
+    Object? title = _keep,
+    Object? enabled = _keep,
+    Object? annotations = _keep,
+    Object? outputSchema = _keep,
+  }) {
+    final s = _spec;
+    replace(ToolSpec(
+        name: s.name,
+        description: _patch<String?>(description, s.description, 'description') ?? s.description,
+        inputSchema: _patch<Map<String, Object?>?>(inputSchema, s.inputSchema, 'inputSchema'),
+        risk: _patch<Risk?>(risk, s.risk, 'risk') ?? Risk.write,
+        activation: _patch<Activation?>(activation, s.activation, 'activation'),
+        title: _patch<String?>(title, s.title, 'title'),
+        enabled: _patch<bool?>(enabled, s.enabled, 'enabled') ?? true,
+        annotations: _patch<ToolAnnotations?>(annotations, s.annotations, 'annotations'),
+        outputSchema: _patch<Map<String, Object?>?>(outputSchema, s.outputSchema, 'outputSchema')));
+  }
+
+  /// [update] 参数缺省标记。
+  static const Object _keep = _KeepField();
+
+  /// @output 未提供（[_keep]）时为 [current]，否则为 [value]（null 或 [T]）。
+  /// @error [value] 不是 [T] 时抛 [ArgumentError]。
+  static T _patch<T>(Object? value, T current, String field) {
+    if (identical(value, _keep)) return current;
+    if (value is T) return value;
+    throw ArgumentError.value(value, field, '类型应为 $T');
+  }
 
   /// 用新定义整体替换（名称不可变，`spec.name` 被忽略；为 null 的 annotations / outputSchema 表示清除该声明）。
   /// 与当前定义相同时不做任何事。
