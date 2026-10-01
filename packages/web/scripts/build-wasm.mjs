@@ -74,6 +74,9 @@ const DEFAULT_OPT_FLAGS = [
   // 关闭内联：内联减少原始体积，但重复代码让 gzip 变差
   '-aimfs', '0', '-fimfs', '0', '-ocimfs', '0',
   '--converge',
+  // 假定低地址 1 KB 不被使用，可把常量偏移折叠进 load/store（gzip 约 -1.6 KB）。
+  // 安全性：Rust wasm32 的栈位于 [0, 1 MB) 向下增长、数据段在 1 MB 之上，只有栈几乎耗尽时才会触及低 1 KB。
+  '--low-memory-unused',
   '--strip-debug',
   '--strip-producers',
 ]

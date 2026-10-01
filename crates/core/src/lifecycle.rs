@@ -3,13 +3,12 @@
 //! 与连接相关、断线即失效的状态放在 [`crate::connection::Session`]（空闲起点、租约、休眠握手）；
 //! 跨连接保留的状态放在 [`Life`]（持有、恢复令牌、唤醒原因）。
 
-use std::collections::BTreeMap;
-
 use app_mcp_protocol as proto;
 use proto::{RpcError, SleepParams, SleepReason, SleepResult, WakeReason, method};
 use serde_json::Value;
 
 use crate::connection::Outgoing;
+use crate::vec_map::VecMap;
 use crate::{CancelReason, Client, ConnectionState, Event, HoldId, LifecycleMode, Millis, Residency, Visibility};
 
 /// App 显式休眠被拒绝且 Host 未给出 `retryAfterMs` 时的重试间隔。
@@ -22,7 +21,7 @@ const MAX_TOKEN_LEN: usize = 512;
 #[derive(Debug, Default)]
 pub(crate) struct Life {
     /// 持有：id → 关联的调用（`hold_for_call`）。
-    pub holds: BTreeMap<u64, Option<String>>,
+    pub holds: VecMap<u64, Option<String>>,
     pub next_hold_id: u64,
     /// 上次休眠时 Host 返回的恢复令牌；成功握手后清除。
     pub resume_token: Option<String>,

@@ -6,9 +6,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import type { CoreClient, CoreConfig, CoreFactory } from '../src/core'
+import type { CoreFactory } from '../src/core'
 import { AppMcpDriver } from '../src/driver'
 import { ToolCallError } from '../src/types'
+import { wasmCoreFactory, type WasmBindings } from '../src/wasm-loader'
 import { FakeSocket, settle, silentLogger } from './fakes'
 
 // 测试从包目录运行（pnpm --filter / vitest 默认 root）
@@ -17,12 +18,9 @@ const wasm = resolve(process.cwd(), 'src/wasm/app_mcp_wasm_bg.wasm')
 const available = existsSync(glue) && existsSync(wasm)
 
 async function loadRealCore(): Promise<CoreFactory> {
-  const mod = (await import(/* @vite-ignore */ pathToFileURL(glue).href)) as {
-    default: (init: { module_or_path: BufferSource }) => Promise<unknown>
-    WasmClient: new (c: CoreConfig) => CoreClient
-  }
+  const mod = (await import(/* @vite-ignore */ pathToFileURL(glue).href)) as WasmBindings
   await mod.default({ module_or_path: readFileSync(wasm) })
-  return (config) => new mod.WasmClient(config)
+  return wasmCoreFactory(mod)
 }
 
 type Json = { id?: number | string; method?: string; params?: any; result?: any; error?: any }

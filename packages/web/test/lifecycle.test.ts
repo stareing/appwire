@@ -8,9 +8,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CoreClient, CoreConfig, CoreFactory, CoreLoader } from '../src/core'
+import type { CoreFactory, CoreLoader } from '../src/core'
 import { AppMcpDriver, parseWakeTokenJs, stripWakeFragment } from '../src/driver'
 import { getToolHub } from '../src/tool-hub'
+import { wasmCoreFactory, type WasmBindings } from '../src/wasm-loader'
 import { installWebMcp, type ModelContext } from '../src/webmcp'
 import type { AppMcpOptions, ToolContext } from '../src/types'
 import { FakeSocket, settle, setup, silentLogger } from './fakes'
@@ -23,15 +24,9 @@ const available = existsSync(glue) && existsSync(wasm)
 let factoryPromise: Promise<CoreFactory> | undefined
 function loadRealCore(): Promise<CoreFactory> {
   factoryPromise ??= (async () => {
-    const mod = (await import(/* @vite-ignore */ pathToFileURL(glue).href)) as {
-      default: (init: { module_or_path: BufferSource }) => Promise<unknown>
-      WasmClient: new (c: CoreConfig) => CoreClient
-      parseWakeToken: (args: string) => string | undefined
-    }
+    const mod = (await import(/* @vite-ignore */ pathToFileURL(glue).href)) as WasmBindings
     await mod.default({ module_or_path: readFileSync(wasm) })
-    const factory: CoreFactory = (config) => new mod.WasmClient(config)
-    factory.parseWakeToken = mod.parseWakeToken
-    return factory
+    return wasmCoreFactory(mod)
   })()
   return factoryPromise
 }

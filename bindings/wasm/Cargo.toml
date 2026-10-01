@@ -20,8 +20,6 @@ app-mcp-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen.workspace = true
-serde-wasm-bindgen.workspace = true
-js-sys.workspace = true
 console_error_panic_hook = { workspace = true, optional = true }
 
 [features]
@@ -32,3 +30,4 @@ debug = ["dep:console_error_panic_hook"]
 # 不直接使用，借 Cargo 特性合并作用到 app-mcp-protocol 依赖的 sha2。
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }
+talc = "5.1.1"

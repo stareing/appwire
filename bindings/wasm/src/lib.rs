@@ -5,19 +5,19 @@
 //! 约定：
 //! - 时间参数为 `f64` 毫秒（JS 侧用 `performance.now()`），内部截断为 [`Millis`]。
 //! - 工具、资源、scope、读取句柄在 JS 中是普通数字。
-//! - 配置、定义、结果用普通 JS 对象传入（serde-wasm-bindgen 转换），字段名为 camelCase。
-//! - 事件以带 `type` 字段的对象返回（见 [`JsEvent`]），没有事件时返回 `undefined`。
+//! - 配置、定义、结果、状态与事件以 JSON 字符串交换（JS 侧 `JSON.stringify` / `JSON.parse`，
+//!   由 `@app-mcp/web` 的 `wasm-loader.ts` 包装成对象接口），字段名为 camelCase。
+//!   @why 不用 serde-wasm-bindgen：JSON 编解码 serde_json 本已链接，省去第二套序列化器（体积）。
+//! - 事件为带 `type` 字段的对象的 JSON（见 [`JsEvent`]），没有事件时返回 `undefined`。
 //! - [`CoreError`] 与参数转换失败都以 JS `Error` 抛出。
 
 mod convert;
 
 pub use convert::{
-    JsCallOutcome, JsConfig, JsEvent, JsLifecycle, JsResourceDef, JsState, JsToolDef, JsToolUpdate,
+    FromJson, JsCallOutcome, JsConfig, JsEvent, JsLifecycle, JsResourceDef, JsState, JsToolDef, JsToolUpdate,
 };
 
 use app_mcp_core::{Client, ConnectionErrorCode, ConnectionIssue, HoldId, Millis, ReadId, ResourceId, ScopeId, ToolId, Visibility};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use wasm_bindgen::prelude::*;
 
 /// 把 JS 传入的时间转换为核心的单调毫秒数（负数与 NaN 视为 0）。
@@ -27,22 +27,25 @@ fn millis(now: f64) -> Millis {
 
 /// JS 数字句柄 → u64。非整数或负数视为无效句柄。
 fn handle(id: f64) -> Result<u64, JsError> {
-    if id.is_finite() && id >= 0.0 && id.fract() == 0.0 && id <= convert::MAX_SAFE_INTEGER as f64 {
-        Ok(id as u64)
-    } else {
-        Err(JsError::new(&format!("无效的句柄：{id}")))
-    }
+    convert::handle(id, "句柄").map_err(|e| JsError::new(&e))
 }
 
-fn from_js<T: DeserializeOwned>(value: JsValue, what: &str) -> Result<T, JsError> {
-    serde_wasm_bindgen::from_value(value).map_err(|e| JsError::new(&format!("{what} 格式错误：{e}")))
+/// JSON 文本 → `T`（[`convert::FromJson`]）。
+///
+/// @error JSON 不合法或字段不符时返回 `<what> 格式错误：<说明>`。
+fn from_json<T: convert::FromJson>(json: &str, what: &str) -> Result<T, JsError> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .map_err(|e| e.to_string())
+        .and_then(T::from_json)
+        .map_err(|e| JsError::new(&format!("{what} 格式错误：{e}")))
 }
 
-fn to_js<T: Serialize + ?Sized>(value: &T) -> Result<JsValue, JsError> {
-    value
-        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
-        .map_err(|e| JsError::new(&format!("无法转换为 JS 值：{e}")))
-}
+/// 全局分配器：Talc 代替默认的 dlmalloc。
+///
+/// @why 更小（WASM 体积）且更快；浏览器 WASM 为单线程（无 `atomics`），可用其单线程版本。
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+#[global_allocator]
+static ALLOCATOR: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
 
 fn core_err(e: app_mcp_core::CoreError) -> JsError {
     JsError::new(&e.to_string())
@@ -56,18 +59,18 @@ pub struct WasmClient {
 
 #[wasm_bindgen]
 impl WasmClient {
-    /// 用配置对象创建客户端，字段见 [`JsConfig`]。
+    /// 用配置 JSON 创建客户端，字段见 [`JsConfig`]。
     #[wasm_bindgen(constructor)]
-    pub fn new(config: JsValue) -> Result<WasmClient, JsError> {
+    pub fn new(config: &str) -> Result<WasmClient, JsError> {
         #[cfg(feature = "debug")]
         console_error_panic_hook::set_once();
-        let config: JsConfig = from_js(config, "配置")?;
+        let config: JsConfig = from_json(config, "配置")?;
         Ok(WasmClient { inner: Client::new(config.into_core()) })
     }
 
-    /// 当前连接状态，形如 `{ status: 'backoff', retryAt }`（`retryAt` 为核心时钟毫秒）。
-    pub fn state(&self) -> Result<JsValue, JsError> {
-        to_js(&JsState::from_core(self.inner.state()))
+    /// 当前连接状态的 JSON，形如 `{"status":"backoff","retryAt":…}`（`retryAt` 为核心时钟毫秒）。
+    pub fn state(&self) -> String {
+        JsState::from_core(self.inner.state()).to_value().to_string()
     }
 
     /// 当前已配对的 token。
@@ -99,19 +102,19 @@ impl WasmClient {
 
     // ---- 工具 -----------------------------------------------------------
 
-    /// 注册工具，字段见 [`JsToolDef`]。返回工具句柄。
+    /// 注册工具，`def` 为 JSON，字段见 [`JsToolDef`]。返回工具句柄。
     #[wasm_bindgen(js_name = registerTool)]
-    pub fn register_tool(&mut self, def: JsValue) -> Result<f64, JsError> {
-        let def: JsToolDef = from_js(def, "工具定义")?;
+    pub fn register_tool(&mut self, def: &str) -> Result<f64, JsError> {
+        let def: JsToolDef = from_json(def, "工具定义")?;
         let def = def.into_core().map_err(|e| JsError::new(&e))?;
         let id = self.inner.register_tool(def).map_err(core_err)?;
         Ok(id.0 as f64)
     }
 
-    /// 部分更新工具，字段见 [`JsToolUpdate`]；`activation` / `title` 传 `null` 表示清除。
+    /// 部分更新工具，`update` 为 JSON，字段见 [`JsToolUpdate`]；`activation` / `title` 为 `null` 表示清除。
     #[wasm_bindgen(js_name = updateTool)]
-    pub fn update_tool(&mut self, tool: f64, update: JsValue) -> Result<(), JsError> {
-        let update: JsToolUpdate = from_js(update, "工具更新")?;
+    pub fn update_tool(&mut self, tool: f64, update: &str) -> Result<(), JsError> {
+        let update: JsToolUpdate = from_json(update, "工具更新")?;
         self.inner.update_tool(ToolId(handle(tool)?), update.into_core()).map_err(core_err)
     }
 
@@ -122,10 +125,10 @@ impl WasmClient {
 
     // ---- 资源 -----------------------------------------------------------
 
-    /// 注册资源，字段见 [`JsResourceDef`]。返回资源句柄。
+    /// 注册资源，`def` 为 JSON，字段见 [`JsResourceDef`]。返回资源句柄。
     #[wasm_bindgen(js_name = registerResource)]
-    pub fn register_resource(&mut self, def: JsValue) -> Result<f64, JsError> {
-        let def: JsResourceDef = from_js(def, "资源定义")?;
+    pub fn register_resource(&mut self, def: &str) -> Result<f64, JsError> {
+        let def: JsResourceDef = from_json(def, "资源定义")?;
         let def = def.into_core().map_err(|e| JsError::new(&e))?;
         let id = self.inner.register_resource(def).map_err(core_err)?;
         Ok(id.0 as f64)
@@ -173,29 +176,26 @@ impl WasmClient {
         self.inner.handle_timeout(millis(now));
     }
 
-    /// handler 完成。`outcome` 为 `{ data, stateHints? }` 或 `{ error: { kind, message, details? } }`。
+    /// handler 完成。`outcome` 为 JSON：`{ data, stateHints? }` 或 `{ error: { kind, message, details? } }`。
     #[wasm_bindgen(js_name = completeCall)]
-    pub fn complete_call(&mut self, call_id: &str, outcome: JsValue, now: f64) -> Result<(), JsError> {
-        let outcome: JsCallOutcome = from_js(outcome, "调用结果")?;
+    pub fn complete_call(&mut self, call_id: &str, outcome: &str, now: f64) -> Result<(), JsError> {
+        let outcome: JsCallOutcome = from_json(outcome, "调用结果")?;
         self.inner.complete_call(call_id, outcome.into_call(), millis(now)).map_err(core_err)
     }
 
-    /// 资源读取完成。`outcome` 为 `{ data }` 或 `{ error: { kind, message, details? } }`。
+    /// 资源读取完成。`outcome` 为 JSON：`{ data }` 或 `{ error: { kind, message, details? } }`。
     #[wasm_bindgen(js_name = completeRead)]
-    pub fn complete_read(&mut self, read: f64, outcome: JsValue) -> Result<(), JsError> {
-        let outcome: JsCallOutcome = from_js(outcome, "读取结果")?;
+    pub fn complete_read(&mut self, read: f64, outcome: &str) -> Result<(), JsError> {
+        let outcome: JsCallOutcome = from_json(outcome, "读取结果")?;
         self.inner.complete_read(ReadId(handle(read)?), outcome.into_read()).map_err(core_err)
     }
 
     // ---- 驱动层输出 -----------------------------------------------------
 
-    /// 取出下一个事件（带 `type` 字段的对象）；没有事件时返回 `undefined`。
+    /// 取出下一个事件（带 `type` 字段的对象的 JSON）；没有事件时返回 `undefined`。
     #[wasm_bindgen(js_name = pollEvent)]
-    pub fn poll_event(&mut self) -> Result<JsValue, JsError> {
-        match self.inner.poll_event() {
-            Some(ev) => to_js(&JsEvent::from_core(ev)),
-            None => Ok(JsValue::UNDEFINED),
-        }
+    pub fn poll_event(&mut self) -> Option<String> {
+        self.inner.poll_event().map(|ev| JsEvent::from_core(ev).to_value().to_string())
     }
 
     /// 下一次需要调用 `handleTimeout` 的时刻（核心时钟毫秒）；没有待处理定时器时为 `undefined`。

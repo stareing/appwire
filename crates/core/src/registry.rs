@@ -4,7 +4,7 @@
 //! 名称加入脏集合，取事件时逐个名称比较"当前应暴露的内容"与"Host 已知的内容"，
 //! 相同则不发送（因此同名先加后删、改了又改回都会自然抵消）。
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use crate::vec_map::{VecMap, VecSet};
 
 use app_mcp_protocol as proto;
 use proto::{ResourceInfo, ResourcesChangedParams, ResourcesSyncParams, ToolInfo, ToolsChangedParams, ToolsSyncParams};
@@ -21,18 +21,18 @@ struct ScopeEntry {
 #[derive(Debug, Default)]
 pub(crate) struct Registry {
     next_id: u64,
-    scopes: BTreeMap<ScopeId, ScopeEntry>,
-    tools: BTreeMap<ToolId, ToolDef>,
-    tool_names: HashMap<String, ToolId>,
-    resources: BTreeMap<ResourceId, ResourceDef>,
-    resource_names: HashMap<String, ResourceId>,
+    scopes: VecMap<ScopeId, ScopeEntry>,
+    tools: VecMap<ToolId, ToolDef>,
+    tool_names: VecMap<String, ToolId>,
+    resources: VecMap<ResourceId, ResourceDef>,
+    resource_names: VecMap<String, ResourceId>,
 
     /// 是否正在追踪增量变更（仅 `Connected` 期间为 true）。
     tracking: bool,
-    host_tools: BTreeMap<String, ToolInfo>,
-    host_resources: BTreeMap<String, ResourceInfo>,
-    dirty_tools: BTreeSet<String>,
-    dirty_resources: BTreeSet<String>,
+    host_tools: VecMap<String, ToolInfo>,
+    host_resources: VecMap<String, ResourceInfo>,
+    dirty_tools: VecSet<String>,
+    dirty_resources: VecSet<String>,
 }
 
 fn tool_info(def: &ToolDef) -> ToolInfo {
@@ -93,11 +93,12 @@ impl Registry {
         }
         // 收集 scope 及其全部后代。scope 的父级只能是已存在的 scope，
         // 因此按 id 顺序扫描、父在集合中则加入即可覆盖全部后代。
-        let mut doomed = BTreeSet::from([scope]);
+        let mut doomed = VecSet::default();
+        doomed.insert(scope);
         let mut grew = true;
         while grew {
             grew = false;
-            for (id, entry) in &self.scopes {
+            for (id, entry) in self.scopes.iter() {
                 if !doomed.contains(id) && entry.parent.is_some_and(|p| doomed.contains(&p)) {
                     doomed.insert(*id);
                     grew = true;

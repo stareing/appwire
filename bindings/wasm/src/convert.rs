@@ -1,34 +1,41 @@
 //! JS 对象 ↔ 核心类型的转换。与 wasm-bindgen 无关，可在原生目标上测试。
+//!
+//! 输入（配置、定义、结果）由 [`FromJson`] 从 JSON 值手工读取：serde 的 `derive(Deserialize)` 会为每个结构
+//! 各生成一套对象 / 数组两种形式的反序列化代码，是 WASM 体积的主要来源之一。协议类型（`AppOverview`、
+//! `WakeDescriptor`、各枚举）仍用其 serde 定义，保持单一来源。输出（状态、事件）用 serde 序列化。
 
 use app_mcp_core::{
-    Activation, AppOverview, CallOutput, CancelReason, ClientConfig, ClientKind, ConnectionErrorCode, ConnectionState, Event, HeartbeatPolicy,
-    LifecycleMode, LifecyclePolicy, ReconnectPolicy, Residency, ResourceDef, Risk, ScopeId, SleepReason, ToolDef,
-    ToolError, ToolUpdate, Visibility, WakeDescriptor, WakeReason,
+    CallOutput, CancelReason, ClientConfig, ClientKind, ConnectionErrorCode, ConnectionState, Event, HeartbeatPolicy,
+    LifecycleMode, LifecyclePolicy, ReconnectPolicy, Residency, ResourceDef, ScopeId, SleepReason, ToolDef, ToolError,
+    ToolUpdate, Visibility, WakeReason,
 };
+use app_mcp_core::{Activation, AppOverview, Risk, WakeDescriptor};
 use app_mcp_protocol::ErrorKind;
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
 
 /// JS 能精确表示的最大整数（2^53 - 1）。
 pub const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 
-/// 区分"字段缺省"（外层 `None`）与"字段为 null"（`Some(None)`）。
-fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(de).map(Some)
+/// JS 数字句柄 → u64。非整数、负数或超出安全整数范围视为无效。
+///
+/// @error `无效的<what>：<数值>`。
+/// @why 数值经 serde_json 的 `Number` 格式化（复用已链接的 zmij），不引入 `f64` 的 `Display`（体积）。
+pub fn handle(id: f64, what: &str) -> Result<u64, String> {
+    if id.is_finite() && id >= 0.0 && id.fract() == 0.0 && id <= MAX_SAFE_INTEGER as f64 {
+        return Ok(id as u64);
+    }
+    let shown = match serde_json::Number::from_f64(id) {
+        Some(n) => n.to_string(),
+        None if id.is_nan() => "NaN".to_owned(),
+        None if id > 0.0 => "Infinity".to_owned(),
+        None => "-Infinity".to_owned(),
+    };
+    Err(format!("无效的{what}：{shown}"))
 }
 
 fn scope_handle(scope: Option<f64>) -> Result<Option<ScopeId>, String> {
-    match scope {
-        None => Ok(None),
-        Some(s) if s.is_finite() && s >= 0.0 && s.fract() == 0.0 && s <= MAX_SAFE_INTEGER as f64 => {
-            Ok(Some(ScopeId(s as u64)))
-        }
-        Some(s) => Err(format!("无效的 scope 句柄：{s}")),
-    }
+    scope.map(|s| handle(s, " scope 句柄").map(ScopeId)).transpose()
 }
 
 pub fn parse_wake_reason(s: &str) -> Result<WakeReason, String> {
@@ -37,7 +44,7 @@ pub fn parse_wake_reason(s: &str) -> Result<WakeReason, String> {
         "app" => Ok(WakeReason::App),
         "visible" => Ok(WakeReason::Visible),
         "cold-start" => Ok(WakeReason::ColdStart),
-        other => Err(format!("无效的唤醒原因：{other:?}")),
+        other => Err(format!("无效的唤醒原因：\"{other}\"")),
     }
 }
 
@@ -47,7 +54,7 @@ pub fn parse_sleep_reason(s: &str) -> Result<SleepReason, String> {
         "grace" => Ok(SleepReason::Grace),
         "background" => Ok(SleepReason::Background),
         "app" => Ok(SleepReason::App),
-        other => Err(format!("无效的休眠原因：{other:?}")),
+        other => Err(format!("无效的休眠原因：\"{other}\"")),
     }
 }
 
@@ -56,49 +63,183 @@ pub fn parse_visibility(s: &str) -> Result<Visibility, String> {
         "visible" => Ok(Visibility::Visible),
         "hidden" => Ok(Visibility::Hidden),
         "frozen" => Ok(Visibility::Frozen),
-        other => Err(format!("无效的可见性：{other:?}")),
+        other => Err(format!("无效的可见性：\"{other}\"")),
     }
+}
+
+// ---------------------------------------------------------------------------
+// JSON 输入读取
+// ---------------------------------------------------------------------------
+
+/// 从 JS 传入的 JSON 值构造。
+///
+/// @error 返回中文说明（不含"格式错误"前缀，由调用方加上所在参数名）。
+pub trait FromJson: Sized {
+    fn from_json(value: Value) -> Result<Self, String>;
+}
+
+/// JSON 对象的字段读取器：逐个取走字段；`null` 与缺省等同（与 serde 的 `Option` 一致），未知字段忽略。
+///
+/// @error 类型不符：`字段 <key> 应为<类型>`；必填字段缺失：`缺少字段 <key>`；嵌套对象的错误前加 `<key>.`。
+struct Fields(Map<String, Value>);
+
+impl Fields {
+    fn new(value: Value) -> Result<Self, String> {
+        match value {
+            Value::Object(map) => Ok(Fields(map)),
+            _ => Err("应为对象".to_owned()),
+        }
+    }
+
+    fn take(&mut self, key: &str) -> Option<Value> {
+        self.0.remove(key).filter(|v| !v.is_null())
+    }
+
+    fn expect<T>(&mut self, key: &str, kind: &str, read: impl FnOnce(Value) -> Option<T>) -> Result<Option<T>, String> {
+        self.take(key).map(|v| read(v).ok_or_else(|| format!("字段 {key} 应为{kind}"))).transpose()
+    }
+
+    fn string(&mut self, key: &str) -> Result<Option<String>, String> {
+        self.expect(key, "字符串", |v| match v {
+            Value::String(s) => Some(s),
+            _ => None,
+        })
+    }
+
+    fn required_string(&mut self, key: &str) -> Result<String, String> {
+        self.string(key)?.ok_or_else(|| format!("缺少字段 {key}"))
+    }
+
+    fn u64(&mut self, key: &str) -> Result<Option<u64>, String> {
+        self.expect(key, "非负整数", |v| v.as_u64())
+    }
+
+    fn f64(&mut self, key: &str) -> Result<Option<f64>, String> {
+        self.expect(key, "数字", |v| v.as_f64())
+    }
+
+    fn bool(&mut self, key: &str) -> Result<Option<bool>, String> {
+        self.expect(key, "布尔值", |v| v.as_bool())
+    }
+
+    fn strings(&mut self, key: &str) -> Result<Option<Vec<String>>, String> {
+        self.expect(key, "字符串数组", |v| match v {
+            Value::Array(items) => items
+                .into_iter()
+                .map(|item| match item {
+                    Value::String(s) => Some(s),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        })
+    }
+
+    /// 任意 JSON 值（`null` 视为缺省）。
+    fn value(&mut self, key: &str) -> Option<Value> {
+        self.take(key)
+    }
+
+    /// 区分缺省（`None`）与显式 `null`（`Some(None)`）。
+    fn nullable(&mut self, key: &str) -> Option<Option<Value>> {
+        self.0.remove(key).map(|v| (!v.is_null()).then_some(v))
+    }
+
+    /// 嵌套对象，由 `T` 读取。
+    fn object<T: FromJson>(&mut self, key: &str) -> Result<Option<T>, String> {
+        self.take(key).map(|v| T::from_json(v).map_err(|e| format!("{key}.{e}"))).transpose()
+    }
+
+    /// 协议类型（枚举、`AppOverview`、`WakeDescriptor`）：沿用其 serde 定义。
+    fn protocol<T: DeserializeOwned>(&mut self, key: &str) -> Result<Option<T>, String> {
+        self.take(key).map(|v| protocol_value(v).map_err(|e| format!("字段 {key}：{e}"))).transpose()
+    }
+}
+
+fn protocol_value<T: DeserializeOwned>(value: Value) -> Result<T, String> {
+    serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
 // 配置
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct JsReconnect {
     pub initial_delay_ms: Option<u64>,
     pub max_delay_ms: Option<u64>,
     pub multiplier: Option<f64>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+impl FromJson for JsReconnect {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        Ok(JsReconnect {
+            initial_delay_ms: f.u64("initialDelayMs")?,
+            max_delay_ms: f.u64("maxDelayMs")?,
+            multiplier: f.f64("multiplier")?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct JsHeartbeat {
     pub interval_ms: Option<u64>,
     pub timeout_ms: Option<u64>,
     pub hidden_timeout_ms: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+impl FromJson for JsHeartbeat {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        Ok(JsHeartbeat {
+            interval_ms: f.u64("intervalMs")?,
+            timeout_ms: f.u64("timeoutMs")?,
+            hidden_timeout_ms: f.u64("hiddenTimeoutMs")?,
+        })
+    }
+}
+
+/// `'persistent' | 'idle' | 'on-demand'`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JsLifecycleMode {
     Persistent,
     Idle,
     OnDemand,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+impl JsLifecycleMode {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "persistent" => Some(JsLifecycleMode::Persistent),
+            "idle" => Some(JsLifecycleMode::Idle),
+            "on-demand" => Some(JsLifecycleMode::OnDemand),
+            _ => None,
+        }
+    }
+}
+
+/// `'keep' | 'exit-when-idle' | 'exit-always'`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JsResidency {
     Keep,
     ExitWhenIdle,
     ExitAlways,
 }
 
+impl JsResidency {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "keep" => Some(JsResidency::Keep),
+            "exit-when-idle" => Some(JsResidency::ExitWhenIdle),
+            "exit-always" => Some(JsResidency::ExitAlways),
+            _ => None,
+        }
+    }
+}
+
 /// 生命周期策略（spec/lifecycle.md 第 3 节）。未提供的字段取核心默认值。
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct JsLifecycle {
     pub mode: Option<JsLifecycleMode>,
     pub idle_timeout_ms: Option<u64>,
@@ -107,6 +248,26 @@ pub struct JsLifecycle {
     pub residency: Option<JsResidency>,
     /// 形如 `{ kind: 'web-url', target: location.href, background: false }`。
     pub wake: Option<WakeDescriptor>,
+}
+
+impl FromJson for JsLifecycle {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        let mode = f.string("mode")?;
+        let residency = f.string("residency")?;
+        Ok(JsLifecycle {
+            mode: mode
+                .map(|s| JsLifecycleMode::parse(&s).ok_or_else(|| format!("无效的生命周期模式：\"{s}\"")))
+                .transpose()?,
+            idle_timeout_ms: f.u64("idleTimeoutMs")?,
+            hidden_idle_timeout_ms: f.u64("hiddenIdleTimeoutMs")?,
+            grace_ms: f.u64("graceMs")?,
+            residency: residency
+                .map(|s| JsResidency::parse(&s).ok_or_else(|| format!("无效的驻留策略：\"{s}\"")))
+                .transpose()?,
+            wake: f.protocol("wake")?,
+        })
+    }
 }
 
 impl JsLifecycle {
@@ -134,8 +295,7 @@ impl JsLifecycle {
 }
 
 /// `new WasmClient(config)` 的配置对象。未提供的可选字段取核心默认值。
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct JsConfig {
     pub app_id: String,
     pub app_name: String,
@@ -159,6 +319,36 @@ pub struct JsConfig {
     pub handshake_timeout_ms: Option<u64>,
     /// 生命周期策略，缺省 `persistent`。
     pub lifecycle: Option<JsLifecycle>,
+}
+
+impl FromJson for JsConfig {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        let max_concurrent_calls = f
+            .u64("maxConcurrentCalls")?
+            .map(|n| usize::try_from(n).map_err(|_| "字段 maxConcurrentCalls 超出范围".to_owned()))
+            .transpose()?;
+        Ok(JsConfig {
+            app_id: f.required_string("appId")?,
+            app_name: f.required_string("appName")?,
+            instance_id: f.required_string("instanceId")?,
+            client_kind: f.protocol("clientKind")?,
+            sdk_version: f.string("sdkVersion")?,
+            app_version: f.string("appVersion")?,
+            origin: f.string("origin")?,
+            instance_title: f.string("instanceTitle")?,
+            instance_url: f.string("instanceUrl")?,
+            token: f.string("token")?,
+            launch_token: f.string("launchToken")?,
+            reconnect: f.object("reconnect")?,
+            heartbeat: f.object("heartbeat")?,
+            max_concurrent_calls,
+            resource_update_throttle_ms: f.u64("resourceUpdateThrottleMs")?,
+            overview: f.protocol("overview")?,
+            handshake_timeout_ms: f.u64("handshakeTimeoutMs")?,
+            lifecycle: f.object("lifecycle")?,
+        })
+    }
 }
 
 impl JsConfig {
@@ -215,11 +405,10 @@ impl JsConfig {
 // 定义
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct JsToolDef {
     pub name: String,
-    #[serde(default)]
+    /// 缺省为空字符串。
     pub description: String,
     pub input_schema: Value,
     pub risk: Option<Risk>,
@@ -228,6 +417,22 @@ pub struct JsToolDef {
     /// 缺省 true。
     pub enabled: Option<bool>,
     pub scope: Option<f64>,
+}
+
+impl FromJson for JsToolDef {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        Ok(JsToolDef {
+            name: f.required_string("name")?,
+            description: f.string("description")?.unwrap_or_default(),
+            input_schema: f.value("inputSchema").ok_or_else(|| "缺少字段 inputSchema".to_owned())?,
+            risk: f.protocol("risk")?,
+            activation: f.protocol("activation")?,
+            title: f.string("title")?,
+            enabled: f.bool("enabled")?,
+            scope: f.f64("scope")?,
+        })
+    }
 }
 
 impl JsToolDef {
@@ -245,17 +450,40 @@ impl JsToolDef {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// 部分更新：缺省字段不变；`activation` / `title` 区分缺省（外层 `None`）与 `null`（`Some(None)`，表示清除）。
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct JsToolUpdate {
     pub description: Option<String>,
     pub input_schema: Option<Value>,
     pub risk: Option<Risk>,
-    #[serde(default, deserialize_with = "double_option")]
     pub activation: Option<Option<Activation>>,
-    #[serde(default, deserialize_with = "double_option")]
     pub title: Option<Option<String>>,
     pub enabled: Option<bool>,
+}
+
+impl FromJson for JsToolUpdate {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        let activation = match f.nullable("activation") {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(v)) => Some(Some(protocol_value(v).map_err(|e| format!("字段 activation：{e}"))?)),
+        };
+        let title = match f.nullable("title") {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(Value::String(s))) => Some(Some(s)),
+            Some(Some(_)) => return Err("字段 title 应为字符串".to_owned()),
+        };
+        Ok(JsToolUpdate {
+            description: f.string("description")?,
+            input_schema: f.value("inputSchema"),
+            risk: f.protocol("risk")?,
+            activation,
+            title,
+            enabled: f.bool("enabled")?,
+        })
+    }
 }
 
 impl JsToolUpdate {
@@ -271,14 +499,25 @@ impl JsToolUpdate {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct JsResourceDef {
     pub name: String,
-    #[serde(default)]
+    /// 缺省为空字符串。
     pub description: String,
     pub mime_type: Option<String>,
     pub scope: Option<f64>,
+}
+
+impl FromJson for JsResourceDef {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        Ok(JsResourceDef {
+            name: f.required_string("name")?,
+            description: f.string("description")?.unwrap_or_default(),
+            mime_type: f.string("mimeType")?,
+            scope: f.f64("scope")?,
+        })
+    }
 }
 
 impl JsResourceDef {
@@ -296,29 +535,46 @@ impl JsResourceDef {
 // 结果
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct JsToolError {
     pub kind: ErrorKind,
-    #[serde(default)]
+    /// 缺省为空字符串。
     pub message: String,
     pub details: Option<Value>,
 }
 
+impl FromJson for JsToolError {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        Ok(JsToolError {
+            kind: f.protocol("kind")?.ok_or_else(|| "缺少字段 kind".to_owned())?,
+            message: f.string("message")?.unwrap_or_default(),
+            details: f.value("details"),
+        })
+    }
+}
+
 /// handler / 资源读取的结果：`{ data, stateHints? }` 或 `{ error: { kind, message, details? } }`。
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct JsCallOutcome {
     pub data: Option<Value>,
     pub state_hints: Option<Vec<String>>,
     pub error: Option<JsToolError>,
 }
 
+impl FromJson for JsCallOutcome {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        Ok(JsCallOutcome { data: f.value("data"), state_hints: f.strings("stateHints")?, error: f.object("error")? })
+    }
+}
+
 impl JsCallOutcome {
     fn error_into_core(e: JsToolError) -> ToolError {
         let err = ToolError::new(e.kind, e.message);
         match e.details {
-            Some(Value::Null) | None => err,
             Some(d) => err.with_details(d),
+            None => err,
         }
     }
 
@@ -344,36 +600,38 @@ impl JsCallOutcome {
 // 状态与事件
 // ---------------------------------------------------------------------------
 
-/// 连接状态，形状与 `@app-mcp/web` 的 `ConnectionState` 一致（`retryAt` 为核心时钟）。
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "kebab-case")]
+/// 连接状态，形状与 `@app-mcp/web` 的 `ConnectionState` 一致（`retryAt` 为核心时钟），见 [`JsState::to_value`]。
+#[derive(Clone, Debug, PartialEq)]
 pub enum JsState {
     Idle,
     Connecting,
     Handshaking,
     PendingPairing,
     Connected,
-    Backoff {
-        #[serde(rename = "retryAt")]
-        retry_at: u64,
-        /// 本次连接失败 / 断开的原因与错误码（spec/protocol.md 10.1）；普通断线时省略。
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        code: Option<ConnectionErrorCode>,
-    },
-    Rejected {
-        reason: String,
-        code: ConnectionErrorCode,
-    },
+    /// 本次连接失败 / 断开的原因与错误码（spec/protocol.md 10.1）；普通断线时为 `None`，输出时省略。
+    Backoff { retry_at: u64, reason: Option<String>, code: Option<ConnectionErrorCode> },
+    Rejected { reason: String, code: ConnectionErrorCode },
     Stopped,
     Dormant,
     Waking,
     /// 对端不是 app-mcp Host（spec/protocol.md 1.6）。
-    HostMismatch {
-        reason: String,
-        code: ConnectionErrorCode,
-    },
+    HostMismatch { reason: String, code: ConnectionErrorCode },
+}
+
+/// 由 `(键, 值)` 构造 JSON 对象。
+///
+/// @why 手工构造输出对象而不用 `derive(Serialize)`：省去每个类型一套序列化代码（WASM 体积）。
+/// 逐个插入而不是 `collect`：`collect` 会引入 `BTreeMap` 的批量构建与稳定排序代码。
+fn object(fields: Vec<(&str, Value)>) -> Value {
+    let mut map = Map::new();
+    for (k, v) in fields {
+        map.insert(k.to_owned(), v);
+    }
+    Value::Object(map)
+}
+
+fn reason_code(status: &str, reason: &str, code: ConnectionErrorCode) -> Value {
+    object(vec![("status", status.into()), ("reason", reason.into()), ("code", code.as_str().into())])
 }
 
 impl JsState {
@@ -396,6 +654,35 @@ impl JsState {
             }
         }
     }
+
+    /// `{ status: <kebab-case>, ... }`。
+    pub fn to_value(&self) -> Value {
+        let status = |s: &str| object(vec![("status", s.into())]);
+        match self {
+            JsState::Idle => status("idle"),
+            JsState::Connecting => status("connecting"),
+            JsState::Handshaking => status("handshaking"),
+            JsState::PendingPairing => status("pending-pairing"),
+            JsState::Connected => status("connected"),
+            JsState::Backoff { retry_at, reason, code } => {
+                let mut v = object(vec![("status", "backoff".into()), ("retryAt", (*retry_at).into())]);
+                if let Value::Object(map) = &mut v {
+                    if let Some(reason) = reason {
+                        map.insert("reason".to_owned(), reason.as_str().into());
+                    }
+                    if let Some(code) = code {
+                        map.insert("code".to_owned(), code.as_str().into());
+                    }
+                }
+                v
+            }
+            JsState::Rejected { reason, code } => reason_code("rejected", reason, *code),
+            JsState::Stopped => status("stopped"),
+            JsState::Dormant => status("dormant"),
+            JsState::Waking => status("waking"),
+            JsState::HostMismatch { reason, code } => reason_code("host-mismatch", reason, *code),
+        }
+    }
 }
 
 fn cancel_reason(r: CancelReason) -> &'static str {
@@ -407,9 +694,8 @@ fn cancel_reason(r: CancelReason) -> &'static str {
     }
 }
 
-/// `pollEvent()` 返回的事件对象，`type` 为 camelCase 的事件名。
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+/// `pollEvent()` 返回的事件，见 [`JsEvent::to_value`]（`type` 为 camelCase 的事件名，字段 camelCase）。
+#[derive(Clone, Debug, PartialEq)]
 pub enum JsEvent {
     Connect,
     Disconnect,
@@ -442,6 +728,35 @@ impl JsEvent {
             Event::IdleExit => JsEvent::IdleExit,
         }
     }
+
+    /// `{ type: <camelCase>, ... }`。
+    pub fn to_value(self) -> Value {
+        match self {
+            JsEvent::Connect => object(vec![("type", "connect".into())]),
+            JsEvent::Disconnect => object(vec![("type", "disconnect".into())]),
+            JsEvent::Send { text } => object(vec![("type", "send".into()), ("text", text.into())]),
+            JsEvent::InvokeTool { call_id, tool, name, arguments } => object(vec![
+                ("type", "invokeTool".into()),
+                ("callId", call_id.into()),
+                ("tool", tool.into()),
+                ("name", name.into()),
+                ("arguments", arguments),
+            ]),
+            JsEvent::CancelTool { call_id, reason } => {
+                object(vec![("type", "cancelTool".into()), ("callId", call_id.into()), ("reason", reason.into())])
+            }
+            JsEvent::ReadResource { read, resource, name } => object(vec![
+                ("type", "readResource".into()),
+                ("read", read.into()),
+                ("resource", resource.into()),
+                ("name", name.into()),
+            ]),
+            JsEvent::StateChanged { state } => object(vec![("type", "stateChanged".into()), ("state", state.to_value())]),
+            JsEvent::Paired { token } => object(vec![("type", "paired".into()), ("token", token.into())]),
+            JsEvent::Warning { message } => object(vec![("type", "warning".into()), ("message", message.into())]),
+            JsEvent::IdleExit => object(vec![("type", "idleExit".into())]),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -452,7 +767,7 @@ mod tests {
 
     #[test]
     fn config_defaults_and_overrides() {
-        let c: JsConfig = serde_json::from_value(json!({
+        let c: JsConfig = JsConfig::from_json(json!({
             "appId": "shop", "appName": "商城", "instanceId": "i1",
             "sdkVersion": "9.9.9", "token": "t", "maxConcurrentCalls": 0,
             "heartbeat": { "timeoutMs": 5 }
@@ -472,7 +787,7 @@ mod tests {
 
     #[test]
     fn config_overview() {
-        let c: JsConfig = serde_json::from_value(json!({
+        let c: JsConfig = JsConfig::from_json(json!({
             "appId": "shop", "appName": "商城", "instanceId": "i1",
             "overview": { "summary": "演示商城", "body": "## 能力范围", "locale": "zh-CN" }
         }))
@@ -485,7 +800,7 @@ mod tests {
 
     #[test]
     fn tool_def_defaults() {
-        let d: JsToolDef = serde_json::from_value(json!({
+        let d: JsToolDef = JsToolDef::from_json(json!({
             "name": "cart.add", "description": "加入购物车",
             "inputSchema": { "type": "object" }, "risk": "os-sensitive", "scope": 3
         }))
@@ -497,13 +812,13 @@ mod tests {
         assert_eq!(d.activation, None);
 
         let bad: JsToolDef =
-            serde_json::from_value(json!({ "name": "x", "inputSchema": {}, "scope": 1.5 })).unwrap();
+            JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "scope": 1.5 })).unwrap();
         assert!(bad.into_core().is_err());
     }
 
     #[test]
     fn tool_update_distinguishes_missing_and_null() {
-        let u: JsToolUpdate = serde_json::from_value(json!({ "title": null, "enabled": false })).unwrap();
+        let u: JsToolUpdate = JsToolUpdate::from_json(json!({ "title": null, "enabled": false })).unwrap();
         let u = u.into_core();
         assert_eq!(u.title, Some(None));
         assert_eq!(u.activation, None);
@@ -513,15 +828,15 @@ mod tests {
 
     #[test]
     fn outcome_conversion() {
-        let ok: JsCallOutcome = serde_json::from_value(json!({ "data": { "a": 1 }, "stateHints": ["cart"] })).unwrap();
+        let ok: JsCallOutcome = JsCallOutcome::from_json(json!({ "data": { "a": 1 }, "stateHints": ["cart"] })).unwrap();
         let ok = ok.into_call().unwrap();
         assert_eq!(ok.data, json!({ "a": 1 }));
         assert_eq!(ok.state_hints, vec!["cart".to_owned()]);
 
-        let empty: JsCallOutcome = serde_json::from_value(json!({})).unwrap();
+        let empty: JsCallOutcome = JsCallOutcome::from_json(json!({})).unwrap();
         assert_eq!(empty.into_read().unwrap(), Value::Null);
 
-        let err: JsCallOutcome = serde_json::from_value(json!({
+        let err: JsCallOutcome = JsCallOutcome::from_json(json!({
             "error": { "kind": "INVALID_INPUT", "message": "bad", "details": { "path": "a" } }
         }))
         .unwrap();
@@ -530,36 +845,45 @@ mod tests {
         assert_eq!(err.message, "bad");
         assert_eq!(err.details, Some(json!({ "path": "a" })));
 
-        let bad_kind = serde_json::from_value::<JsCallOutcome>(json!({ "error": { "kind": "NOPE" } }));
+        let bad_kind = JsCallOutcome::from_json(json!({ "error": { "kind": "NOPE" } }));
         assert!(bad_kind.is_err());
     }
 
     #[test]
     fn state_shape() {
-        let s = serde_json::to_value(JsState::from_core(&ConnectionState::Backoff { retry_at: 42, reason: None, code: None }))
-            .unwrap();
-        assert_eq!(s, json!({ "status": "backoff", "retryAt": 42 }));
-        let s = serde_json::to_value(JsState::from_core(&ConnectionState::Backoff {
-            retry_at: 42,
-            reason: Some("无法连接".into()),
-            code: Some(ConnectionErrorCode::ConnectFailed),
-        }))
-        .unwrap();
-        assert_eq!(s, json!({ "status": "backoff", "retryAt": 42, "reason": "无法连接", "code": "CONNECT_FAILED" }));
-        let s = serde_json::to_value(JsState::from_core(&ConnectionState::PendingPairing)).unwrap();
-        assert_eq!(s, json!({ "status": "pending-pairing" }));
-        let s = serde_json::to_value(JsState::from_core(&ConnectionState::Rejected {
-            reason: "r".into(),
-            code: ConnectionErrorCode::OriginNotAllowed,
-        }))
-        .unwrap();
-        assert_eq!(s, json!({ "status": "rejected", "reason": "r", "code": "ORIGIN_NOT_ALLOWED" }));
-        let s = serde_json::to_value(JsState::from_core(&ConnectionState::HostMismatch {
-            reason: "m".into(),
-            code: ConnectionErrorCode::HostNotAppMcp,
-        }))
-        .unwrap();
-        assert_eq!(s, json!({ "status": "host-mismatch", "reason": "m", "code": "HOST_NOT_APP_MCP" }));
+        let cases = [
+            (ConnectionState::Idle, json!({ "status": "idle" })),
+            (ConnectionState::Connecting, json!({ "status": "connecting" })),
+            (ConnectionState::Handshaking, json!({ "status": "handshaking" })),
+            (ConnectionState::PendingPairing, json!({ "status": "pending-pairing" })),
+            (ConnectionState::Connected, json!({ "status": "connected" })),
+            (
+                ConnectionState::Backoff { retry_at: 42, reason: None, code: None },
+                json!({ "status": "backoff", "retryAt": 42 }),
+            ),
+            (
+                ConnectionState::Backoff {
+                    retry_at: 42,
+                    reason: Some("无法连接".into()),
+                    code: Some(ConnectionErrorCode::ConnectFailed),
+                },
+                json!({ "status": "backoff", "retryAt": 42, "reason": "无法连接", "code": "CONNECT_FAILED" }),
+            ),
+            (
+                ConnectionState::Rejected { reason: "r".into(), code: ConnectionErrorCode::OriginNotAllowed },
+                json!({ "status": "rejected", "reason": "r", "code": "ORIGIN_NOT_ALLOWED" }),
+            ),
+            (ConnectionState::Stopped, json!({ "status": "stopped" })),
+            (ConnectionState::Dormant, json!({ "status": "dormant" })),
+            (ConnectionState::Waking, json!({ "status": "waking" })),
+            (
+                ConnectionState::HostMismatch { reason: "m".into(), code: ConnectionErrorCode::HostNotAppMcp },
+                json!({ "status": "host-mismatch", "reason": "m", "code": "HOST_NOT_APP_MCP" }),
+            ),
+        ];
+        for (state, expected) in cases {
+            assert_eq!(JsState::from_core(&state).to_value(), expected);
+        }
     }
 
     #[test]
@@ -597,13 +921,13 @@ mod tests {
             ),
         ];
         for (ev, expected) in cases {
-            assert_eq!(serde_json::to_value(JsEvent::from_core(ev)).unwrap(), expected);
+            assert_eq!(JsEvent::from_core(ev).to_value(), expected);
         }
     }
 
     #[test]
     fn config_lifecycle() {
-        let c: JsConfig = serde_json::from_value(json!({
+        let c: JsConfig = JsConfig::from_json(json!({
             "appId": "shop", "appName": "商城", "instanceId": "i1", "handshakeTimeoutMs": 0,
             "lifecycle": {
                 "mode": "on-demand", "graceMs": 3000, "residency": "exit-when-idle",
@@ -622,9 +946,9 @@ mod tests {
         assert_eq!(w.kind, app_mcp_core::WakeKind::WebUrl);
         assert!(!w.background);
 
-        let c: JsConfig = serde_json::from_value(json!({ "appId": "shop", "appName": "商城", "instanceId": "i1" })).unwrap();
+        let c: JsConfig = JsConfig::from_json(json!({ "appId": "shop", "appName": "商城", "instanceId": "i1" })).unwrap();
         assert_eq!(c.into_core().lifecycle, LifecyclePolicy::default());
-        let bad = serde_json::from_value::<JsConfig>(json!({
+        let bad = JsConfig::from_json(json!({
             "appId": "shop", "appName": "商城", "instanceId": "i1", "lifecycle": { "mode": "sometimes" }
         }));
         assert!(bad.is_err());
@@ -642,5 +966,58 @@ mod tests {
     fn visibility_parse() {
         assert_eq!(parse_visibility("frozen").unwrap(), Visibility::Frozen);
         assert!(parse_visibility("gone").is_err());
+    }
+
+    #[test]
+    fn json_reader_errors_and_null_handling() {
+        let err = |v: Value| JsConfig::from_json(v).unwrap_err();
+        assert_eq!(err(json!([])), "应为对象");
+        assert_eq!(err(json!({ "appName": "a", "instanceId": "i" })), "缺少字段 appId");
+        assert_eq!(err(json!({ "appId": 1, "appName": "a", "instanceId": "i" })), "字段 appId 应为字符串");
+        let base = json!({ "appId": "a", "appName": "a", "instanceId": "i" });
+        let with = |k: &str, v: Value| {
+            let mut o = base.clone();
+            o[k] = v;
+            o
+        };
+        assert_eq!(err(with("maxConcurrentCalls", json!(-1))), "字段 maxConcurrentCalls 应为非负整数");
+        assert_eq!(err(with("heartbeat", json!({ "timeoutMs": "x" }))), "heartbeat.字段 timeoutMs 应为非负整数");
+        assert_eq!(err(with("reconnect", json!({ "multiplier": true }))), "reconnect.字段 multiplier 应为数字");
+        assert!(err(with("clientKind", json!("tv"))).starts_with("字段 clientKind："));
+        assert_eq!(err(with("lifecycle", json!({ "residency": "x" }))), "lifecycle.无效的驻留策略：\"x\"");
+        // null 等同缺省；未知字段忽略
+        let c = JsConfig::from_json(with("token", Value::Null)).unwrap();
+        assert_eq!(c.token, None);
+        assert!(JsConfig::from_json(with("unknownField", json!(1))).is_ok());
+
+        assert_eq!(JsToolDef::from_json(json!({ "name": "t" })).unwrap_err(), "缺少字段 inputSchema");
+        assert_eq!(
+            JsToolDef::from_json(json!({ "name": "t", "inputSchema": {}, "enabled": 1 })).unwrap_err(),
+            "字段 enabled 应为布尔值"
+        );
+        assert_eq!(JsResourceDef::from_json(json!({ "name": 3 })).unwrap_err(), "字段 name 应为字符串");
+        assert_eq!(
+            JsToolUpdate::from_json(json!({ "title": 1 })).unwrap_err(),
+            "字段 title 应为字符串"
+        );
+        let u = JsToolUpdate::from_json(json!({ "activation": null, "title": "x", "risk": "write" })).unwrap();
+        assert_eq!(u.activation, Some(None));
+        assert_eq!(u.title, Some(Some("x".into())));
+        assert_eq!(u.risk, Some(Risk::Write));
+        assert_eq!(
+            JsCallOutcome::from_json(json!({ "stateHints": ["a", 1] })).unwrap_err(),
+            "字段 stateHints 应为字符串数组"
+        );
+        assert_eq!(JsCallOutcome::from_json(json!({ "error": {} })).unwrap_err(), "error.缺少字段 kind");
+    }
+
+    #[test]
+    fn handle_validation() {
+        assert_eq!(handle(7.0, "句柄"), Ok(7));
+        assert_eq!(handle(1.5, "句柄").unwrap_err(), "无效的句柄：1.5");
+        assert_eq!(handle(-1.0, "句柄").unwrap_err(), "无效的句柄：-1.0");
+        assert_eq!(handle(f64::NAN, "句柄").unwrap_err(), "无效的句柄：NaN");
+        assert_eq!(handle(f64::NEG_INFINITY, "句柄").unwrap_err(), "无效的句柄：-Infinity");
+        assert!(handle(MAX_SAFE_INTEGER as f64 + 2.0, "句柄").is_err());
     }
 }

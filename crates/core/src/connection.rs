@@ -2,7 +2,7 @@
 //!
 //! 这里是 [`Client`] 的私有实现部分；公开方法在 `lib.rs` 中，只做参数检查与转发。
 
-use std::collections::HashMap;
+use crate::vec_map::VecMap;
 
 use app_mcp_protocol as proto;
 use proto::{
@@ -55,10 +55,10 @@ pub(crate) struct Subscription {
 /// 连接相关的内部状态，断线时整体重置。
 #[derive(Debug, Default)]
 pub(crate) struct Session {
-    pub pending_requests: HashMap<i64, Outgoing>,
+    pub pending_requests: VecMap<i64, Outgoing>,
     pub heartbeat: Heartbeat,
-    pub reads: HashMap<ReadId, PendingRead>,
-    pub subscriptions: HashMap<String, Subscription>,
+    pub reads: VecMap<ReadId, PendingRead>,
+    pub subscriptions: VecMap<String, Subscription>,
     /// 握手超时时刻（`Handshaking` 期间）。
     pub handshake_deadline: Option<Millis>,
     /// 本次 `app/hello` 携带了恢复令牌。
@@ -352,14 +352,14 @@ impl Client {
 
         // 资源节流
         let throttle = self.config.resource_update_throttle_ms;
-        let mut due: Vec<String> = self
+        // 按名称升序（VecMap 的迭代顺序）
+        let due: Vec<String> = self
             .session
             .subscriptions
             .iter()
             .filter(|(_, s)| s.pending && s.last_sent.is_none_or(|t| now >= t.saturating_add(throttle)))
             .map(|(n, _)| n.clone())
             .collect();
-        due.sort();
         for name in due {
             self.send_resource_updated(name, now);
         }
@@ -509,7 +509,7 @@ impl Client {
             return;
         }
         if subscribe {
-            self.session.subscriptions.entry(p.name).or_default();
+            self.session.subscriptions.get_or_insert_default(p.name);
         } else {
             self.session.subscriptions.remove(&p.name);
         }

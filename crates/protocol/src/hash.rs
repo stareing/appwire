@@ -20,13 +20,13 @@ pub fn canonical_json(value: &Value) -> String {
 fn write_canonical(value: &Value, out: &mut String) {
     match value {
         Value::Object(map) => {
-            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
-            entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+            let entries: Vec<(&String, &Value)> = map.iter().collect();
             out.push('{');
-            for (i, (k, v)) in entries.into_iter().enumerate() {
+            for (i, &at) in sorted_order(entries.iter().map(|(k, _)| k.as_str())).iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
+                let (k, v) = entries[at];
                 write_string(k, out);
                 out.push(':');
                 write_canonical(v, out);
@@ -49,6 +49,16 @@ fn write_canonical(value: &Value, out: &mut String) {
     }
 }
 
+/// 按名称的 UTF-8 字节序排列后的下标；同名保持输入顺序（结果与稳定排序相同）。
+///
+/// @why 键与下标组成的元组互不相等，`sort_unstable` 即可得到确定结果；
+///      三处排序共用这一个单态化，减小 WASM 体积。
+fn sorted_order<'a>(names: impl Iterator<Item = &'a str>) -> Vec<usize> {
+    let mut keys: Vec<(&[u8], usize)> = names.enumerate().map(|(i, n)| (n.as_bytes(), i)).collect();
+    keys.sort_unstable();
+    keys.into_iter().map(|(_, i)| i).collect()
+}
+
 fn write_string(s: &str, out: &mut String) {
     out.push_str(&Value::String(s.to_owned()).to_string());
 }
@@ -59,10 +69,12 @@ fn to_value<T: serde::Serialize>(v: &T) -> Value {
 
 /// 计算 `toolsHash`。输入顺序无关（内部按名称排序）。
 pub fn tools_hash(tools: &ToolsSyncParams, resources: &ResourcesSyncParams) -> String {
-    let mut t: Vec<&ToolInfo> = tools.tools.iter().collect();
-    t.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
-    let mut r: Vec<&ResourceInfo> = resources.resources.iter().collect();
-    r.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+    let t: Vec<&ToolInfo> =
+        sorted_order(tools.tools.iter().map(|x| x.name.as_str())).into_iter().map(|i| &tools.tools[i]).collect();
+    let r: Vec<&ResourceInfo> = sorted_order(resources.resources.iter().map(|x| x.name.as_str()))
+        .into_iter()
+        .map(|i| &resources.resources[i])
+        .collect();
     let doc = serde_json::json!({ "resources": to_value(&r), "tools": to_value(&t) });
     let digest = Sha256::digest(canonical_json(&doc).as_bytes());
     digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
@@ -129,5 +141,11 @@ mod tests {
         t.tools[0].description.push('!');
         assert_ne!(tools_hash(&t, &vector_resources()), h);
         assert_ne!(tools_hash(&vector_tools(), &ResourcesSyncParams::default()), h);
+    }
+
+    #[test]
+    fn sorted_order_is_byte_order_and_stable_for_equal_names() {
+        assert_eq!(sorted_order(["b", "a", "b", "é", "Z"].into_iter()), [4, 1, 0, 2, 3]);
+        assert!(sorted_order(std::iter::empty()).is_empty());
     }
 }

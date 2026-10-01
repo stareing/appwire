@@ -27,6 +27,7 @@ mod calls;
 mod connection;
 mod lifecycle;
 mod registry;
+mod vec_map;
 
 use std::collections::VecDeque;
 
