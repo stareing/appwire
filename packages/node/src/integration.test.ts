@@ -35,7 +35,7 @@ interface HostLine {
   type: string
   name?: string
   result?: unknown
-  error?: { code: number; message: string; data?: { kind?: string } }
+  error?: { code: number; message: string; data?: { kind?: string; [key: string]: unknown } }
   tools?: string[]
   resources?: string[]
   toolInfo?: Record<string, unknown>
@@ -132,6 +132,7 @@ describe.skipIf(!existsSync(nativePath))('真实原生模块', () => {
         '--invoke', 'cart.add', '--args', '{}',
         '--invoke', 'fail.reject', '--args', '{}',
         '--invoke', 'fail.boom', '--args', '{}',
+        '--invoke', 'fail.login', '--args', '{}',
         '--read', 'cart',
       ])
       const paired: string[] = []
@@ -173,6 +174,12 @@ describe.skipIf(!existsSync(nativePath))('真实原生模块', () => {
           throw new Error('炸了')
         },
       })
+      app.tool('fail.login', {
+        description: 'l',
+        handler: () => {
+          throw ToolCallError.userActionRequired('请先登录', { reason: 'login', uri: 'demo://login' })
+        },
+      })
       const states: string[] = []
       app.onStateChange((s) => states.push(s.status))
       app.start()
@@ -187,6 +194,10 @@ describe.skipIf(!existsSync(nativePath))('真实原生模块', () => {
       expect(invokes[1]).toMatchObject({ name: 'cart.add', result: { data: { count: 1 }, stateHints: ['cart'] } })
       expect(invokes[2]).toMatchObject({ name: 'fail.reject', error: { message: '用户拒绝', data: { kind: 'USER_REJECTED' } } })
       expect(invokes[3]).toMatchObject({ name: 'fail.boom', error: { message: '炸了', data: { kind: 'HANDLER_ERROR' } } })
+      expect(invokes[4]).toMatchObject({
+        name: 'fail.login',
+        error: { code: -32019, message: '请先登录', data: { kind: 'USER_ACTION_REQUIRED', reason: 'login', uri: 'demo://login' } },
+      })
       expect(byType('read')[0]).toMatchObject({ name: 'cart', result: { contents: { items: 1 } } })
       expect(byType('progress')).toEqual([expect.objectContaining({ progress: 1, total: 2, message: '相加' })])
       expect(states).toContain('connected')

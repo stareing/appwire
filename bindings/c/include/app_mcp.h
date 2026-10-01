@@ -52,7 +52,10 @@
  *   · am_call_fail 的错误类别新增 "RATE_LIMITED"、"PAYLOAD_TOO_LARGE"（由 Host 产生，App 一般不用）。
  * - v10（第 16 项 O2 / N7a，spec/protocol.md 3.3）：只新增函数 am_call_progress（报告调用进度）。默认行为变化：
  *   同一 callId 在 5 分钟内重复到达时不再调用 handler，而是返回首次结果（执行中重复到达的挂到同一次执行上）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v10 仍为 3。）
+ * - v11（spec/protocol.md 第 4 节）：只新增函数 am_call_fail_user_action（以 USER_ACTION_REQUIRED 结束调用：需要用户
+ *   本人操作，可带 reason / uri）。am_call_fail 的错误类别新增 "USER_ACTION_REQUIRED"（App 返回）与
+ *   "POLICY_DENIED"（由 Host 的策略规则产生，App 一般不用）。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v11 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -476,12 +479,19 @@ AmStatus am_call_complete(AmCall *call, const char *data_json, const char *const
  * AM_ERR_INVALID_ARGUMENT，调用以 HANDLER_ERROR 结束并消费 call。调用已被取消时仍然消费 call，并返回
  * AM_ERR_ALREADY_COMPLETED。call 为 NULL 时返回 AM_ERR_INVALID_ARGUMENT。 */
 AmStatus am_call_complete_ex(AmCall *call, const AmCallResult *result);
-/* 失败完成并消费 call。kind 为协议错误类别字符串（如 "HANDLER_ERROR"），未知值按 HANDLER_ERROR 处理。 */
+/* 失败完成并消费 call。kind 为协议错误类别字符串（如 "HANDLER_ERROR"、"USER_REJECTED"、"USER_ACTION_REQUIRED"，
+ * 完整列表见 spec/protocol.md 第 4 节），未知值按 HANDLER_ERROR 处理。 */
 AmStatus am_call_fail(AmCall *call, const char *kind, const char *message);
 /* v3：失败完成并消费 call，附带结构化详情（JSON 文本；对象的字段合并进错误的 data，其他值放在
  * data.details）。details_json 为 NULL 等同 am_call_fail。details_json 非法时返回 AM_ERR_INVALID_JSON
  * 且不消费 call（可以重试）。 */
 AmStatus am_call_fail_with_details(AmCall *call, const char *kind, const char *message, const char *details_json);
+/* v11：以 USER_ACTION_REQUIRED 失败完成并消费 call（spec/protocol.md 第 4 节）：需要用户本人操作后才能继续
+ * （登录过期、系统权限未授予、需切到前台、需在 App 内确认等）。message 为面向用户的说明（NULL 视为空串）；
+ * reason 为可选类别（建议 "login" / "permission" / "foreground" / "confirm"，也可为其他值），uri 为可选的 App 内入口
+ * （深链接等）；二者为 NULL 时不出现在错误的 data 中。非法 UTF-8 按替换字符处理。总是消费 call；调用已被取消时
+ * 返回 AM_ERR_ALREADY_COMPLETED。call 为 NULL 时返回 AM_ERR_INVALID_ARGUMENT。 */
+AmStatus am_call_fail_user_action(AmCall *call, const char *message, const char *reason, const char *uri);
 /* v3：延长持有：调用完成后仍阻止自动休眠（handler 发起的长任务），直到 am_hold_release。
  * 不消费 call；调用已结束时返回 AM_ERR_ALREADY_COMPLETED。 */
 AmStatus am_call_hold(const AmCall *call, AmHold **out);

@@ -28,6 +28,8 @@ import {
 } from '@app-mcp/web'
 
 export type { AppMcpBridge, HelloReply, MainEvent, OpReply, RendererOp } from '@app-mcp/web'
+/** 页面 handler 抛出以指定错误类别（如 `ToolCallError.userActionRequired(...)`），类别与详情经插件原样送到 Rust 侧。 */
+export { ToolCallError, type UserActionReason, type UserActionRequiredOptions } from '@app-mcp/web'
 export { BRIDGE_VERSION }
 
 /** 插件命令（页面 → Rust）。App 的 capability 需包含 `app-mcp:default`。 */

@@ -2,7 +2,8 @@
 //
 // 用法：result_cpp_test <fake_host 可执行文件>
 // 检查：带注解 + outputSchema 注册后 Host 收到的 ToolInfo（fake_host --tool-info）；
-//       以 pending + state_resource + summary + 内容注解完成后 Host 收到的结果；普通返回值不变（回归）。
+//       以 pending + state_resource + summary + 内容注解完成后 Host 收到的结果；普通返回值不变（回归）；
+//       USER_ACTION_REQUIRED（v11）：抛出 UserActionRequired 带 reason / uri、Call::fail_user_action 不带时 data 只有 kind。
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -36,7 +37,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     std::string cmd = std::string("\"") + argv[1] +
-                      "\" --addr 127.0.0.1:0 --tool-info --invoke order.submit --invoke plain --timeout-ms 15000";
+                      "\" --addr 127.0.0.1:0 --tool-info --invoke order.submit --invoke plain"
+                      " --invoke login --invoke front --timeout-ms 15000";
     FILE* host = popen(cmd.c_str(), "r");
     if (!host) return 1;
 
@@ -81,9 +83,16 @@ int main(int argc, char** argv) {
         call.complete(R"({"ok":true})");
         call.progress(3);  // 已完成：无副作用
     }, plain_options);
+    auto login = client.register_tool("login", "需登录", [](app_mcp::Call) {
+        throw app_mcp::UserActionRequired("登录已过期", std::string(app_mcp::user_action_reason::login),
+                                          std::string("shop://login"));
+    }, plain_options);
+    auto front = client.register_tool("front", "需前台", [](app_mcp::Call call) {
+        call.fail_user_action("请切到前台");
+    }, plain_options);
     client.start();
 
-    bool info_ok = false, plain_info_ok = false, result_ok = false, plain_ok = false;
+    bool info_ok = false, plain_info_ok = false, result_ok = false, plain_ok = false, login_ok = false, front_ok = false;
     int progress_lines = 0;
     bool progress_ok = false;
     while (std::fgets(buf, sizeof buf, host)) {
@@ -107,6 +116,13 @@ int main(int argc, char** argv) {
         if (has("\"type\":\"invoke\"") && has("\"plain\"")) {
             plain_ok = has(R"("result":{"data":{"ok":true}})");
         }
+        if (has("\"type\":\"invoke\"") && has("\"login\"")) {
+            login_ok = has(R"("error":{"code":-32019,"data":{"kind":"USER_ACTION_REQUIRED","reason":"login",)"
+                           R"("uri":"shop://login"},"message":"登录已过期"})");
+        }
+        if (has("\"type\":\"invoke\"") && has("\"front\"")) {
+            front_ok = has(R"("error":{"code":-32019,"data":{"kind":"USER_ACTION_REQUIRED"},"message":"请切到前台"})");
+        }
     }
     int status = pclose(host);
 #ifndef _WIN32
@@ -117,6 +133,8 @@ int main(int argc, char** argv) {
     EXPECT(plain_info_ok);
     EXPECT(result_ok);
     EXPECT(plain_ok);
+    EXPECT(login_ok);
+    EXPECT(front_ok);
     EXPECT(progress_ok);
     EXPECT(progress_lines == 2);
     int rc = g_failed == 0 ? 0 : 1;

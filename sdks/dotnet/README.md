@@ -110,6 +110,9 @@ var outcome = await hub.CallAsync("notes.add", new { text = "买牛奶" });  // 
 - 被拒绝的调用照常返回 `CallOutcome`，`Error.Kind` 为 `HubError.RateLimited` / `HubError.PayloadTooLarge`（`Details` 字段见 spec/protocol.md 第 4 节）。
 - App 的声明：`HubToolInfo.Annotations`（Agent 实际看到的注解：声明优先、缺少的按 risk 推导）、`HubToolInfo.OutputSchema`、
   `ApprovalRequest.Annotations`；结构化结果：`CallOutcome.Status`（`HubResultStatus`）、`StateResource`、`Summary`、`Annotations`。
+- 策略挂点（spec/hub-api.md 3.13）：`HubOptions.Policy`（`HubPolicy`）或运行中 `AppMcpHub.SetPolicy(...)`；`hide` 使 App / 工具从所有列表消失
+  （调用按 `TOOL_NOT_FOUND`），`deny` 使调用以 `HubError.PolicyDenied` 结束（`Details.ruleId`）。无规则时行为不变；生效规则与命中次数见
+  `HubStatusInfo.Policy`。
 
 ### 休眠与唤醒（spec/hub-api.md 3.5）
 
@@ -158,6 +161,7 @@ var client = AppMcpClient.Create(new AppMcpClientOptions
 | `IdleExit` 事件 | 休眠完成且 `Residency` 允许退出时触发（在 Dispatcher 上），App 自行决定是否退出 |
 | `ClientStatus.Dormant` / `Waking` | 新增状态 |
 | `ToolCallException(kind, message, details)` | 带结构化详情失败：对象字段合并进错误 `data`，其他值放在 `data.details` |
+| `UserActionRequiredException(message, reason, uri)` | 需要用户本人操作（登录过期、权限未授予、需切到前台等）：以 `USER_ACTION_REQUIRED` 失败，`reason`（`UserActionReason.Login` 等）与 `uri`（App 内入口）可选 |
 
 ### 功耗选项（spec/lifecycle.md 第 11、13 节）
 

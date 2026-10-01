@@ -59,6 +59,12 @@ pub enum Command {
     /// 撤销 setup：按 <home>/setup.json 只删除 setup 写入的 Agent 条目（文件自写入后未变化时整文件恢复备份）、
     /// 卸载 setup 安装的服务；--purge 同时删除 <home>/bin。
     Uninstall(UninstallArgs),
+    /// 策略规则（<home>/policy.json）：hide 让 App / 工具对所有 Agent 不可见（调用按不存在），deny 拒绝调用 / 唤醒
+    /// （POLICY_DENIED）。无规则时默认放行。按注解匹配等完整写法直接编辑文件后 reload（spec/hub-api.md 3.13）。
+    Policy {
+        #[command(subcommand)]
+        action: PolicyCommand,
+    },
     /// 打印本地访问令牌（不存在时生成），供 MCP 客户端配置 `Authorization: Bearer <令牌>`。
     Token {
         #[command(flatten)]
@@ -67,6 +73,58 @@ pub enum Command {
         #[arg(long)]
         regenerate: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PolicyCommand {
+    /// 显示规则文件与运行中 Host 生效的规则（含命中次数、最近一次重载错误）。
+    Show {
+        #[command(flatten)]
+        home: HomeArg,
+        /// 输出 JSON。
+        #[arg(long)]
+        json: bool,
+    },
+    /// 校验规则文件（默认 <home>/policy.json）；不合法时退出码 1。
+    Validate {
+        #[command(flatten)]
+        home: HomeArg,
+        /// 要校验的文件。
+        #[arg(value_name = "FILE")]
+        file: Option<PathBuf>,
+    },
+    /// 让运行中的 Host 重新加载规则文件；不合法时 Host 保留之前的规则（退出码 1）。Host 未运行时退出码 3。
+    Reload(HomeArg),
+    /// 添加 hide 规则：App（或其中的工具）对所有 Agent 不可见，调用按不存在处理。
+    Hide(PolicyRuleArgs),
+    /// 添加 deny 规则：调用返回 POLICY_DENIED（工具仍可见）。
+    Deny {
+        #[command(flatten)]
+        rule: PolicyRuleArgs,
+        /// 同时禁止唤醒（App 未运行 / 休眠时不启动它）。
+        #[arg(long)]
+        wake: bool,
+    },
+    /// 按 id 删除规则。
+    Remove {
+        #[command(flatten)]
+        home: HomeArg,
+        id: String,
+    },
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct PolicyRuleArgs {
+    #[command(flatten)]
+    pub home: HomeArg,
+    /// appId（或上游名）；末尾可用 * 通配，如 shop*；* 表示全部。
+    pub app: String,
+    /// 工具局部名（不含 appId），末尾可用 * 通配，如 cart.*；省略时作用于整个 App。
+    #[arg(long, value_name = "NAME")]
+    pub tool: Option<String>,
+    /// 规则 id，默认由动作与目标生成（如 hide-shop-cart.add）。
+    #[arg(long)]
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -532,6 +590,11 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Doctor { json: true, .. })));
         let cli = Cli::try_parse_from(["app-mcp-host", "status"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Status(_))));
+        let cli = Cli::try_parse_from(["app-mcp-host", "policy", "deny", "shop", "--tool", "pay*", "--wake"]).unwrap();
+        let Some(Command::Policy { action: PolicyCommand::Deny { rule, wake: true } }) = cli.command else { panic!() };
+        assert_eq!((rule.app.as_str(), rule.tool.as_deref()), ("shop", Some("pay*")));
+        let cli = Cli::try_parse_from(["app-mcp-host", "policy", "reload", "--home", "/tmp/x"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Policy { action: PolicyCommand::Reload(_) })));
 
         let cli = Cli::try_parse_from(["app-mcp-host", "setup"]).unwrap();
         let Some(Command::Setup(a)) = cli.command else { panic!() };

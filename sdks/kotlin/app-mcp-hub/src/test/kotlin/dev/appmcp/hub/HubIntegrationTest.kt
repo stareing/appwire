@@ -366,6 +366,78 @@ class HubIntegrationTest {
         }
     }
 
+    /** 策略挂点（spec/hub-api.md 3.13）：hide / deny、setPolicy 不合法时保留旧规则、命中计数。 */
+    @Test
+    fun policyHideDenyAndReplace() = runBlocking {
+        assertFailsWith<FfiHubException.InvalidConfig> {
+            Hub.start(
+                HubConfig(
+                    enableListen = false,
+                    enableIpc = false,
+                    policy = PolicyConfig(listOf(PolicyRule("bad id", PolicyAction.HIDE, "notes"))),
+                ),
+            )
+        }
+        val hub = Hub.start(
+            HubConfig(
+                listen = "127.0.0.1:0",
+                enableIpc = false,
+                policy = PolicyConfig(
+                    listOf(
+                        PolicyRule("hide-clear", PolicyAction.HIDE, "notes", tool = "clear"),
+                        PolicyRule("deny-add", PolicyAction.DENY, "notes", tool = "add"),
+                    ),
+                ),
+            ),
+        )
+        val app = AppMcp.create(
+            AppMcpConfig("notes", "笔记", hostUrl = "ws://${hub.listenAddr}/app", dispatcher = Dispatchers.Default),
+        )
+        app.tool("add", "添加") { args, _ -> args }
+        app.tool("clear", "清空") { _, _ -> buildJsonObject { put("cleared", true) } }
+        app.tool("echo", "回显") { args, _ -> args }
+        fun names() = hub.tools(ToolFilter(apps = listOf("notes"), includeBuiltin = false)).map { it.tool }.sorted()
+        try {
+            app.start()
+            withTimeout(10.seconds) { while (names().size < 2) delay(20) }
+            assertEquals(listOf("add", "echo"), names(), "hide 的工具不在列表中")
+
+            assertEquals("TOOL_NOT_FOUND", hub.callTool("notes.clear").error?.kind)
+            val denied = hub.callTool("notes.add", buildJsonObject { put("a", 1) }).error
+            assertEquals("POLICY_DENIED", denied?.kind)
+            assertEquals("deny-add", denied?.details?.jsonObject?.get("ruleId")?.jsonPrimitive?.content)
+            assertEquals(null, hub.callTool("notes.echo", buildJsonObject { put("a", 1) }).error)
+            assertEquals(listOf(1uL, 1uL), hub.policy().rules.map { it.hits })
+            assertEquals(2, hub.status().policy?.rules?.size)
+
+            // 不合法（hide 不能写 hooks）→ INVALID_INPUT，旧规则继续生效
+            val e = assertFailsWith<FfiHubException.Tool> {
+                hub.setPolicy(
+                    PolicyConfig(listOf(PolicyRule("h", PolicyAction.HIDE, "notes", hooks = listOf(PolicyHook.CALL)))),
+                )
+            }
+            assertEquals("INVALID_INPUT", e.kind)
+            assertEquals("POLICY_DENIED", hub.callTool("notes.add", buildJsonObject { put("a", 1) }).error?.kind)
+            assertTrue(hub.policy().lastError != null, "失败记入 lastError")
+
+            // 按注解匹配的规则经 FFI 往返；替换后 add 恢复、echo 隐藏
+            val byAnnotation = PolicyRule(
+                "deny-destructive", PolicyAction.DENY, "*",
+                annotations = AnnotationMatch(destructiveHint = true),
+                hooks = listOf(PolicyHook.CALL, PolicyHook.WAKE),
+            )
+            hub.setPolicy(PolicyConfig(listOf(PolicyRule("hide-echo", PolicyAction.HIDE, "notes", tool = "echo"), byAnnotation)))
+            assertEquals(listOf("add", "clear"), names())
+            assertEquals(null, hub.callTool("notes.add", buildJsonObject { put("a", 1) }).error)
+            val st = hub.policy()
+            assertEquals(null, st.lastError, "成功加载后清除")
+            assertEquals(byAnnotation, st.rules[1].rule)
+        } finally {
+            app.close()
+            hub.close()
+        }
+    }
+
     @Test
     fun nativeAppOverIpc() = runBlocking {
         val windows = System.getProperty("os.name").lowercase().contains("windows")

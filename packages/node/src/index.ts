@@ -57,6 +57,8 @@ export type {
   ToolHandle,
   ToolResult,
   ToolResultEnvelope,
+  UserActionReason,
+  UserActionRequiredOptions,
   Visibility,
   WakeDescriptor,
   WakeKind,

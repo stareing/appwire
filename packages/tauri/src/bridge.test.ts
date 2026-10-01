@@ -4,7 +4,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { BRIDGE_VERSION, findElectronBridge, type AppMcpBridge, type MainEvent, type RendererOp } from '@app-mcp/web'
-import { createTauriAppMcp, getTauriBridge, isTauri, TAURI_DISPATCH_FN, TAURI_OP_COMMAND } from './index'
+import { createTauriAppMcp, getTauriBridge, isTauri, TAURI_DISPATCH_FN, TAURI_OP_COMMAND, ToolCallError } from './index'
 import { BRIDGE_SCRIPT, createFakeTauri } from './fake-tauri'
 
 const quiet = { debug() {}, warn: vi.fn(), error: vi.fn() }
@@ -155,6 +155,46 @@ describe('createTauriAppMcp', () => {
     appMcp.dispose()
     await fake.waitFor((op) => op.op === 'reset')
     expect(states).toEqual(['connected', 'dormant', 'stopped'])
+  })
+
+  it('USER_ACTION_REQUIRED 的类别与 reason / uri 经注入脚本送到 Rust 侧；缺省字段省略', async () => {
+    const fake = createFakeTauri()
+    const appMcp = createTauriAppMcp({ appId: 'shop', appName: '示例商城', bridge: bridgeOf(fake.window), logger: quiet })
+    appMcp.tool('order.pay', {
+      description: '付款',
+      handler: () => {
+        throw ToolCallError.userActionRequired('请先登录', { reason: 'login', uri: 'shop://login' })
+      },
+    })
+    appMcp.tool('camera.scan', {
+      description: '扫码',
+      handler: () => {
+        throw ToolCallError.userActionRequired('请切到前台')
+      },
+    })
+    const toolId = async (name: string) =>
+      ((await fake.waitFor((op) => op.op === 'tool.register' && op.name === name)) as Extract<RendererOp, { op: 'tool.register' }>).id
+    fake.emit({ type: 'call', callId: 'c1', toolId: await toolId('order.pay'), input: {} })
+    fake.emit({ type: 'call', callId: 'c2', toolId: await toolId('camera.scan'), input: {} })
+    const full = await fake.waitFor((op) => op.op === 'call.result' && op.callId === 'c1')
+    const bare = await fake.waitFor((op) => op.op === 'call.result' && op.callId === 'c2')
+    // Tauri IPC 按 JSON 序列化
+    expect(JSON.parse(JSON.stringify(full))).toEqual({
+      op: 'call.result',
+      callId: 'c1',
+      ok: false,
+      kind: 'USER_ACTION_REQUIRED',
+      message: '请先登录',
+      details: { reason: 'login', uri: 'shop://login' },
+    })
+    expect(JSON.parse(JSON.stringify(bare))).toEqual({
+      op: 'call.result',
+      callId: 'c2',
+      ok: false,
+      kind: 'USER_ACTION_REQUIRED',
+      message: '请切到前台',
+    })
+    appMcp.dispose()
   })
 
   it('连接 ID 经注入脚本从 hello 回复与 state 事件到达页面', async () => {

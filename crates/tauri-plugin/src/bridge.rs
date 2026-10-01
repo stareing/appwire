@@ -178,7 +178,8 @@ enum PageOp {
 }
 
 /// `Outcome`：`{ok: true, data, stateHints?, status?, stateResource?, summary?, annotations?}` /
-/// `{ok: false, kind, message}`。
+/// `{ok: false, kind, message, details?}`（`details` 为对象时随错误的 `data` 发给 Host，如 `USER_ACTION_REQUIRED` 的
+/// `reason` / `uri`）。
 ///
 /// @compat `status` / `annotations` 先按原始 JSON 接收、在 [`Outcome::call_result`] 中转换：取值不合法时
 /// 调用以 `HANDLER_ERROR` 结束，而不是整条消息解析失败（那样调用会一直挂到超时）。
@@ -201,6 +202,9 @@ struct Outcome {
     kind: Option<String>,
     #[serde(default)]
     message: Option<String>,
+    /// @compat 可选字段（旧页面不发送）；只接受对象，其他值忽略。
+    #[serde(default)]
+    details: Option<Value>,
 }
 
 impl Outcome {
@@ -246,6 +250,11 @@ impl Outcome {
             .clone()
             .unwrap_or_else(|| "页面 handler 执行失败".to_owned());
         (kind, message)
+    }
+
+    /// 失败的结构化详情（JSON 文本）；缺省或不是对象时为 `None`。
+    fn details_json(&self) -> Option<String> {
+        self.details.as_ref().filter(|d| d.is_object()).map(Value::to_string)
     }
 }
 
@@ -723,7 +732,7 @@ impl Session {
                     }
                 } else {
                     let (kind, message) = outcome.error();
-                    call.fail(kind, &message)
+                    call.fail_with_details(kind, &message, outcome.details_json().as_deref())
                 };
                 match done {
                     // 结果无法提交（如数据不是合法 JSON）：调用以失败结束，并把原因告诉页面。

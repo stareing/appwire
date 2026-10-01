@@ -159,6 +159,15 @@ void test_lifecycle() {
 
     EXPECT(am_call_fail_with_details(nullptr, "HANDLER_ERROR", "x", "{}") == AM_ERR_INVALID_ARGUMENT);
 
+    // v11：UserActionRequired 是 kind 为 USER_ACTION_REQUIRED 的 ToolCallError
+    app_mcp::UserActionRequired ua("请先登录", std::string(app_mcp::user_action_reason::login));
+    const app_mcp::ToolCallError& as_tool_error = ua;
+    EXPECT(as_tool_error.kind() == "USER_ACTION_REQUIRED");
+    EXPECT(ua.reason() == std::optional<std::string>("login"));
+    EXPECT(!ua.uri().has_value());
+    EXPECT(std::string(ua.what()) == "请先登录");
+    EXPECT(am_call_fail_user_action(nullptr, "x", nullptr, nullptr) == AM_ERR_INVALID_ARGUMENT);
+
     AmLifecycle lc;
     std::memset(&lc, 0xff, sizeof lc);
     am_lifecycle_init(&lc);

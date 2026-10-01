@@ -35,6 +35,13 @@ export type ErrorKind =
   | 'RATE_LIMITED'
   /** 参数 / 结果 / 资源内容超过大小上限（不截断）。`details`：`part`（`arguments` / `result` / `resource`）、`sizeBytes`、`limitBytes`。 */
   | 'PAYLOAD_TOO_LARGE'
+  /**
+   * 被本机的 `deny` 策略规则拒绝（{@link PolicyConfig}），操作未执行；重试不会改变结果。
+   * `details`：`ruleId`（命中规则的 id，不附规则内容）、`hook`（`call` / `wake`）、`appId`、`tool`。
+   */
+  | 'POLICY_DENIED'
+  /** 需要用户本人操作（登录、授权、切到前台、在 App 内确认）后才能继续。`details`：`reason?`（`login` / `permission` / `foreground` / `confirm` 等）、`uri?`。 */
+  | 'USER_ACTION_REQUIRED'
 
 /**
  * 标准 MCP 工具注解（spec/protocol.md 第 3 节）。Hub 原样传递 App 的声明，不据此做判断；
@@ -149,6 +156,53 @@ export interface LimitsConfig {
 /** 结果与工具 `outputSchema` 不符时的处理：`off` 不校验；`log`（默认）只记日志；`reject` 调用以 `HANDLER_ERROR` 结束。 */
 export type OutputValidation = 'off' | 'log' | 'reject'
 
+/** 策略规则的动作：`hide` 不出现在任何列表中、调用为 `TOOL_NOT_FOUND`；`deny` 可见，在 `hooks` 指定的执行点以 `POLICY_DENIED` 拒绝。 */
+export type PolicyAction = 'hide' | 'deny'
+
+/** 策略执行点。规则的 `hooks` 只能写 `call` / `wake`（`list` 由 `hide` 隐式使用，`handle` 尚未实现）。 */
+export type PolicyHook = 'list' | 'call' | 'wake' | 'handle'
+
+/** 按 App 声明的 MCP 注解匹配：给出的每一项都与工具注解相等才命中（工具未声明该项时不命中）。至少给出一项。 */
+export interface AnnotationMatch {
+  readOnlyHint?: boolean
+  destructiveHint?: boolean
+  idempotentHint?: boolean
+  openWorldHint?: boolean
+}
+
+/** 一条策略规则。`tool` 与 `annotations` 都缺省时作用于整个 App。 */
+export interface PolicyRule {
+  /** `[A-Za-z0-9_.-]{1,64}`，在规则集中唯一；`POLICY_DENIED` 的 `details.ruleId`。 */
+  id: string
+  action: PolicyAction
+  /** appId（或上游名）：精确名，或以 `*` 结尾的前缀；`*` 匹配全部。 */
+  app: string
+  /** 工具局部名（不含 appId），规则同 `app`。 */
+  tool?: string
+  annotations?: AnnotationMatch
+  /** 只用于 `deny`：`call` / `wake` 的非空子集，缺省 `['call']`。 */
+  hooks?: PolicyHook[]
+}
+
+/** 策略规则集（spec/hub-api.md 3.13）：按顺序匹配，`deny` 取第一条命中的规则；空规则集 = 不做任何限制。 */
+export interface PolicyConfig {
+  rules?: PolicyRule[]
+}
+
+/** 一条生效的规则及其命中次数（自本规则集生效以来拒绝或按不存在处理的调用 / 唤醒次数，列表过滤不计）。 */
+export interface PolicyRuleStatus extends PolicyRule {
+  hits: number
+}
+
+/** 策略状态（`Hub.policy()`、`HubStatus.policy`）。 */
+export interface PolicyStatus {
+  rules: PolicyRuleStatus[]
+  /** 当前规则集生效的时刻（Unix 毫秒）。 */
+  loadedAtMs: number
+  /** 最近一次 `setPolicy` 失败的原因（之前的规则继续生效）；之后成功加载时清除。 */
+  lastError?: { message: string; atMs: number }
+}
+
 /** `Hub.start` 的配置。时长均为毫秒。 */
 export interface HubConfig {
   /**
@@ -208,6 +262,9 @@ export interface HubConfig {
   limits?: LimitsConfig
   /** 结果与 `outputSchema` 不符时的处理，缺省 `log`。 */
   outputValidation?: OutputValidation
+  // ---- 策略挂点（spec/hub-api.md 3.13）----
+  /** 隐藏 / 拒绝规则；缺省无规则（行为不变）。规则不合法时 `Hub.start` 失败。运行中用 `Hub.setPolicy` 替换。 */
+  policy?: PolicyConfig
   // ---- 渐进暴露（spec/hub-api.md 3.7）----
   /** 工具暴露方式，缺省 `auto`。 */
   toolExposure?: ToolExposure
@@ -530,6 +587,8 @@ export interface HubStatus {
   limits?: Required<LimitsConfig>
   /** 结果与 `outputSchema` 不符时的处理；旧 Hub 缺省。 */
   outputValidation?: OutputValidation
+  /** 策略规则、命中次数与最近的加载错误；旧 Hub 缺省。 */
+  policy?: PolicyStatus
 }
 
 /** 租约策略与统计。 */

@@ -2,11 +2,11 @@
 //! 端口被占用时说明占用者）。本配置目录的实例以登记文件为准，见 `lib.rs` 的 `running_instance`。
 //!
 //! [`fetch_status`]：读取运行中 Host 的 `GET /status`（`doctor`、`status`）——优先经本地 IPC（连接后核对监听方
-//! 是同一用户，与原生 SDK 相同），IPC 关闭时经 TCP 携带令牌。
+//! 是同一用户，与原生 SDK 相同），IPC 关闭时经 TCP 携带令牌。[`post_policy`]：`POST /policy`（`policy reload`），同样的通道与授权。
 
 use std::time::Duration;
 
-use app_mcp_hub::http_server::{HEALTH_PATH, STATUS_PATH};
+use app_mcp_hub::http_server::{HEALTH_PATH, POLICY_PATH, PolicyReply, STATUS_PATH};
 use app_mcp_hub::{Health, HubStatus};
 use app_mcp_protocol::Endpoint;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -74,14 +74,29 @@ fn bindable(addr: &str) -> bool {
     std::net::TcpListener::bind(addr).is_ok()
 }
 
-/// 在一条连接上发 `GET <path>`（`Connection: close`），读到连接关闭，返回 (状态码, 响应体)。
-async fn http_get<S>(mut stream: S, host: &str, path: &str, bearer: Option<&str>) -> Result<(u16, String), String>
+/// 发往运行中 Host 的一个请求（`GET /status`、`POST /policy`）。
+#[derive(Clone, Copy, Debug)]
+struct HostRequest<'a> {
+    method: &'static str,
+    path: &'static str,
+    /// JSON 请求体（`POST`）。
+    body: Option<&'a str>,
+}
+
+/// 在一条连接上发请求（`Connection: close`），读到连接关闭，返回 (状态码, 响应体)。
+async fn http_request<S>(mut stream: S, host: &str, req: HostRequest<'_>, bearer: Option<&str>) -> Result<(u16, String), String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let auth = bearer.map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
+    let body = req.body.unwrap_or_default();
+    let content = match req.body {
+        Some(b) => format!("Content-Type: application/json\r\nContent-Length: {}\r\n", b.len()),
+        None => String::new(),
+    };
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\n{auth}Connection: close\r\n\r\n"
+        "{} {} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\n{auth}{content}Connection: close\r\n\r\n{body}",
+        req.method, req.path
     );
     stream.write_all(request.as_bytes()).await.map_err(|e| format!("发送请求失败：{e}"))?;
     let mut buf = Vec::new();
@@ -121,6 +136,14 @@ fn parse_status(code: u16, body: &str) -> Result<HubStatus, String> {
 
 /// 经本地 IPC 端点读取 `/status`。连接后核对监听方是当前用户（防止他人抢占端点冒充 Host）。
 pub async fn fetch_status_ipc(endpoint: &str) -> Result<HubStatus, String> {
+    let (code, body) = request_ipc(endpoint, STATUS).await?;
+    parse_status(code, &body)
+}
+
+const STATUS: HostRequest<'static> = HostRequest { method: "GET", path: STATUS_PATH, body: None };
+
+/// 经本地 IPC 端点发请求。连接后核对监听方是当前用户。
+async fn request_ipc(endpoint: &str, req: HostRequest<'_>) -> Result<(u16, String), String> {
     let ep = Endpoint::parse(endpoint)?;
     let fut = async {
         match ep {
@@ -134,7 +157,7 @@ pub async fn fetch_status_ipc(endpoint: &str) -> Result<HubStatus, String> {
                 if cred.uid() != me {
                     return Err(format!("{} 的监听方属于其他用户（uid {}），拒绝连接", path.display(), cred.uid()));
                 }
-                http_get(stream, "localhost", STATUS_PATH, None).await
+                http_request(stream, "localhost", req, None).await
             }
             #[cfg(windows)]
             Endpoint::Pipe(name) => {
@@ -155,34 +178,66 @@ pub async fn fetch_status_ipc(endpoint: &str) -> Result<HubStatus, String> {
                 if owner != me {
                     return Err(format!("命名管道 {name} 的所有者（{owner}）不是当前用户，拒绝连接"));
                 }
-                http_get(client, "localhost", STATUS_PATH, None).await
+                http_request(client, "localhost", req, None).await
             }
             other => Err(format!("不是本平台的本地 IPC 端点：{other}")),
         }
     };
-    let (code, body) = tokio::time::timeout(CONNECT_TIMEOUT + READ_TIMEOUT, fut)
+    tokio::time::timeout(CONNECT_TIMEOUT + READ_TIMEOUT, fut)
         .await
-        .map_err(|_| "超时".to_owned())??;
-    parse_status(code, &body)
+        .map_err(|_| "超时".to_owned())?
 }
 
 /// 经 TCP 读取 `/status`（需要令牌）。
 pub async fn fetch_status_tcp(addr: &str, token: Option<&str>) -> Result<HubStatus, String> {
+    let (code, body) = request_tcp(addr, token, STATUS).await?;
+    parse_status(code, &body)
+}
+
+async fn request_tcp(addr: &str, token: Option<&str>, req: HostRequest<'_>) -> Result<(u16, String), String> {
     let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
         .map_err(|_| "连接超时".to_owned())?
         .map_err(|e| format!("连接 {addr} 失败：{e}"))?;
-    let (code, body) = http_get(stream, addr, STATUS_PATH, token).await?;
-    parse_status(code, &body)
+    http_request(stream, addr, req, token).await
+}
+
+/// 发往运行中 Host：有 IPC 端点时经 IPC，否则经 TCP 携带令牌。
+async fn request_host(
+    ipc_endpoint: Option<&str>,
+    listen: Option<&str>,
+    token: Option<&str>,
+    req: HostRequest<'_>,
+) -> Result<(u16, String), String> {
+    match (ipc_endpoint, listen) {
+        (Some(ep), _) => request_ipc(ep, req).await,
+        (None, Some(addr)) => request_tcp(addr, token, req).await,
+        (None, None) => Err("Host 既没有本地 IPC 端点也没有 TCP 监听".to_owned()),
+    }
 }
 
 /// 读取运行中 Host 的 `/status`：有 IPC 端点时经 IPC，否则经 TCP 携带令牌。
 pub async fn fetch_status(ipc_endpoint: Option<&str>, listen: Option<&str>, token: Option<&str>) -> Result<HubStatus, String> {
-    match (ipc_endpoint, listen) {
-        (Some(ep), _) => fetch_status_ipc(ep).await,
-        (None, Some(addr)) => fetch_status_tcp(addr, token).await,
-        (None, None) => Err("Host 既没有本地 IPC 端点也没有 TCP 监听".to_owned()),
+    let (code, body) = request_host(ipc_endpoint, listen, token, STATUS).await?;
+    parse_status(code, &body)
+}
+
+/// 把策略规则（`policy.json` 的原文）交给运行中的 Host 替换（`POST /policy`）。Host 校验不合法时返回
+/// `PolicyReply { ok: false, error }` 并保留之前的规则。
+///
+/// @error 连接失败、旧版 Host 不支持（404）、响应无法解析。
+pub async fn post_policy(
+    ipc_endpoint: Option<&str>,
+    listen: Option<&str>,
+    token: Option<&str>,
+    rules_json: &str,
+) -> Result<PolicyReply, String> {
+    let req = HostRequest { method: "POST", path: POLICY_PATH, body: Some(rules_json) };
+    let (code, body) = request_host(ipc_endpoint, listen, token, req).await?;
+    if code == 404 {
+        return Err("运行中的 Host 版本不支持重载策略规则（POST /policy），请升级后重启 Host".to_owned());
     }
+    serde_json::from_str(&body).map_err(|_| format!("HTTP {code}：{body}"))
 }
 
 /// 解析 `/healthz` 的 HTTP 响应（只支持 Content-Length / 读到 EOF 的响应体）。

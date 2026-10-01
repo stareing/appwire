@@ -92,7 +92,15 @@ def test_tool_call_error_validates_kind():
     with pytest.raises(ValueError):
         ToolCallError("NOT_A_KIND", "x")
     assert "HANDLER_ERROR" in app_mcp.ERROR_KINDS
-    assert {"RATE_LIMITED", "PAYLOAD_TOO_LARGE"} <= app_mcp.ERROR_KINDS
+    assert {"RATE_LIMITED", "PAYLOAD_TOO_LARGE", "POLICY_DENIED", "USER_ACTION_REQUIRED"} <= app_mcp.ERROR_KINDS
+
+
+def test_user_action_required_details():
+    e = ToolCallError.user_action_required("请先登录", app_mcp.UserActionReason.LOGIN, "shop://login")
+    assert (e.kind, e.message, e.details) == ("USER_ACTION_REQUIRED", "请先登录", {"reason": "login", "uri": "shop://login"})
+    assert ToolCallError.user_action_required("x", reason="custom").details == {"reason": "custom"}
+    assert ToolCallError.user_action_required("x", uri="shop://a").details == {"uri": "shop://a"}
+    assert ToolCallError.user_action_required("切到前台").details is None
 
 
 # ---------------------------------------------------------------------------

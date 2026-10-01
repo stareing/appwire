@@ -619,6 +619,28 @@ describe('工具调用', () => {
     expect(outcome()).toEqual({ error: { kind: 'USER_REJECTED', message: '用户取消', details: { step: 2 } } })
   })
 
+  it('ToolCallError.userActionRequired → USER_ACTION_REQUIRED，详情只含给出的 reason / uri', async () => {
+    const full = await invoke(() => {
+      throw ToolCallError.userActionRequired('请先登录', { reason: 'login', uri: 'shop://login' })
+    })
+    expect(full.outcome()).toEqual({
+      error: { kind: 'USER_ACTION_REQUIRED', message: '请先登录', details: { reason: 'login', uri: 'shop://login' } },
+    })
+    const uriOnly = await invoke(() => {
+      throw ToolCallError.userActionRequired('请在 App 内确认', { uri: 'shop://confirm/1' })
+    })
+    expect(uriOnly.outcome()).toEqual({
+      error: { kind: 'USER_ACTION_REQUIRED', message: '请在 App 内确认', details: { uri: 'shop://confirm/1' } },
+    })
+    const bare = await invoke(() => {
+      throw ToolCallError.userActionRequired('请切到前台', { reason: undefined })
+    })
+    expect(bare.outcome()).toEqual({ error: { kind: 'USER_ACTION_REQUIRED', message: '请切到前台' } })
+    const e = ToolCallError.userActionRequired('x', { reason: 'usb-key' })
+    expect(e).toBeInstanceOf(ToolCallError)
+    expect(e).toMatchObject({ name: 'ToolCallError', kind: 'USER_ACTION_REQUIRED', message: 'x', details: { reason: 'usb-key' } })
+  })
+
   it('其他异常 → HANDLER_ERROR', async () => {
     const { outcome } = await invoke(async () => {
       throw new Error('炸了')

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from app_mcp import AppMcp, ToolCallError, ToolContext, ToolResult
+from app_mcp import AppMcp, ToolCallError, ToolContext, ToolResult, UserActionReason
 
 pytestmark = pytest.mark.integration
 
@@ -63,6 +63,8 @@ def test_invoke_tools_via_fake_host(fake_host_bin: Path):
         "--invoke", "echo.async", "--args", '{"text": "你好"}',
         "--invoke", "cart.checkout", "--args", "{}",
         "--invoke", "boom",
+        "--invoke", "account.login",
+        "--invoke", "app.foreground",
         "--read", "cart",
         "--timeout-ms", "15000",
     )
@@ -88,6 +90,14 @@ def test_invoke_tools_via_fake_host(fake_host_bin: Path):
     @client.tool("boom", description="抛异常")
     def boom() -> None:
         raise RuntimeError("炸了")
+
+    @client.tool("account.login", description="需登录")
+    def need_login() -> None:
+        raise ToolCallError.user_action_required("登录已过期", UserActionReason.LOGIN, "shop://login")
+
+    @client.tool("app.foreground", description="需前台")
+    def need_foreground() -> None:
+        raise ToolCallError.user_action_required("请切到前台")
 
     @client.resource("cart", description="购物车")
     def cart() -> dict:
@@ -115,6 +125,13 @@ def test_invoke_tools_via_fake_host(fake_host_bin: Path):
     assert results["cart.checkout"]["error"]["data"]["kind"] == "USER_REJECTED"
     assert results["cart.checkout"]["error"]["message"] == "用户取消了结账"
     assert results["boom"]["error"]["data"]["kind"] == "HANDLER_ERROR"
+    assert results["account.login"]["error"]["message"] == "登录已过期"
+    assert results["account.login"]["error"]["data"] == {
+        "kind": "USER_ACTION_REQUIRED",
+        "reason": "login",
+        "uri": "shop://login",
+    }
+    assert results["app.foreground"]["error"]["data"] == {"kind": "USER_ACTION_REQUIRED"}
     assert results["cart"]["result"]["contents"] == {"items": ["A"]}
     assert threads and threads[0].startswith("app-mcp")
 

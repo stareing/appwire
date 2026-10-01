@@ -37,6 +37,7 @@ __all__ = [
     "ToolContext",
     "ToolResult",
     "ToolCallError",
+    "UserActionReason",
     "Dispatcher",
     "Hold",
 ]
@@ -223,6 +224,32 @@ class ToolCallError(Exception):
         self.kind = kind
         self.message = message
         self.details = details
+
+    @classmethod
+    def user_action_required(cls, message: str, reason: str | None = None, uri: str | None = None) -> ToolCallError:
+        """``USER_ACTION_REQUIRED``（spec/protocol.md 第 4 节）：需要用户本人操作后才能继续（登录过期、系统权限未授予、
+        需切到前台、需在 App 内确认），如
+        ``raise ToolCallError.user_action_required("登录已过期，请重新登录", UserActionReason.LOGIN, "shop://login")``。
+
+        @input message 面向用户的说明（Agent 应转告用户）
+        @input reason 可选类别：``UserActionReason`` 中的值或其他字符串；``None`` 时不出现在 ``data`` 中
+        @input uri 可选的 App 内入口（深链接等）；``None`` 时不出现在 ``data`` 中
+        """
+        fields = {k: v for k, v in (("reason", reason), ("uri", uri)) if v is not None}
+        return cls("USER_ACTION_REQUIRED", message, fields or None)
+
+
+class UserActionReason:
+    """``USER_ACTION_REQUIRED`` 的 ``data.reason`` 建议取值（接收方遇到其他值按原样展示）。"""
+
+    LOGIN = "login"
+    """登录已过期 / 未登录。"""
+    PERMISSION = "permission"
+    """系统权限未授予（相机、位置、通知等）。"""
+    FOREGROUND = "foreground"
+    """需要把 App 切到前台。"""
+    CONFIRM = "confirm"
+    """需要用户在 App 内确认。"""
 
 
 class Hold:

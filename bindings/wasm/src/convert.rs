@@ -1089,6 +1089,22 @@ mod tests {
 
         let bad_kind = JsCallOutcome::from_json(json!({ "error": { "kind": "NOPE" } }));
         assert!(bad_kind.is_err());
+
+        // USER_ACTION_REQUIRED（@app-mcp/web 的 ToolCallError.userActionRequired）：详情原样进入核心错误
+        let action = JsCallOutcome::from_json(json!({
+            "error": { "kind": "USER_ACTION_REQUIRED", "message": "请先登录", "details": { "reason": "login", "uri": "shop://login" } }
+        }))
+        .unwrap()
+        .into_call()
+        .unwrap_err();
+        assert_eq!(action, ToolError::user_action_required("请先登录", Some("login"), Some("shop://login")));
+        let bare = JsCallOutcome::from_json(json!({ "error": { "kind": "USER_ACTION_REQUIRED", "message": "切到前台" } }))
+            .unwrap()
+            .into_call()
+            .unwrap_err();
+        assert_eq!(bare, ToolError::user_action_required("切到前台", None, None));
+        let denied = JsCallOutcome::from_json(json!({ "error": { "kind": "POLICY_DENIED" } })).unwrap();
+        assert_eq!(denied.into_call().unwrap_err().kind, ErrorKind::PolicyDenied);
     }
 
     /// 第 14 项 S1 / 第 19 项 R2：工具注解与输出 schema；更新时 `null` 清除。

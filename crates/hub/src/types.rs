@@ -405,6 +405,9 @@ pub struct HubStatus {
     /// 结果与 `outputSchema` 不符时的处理；旧 Host 没有时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_validation: Option<crate::limits::OutputValidation>,
+    /// 策略规则与命中次数、最近的加载错误（spec/hub-api.md 3.13）；旧 Host 没有时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<crate::policy::PolicyStatus>,
 }
 
 /// 主 HTTP 服务的令牌策略。

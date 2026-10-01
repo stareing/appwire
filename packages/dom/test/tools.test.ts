@@ -368,9 +368,11 @@ describe('detach', () => {
 })
 
 describe('toErrorKind', () => {
-  it('识别全部协议错误类别（含 Host 侧的 RATE_LIMITED / PAYLOAD_TOO_LARGE），未知值归为 HANDLER_ERROR', () => {
+  it('识别全部协议错误类别（含 Host 侧的 RATE_LIMITED / PAYLOAD_TOO_LARGE / POLICY_DENIED），未知值归为 HANDLER_ERROR', () => {
     expect(toErrorKind('RATE_LIMITED')).toBe('RATE_LIMITED')
     expect(toErrorKind('PAYLOAD_TOO_LARGE')).toBe('PAYLOAD_TOO_LARGE')
+    expect(toErrorKind('POLICY_DENIED')).toBe('POLICY_DENIED')
+    expect(toErrorKind('USER_ACTION_REQUIRED')).toBe('USER_ACTION_REQUIRED')
     expect(toErrorKind('NOPE')).toBe('HANDLER_ERROR')
   })
 })

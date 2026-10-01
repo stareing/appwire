@@ -102,6 +102,85 @@ public sealed class HubLimits
     }
 }
 
+/// <summary>策略规则的动作（spec/hub-api.md 3.13）。</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<HubPolicyAction>))]
+public enum HubPolicyAction
+{
+    /// <summary>工具（或整个 App）不出现在任何列表中，调用为 TOOL_NOT_FOUND。</summary>
+    Hide,
+    /// <summary>可见，在 <see cref="HubPolicyRule.Hooks"/> 指定的执行点以 POLICY_DENIED 拒绝。</summary>
+    Deny,
+}
+
+/// <summary>策略执行点。规则的 Hooks 只能写 Call / Wake（List 由 Hide 隐式使用，Handle 尚未实现，写了校验报错）。</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<HubPolicyHook>))]
+public enum HubPolicyHook { List, Call, Wake, Handle }
+
+/// <summary>按 App 声明的 MCP 注解匹配：给出的每一项都与工具注解相等才命中（工具未声明该项时不命中）。至少给出一项。</summary>
+public sealed class HubAnnotationMatch
+{
+    public bool? ReadOnlyHint { get; set; }
+    public bool? DestructiveHint { get; set; }
+    public bool? IdempotentHint { get; set; }
+    public bool? OpenWorldHint { get; set; }
+
+    internal JsonObject ToJson()
+    {
+        var o = new JsonObject();
+        if (ReadOnlyHint is { } a) o["readOnlyHint"] = a;
+        if (DestructiveHint is { } b) o["destructiveHint"] = b;
+        if (IdempotentHint is { } c) o["idempotentHint"] = c;
+        if (OpenWorldHint is { } d) o["openWorldHint"] = d;
+        return o;
+    }
+}
+
+/// <summary>一条策略规则。Tool 与 Annotations 都为 null 时作用于整个 App。</summary>
+public sealed class HubPolicyRule
+{
+    /// <summary>规则标识：[A-Za-z0-9_.-]{1,64}，在规则集中唯一；POLICY_DENIED 的 Details.ruleId。</summary>
+    public required string Id { get; set; }
+    public required HubPolicyAction Action { get; set; }
+    /// <summary>appId（或上游名）：精确名，或以 * 结尾的前缀；"*" 匹配全部。</summary>
+    public required string App { get; set; }
+    /// <summary>工具局部名（不含 appId），规则同 App。</summary>
+    public string? Tool { get; set; }
+    public HubAnnotationMatch? Annotations { get; set; }
+    /// <summary>只用于 Deny：Call / Wake 的非空子集；null 为 [Call]。</summary>
+    public IList<HubPolicyHook>? Hooks { get; set; }
+
+    internal static string HookString(HubPolicyHook h) => h.ToString().ToLowerInvariant();
+
+    internal JsonObject ToJson()
+    {
+        var o = new JsonObject
+        {
+            ["id"] = Id,
+            ["action"] = Action.ToString().ToLowerInvariant(),
+            ["app"] = App,
+        };
+        if (Tool is not null) o["tool"] = Tool;
+        if (Annotations is { } m) o["annotations"] = m.ToJson();
+        if (Hooks is { } hooks) o["hooks"] = new JsonArray(hooks.Select(h => (JsonNode?)HookString(h)).ToArray());
+        return o;
+    }
+}
+
+/// <summary>
+/// 策略规则集（spec/hub-api.md 3.13）：按顺序匹配，Deny 取第一条命中的规则；空规则集 = 不做任何限制（默认）。
+/// 用于 <see cref="HubOptions.Policy"/> 与 <see cref="AppMcpHub.SetPolicy"/>。
+/// </summary>
+public sealed class HubPolicy
+{
+    public IList<HubPolicyRule> Rules { get; init; } = new List<HubPolicyRule>();
+
+    /// <summary>JSON 形式 {"rules":[{"id","action","app","tool"?,"annotations"?,"hooks"?}]}。</summary>
+    public string ToJsonString() => ToJson().ToJsonString();
+
+    internal JsonObject ToJson() =>
+        new() { ["rules"] = new JsonArray(Rules.Select(r => (JsonNode?)r.ToJson()).ToArray()) };
+}
+
 /// <summary>唤醒器配置（spec/hub-api.md 3.5）；<see cref="AppMcpHub"/> 的自定义唤醒回调优先。</summary>
 public sealed class WakerOptions
 {
@@ -209,6 +288,12 @@ public sealed class HubOptions
     /// <summary>结果与 outputSchema 不符时的处理（默认 <see cref="AppMcp.Hub.OutputValidation.Log"/>）。</summary>
     public OutputValidation? OutputValidation { get; set; }
 
+    // ---- 策略挂点（spec/hub-api.md 3.13）----
+
+    /// <summary>隐藏 / 拒绝规则；null = 无规则（行为不变）。规则不合法时启动失败（InvalidConfig）。
+    /// 运行中用 <see cref="AppMcpHub.SetPolicy"/> 替换。</summary>
+    public HubPolicy? Policy { get; set; }
+
     // ---- 渐进暴露（spec/hub-api.md 3.7）----
 
     /// <summary>工具暴露方式（默认 <see cref="AppMcp.Hub.ToolExposure.Auto"/>）。</summary>
@@ -280,6 +365,7 @@ public sealed class HubOptions
         if (Lease is { } lease) o["lease"] = lease.ToJson();
         if (Limits is { } limits) o["limits"] = limits.ToJson();
         if (OutputValidation is { } ov) o["outputValidation"] = ov.ToString().ToLowerInvariant();
+        if (Policy is { } policy) o["policy"] = policy.ToJson();
         if (ToolExposure is { } te) o["toolExposure"] = te.ToString().ToLowerInvariant();
         if (ToolExposureThreshold is { } tt)
         {
@@ -444,6 +530,10 @@ public sealed record HubError(string Kind, string Message, JsonElement? Details)
     public const string RateLimited = "RATE_LIMITED";
     /// <summary>参数、结果或资源内容超过 Hub 的大小上限。</summary>
     public const string PayloadTooLarge = "PAYLOAD_TOO_LARGE";
+    /// <summary>被本机的 Deny 策略规则拒绝，操作未执行；重试不会改变结果。Details：ruleId、hook（"call"/"wake"）、appId、tool。</summary>
+    public const string PolicyDenied = "POLICY_DENIED";
+    /// <summary>需要用户本人操作（登录、授权、切到前台、在 App 内确认）后才能继续。Details：reason?、uri?。</summary>
+    public const string UserActionRequired = "USER_ACTION_REQUIRED";
 }
 
 /// <summary>App 声明的调用结果业务状态（spec/protocol.md 3.2）。</summary>
@@ -605,7 +695,27 @@ public sealed record HubStatusInfo(
     public HubLimits? Limits { get; init; }
     /// <summary>结果与 outputSchema 不符时的处理；旧 Hub 为 null。</summary>
     public OutputValidation? OutputValidation { get; init; }
+    /// <summary>策略规则、命中次数与最近的加载错误；旧 Hub 为 null。</summary>
+    public HubPolicyStatusInfo? Policy { get; init; }
 }
+
+/// <summary>策略状态（PolicyStatus）：生效的规则（按顺序）与命中次数、规则集生效时刻（Unix 毫秒）。</summary>
+public sealed record HubPolicyStatusInfo(IReadOnlyList<HubPolicyRuleStatus> Rules, ulong LoadedAtMs)
+{
+    /// <summary>最近一次 <see cref="AppMcpHub.SetPolicy"/> 失败的原因（之前的规则继续生效）；之后成功加载时清除。</summary>
+    public HubPolicyLoadError? LastError { get; init; }
+}
+
+/// <summary>一条生效的规则；Hits 为自本规则集生效以来拒绝或按不存在处理的调用 / 唤醒次数（列表过滤不计）。</summary>
+public sealed record HubPolicyRuleStatus(string Id, HubPolicyAction Action, string App, ulong Hits)
+{
+    public string? Tool { get; init; }
+    public HubAnnotationMatch? Annotations { get; init; }
+    public IReadOnlyList<HubPolicyHook>? Hooks { get; init; }
+}
+
+/// <summary>规则加载失败（AtMs：Unix 毫秒）。</summary>
+public sealed record HubPolicyLoadError(string Message, ulong AtMs);
 
 /// <summary>租约策略与统计（LeaseStatus）。Mode：adaptive / fixed（固定 LeaseTtl）/ off（LeaseTtl = 0）。</summary>
 public sealed record LeaseStatusInfo(

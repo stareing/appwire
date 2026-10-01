@@ -30,7 +30,7 @@ use std::time::Duration;
 use app_mcp_hub::{
     ApprovalHandler, ApprovalPolicy, ApprovalRequest, CallRequest, ErrorKind, Hub, HubConfig,
     HubError, LeaseOverrides, LimitOverrides, OutputValidation, PairingHandler, PairingRequest,
-    ToolExposure, ToolFilter, ToolFormat, UpstreamConfig, WakeRequest, Waker, WakerConfig,
+    PolicyConfig, ToolExposure, ToolFilter, ToolFormat, UpstreamConfig, WakeRequest, Waker, WakerConfig,
     async_trait, load_manifests,
 };
 use napi::bindgen_prelude::{Promise, spawn};
@@ -149,6 +149,8 @@ struct ConfigJson {
     limits: Option<LimitOverrides>,
     /// 结果与 `outputSchema` 不符时的处理：`"off"` / `"log"`（默认）/ `"reject"`。
     output_validation: Option<OutputValidation>,
+    /// 策略挂点（spec/hub-api.md 3.13）：`{"rules": [...]}`；规则不合法时 `Hub.start` 失败。
+    policy: Option<PolicyConfig>,
     /// `"system"` / `"none"` / `{"exec": [...]}`（spec/hub-api.md 3.5）。
     waker: Option<WakerConfig>,
     /// 渐进暴露（spec/hub-api.md 3.7）。
@@ -238,6 +240,9 @@ impl ConfigJson {
         }
         if let Some(v) = self.output_validation {
             c.output_validation = v;
+        }
+        if let Some(p) = self.policy {
+            c.policy = p;
         }
         if let Some(w) = self.waker {
             c.waker = w;
@@ -429,6 +434,21 @@ impl JsHub {
     #[napi]
     pub fn status(&self) -> Result<String> {
         to_json(&self.hub()?.status())
+    }
+
+    /// `PolicyStatus` 的 JSON：生效的策略规则、命中次数与最近的加载错误（spec/hub-api.md 3.13）。
+    #[napi]
+    pub fn policy(&self) -> Result<String> {
+        to_json(&self.hub()?.policy())
+    }
+
+    /// 替换策略规则集（`PolicyConfig` 的 JSON，命中计数清零）。JSON 不合法 → `INVALID_ARG`；
+    /// 规则不合法 → `INVALID_INPUT`（之前的规则继续生效，原因记入 `policy().lastError`）。
+    #[napi]
+    pub fn set_policy(&self, policy_json: String) -> Result<()> {
+        let policy: PolicyConfig = serde_json::from_str(&policy_json)
+            .map_err(|e| invalid_arg(format!("policy 不是合法的 JSON：{e}")))?;
+        self.hub()?.set_policy(policy).map_err(hub_error)
     }
 
     /// `HubTool[]` 的 JSON。`filterJson` 为 `ToolFilter`（可省略）。

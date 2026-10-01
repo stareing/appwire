@@ -64,6 +64,12 @@
  *     HubStatus.limits、HubStatus.outputValidation；AppStatus.rateLimited、tooLarge、tools（ToolDeclaration 数组）。
  *   · 错误类别新增 "RATE_LIMITED"（details：retryAfterMs、scope、perMinute、burst、appId、tool）与
  *     "PAYLOAD_TOO_LARGE"（details：part、sizeBytes、limitBytes）。
+ * - v10（策略挂点，spec/hub-api.md 3.13）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 policy（{"rules":[{"id","action":"hide"|"deny","app","tool"?,"annotations"?,
+ *     "hooks"?}]}）；函数 am_hub_set_policy（运行中替换规则集）。
+ *   · HubStatus JSON 中新增：policy（rules[{规则字段…, hits}]、loadedAtMs、lastError?{message, atMs}）。
+ *   · 错误类别新增 "POLICY_DENIED"（details：ruleId、hook、appId、tool）与 "USER_ACTION_REQUIRED"
+ *     （details：reason?、uri?，需要用户本人操作后才能继续）。被 hide 的工具调用为 "TOOL_NOT_FOUND"。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -205,6 +211,12 @@ void am_hub_string_free(char *s);
  *                        参数 / 结果 / 资源超过字节上限 → PAYLOAD_TOO_LARGE（不截断）。*PerMinute = 0 不限流，
  *                        *Bytes = 0 不限大小；限流时 *Burst = 0 报 AM_HUB_ERR_INVALID_CONFIG；未知字段报 AM_HUB_ERR_INVALID_JSON
  *   outputValidation     结果与工具 outputSchema 不符时："off" 不校验 / "log"（默认）只记日志 / "reject" 以 HANDLER_ERROR 结束
+ *   —— v10 策略挂点（spec/hub-api.md 3.13）——
+ *   policy               {"rules": [{"id": "no-clear", "action": "hide"|"deny", "app": "shop"（或前缀 "shop*" / "*"）,
+ *                        "tool"?: "cart.clear"（局部名，可带末尾 *）, "annotations"?: {"destructiveHint": true, …},
+ *                        "hooks"?: ["call", "wake"]（只用于 deny，缺省 ["call"]）}]}。hide：工具（或整个 App）不出现在
+ *                        任何列表中，调用为 TOOL_NOT_FOUND；deny：调用 / 唤醒以 POLICY_DENIED 结束（details.ruleId）。
+ *                        缺省无规则（行为不变）；规则不合法报 AM_HUB_ERR_INVALID_CONFIG，未知字段报 AM_HUB_ERR_INVALID_JSON
  *   —— v3 渐进暴露（spec/hub-api.md 3.7）——
  *   toolExposure         "auto"（默认，App 工具总数超过阈值时渐进）/ "progressive" / "all"
  *   toolExposureThreshold  auto 的阈值，默认 40
@@ -255,7 +267,9 @@ AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **ou
  * v7 / v8 起另有 AppStatus.wakes、InstanceStatus.power、lease（见文件头“版本”）。v9 起另有：
  *   limits（同配置 limits，全部字段给出）、outputValidation；
  *   AppStatus.rateLimited / tooLarge（启动以来 RATE_LIMITED / PAYLOAD_TOO_LARGE 的拒绝次数）、
- *   AppStatus.tools：[{name（局部名）, risk, annotations?（App 声明的原样注解）, effective（Agent 看到的注解）, outputSchema（bool：是否声明）}] */
+ *   AppStatus.tools：[{name（局部名）, risk, annotations?（App 声明的原样注解）, effective（Agent 看到的注解）, outputSchema（bool：是否声明）}]
+ * v10 起另有 policy：{rules: [{id, action, app, tool?, annotations?, hooks?, hits（自本规则集生效以来的拒绝 / 按不存在处理次数）}],
+ *   loadedAtMs, lastError?: {message, atMs}（最近一次 am_hub_set_policy 失败，之后成功时清除）} */
 AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------
@@ -287,6 +301,10 @@ AmHubStatus am_hub_unsubscribe(AmHub *hub, const char *uri);
 AmHubStatus am_hub_select_instance(AmHub *hub, const char *app_id, const char *instance_id);
 /* 清除某会话的状态（已附带的总览、apps.select）。session 为 NULL 表示默认会话。 */
 AmHubStatus am_hub_reset_session(AmHub *hub, const char *session);
+/* v10：替换策略规则集（JSON 形式同配置 policy；"{}" 或 {"rules":[]} 清空），命中计数清零。
+ * 不是合法 JSON 或有未知字段 → AM_HUB_ERR_INVALID_JSON；规则不合法 → AM_HUB_ERR_INVALID_CONFIG（之前的规则继续生效，
+ * 原因记入 am_hub_status_json 的 policy.lastError）。 */
+AmHubStatus am_hub_set_policy(AmHub *hub, const char *policy_json);
 
 /* ---------------------------------------------------------------------------
  * 工具格式导出与分派（spec/hub-api.md 第 5 节）

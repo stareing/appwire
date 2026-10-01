@@ -1,9 +1,10 @@
-import { ErrorKind } from './Types';
+import { ErrorKind, UserActionRequiredOptions } from './Types';
 
 const ERROR_KINDS: string[] = [
   'TOOL_NOT_FOUND', 'TOOL_DISABLED', 'INVALID_INPUT', 'USER_REJECTED', 'TIMEOUT', 'HANDLER_ERROR', 'CANCELLED',
   'APP_DISCONNECTED', 'APP_NOT_INSTALLED', 'LAUNCH_FAILED', 'APP_NOT_RESPONDING', 'INSTANCE_FROZEN',
   'RESOURCE_NOT_FOUND', 'UNAUTHORIZED', 'UNSUPPORTED_PROTOCOL', 'RATE_LIMITED', 'PAYLOAD_TOO_LARGE',
+  'POLICY_DENIED', 'USER_ACTION_REQUIRED',
 ];
 
 export function isErrorKind(value: string): boolean {
@@ -23,6 +24,25 @@ export class ToolCallError extends Error {
     this.name = 'ToolCallError';
     this.kind = kind;
     this.details = details;
+  }
+
+  /**
+   * `USER_ACTION_REQUIRED`：需要用户本人操作后才能继续，Agent 会把 `message` 转告用户。
+   * @input message 面向用户的说明。
+   * @output 详情为 `{ reason?, uri? }`，未给出的字段省略；两者都未给出时没有详情。
+   */
+  static userActionRequired(message: string, options?: UserActionRequiredOptions): ToolCallError {
+    const details: Record<string, Object> = {};
+    let empty = true;
+    if (options?.reason !== undefined) {
+      details['reason'] = options.reason;
+      empty = false;
+    }
+    if (options?.uri !== undefined) {
+      details['uri'] = options.uri;
+      empty = false;
+    }
+    return new ToolCallError('USER_ACTION_REQUIRED', message, empty ? undefined : details);
   }
 }
 

@@ -143,6 +143,33 @@ test('失败：ToolCallError 带详情、普通异常、非法 JSON、同步抛�
     detailsJson: '{"step":"confirm"}',
   });
 
+  mcp.tool('login', {
+    description: '登录',
+    handler: () => {
+      throw ToolCallError.userActionRequired('请先登录', { reason: 'login', uri: 'shop://login' });
+    },
+  });
+  assert.deepEqual(await client.invoke('login').done, {
+    ok: false,
+    kind: 'USER_ACTION_REQUIRED',
+    message: '请先登录',
+    detailsJson: '{"reason":"login","uri":"shop://login"}',
+  });
+  mcp.tool('fg', { description: '前台', handler: async () => Promise.reject(ToolCallError.userActionRequired('请切到前台')) });
+  assert.deepEqual(await client.invoke('fg').done, { ok: false, kind: 'USER_ACTION_REQUIRED', message: '请切到前台' });
+  mcp.tool('perm', {
+    description: '权限',
+    handler: () => {
+      throw ToolCallError.userActionRequired('请授予相机权限', { reason: 'permission' });
+    },
+  });
+  assert.deepEqual(await client.invoke('perm').done, {
+    ok: false,
+    kind: 'USER_ACTION_REQUIRED',
+    message: '请授予相机权限',
+    detailsJson: '{"reason":"permission"}',
+  });
+
   mcp.tool('boom', { description: 'x', handler: async () => Promise.reject(new Error('坏了')) });
   assert.deepEqual(await client.invoke('boom').done, { ok: false, kind: 'HANDLER_ERROR', message: '坏了' });
 

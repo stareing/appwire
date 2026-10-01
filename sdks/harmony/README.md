@@ -49,6 +49,10 @@ export default class EntryStage extends AbilityStage {
         if (input.productId === '') {
           throw new ToolCallError('INVALID_INPUT', '商品 ID 为空');
         }
+        if (!isLoggedIn()) {
+          // Agent 收到 USER_ACTION_REQUIRED 并转告用户；reason / uri 可省略
+          throw ToolCallError.userActionRequired('登录已过期，请在 App 内重新登录后重试', { reason: 'login', uri: 'shopapp://login' });
+        }
         return addToCart(input.productId);
       },
     });

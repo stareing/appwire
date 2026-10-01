@@ -261,6 +261,47 @@ describe('createBridgeAppMcp', () => {
     expect(ops.at(-1)).toEqual({ op: 'scope.dispose', id: 3 })
   })
 
+  it('USER_ACTION_REQUIRED 的详情随 call.result 送到主进程；缺省字段省略，不可序列化的详情丢弃', async () => {
+    const { app, emit, results } = page()
+    app.tool('login', {
+      description: 'l',
+      handler: () => {
+        throw ToolCallError.userActionRequired('请先登录', { reason: 'login', uri: 'shop://login' })
+      },
+    })
+    app.tool('foreground', {
+      description: 'f',
+      handler: () => {
+        throw ToolCallError.userActionRequired('请切到前台')
+      },
+    })
+    app.tool('cyclic', {
+      description: 'c',
+      handler: () => {
+        const details: Record<string, unknown> = {}
+        details.self = details
+        throw new ToolCallError('HANDLER_ERROR', '循环', details)
+      },
+    })
+    await settle()
+    emit({ type: 'call', callId: 'c1', toolId: 1, input: {} })
+    emit({ type: 'call', callId: 'c2', toolId: 2, input: {} })
+    emit({ type: 'call', callId: 'c3', toolId: 3, input: {} })
+    await settle()
+    expect(results()).toEqual([
+      {
+        op: 'call.result',
+        callId: 'c1',
+        ok: false,
+        kind: 'USER_ACTION_REQUIRED',
+        message: '请先登录',
+        details: { reason: 'login', uri: 'shop://login' },
+      },
+      { op: 'call.result', callId: 'c2', ok: false, kind: 'USER_ACTION_REQUIRED', message: '请切到前台' },
+      { op: 'call.result', callId: 'c3', ok: false, kind: 'HANDLER_ERROR', message: '循环' },
+    ])
+  })
+
   it('主进程拒绝时记录错误', async () => {
     const fake = fakeBridge((op) => (op.op === 'tool.register' ? { ok: false, message: 'already registered' } : { ok: true }))
     const logger = silentLogger()

@@ -139,6 +139,15 @@ const hub = await Hub.start({
 - 计数：`status()` 中 `AppStatus.rateLimited` / `tooLarge`（启动以来被拒绝的次数）、`AppStatus.tools`（`ToolDeclaration`：`risk`、
   声明的 `annotations`、实际生效的 `effective`、是否有 `outputSchema`），以及 `HubStatus.limits`（全部字段给出）与 `HubStatus.outputValidation`。
 
+## 策略挂点（spec/hub-api.md 3.13）
+
+`policy` 配置（运行中用 `hub.setPolicy(...)` 替换，`hub.policy()` / `status().policy` 查看规则与命中次数）：`hide` 使工具（或整个 App）从所有列表中消失、调用为 `TOOL_NOT_FOUND`；`deny` 使调用（`hooks: ['wake']` 时唤醒）以 `POLICY_DENIED`（-32018，`details.ruleId`）结束。规则不合法时 `Hub.start` 失败 / `setPolicy` 抛 `INVALID_INPUT`（旧规则继续生效）。
+
+```ts
+const hub = await Hub.start({ policy: { rules: [{ id: 'no-pay', action: 'deny', app: 'shop', tool: 'order.*' }] } })
+hub.setPolicy({ rules: [{ id: 'no-destructive', action: 'hide', app: '*', annotations: { destructiveHint: true } }] })
+```
+
 **注解如实传递，不用于放行**：App 声明的标准 MCP 工具注解（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` / `title`）
 原样出现在 `HubTool.annotations`、`ApprovalRequest.annotations` 与 `exportTools('mcp')` 中（缺少的字段按 `risk` 推导）。
 `approval.requireAtOrAbove` 仍按 `risk` 决定是否询问；要按注解决定是否确认，在 `setApprovalHandler` 的回调里自行判断。

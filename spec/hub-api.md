@@ -48,6 +48,7 @@ pub struct HubConfig {
     pub approval: ApprovalPolicy,           // 见 3.3
     pub limits: LimitPolicy,                // 资源保护：限流与大小上限（3.11）
     pub output_validation: OutputValidation, // 结果与 outputSchema 不符时 Off / Log（默认）/ Reject（3.11）
+    pub policy: PolicyConfig,               // 策略规则（hide / deny），默认无规则（3.13）
 }
 
 impl Hub {
@@ -81,6 +82,8 @@ impl Hub {
     // ---- 策略回调 ----
     pub fn set_approval_handler(&self, h: Arc<dyn ApprovalHandler>);
     pub fn set_pairing_handler(&self, h: Arc<dyn PairingHandler>);
+    pub fn set_policy(&self, p: PolicyConfig) -> Result<(), HubError>; // 3.13
+    pub fn policy(&self) -> PolicyStatus;                               // 3.13
 
     // ---- 对外出口 ----
     pub fn mcp_session(&self) -> McpSession;                  // rmcp ServerHandler
@@ -252,6 +255,7 @@ pub struct PairingRequest { pub app_id: String, pub app_name: String,
 | `/mcp` | MCP Streamable HTTP（`mcp_http` 或额外监听器） | `Origin` 允许列表（403）→ 令牌（401） |
 | `/healthz` | `GET` → `Health` JSON | `Origin` 允许列表（403），不需要令牌 |
 | `/status` | `GET` → `HubStatus` JSON（3.9） | `Origin` 允许列表（403）→ IPC 直接允许；TCP 必须带有效令牌，未配置令牌时 403 |
+| `/policy` | `POST`（请求体为 `PolicyConfig` JSON，≤ 1 MiB）→ `{ok, rules?, error?}`；替换策略规则（3.13） | 同 `/status`；规则不合法时 400，之前的规则继续生效 |
 
 ```rust
 pub struct HttpOptions {
@@ -632,6 +636,72 @@ App 报告进度的消息与 SDK 行为见 spec/protocol.md 3.3（唯一定义�
 - **取消**：MCP `notifications/cancelled`（rmcp 取消请求的 `CancellationToken`）与 `Hub::cancel_call` 共用一条路径：等待审批 / 唤醒中
   直接结束；已转发给 App 时发送 `tools/cancel`，SDK 取消 handler（各语言的取消信号 / 监听），调用以 `CANCELLED` 结束。
 
+### 3.13 策略挂点（第 16 项 P2、第 18 项 L5）
+
+类比 LSM：本库只提供**执行点**，不内置任何判断；规则由用户（常驻 Host）或厂商（嵌入式 Hub）写。**没有规则时所有执行点直接放行，
+行为与没有策略时完全一致**。按 Agent 区分的规则依赖 Agent 任务对象（docs/plans/16-agent-os.md P1），尚未支持。
+实现：`crates/hub/src/policy.rs`（纯数据与匹配）。
+
+**执行点**（`PolicyHook`）：
+
+| 执行点 | 位置 | 使用的动作 |
+|---|---|---|
+| `list` | MCP `tools/list`、`resources/list`、`instructions` 中的 App 简介；`apps.list` / `apps.tools` / `apps.overview`；Hub API `apps()` / `tools()` / `export_tools()` / `resources()` / `overview()` | `hide` |
+| `call` | 名称解析之后，资源保护（3.11）、审批（3.3）、唤醒之前；App 工具与上游工具（内置 `apps.*` 不受影响） | `hide`、`deny` |
+| `wake` | 调用 / 资源读取需要唤醒休眠或未运行的 App 时，发起唤醒之前（3.5） | `deny` |
+| `handle` | 数据句柄访问（第 17 项）：只定义执行点，尚未接入；规则写 `handle` 时校验报错 | — |
+
+**动作**：
+
+- `hide`：App / 工具不出现在任何列表中；调用按不存在处理（App 整体隐藏 = appId 未知：Hub API `Err(TOOL_NOT_FOUND)`；工具隐藏 =
+  结果中的 `TOOL_NOT_FOUND`），资源读取 / 订阅按 `RESOURCE_NOT_FOUND`，隐藏 App 的资源变化不再通知；`apps.select` 隐藏的 App 与没有该实例相同。
+  错误信息与真正不存在时相同，不提及规则。`hide` **只能全局生效**（MCP 2026-07-28 要求列表不得按连接变化）。
+  `/status`、`doctor`、`HubEvent` 仍包含被隐藏的 App（诊断用）。App 提供的总览正文按原样给出（本库不改写 App 的文字）。
+- `deny`：可见，在 `hooks` 指定的执行点拒绝，返回 `POLICY_DENIED`（错误码与 `data` 的唯一定义见 spec/protocol.md 第 4 节；只附命中规则的
+  `id`，不附规则内容）。被拒绝的调用不转发、不唤醒、不触发审批、不消耗限流令牌。
+
+**规则**（`PolicyConfig`，`HubConfig.policy`、`Hub::set_policy`、`<home>/policy.json`、各绑定共用的 JSON 形式，未知字段报错）：
+
+```json
+{ "rules": [
+  { "id": "hide-notes", "action": "hide", "app": "notes" },
+  { "id": "no-admin",   "action": "hide", "app": "shop", "tool": "admin.*" },
+  { "id": "no-destroy", "action": "deny", "app": "*", "annotations": { "destructiveHint": true } },
+  { "id": "no-wake-music", "action": "deny", "app": "music", "hooks": ["wake"] }
+] }
+```
+
+| 字段 | 含义 |
+|---|---|
+| `id` | `[A-Za-z0-9_.-]{1,64}`，规则集中唯一 |
+| `action` | `hide` / `deny` |
+| `app` | appId（或上游名）：精确名，或以 `*` 结尾的前缀（`shop*`）；`*` 匹配全部。`*` 只能在末尾 |
+| `tool` | 可选，工具局部名（不含 appId），规则同 `app` |
+| `annotations` | 可选，`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` 的布尔值（至少一项）：每项都与工具的注解（`HubTool.annotations`，Agent 实际看到的）相等才命中；工具**没有声明**该项时不命中（本库不按 MCP 缺省值推断）。这是用户的规则引用 App 的声明，本库不推断风险、不改写声明 |
+| `hooks` | 只用于 `deny`：`call` / `wake` 的非空子集，缺省 `["call"]`。`hide` 不能写 |
+
+- 作用范围：`tool` 与 `annotations` 都缺省 → 整个 App（`hide` 时连同资源、`apps.list` 中的条目；不针对具体工具的唤醒——资源读取——只匹配这类规则）；
+  否则只作用于匹配的工具（`apps.list` 中实例的 `tools` 与 `staticToolCount` 同样去掉被隐藏的工具）。
+- 匹配顺序：按规则顺序，`hide` 先于 `deny`；`deny` 取第一条命中的规则。规则最多 `MAX_POLICY_RULES`（1024）条。
+- `Hub::start`：规则不合法 → `InvalidInput`。`Hub::set_policy`：不合法 → `INVALID_INPUT`，**之前的规则继续生效**，错误记入
+  `PolicyStatus.last_error`；成功时命中计数清零，并按工具 / 资源列表变化通知（`ToolsChanged` / `ResourcesChanged`、MCP `list_changed`）。
+- 状态：`Hub::policy()` / `HubStatus.policy`：`PolicyStatus { rules: [PolicyRule + hits], loaded_at_ms, last_error? }`。`hits` = 该规则拒绝或按不存在处理的
+  调用 / 唤醒 / 资源读取次数（列表过滤不计）。
+- 厂商回调：`ApprovalHandler`（3.3）保留，是调用执行点上的回调形态（在规则之后、转发之前）；不新增其他回调。
+
+**常驻 Host**：规则文件 `<home>/policy.json`（`PolicyConfig` JSON）。
+
+- 启动（`serve` / `stdio`）时加载；文件不存在 = 无规则；文件不合法时**拒绝启动**（不在规则失效的情况下静默放行）。
+- `app-mcp-host policy reload`：把文件原文交给运行中的 Host（`POST /policy`，经本地 IPC 或 TCP + 令牌）；不合法时 Host 保留之前的规则，
+  命令退出码 1；Host 未运行时退出码 3。`policy validate [FILE]` 只校验；`policy show [--json]` 显示文件与生效规则、命中次数、最近的重载错误；
+  `policy hide <app> [--tool T] [--id ID]`、`policy deny <app> [--tool T] [--wake] [--id ID]`、`policy remove <id>` 编辑文件（临时文件 + rename）
+  并在 Host 运行时立即重载。按注解匹配等完整写法直接编辑文件后 `reload`。
+- `doctor`「策略规则」检查：生效规则与命中次数；规则文件不合法、最近一次重载失败为错误；文件与生效规则不一致（未重载）为注意。
+- Host 不支持调用外部程序做判断（避免执行任意进程）；需要时由厂商嵌入 Hub 并用 `ApprovalHandler`。
+
+**绑定**：hub-c 配置 JSON `policy` 与 `am_hub_set_policy(hub, policy_json)`；hub-node 配置 `policy` 与 `setPolicy`；uniffi `HubConfig.policy`、
+`Hub.set_policy`；各语言封装同名（`Policy` / `SetPolicy`、`policy` / `set_policy`）。生效规则与命中次数在各绑定的状态（`HubStatus.policy`）中。
+
 ## 4. 进程内 App（可选，M2）
 
 `Hub::attach_local(hello) -> LocalAppChannel`：厂商自带的系统 App 与 Hub 同进程时，
@@ -673,5 +743,6 @@ Gemini 不支持的关键字（`additionalProperties`、`$ref` 等）在 `Gemini
 - Hub 单元测试 + 迁移后的 Host 全部集成测试保持通过（MCP 出口行为不变）。
 - 每种 `ToolFormat` 的导出与 `dispatch` 往返测试（对 fake App 实例）。
 - 审批：拒绝 → `USER_REJECTED`；超时 → 拒绝；低于阈值不询问。
+- 策略（3.13）：`hide` 的 App / 工具不在任何列表中、调用按不存在；`deny` → `POLICY_DENIED`（只附规则 id）；不合法的规则不生效且保留旧规则；无规则时行为不变。
 - 会话维度的总览首次附带：两个 `session` 各附带一次。
 - 绑定：各语言用 `app-mcp-native` 的 App 端 SDK（或 `fake_app`）连上嵌入式 Hub，完成列工具 + 调用 + 事件 + 审批。

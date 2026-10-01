@@ -12,6 +12,7 @@ function fakeBinding() {
     pairing: undefined as ((json: string) => Promise<boolean>) | undefined,
     waker: undefined as ((json: string) => Promise<string | null>) | null | undefined,
     shutdown: false,
+    policy: undefined as unknown,
   }
   const native: NativeHub = {
     get listenAddr() {
@@ -39,6 +40,12 @@ function fakeBinding() {
         apps: [{ appId: 'a', name: 'A', kind: 'app', state: 'disconnected', instances: [], lastError: { message: 'x', atMs: 1 } }],
         reports: [],
       }),
+    policy: () => JSON.stringify({ rules: [], loadedAtMs: 7 }),
+    setPolicy: (json) => {
+      const p = JSON.parse(json) as { rules?: { id: string }[] }
+      if (p.rules?.some((r) => r.id === 'bad id')) throw new Error('[INVALID_INPUT] 规则 id 不合法')
+      state.policy = p
+    },
     tools: (f) => JSON.stringify([{ name: 'a.b', filter: f ? JSON.parse(f) : null }]),
     resources: () => '[]',
     overview: (id) => (id === 'a' ? '{"appId":"a"}' : null),
@@ -107,6 +114,25 @@ describe('Hub 封装', () => {
     })
     expect(hub.exportTools('gemini')).toEqual([{ format: 'gemini' }])
     expect((await hub.readResource('u')).text).toBe('1')
+  })
+
+  it('策略：配置透传、setPolicy 序列化、policy() 解析、不合法规则转为 HubError(INVALID_INPUT)', async () => {
+    const { binding, state } = fakeBinding()
+    const policy = { rules: [{ id: 'no-pay', action: 'deny' as const, app: 'shop', tool: 'order.pay', hooks: ['call' as const] }] }
+    const hub = await Hub.start({ binding, keepAlive: false, policy })
+    expect(state.config).toEqual({ policy })
+    hub.setPolicy({ rules: [{ id: 'h', action: 'hide', app: 'shop*' }] })
+    expect(state.policy).toEqual({ rules: [{ id: 'h', action: 'hide', app: 'shop*' }] })
+    expect(hub.policy()).toEqual({ rules: [], loadedAtMs: 7 })
+    const e = (() => {
+      try {
+        hub.setPolicy({ rules: [{ id: 'bad id', action: 'hide', app: 'x' }] })
+      } catch (err) {
+        return err
+      }
+    })()
+    expect(e).toBeInstanceOf(HubError)
+    expect(e).toMatchObject({ kind: 'INVALID_INPUT' })
   })
 
   it('原生错误转为 HubError', async () => {

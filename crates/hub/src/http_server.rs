@@ -6,6 +6,7 @@
 //! | `/mcp` | MCP Streamable HTTP（rmcp [`StreamableHttpService`]，开启时） | `Origin` 允许列表（403）→ 令牌（401） |
 //! | `/healthz` | `GET`：Host 身份与监听信息（[`Health`]），不需要令牌 | `Origin` 允许列表（403） |
 //! | `/status` | `GET`：运行状态（[`crate::HubStatus`]：实例、最近错误、SDK 诊断上报） | `Origin` 允许列表（403）→ IPC 直接允许；TCP 必须携带有效令牌（未配置令牌时 403） |
+//! | `/policy` | `POST`：替换策略规则（请求体为 [`crate::PolicyConfig`] JSON，spec/hub-api.md 3.13）；不合法时 400、保留之前的规则 | 同 `/status` |
 //!
 //! - 本地 IPC 端点上的 `/mcp`（[`crate::HubConfig::mcp_http`] 开启时）与 TCP 上相同，但**不校验令牌**：
 //!   IPC 的对端用户已由操作系统核对为同一用户（[`crate::ipc`]），同一用户本来就能读取令牌文件，令牌没有额外防护。
@@ -74,6 +75,9 @@ fn mcp_service(_shared: &Arc<HubShared>, _options: &HttpOptions) -> Option<McpSe
 
 pub use app_mcp_protocol::{APP_PATH, HEALTH_PATH, MCP_PATH, STATUS_PATH};
 
+/// 替换策略规则（`POST`，spec/hub-api.md 3.13）；授权同 `/status`。
+pub const POLICY_PATH: &str = "/policy";
+
 /// `/healthz` 响应中的服务标识（[`app_mcp_protocol::identity::SERVICE_NAME`]）。
 pub const HEALTH_SERVICE: &str = app_mcp_protocol::identity::SERVICE_NAME;
 
@@ -139,6 +143,28 @@ fn json(status: http::StatusCode, value: &impl Serialize) -> http::Response<Body
         http::HeaderValue::from_static("application/json"),
     );
     resp
+}
+
+/// `POST /policy` 请求体的字节上限（B-07）。
+pub const MAX_POLICY_BODY: usize = 1024 * 1024;
+
+/// `POST /policy` 的响应体。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyReply {
+    pub ok: bool,
+    /// 成功时生效的规则条数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<usize>,
+    /// 失败原因（之前的规则继续生效）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl PolicyReply {
+    fn error(message: String) -> Self {
+        Self { ok: false, rules: None, error: Some(message) }
+    }
 }
 
 /// 取 `Authorization: Bearer <令牌>` 中的令牌；空令牌视为未携带。
@@ -270,6 +296,15 @@ impl Router {
                 }
                 json(http::StatusCode::OK, &self.shared.status())
             }
+            POLICY_PATH => {
+                if req.method() != http::Method::POST {
+                    return plain(http::StatusCode::METHOD_NOT_ALLOWED, "只支持 POST");
+                }
+                if let Some(resp) = self.authorize_status(req.headers(), peer) {
+                    return resp;
+                }
+                self.replace_policy(req).await
+            }
             MCP_PATH => {
                 let Some(service) = &self.mcp else {
                     return plain(http::StatusCode::NOT_FOUND, "本端点未开启 MCP HTTP 服务。");
@@ -291,6 +326,30 @@ impl Router {
                 http::StatusCode::NOT_FOUND,
                 "app-mcp：App 连接 /app（WebSocket），MCP /mcp，健康检查 /healthz，运行状态 /status。",
             ),
+        }
+    }
+
+    /// `POST /policy`：读取请求体（上限 [`MAX_POLICY_BODY`]）并替换规则；不合法时 400，之前的规则继续生效。
+    async fn replace_policy(&self, req: http::Request<Incoming>) -> http::Response<Body> {
+        let body = http_body_util::Limited::new(req.into_body(), MAX_POLICY_BODY);
+        let bytes = match body.collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(e) => {
+                return json(http::StatusCode::PAYLOAD_TOO_LARGE, &PolicyReply::error(format!("读取请求体失败（上限 {MAX_POLICY_BODY} 字节）：{e}")));
+            }
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let result = crate::PolicyConfig::from_json(&text).and_then(|config| {
+            let n = config.rules.len();
+            self.shared.set_policy(config).map(|()| n)
+        });
+        match result {
+            Ok(n) => json(http::StatusCode::OK, &PolicyReply { ok: true, rules: Some(n), error: None }),
+            Err(e) => {
+                // from_json 失败时也记下错误（set_policy 内部校验失败已记录）。
+                self.shared.record_policy_error(&e);
+                json(http::StatusCode::BAD_REQUEST, &PolicyReply::error(e))
+            }
         }
     }
 

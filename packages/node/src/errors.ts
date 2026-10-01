@@ -1,4 +1,4 @@
-import type { ErrorKind } from './types.js'
+import type { ErrorKind, UserActionRequiredOptions } from './types.js'
 
 const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
   'TOOL_NOT_FOUND',
@@ -18,6 +18,8 @@ const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
   'UNSUPPORTED_PROTOCOL',
   'RATE_LIMITED',
   'PAYLOAD_TOO_LARGE',
+  'POLICY_DENIED',
+  'USER_ACTION_REQUIRED',
 ])
 
 export function isErrorKind(value: unknown): value is ErrorKind {
@@ -34,6 +36,28 @@ export class ToolCallError extends Error {
     this.kind = kind
     this.details = details
   }
+
+  /**
+   * `USER_ACTION_REQUIRED`：需要用户本人操作后才能继续，Agent 会把 `message` 转告用户。
+   *
+   * ```ts
+   * throw ToolCallError.userActionRequired('登录已过期，请在 App 内重新登录后重试', { reason: 'login', uri: 'shop://login' })
+   * ```
+   *
+   * @input message 面向用户的说明。
+   * @output 详情为 `{ reason?, uri? }`，未给出的字段省略；两者都未给出时没有详情。
+   */
+  static userActionRequired(message: string, options: UserActionRequiredOptions = {}): ToolCallError {
+    return new ToolCallError('USER_ACTION_REQUIRED', message, userActionDetails(options))
+  }
+}
+
+/** `{ reason?, uri? }` → 错误详情（省略缺省字段；为空时返回 undefined）。 */
+function userActionDetails(options: UserActionRequiredOptions): Record<string, unknown> | undefined {
+  const details: Record<string, unknown> = {}
+  if (options.reason !== undefined) details.reason = options.reason
+  if (options.uri !== undefined) details.uri = options.uri
+  return Object.keys(details).length === 0 ? undefined : details
 }
 
 /**

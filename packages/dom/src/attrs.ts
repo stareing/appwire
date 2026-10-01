@@ -109,6 +109,8 @@ const ERROR_KINDS: readonly ErrorKind[] = [
   'UNSUPPORTED_PROTOCOL',
   'RATE_LIMITED',
   'PAYLOAD_TOO_LARGE',
+  'POLICY_DENIED',
+  'USER_ACTION_REQUIRED',
 ]
 
 export function isRisk(v: string): v is Risk {

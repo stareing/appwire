@@ -725,6 +725,12 @@ final class AppMcp {
 
   void _failCall(_PendingCall call, Object error) {
     if (call.consumed) return;
+    if (error is UserActionRequiredError) {
+      using((arena) => _b.am_call_fail_user_action(call.ptr, error.message.toNativeUtf8(allocator: arena),
+          _optStr(error.reason, arena), _optStr(error.uri, arena)));
+      _finishCall(call);
+      return;
+    }
     final f = failureFromError(error);
     final details = f.detailsJson;
     if (details != null) {

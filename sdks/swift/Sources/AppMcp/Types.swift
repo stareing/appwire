@@ -49,6 +49,10 @@ public enum ErrorKind {
     public static let rateLimited = "RATE_LIMITED"
     /// Host 侧大小上限（App 一般不抛）。
     public static let payloadTooLarge = "PAYLOAD_TOO_LARGE"
+    /// Host 侧策略规则拒绝（App 一般不抛）。
+    public static let policyDenied = "POLICY_DENIED"
+    /// 需要用户本人操作后才能继续（用 `ToolCallError.userActionRequired(message:reason:uri:)` 构造）。
+    public static let userActionRequired = "USER_ACTION_REQUIRED"
 
     /// 原生库认可的全部类别。
     public static var all: Set<String> { Set(AppMcpBindings.errorKinds()) }
@@ -73,6 +77,32 @@ public struct ToolCallError: Error, Sendable, Equatable, CustomStringConvertible
     }
 
     public var description: String { "\(kind): \(message)" }
+
+    /// `USER_ACTION_REQUIRED`（spec/protocol.md 第 4 节）：需要用户本人操作后才能继续（登录过期、系统权限未授予、
+    /// 需切到前台、需在 App 内确认），例如
+    /// `throw ToolCallError.userActionRequired(message: "登录已过期，请重新登录", reason: UserActionReason.login, uri: "shop://login")`。
+    ///
+    /// @input message 面向用户的说明（Agent 应转告用户）
+    /// @input reason 可选类别：`UserActionReason` 中的值或其他字符串；`nil` 时不出现在 `data` 中
+    /// @input uri 可选的 App 内入口（深链接等）；`nil` 时不出现在 `data` 中
+    public static func userActionRequired(message: String, reason: String? = nil, uri: String? = nil) -> ToolCallError {
+        var fields: [String: JSONValue] = [:]
+        if let reason { fields["reason"] = .string(reason) }
+        if let uri { fields["uri"] = .string(uri) }
+        return ToolCallError(ErrorKind.userActionRequired, message, details: fields.isEmpty ? nil : .object(fields))
+    }
+}
+
+/// `USER_ACTION_REQUIRED` 的 `data.reason` 建议取值（接收方遇到其他值按原样展示）。
+public enum UserActionReason {
+    /// 登录已过期 / 未登录。
+    public static let login = "login"
+    /// 系统权限未授予（相机、位置、通知等）。
+    public static let permission = "permission"
+    /// 需要把 App 切到前台。
+    public static let foreground = "foreground"
+    /// 需要用户在 App 内确认。
+    public static let confirm = "confirm"
 }
 
 /// 结构化调用结果（spec/protocol.md 3.2），作为 handler 返回值。直接返回普通值 = `.done` 且无附加信息。

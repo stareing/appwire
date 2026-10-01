@@ -45,7 +45,8 @@ import type {
 //
 // @compat 版本 1 内只做可选字段的新增，旧页面忽略、新页面缺省为 undefined，因此不升版本
 // （升版本会让 findElectronBridge 拒绝新旧混用）。已有新增：`HelloReply.connectionId`、`state` 事件的 `connectionId`、
-// `ToolSpecMessage.annotations` / `outputSchema`、成功 `Outcome` 的 `status` / `stateResource` / `summary` / `annotations`。
+// `ToolSpecMessage.annotations` / `outputSchema`、成功 `Outcome` 的 `status` / `stateResource` / `summary` / `annotations`、
+// 失败 `Outcome` 的 `details`。
 
 /** preload 默认把桥接对象暴露为 `window.appMcpBridge`。 */
 export const DEFAULT_BRIDGE_KEY = 'appMcpBridge'
@@ -64,8 +65,13 @@ export interface ToolSpecMessage {
   enabled?: boolean
 }
 
-/** 成功结果的字段同 {@link NormalizedResult}（`data` 之外均可选，旧主进程忽略新增字段）。 */
-export type Outcome = ({ ok: true } & NormalizedResult) | { ok: false; kind: ErrorKind; message: string }
+/**
+ * 成功结果的字段同 {@link NormalizedResult}（`data` 之外均可选，旧主进程忽略新增字段）。
+ * 失败的 `details` 来自 ToolCallError（JSON 对象，如 `USER_ACTION_REQUIRED` 的 `{ reason?, uri? }`），随错误的 `data` 发给 Host。
+ */
+export type Outcome =
+  | ({ ok: true } & NormalizedResult)
+  | { ok: false; kind: ErrorKind; message: string; details?: Record<string, unknown> }
 
 export type RendererOp =
   /** 页面（重新）加载：主进程丢弃该 webContents 之前的全部登记。 */
@@ -176,11 +182,27 @@ function callError(kind: ErrorKind, message: string): Error & { kind: ErrorKind 
   return error
 }
 
+/** ToolCallError 的详情 → 可跨 IPC 传递的 JSON 对象；不是对象或无法序列化时丢弃（错误本身照常上报）。 */
+function outcomeDetails(details: unknown): Record<string, unknown> | undefined {
+  if (typeof details !== 'object' || details === null || Array.isArray(details)) return undefined
+  try {
+    const json = toJsonValue(details)
+    return typeof json === 'object' && json !== null && !Array.isArray(json) ? (json as Record<string, unknown>) : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function toOutcomeError(error: unknown): Outcome {
   if (typeof error === 'object' && error !== null) {
     const e = error as { name?: unknown; kind?: unknown; message?: unknown }
     const message = typeof e.message === 'string' ? e.message : String(error)
-    if (e.name === 'ToolCallError' && typeof e.kind === 'string') return { ok: false, kind: e.kind as ErrorKind, message }
+    if (e.name === 'ToolCallError' && typeof e.kind === 'string') {
+      const details = outcomeDetails((error as { details?: unknown }).details)
+      return details === undefined
+        ? { ok: false, kind: e.kind as ErrorKind, message }
+        : { ok: false, kind: e.kind as ErrorKind, message, details }
+    }
     return { ok: false, kind: 'HANDLER_ERROR', message: message || 'handler 执行失败' }
   }
   return { ok: false, kind: 'HANDLER_ERROR', message: String(error) }

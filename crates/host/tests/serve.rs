@@ -562,3 +562,63 @@ async fn config_file_is_read() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+/// 运行 `app-mcp-host policy …`（同步），返回（退出码，stdout，stderr）。
+fn policy_cli(home: &Path, args: &[&str]) -> (i32, String, String) {
+    let mut c = Command::new(BIN);
+    c.arg("policy").args(args).arg("--home").arg(home).env_remove("APP_MCP_HOME");
+    run_to_exit(c)
+}
+
+/// 第 16 项 P2 / 第 18 项 L5：`<home>/policy.json` 启动时加载；`policy hide` 编辑后运行中的 Host 立即重载；
+/// 不合法的规则 reload 被拒绝、之前的规则继续生效并记入状态；不合法的文件使 serve 拒绝启动。
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_file_reload_and_cli() {
+    let home = TempHome::new("policy");
+    std::fs::write(
+        home.0.join("policy.json"),
+        json!({"rules": [{"id": "no-add", "action": "deny", "app": "calc", "tool": "math.*"}]}).to_string(),
+    )
+    .unwrap();
+    let serve = start_serve(&home, &[]).await;
+    let _app = calc_app(&serve.ipc);
+    let client = mcp(serve.addr, None).await;
+    wait_tool(&client, "calc.math.add").await;
+    let r = add(&client, 1, 2).await;
+    assert_eq!(r.is_error, Some(true));
+    let err = &r.structured_content.as_ref().unwrap()["error"];
+    assert_eq!((err["kind"].as_str(), err["details"]["ruleId"].as_str()), (Some("POLICY_DENIED"), Some("no-add")));
+
+    // 编辑：去掉 deny、隐藏整个 App → 运行中的 Host 重载
+    let (code, out, err) = policy_cli(&home.0, &["remove", "no-add"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(add(&client, 1, 2).await.is_error != Some(true));
+    let (code, out, err) = policy_cli(&home.0, &["hide", "calc"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("已重载规则（1 条）"), "{out}");
+    let tools = client.list_all_tools().await.unwrap();
+    assert!(tools.iter().all(|t| !t.name.starts_with("calc.")), "{tools:?}");
+    assert_eq!(add(&client, 1, 2).await.structured_content.unwrap()["error"]["kind"], "TOOL_NOT_FOUND");
+
+    // 不合法的文件：reload 失败（退出码 1），之前的规则继续生效，错误可见
+    std::fs::write(home.0.join("policy.json"), r#"{"rules": [{"id": "x", "action": "deny", "app": "calc", "hooks": ["handle"]}]}"#).unwrap();
+    let (code, out, err) = policy_cli(&home.0, &["reload"]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(err.contains("继续使用之前的规则") && err.contains("尚未实现"), "{err}");
+    let (code, _, err) = policy_cli(&home.0, &["validate"]);
+    assert_eq!(code, 1, "{err}");
+    let (code, out, _) = policy_cli(&home.0, &["show", "--json"]);
+    assert_eq!(code, 0);
+    let shown: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(shown["running"]["rules"][0]["id"], "hide-calc", "{shown}");
+    assert!(shown["running"]["rules"][0]["hits"].as_u64().unwrap() >= 1, "{shown}");
+    assert!(shown["running"]["lastError"]["message"].as_str().unwrap().contains("尚未实现"), "{shown}");
+    assert!(shown["fileError"].is_string(), "{shown}");
+    let _ = client.cancel().await;
+    drop(serve);
+
+    // 不合法的文件：serve 拒绝启动
+    let (code, _, err) = run_to_exit(serve_cmd(&home.0, "127.0.0.1:0", &[]));
+    assert_ne!(code, 0);
+    assert!(err.contains("策略规则文件无效"), "{err}");
+}

@@ -19,6 +19,8 @@ import { createBridgeAppMcp, type AppMcp, type AppMcpOptions } from '@app-mcp/we
 import { DEFAULT_BRIDGE_KEY, type AppMcpBridge } from './protocol.js'
 
 export type { AppMcpBridge, MainEvent, RendererOp } from './protocol.js'
+/** 页面 handler 抛出以指定错误类别（如 `ToolCallError.userActionRequired(...)`），类别与详情经 IPC 原样送到主进程。 */
+export { ToolCallError, type UserActionReason, type UserActionRequiredOptions } from '@app-mcp/web'
 
 export interface RendererAppMcpOptions extends AppMcpOptions {
   /** 桥接对象，缺省取 `window[bridgeKey]`。 */

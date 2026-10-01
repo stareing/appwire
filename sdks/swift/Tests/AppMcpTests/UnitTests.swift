@@ -9,8 +9,18 @@ final class UnitTests: XCTestCase {
             ErrorKind.appNotInstalled, ErrorKind.launchFailed, ErrorKind.appNotResponding,
             ErrorKind.instanceFrozen, ErrorKind.resourceNotFound, ErrorKind.unauthorized,
             ErrorKind.unsupportedProtocol, ErrorKind.rateLimited, ErrorKind.payloadTooLarge,
+            ErrorKind.policyDenied, ErrorKind.userActionRequired,
         ]
         XCTAssertEqual(ErrorKind.all, declared)
+    }
+
+    func testUserActionRequiredDetails() {
+        let e = ToolCallError.userActionRequired(message: "请先登录", reason: UserActionReason.login, uri: "shop://login")
+        XCTAssertEqual(e.kind, ErrorKind.userActionRequired)
+        XCTAssertEqual(e.message, "请先登录")
+        XCTAssertEqual(e.details, .object(["reason": .string("login"), "uri": .string("shop://login")]))
+        XCTAssertEqual(ToolCallError.userActionRequired(message: "x", reason: "custom").details, .object(["reason": .string("custom")]))
+        XCTAssertNil(ToolCallError.userActionRequired(message: "切到前台").details)
     }
 
     func testJSONValueRoundTrip() throws {

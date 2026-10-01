@@ -264,6 +264,16 @@ public sealed class AppMcpHub : IDisposable, IAsyncDisposable
         HubNativeMethods.Check(HubNativeMethods.am_hub_reset_session(_handle, s.Add(session)));
     }
 
+    /// <summary>替换策略规则集（spec/hub-api.md 3.13，命中计数清零）；传空规则集清空。</summary>
+    /// <exception cref="HubException">规则不合法（<see cref="HubStatus.InvalidConfig"/>）：之前的规则继续生效，
+    /// 原因记入 <see cref="HubStatusInfo.Policy"/> 的 LastError。</exception>
+    public unsafe void SetPolicy(HubPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        using var s = new Utf8Strings();
+        HubNativeMethods.Check(HubNativeMethods.am_hub_set_policy(_handle, s.Add(policy.ToJsonString())));
+    }
+
     // -----------------------------------------------------------------------
     // 工具格式导出与分派
     // -----------------------------------------------------------------------

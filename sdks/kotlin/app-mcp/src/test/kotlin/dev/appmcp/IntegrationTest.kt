@@ -51,6 +51,8 @@ class IntegrationTest {
             "--invoke", "greet", "--args", """{"name":"世界"}""",
             "--invoke", "cart.checkout",
             "--invoke", "boom",
+            "--invoke", "account.login",
+            "--invoke", "app.foreground",
             "--read", "cart",
             "--timeout-ms", "15000",
         ).redirectError(ProcessBuilder.Redirect.INHERIT).start()
@@ -73,6 +75,10 @@ class IntegrationTest {
             throw ToolCallException(ErrorKind.USER_REJECTED, "用户取消了结账")
         }
         client.tool("boom", "抛异常") { _, _ -> error("炸了") }
+        client.tool("account.login", "需登录") { _, _ ->
+            throw ToolCallException.userActionRequired("登录已过期", UserActionReason.LOGIN, "shop://login")
+        }
+        client.tool("app.foreground", "需前台") { _, _ -> throw ToolCallException.userActionRequired("请切到前台") }
         client.resource("cart", "购物车") { mapOf("items" to listOf("A")) }
 
         val lines = try {
@@ -109,6 +115,22 @@ class IntegrationTest {
         assertEquals(
             "HANDLER_ERROR",
             results["boom"]!!["error"]!!.jsonObject["data"]!!.jsonObject["kind"]!!.jsonPrimitive.content,
+        )
+        val login = results["account.login"]!!["error"]!!.jsonObject
+        assertEquals("登录已过期", login["message"]!!.jsonPrimitive.content)
+        assertEquals(
+            JsonObject(
+                mapOf(
+                    "kind" to JsonPrimitive("USER_ACTION_REQUIRED"),
+                    "reason" to JsonPrimitive("login"),
+                    "uri" to JsonPrimitive("shop://login"),
+                ),
+            ),
+            login["data"],
+        )
+        assertEquals(
+            JsonObject(mapOf("kind" to JsonPrimitive("USER_ACTION_REQUIRED"))),
+            results["app.foreground"]!!["error"]!!.jsonObject["data"],
         )
         assertEquals(
             JsonObject(mapOf("items" to kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("A"))))),

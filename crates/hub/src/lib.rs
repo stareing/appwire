@@ -23,6 +23,7 @@ mod lease;
 mod lifecycle;
 mod limits;
 mod mcp_convert;
+pub mod policy;
 mod power;
 pub mod progress;
 #[cfg(feature = "mcp-server")]
@@ -45,6 +46,10 @@ pub use lease::{LeaseOverrides, LeasePairStatus, LeasePolicy, LeaseStatus};
 pub use limits::{LimitOverrides, LimitPolicy, OutputValidation, RateLimit};
 pub use http_server::{Health, HttpOptions};
 pub use progress::ProgressUpdate;
+pub use policy::{
+    AnnotationMatch, MAX_POLICY_RULES, PolicyAction, PolicyConfig, PolicyHook, PolicyLoadError, PolicyRule, PolicyRuleStatus,
+    PolicyStatus,
+};
 pub use hub::{
     DEFAULT_PROGRESS_INTERVAL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
     load_manifests, parse_resource_uri, resource_uri,

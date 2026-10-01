@@ -114,6 +114,8 @@ fn enum_conversions() {
         error_kind_from(Some("USER_REJECTED")),
         ErrorKind::UserRejected
     );
+    assert_eq!(error_kind_from(Some("USER_ACTION_REQUIRED")), ErrorKind::UserActionRequired);
+    assert_eq!(error_kind_from(Some("POLICY_DENIED")), ErrorKind::PolicyDenied);
     assert_eq!(error_kind_from(Some("nope")), ErrorKind::HandlerError);
     assert_eq!(error_kind_from(None), ErrorKind::HandlerError);
 }
@@ -394,6 +396,8 @@ fn header_consistency() {
         "am_call_complete_ex",
         // v10
         "am_call_progress",
+        // v11
+        "am_call_fail_user_action",
     ];
     // 收集头文件中形如 `am_xxx(` 的声明。
     let mut declared = Vec::new();
@@ -995,6 +999,10 @@ fn call_fail_with_details_null_call() {
     );
     assert!(out.is_null());
     assert_eq!(unsafe { am_call_progress(ptr::null(), 1.0, -1.0, ptr::null()) }, AmStatus::InvalidArgument);
+    assert_eq!(
+        unsafe { am_call_fail_user_action(ptr::null_mut(), ptr::null(), ptr::null(), ptr::null()) },
+        AmStatus::InvalidArgument
+    );
 }
 
 #[test]
@@ -1117,6 +1125,20 @@ fn fake_host_path() -> Option<std::path::PathBuf> {
 /// `order.submit`：以 pending + stateResource + summary + 内容注解完成；`plain`：普通返回值（回归）。
 unsafe extern "C" fn submit_tool(_ud: *mut c_void, call: *mut AmCall) {
     let name = unsafe { CStr::from_ptr(am_call_tool_name(call)) }.to_string_lossy().into_owned();
+    if name == "login" {
+        // USER_ACTION_REQUIRED：带 reason / uri
+        let msg = CString::new("登录已过期，请在 App 内重新登录").unwrap_or_default();
+        let reason = CString::new("login").unwrap_or_default();
+        let uri = CString::new("shop://login").unwrap_or_default();
+        let _ = unsafe { am_call_fail_user_action(call, msg.as_ptr(), reason.as_ptr(), uri.as_ptr()) };
+        return;
+    }
+    if name == "front" {
+        // reason / uri 为 NULL：data 中不出现
+        let msg = CString::new("请把 App 切到前台").unwrap_or_default();
+        let _ = unsafe { am_call_fail_user_action(call, msg.as_ptr(), ptr::null(), ptr::null()) };
+        return;
+    }
     if name == "plain" {
         // 进度：total 为负数表示未知；非法 UTF-8 的说明被拒绝（调用不受影响）
         let msg = CString::new("处理中").unwrap_or_default();
@@ -1166,7 +1188,10 @@ fn tool_options_and_call_result_reach_host() {
         return;
     };
     let Ok(mut child) = Command::new(bin)
-        .args(["--tool-info", "--invoke", "order.submit", "--invoke", "plain", "--timeout-ms", "8000"])
+        .args([
+            "--tool-info", "--invoke", "order.submit", "--invoke", "plain", "--invoke", "login", "--invoke", "front",
+            "--timeout-ms", "8000",
+        ])
         .stdout(Stdio::piped())
         .spawn()
     else {
@@ -1238,6 +1263,17 @@ fn tool_options_and_call_result_reach_host() {
         unsafe { am_tool_register(root, &plain_spec, Some(submit_tool), ptr::null_mut(), None, &mut plain) },
         AmStatus::Ok
     );
+    let mut ua_tools = Vec::new();
+    for n in ["login", "front"] {
+        let n = CString::new(n).unwrap_or_default();
+        let ua_spec = AmToolSpec { name: n.as_ptr(), risk: 0, ..spec };
+        let mut t: *mut AmTool = ptr::null_mut();
+        assert_eq!(
+            unsafe { am_tool_register(root, &ua_spec, Some(submit_tool), ptr::null_mut(), None, &mut t) },
+            AmStatus::Ok
+        );
+        ua_tools.push(t);
+    }
     assert_eq!(unsafe { am_client_start(client) }, AmStatus::Ok);
 
     let out: Vec<serde_json::Value> =
@@ -1246,6 +1282,9 @@ fn tool_options_and_call_result_reach_host() {
     unsafe {
         am_tool_free(tool);
         am_tool_free(plain);
+        for t in ua_tools {
+            am_tool_free(t);
+        }
         am_scope_free(root);
         am_client_free(client);
     }
@@ -1269,4 +1308,15 @@ fn tool_options_and_call_result_reach_host() {
     assert_eq!(out[2], serde_json::json!({ "type": "progress", "callId": out[2]["callId"], "progress": 1.0, "message": "处理中" }));
     assert_eq!(out[3], serde_json::json!({ "type": "progress", "callId": out[2]["callId"], "progress": 2.0, "total": 4.0 }));
     assert_eq!(out[4]["result"], serde_json::json!({ "data": { "ok": true } }));
+    assert_eq!(
+        out[5]["error"],
+        serde_json::json!({
+            "code": -32019, "message": "登录已过期，请在 App 内重新登录",
+            "data": { "kind": "USER_ACTION_REQUIRED", "reason": "login", "uri": "shop://login" }
+        })
+    );
+    assert_eq!(
+        out[6]["error"],
+        serde_json::json!({ "code": -32019, "message": "请把 App 切到前台", "data": { "kind": "USER_ACTION_REQUIRED" } })
+    );
 }

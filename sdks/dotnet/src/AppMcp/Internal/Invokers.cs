@@ -140,6 +140,15 @@ internal sealed unsafe class PendingCall
         if (status == AmStatus.InvalidJson) FailRaw(call, kind, message);
     }
 
+    /// <summary>以 USER_ACTION_REQUIRED 失败完成（v11）；reason / uri 为 null 时不出现在错误的 data 中。</summary>
+    public void FailUserAction(string message, string? reason, string? uri)
+    {
+        var call = Take();
+        if (call == 0) return;
+        using var strings = new Utf8Strings();
+        NativeMethods.am_call_fail_user_action(call, strings.AddPtr(message), strings.AddPtr(reason), strings.AddPtr(uri));
+    }
+
     internal static void FailRaw(nint call, string kind, string message)
     {
         using var strings = new Utf8Strings();
@@ -206,6 +215,10 @@ internal sealed class ToolInvoker(RawToolHandler handler, SynchronizationContext
         {
             var result = await handler(args, context).ConfigureAwait(false);
             pending.Complete(result, context.StateHints);
+        }
+        catch (UserActionRequiredException e)
+        {
+            pending.FailUserAction(e.Message, e.Reason, e.Uri);
         }
         catch (ToolCallException e) when (e.Details is not null)
         {

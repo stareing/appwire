@@ -3,6 +3,7 @@ package dev.appmcp
 import dev.appmcp.ffi.AppMcpException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -169,5 +170,19 @@ class UnitTest {
         val e = ToolCallException(ErrorKind.INVALID_INPUT, "坏", JsonPrimitive(1))
         assertEquals(JsonPrimitive(1), e.details)
         assertEquals(null, ToolCallException(ErrorKind.INVALID_INPUT, "坏").details)
+    }
+
+    @Test
+    fun userActionRequiredDetails() {
+        val e = ToolCallException.userActionRequired("请先登录", UserActionReason.LOGIN, "shop://login")
+        assertEquals(ErrorKind.USER_ACTION_REQUIRED, e.kind)
+        assertEquals("请先登录", e.message)
+        assertEquals(
+            JsonObject(mapOf("reason" to JsonPrimitive("login"), "uri" to JsonPrimitive("shop://login"))),
+            e.details,
+        )
+        assertEquals(JsonObject(mapOf("reason" to JsonPrimitive("custom"))), ToolCallException.userActionRequired("x", "custom").details)
+        assertEquals(null, ToolCallException.userActionRequired("切到前台").details)
+        assertTrue(ErrorKind.POLICY_DENIED in ErrorKind.all && ErrorKind.USER_ACTION_REQUIRED in ErrorKind.all)
     }
 }

@@ -147,11 +147,13 @@ impl ServerHandler for McpSession {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         let _activity = self.shared.session_request(&self.key);
+        let policy = self.shared.policy();
         let resources = self
             .shared
             .registry()
             .resources()
             .into_iter()
+            .filter(|r| policy.app_hidden(&r.app_id).is_none())
             .map(|r| {
                 let desc = if r.available {
                     r.info.description.clone()

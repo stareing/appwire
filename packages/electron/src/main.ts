@@ -33,6 +33,9 @@ import {
 } from './protocol.js'
 
 export type { HelloReply, MainEvent, OpReply, RendererOp } from './protocol.js'
+/** 主进程 handler 抛出以指定错误类别（如 `ToolCallError.userActionRequired(...)`）。 */
+export { ToolCallError }
+export type { UserActionReason, UserActionRequiredOptions } from '@app-mcp/node'
 
 /** Electron `WebContents` 的最小接口。 */
 export interface WebContentsLike {
@@ -171,7 +174,7 @@ class RendererSession {
         if (!pending) return undefined // 已取消或超时
         this.calls.delete(op.callId)
         if (op.ok) pending.resolve(callResult(op))
-        else pending.reject(new ToolCallError(op.kind, op.message))
+        else pending.reject(new ToolCallError(op.kind, op.message, plainDetails(op.details)))
         return undefined
       }
       case 'call.progress':
@@ -294,6 +297,13 @@ function toolDefinition(spec: ToolSpecMessage) {
 }
 
 /** 页面的成功结果 → @app-mcp/node 的结构化结果（只带出现的字段；旧页面只有 data / stateHints）。 */
+/** 页面送来的错误详情：只接受普通对象（如 `USER_ACTION_REQUIRED` 的 `{ reason?, uri? }`），其他值丢弃。 */
+function plainDetails(details: unknown): Record<string, unknown> | undefined {
+  return typeof details === 'object' && details !== null && !Array.isArray(details)
+    ? (details as Record<string, unknown>)
+    : undefined
+}
+
 function callResult(outcome: Extract<Outcome, { ok: true }>): ToolResultEnvelope<unknown> {
   const { ok: _ok, data, stateHints, status, stateResource, summary, annotations } = outcome
   return {

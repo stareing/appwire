@@ -276,6 +276,75 @@ final class HubIntegrationTests: XCTestCase {
         XCTAssertTrue(decl.outputSchema)
     }
 
+    /// 策略挂点（spec/hub-api.md 3.13）：hide → 不在列表、调用 TOOL_NOT_FOUND；deny → POLICY_DENIED；
+    /// setPolicy 不合法时抛错且旧规则继续生效；清空后恢复原行为。
+    func testPolicyHideDenyAndSetPolicy() async throws {
+        XCTAssertThrowsError(try Hub(config: HubConfig(
+            listen: "127.0.0.1:0", enableIpc: false,
+            policy: PolicyConfig(rules: [PolicyRule(id: "bad id", action: .hide, app: "notes")])
+        ))) { error in
+            guard case HubError.InvalidConfig = error else { return XCTFail("\(error)") }
+        }
+        let hub = try Hub(config: HubConfig(
+            listen: "127.0.0.1:0", enableIpc: false,
+            policy: PolicyConfig(rules: [
+                PolicyRule(id: "hide-clear", action: .hide, app: "notes", tool: "clear"),
+                PolicyRule(id: "deny-add", action: .deny, app: "notes", tool: "add"),
+            ])
+        ))
+        defer { hub.close() }
+        let app = try AppMcpClient(config: AppMcpConfig(
+            appId: "notes", appName: "笔记", hostURL: "ws://\(hub.listenAddr ?? "")/app"
+        ))
+        try app.tool("add", description: "添加") { (args: JSONValue, _) in args }
+        try app.tool("clear", description: "清空") { (args: JSONValue, _) in args }
+        try app.tool("echo", description: "回显") { (args: JSONValue, _) in args }
+        app.start()
+        defer { app.stop() }
+
+        func names() -> [String] {
+            hub.tools(ToolFilter(apps: ["notes"], includeBuiltin: false)).map(\.tool).sorted()
+        }
+        let deadline = Date().addingTimeInterval(10)
+        while names().count < 2 {
+            if Date() > deadline { return XCTFail("等待工具注册超时") }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(names(), ["add", "echo"], "hide 的工具不在列表中")
+
+        let hidden = try await hub.callTool("notes.clear")
+        XCTAssertEqual(hidden.error?.kind, "TOOL_NOT_FOUND")
+        let denied = try await hub.callTool("notes.add")
+        XCTAssertEqual(denied.error?.kind, "POLICY_DENIED")
+        let details = try JSONSerialization.jsonObject(
+            with: Data(try XCTUnwrap(denied.error?.detailsJson).utf8)
+        ) as? [String: Any]
+        XCTAssertEqual(details?["ruleId"] as? String, "deny-add")
+        XCTAssertEqual(details?["hook"] as? String, "call")
+        let st = try hub.policy()
+        XCTAssertEqual(st.rules.map(\.rule.id), ["hide-clear", "deny-add"])
+        XCTAssertEqual(st.rules.map(\.hits), [1, 1])
+        XCTAssertEqual(try hub.status().policy?.rules.count, 2)
+
+        // 不合法：hide 不能写 hooks → 抛错，旧规则继续生效
+        XCTAssertThrowsError(try hub.setPolicy(PolicyConfig(rules: [
+            PolicyRule(id: "x", action: .hide, app: "notes", hooks: [.call]),
+        ]))) { error in
+            guard case let HubError.Tool(kind, _, _) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(kind, "INVALID_INPUT")
+        }
+        let still = try await hub.callTool("notes.add")
+        XCTAssertEqual(still.error?.kind, "POLICY_DENIED")
+        XCTAssertNotNil(try hub.policy().lastError)
+
+        // 清空：恢复原行为
+        try hub.setPolicy(PolicyConfig(rules: []))
+        XCTAssertEqual(names(), ["add", "clear", "echo"])
+        let ok = try await hub.callTool("notes.add")
+        XCTAssertNil(ok.error)
+        XCTAssertNil(try hub.policy().lastError)
+    }
+
     func testProgressiveExposureConfig() throws {
         let hub = try Hub(config: HubConfig(
             enableListen: false, enableIpc: false, waker: .exec(argv: ["true"]), toolExposure: .progressive, toolExposureThreshold: 5

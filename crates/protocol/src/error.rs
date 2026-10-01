@@ -45,6 +45,11 @@ pub enum ErrorKind {
     RateLimited,
     /// Host 侧大小上限：调用参数、调用结果或资源内容超过上限，未转发 / 未返回（不截断）。
     PayloadTooLarge,
+    /// 调用被用户 / 厂商的策略规则拒绝（`deny`，spec/hub-api.md 3.13），未转发、未唤醒；`data.ruleId` 为命中规则的标识。
+    PolicyDenied,
+    /// 需要用户本人操作后才能继续（登录过期、系统权限未授予、需切到前台、需在 App 内确认等），由 App 的 handler 返回；
+    /// `message` 面向用户，`data.reason` / `data.uri` 可选（见 [`ToolError::user_action_required`]）。
+    UserActionRequired,
 }
 
 impl ErrorKind {
@@ -68,6 +73,8 @@ impl ErrorKind {
             ErrorKind::UnsupportedProtocol => -32015,
             ErrorKind::RateLimited => -32016,
             ErrorKind::PayloadTooLarge => -32017,
+            ErrorKind::PolicyDenied => -32018,
+            ErrorKind::UserActionRequired => -32019,
         }
     }
 
@@ -90,6 +97,8 @@ impl ErrorKind {
             ErrorKind::UnsupportedProtocol => "UNSUPPORTED_PROTOCOL",
             ErrorKind::RateLimited => "RATE_LIMITED",
             ErrorKind::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            ErrorKind::PolicyDenied => "POLICY_DENIED",
+            ErrorKind::UserActionRequired => "USER_ACTION_REQUIRED",
         }
     }
 }
@@ -120,6 +129,35 @@ impl ToolError {
         self.details = Some(details);
         self
     }
+
+    /// `USER_ACTION_REQUIRED`（spec/protocol.md 第 4 节）：需要用户本人操作后才能继续。
+    ///
+    /// @input message 面向用户的说明（Agent 应转告用户），如"登录已过期，请在 App 内重新登录后重试"。
+    /// @input reason 可选类别：[`user_action_reason`] 中的值或其他字符串。
+    /// @input uri 可选的 App 内入口（深链接等），供 Agent / 用户打开。
+    pub fn user_action_required(message: impl Into<String>, reason: Option<&str>, uri: Option<&str>) -> Self {
+        let mut details = serde_json::Map::new();
+        if let Some(r) = reason {
+            details.insert("reason".into(), Value::String(r.to_owned()));
+        }
+        if let Some(u) = uri {
+            details.insert("uri".into(), Value::String(u.to_owned()));
+        }
+        let err = Self::new(ErrorKind::UserActionRequired, message);
+        if details.is_empty() { err } else { err.with_details(Value::Object(details)) }
+    }
+}
+
+/// `USER_ACTION_REQUIRED` 的 `data.reason` 建议取值（spec/protocol.md 第 4 节；接收方遇到其他值按原样展示）。
+pub mod user_action_reason {
+    /// 登录已过期 / 未登录。
+    pub const LOGIN: &str = "login";
+    /// 系统权限未授予（相机、位置、通知等）。
+    pub const PERMISSION: &str = "permission";
+    /// 需要把 App 切到前台。
+    pub const FOREGROUND: &str = "foreground";
+    /// 需要用户在 App 内确认。
+    pub const CONFIRM: &str = "confirm";
 }
 
 impl From<ToolError> for RpcError {
@@ -182,5 +220,21 @@ mod tests {
         assert_eq!(serde_json::to_value(ErrorKind::RateLimited).unwrap(), json!("RATE_LIMITED"));
         assert_eq!((ErrorKind::RateLimited.code(), ErrorKind::PayloadTooLarge.code()), (-32016, -32017));
         assert_eq!(ErrorKind::PayloadTooLarge.as_str(), "PAYLOAD_TOO_LARGE");
+        assert_eq!((ErrorKind::PolicyDenied.code(), ErrorKind::UserActionRequired.code()), (-32018, -32019));
+        assert_eq!(serde_json::to_value(ErrorKind::PolicyDenied).unwrap(), json!("POLICY_DENIED"));
+        assert_eq!(ErrorKind::UserActionRequired.as_str(), "USER_ACTION_REQUIRED");
+    }
+
+    #[test]
+    fn user_action_required_details() {
+        let e = ToolError::user_action_required("请先登录", Some(user_action_reason::LOGIN), Some("shop://login"));
+        let rpc: RpcError = e.clone().into();
+        assert_eq!(rpc.code, -32019);
+        assert_eq!(rpc.data, Some(json!({"kind": "USER_ACTION_REQUIRED", "reason": "login", "uri": "shop://login"})));
+        assert_eq!(rpc.to_tool_error(), e);
+        let bare = ToolError::user_action_required("切到前台", None, None);
+        assert_eq!(bare.details, None);
+        let rpc: RpcError = bare.into();
+        assert_eq!(rpc.data, Some(json!({"kind": "USER_ACTION_REQUIRED"})));
     }
 }

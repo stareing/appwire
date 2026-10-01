@@ -265,27 +265,43 @@ async fn page_tool_roundtrip_with_rust_tool() {
         .expect("调用 Rust 工具");
     assert_eq!(native.result.expect("成功")["from"], "rust");
 
-    // 页面报告的错误类别原样传给 Host；无法识别的类别按 HANDLER_ERROR。
-    for (kind, expected) in [
-        ("USER_REJECTED", ErrorKind::UserRejected),
-        ("WHATEVER", ErrorKind::HandlerError),
-    ] {
+    // 页面报告的错误类别与详情原样传给 Host；无法识别的类别按 HANDLER_ERROR；详情不是对象时忽略。
+    let cases = [
+        ("USER_REJECTED", Value::Null, ErrorKind::UserRejected, None),
+        ("WHATEVER", Value::Null, ErrorKind::HandlerError, None),
+        ("POLICY_DENIED", Value::Null, ErrorKind::PolicyDenied, None),
+        (
+            "USER_ACTION_REQUIRED",
+            json!({ "reason": "login", "uri": "shop://login" }),
+            ErrorKind::UserActionRequired,
+            Some(json!({ "reason": "login", "uri": "shop://login" })),
+        ),
+        (
+            "USER_ACTION_REQUIRED",
+            json!({ "reason": "permission" }),
+            ErrorKind::UserActionRequired,
+            Some(json!({ "reason": "permission" })),
+        ),
+        ("USER_ACTION_REQUIRED", json!({}), ErrorKind::UserActionRequired, None),
+        ("USER_ACTION_REQUIRED", json!("x"), ErrorKind::UserActionRequired, None),
+    ];
+    for (kind, details, expected, expected_details) in cases {
         let hub = fx.hub.clone();
         let pending = tokio::spawn(async move {
             hub.call_tool(CallRequest::new("roundtrip.page.add", json!({})))
                 .await
         });
         let call = wait_event(&page, "call").await;
-        fx.op(
-            &page,
-            "main",
-            "main",
-            json!({ "op": "call.result", "callId": call["callId"], "ok": false, "kind": kind, "message": "不行" }),
-        );
+        let mut op = json!({ "op": "call.result", "callId": call["callId"], "ok": false, "kind": kind, "message": "不行" });
+        if !details.is_null() {
+            op["details"] = details;
+        }
+        fx.op(&page, "main", "main", op);
         let out = pending.await.expect("join").expect("调用");
         let err = out.result.expect_err("失败");
         assert_eq!(err.kind, expected);
         assert_eq!(err.message, "不行");
+        assert_eq!(err.details, expected_details, "{kind}");
     }
     fx.bridge.client().stop();
     shutdown(fx.hub).await;

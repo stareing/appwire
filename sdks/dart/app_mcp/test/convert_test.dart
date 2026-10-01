@@ -77,6 +77,15 @@ void main() {
     test('Host 侧类别', () {
       expect(ErrorKind.parse('RATE_LIMITED'), ErrorKind.rateLimited);
       expect(ErrorKind.payloadTooLarge.wireName, 'PAYLOAD_TOO_LARGE');
+      expect(ErrorKind.parse('POLICY_DENIED'), ErrorKind.policyDenied);
+      expect(ErrorKind.userActionRequired.wireName, 'USER_ACTION_REQUIRED');
+    });
+    test('UserActionRequiredError 是 USER_ACTION_REQUIRED 的 ToolCallError', () {
+      final ToolCallError e = UserActionRequiredError('请先登录', reason: UserActionReason.login);
+      expect(e.kind, ErrorKind.userActionRequired);
+      expect(failureFromError(e), (kind: 'USER_ACTION_REQUIRED', message: '请先登录', detailsJson: null));
+      expect((e as UserActionRequiredError).reason, 'login');
+      expect(e.uri, isNull);
     });
   });
 

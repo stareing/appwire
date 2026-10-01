@@ -44,6 +44,7 @@ Host 默认监听：
   | `/mcp` | MCP Streamable HTTP（`app-mcp-host serve` 开启；嵌入式 Hub 可选） | `Origin` 允许列表（403）→ 本地访问令牌（401） |
   | `/healthz` | `GET`：Host 身份与监听信息（1.6），不需要令牌 | `Origin` 允许列表（403） |
   | `/status` | `GET`：运行状态（各 App 实例的连接 / 休眠 / 唤醒、最近错误、SDK 上报，10.2），供 `app-mcp-host doctor` / `status` | 本地 IPC 直接允许；TCP 必须带有效令牌（未配置令牌时 403，请经 IPC 访问） |
+  | `/policy` | `POST`：替换策略规则（spec/hub-api.md 3.13），供 `app-mcp-host policy reload` | 同 `/status` |
 
   未显式配置监听地址且默认端口被占用时，Host 依次尝试**固定的备选端口** `7737`、`7757`，实际地址写入登记文件（1.7）。
   合并之前的独立 MCP 端口 `7718` 不再默认监听；兼容期内可显式配置（`app-mcp-host` 的 `http.addr` / `--http`，
@@ -378,6 +379,8 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
 | `UNSUPPORTED_PROTOCOL` | -32015 | 协议版本不兼容 |
 | `RATE_LIMITED` | -32016 | Host 限流：对该（App, 工具）或该 App 的调用过于频繁，调用未转发。`data`：`retryAfterMs`（建议等待毫秒数）、`scope`（`tool` / `app`）、`perMinute`、`burst`、`appId`、`tool`（spec/hub-api.md 3.11） |
 | `PAYLOAD_TOO_LARGE` | -32017 | Host 大小上限：调用参数、调用结果或资源内容超过上限，未转发 / 未返回（不截断）。`data`：`part`（`arguments` / `result` / `resource`）、`sizeBytes`、`limitBytes`。`result` 超限时调用可能已在 App 内执行 |
+| `POLICY_DENIED` | -32018 | 调用被用户 / 厂商写的策略规则拒绝（`deny`，spec/hub-api.md 3.13），未转发、未唤醒；与 `USER_REJECTED`（用户当场拒绝）不同，重试不会改变结果。`data`：`ruleId`（命中规则的标识，不含规则内容）、`hook`（`call` / `wake`）、`appId`、`tool` |
+| `USER_ACTION_REQUIRED` | -32019 | 需要用户本人操作后才能继续：登录过期、系统权限未授予、需切到前台、需在 App 内确认等。由 App 的 handler 返回（各语言 SDK 提供构造方法）；调用未完成，用户操作后可重试。`message` 面向用户（Agent 应转告用户），`data`：`reason`（可选，建议取值 `login` / `permission` / `foreground` / `confirm`，其他字符串按原样展示）、`uri`（可选，App 内入口，如深链接）。Host 原样转为 MCP 错误结果，不据此做任何决定；错误消息与结果一样计入结果大小上限（spec/hub-api.md 3.11） |
 
 `message` 面向模型，应说明原因和建议的下一步。`data` 中除 `kind` 外可携带其他字段。
 标准 JSON-RPC 错误码（-32700、-32600、-32601、-32602、-32603）用于协议层错误。

@@ -47,6 +47,10 @@ impl AppHome {
     pub fn token_file(&self) -> PathBuf {
         self.dir.join("token")
     }
+    /// 策略规则（spec/hub-api.md 3.13）：启动时加载，`app-mcp-host policy reload` 重载。
+    pub fn policy_file(&self) -> PathBuf {
+        self.dir.join("policy.json")
+    }
     pub fn log_dir(&self) -> PathBuf {
         self.dir.join("logs")
     }

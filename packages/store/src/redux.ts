@@ -40,6 +40,8 @@ const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
   'UNSUPPORTED_PROTOCOL',
   'RATE_LIMITED',
   'PAYLOAD_TOO_LARGE',
+  'POLICY_DENIED',
+  'USER_ACTION_REQUIRED',
 ])
 
 /** createAsyncThunk dispatch 结果：带 `unwrap()` 的 Promise。 */

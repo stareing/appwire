@@ -393,6 +393,19 @@ impl AppMcpHub {
         Ok(hub.status().into())
     }
 
+    /// 生效的策略规则、各规则命中次数与最近的加载错误（spec/hub-api.md 3.13）。已停止时返回 `Shutdown`。
+    pub fn policy(&self) -> Result<PolicyStatus, HubError> {
+        let hub = self.hub()?;
+        Ok(hub.policy().into())
+    }
+
+    /// 替换策略规则集（命中计数清零）。规则不合法时返回 `HubError::Tool`（`kind = "INVALID_INPUT"`），
+    /// 之前的规则继续生效，错误记入 `policy().last_error`。
+    pub fn set_policy(&self, policy: PolicyConfig) -> Result<(), HubError> {
+        let hub = self.hub()?;
+        hub.set_policy(policy.into()).map_err(Into::into)
+    }
+
     // ---- 操作 ----
 
     /// 调用工具。工具层面的失败（参数不合法、用户拒绝、超时、App 报错…）放在 `CallOutcome.error`；

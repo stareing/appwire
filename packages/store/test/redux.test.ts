@@ -199,6 +199,12 @@ describe('exposeRedux', () => {
     expect(toCallError({ kind: 'NOT_A_KIND', message: 'm' })).not.toBeInstanceOf(ToolCallError)
     expect(toCallError({ kind: 'RATE_LIMITED', message: 'm' })).toMatchObject({ kind: 'RATE_LIMITED' })
     expect(toCallError({ code: 'PAYLOAD_TOO_LARGE', message: 'm' })).toMatchObject({ kind: 'PAYLOAD_TOO_LARGE' })
+    expect(toCallError({ kind: 'POLICY_DENIED', message: 'm' })).toMatchObject({ kind: 'POLICY_DENIED' })
+    expect(toCallError({ kind: 'USER_ACTION_REQUIRED', message: '请先登录', details: { reason: 'login' } })).toMatchObject({
+      kind: 'USER_ACTION_REQUIRED',
+      message: '请先登录',
+      details: { reason: 'login' },
+    })
     expect(toCallError('坏了').message).toContain('坏了')
     expect(toCallError(42).message).toContain('42')
   })

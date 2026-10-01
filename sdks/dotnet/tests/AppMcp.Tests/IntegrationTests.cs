@@ -24,6 +24,8 @@ public class IntegrationTests(ITestOutputHelper output)
             "--invoke", "fail.custom", "--args", "{}",
             "--invoke", "throws", "--args", "{}",
             "--invoke", "raw.echo", "--args", """{"x":1}""",
+            "--invoke", "need.login", "--args", "{}",
+            "--invoke", "need.front", "--args", "{}",
             "--read", "app.info",
             "--timeout-ms", "20000");
         var addr = await host.ReadListeningAsync();
@@ -61,6 +63,10 @@ public class IntegrationTests(ITestOutputHelper output)
             throw new InvalidOperationException("出错了"));
         using var echo = client.RegisterTool("raw.echo", "回显", (args, _) =>
             Task.FromResult<object?>(new { echoed = args }));
+        using var needLogin = client.RegisterTool("need.login", "需登录", (_, _) =>
+            throw new UserActionRequiredException("登录已过期", UserActionReason.Login, "shop://login"));
+        using var needFront = client.RegisterTool("need.front", "需前台", (_, _) =>
+            Task.FromException<object?>(new UserActionRequiredException("请切到前台")));
         using var info = client.RegisterResource("app.info", "信息", _ => Task.FromResult<object?>(new { app = "dotnet", lang = "c#" }));
 
         client.Start();
@@ -73,7 +79,7 @@ public class IntegrationTests(ITestOutputHelper output)
         Assert.Contains("greet", tools["tools"]!.AsArray().Select(t => (string?)t));
 
         var invokes = json.Where(j => (string?)j["type"] == "invoke").ToList();
-        Assert.Equal(5, invokes.Count);
+        Assert.Equal(7, invokes.Count);
 
         var progress = Assert.Single(json, j => (string?)j["type"] == "progress");
         Assert.Equal(1.0, (double?)progress["progress"]);
@@ -87,6 +93,15 @@ public class IntegrationTests(ITestOutputHelper output)
         Assert.Equal("HANDLER_ERROR", (string?)invokes[3]["error"]!["data"]!["kind"]);
         Assert.Contains("出错了", (string?)invokes[3]["error"]!["message"]);
         Assert.Equal(1, (int?)invokes[4]["result"]!["data"]!["echoed"]!["x"]);
+        // USER_ACTION_REQUIRED（v11）：reason / uri 进入 data；未给时 data 只有 kind
+        var login = invokes[5]["error"]!;
+        Assert.Equal(-32019, (int?)login["code"]);
+        Assert.Equal("登录已过期", (string?)login["message"]);
+        Assert.True(JsonNode.DeepEquals(
+            JsonNode.Parse("""{"kind":"USER_ACTION_REQUIRED","reason":"login","uri":"shop://login"}"""), login["data"]));
+        var front = invokes[6]["error"]!;
+        Assert.Equal(-32019, (int?)front["code"]);
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""{"kind":"USER_ACTION_REQUIRED"}"""), front["data"]));
 
         var read = json.Single(j => (string?)j["type"] == "read");
         Assert.Equal("c#", (string?)read["result"]!["contents"]!["lang"]);

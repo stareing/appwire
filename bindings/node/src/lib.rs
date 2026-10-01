@@ -123,6 +123,8 @@ fn parse_error_kind(s: &str) -> Result<ErrorKind, String> {
         "UNSUPPORTED_PROTOCOL" => ErrorKind::UnsupportedProtocol,
         "RATE_LIMITED" => ErrorKind::RateLimited,
         "PAYLOAD_TOO_LARGE" => ErrorKind::PayloadTooLarge,
+        "POLICY_DENIED" => ErrorKind::PolicyDenied,
+        "USER_ACTION_REQUIRED" => ErrorKind::UserActionRequired,
         other => return Err(invalid_arg(format!("未知的错误类别：{other:?}"))),
     })
 }

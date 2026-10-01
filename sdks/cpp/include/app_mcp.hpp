@@ -9,6 +9,7 @@
 //   Client 析构会停止客户端。
 // - Call / Read 为只能移动的对象，必须完成一次；析构时若尚未完成，以 HANDLER_ERROR 失败。
 // - handler 抛出 ToolCallError 时按其 kind（及可选 details）失败，抛出其他 std::exception 时以 HANDLER_ERROR 失败。
+//   需要用户本人操作（登录过期、权限未授予、需切到前台等）时抛出 UserActionRequired 或调用 Call::fail_user_action。
 //
 // 生命周期（spec/lifecycle.md，需要 AM_API_VERSION >= 3）：
 // - ClientConfig::lifecycle 设置 persistent / idle / on-demand；空闲后与 Host 完成 app/sleep 并释放连接与运行时。
@@ -74,6 +75,29 @@ public:
 private:
     std::string kind_;
     std::optional<std::string> details_json_;
+};
+
+/// USER_ACTION_REQUIRED 的 data.reason 建议取值（spec/protocol.md 第 4 节；也可用其他字符串）。
+namespace user_action_reason {
+inline constexpr const char* login = "login";            ///< 登录已过期 / 未登录
+inline constexpr const char* permission = "permission";  ///< 系统权限未授予
+inline constexpr const char* foreground = "foreground";  ///< 需要把 App 切到前台
+inline constexpr const char* confirm = "confirm";        ///< 需要用户在 App 内确认
+}  // namespace user_action_reason
+
+/// handler 中抛出，以 USER_ACTION_REQUIRED 失败（app_mcp.h v11）：需要用户本人操作后才能继续。
+/// message 面向用户；reason（见 user_action_reason）与 uri（App 内入口，如深链接）可选，缺省时不出现在错误的 data 中。
+class UserActionRequired : public ToolCallError {
+public:
+    explicit UserActionRequired(const std::string& message, std::optional<std::string> reason = std::nullopt,
+                                std::optional<std::string> uri = std::nullopt)
+        : ToolCallError("USER_ACTION_REQUIRED", message), reason_(std::move(reason)), uri_(std::move(uri)) {}
+    const std::optional<std::string>& reason() const noexcept { return reason_; }
+    const std::optional<std::string>& uri() const noexcept { return uri_; }
+
+private:
+    std::optional<std::string> reason_;
+    std::optional<std::string> uri_;
 };
 
 namespace detail {
@@ -563,6 +587,15 @@ public:
         detail::check(s);
     }
 
+    /// 以 USER_ACTION_REQUIRED 失败完成（app_mcp.h v11）：需要用户本人操作后才能继续。
+    /// reason（见 user_action_reason）与 uri 缺省时不出现在错误的 data 中。
+    void fail_user_action(const std::string& message, const std::optional<std::string>& reason = std::nullopt,
+                          const std::optional<std::string>& uri = std::nullopt) {
+        AmCall* c = take();
+        detail::check(am_call_fail_user_action(c, message.c_str(), detail::c_str_or_null(reason),
+                                               detail::c_str_or_null(uri)));
+    }
+
     /// 延长持有：调用完成后仍阻止自动休眠（handler 发起的长任务），直到 HoldGuard 释放。
     /// 必须在完成调用之前取得。
     HoldGuard hold() const {
@@ -663,6 +696,9 @@ inline void tool_trampoline(void* ud, AmCall* raw) {
     auto state = std::make_shared<Pending<AmCall>>(raw);
     try {
         (*static_cast<ToolHandler*>(ud))(Call(state));
+    } catch (const UserActionRequired& e) {
+        if (AmCall* c = state->take())
+            am_call_fail_user_action(c, e.what(), c_str_or_null(e.reason()), c_str_or_null(e.uri()));
     } catch (const ToolCallError& e) {
         if (AmCall* c = state->take()) {
             const char* details = e.details_json() ? e.details_json()->c_str() : nullptr;

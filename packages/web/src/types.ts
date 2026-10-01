@@ -34,6 +34,13 @@ export type ErrorKind =
   | 'RATE_LIMITED'
   /** 调用参数 / 结果 / 资源内容超过 Host 的大小上限（Host 产生，App 一般不抛）。 */
   | 'PAYLOAD_TOO_LARGE'
+  /** 被用户 / 厂商的策略规则拒绝，调用未转发（Hub 产生，App 一般不抛）。 */
+  | 'POLICY_DENIED'
+  /**
+   * 需要用户本人操作后才能继续（登录过期、系统权限未授予、需切到前台、需在 App 内确认等），由 handler 抛出，
+   * 见 {@link ToolCallError.userActionRequired}。
+   */
+  | 'USER_ACTION_REQUIRED'
 
 /** JSON Schema 对象（只要求顶层 type 为 object）。 */
 export type JsonSchema = { type: 'object'; [key: string]: unknown }
@@ -378,6 +385,17 @@ export interface ToolHandle {
   dispose(): void
 }
 
+/** `USER_ACTION_REQUIRED` 的 `reason` 建议取值（spec/protocol.md 第 4 节）；也可以是其他字符串。 */
+export type UserActionReason = 'login' | 'permission' | 'foreground' | 'confirm' | (string & {})
+
+/** {@link ToolCallError.userActionRequired} 的可选项；未给出的字段不出现在错误详情中。 */
+export interface UserActionRequiredOptions {
+  /** 类别：`login` 登录过期 / `permission` 系统权限未授予 / `foreground` 需切到前台 / `confirm` 需在 App 内确认。 */
+  reason?: UserActionReason
+  /** App 内入口（深链接等），供 Agent / 用户打开。 */
+  uri?: string
+}
+
 /** handler 可以抛出此错误以指定错误类别；其他异常归为 HANDLER_ERROR。 */
 export class ToolCallError extends Error {
   readonly kind: ErrorKind
@@ -388,6 +406,28 @@ export class ToolCallError extends Error {
     this.kind = kind
     this.details = details
   }
+
+  /**
+   * `USER_ACTION_REQUIRED`：需要用户本人操作后才能继续，Agent 会把 `message` 转告用户。
+   *
+   * ```ts
+   * throw ToolCallError.userActionRequired('登录已过期，请在 App 内重新登录后重试', { reason: 'login', uri: 'shop://login' })
+   * ```
+   *
+   * @input message 面向用户的说明。
+   * @output 详情为 `{ reason?, uri? }`，未给出的字段省略；两者都未给出时没有详情。
+   */
+  static userActionRequired(message: string, options: UserActionRequiredOptions = {}): ToolCallError {
+    return new ToolCallError('USER_ACTION_REQUIRED', message, userActionDetails(options))
+  }
+}
+
+/** `{ reason?, uri? }` → 错误详情（省略缺省字段；为空时返回 undefined）。 */
+function userActionDetails(options: UserActionRequiredOptions): Record<string, unknown> | undefined {
+  const details: Record<string, unknown> = {}
+  if (options.reason !== undefined) details.reason = options.reason
+  if (options.uri !== undefined) details.uri = options.uri
+  return Object.keys(details).length === 0 ? undefined : details
 }
 
 // ---------------------------------------------------------------------------

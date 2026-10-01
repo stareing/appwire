@@ -61,6 +61,8 @@ final class IntegrationTests: XCTestCase {
             "--invoke", "greet", "--args", #"{"name":"世界"}"#,
             "--invoke", "cart.checkout",
             "--invoke", "boom",
+            "--invoke", "account.login",
+            "--invoke", "app.foreground",
             "--invoke", "bg.echo", "--args", #"{"name":"后台"}"#,
             "--read", "cart",
             "--timeout-ms", "15000",
@@ -87,6 +89,12 @@ final class IntegrationTests: XCTestCase {
         }
         struct Boom: Error {}
         try client.tool("boom", description: "抛异常") { (_: NoArguments, _) in throw Boom() }
+        try client.tool("account.login", description: "需登录") { (_: NoArguments, _) in
+            throw ToolCallError.userActionRequired(message: "登录已过期", reason: UserActionReason.login, uri: "shop://login")
+        }
+        try client.tool("app.foreground", description: "需前台") { (_: NoArguments, _) in
+            throw ToolCallError.userActionRequired(message: "请切到前台")
+        }
         try client.backgroundTool("bg.echo", description: "后台回显") { (g: Greeting, _) in g.name }
         try client.resource("cart", description: "购物车") { ["items": ["A"]] }
         client.start()
@@ -119,6 +127,14 @@ final class IntegrationTests: XCTestCase {
         XCTAssertEqual(rejected?["message"] as? String, "用户取消了结账")
         let boom = results["boom"]?["error"] as? [String: Any]
         XCTAssertEqual((boom?["data"] as? [String: Any])?["kind"] as? String, "HANDLER_ERROR")
+        let login = results["account.login"]?["error"] as? [String: Any]
+        XCTAssertEqual(login?["message"] as? String, "登录已过期")
+        XCTAssertEqual(
+            login?["data"] as? [String: String],
+            ["kind": "USER_ACTION_REQUIRED", "reason": "login", "uri": "shop://login"]
+        )
+        let fg = results["app.foreground"]?["error"] as? [String: Any]
+        XCTAssertEqual(fg?["data"] as? [String: String], ["kind": "USER_ACTION_REQUIRED"])
         XCTAssertEqual((results["bg.echo"]?["result"] as? [String: Any])?["data"] as? String, "后台")
         let cart = (results["cart"]?["result"] as? [String: Any])?["contents"] as? [String: Any]
         XCTAssertEqual(cart?["items"] as? [String], ["A"])

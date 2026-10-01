@@ -13,5 +13,6 @@ export {
   Activation, AppMcpOptions, AppOverview, Audience, CancelReason, ConnectionState, ConnectionStatus, ContentAnnotations,
   ErrorKind, HeartbeatMode, HoldHandle, LifecycleMode, LifecycleOptions, Logger, Registrar, Residency, ResourceDefinition,
   ResourceHandle, ResultStatus, Risk, Scope, ToolAnnotations, ToolChanges, ToolContext, ToolDefinition, ToolHandle,
-  ToolHandler, ToolResult, ToolResultOptions, Visibility, WakeDescriptor, WakeKind, WakeReason,
+  ToolHandler, ToolResult, ToolResultOptions, UserActionRequiredOptions, Visibility, WakeDescriptor, WakeKind,
+  WakeReason,
 } from './src/main/ets/Types';

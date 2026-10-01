@@ -58,6 +58,9 @@ appMcp.tool('order.cancel', {
 - **无返回值**（`undefined` / `null`）且没有 `summary` 时，Host 对模型输出"已完成"，而不是 `null`。
 - Host 还会对调用限流、限制参数 / 结果 / 资源大小，超出时 Agent 收到 `RATE_LIMITED` / `PAYLOAD_TOO_LARGE`
   （参数超限与被限流的调用不会转发到页面；结果超限时 handler 已执行，结果不返回）。上限见 crates/host/README.md。
+- **需要用户操作**（登录过期、系统权限未授予、需切到前台、需在 App 内确认）时抛出
+  `ToolCallError.userActionRequired('登录已过期，请重新登录后重试', { reason: 'login', uri: 'shop://login' })`：
+  Agent 收到 `USER_ACTION_REQUIRED`，把说明转告用户；`reason` / `uri` 可省略。
 
 ## 生命周期（休眠与唤醒）
 

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use hub::{
-    ApprovalPolicy, HubConfig, LeaseOverrides, LimitOverrides, OutputValidation, ToolExposure, UpstreamConfig, WakerConfig,
-    load_manifests,
+    ApprovalPolicy, HubConfig, LeaseOverrides, LimitOverrides, OutputValidation, PolicyConfig, ToolExposure, UpstreamConfig,
+    WakerConfig, load_manifests,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -57,6 +57,8 @@ pub(crate) struct ConfigJson {
     pub limits: Option<LimitOverrides>,
     /// 结果与 `outputSchema` 不符时的处理：`"off"` / `"log"`（默认）/ `"reject"`。
     pub output_validation: Option<OutputValidation>,
+    /// 策略挂点（spec/hub-api.md 3.13）：`{"rules": [{"id","action","app","tool"?,"annotations"?,"hooks"?}]}`。
+    pub policy: Option<PolicyConfig>,
     /// `"system"` / `"none"` / `{"exec": [...]}`（spec/hub-api.md 3.5）。
     pub waker: Option<WakerConfig>,
     /// 渐进暴露（spec/hub-api.md 3.7）。
@@ -96,6 +98,7 @@ impl Default for ConfigJson {
             lease: None,
             limits: None,
             output_validation: None,
+            policy: None,
             waker: None,
             tool_exposure: None,
             tool_exposure_threshold: None,
@@ -187,6 +190,11 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     }
     if let Some(v) = c.output_validation {
         hub.output_validation = v;
+    }
+    if let Some(p) = c.policy {
+        p.validate()
+            .map_err(|e| FfiError::new(AmHubStatus::InvalidConfig, format!("policy 无效：{e}")))?;
+        hub.policy = p;
     }
     if let Some(w) = c.waker {
         hub.waker = w;
@@ -306,6 +314,25 @@ mod tests {
         assert_eq!(e, Some(AmHubStatus::InvalidJson), "limits 内未知字段报错");
         let e = parse(Some(r#"{"outputValidation": "strict"}"#)).err().map(|e| e.status);
         assert_eq!(e, Some(AmHubStatus::InvalidJson));
+    }
+
+    #[test]
+    fn policy_field() {
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert!(p.hub.policy.is_empty());
+        let p = parse(Some(
+            r#"{"policy": {"rules": [{"id": "no-clear", "action": "deny", "app": "shop*", "tool": "cart.clear", "hooks": ["call", "wake"]}]}}"#,
+        ))
+        .map_err(|e| e.message)
+        .expect("解析");
+        assert_eq!(p.hub.policy.rules.len(), 1);
+        assert_eq!(p.hub.policy.rules[0].action, hub::PolicyAction::Deny);
+        let e = parse(Some(r#"{"policy": {"rules": [{"id": "a b", "action": "hide", "app": "shop"}]}}"#)).err();
+        let e = e.expect("不合法的 id");
+        assert_eq!(e.status, AmHubStatus::InvalidConfig);
+        assert!(e.message.contains("policy"), "{}", e.message);
+        let e = parse(Some(r#"{"policy": {"rules": [], "bogus": 1}}"#)).err().map(|e| e.status);
+        assert_eq!(e, Some(AmHubStatus::InvalidJson), "policy 内未知字段报错");
     }
 
     #[test]

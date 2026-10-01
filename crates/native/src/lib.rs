@@ -32,7 +32,7 @@ pub use app_mcp_core::{
     Residency, ResultStatus, Risk, SleepReason, ToolAnnotations, TransportKind, Visibility, WakeDescriptor, WakeKind,
     WakeReason, parse_wake_token,
 };
-pub use app_mcp_protocol::{ConnectionErrorCode, ErrorKind};
+pub use app_mcp_protocol::{ConnectionErrorCode, ErrorKind, user_action_reason};
 
 // ---------------------------------------------------------------------------
 // 配置
@@ -360,6 +360,22 @@ impl CallHandle {
             }
         };
         self.inner.finish(Err(err))
+    }
+    /// 以 `USER_ACTION_REQUIRED` 失败完成（spec/protocol.md 第 4 节）：需要用户本人操作后才能继续
+    /// （登录过期、系统权限未授予、需切到前台、需在 App 内确认等）。
+    ///
+    /// @input message 面向用户的说明（Agent 转告用户）。
+    /// @input reason 可选类别，建议取 `user_action_reason` 中的值（`login` / `permission` / `foreground` / `confirm`）。
+    /// @input uri 可选的 App 内入口（深链接等）。
+    /// @output `None` 的字段不出现在错误的 `data` 中。
+    pub fn fail_user_action(
+        &self,
+        message: &str,
+        reason: Option<&str>,
+        uri: Option<&str>,
+    ) -> Result<(), NativeError> {
+        self.inner
+            .finish(Err(ToolError::user_action_required(message, reason, uri)))
     }
     /// 报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent（MCP `notifications/progress`）。`progress` 应递增；
     /// `total` 未知时为 `None`。未连接时丢弃；调用已结束（完成、取消）时返回 [`NativeError::AlreadyCompleted`]。

@@ -526,6 +526,11 @@ final class AppMcpBindings {
       Int32 Function(Pointer<AmCall>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>),
       int Function(Pointer<AmCall>, Pointer<Utf8>, Pointer<Utf8>,
           Pointer<Utf8>)>('am_call_fail_with_details');
+  // v11
+  late final am_call_fail_user_action = library.lookupFunction<
+      Int32 Function(Pointer<AmCall>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>),
+      int Function(Pointer<AmCall>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>)>('am_call_fail_user_action');
   late final am_call_hold = library.lookupFunction<
       Int32 Function(Pointer<AmCall>, Pointer<Pointer<AmHold>>),
       int Function(Pointer<AmCall>, Pointer<Pointer<AmHold>>)>('am_call_hold');

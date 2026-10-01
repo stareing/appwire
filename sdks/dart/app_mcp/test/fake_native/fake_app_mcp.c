@@ -797,6 +797,21 @@ AmStatus am_call_fail_with_details(AmCall *call, const char *kind, const char *m
     consume(call, buf);
     return cancelled ? AM_ERR_ALREADY_COMPLETED : AM_OK;
 }
+/* v11：结果记为 {"ok":false,"kind":"USER_ACTION_REQUIRED","message",["reason"],["uri"]}（NULL 的字段省略）。 */
+AmStatus am_call_fail_user_action(AmCall *call, const char *message, const char *reason, const char *uri) {
+    if (!call) return AM_ERR_INVALID_ARGUMENT;
+    if (!message) message = "";
+    int cancelled = am_call_is_cancelled(call);
+    size_t cap = 128 + strlen(message) + (reason ? strlen(reason) : 0) + (uri ? strlen(uri) : 0);
+    char *buf = malloc(cap);
+    int n = snprintf(buf, cap, "{\"ok\":false,\"kind\":\"%s\",\"message\":\"%s\"",
+                     cancelled ? "CANCELLED" : "USER_ACTION_REQUIRED", message);
+    if (reason) n += snprintf(buf + n, cap - n, ",\"reason\":\"%s\"", reason);
+    if (uri) n += snprintf(buf + n, cap - n, ",\"uri\":\"%s\"", uri);
+    snprintf(buf + n, cap - n, "}");
+    consume(call, buf);
+    return cancelled ? AM_ERR_ALREADY_COMPLETED : AM_OK;
+}
 /* v10：记录进度，"progress|total|message"（total 未知为 -，message 为 NULL 时为空），以换行分隔累积。 */
 static char g_progress[4096];
 AmStatus am_call_progress(const AmCall *call, double progress, double total, const char *message) {

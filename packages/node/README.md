@@ -99,6 +99,8 @@ the process itself).
 - `AppMcp` - `tool`, `resource`, `scope`, `state`, `onStateChange`, `dispose`, plus Node-specific
   `start`, `setVisibility`, `handleWake`, `wake`, `connectNow`, `sleep`, `hold`, `onIdleExit`, `token`.
 - `ToolCallError(kind, message, details?)` - throw from a handler to return a specific error kind.
+- `ToolCallError.userActionRequired(message, { reason?, uri? })` - the user must act first (login expired, OS permission
+  missing, app must be in the foreground, in-app confirmation); the agent receives `USER_ACTION_REQUIRED` and relays `message`.
 - `loadNativeBinding`, `nativeFileName` - low-level access to the native module.
 - Types: `ToolDefinition`, `LazyToolDefinition`, `ResourceDefinition`, `Risk`, `Activation`,
   `ToolAnnotations`, `OutputDefinition`, `ToolResultEnvelope`, `ResultStatus`, `ContentAnnotations`,

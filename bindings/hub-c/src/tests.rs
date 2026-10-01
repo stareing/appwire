@@ -716,13 +716,13 @@ fn header_matches_implementation() {
         "am_hub_unsubscribe", "am_hub_select_instance", "am_hub_reset_session",
         "am_hub_export_tools", "am_hub_dispatch", "am_hub_set_event_cb", "am_hub_set_approval_cb",
         "am_hub_approval_complete", "am_hub_set_pairing_cb", "am_hub_pairing_complete",
-        "am_hub_set_waker_cb", "am_hub_waker_complete",
+        "am_hub_set_waker_cb", "am_hub_waker_complete", "am_hub_set_policy",
     ] {
         assert!(h.contains(&format!("{f}(")), "{f}");
     }
     let src = include_str!("lib.rs");
     let exported = src.matches("#[unsafe(no_mangle)]").count();
-    assert_eq!(exported, 30, "导出函数数量与头文件清单一致");
+    assert_eq!(exported, 31, "导出函数数量与头文件清单一致");
 }
 
 #[test]
@@ -977,6 +977,88 @@ fn limits_annotations_and_structured_result() {
     assert_eq!(app_st["tools"][0]["annotations"], json!({"idempotentHint": false}), "{st}");
 
     client.stop();
+    // SAFETY: 有效句柄。
+    unsafe { am_hub_free(hub) };
+}
+
+fn set_policy(hub: *mut AmHub, policy: &str) -> AmHubStatus {
+    let p = c(policy);
+    // SAFETY: 有效参数。
+    unsafe { am_hub_set_policy(hub, p.as_ptr()) }
+}
+
+fn tool_names(hub: *mut AmHub) -> Vec<String> {
+    let filter = c(r#"{"apps":["notes"],"includeBuiltin":false}"#);
+    // SAFETY: 有效参数。
+    let t = query_json(|o| unsafe { am_hub_tools_json(hub, filter.as_ptr(), o) });
+    let mut v: Vec<String> =
+        t.as_array().into_iter().flatten().filter_map(|t| t["tool"].as_str().map(str::to_owned)).collect();
+    v.sort();
+    v
+}
+
+/// 配置 policy（v10）→ hide 的工具不在列表中且调用为 TOOL_NOT_FOUND；deny → POLICY_DENIED；am_hub_set_policy 替换，
+/// 不合法时保留旧规则；HubStatus.policy 的命中计数与 lastError。
+#[test]
+fn policy_hide_deny_and_set_policy() {
+    let bad = c(r#"{"listen":null,"ipcEndpoint":null,"policy":{"rules":[{"id":"x","action":"hide","app":"a*b"}]}}"#);
+    let mut out = ptr::null_mut();
+    // SAFETY: 有效参数。
+    assert_eq!(unsafe { am_hub_start(bad.as_ptr(), &mut out) }, AmHubStatus::InvalidConfig);
+    assert!(out.is_null());
+    assert!(last_error().contains("policy"), "{}", last_error());
+
+    let hub = start_hub(
+        r#"{"listen":"127.0.0.1:0","policy":{"rules":[
+            {"id":"hide-delete","action":"hide","app":"notes","tool":"delete"},
+            {"id":"deny-add","action":"deny","app":"notes","tool":"add"}]}}"#,
+    );
+    let app = start_app(hub);
+    let deadline = Instant::now() + WAIT;
+    while tool_names(hub).len() < 2 {
+        assert!(Instant::now() < deadline, "工具未同步");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(tool_names(hub), ["add", "hang"], "hide 的工具不在列表中");
+
+    let (tx, rx) = mpsc::channel();
+    call(hub, json!({"name":"notes.delete"}), &tx);
+    let o = recv(&rx);
+    assert_eq!(o["result"]["error"]["kind"], "TOOL_NOT_FOUND", "{o}");
+    call(hub, json!({"name":"notes.add","arguments":{"text":"x"}}), &tx);
+    let o = recv(&rx);
+    assert_eq!(o["result"]["error"]["kind"], "POLICY_DENIED", "{o}");
+    assert_eq!(o["result"]["error"]["details"]["ruleId"], "deny-add", "{o}");
+    assert_eq!(o["result"]["error"]["details"]["hook"], "call", "{o}");
+
+    // SAFETY: 有效参数。
+    let st = query_json(|o| unsafe { am_hub_status_json(hub, o) });
+    assert_eq!(st["policy"]["rules"][0]["id"], "hide-delete", "{st}");
+    assert_eq!(st["policy"]["rules"][0]["hits"], 1, "{st}");
+    assert_eq!(st["policy"]["rules"][1]["hits"], 1, "{st}");
+
+    // 不是合法 JSON / 未知字段 / 规则不合法（hide 不能写 hooks）：报错，旧规则继续生效
+    assert_eq!(set_policy(hub, "{"), AmHubStatus::InvalidJson);
+    assert_eq!(set_policy(hub, r#"{"rules":[],"x":1}"#), AmHubStatus::InvalidJson);
+    let invalid = r#"{"rules":[{"id":"h","action":"hide","app":"notes","hooks":["call"]}]}"#;
+    assert_eq!(set_policy(hub, invalid), AmHubStatus::InvalidConfig);
+    assert!(last_error().contains("hooks"), "{}", last_error());
+    call(hub, json!({"name":"notes.add","arguments":{"text":"x"}}), &tx);
+    assert_eq!(recv(&rx)["result"]["error"]["kind"], "POLICY_DENIED");
+    // SAFETY: 有效参数。
+    let st = query_json(|o| unsafe { am_hub_status_json(hub, o) });
+    assert!(st["policy"]["lastError"]["message"].is_string(), "{st}");
+
+    // 清空：恢复原行为
+    assert_eq!(set_policy(hub, "{}"), AmHubStatus::Ok, "{}", last_error());
+    assert_eq!(tool_names(hub), ["add", "delete", "hang"]);
+    call(hub, json!({"name":"notes.add","arguments":{"text":"x"}}), &tx);
+    let o = recv(&rx);
+    assert_eq!(o["result"]["ok"]["echo"]["text"], "x", "{o}");
+    // SAFETY: NULL 参数。
+    assert_eq!(unsafe { am_hub_set_policy(hub, ptr::null()) }, AmHubStatus::InvalidArgument);
+
+    app.client.stop();
     // SAFETY: 有效句柄。
     unsafe { am_hub_free(hub) };
 }

@@ -402,6 +402,7 @@ pub async fn run(home: &AppHome, s: &Settings) -> Report {
     checks.push(lease_check(status.as_ref()));
     checks.push(tools_check(status.as_ref()));
     checks.push(limits_check(status.as_ref()));
+    checks.push(policy_check(validate_policy_file(home), status.as_ref()));
 
     // 10. 网页拦截上报
     checks.push(reports_check(status.as_ref()));
@@ -759,6 +760,57 @@ fn limits_check(status: Option<&Result<HubStatus, String>>) -> Check {
         .details(details)
 }
 
+/// 规则文件的校验结果（`policy_check` 的输入，便于测试）。
+fn validate_policy_file(home: &AppHome) -> (String, Result<app_mcp_hub::PolicyConfig, String>) {
+    let path = home.policy_file();
+    (path.display().to_string(), crate::policy::validate_file(&path))
+}
+
+/// 策略规则（spec/hub-api.md 3.13）：生效规则与命中次数；规则文件不合法、最近一次重载失败为错误；
+/// 文件与生效规则不一致（改了文件没有 reload）为注意。
+fn policy_check(file: (String, Result<app_mcp_hub::PolicyConfig, String>), status: Option<&Result<HubStatus, String>>) -> Check {
+    const T: &str = "策略规则";
+    let (path, file) = file;
+    let running = match status {
+        Some(Ok(st)) => st.policy.as_ref(),
+        _ => None,
+    };
+    let details = json!({
+        "file": path,
+        "fileError": file.as_ref().err(),
+        "running": running,
+    });
+    if let Err(e) = &file {
+        let effect = if running.is_some() { "运行中的 Host 继续使用之前的规则" } else { "Host 启动时会因此失败" };
+        return Check::new("policy", T, Level::Error, format!("规则文件无效（{effect}）：{e}"))
+            .hint("修正或删除该文件后运行 app-mcp-host policy reload；app-mcp-host policy validate 校验")
+            .details(details);
+    }
+    let file_rules = file.as_ref().map(|c| c.rules.clone()).unwrap_or_default();
+    let Some(st) = running else {
+        let summary = if file_rules.is_empty() {
+            "无规则（默认放行）；Host 未运行或状态不可读".to_owned()
+        } else {
+            format!("规则文件有 {} 条规则；Host 未运行或状态不可读，无法确认生效情况", file_rules.len())
+        };
+        return Check::new("policy", T, Level::Skip, summary).details(details);
+    };
+    if let Some(e) = &st.last_error {
+        return Check::new("policy", T, Level::Error, format!("最近一次重载失败，之前的规则继续生效：{}", e.message))
+            .hint("修正 policy.json 后运行 app-mcp-host policy reload")
+            .details(details);
+    }
+    let effective: Vec<_> = st.rules.iter().map(|r| r.rule.clone()).collect();
+    let summary = crate::policy::describe_status(st).replace('\n', "；");
+    if effective != file_rules {
+        return Check::new("policy", T, Level::Warn, format!("规则文件与运行中的规则不一致（改动尚未重载）。生效：{summary}"))
+            .hint("运行 app-mcp-host policy reload 使文件中的规则生效")
+            .details(details);
+    }
+    let level = if st.rules.is_empty() { Level::Ok } else { Level::Info };
+    Check::new("policy", T, level, summary).details(details)
+}
+
 fn lease_text(l: &LeaseStatus) -> String {
     let policy = match l.mode.as_str() {
         "off" => return "租约已关闭（--lease-ms 0）".to_owned(),
@@ -980,6 +1032,33 @@ mod tests {
         let mut empty = status_with_tools(0);
         empty.apps[0].tools.clear();
         assert!(tools_check(Some(&Ok(empty))).summary.contains("没有已知工具"));
+    }
+
+    #[test]
+    fn policy_check_levels() {
+        use app_mcp_hub::PolicyConfig;
+        let rules = PolicyConfig::from_json(r#"{"rules": [{"id": "h", "action": "hide", "app": "notes"}]}"#).unwrap();
+        let file = |r: Result<PolicyConfig, String>| ("/x/policy.json".to_owned(), r);
+        let mut st = status_with_tools(0);
+        st.policy = Some(serde_json::from_value(json!({
+            "rules": [{"id": "h", "action": "hide", "app": "notes", "hits": 2}], "loadedAtMs": 1
+        })).unwrap());
+        let c = policy_check(file(Ok(rules.clone())), Some(&Ok(st.clone())));
+        assert!(matches!(c.status, Level::Info) && c.summary.contains("h：hide app=notes，命中 2 次"), "{}", c.summary);
+        let c = policy_check(file(Ok(PolicyConfig::default())), Some(&Ok(st.clone())));
+        assert!(matches!(c.status, Level::Warn) && c.summary.contains("尚未重载"), "{}", c.summary);
+        let c = policy_check(file(Err("坏了".into())), Some(&Ok(st.clone())));
+        assert!(matches!(c.status, Level::Error) && c.summary.contains("继续使用之前的规则"), "{}", c.summary);
+        assert!(policy_check(file(Err("坏了".into())), None).summary.contains("启动时会因此失败"));
+        let mut failed = st.clone();
+        failed.policy.as_mut().unwrap().last_error = Some(app_mcp_hub::PolicyLoadError { message: "id 重复".into(), at_ms: 2 });
+        let c = policy_check(file(Ok(rules)), Some(&Ok(failed)));
+        assert!(matches!(c.status, Level::Error) && c.summary.contains("id 重复"), "{}", c.summary);
+        let mut empty = st;
+        empty.policy = Some(Default::default());
+        let c = policy_check(file(Ok(PolicyConfig::default())), Some(&Ok(empty)));
+        assert!(matches!(c.status, Level::Ok) && c.summary.contains("默认放行"), "{}", c.summary);
+        assert!(matches!(policy_check(file(Ok(PolicyConfig::default())), None).status, Level::Skip));
     }
 
     #[test]

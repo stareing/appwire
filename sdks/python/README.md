@@ -59,6 +59,10 @@ def submit() -> ToolResult:
 - Returning a plain value is a `done` result. Return `ToolResult` for a status, summary or content annotations
   (`ContentAnnotations`, or a dict with `audience` / `priority` / `last_modified`). With no return value (`None`,
   no `summary`, status `done`) the Hub shows the model the fixed text "已完成" ("done") instead of `null`.
+- Raise `ToolCallError(kind, message, details=None)` to fail with a specific error kind. When only the user can
+  unblock the call (expired login, missing OS permission, app must be in the foreground, in-app confirmation), raise
+  `ToolCallError.user_action_required("Login expired, sign in again", UserActionReason.LOGIN, "notes://login")`
+  (`USER_ACTION_REQUIRED`; `reason` and `uri` are optional and omitted when `None`).
 
 ## Lifecycle and power
 
@@ -120,6 +124,11 @@ when a result does not match the tool's `outputSchema`: skip the check, log a wa
 `HANDLER_ERROR`. Rejected calls still return a `CallResult` whose `error.kind` is `"RATE_LIMITED"` or
 `"PAYLOAD_TOO_LARGE"`. `CallResult` also carries the app's `status` (`ResultStatus`), `state_resource`, `summary`
 and `annotations`.
+
+Policy hook points (`spec/hub-api.md` §3.13): `Hub(policy={"rules": [{"id": "no-pay", "action": "deny", "app": "shop",
+"tool": "pay*"}]})` or `hub.set_policy(...)` at runtime. `hide` removes an app / tool from every list (calls get
+`TOOL_NOT_FOUND`); `deny` makes calls fail with `POLICY_DENIED` (`details.ruleId`). No rules = unchanged behavior;
+`hub.policy()` returns the active rules with hit counts.
 
 ## Build
 

@@ -85,6 +85,8 @@ client.onIdleExit.listen((_) { /* residency 允许时：App 自行决定是否�
 - handler 内的长任务用 `ctx.hold()` 延长持有（必须在调用完成前获取）；调用进行中本身就视为非空闲。
 - `throw ToolCallError(kind, message, details: {...})`：`details` 经 `am_call_fail_with_details` 上报，
   对象字段合并进协议错误的 `data`。
+- `throw UserActionRequiredError(message, reason: UserActionReason.login, uri: 'myapp://login')`：需要用户本人操作
+  （登录过期、权限未授予、需切到前台等），以 `USER_ACTION_REQUIRED` 失败；`reason` / `uri` 可选，缺省时不出现在 `data` 中。
 - `ConnectionStatus` 新增 `dormant`（已休眠，无连接无定时器）与 `waking`（正在回连）。
 
 ### Flutter：可见性与回到前台

@@ -802,6 +802,24 @@ pub unsafe extern "C" fn am_hub_reset_session(hub: *mut AmHub, session: *const c
     })
 }
 
+/// 替换策略规则集（v10，spec/hub-api.md 3.13）。
+///
+/// @error JSON 不合法或有未知字段 → `InvalidJson`；规则不合法 → `InvalidConfig`（之前的规则继续生效，原因记入
+/// `HubStatus.policy.lastError`）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_hub_set_policy(hub: *mut AmHub, policy_json: *const c_char) -> AmHubStatus {
+    guard(|| {
+        // SAFETY: 由调用方保证。
+        let h = unsafe { hub_ref(hub) }?;
+        // SAFETY: 同上。
+        let text = unsafe { req_str(policy_json, "policy_json") }?;
+        let policy: hub::PolicyConfig = serde_json::from_str(text).map_err(|e| FfiError::json("policy_json", e))?;
+        h.hub()?
+            .set_policy(policy)
+            .map_err(|e| FfiError::new(AmHubStatus::InvalidConfig, e.0.message))
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn am_hub_dispatch(
     hub: *mut AmHub,

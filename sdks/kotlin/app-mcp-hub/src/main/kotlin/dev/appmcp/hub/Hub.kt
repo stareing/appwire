@@ -67,6 +67,21 @@ typealias ResultStatus = dev.appmcp.hub.ffi.ResultStatus
 /** 一个工具的声明（[AppStatus.tools]）。 */
 typealias ToolDeclaration = dev.appmcp.hub.ffi.ToolDeclaration
 
+// 策略挂点（spec/hub-api.md 3.13）。
+/** 策略规则集（[HubConfig.policy]、[Hub.setPolicy]）；空规则集 = 不做任何限制（默认）。 */
+typealias PolicyConfig = dev.appmcp.hub.ffi.PolicyConfig
+/** 一条策略规则：`HIDE`（不出现在任何列表中、调用为 `TOOL_NOT_FOUND`）或 `DENY`（以 `POLICY_DENIED` 拒绝）。 */
+typealias PolicyRule = dev.appmcp.hub.ffi.PolicyRule
+typealias PolicyAction = dev.appmcp.hub.ffi.PolicyAction
+/** 执行点；规则的 `hooks` 只能写 `CALL` / `WAKE`。 */
+typealias PolicyHook = dev.appmcp.hub.ffi.PolicyHook
+/** 按 App 声明的 MCP 注解匹配（给出的每一项都相等才命中）。 */
+typealias AnnotationMatch = dev.appmcp.hub.ffi.AnnotationMatch
+/** 策略状态（[Hub.policy]、[HubStatus.policy]）：生效的规则、命中次数与最近的加载错误。 */
+typealias PolicyStatus = dev.appmcp.hub.ffi.PolicyStatus
+typealias PolicyRuleStatus = dev.appmcp.hub.ffi.PolicyRuleStatus
+typealias PolicyLoadError = dev.appmcp.hub.ffi.PolicyLoadError
+
 /** 工具暴露方式（`AUTO` / `PROGRESSIVE` / `ALL`，spec/hub-api.md 3.7）。 */
 typealias ToolExposure = dev.appmcp.hub.ffi.ToolExposure
 
@@ -228,6 +243,15 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
      * （实例带 `info.connectionId`）、最近错误、最近的 SDK 诊断上报。已停止时抛出 `HubException.Shutdown`。
      */
     fun status(): HubStatus = inner.status()
+
+    /** 生效的策略规则、各规则命中次数与最近的加载错误（spec/hub-api.md 3.13）。已停止时抛出 `HubException.Shutdown`。 */
+    fun policy(): PolicyStatus = inner.policy()
+
+    /**
+     * 替换策略规则集（命中计数清零；`PolicyConfig()` 清空）。规则不合法时抛出 `HubException.Tool`
+     * （`kind = "INVALID_INPUT"`），之前的规则继续生效，原因记入 [policy] 的 `lastError`。
+     */
+    fun setPolicy(policy: PolicyConfig) = inner.setPolicy(policy)
 
     /** 设置全局默认实例（`null` 恢复按规则路由）。 */
     fun selectInstance(appId: String, instanceId: String?) = inner.selectInstance(appId, instanceId)

@@ -168,6 +168,7 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 |---|---|
 | `config.json` | 常驻模式配置（`serve` 读取；`service install` 写入） |
 | `token` | 本地访问令牌（首次需要时生成，Unix 权限 0600） |
+| `policy.json` | 策略规则（可选）：`hide` 让 App / 工具对所有 Agent 不可见，`deny` 拒绝调用 / 唤醒（`POLICY_DENIED`）；无规则时默认放行。启动时加载（不合法时拒绝启动），`app-mcp-host policy reload` 重载；格式与语义见 spec/hub-api.md 3.13 |
 | `logs/app-mcp-host.log` | 常驻模式日志，按大小轮转（默认 5 MiB × 保留 3 个历史文件）；stderr 仍同时输出 |
 | `manifests/*.json` | 静态清单目录（默认） |
 | `run/hub.lock`、`run/endpoints.json` | 单实例锁与登记文件（运行时，见上方「单实例与登记文件」） |
@@ -238,6 +239,10 @@ App 声明的工具注解与结果契约（`annotations`、`outputSchema`、结�
 `--tool-rate-limit` / `--tool-rate-burst` / `--app-rate-limit` / `--app-rate-burst` / `--max-arguments-bytes` / `--max-result-bytes` /
 `--max-resource-bytes <N>`、`--output-validation off|log|reject`、`--log-level`、
 `--no-log-file`、`--config <file>`、`--home <dir>`。`app-mcp-host token` 打印令牌（`--regenerate` 重新生成）。
+
+策略规则：`app-mcp-host policy hide <app> [--tool T]`、`policy deny <app> [--tool T] [--wake]`、`policy remove <id>` 编辑
+`policy.json` 并让运行中的 Host 立即重载；`policy show [--json]`（生效规则与命中次数）、`policy validate [FILE]`、`policy reload`。
+重载不合法的规则时 Host 保留之前的规则，`doctor` 的「策略规则」检查报出错误。
 
 ## 安全
 

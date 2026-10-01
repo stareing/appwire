@@ -559,6 +559,46 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(plain.status()).toMatchObject({ limits: { toolRatePerMinute: 120, toolRateBurst: 30 }, outputValidation: 'log' })
   })
 
+  it('策略挂点：hide 不在列表且调用为 TOOL_NOT_FOUND；deny → POLICY_DENIED；setPolicy 不合法时保留旧规则', async () => {
+    const { hub } = await startHub({
+      policy: {
+        rules: [
+          { id: 'hide-clear', action: 'hide', app: 'shop', tool: 'cart.clear' },
+          { id: 'no-pay', action: 'deny', app: 'shop', tool: 'order.pay' },
+        ],
+      },
+    })
+    await startShop(hub)
+    const names = () => hub.tools({ apps: ['shop'], includeBuiltin: false }).map((t) => t.name).sort()
+    expect(names()).toEqual(['shop.cart.add', 'shop.order.pay'])
+    const hidden = await hub.callTool({ name: 'shop.cart.clear' })
+    expect(hidden.result.error).toMatchObject({ kind: 'TOOL_NOT_FOUND' })
+    const denied = await hub.callTool({ name: 'shop.order.pay' })
+    expect(denied.result.error).toMatchObject({
+      kind: 'POLICY_DENIED',
+      details: { ruleId: 'no-pay', hook: 'call', appId: 'shop', tool: 'order.pay' },
+    })
+    expect(hub.policy().rules.map((r) => [r.id, r.hits])).toEqual([
+      ['hide-clear', 1],
+      ['no-pay', 1],
+    ])
+    expect(hub.status().policy?.rules).toHaveLength(2)
+
+    // hide 不能写 hooks → INVALID_INPUT，旧规则继续生效，原因记入 lastError
+    expect(() => hub.setPolicy({ rules: [{ id: 'x', action: 'hide', app: 'shop', hooks: ['call'] }] })).toThrow(
+      expect.objectContaining({ kind: 'INVALID_INPUT' }),
+    )
+    expect(() => hub.setPolicy({ rules: [], bogus: 1 } as never)).toThrow(expect.objectContaining({ kind: 'INVALID_ARG' }))
+    expect((await hub.callTool({ name: 'shop.order.pay' })).result.error?.kind).toBe('POLICY_DENIED')
+    expect(hub.policy().lastError?.message).toContain('hooks')
+
+    // 清空：恢复原行为
+    hub.setPolicy({})
+    expect(names()).toEqual(['shop.cart.add', 'shop.cart.clear', 'shop.order.pay'])
+    expect((await hub.callTool({ name: 'shop.order.pay' })).result.ok).toEqual({ paid: true })
+    expect(hub.policy()).toMatchObject({ rules: [] })
+  })
+
   it('shutdown 后调用抛 SHUTDOWN', async () => {
     const { hub } = await startHub({ listen: null })
     expect(hub.listenAddr).toBeNull()
@@ -594,6 +634,13 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     ).rejects.toMatchObject({ kind: 'INVALID_ARG' })
     await expect(
       Hub.start({ keepAlive: false, listen: null, ipcEndpoint: null, outputValidation: 'strict' as never }),
+    ).rejects.toMatchObject({ kind: 'INVALID_ARG' })
+    // 策略规则不合法（通配符不在末尾）→ 启动失败；未知字段 → INVALID_ARG
+    await expect(
+      Hub.start({ keepAlive: false, listen: null, ipcEndpoint: null, policy: { rules: [{ id: 'x', action: 'hide', app: 'a*b' }] } }),
+    ).rejects.toMatchObject({ kind: 'START_FAILED' })
+    await expect(
+      Hub.start({ keepAlive: false, listen: null, ipcEndpoint: null, policy: { bogus: 1 } as never }),
     ).rejects.toMatchObject({ kind: 'INVALID_ARG' })
   })
 })

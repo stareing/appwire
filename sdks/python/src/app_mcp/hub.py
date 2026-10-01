@@ -103,11 +103,27 @@ ContentAnnotations = ffi.ContentAnnotations
 Audience = ffi.Audience
 #: 调用结果的业务状态：``ResultStatus.DONE`` / ``PENDING`` / ``PARTIAL`` / ``NOOP``。
 ResultStatus = ffi.ResultStatus
+# 策略挂点（spec/hub-api.md 3.13）。
+#: 策略规则集（``HubConfig.policy``、:meth:`Hub.set_policy`）；空规则集 = 不做任何限制。
+PolicyConfig = ffi.PolicyConfig
+#: 一条规则：``id``、``action``、``app``（可带末尾 ``*``）、``tool``、``annotations``、``hooks``。
+PolicyRule = ffi.PolicyRule
+#: ``PolicyAction.HIDE``（不出现在列表中，调用为 ``TOOL_NOT_FOUND``）/ ``DENY``（以 ``POLICY_DENIED`` 拒绝）。
+PolicyAction = ffi.PolicyAction
+#: 执行点；规则的 ``hooks`` 只能写 ``CALL`` / ``WAKE``。
+PolicyHook = ffi.PolicyHook
+#: 按 App 声明的 MCP 注解匹配。
+AnnotationMatch = ffi.AnnotationMatch
+#: 策略状态（:meth:`Hub.policy`、``HubStatus.policy``）：规则与命中次数、生效时刻、最近的加载错误。
+PolicyStatus = ffi.PolicyStatus
+PolicyRuleStatus = ffi.PolicyRuleStatus
+PolicyLoadError = ffi.PolicyLoadError
 
 FormatLike = Union[ToolFormat, str]
 RiskLike = Union[Risk, str]
 LimitsLike = Union[LimitsConfig, dict[str, int]]
 OutputValidationLike = Union[OutputValidation, str]
+PolicyLike = Union[PolicyConfig, dict[str, Any]]
 
 # LimitsConfig 字段 ← JSON 配置键（与 app-mcp-host 配置文件 ``limits`` 相同；也接受 snake_case）。
 _LIMIT_KEYS = {
@@ -119,9 +135,18 @@ _LIMIT_KEYS = {
     "maxResultBytes": "max_result_bytes",
     "maxResourceBytes": "max_resource_bytes",
 }
+# 策略规则的 JSON 键 → PolicyRule / AnnotationMatch 字段（与 app-mcp-host 的 policy.json 相同；也接受 snake_case）。
+_RULE_KEYS = {"id": "id", "action": "action", "app": "app", "tool": "tool", "annotations": "annotations", "hooks": "hooks"}
+_ANNOTATION_KEYS = {
+    "readOnlyHint": "read_only_hint",
+    "destructiveHint": "destructive_hint",
+    "idempotentHint": "idempotent_hint",
+    "openWorldHint": "open_world_hint",
+}
 Dispatcher = Callable[[Callable[[], None]], None]
 
 __all__ = [
+    "AnnotationMatch",
     "Activation",
     "AppInfo",
     "AppKind",
@@ -150,6 +175,13 @@ __all__ = [
     "LimitsConfig",
     "OutputValidation",
     "PairingRequest",
+    "PolicyAction",
+    "PolicyConfig",
+    "PolicyHook",
+    "PolicyLoadError",
+    "PolicyRule",
+    "PolicyRuleStatus",
+    "PolicyStatus",
     "ResourceContent",
     "ResultStatus",
     "Risk",
@@ -229,6 +261,49 @@ def _output_validation(value: OutputValidationLike | None) -> OutputValidation |
         return OutputValidation[value.strip().upper()]
     except KeyError:
         raise ValueError(f"未知的 output_validation：{value!r}（可选 off、log、reject）") from None
+
+
+def _enum(cls: Any, value: Any, what: str) -> Any:
+    if isinstance(value, cls):
+        return value
+    try:
+        return cls[str(value).strip().upper()]
+    except KeyError:
+        raise ValueError(f"未知的 {what}：{value!r}（可选 {', '.join(m.name.lower() for m in cls)}）") from None
+
+
+def _fields(value: dict[str, Any], keys: dict[str, str], what: str) -> dict[str, Any]:
+    """JSON 键（或 snake_case 字段名）→ 字段名；未知键抛 ``ValueError``。"""
+    fields = set(keys.values())
+    out: dict[str, Any] = {}
+    for key, v in value.items():
+        name = keys.get(key, key)
+        if name not in fields:
+            raise ValueError(f"未知的 {what} 字段：{key!r}（可选 {sorted(keys)}）")
+        out[name] = v
+    return out
+
+
+def _policy_rule(value: PolicyRule | dict[str, Any]) -> PolicyRule:
+    if isinstance(value, PolicyRule):
+        return value
+    kw = _fields(value, _RULE_KEYS, "策略规则")
+    kw["action"] = _enum(PolicyAction, kw.get("action"), "action")
+    ann = kw.get("annotations")
+    if isinstance(ann, dict):
+        kw["annotations"] = AnnotationMatch(**_fields(ann, _ANNOTATION_KEYS, "annotations"))
+    if kw.get("hooks") is not None:
+        kw["hooks"] = [_enum(PolicyHook, h, "hook") for h in kw["hooks"]]
+    return PolicyRule(**kw)
+
+
+def _policy(value: PolicyLike) -> PolicyConfig:
+    """``PolicyConfig`` 或字典（JSON 形式 ``{"rules": [{"id", "action": "hide"|"deny", "app", ...}]}``）；
+    未知键 / 取值抛 ``ValueError``（规则本身的校验由 Hub 完成）。"""
+    if isinstance(value, PolicyConfig):
+        return value
+    kw = _fields(value, {"rules": "rules"}, "policy")
+    return PolicyConfig(rules=[_policy_rule(r) for r in kw.get("rules", [])])
 
 
 def init_logging(filter: str | None = None) -> bool:
@@ -495,7 +570,8 @@ class Hub:
     """嵌入式 Hub。
 
     参数与 :class:`HubConfig` 字段一致（``approval_min_risk`` 可用字符串，如 ``"destructive"``；``limits`` 可用字典，
-    键同 JSON 配置，如 ``{"toolRatePerMinute": 60}``；``output_validation`` 可用 ``"off"`` / ``"log"`` / ``"reject"``）；
+    键同 JSON 配置，如 ``{"toolRatePerMinute": 60}``；``output_validation`` 可用 ``"off"`` / ``"log"`` / ``"reject"``；
+    ``policy`` 可用 JSON 形式的字典，如 ``{"rules": [{"id": "no-pay", "action": "deny", "app": "shop", "tool": "order.*"}]}``）；
     也可直接传 ``config=HubConfig(...)``。
     """
 
@@ -507,6 +583,8 @@ class Hub:
                 kwargs["limits"] = _limits(kwargs["limits"])
             if "output_validation" in kwargs:
                 kwargs["output_validation"] = _output_validation(kwargs["output_validation"])
+            if kwargs.get("policy") is not None:
+                kwargs["policy"] = _policy(kwargs["policy"])
             config = HubConfig(**kwargs)
         elif kwargs:
             raise TypeError("config 与关键字参数不能同时使用")
@@ -580,6 +658,15 @@ class Hub:
         """运行状态（spec/hub-api.md 3.9，与 ``GET /status`` 相同）：身份、监听位置、令牌策略、各 App 与实例的状态
         （实例带 ``info.connection_id``）、最近错误、最近的 SDK 诊断上报。已关闭时抛出 ``HubError.Shutdown``。"""
         return self._inner.status()
+
+    def policy(self) -> PolicyStatus:
+        """生效的策略规则、各规则命中次数与最近的加载错误（spec/hub-api.md 3.13）。"""
+        return self._inner.policy()
+
+    def set_policy(self, policy: PolicyLike) -> None:
+        """替换策略规则集（命中计数清零；``{}`` 清空）。规则不合法时抛 ``HubError.Tool``（``kind == "INVALID_INPUT"``），
+        之前的规则继续生效，原因记入 ``policy().last_error``；字典中有未知键 / 取值时抛 ``ValueError``。"""
+        self._inner.set_policy(_policy(policy))
 
     def select_instance(self, app_id: str, instance_id: str | None) -> None:
         """设置全局默认实例（``None`` 恢复按规则路由）。"""

@@ -3,10 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createAppMcp, type AppMcp as NodeAppMcp } from '@app-mcp/node'
 import { ToolCallError } from '@app-mcp/web'
 import { FakeNativeClient, fakeBinding } from '../../node/src/testing/fake-native.js'
-import { attachAppMcp, type IpcMainInvokeEventLike, type IpcMainLike, type WebContentsLike } from './main.js'
+import { attachAppMcp, ToolCallError as MainToolCallError, type IpcMainInvokeEventLike, type IpcMainLike, type WebContentsLike } from './main.js'
 import { exposeAppMcpBridge, type IpcRendererLike } from './preload.js'
 import { CHANNEL_OP } from './protocol.js'
-import { createRendererAppMcp, getAppMcpBridge } from './renderer.js'
+import { createRendererAppMcp, getAppMcpBridge, ToolCallError as RendererToolCallError } from './renderer.js'
 
 // ---------------------------------------------------------------------------
 // 假 Electron：ipcMain / webContents / ipcRenderer（消息经 structuredClone，模拟进程边界）
@@ -211,6 +211,42 @@ describe('Electron 桥接', () => {
     expect(await native.call('reject')).toEqual({ ok: false, kind: 'USER_REJECTED', message: '不行' })
     expect(await native.call('boom')).toEqual({ ok: false, kind: 'HANDLER_ERROR', message: '炸了' })
     expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/tool\.register 失败.*already registered/))
+  })
+
+  it('USER_ACTION_REQUIRED 的 reason / uri 经 IPC 到达主进程客户端；缺省字段省略', async () => {
+    const { ipcMain, native } = setupMain()
+    const { page } = setupPage(ipcMain, new FakeWebContents(1))
+    page.tool('login', {
+      description: 'l',
+      handler: () => {
+        throw RendererToolCallError.userActionRequired('请先登录', { reason: 'login', uri: 'shop://login' })
+      },
+    })
+    page.tool('foreground', {
+      description: 'f',
+      handler: () => {
+        throw RendererToolCallError.userActionRequired('请切到前台')
+      },
+    })
+    page.tool('deny', {
+      description: 'd',
+      handler: () => {
+        throw new ToolCallError('POLICY_DENIED', '策略拒绝')
+      },
+    })
+    await flush()
+    expect(await native.call('login')).toEqual({
+      ok: false,
+      kind: 'USER_ACTION_REQUIRED',
+      message: '请先登录',
+      details: { reason: 'login', uri: 'shop://login' },
+    })
+    expect(await native.call('foreground')).toEqual({ ok: false, kind: 'USER_ACTION_REQUIRED', message: '请切到前台' })
+    expect(await native.call('deny')).toEqual({ ok: false, kind: 'POLICY_DENIED', message: '策略拒绝' })
+    expect(MainToolCallError.userActionRequired('x', { reason: 'confirm' })).toMatchObject({
+      kind: 'USER_ACTION_REQUIRED',
+      details: { reason: 'confirm' },
+    })
   })
 
   it('取消经 IPC 传到页面的 AbortSignal', async () => {

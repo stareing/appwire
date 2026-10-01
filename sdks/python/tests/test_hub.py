@@ -429,3 +429,59 @@ def test_limits_annotations_and_structured_result() -> None:
             assert decl.output_schema is True
         finally:
             app.close()
+
+
+def test_policy_hide_deny_and_set_policy() -> None:
+    """策略挂点（spec/hub-api.md 3.13）：hide / deny、set_policy 替换、不合法规则保留旧规则、命中计数。"""
+    from app_mcp.hub import PolicyAction, PolicyConfig, PolicyHook, PolicyRule
+
+    # 非法：通配符不在末尾（Hub 校验）；未知键 / 取值（封装层）
+    with pytest.raises(HubError.InvalidConfig):
+        Hub(listen=None, enable_listen=False, enable_ipc=False, policy={"rules": [{"id": "x", "action": "hide", "app": "a*b"}]})
+    with pytest.raises(ValueError):
+        Hub(enable_listen=False, enable_ipc=False, policy={"rules": [{"id": "x", "action": "block", "app": "a"}]})
+    with pytest.raises(ValueError):
+        Hub(enable_listen=False, enable_ipc=False, policy={"rules": [], "bogus": 1})
+
+    policy = {
+        "rules": [
+            {"id": "hide-clear", "action": "hide", "app": "notes", "tool": "clear"},
+            {"id": "deny-add", "action": "deny", "app": "notes", "tool": "add", "hooks": ["call", "wake"]},
+        ]
+    }
+    with Hub(listen="127.0.0.1:0", enable_ipc=False, policy=policy) as hub:
+        app = start_notes_app(hub)
+        try:
+            wait_tools(hub, 1)
+            assert [t.name for t in hub.tools(apps=["notes"], include_builtin=False)] == ["notes.add"]
+            hidden = hub.call_tool_sync("notes.clear")
+            assert hidden.error is not None and hidden.error.kind == "TOOL_NOT_FOUND"
+            denied = hub.call_tool_sync("notes.add", {"text": "x"})
+            assert denied.error is not None and denied.error.kind == "POLICY_DENIED"
+            details = json.loads(denied.error.details_json or "{}")
+            assert details["ruleId"] == "deny-add" and details["hook"] == "call"
+
+            st = hub.policy()
+            assert [(r.rule.id, r.hits) for r in st.rules] == [("hide-clear", 1), ("deny-add", 1)]
+            assert st.rules[1].rule.hooks == [PolicyHook.CALL, PolicyHook.WAKE]
+            assert st.last_error is None
+            assert hub.status().policy is not None
+
+            # 不合法（hide 不能写 hooks）→ INVALID_INPUT，旧规则继续生效
+            bad = PolicyRule(id="h", action=PolicyAction.HIDE, app="notes", tool=None, annotations=None, hooks=[PolicyHook.CALL])
+            with pytest.raises(HubError.Tool) as e:
+                hub.set_policy(PolicyConfig(rules=[bad]))
+            assert e.value.kind == "INVALID_INPUT"
+            assert hub.call_tool_sync("notes.add", {"text": "x"}).error.kind == "POLICY_DENIED"
+            assert hub.policy().last_error is not None
+
+            # 按注解匹配（字典形式）：清空后只拒绝 destructive 工具
+            hub.set_policy({"rules": [{"id": "no-destructive", "action": "deny", "app": "*", "annotations": {"destructiveHint": True}}]})
+            assert hub.call_tool_sync("notes.add", {"text": "x"}).data == {"saved": "x"}
+            out = hub.call_tool_sync("notes.clear")
+            assert out.error is not None and out.error.kind == "POLICY_DENIED"
+            hub.set_policy({})
+            assert hub.call_tool_sync("notes.clear").data == {"cleared": True}
+            assert hub.policy().rules == []
+        finally:
+            app.stop()

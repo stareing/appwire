@@ -609,6 +609,55 @@ describe('错误详情', () => {
       details: { issues: [{ path: 'n', message: '应为数字' }] },
     })
   })
+
+  it('ToolCallError.userActionRequired：类别 USER_ACTION_REQUIRED，详情只含给出的 reason / uri', async () => {
+    const { app, native } = setup()
+    const cases: [string, ToolCallError][] = [
+      ['full', ToolCallError.userActionRequired('请先登录', { reason: 'login', uri: 'shop://login' })],
+      ['reason', ToolCallError.userActionRequired('请授予相机权限', { reason: 'permission' })],
+      ['custom', ToolCallError.userActionRequired('请插入 U 盾', { reason: 'usb-key', uri: undefined })],
+      ['bare', ToolCallError.userActionRequired('请切到前台')],
+    ]
+    for (const [name, error] of cases) {
+      app.tool(name, {
+        description: name,
+        handler: () => {
+          throw error
+        },
+      })
+    }
+    expect(await native.call('full')).toEqual({
+      ok: false,
+      kind: 'USER_ACTION_REQUIRED',
+      message: '请先登录',
+      details: { reason: 'login', uri: 'shop://login' },
+    })
+    expect(await native.call('reason')).toEqual({
+      ok: false,
+      kind: 'USER_ACTION_REQUIRED',
+      message: '请授予相机权限',
+      details: { reason: 'permission' },
+    })
+    expect(await native.call('custom')).toEqual({
+      ok: false,
+      kind: 'USER_ACTION_REQUIRED',
+      message: '请插入 U 盾',
+      details: { reason: 'usb-key' },
+    })
+    expect(await native.call('bare')).toEqual({ ok: false, kind: 'USER_ACTION_REQUIRED', message: '请切到前台' })
+    expect(ToolCallError.userActionRequired('x')).toMatchObject({ name: 'ToolCallError', kind: 'USER_ACTION_REQUIRED', details: undefined })
+  })
+
+  it('识别 POLICY_DENIED 类别（Hub 产生，handler 抛出时原样上报）', async () => {
+    const { app, native } = setup()
+    app.tool('deny', {
+      description: 'd',
+      handler: () => {
+        throw new ToolCallError('POLICY_DENIED', '策略拒绝')
+      },
+    })
+    expect(await native.call('deny')).toEqual({ ok: false, kind: 'POLICY_DENIED', message: '策略拒绝' })
+  })
 })
 
 describe('惰性 handler', () => {

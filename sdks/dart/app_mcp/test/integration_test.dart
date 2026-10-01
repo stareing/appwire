@@ -188,6 +188,8 @@ void main() {
       '--tool-info',
       '--invoke', 'order.submit',
       '--invoke', 'plain',
+      '--invoke', 'login',
+      '--invoke', 'front',
       '--timeout-ms', '15000',
     ]);
     final client = AppMcp(
@@ -214,6 +216,11 @@ void main() {
       ctx.progress(1, total: 2, message: '处理中');
       return {'ok': true};
     });
+    client.tool('login',
+        description: '需登录',
+        handler: (args, ctx) =>
+            throw UserActionRequiredError('登录已过期', reason: UserActionReason.login, uri: 'shop://login'));
+    client.tool('front', description: '需前台', handler: (args, ctx) => throw UserActionRequiredError('请切到前台'));
     client.start();
     try {
       final tools = await host.nextJson();
@@ -245,6 +252,17 @@ void main() {
       final plain = await host.nextJson();
       expect(plain['result'], {
         'data': {'ok': true}
+      });
+      // USER_ACTION_REQUIRED（v11）：reason / uri 进入 data；未给时 data 只有 kind
+      expect((await host.nextJson())['error'], {
+        'code': -32019,
+        'message': '登录已过期',
+        'data': {'kind': 'USER_ACTION_REQUIRED', 'reason': 'login', 'uri': 'shop://login'},
+      });
+      expect((await host.nextJson())['error'], {
+        'code': -32019,
+        'message': '请切到前台',
+        'data': {'kind': 'USER_ACTION_REQUIRED'},
       });
       expect(await host.process.exitCode.timeout(const Duration(seconds: 10)), 0);
     } finally {

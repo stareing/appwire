@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use app_mcp_native::{
     CallHandle, CancelListener, CancelReason, ErrorKind, NativeClient, NativeConfig, NativeError,
-    ReadHandle, ResourceReader, ResourceSpec, StateStatus, ToolHandler, ToolSpec,
+    ReadHandle, ResourceReader, ResourceSpec, StateStatus, ToolHandler, ToolSpec, user_action_reason,
 };
 use app_mcp_protocol::method;
 use common::{MockHost, Recorder, WAIT, eventually};
@@ -215,6 +215,32 @@ fn complete_and_fail_from_other_threads() {
     let err = host.wait_response(&id).unwrap_err();
     assert_eq!(err.kind(), Some(ErrorKind::UserRejected));
     assert_eq!(err.message, "用户取消了操作");
+
+    // fail_user_action：USER_ACTION_REQUIRED，带 reason / uri
+    let id = host.invoke("c2u", "work", json!({}));
+    calls
+        .recv_timeout(WAIT)
+        .unwrap()
+        .fail_user_action("登录已过期", Some(user_action_reason::LOGIN), Some("shop://login"))
+        .unwrap();
+    let err = host.wait_response(&id).unwrap_err();
+    assert_eq!(err.code, -32019);
+    assert_eq!(err.message, "登录已过期");
+    assert_eq!(
+        err.data,
+        Some(json!({ "kind": "USER_ACTION_REQUIRED", "reason": "login", "uri": "shop://login" }))
+    );
+    // 都不给时 data 只有 kind
+    let id = host.invoke("c2v", "work", json!({}));
+    let call = calls.recv_timeout(WAIT).unwrap();
+    call.fail_user_action("请切到前台", None, None).unwrap();
+    assert_eq!(
+        call.fail_user_action("x", None, None),
+        Err(NativeError::AlreadyCompleted)
+    );
+    let err = host.wait_response(&id).unwrap_err();
+    assert_eq!(err.kind(), Some(ErrorKind::UserActionRequired));
+    assert_eq!(err.data, Some(json!({ "kind": "USER_ACTION_REQUIRED" })));
 
     // complete(None) → data: null
     let id = host.invoke("c3", "work", json!({}));

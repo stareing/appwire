@@ -73,6 +73,21 @@ public typealias HubContentAnnotations = AppMcpHubBindings.ContentAnnotations
 public typealias HubAudience = AppMcpHubBindings.Audience
 /// 调用结果的业务状态：`.done` / `.pending` / `.partial` / `.noop`。
 public typealias HubResultStatus = AppMcpHubBindings.ResultStatus
+// 策略挂点（spec/hub-api.md 3.13）。
+/// 策略规则集（`HubConfig.policy`、`Hub.setPolicy`）：按顺序匹配，`.deny` 取第一条命中的规则；空规则集 = 不做任何限制。
+public typealias PolicyConfig = AppMcpHubBindings.PolicyConfig
+/// 一条策略规则：`app` / `tool` 为精确名或以 `*` 结尾的前缀；`tool` 与 `annotations` 都为空时作用于整个 App。
+public typealias PolicyRule = AppMcpHubBindings.PolicyRule
+/// `.hide`：不出现在任何列表中、调用为 `TOOL_NOT_FOUND`；`.deny`：在 `hooks` 指定的执行点以 `POLICY_DENIED` 拒绝。
+public typealias PolicyAction = AppMcpHubBindings.PolicyAction
+/// 执行点；规则的 `hooks` 只能写 `.call` / `.wake`（只用于 `.deny`，为空时为 `[.call]`）。
+public typealias PolicyHook = AppMcpHubBindings.PolicyHook
+/// 按 App 声明的 MCP 注解匹配（给出的每一项都相等才命中）。
+public typealias AnnotationMatch = AppMcpHubBindings.AnnotationMatch
+/// 生效的规则、命中次数与最近的加载错误（`Hub.policy()`、`HubStatus.policy`）。
+public typealias PolicyStatus = AppMcpHubBindings.PolicyStatus
+public typealias PolicyRuleStatus = AppMcpHubBindings.PolicyRuleStatus
+public typealias PolicyLoadError = AppMcpHubBindings.PolicyLoadError
 
 /// 工具调用以错误结束（`CallResult.decode` / `CallResult.get()`）。`kind` 为协议错误类别，如 `USER_REJECTED`。
 public struct ToolError: Error, Sendable, Equatable, CustomStringConvertible {
@@ -290,6 +305,13 @@ public final class Hub: @unchecked Sendable {
     /// 运行状态（spec/hub-api.md 3.9，与 `GET /status` 相同）：身份、监听位置、令牌策略、各 App 与实例的状态
     /// （实例带 `info.connectionId`）、最近错误、最近的 SDK 诊断上报。已关闭时抛出 `HubError.Shutdown`。
     public func status() throws -> HubStatus { try inner.status() }
+
+    /// 生效的策略规则、各规则命中次数与最近的加载错误（spec/hub-api.md 3.13）。已关闭时抛 `HubError.Shutdown`。
+    public func policy() throws -> PolicyStatus { try inner.policy() }
+
+    /// 替换策略规则集（命中计数清零）；传 `PolicyConfig(rules: [])` 清空。
+    /// 规则不合法时抛 `HubError.Tool`（`kind == "INVALID_INPUT"`），之前的规则继续生效，原因记入 `policy().lastError`。
+    public func setPolicy(_ policy: PolicyConfig) throws { try inner.setPolicy(policy: policy) }
 
     /// 设置全局默认实例（`nil` 恢复按规则路由）。
     public func selectInstance(appId: String, instanceId: String?) {

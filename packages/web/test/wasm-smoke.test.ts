@@ -79,6 +79,18 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
         throw new ToolCallError('USER_REJECTED', '用户拒绝')
       },
     })
+    app.tool('cart.checkout', {
+      description: '需要登录',
+      handler: () => {
+        throw ToolCallError.userActionRequired('登录已过期，请重新登录', { reason: 'login', uri: 'shop://login' })
+      },
+    })
+    app.tool('cart.scan', {
+      description: '需要切到前台',
+      handler: () => {
+        throw ToolCallError.userActionRequired('请切到前台')
+      },
+    })
     app.resource('cart.state', { description: '购物车', read: () => ({ items: 1 }) })
 
     for (let i = 0; i < 50 && sockets.length === 0; i++) await new Promise((r) => setTimeout(r, 10))
@@ -108,7 +120,7 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     const methods = sent().map((m) => m.method)
     expect(methods).toEqual(['app/hello', 'tools/sync', 'resources/sync', 'app/visibility', 'app/ready'])
     const sync = sent()[1] as Json
-    expect(sync.params.tools.map((t: { name: string }) => t.name).sort()).toEqual(['cart.add', 'cart.fail', 'order.submit'])
+    expect(sync.params.tools.map((t: { name: string }) => t.name).sort()).toEqual(['cart.add', 'cart.checkout', 'cart.fail', 'cart.scan', 'order.submit'])
     const submit = sync.params.tools.find((t: { name: string }) => t.name === 'order.submit')
     expect(submit).toMatchObject({
       risk: 'payment',
@@ -154,6 +166,21 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     await settle()
     const r2 = sent().find((m) => m.id === 'h2') as Json
     expect(r2.error).toMatchObject({ code: -32004, message: '用户拒绝', data: { kind: 'USER_REJECTED' } })
+
+    // USER_ACTION_REQUIRED：详情经 WASM 核心并入 data；缺省字段省略
+    ws.receive(JSON.stringify({ jsonrpc: '2.0', id: 'h5', method: 'tools/invoke', params: { callId: 'c5', name: 'cart.checkout', arguments: {} } }))
+    ws.receive(JSON.stringify({ jsonrpc: '2.0', id: 'h6', method: 'tools/invoke', params: { callId: 'c6', name: 'cart.scan', arguments: {} } }))
+    await settle()
+    expect((sent().find((m) => m.id === 'h5') as Json).error).toEqual({
+      code: -32019,
+      message: '登录已过期，请重新登录',
+      data: { kind: 'USER_ACTION_REQUIRED', reason: 'login', uri: 'shop://login' },
+    })
+    expect((sent().find((m) => m.id === 'h6') as Json).error).toEqual({
+      code: -32019,
+      message: '请切到前台',
+      data: { kind: 'USER_ACTION_REQUIRED' },
+    })
 
     // 资源读取
     ws.receive(JSON.stringify({ jsonrpc: '2.0', id: 'h3', method: 'resources/read', params: { name: 'cart.state' } }))

@@ -1390,6 +1390,29 @@ pub unsafe extern "C" fn am_call_fail_with_details(
     status
 }
 
+/// v11：以 `USER_ACTION_REQUIRED` 失败完成并消费 call；reason / uri 为 NULL 时不出现在错误的 data 中。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_call_fail_user_action(
+    call: *mut AmCall,
+    message: *const c_char,
+    reason: *const c_char,
+    uri: *const c_char,
+) -> AmStatus {
+    if call.is_null() {
+        return guard(|| Err(FfiError::null("call")));
+    }
+    let status = guard(|| {
+        let c = unsafe { &*call };
+        let message = unsafe { lossy_str(message) }.unwrap_or_default();
+        let reason = unsafe { lossy_str(reason) };
+        let uri = unsafe { lossy_str(uri) };
+        c.handle.fail_user_action(&message, reason.as_deref(), uri.as_deref())?;
+        Ok(())
+    });
+    unsafe { consume(call) };
+    status
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn am_call_hold(call: *const AmCall, out: *mut *mut AmHold) -> AmStatus {
     guard(|| {

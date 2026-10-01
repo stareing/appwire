@@ -75,6 +75,11 @@ public enum ToolErrorKind
     RateLimited,
     /// <summary>调用参数、结果或资源内容超过 Host 的大小上限（由 Host 产生，App 一般不用）。</summary>
     PayloadTooLarge,
+    /// <summary>调用被用户 / 厂商的策略规则拒绝（由 Host 产生，App 一般不用）。</summary>
+    PolicyDenied,
+    /// <summary>需要用户本人操作后才能继续（登录过期、系统权限未授予、需切到前台、需在 App 内确认等）；
+    /// 用 <see cref="UserActionRequiredException"/> 抛出可附带 reason / uri。</summary>
+    UserActionRequired,
 }
 
 public static class ToolErrorKinds
@@ -99,6 +104,8 @@ public static class ToolErrorKinds
         ToolErrorKind.UnsupportedProtocol => "UNSUPPORTED_PROTOCOL",
         ToolErrorKind.RateLimited => "RATE_LIMITED",
         ToolErrorKind.PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+        ToolErrorKind.PolicyDenied => "POLICY_DENIED",
+        ToolErrorKind.UserActionRequired => "USER_ACTION_REQUIRED",
         _ => "HANDLER_ERROR",
     };
 }
@@ -127,6 +134,33 @@ public class ToolCallException : Exception
 
     /// <summary>结构化详情（可为 null）。</summary>
     public object? Details { get; }
+}
+
+/// <summary><c>USER_ACTION_REQUIRED</c> 的 <c>data.reason</c> 建议取值（spec/protocol.md 第 4 节；也可用其他字符串）。</summary>
+public static class UserActionReason
+{
+    /// <summary>登录已过期 / 未登录。</summary>
+    public const string Login = "login";
+    /// <summary>系统权限未授予（相机、位置、通知等）。</summary>
+    public const string Permission = "permission";
+    /// <summary>需要把 App 切到前台。</summary>
+    public const string Foreground = "foreground";
+    /// <summary>需要用户在 App 内确认。</summary>
+    public const string Confirm = "confirm";
+}
+
+/// <summary>在 handler 中抛出，以 <c>USER_ACTION_REQUIRED</c> 失败（app_mcp.h v11）：需要用户本人操作后才能继续。</summary>
+/// <param name="message">面向用户的说明（Agent 转告用户）。</param>
+/// <param name="reason">可选类别，见 <see cref="UserActionReason"/>；为 null 时不出现在错误的 data 中。</param>
+/// <param name="uri">可选的 App 内入口（深链接等）；为 null 时不出现在错误的 data 中。</param>
+public class UserActionRequiredException(string message, string? reason = null, string? uri = null)
+    : ToolCallException(ToolErrorKind.UserActionRequired, message)
+{
+    /// <summary>类别（<c>data.reason</c>），可为 null。</summary>
+    public string? Reason { get; } = reason;
+
+    /// <summary>App 内入口（<c>data.uri</c>），可为 null。</summary>
+    public string? Uri { get; } = uri;
 }
 
 /// <summary>客户端状态。</summary>

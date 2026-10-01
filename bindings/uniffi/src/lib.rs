@@ -423,7 +423,7 @@ impl From<native::NativeError> for AppMcpError {
 }
 
 /// 所有协议错误类别（FFI 上的字符串形式）。
-const ALL_ERROR_KINDS: [ErrorKind; 17] = [
+const ALL_ERROR_KINDS: [ErrorKind; 19] = [
     ErrorKind::ToolNotFound,
     ErrorKind::ToolDisabled,
     ErrorKind::InvalidInput,
@@ -441,6 +441,8 @@ const ALL_ERROR_KINDS: [ErrorKind; 17] = [
     ErrorKind::UnsupportedProtocol,
     ErrorKind::RateLimited,
     ErrorKind::PayloadTooLarge,
+    ErrorKind::PolicyDenied,
+    ErrorKind::UserActionRequired,
 ];
 
 fn parse_error_kind(kind: &str) -> Result<ErrorKind, AppMcpError> {
@@ -1228,9 +1230,11 @@ mod tests {
     #[test]
     fn error_kinds_roundtrip() {
         let kinds = error_kinds();
-        assert_eq!(kinds.len(), 17);
+        assert_eq!(kinds.len(), 19);
         assert!(kinds.contains(&"RATE_LIMITED".to_owned()));
         assert!(kinds.contains(&"PAYLOAD_TOO_LARGE".to_owned()));
+        assert!(kinds.contains(&"POLICY_DENIED".to_owned()));
+        assert!(kinds.contains(&"USER_ACTION_REQUIRED".to_owned()));
         for k in &kinds {
             assert_eq!(parse_error_kind(k).map(|e| e.as_str()), Ok(k.as_str()));
         }

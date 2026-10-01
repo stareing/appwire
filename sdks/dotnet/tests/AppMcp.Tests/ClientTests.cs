@@ -22,9 +22,23 @@ public class BasicTests
     [InlineData(ToolErrorKind.UnsupportedProtocol, "UNSUPPORTED_PROTOCOL")]
     [InlineData(ToolErrorKind.RateLimited, "RATE_LIMITED")]
     [InlineData(ToolErrorKind.PayloadTooLarge, "PAYLOAD_TOO_LARGE")]
+    [InlineData(ToolErrorKind.PolicyDenied, "POLICY_DENIED")]
+    [InlineData(ToolErrorKind.UserActionRequired, "USER_ACTION_REQUIRED")]
     public void ErrorKindStrings(ToolErrorKind kind, string expected)
     {
         Assert.Equal(expected, kind.ToProtocolString());
+    }
+
+    [Fact]
+    public void UserActionRequiredExceptionCarriesReasonAndUri()
+    {
+        ToolCallException e = new UserActionRequiredException("请先登录", UserActionReason.Login);
+        Assert.Equal(ToolErrorKind.UserActionRequired, e.Kind);
+        Assert.Equal("请先登录", e.Message);
+        var ua = Assert.IsType<UserActionRequiredException>(e);
+        Assert.Equal("login", ua.Reason);
+        Assert.Null(ua.Uri);
+        Assert.Null(ua.Details);
     }
 
     [Fact]

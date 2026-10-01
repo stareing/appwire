@@ -226,6 +226,22 @@ void main() {
       expect(await invoke('pay2', {}), {'ok': false, 'kind': 'USER_REJECTED', 'message': '坏详情'});
     });
 
+    test('UserActionRequiredError 经 am_call_fail_user_action 上报；reason / uri 缺省时不传', () async {
+      client.tool('login',
+          description: '需登录',
+          handler: (a, c) =>
+              throw UserActionRequiredError('登录已过期', reason: UserActionReason.login, uri: 'shop://login'));
+      client.tool('front', description: '需前台', handler: (a, c) async => throw UserActionRequiredError('请切到前台'));
+      expect(await invoke('login', {}), {
+        'ok': false,
+        'kind': 'USER_ACTION_REQUIRED',
+        'message': '登录已过期',
+        'reason': 'login',
+        'uri': 'shop://login'
+      });
+      expect(await invoke('front', {}), {'ok': false, 'kind': 'USER_ACTION_REQUIRED', 'message': '请切到前台'});
+    });
+
     test('ctx.hold()：调用完成后仍持有，完成后再 hold 抛出', () async {
       McpHold? held;
       ToolContext? saved;

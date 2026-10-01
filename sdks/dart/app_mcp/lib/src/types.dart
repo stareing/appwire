@@ -62,7 +62,14 @@ enum ErrorKind {
   rateLimited('RATE_LIMITED'),
 
   /// 调用参数、结果或资源内容超过 Host 的大小上限（由 Host 产生，App 一般不用）。
-  payloadTooLarge('PAYLOAD_TOO_LARGE');
+  payloadTooLarge('PAYLOAD_TOO_LARGE'),
+
+  /// 调用被用户 / 厂商的策略规则拒绝（由 Host 产生，App 一般不用）。
+  policyDenied('POLICY_DENIED'),
+
+  /// 需要用户本人操作后才能继续（登录过期、系统权限未授予、需切到前台、需在 App 内确认等）；
+  /// 用 [UserActionRequiredError] 抛出可附带 reason / uri。
+  userActionRequired('USER_ACTION_REQUIRED');
 
   const ErrorKind(this.wireName);
 
@@ -168,6 +175,33 @@ class ToolCallError implements Exception {
 
   @override
   String toString() => 'ToolCallError(${kind.wireName}): $message';
+}
+
+/// `USER_ACTION_REQUIRED` 的 `data.reason` 建议取值（spec/protocol.md 第 4 节；也可用其他字符串）。
+abstract final class UserActionReason {
+  /// 登录已过期 / 未登录。
+  static const login = 'login';
+
+  /// 系统权限未授予（相机、位置、通知等）。
+  static const permission = 'permission';
+
+  /// 需要把 App 切到前台。
+  static const foreground = 'foreground';
+
+  /// 需要用户在 App 内确认。
+  static const confirm = 'confirm';
+}
+
+/// handler 抛出此错误以 `USER_ACTION_REQUIRED` 失败（app_mcp.h v11）：需要用户本人操作后才能继续。
+///
+/// [message] 面向用户（Agent 转告用户）；[reason]（见 [UserActionReason]）与 [uri]（App 内入口，如深链接）可选，
+/// 为 null 时不出现在协议错误的 `data` 中。
+class UserActionRequiredError extends ToolCallError {
+  UserActionRequiredError(String message, {this.reason, this.uri})
+      : super(ErrorKind.userActionRequired, message);
+
+  final String? reason;
+  final String? uri;
 }
 
 /// 原生库返回的错误码（对应 C 的 `AmStatus`）。

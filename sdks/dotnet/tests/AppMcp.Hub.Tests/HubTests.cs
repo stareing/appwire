@@ -129,6 +129,51 @@ public class HubBasicTests
     }
 
     [Fact]
+    public void PolicyConfigSerializesAndValidates()
+    {
+        var policy = new HubPolicy
+        {
+            Rules =
+            {
+                new HubPolicyRule { Id = "hide-x", Action = HubPolicyAction.Hide, App = "shop*" },
+                new HubPolicyRule
+                {
+                    Id = "no-destructive",
+                    Action = HubPolicyAction.Deny,
+                    App = "*",
+                    Annotations = new HubAnnotationMatch { DestructiveHint = true },
+                    Hooks = [HubPolicyHook.Call, HubPolicyHook.Wake],
+                },
+            },
+        };
+        var json = JsonNode.Parse(new HubOptions { Policy = policy }.ToConfigJson())!["policy"]!["rules"]!.AsArray();
+        Assert.Equal("""{"id":"hide-x","action":"hide","app":"shop*"}""", json[0]!.ToJsonString());
+        Assert.Equal("""{"id":"no-destructive","action":"deny","app":"*","annotations":{"destructiveHint":true},"hooks":["call","wake"]}""",
+            json[1]!.ToJsonString());
+        Assert.False(JsonNode.Parse(new HubOptions().ToConfigJson())!.AsObject().ContainsKey("policy"));
+
+        using (var h = AppMcpHub.Start(new HubOptions { DisableIpc = true, DisableListen = true, Dispatcher = null, Policy = policy }))
+        {
+            var st = h.Status().Policy!;
+            Assert.Equal(["hide-x", "no-destructive"], st.Rules.Select(r => r.Id));
+            Assert.Equal(HubPolicyAction.Deny, st.Rules[1].Action);
+            Assert.Equal([HubPolicyHook.Call, HubPolicyHook.Wake], st.Rules[1].Hooks!);
+            Assert.True(st.Rules[1].Annotations!.DestructiveHint);
+            Assert.Equal(0UL, st.Rules[0].Hits);
+            Assert.Null(st.LastError);
+        }
+        // 通配符不在末尾 → 启动失败
+        var bad = new HubOptions
+        {
+            DisableIpc = true,
+            DisableListen = true,
+            Dispatcher = null,
+            Policy = new HubPolicy { Rules = { new HubPolicyRule { Id = "x", Action = HubPolicyAction.Hide, App = "a*b" } } },
+        };
+        Assert.Equal(HubStatus.InvalidConfig, Assert.Throws<HubException>(() => AppMcpHub.Start(bad)).Status);
+    }
+
+    [Fact]
     public void LimitsAndOutputValidationConfig()
     {
         var json = JsonNode.Parse(new HubOptions
@@ -630,6 +675,71 @@ public class HubIntegrationTests
         {
             if (Directory.Exists(dir)) Directory.Delete(dir, true);
         }
+    }
+
+    [Fact]
+    public async Task PolicyHideDenyAndSetPolicy()
+    {
+        await using var hub = AppMcpHub.Start(new HubOptions
+        {
+            DisableIpc = true,
+            Listen = "127.0.0.1:0",
+            Dispatcher = null,
+            Policy = new HubPolicy
+            {
+                Rules =
+                {
+                    new HubPolicyRule { Id = "hide-clear", Action = HubPolicyAction.Hide, App = "shop", Tool = "cart.clear" },
+                    new HubPolicyRule { Id = "no-pay", Action = HubPolicyAction.Deny, App = "shop", Tool = "order.pay" },
+                },
+            },
+        });
+        await using var app = AppMcp.AppMcpClient.Create(new AppMcp.AppMcpClientOptions
+        {
+            AppId = "shop",
+            AppName = "商店",
+            HostUrl = $"ws://{hub.ListenAddress}/app",
+            Dispatcher = null,
+        });
+        Task<object?> Ok(object? data) => Task.FromResult<object?>(data);
+        using var add = app.RegisterTool("cart.add", "加购", (_, _) => Ok(new { added = true }));
+        using var clear = app.RegisterTool("cart.clear", "清空", (_, _) => Ok(new { cleared = true }));
+        using var pay = app.RegisterTool("order.pay", "付款", (_, _) => Ok(new { paid = true }));
+        app.Start();
+        var filter = new ToolFilter { Apps = ["shop"], IncludeBuiltin = false };
+        List<string> Names() => hub.ListTools(filter).Select(t => t.Name).Order().ToList();
+        await WaitUntil(() => Names().Count == 2, "工具未同步");
+        Assert.Equal(["shop.cart.add", "shop.order.pay"], Names());
+
+        // (a) hide：不在列表，调用为 TOOL_NOT_FOUND
+        var hidden = await hub.CallAsync("shop.cart.clear");
+        Assert.Equal("TOOL_NOT_FOUND", hidden.Error?.Kind);
+        // (b) deny：POLICY_DENIED，details.ruleId
+        var denied = await hub.CallAsync("shop.order.pay");
+        Assert.Equal(HubError.PolicyDenied, denied.Error?.Kind);
+        Assert.Equal("no-pay", denied.Error!.Details!.Value.GetProperty("ruleId").GetString());
+        Assert.Equal("call", denied.Error.Details.Value.GetProperty("hook").GetString());
+        var st = hub.Status().Policy!;
+        Assert.Equal([1UL, 1UL], st.Rules.Select(r => r.Hits));
+
+        // (c) 不合法（hide 不能写 hooks）→ 抛出，之前的规则继续生效
+        var invalid = new HubPolicy
+        {
+            Rules = { new HubPolicyRule { Id = "x", Action = HubPolicyAction.Hide, App = "shop", Hooks = [HubPolicyHook.Call] } },
+        };
+        var e = Assert.Throws<HubException>(() => hub.SetPolicy(invalid));
+        Assert.Equal(HubStatus.InvalidConfig, e.Status);
+        Assert.Contains("hooks", e.Message);
+        Assert.Equal(HubError.PolicyDenied, (await hub.CallAsync("shop.order.pay")).Error?.Kind);
+        Assert.NotNull(hub.Status().Policy!.LastError);
+
+        // 清空：恢复原行为
+        hub.SetPolicy(new HubPolicy());
+        Assert.Equal(["shop.cart.add", "shop.cart.clear", "shop.order.pay"], Names());
+        var paid = await hub.CallAsync("shop.order.pay");
+        Assert.True(paid.IsSuccess, paid.Json.GetRawText());
+        Assert.Empty(hub.Status().Policy!.Rules);
+        Assert.Null(hub.Status().Policy!.LastError);
     }
 
     private static async Task WaitUntil(Func<bool> condition, string message)

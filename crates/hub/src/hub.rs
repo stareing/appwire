@@ -15,7 +15,7 @@ use app_mcp_protocol::identity::HostIdentity;
 use app_mcp_protocol::registry::EndpointRegistry;
 use app_mcp_protocol::{
     DEFAULT_LISTEN_ADDR, ErrorKind, ResourceInfo, ResourceSubscribeParams, ResourcesReadParams,
-    ResourcesReadResult, ToolError, method,
+    ResourcesReadResult, ToolAnnotations, ToolError, method,
 };
 #[cfg(any(feature = "mcp-server", feature = "upstream"))]
 use rmcp::model::Resource;
@@ -35,6 +35,7 @@ use crate::limits::{LimitOverrides, LimitPolicy, OutputValidation, RateBook};
 #[cfg(feature = "mcp-server")]
 use crate::mcp::McpSession;
 use crate::origin::OriginPolicy;
+use crate::policy::{PolicyConfig, PolicyHook, PolicyState, PolicyStatus};
 #[cfg(feature = "mcp-server")]
 use crate::overview::AppSummary;
 use crate::overview::{Overview, OverviewSource};
@@ -167,6 +168,9 @@ pub struct HubConfig {
     /// 调用进度转发给 Agent（MCP `notifications/progress`）的最小间隔（spec/hub-api.md 3.12）：间隔内只保留最新一条。
     /// 默认 [`DEFAULT_PROGRESS_INTERVAL`]；`0` = 不合并（不递增的进度仍丢弃）。
     pub progress_interval: Duration,
+    /// 策略规则（spec/hub-api.md 3.13）：`hide` 从所有列表中去掉 App / 工具（调用按不存在），`deny` 在调用 / 唤醒执行点拒绝
+    /// （`POLICY_DENIED`）。默认无规则：行为与没有策略时完全一致。运行中可用 [`Hub::set_policy`] 替换。
+    pub policy: PolicyConfig,
 }
 
 /// [`HubConfig::progress_interval`] 的默认值。
@@ -220,6 +224,7 @@ impl Default for HubConfig {
             limits: LimitPolicy::default(),
             output_validation: OutputValidation::default(),
             progress_interval: DEFAULT_PROGRESS_INTERVAL,
+            policy: PolicyConfig::default(),
         }
     }
 }
@@ -296,6 +301,8 @@ pub struct HubShared {
     pub(crate) lease_changed: Notify,
     /// 调用限流状态与每 App 的拒绝计数（spec/hub-api.md 3.11）。
     pub(crate) rates: Mutex<RateBook>,
+    /// 生效的策略规则、命中计数与最近的加载错误（spec/hub-api.md 3.13）。
+    pub(crate) policy: Mutex<PolicyState>,
 }
 
 /// 一次调用的进度路由（[`HubShared::progress_routes`]）。
@@ -333,6 +340,7 @@ impl HubShared {
             }
         }
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        let policy = PolicyState::new(config.policy.clone(), unix_millis());
         Self {
             identity: HostIdentity::current(env!("CARGO_PKG_VERSION")),
             run_tag: format!("{:06x}", rand::random::<u32>() & 0x00ff_ffff),
@@ -364,6 +372,7 @@ impl HubShared {
             leases: Mutex::new(LeaseBook::default()),
             lease_changed: Notify::new(),
             rates: Mutex::new(RateBook::default()),
+            policy: Mutex::new(policy),
         }
     }
 
@@ -532,6 +541,7 @@ impl HubShared {
             lease: Some(lock(&self.leases).status(&self.config.lease, self.config.lease_ttl)),
             limits: Some(LimitOverrides::from_policy(&self.config.limits)),
             output_validation: Some(self.config.output_validation),
+            policy: Some(lock(&self.policy).status()),
         }
     }
 
@@ -679,6 +689,9 @@ impl HubShared {
 
     /// App 与上游工具（不含内置工具）的总数。
     fn tool_count(&self) -> usize {
+        if self.policy().has_hide() {
+            return self.visible_tools(false).iter().filter(|(_, builtin)| !builtin).count();
+        }
         let apps = self.registry().tools().len();
         apps + lock(&self.upstreams).values().map(|s| s.tools.len()).sum::<usize>()
     }
@@ -738,17 +751,19 @@ impl HubShared {
     pub(crate) fn mcp_tools(&self, key: &str) -> Vec<Tool> {
         let exposed = self.exposed_apps(key);
         let listed = |app_id: &str| exposed.as_ref().is_none_or(|e| e.contains(app_id));
+        let policy = self.policy();
         let mut tools = call::builtin_tools(exposed.is_some());
         tools.extend(
             self.registry()
                 .tools()
                 .iter()
                 .filter(|t| listed(&t.app_id))
+                .filter(|t| policy.tool_hidden(&t.app_id, &t.info.name, Some(&t.info.effective_annotations())).is_none())
                 .map(|t| call::to_mcp_tool(&t.app_id, &t.info, t.availability)),
         );
         let ups = lock(&self.upstreams);
         for (name, st) in ups.iter().filter(|(name, _)| listed(name)) {
-            for t in &st.tools {
+            for t in st.tools.iter().filter(|t| policy.tool_hidden(name, &t.name, Some(&call::upstream_hub_tool(name, t).annotations)).is_none()) {
                 let mut t = t.clone();
                 t.name = format!("{name}.{}", t.name).into();
                 tools.push(t);
@@ -759,7 +774,7 @@ impl HubShared {
 
     /// `apps.tools` 的结果：某个 App（或上游）的全部工具定义。
     pub(crate) fn app_tools(&self, app_id: &str) -> Vec<HubTool> {
-        self.all_tools(false)
+        self.visible_tools(false)
             .into_iter()
             .filter(|(t, builtin)| !builtin && t.app_id == app_id)
             .map(|(t, _)| t)
@@ -776,6 +791,116 @@ impl HubShared {
 
     pub(crate) fn pairing_handler(&self) -> Option<Arc<dyn PairingHandler>> {
         lock(&self.pairing_handler).clone()
+    }
+
+    // ------------------------------------------------------------------
+    // 策略挂点（spec/hub-api.md 3.13）
+    // ------------------------------------------------------------------
+
+    /// 当前生效的规则集（快照；替换规则集不影响已取得的快照）。
+    pub(crate) fn policy(&self) -> Arc<PolicyConfig> {
+        lock(&self.policy).config.clone()
+    }
+
+    fn policy_hit(&self, config: &Arc<PolicyConfig>, index: usize) {
+        lock(&self.policy).hit(config, index);
+    }
+
+    /// 替换规则集；不合法时保留之前的规则并记下错误（`/status` 的 `policy.lastError`）。
+    /// 成功后按工具 / 资源列表变化通知所有会话（`hide` 可能改变了列表）。
+    pub(crate) fn set_policy(&self, config: PolicyConfig) -> Result<(), String> {
+        let n = config.rules.len();
+        let r = lock(&self.policy).replace(config, unix_millis());
+        match &r {
+            Ok(()) => {
+                tracing::info!(rules = n, "策略规则已更新");
+                self.mark_tools_changed();
+                self.mark_resources_changed();
+            }
+            Err(e) => tracing::warn!(error = %e, "策略规则不合法，继续使用之前的规则"),
+        }
+        r
+    }
+
+    /// 记下一次加载失败（规则文本不是合法 JSON 等），之前的规则继续生效。
+    pub(crate) fn record_policy_error(&self, message: &str) {
+        lock(&self.policy).record_error(message, unix_millis());
+    }
+
+    /// 调用 / 资源读取时的整体隐藏检查：隐藏时计入命中规则的次数。
+    pub(crate) fn app_hidden_hit(&self, app_id: &str) -> bool {
+        let policy = self.policy();
+        let Some(i) = policy.app_hidden(app_id) else {
+            return false;
+        };
+        self.policy_hit(&policy, i);
+        true
+    }
+
+    /// 某个 App / 上游工具当前的注解（Agent 实际看到的；按注解匹配规则时使用）。
+    fn tool_annotations(&self, app_id: &str, tool: &str) -> Option<ToolAnnotations> {
+        if let Some(st) = lock(&self.upstreams).get(app_id) {
+            return st
+                .tools
+                .iter()
+                .find(|t| t.name == tool)
+                .map(|t| call::upstream_hub_tool(app_id, t).annotations);
+        }
+        self.registry()
+            .tools()
+            .into_iter()
+            .find(|t| t.app_id == app_id && t.info.name == tool)
+            .map(|t| t.info.effective_annotations())
+    }
+
+    /// App 是否被 `hide` 规则整体隐藏（列表与名称解析都按不存在处理）。
+    pub(crate) fn app_hidden(&self, app_id: &str) -> bool {
+        self.policy().app_hidden(app_id).is_some()
+    }
+
+    /// 调用执行点：`hide` → `TOOL_NOT_FOUND`（与不存在的工具相同，隐藏的东西不暴露）；`deny`（call）→ `POLICY_DENIED`。
+    /// 无规则时直接放行。App 整体隐藏由调用方按 appId 未知处理（[`Self::app_hidden`]）。
+    pub(crate) fn check_call_policy(&self, app_id: &str, tool: &str) -> Result<(), ToolError> {
+        let policy = self.policy();
+        if policy.is_empty() {
+            return Ok(());
+        }
+        let annotations = if policy.needs_annotations() { self.tool_annotations(app_id, tool) } else { None };
+        let annotations = annotations.as_ref();
+        if let Some(i) = policy.tool_hidden(app_id, tool, annotations) {
+            self.policy_hit(&policy, i);
+            return Err(ToolError::new(
+                ErrorKind::ToolNotFound,
+                format!("工具「{app_id}.{tool}」不存在。可调用 apps.tools 查看该 App 的工具。"),
+            ));
+        }
+        match policy.denied(PolicyHook::Call, app_id, Some((tool, annotations))) {
+            None => Ok(()),
+            Some(i) => {
+                self.policy_hit(&policy, i);
+                Err(crate::policy::denied_error(&policy.rules[i].id, PolicyHook::Call, app_id, Some(tool)))
+            }
+        }
+    }
+
+    /// 唤醒执行点：`deny`（wake）→ `POLICY_DENIED`。`tool` 为 `None`（资源读取触发的唤醒）时只有 App 级规则匹配。
+    pub(crate) fn check_wake_policy(&self, app_id: &str, tool: Option<&str>) -> Result<(), ToolError> {
+        let policy = self.policy();
+        if policy.is_empty() {
+            return Ok(());
+        }
+        let annotations = match tool {
+            Some(t) if policy.needs_annotations() => self.tool_annotations(app_id, t),
+            _ => None,
+        };
+        let target = tool.map(|t| (t, annotations.as_ref()));
+        match policy.denied(PolicyHook::Wake, app_id, target) {
+            None => Ok(()),
+            Some(i) => {
+                self.policy_hit(&policy, i);
+                Err(crate::policy::denied_error(&policy.rules[i].id, PolicyHook::Wake, app_id, tool))
+            }
+        }
     }
 
     /// 之前已配对过（token 匹配，或同一 appId + Origin 经 PairingHandler 同意过）。
@@ -810,10 +935,10 @@ impl HubShared {
             .registry()
             .wake_plan_resource(app_id, name, selected.as_deref());
         let selected = match plan {
-            Some(plan) => Some(
-                self.wake_and_wait(&plan, std::pin::pin!(std::future::pending::<()>()))
-                    .await?,
-            ),
+            Some(plan) => {
+                self.check_wake_policy(app_id, None)?;
+                Some(self.wake_and_wait(&plan, std::pin::pin!(std::future::pending::<()>())).await?)
+            }
             None => selected,
         };
         let target = self
@@ -846,6 +971,9 @@ impl HubShared {
                 format!("无法识别的资源 URI：{uri}"),
             ));
         };
+        if self.app_hidden(app_id) {
+            return Err(ToolError::new(ErrorKind::ResourceNotFound, format!("资源「{uri}」不存在")));
+        }
         lock(&self.resource_subs)
             .entry(uri.to_owned())
             .or_default()
@@ -954,6 +1082,10 @@ impl HubShared {
 
     /// SDK 报告资源内容变化：发事件，并通知订阅了该资源的 MCP 会话。
     pub(crate) fn resource_updated(self: &Arc<Self>, app_id: &str, name: &str) {
+        // 被 `hide` 隐藏的 App 的资源变化不通知（隐藏前建立的订阅也不再收到）。
+        if self.app_hidden(app_id) {
+            return;
+        }
         let uri = resource_uri(app_id, name);
         self.emit(HubEvent::ResourceUpdated { uri: uri.clone() });
         let sessions: Vec<u64> = lock(&self.resource_subs)
@@ -984,8 +1116,13 @@ impl HubShared {
 
     pub(crate) fn apps_json(&self, selected: &HashMap<String, String>) -> Value {
         let mut v = self.registry().apps_json(selected);
+        let policy = self.policy();
+        if policy.has_hide() {
+            self.hide_in_apps_json(&policy, &mut v);
+        }
         let ups: Vec<Value> = lock(&self.upstreams)
             .iter()
+            .filter(|(name, _)| policy.app_hidden(name).is_none())
             .map(|(name, st)| {
                 json!({
                     "appId": name,
@@ -994,7 +1131,12 @@ impl HubShared {
                     "summary": upstream_overview(name, st).map(|o| o.summary),
                     "connected": st.connected(),
                     "command": st.config.command,
-                    "tools": st.tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(),
+                    "tools": st
+                        .tools
+                        .iter()
+                        .filter(|t| policy.tool_hidden(name, &t.name, Some(&call::upstream_hub_tool(name, t).annotations)).is_none())
+                        .map(|t| t.name.to_string())
+                        .collect::<Vec<_>>(),
                     "resourceCount": st.resources.len(),
                     "restarts": st.restarts,
                     "lastError": st.last_error,
@@ -1005,6 +1147,39 @@ impl HubShared {
             apps.extend(ups);
         }
         v
+    }
+
+    /// `apps.list` 中去掉被 `hide` 隐藏的 App，并从各实例的 `tools` 与 `staticToolCount` 中去掉被隐藏的工具。
+    fn hide_in_apps_json(&self, policy: &PolicyConfig, v: &mut Value) {
+        let annotations: HashMap<(String, String), ToolAnnotations> = self
+            .registry()
+            .tools()
+            .into_iter()
+            .map(|t| ((t.app_id, t.info.name.clone()), t.info.effective_annotations()))
+            .collect();
+        let visible = |app_id: &str, tool: &str| {
+            let a = annotations.get(&(app_id.to_owned(), tool.to_owned()));
+            policy.tool_hidden(app_id, tool, a).is_none()
+        };
+        let Some(apps) = v.get_mut("apps").and_then(Value::as_array_mut) else {
+            return;
+        };
+        apps.retain(|a| a["appId"].as_str().is_some_and(|id| policy.app_hidden(id).is_none()));
+        for app in apps.iter_mut() {
+            let app_id = app["appId"].as_str().unwrap_or_default().to_owned();
+            for key in ["instances", "dormantInstances"] {
+                for inst in app.get_mut(key).and_then(Value::as_array_mut).into_iter().flatten() {
+                    if let Some(tools) = inst.get_mut("tools").and_then(Value::as_array_mut) {
+                        tools.retain(|t| t.as_str().is_some_and(|t| visible(&app_id, t)));
+                    }
+                }
+            }
+            let static_count = self
+                .registry()
+                .manifest(&app_id)
+                .map_or(0, |m| m.tools.iter().filter(|t| visible(&app_id, &t.name)).count());
+            app["staticToolCount"] = json!(static_count);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1107,9 +1282,10 @@ impl HubShared {
     /// 已连接上游的资源，URI 改为 `app-mcp://<name>/<编码后的上游 URI>`。
     #[cfg(feature = "mcp-server")]
     pub(crate) fn upstream_resources(&self) -> Vec<Resource> {
+        let policy = self.policy();
         let ups = lock(&self.upstreams);
         let mut out = Vec::new();
-        for (name, st) in ups.iter() {
+        for (name, st) in ups.iter().filter(|(name, _)| policy.app_hidden(name).is_none()) {
             for r in &st.resources {
                 let mut r = r.clone();
                 r.uri = resource_uri(name, &encode_uri_component(&r.uri));
@@ -1122,6 +1298,9 @@ impl HubShared {
 
     /// App 或上游当前生效的总览。
     pub(crate) fn overview(&self, app_id: &str) -> Option<Overview> {
+        if self.app_hidden(app_id) {
+            return None;
+        }
         if let Some(st) = lock(&self.upstreams).get(app_id) {
             return upstream_overview(app_id, st);
         }
@@ -1137,6 +1316,8 @@ impl HubShared {
             name: st.server_name.clone().unwrap_or_else(|| name.clone()),
             summary: upstream_overview(name, st).map(|o| o.summary),
         }));
+        let policy = self.policy();
+        out.retain(|s| policy.app_hidden(&s.app_id).is_none());
         out.sort_by(|a, b| a.app_id.cmp(&b.app_id));
         out
     }
@@ -1165,6 +1346,16 @@ impl HubShared {
             }
         }
         out
+    }
+
+    /// [`Self::all_tools`] 去掉被 `hide` 规则隐藏的 App 工具与上游工具（Agent 可见的列表）。
+    pub(crate) fn visible_tools(&self, with_apps_tools: bool) -> Vec<(HubTool, bool)> {
+        let policy = self.policy();
+        let mut tools = self.all_tools(with_apps_tools);
+        if policy.has_hide() {
+            tools.retain(|(t, builtin)| *builtin || policy.tool_hidden(&t.app_id, &t.tool, Some(&t.annotations)).is_none());
+        }
+        tools
     }
 
     /// 按当前全部工具计算导出名，并并入历史映射。
@@ -1291,6 +1482,7 @@ impl Hub {
             .lease
             .validate()
             .and_then(|()| config.limits.validate())
+            .and_then(|()| config.policy.validate())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         // 锁先于任何监听：并发启动的两个 Host 只有一个能走到绑定。
         let instance = config.run_dir.as_deref().map(Instance::acquire).transpose()?;
@@ -1459,6 +1651,8 @@ impl Hub {
             selected_instance: None,
             dormant_instances: Vec::new(),
         }));
+        let policy = self.shared.policy();
+        out.retain(|a| policy.app_hidden(&a.app_id).is_none());
         out
     }
 
@@ -1470,7 +1664,7 @@ impl Hub {
         let progressive = exposed.is_some();
         let exposed = exposed.filter(|_| filter.apps.is_none());
         self.shared
-            .all_tools(progressive)
+            .visible_tools(progressive)
             .into_iter()
             .filter(|(t, builtin)| filter.accepts(t, *builtin))
             .filter(|(t, builtin)| *builtin || exposed.as_ref().is_none_or(|e| e.contains(&t.app_id)))
@@ -1507,6 +1701,8 @@ impl Hub {
                 });
             }
         }
+        let policy = self.shared.policy();
+        out.retain(|r| policy.app_hidden(&r.app_id).is_none());
         out
     }
 
@@ -1518,6 +1714,19 @@ impl Hub {
     /// （spec/hub-api.md 3.9）。`GET /status` 返回同样的内容。
     pub fn status(&self) -> HubStatus {
         self.shared.status()
+    }
+
+    /// 替换策略规则（spec/hub-api.md 3.13）。规则不合法时返回 `INVALID_INPUT`，之前的规则继续生效（错误记入
+    /// `status().policy.last_error`）；成功后命中计数清零，并按工具 / 资源列表变化通知所有会话。
+    pub fn set_policy(&self, config: PolicyConfig) -> Result<(), HubError> {
+        self.shared
+            .set_policy(config)
+            .map_err(|e| HubError(ToolError::new(ErrorKind::InvalidInput, e)))
+    }
+
+    /// 生效的策略规则、各规则命中次数与最近的加载错误。
+    pub fn policy(&self) -> PolicyStatus {
+        lock(&self.shared.policy).status()
     }
 
     // ---- 操作 ----

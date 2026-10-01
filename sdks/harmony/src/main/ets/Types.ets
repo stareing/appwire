@@ -19,8 +19,18 @@ export type ErrorKind =
   'TOOL_NOT_FOUND' | 'TOOL_DISABLED' | 'INVALID_INPUT' | 'USER_REJECTED' | 'TIMEOUT' | 'HANDLER_ERROR' |
   'CANCELLED' | 'APP_DISCONNECTED' | 'APP_NOT_INSTALLED' | 'LAUNCH_FAILED' | 'APP_NOT_RESPONDING' |
   'INSTANCE_FROZEN' | 'RESOURCE_NOT_FOUND' | 'UNAUTHORIZED' | 'UNSUPPORTED_PROTOCOL' |
-  // Host 产生（限流 / 超过大小上限），App 一般不抛
-  'RATE_LIMITED' | 'PAYLOAD_TOO_LARGE';
+  // Host 产生（限流 / 超过大小上限 / 策略拒绝），App 一般不抛
+  'RATE_LIMITED' | 'PAYLOAD_TOO_LARGE' | 'POLICY_DENIED' |
+  // 需要用户本人操作后才能继续，由 handler 抛出（见 ToolCallError.userActionRequired）
+  'USER_ACTION_REQUIRED';
+
+/** `ToolCallError.userActionRequired` 的可选项；未给出的字段不出现在错误详情中。 */
+export interface UserActionRequiredOptions {
+  /** 类别，建议取 `login`（登录过期）/ `permission`（系统权限未授予）/ `foreground`（需切到前台）/ `confirm`（需在 App 内确认），也可以是其他字符串。 */
+  reason?: string;
+  /** App 内入口（如 deep link），供 Agent / 用户打开。 */
+  uri?: string;
+}
 
 /**
  * 标准 MCP 工具注解（spec/protocol.md 第 3 节），原样转发给 Agent，由 Agent 决定是否确认 / 放行。

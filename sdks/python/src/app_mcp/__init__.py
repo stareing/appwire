@@ -28,6 +28,7 @@ if TYPE_CHECKING:  # pragma: no cover
         ToolCallError,
         ToolContext,
         ToolHandle,
+        UserActionReason,
         ToolResult,
     )
 
@@ -61,6 +62,7 @@ _LAZY: dict[str, tuple[str, str]] = {
             "ToolContext",
             "ToolHandle",
             "ToolResult",
+            "UserActionReason",
         )
     },
     **{
@@ -125,6 +127,7 @@ __all__ = [
     "ToolAnnotations",
     "ToolHandle",
     "ToolResult",
+    "UserActionReason",
     "Visibility",
     "WakeDescriptor",
     "WakeReason",

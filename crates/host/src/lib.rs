@@ -7,6 +7,7 @@
 //! - `service install|uninstall|status|start|stop`：当前用户的登录自启服务（[`service`]）；`install` 先检查端口占用。
 //! - `doctor`：逐项诊断（[`doctor`]）；`status`：一行状态摘要。
 //! - `setup` / `uninstall`：一条命令安装（二进制就位、自启、写入已装 Agent 的 MCP 配置、自检）与撤销（[`setup`]）。
+//! - `policy show|validate|reload|hide|deny|remove`：策略规则 `<home>/policy.json`（[`policy`]）。
 //! - `stdio` / 不带子命令：单客户端 stdio 模式（兼容旧用法）。
 //!
 //! stdout 在 stdio 模式下专用于 MCP 协议，所有日志写 stderr（常驻模式另写 `<home>/logs/`）。
@@ -15,6 +16,7 @@ pub mod cli;
 pub mod config;
 pub mod doctor;
 pub mod logging;
+pub mod policy;
 pub mod ports;
 pub mod probe;
 pub mod service;
@@ -89,6 +91,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Status(HomeArg { home })) => status_line(&home).await,
         Some(Command::Setup(args)) => setup_cmd(args).await,
         Some(Command::Uninstall(args)) => uninstall_cmd(args).await,
+        Some(Command::Policy { action }) => policy::cmd(action).await,
         Some(Command::Token { home, regenerate }) => {
             let home = AppHome::resolve(home.home.as_deref())?;
             let t = if regenerate {
@@ -169,7 +172,8 @@ async fn run_legacy(args: LegacyArgs) -> anyhow::Result<ExitCode> {
         file: None,
     })?;
     log_notices(&s);
-    let hub = match Hub::start(hub_config(&s, &home)).await {
+    let config = HubConfig { policy: policy::load(&home)?, ..hub_config(&s, &home) };
+    let hub = match Hub::start(config).await {
         Ok(h) => h,
         Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => {
             let hint = running_instance(&home)
@@ -328,6 +332,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<ExitCode> {
     let config = HubConfig {
         http: options.clone(),
         mcp_http: true,
+        policy: policy::load(&home)?,
         ..hub_config(&s, &home)
     };
     let hub = match Hub::start(config).await {

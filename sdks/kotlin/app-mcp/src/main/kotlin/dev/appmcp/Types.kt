@@ -2,6 +2,8 @@ package dev.appmcp
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 // 直接复用 uniffi 生成的数据类型。
 /** 风险等级（旧写法：优先用 [ToolAnnotations]；两者同时存在时注解中声明的字段优先，缺少的按 risk 推导）。 */
@@ -44,6 +46,10 @@ object ErrorKind {
     const val RATE_LIMITED = "RATE_LIMITED"
     /** Host 侧大小上限（App 一般不抛）。 */
     const val PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
+    /** Host 侧策略规则拒绝（App 一般不抛）。 */
+    const val POLICY_DENIED = "POLICY_DENIED"
+    /** 需要用户本人操作后才能继续（用 [ToolCallException.userActionRequired] 构造）。 */
+    const val USER_ACTION_REQUIRED = "USER_ACTION_REQUIRED"
 
     /** 原生库认可的全部类别。 */
     val all: Set<String> by lazy { dev.appmcp.ffi.errorKinds().toSet() }
@@ -60,7 +66,40 @@ class ToolCallException @JvmOverloads constructor(
     val kind: String,
     override val message: String,
     val details: JsonElement? = null,
-) : Exception(message)
+) : Exception(message) {
+    companion object {
+        /**
+         * `USER_ACTION_REQUIRED`（spec/protocol.md 第 4 节）：需要用户本人操作后才能继续（登录过期、系统权限未授予、
+         * 需切到前台、需在 App 内确认），例如
+         * `throw ToolCallException.userActionRequired("登录已过期，请在 App 内重新登录后重试", UserActionReason.LOGIN, "shop://login")`。
+         *
+         * @input message 面向用户的说明（Agent 应转告用户）
+         * @input reason 可选类别：[UserActionReason] 中的值或其他字符串；为 null 时不出现在 `data` 中
+         * @input uri 可选的 App 内入口（深链接等）；为 null 时不出现在 `data` 中
+         */
+        @JvmStatic
+        @JvmOverloads
+        fun userActionRequired(message: String, reason: String? = null, uri: String? = null): ToolCallException {
+            val fields = buildMap {
+                reason?.let { put("reason", JsonPrimitive(it)) }
+                uri?.let { put("uri", JsonPrimitive(it)) }
+            }
+            return ToolCallException(ErrorKind.USER_ACTION_REQUIRED, message, fields.takeIf { it.isNotEmpty() }?.let(::JsonObject))
+        }
+    }
+}
+
+/** `USER_ACTION_REQUIRED` 的 `data.reason` 建议取值（接收方遇到其他值按原样展示）。 */
+object UserActionReason {
+    /** 登录已过期 / 未登录。 */
+    const val LOGIN = "login"
+    /** 系统权限未授予（相机、位置、通知等）。 */
+    const val PERMISSION = "permission"
+    /** 需要把 App 切到前台。 */
+    const val FOREGROUND = "foreground"
+    /** 需要用户在 App 内确认。 */
+    const val CONFIRM = "confirm"
+}
 
 /**
  * 结构化调用结果，作为 handler 返回值（spec/protocol.md 3.2）。直接返回普通值 = `DONE` 且无附加信息。

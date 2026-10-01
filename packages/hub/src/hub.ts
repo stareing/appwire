@@ -23,6 +23,8 @@ import type {
   HubTool,
   PairingHandler,
   PairingRequest,
+  PolicyConfig,
+  PolicyStatus,
   ResourceContent,
   ToolCallInput,
   ToolFilter,
@@ -76,7 +78,7 @@ const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
   'TOOL_NOT_FOUND', 'TOOL_DISABLED', 'INVALID_INPUT', 'USER_REJECTED', 'TIMEOUT', 'HANDLER_ERROR',
   'CANCELLED', 'APP_DISCONNECTED', 'APP_NOT_INSTALLED', 'LAUNCH_FAILED', 'APP_NOT_RESPONDING',
   'INSTANCE_FROZEN', 'RESOURCE_NOT_FOUND', 'UNAUTHORIZED', 'UNSUPPORTED_PROTOCOL', 'RATE_LIMITED',
-  'PAYLOAD_TOO_LARGE',
+  'PAYLOAD_TOO_LARGE', 'POLICY_DENIED', 'USER_ACTION_REQUIRED',
 ])
 
 /** 把用户的 Waker 规整为“总是 resolve”的 Promise：null = 成功；失败为 `{"kind","message"}` JSON。 */
@@ -158,6 +160,19 @@ export class Hub {
   /** 运行状态、各 App 最近错误与 SDK 诊断上报（与 `GET /status` 相同，spec/hub-api.md 3.9）。 */
   status(): HubStatus {
     return wrapSync(() => JSON.parse(this.#native.status()) as HubStatus)
+  }
+
+  /** 生效的策略规则、各规则命中次数与最近的加载错误（spec/hub-api.md 3.13）。 */
+  policy(): PolicyStatus {
+    return wrapSync(() => JSON.parse(this.#native.policy()) as PolicyStatus)
+  }
+
+  /**
+   * 替换策略规则集（命中计数清零）；传 `{}` 或 `{ rules: [] }` 清空。
+   * 规则不合法时抛 {@link HubError}（`kind = 'INVALID_INPUT'`），之前的规则继续生效，原因记入 `policy().lastError`。
+   */
+  setPolicy(policy: PolicyConfig): void {
+    wrapSync(() => this.#native.setPolicy(JSON.stringify(policy)))
   }
 
   tools(filter?: ToolFilter): HubTool[] {

@@ -219,6 +219,14 @@ fn cancelled() -> ToolError {
     ToolError::new(ErrorKind::Cancelled, "调用已被取消。")
 }
 
+/// appId 未知（或被 `hide` 规则整体隐藏，二者对 Agent 不可区分）。
+fn unknown_app(app_id: &str) -> ToolError {
+    ToolError::new(
+        ErrorKind::ToolNotFound,
+        format!("没有 appId 为「{app_id}」的 App。可调用 apps.list 查看可用的 App。"),
+    )
+}
+
 impl HubShared {
     fn new_call_id(&self) -> String {
         format!("call-{}-{:08x}", self.next_id(), rand::random::<u32>())
@@ -271,11 +279,23 @@ impl HubShared {
             output_shape: OutputShape::Undeclared,
         };
 
+        // 策略：整体隐藏的 App / 上游与不存在的 appId 相同（spec/hub-api.md 3.13）。
+        if let Some((app_id, _)) = name.split_once('.')
+            && builtin_schema(&name).is_none()
+            && self.app_hidden_hit(app_id)
+        {
+            return inv(Some(app_id), Body::NotFound(unknown_app(app_id)));
+        }
+
         // 上游 MCP 服务器
         if let Some((app_id, tool)) = name.split_once('.')
             && let Some(peer) = self.upstream_peer(app_id)
         {
-            let guard = if args.is_object() { self.guard_call(app_id, tool, &args) } else { Ok(()) };
+            let guard = if args.is_object() {
+                self.check_call_policy(app_id, tool).and_then(|()| self.guard_call(app_id, tool, &args))
+            } else {
+                Ok(())
+            };
             let result = match (args, guard) {
                 (Value::Object(_), Err(e)) => Ok(error_result(&e)),
                 (Value::Object(map), Ok(())) => {
@@ -327,11 +347,10 @@ impl HubShared {
             );
         };
         if !self.registry().has_app(app_id) {
-            let e = ToolError::new(
-                ErrorKind::ToolNotFound,
-                format!("没有 appId 为「{app_id}」的 App。可调用 apps.list 查看可用的 App。"),
-            );
-            return inv(Some(app_id), Body::NotFound(e));
+            return inv(Some(app_id), Body::NotFound(unknown_app(app_id)));
+        }
+        if let Err(e) = self.check_call_policy(app_id, tool) {
+            return inv(Some(app_id), Body::App(Err(e)));
         }
         if let Err(e) = self.guard_call(app_id, tool, &args) {
             let mut out = inv(Some(app_id), Body::App(Err(e)));
@@ -487,6 +506,16 @@ impl HubShared {
         Ok(r)
     }
 
+    /// App 返回的错误：与结果一样受结果大小上限约束（`USER_ACTION_REQUIRED` 等错误的说明来自 App，spec/protocol.md 第 4 节），
+    /// 超出时返回 `PAYLOAD_TOO_LARGE`；否则原样转为 [`ToolError`]。
+    fn accept_error(&self, app_id: &str, tool: &str, rpc: &app_mcp_protocol::RpcError) -> ToolError {
+        let size = serde_json::to_vec(rpc).map_or(0, |b| b.len());
+        match self.guard_payload(app_id, Payload::Result, size, &format!("工具「{app_id}.{tool}」")) {
+            Err(e) => e,
+            Ok(()) => rpc.to_tool_error(),
+        }
+    }
+
     /// [`HubShared::invoke_tool`] 的主体：返回结果与目标实例；路由到实例后把其 `outputSchema` 形式写入 `output_shape`。
     #[allow(clippy::too_many_arguments)]
     async fn invoke_routed(
@@ -519,6 +548,9 @@ impl HubShared {
             // 不唤醒（`waker: none`）：不做审批，直接按未连接返回（带 launchUrl）。
             if !self.wake_enabled() {
                 return (Err(self.registry().disconnected_error(app_id)), plan.instance_id.clone());
+            }
+            if let Err(e) = self.check_wake_policy(app_id, Some(tool_name)) {
+                return (Err(e), plan.instance_id.clone());
             }
             if let Some(tool) = &plan.tool {
                 if let SchemaCheck::Invalid(msg) = schema::check(&tool.input_schema, &arguments) {
@@ -656,7 +688,7 @@ impl HubShared {
         drop(progress);
         let result = match outcome {
             Ok(Ok(Ok(v))) => self.accept_result(app_id, tool_name, &target.tool, v),
-            Ok(Ok(Err(rpc))) => Err(rpc.to_tool_error()),
+            Ok(Ok(Err(rpc))) => Err(self.accept_error(app_id, tool_name, &rpc)),
             Ok(Err(_)) => return (Err(disconnected()), instance),
             Err(_) => {
                 send_cancel("timeout");
@@ -774,7 +806,7 @@ impl HubShared {
             TOOL_APPS_LIST => Ok(json_result(self.apps_json(&self.merged_selection(key)))),
             TOOL_APPS_SELECT => {
                 let (app_id, instance_id) = (arg("appId"), arg("instanceId"));
-                if self.registry().instance(&app_id, &instance_id).is_none() {
+                if self.app_hidden(&app_id) || self.registry().instance(&app_id, &instance_id).is_none() {
                     return Some(Err(ToolError::new(
                         ErrorKind::AppDisconnected,
                         format!(
@@ -799,13 +831,8 @@ impl HubShared {
             TOOL_APPS_OVERVIEW => {
                 let app_id = arg("appId");
                 let known = self.is_upstream(&app_id) || self.registry().has_app(&app_id);
-                if !known {
-                    return Some(Err(ToolError::new(
-                        ErrorKind::ToolNotFound,
-                        format!(
-                            "没有 appId 为「{app_id}」的 App。可调用 apps.list 查看可用的 App。"
-                        ),
-                    )));
+                if !known || self.app_hidden(&app_id) {
+                    return Some(Err(unknown_app(&app_id)));
                 }
                 match self.overview(&app_id) {
                     None => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
@@ -822,13 +849,8 @@ impl HubShared {
             TOOL_APPS_TOOLS => {
                 let app_id = arg("appId");
                 let known = self.is_upstream(&app_id) || self.registry().has_app(&app_id);
-                if !known {
-                    return Some(Err(ToolError::new(
-                        ErrorKind::ToolNotFound,
-                        format!(
-                            "没有 appId 为「{app_id}」的 App。可调用 apps.list 查看可用的 App。"
-                        ),
-                    )));
+                if !known || self.app_hidden(&app_id) {
+                    return Some(Err(unknown_app(&app_id)));
                 }
                 let tools = self.app_tools(&app_id);
                 let progressive = self.progressive();
@@ -871,6 +893,9 @@ pub(crate) async fn read_resource(
         ));
     };
     let _activity = shared.session_request(session_key);
+    if shared.app_hidden_hit(app_id) {
+        return Err(McpError::resource_not_found(format!("资源「{uri}」不存在"), Some(json!({ "kind": ErrorKind::ResourceNotFound }))));
+    }
     if let Some(peer) = shared.upstream_peer(app_id) {
         return read_upstream_resource(shared, app_id, name, uri, peer).await;
     }
@@ -1328,7 +1353,7 @@ pub(crate) fn mcp_error_to_tool(e: &McpError) -> ToolError {
     }
 }
 
-const ALL_KINDS: [ErrorKind; 17] = [
+const ALL_KINDS: [ErrorKind; 19] = [
     ErrorKind::ToolNotFound,
     ErrorKind::ToolDisabled,
     ErrorKind::InvalidInput,
@@ -1346,6 +1371,8 @@ const ALL_KINDS: [ErrorKind; 17] = [
     ErrorKind::UnsupportedProtocol,
     ErrorKind::RateLimited,
     ErrorKind::PayloadTooLarge,
+    ErrorKind::PolicyDenied,
+    ErrorKind::UserActionRequired,
 ];
 
 /// 把协议错误转为 MCP 协议错误（资源读取等非工具调用路径）。
