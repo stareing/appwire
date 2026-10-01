@@ -6,6 +6,7 @@
 //   --opt-only         跳过 cargo 与 wasm-bindgen，只对 src/wasm 中现有的 .wasm 运行 wasm-opt 并报告体积
 // 环境变量：
 //   CARGO_TARGET_DIR   cargo 输出目录（默认 <仓库>/target）
+//   RUSTFLAGS / CARGO_ENCODED_RUSTFLAGS  保留，并在其后追加路径重映射（见 remapFlags）
 //   APP_MCP_WASM_DEBUG 设为 1 时启用 debug feature（console_error_panic_hook）
 //   WASM_BINDGEN       wasm-bindgen 可执行文件路径
 //   WASM_OPT           wasm-opt 可执行文件路径；设为 0 跳过（缺省在 PATH、~/.local/bin、~/.local/binaryen-*/bin 中查找）
@@ -49,6 +50,37 @@ function findWasmBindgen() {
   const fallback = join(home, '.cargo', 'bin', process.platform === 'win32' ? 'wasm-bindgen.exe' : 'wasm-bindgen')
   if (existsSync(fallback)) return fallback
   throw new Error('找不到 wasm-bindgen，请运行 cargo install wasm-bindgen-cli --version 0.2.129')
+}
+
+/**
+ * 把编译期写入 panic 位置信息的本机绝对路径（cargo 注册表源码、rust-src、仓库根）重映射为短的相对前缀。
+ *
+ * @why 产物不含本机用户名 / 目录，体积与机器无关（gzip 约 -0.1 KB）。
+ * @side-effect 只作用于本次 cargo 构建（--target 指定后不影响宿主侧的构建脚本与过程宏）。
+ */
+function remapFlags() {
+  const cargoHome = process.env.CARGO_HOME || join(process.env.HOME || homedir(), '.cargo')
+  const registrySrc = join(cargoHome, 'registry', 'src')
+  const flags = [`--remap-path-prefix=${registrySrc}=crates`, `--remap-path-prefix=${repoRoot}=.`]
+  try {
+    // 各注册表索引目录（index.crates.io-<哈希>）再映射一次，路径里不留哈希
+    for (const index of readdirSync(registrySrc)) flags.push(`--remap-path-prefix=${join(registrySrc, index)}=crates`)
+  } catch {
+    // 注册表目录不存在（vendored / 离线），保留上面的通用映射
+  }
+  const sysroot = spawnSync('rustc', ['--print', 'sysroot'], { encoding: 'utf8' })
+  if (sysroot.status === 0 && sysroot.stdout.trim()) {
+    flags.push(`--remap-path-prefix=${join(sysroot.stdout.trim(), 'lib', 'rustlib', 'src', 'rust')}=rust`)
+  }
+  return flags
+}
+
+/** 现有 rustflags（CARGO_ENCODED_RUSTFLAGS 优先，与 cargo 一致）追加重映射后，以 CARGO_ENCODED_RUSTFLAGS 传给 cargo。 */
+function cargoEnv() {
+  const sep = '\x1f'
+  const encoded = process.env.CARGO_ENCODED_RUSTFLAGS
+  const existing = encoded ? encoded.split(sep) : (process.env.RUSTFLAGS ?? '').split(/\s+/).filter(Boolean)
+  return { ...process.env, CARGO_ENCODED_RUSTFLAGS: [...existing, ...remapFlags()].join(sep) }
 }
 
 function findWasmOpt() {
@@ -97,7 +129,7 @@ if (!optOnly) {
   // 1. cargo build
   const cargoArgs = ['build', '--target', target, '--profile', profile, '-p', crate]
   if (process.env.APP_MCP_WASM_DEBUG === '1') cargoArgs.push('--features', 'debug')
-  run('cargo', cargoArgs)
+  run('cargo', cargoArgs, { env: cargoEnv() })
 
   const targetDir = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : join(repoRoot, 'target')
   const wasmIn = join(targetDir, target, profile, `${artifact}.wasm`)

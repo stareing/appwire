@@ -11,8 +11,11 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-serde.workspace = true
-serde_json = { workspace = true, features = ["raw_value"] }
+# @why serde / serde_json 不经 workspace 继承：workspace 版本带 std 默认特性，无法在成员里关掉。
+# WASM 依赖图（protocol、core、wasm 绑定）只用 alloc，免去 io::Error 等 std 代码（gzip 约 -1.8 KB）；
+# 原生构建中其他成员经 workspace 打开 std，特性合并后行为不变。
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc", "raw_value"] }
 thiserror.workspace = true
 sha2 = "0.10"
 

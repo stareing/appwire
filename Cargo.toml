@@ -49,8 +49,6 @@ clap = { version = "4", features = ["derive"] }
 dirs = "6"
 rand = "0.9"
 wasm-bindgen = "=0.2.129"
-serde-wasm-bindgen = "0.6"
-js-sys = "0.3"
 console_error_panic_hook = "0.1"
 uniffi = "0.32"
 napi = { version = "3", default-features = false }

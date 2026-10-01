@@ -79,50 +79,79 @@ pub trait FromJson: Sized {
 }
 
 /// JSON 对象的字段读取器：逐个取走字段；`null` 与缺省等同（与 serde 的 `Option` 一致），未知字段忽略。
+/// 读取失败时记下第一条错误并返回缺省值，读完后由 [`Fields::finish`] 统一返回。
 ///
 /// @error 类型不符：`字段 <key> 应为<类型>`；必填字段缺失：`缺少字段 <key>`；嵌套对象的错误前加 `<key>.`。
-struct Fields(Map<String, Value>);
+/// @why 不在每个字段上 `?` 提前返回：每个提前返回点都要生成一份"释放已读字段"的代码（WASM 体积）。
+struct Fields {
+    map: Map<String, Value>,
+    error: Option<String>,
+}
 
 impl Fields {
     fn new(value: Value) -> Result<Self, String> {
         match value {
-            Value::Object(map) => Ok(Fields(map)),
+            Value::Object(map) => Ok(Fields { map, error: None }),
             _ => Err("应为对象".to_owned()),
         }
     }
 
+    /// 记录错误（只保留第一条）。
+    fn fail(&mut self, message: String) {
+        if self.error.is_none() {
+            self.error = Some(message);
+        }
+    }
+
+    /// 读完所有字段后调用：有错误时返回第一条，否则返回 `value`。
+    fn finish<T>(self, value: T) -> Result<T, String> {
+        match self.error {
+            Some(e) => Err(e),
+            None => Ok(value),
+        }
+    }
+
     fn take(&mut self, key: &str) -> Option<Value> {
-        self.0.remove(key).filter(|v| !v.is_null())
+        self.map.remove(key).filter(|v| !v.is_null())
     }
 
-    fn expect<T>(&mut self, key: &str, kind: &str, read: impl FnOnce(Value) -> Option<T>) -> Result<Option<T>, String> {
-        self.take(key).map(|v| read(v).ok_or_else(|| format!("字段 {key} 应为{kind}"))).transpose()
+    fn expect<T>(&mut self, key: &str, kind: &str, read: impl FnOnce(Value) -> Option<T>) -> Option<T> {
+        let read = read(self.take(key)?);
+        if read.is_none() {
+            self.fail(format!("字段 {key} 应为{kind}"));
+        }
+        read
     }
 
-    fn string(&mut self, key: &str) -> Result<Option<String>, String> {
+    fn string(&mut self, key: &str) -> Option<String> {
         self.expect(key, "字符串", |v| match v {
             Value::String(s) => Some(s),
             _ => None,
         })
     }
 
-    fn required_string(&mut self, key: &str) -> Result<String, String> {
-        self.string(key)?.ok_or_else(|| format!("缺少字段 {key}"))
+    /// 缺失时记录错误并返回空字符串。
+    fn required_string(&mut self, key: &str) -> String {
+        let Some(s) = self.string(key) else {
+            self.fail(format!("缺少字段 {key}"));
+            return String::new();
+        };
+        s
     }
 
-    fn u64(&mut self, key: &str) -> Result<Option<u64>, String> {
+    fn u64(&mut self, key: &str) -> Option<u64> {
         self.expect(key, "非负整数", |v| v.as_u64())
     }
 
-    fn f64(&mut self, key: &str) -> Result<Option<f64>, String> {
+    fn f64(&mut self, key: &str) -> Option<f64> {
         self.expect(key, "数字", |v| v.as_f64())
     }
 
-    fn bool(&mut self, key: &str) -> Result<Option<bool>, String> {
+    fn bool(&mut self, key: &str) -> Option<bool> {
         self.expect(key, "布尔值", |v| v.as_bool())
     }
 
-    fn strings(&mut self, key: &str) -> Result<Option<Vec<String>>, String> {
+    fn strings(&mut self, key: &str) -> Option<Vec<String>> {
         self.expect(key, "字符串数组", |v| match v {
             Value::Array(items) => items
                 .into_iter()
@@ -142,22 +171,45 @@ impl Fields {
 
     /// 区分缺省（`None`）与显式 `null`（`Some(None)`）。
     fn nullable(&mut self, key: &str) -> Option<Option<Value>> {
-        self.0.remove(key).map(|v| (!v.is_null()).then_some(v))
+        self.map.remove(key).map(|v| (!v.is_null()).then_some(v))
     }
 
     /// 嵌套对象，由 `T` 读取。
-    fn object<T: FromJson>(&mut self, key: &str) -> Result<Option<T>, String> {
-        self.take(key).map(|v| T::from_json(v).map_err(|e| format!("{key}.{e}"))).transpose()
+    fn object<T: FromJson>(&mut self, key: &str) -> Option<T> {
+        match T::from_json(self.take(key)?) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.fail(format!("{key}.{e}"));
+                None
+            }
+        }
     }
 
     /// 协议类型（枚举、`AppOverview`、`WakeDescriptor`）：沿用其 serde 定义。
-    fn protocol<T: DeserializeOwned>(&mut self, key: &str) -> Result<Option<T>, String> {
-        self.take(key).map(|v| protocol_value(v).map_err(|e| format!("字段 {key}：{e}"))).transpose()
+    fn protocol<T: DeserializeOwned>(&mut self, key: &str) -> Option<T> {
+        let value = self.take(key)?;
+        self.protocol_value(key, value)
     }
-}
 
-fn protocol_value<T: DeserializeOwned>(value: Value) -> Result<T, String> {
-    serde_json::from_value(value).map_err(|e| e.to_string())
+    fn protocol_value<T: DeserializeOwned>(&mut self, key: &str, value: Value) -> Option<T> {
+        match serde_json::from_value(value) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.fail(format!("字段 {key}：{e}"));
+                None
+            }
+        }
+    }
+
+    /// 字符串枚举：`parse` 不认识时记录 `<无效说明>："<值>"`。
+    fn keyword<T>(&mut self, key: &str, invalid: &str, parse: fn(&str) -> Option<T>) -> Option<T> {
+        let s = self.string(key)?;
+        let parsed = parse(&s);
+        if parsed.is_none() {
+            self.fail(format!("{invalid}：\"{s}\""));
+        }
+        parsed
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -174,11 +226,12 @@ pub struct JsReconnect {
 impl FromJson for JsReconnect {
     fn from_json(value: Value) -> Result<Self, String> {
         let mut f = Fields::new(value)?;
-        Ok(JsReconnect {
-            initial_delay_ms: f.u64("initialDelayMs")?,
-            max_delay_ms: f.u64("maxDelayMs")?,
-            multiplier: f.f64("multiplier")?,
-        })
+        let r = JsReconnect {
+            initial_delay_ms: f.u64("initialDelayMs"),
+            max_delay_ms: f.u64("maxDelayMs"),
+            multiplier: f.f64("multiplier"),
+        };
+        f.finish(r)
     }
 }
 
@@ -192,11 +245,12 @@ pub struct JsHeartbeat {
 impl FromJson for JsHeartbeat {
     fn from_json(value: Value) -> Result<Self, String> {
         let mut f = Fields::new(value)?;
-        Ok(JsHeartbeat {
-            interval_ms: f.u64("intervalMs")?,
-            timeout_ms: f.u64("timeoutMs")?,
-            hidden_timeout_ms: f.u64("hiddenTimeoutMs")?,
-        })
+        let h = JsHeartbeat {
+            interval_ms: f.u64("intervalMs"),
+            timeout_ms: f.u64("timeoutMs"),
+            hidden_timeout_ms: f.u64("hiddenTimeoutMs"),
+        };
+        f.finish(h)
     }
 }
 
@@ -253,20 +307,15 @@ pub struct JsLifecycle {
 impl FromJson for JsLifecycle {
     fn from_json(value: Value) -> Result<Self, String> {
         let mut f = Fields::new(value)?;
-        let mode = f.string("mode")?;
-        let residency = f.string("residency")?;
-        Ok(JsLifecycle {
-            mode: mode
-                .map(|s| JsLifecycleMode::parse(&s).ok_or_else(|| format!("无效的生命周期模式：\"{s}\"")))
-                .transpose()?,
-            idle_timeout_ms: f.u64("idleTimeoutMs")?,
-            hidden_idle_timeout_ms: f.u64("hiddenIdleTimeoutMs")?,
-            grace_ms: f.u64("graceMs")?,
-            residency: residency
-                .map(|s| JsResidency::parse(&s).ok_or_else(|| format!("无效的驻留策略：\"{s}\"")))
-                .transpose()?,
-            wake: f.protocol("wake")?,
-        })
+        let l = JsLifecycle {
+            mode: f.keyword("mode", "无效的生命周期模式", JsLifecycleMode::parse),
+            residency: f.keyword("residency", "无效的驻留策略", JsResidency::parse),
+            idle_timeout_ms: f.u64("idleTimeoutMs"),
+            hidden_idle_timeout_ms: f.u64("hiddenIdleTimeoutMs"),
+            grace_ms: f.u64("graceMs"),
+            wake: f.protocol("wake"),
+        };
+        f.finish(l)
     }
 }
 
@@ -324,30 +373,34 @@ pub struct JsConfig {
 impl FromJson for JsConfig {
     fn from_json(value: Value) -> Result<Self, String> {
         let mut f = Fields::new(value)?;
-        let max_concurrent_calls = f
-            .u64("maxConcurrentCalls")?
-            .map(|n| usize::try_from(n).map_err(|_| "字段 maxConcurrentCalls 超出范围".to_owned()))
-            .transpose()?;
-        Ok(JsConfig {
-            app_id: f.required_string("appId")?,
-            app_name: f.required_string("appName")?,
-            instance_id: f.required_string("instanceId")?,
-            client_kind: f.protocol("clientKind")?,
-            sdk_version: f.string("sdkVersion")?,
-            app_version: f.string("appVersion")?,
-            origin: f.string("origin")?,
-            instance_title: f.string("instanceTitle")?,
-            instance_url: f.string("instanceUrl")?,
-            token: f.string("token")?,
-            launch_token: f.string("launchToken")?,
-            reconnect: f.object("reconnect")?,
-            heartbeat: f.object("heartbeat")?,
+        let max_concurrent_calls = f.u64("maxConcurrentCalls").and_then(|n| {
+            let n = usize::try_from(n).ok();
+            if n.is_none() {
+                f.fail("字段 maxConcurrentCalls 超出范围".to_owned());
+            }
+            n
+        });
+        let c = JsConfig {
+            app_id: f.required_string("appId"),
+            app_name: f.required_string("appName"),
+            instance_id: f.required_string("instanceId"),
+            client_kind: f.protocol("clientKind"),
+            sdk_version: f.string("sdkVersion"),
+            app_version: f.string("appVersion"),
+            origin: f.string("origin"),
+            instance_title: f.string("instanceTitle"),
+            instance_url: f.string("instanceUrl"),
+            token: f.string("token"),
+            launch_token: f.string("launchToken"),
+            reconnect: f.object("reconnect"),
+            heartbeat: f.object("heartbeat"),
             max_concurrent_calls,
-            resource_update_throttle_ms: f.u64("resourceUpdateThrottleMs")?,
-            overview: f.protocol("overview")?,
-            handshake_timeout_ms: f.u64("handshakeTimeoutMs")?,
-            lifecycle: f.object("lifecycle")?,
-        })
+            resource_update_throttle_ms: f.u64("resourceUpdateThrottleMs"),
+            overview: f.protocol("overview"),
+            handshake_timeout_ms: f.u64("handshakeTimeoutMs"),
+            lifecycle: f.object("lifecycle"),
+        };
+        f.finish(c)
     }
 }
 
@@ -422,16 +475,23 @@ pub struct JsToolDef {
 impl FromJson for JsToolDef {
     fn from_json(value: Value) -> Result<Self, String> {
         let mut f = Fields::new(value)?;
-        Ok(JsToolDef {
-            name: f.required_string("name")?,
-            description: f.string("description")?.unwrap_or_default(),
-            input_schema: f.value("inputSchema").ok_or_else(|| "缺少字段 inputSchema".to_owned())?,
-            risk: f.protocol("risk")?,
-            activation: f.protocol("activation")?,
-            title: f.string("title")?,
-            enabled: f.bool("enabled")?,
-            scope: f.f64("scope")?,
-        })
+        let name = f.required_string("name");
+        let description = f.string("description").unwrap_or_default();
+        let input_schema = f.value("inputSchema").unwrap_or_else(|| {
+            f.fail("缺少字段 inputSchema".to_owned());
+            Value::Null
+        });
+        let d = JsToolDef {
+            name,
+            description,
+            input_schema,
+            risk: f.protocol("risk"),
+            activation: f.protocol("activation"),
+            title: f.string("title"),
+            enabled: f.bool("enabled"),
+            scope: f.f64("scope"),
+        };
+        f.finish(d)
     }
 }
 
@@ -467,22 +527,26 @@ impl FromJson for JsToolUpdate {
         let activation = match f.nullable("activation") {
             None => None,
             Some(None) => Some(None),
-            Some(Some(v)) => Some(Some(protocol_value(v).map_err(|e| format!("字段 activation：{e}"))?)),
+            Some(Some(v)) => f.protocol_value("activation", v).map(Some),
         };
         let title = match f.nullable("title") {
             None => None,
             Some(None) => Some(None),
             Some(Some(Value::String(s))) => Some(Some(s)),
-            Some(Some(_)) => return Err("字段 title 应为字符串".to_owned()),
+            Some(Some(_)) => {
+                f.fail("字段 title 应为字符串".to_owned());
+                None
+            }
         };
-        Ok(JsToolUpdate {
-            description: f.string("description")?,
+        let u = JsToolUpdate {
+            description: f.string("description"),
             input_schema: f.value("inputSchema"),
-            risk: f.protocol("risk")?,
+            risk: f.protocol("risk"),
             activation,
             title,
-            enabled: f.bool("enabled")?,
-        })
+            enabled: f.bool("enabled"),
+        };
+        f.finish(u)
     }
 }
 
@@ -511,12 +575,13 @@ pub struct JsResourceDef {
 impl FromJson for JsResourceDef {
     fn from_json(value: Value) -> Result<Self, String> {
         let mut f = Fields::new(value)?;
-        Ok(JsResourceDef {
-            name: f.required_string("name")?,
-            description: f.string("description")?.unwrap_or_default(),
-            mime_type: f.string("mimeType")?,
-            scope: f.f64("scope")?,
-        })
+        let d = JsResourceDef {
+            name: f.required_string("name"),
+            description: f.string("description").unwrap_or_default(),
+            mime_type: f.string("mimeType"),
+            scope: f.f64("scope"),
+        };
+        f.finish(d)
     }
 }
 
@@ -546,11 +611,16 @@ pub struct JsToolError {
 impl FromJson for JsToolError {
     fn from_json(value: Value) -> Result<Self, String> {
         let mut f = Fields::new(value)?;
-        Ok(JsToolError {
-            kind: f.protocol("kind")?.ok_or_else(|| "缺少字段 kind".to_owned())?,
-            message: f.string("message")?.unwrap_or_default(),
-            details: f.value("details"),
-        })
+        let kind = f.protocol("kind");
+        let message = f.string("message").unwrap_or_default();
+        let details = f.value("details");
+        match kind {
+            Some(kind) => f.finish(JsToolError { kind, message, details }),
+            None => {
+                f.fail("缺少字段 kind".to_owned());
+                Err(f.error.unwrap_or_default())
+            }
+        }
     }
 }
 
@@ -565,7 +635,8 @@ pub struct JsCallOutcome {
 impl FromJson for JsCallOutcome {
     fn from_json(value: Value) -> Result<Self, String> {
         let mut f = Fields::new(value)?;
-        Ok(JsCallOutcome { data: f.value("data"), state_hints: f.strings("stateHints")?, error: f.object("error")? })
+        let o = JsCallOutcome { data: f.value("data"), state_hints: f.strings("stateHints"), error: f.object("error") };
+        f.finish(o)
     }
 }
 
@@ -985,6 +1056,12 @@ mod tests {
         assert_eq!(err(with("reconnect", json!({ "multiplier": true }))), "reconnect.字段 multiplier 应为数字");
         assert!(err(with("clientKind", json!("tv"))).starts_with("字段 clientKind："));
         assert_eq!(err(with("lifecycle", json!({ "residency": "x" }))), "lifecycle.无效的驻留策略：\"x\"");
+        // 多处出错时只报读取顺序上的第一条
+        assert_eq!(
+            err(json!({ "appId": 1, "appName": 2, "instanceId": "i", "heartbeat": { "timeoutMs": "x" } })),
+            "字段 appId 应为字符串"
+        );
+        assert_eq!(err(with("lifecycle", json!({ "mode": 1, "residency": "x" }))), "lifecycle.字段 mode 应为字符串");
         // null 等同缺省；未知字段忽略
         let c = JsConfig::from_json(with("token", Value::Null)).unwrap();
         assert_eq!(c.token, None);

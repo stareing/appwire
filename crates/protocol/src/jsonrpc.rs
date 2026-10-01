@@ -3,15 +3,69 @@
 //! 只负责区分请求 / 通知 / 响应并保留原始 `params` / `result`，
 //! 具体参数类型由调用方按方法名用 [`serde_json::from_value`] 解析。
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Deserializer, Unexpected, Visitor};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value, json};
 
 /// 请求 ID：JSON-RPC 允许数字或字符串。
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(untagged)]
+///
+/// @why 序列化 / 反序列化手写而不用 `#[serde(untagged)]`：untagged 会链接 serde 的 `Content`
+/// 缓冲反序列化（WASM 中约数 KB）；语义相同——数字须在 i64 范围内，其余类型报错。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum RequestId {
     Number(i64),
     String(String),
+}
+
+impl Serialize for RequestId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            RequestId::Number(n) => serializer.serialize_i64(*n),
+            RequestId::String(s) => serializer.serialize_str(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RequestId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(RequestIdVisitor)
+    }
+}
+
+struct RequestIdVisitor;
+
+impl Visitor<'_> for RequestIdVisitor {
+    type Value = RequestId;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a number (i64) or string request id")
+    }
+
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<RequestId, E> {
+        Ok(RequestId::Number(v))
+    }
+
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<RequestId, E> {
+        i64::try_from(v).map(RequestId::Number).map_err(|_| E::invalid_value(Unexpected::Unsigned(v), &self))
+    }
+
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<RequestId, E> {
+        Ok(RequestId::String(v.to_owned()))
+    }
+
+    fn visit_string<E: de::Error>(self, v: String) -> Result<RequestId, E> {
+        Ok(RequestId::String(v))
+    }
+}
+
+impl RequestId {
+    /// @why 直接构造而不经 `serde_json::to_value(..).expect(..)`：免去不可能失败的错误分支。
+    fn to_value(&self) -> Value {
+        match self {
+            RequestId::Number(n) => Value::from(*n),
+            RequestId::String(s) => Value::String(s.clone()),
+        }
+    }
 }
 
 impl From<i64> for RequestId {
@@ -180,7 +234,7 @@ impl Message {
         obj.insert("jsonrpc".into(), json!("2.0"));
         match self {
             Message::Request(r) => {
-                obj.insert("id".into(), serde_json::to_value(&r.id).expect("id serializes"));
+                obj.insert("id".into(), r.id.to_value());
                 obj.insert("method".into(), Value::String(r.method.clone()));
                 if !r.params.is_null() {
                     obj.insert("params".into(), r.params.clone());
@@ -193,7 +247,7 @@ impl Message {
                 }
             }
             Message::Response(r) => {
-                obj.insert("id".into(), serde_json::to_value(&r.id).expect("id serializes"));
+                obj.insert("id".into(), r.id.to_value());
                 match &r.outcome {
                     Ok(result) => {
                         obj.insert("result".into(), result.clone());
@@ -237,6 +291,28 @@ mod tests {
         assert!(Message::parse(r#"{"jsonrpc":"2.0","id":1}"#).is_err());
         assert!(Message::parse(r#"{"jsonrpc":"2.0","method":5}"#).is_err());
         assert!(Message::parse("not json").is_err());
+    }
+
+    #[test]
+    fn request_id_accepts_i64_and_string_only() {
+        for (text, want) in [
+            ("7", Some(RequestId::Number(7))),
+            ("-3", Some(RequestId::Number(-3))),
+            (r#""abc""#, Some(RequestId::from("abc"))),
+            ("9223372036854775808", None),
+            ("1.5", None),
+            ("null", None),
+            ("[1]", None),
+            ("{}", None),
+        ] {
+            assert_eq!(serde_json::from_str::<RequestId>(text).ok(), want, "{text}");
+            let value: Value = serde_json::from_str(text).unwrap();
+            assert_eq!(serde_json::from_value::<RequestId>(value).ok(), want, "{text}");
+        }
+        assert_eq!(serde_json::to_string(&RequestId::Number(-3)).unwrap(), "-3");
+        assert_eq!(serde_json::to_string(&RequestId::from("a")).unwrap(), r#""a""#);
+        assert_eq!(RequestId::Number(5).to_value(), json!(5));
+        assert_eq!(RequestId::from("x").to_value(), json!("x"));
     }
 
     #[test]
