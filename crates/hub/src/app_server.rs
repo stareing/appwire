@@ -5,12 +5,14 @@
 //!
 //! 每个连接一个任务：读循环在本任务中执行，写操作通过 [`Connection`] 的通道交给独立的写任务。
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use app_mcp_manifest::is_reserved_app_id;
 use app_mcp_protocol::{
-    ErrorKind, HelloParams, HelloResult, Message, Notification, PROTOCOL_VERSION,
+    ErrorKind, HelloParams, HelloResult, MUX_MAX_CHANNELS, MUX_VERSION, Message, MuxFrame, MuxParams,
+    MuxResult, Notification, PROTOCOL_VERSION,
     PairingResultParams, PairingStatus, Request, ResourceUpdatedParams, ResourcesChangedParams,
     ResourcesSyncParams, RpcError, SleepParams, SleepResult, ToolError, ToolsChangedParams,
     ToolsSyncParams, Visibility, VisibilityParams, is_valid_app_id, method,
@@ -20,7 +22,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, interval_at, sleep_until};
 use tokio_tungstenite::tungstenite::handshake::server::{
     Callback, ErrorResponse, Request as HttpRequest, Response as HttpResponse,
@@ -142,11 +144,27 @@ where
             return;
         }
     };
-    let (mut sink, mut stream) = ws.split();
+    let (sink, stream) = ws.split();
+    let mut frames = text_frames(stream);
+
+    // 第一条消息决定连接模式：`app/mux` → 多路复用（spec/protocol.md 第 9 节），否则为单实例连接。
+    let first = match tokio::time::timeout(shared.config.idle_timeout, frames.next()).await {
+        Ok(Some(text)) => text,
+        Ok(None) => return,
+        Err(_) => {
+            tracing::debug!(%peer, "连接建立后没有收到任何消息，断开");
+            return;
+        }
+    };
+    if let Some(req) = mux_request(&first) {
+        run_mux(shared, sink, frames, origin, peer, req).await;
+        return;
+    }
+
     let (conn, mut rx) = Connection::new(shared.next_id());
     tracing::debug!(%peer, conn = conn.id, ?origin, "新连接");
-
     let writer = tokio::spawn(async move {
+        let mut sink = sink;
         while let Some(out) = rx.recv().await {
             match out {
                 Outgoing::Text(text) => {
@@ -159,7 +177,213 @@ where
         }
         let _ = sink.close().await;
     });
+    let inbound = futures::stream::once(std::future::ready(first)).chain(frames);
+    run_session(shared, conn, inbound, origin, peer).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await;
+}
 
+/// WebSocket 消息流 → 文本消息流：Close 帧或读取出错时结束，二进制帧记录警告后忽略。
+fn text_frames<St>(stream: St) -> futures::stream::BoxStream<'static, String>
+where
+    St: futures::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>> + Send + 'static,
+{
+    stream
+        .take_while(|m| {
+            let go = match m {
+                Ok(m) => !m.is_close(),
+                Err(e) => {
+                    tracing::debug!("读取失败：{e}");
+                    false
+                }
+            };
+            std::future::ready(go)
+        })
+        .filter_map(|m| {
+            std::future::ready(match m {
+                Ok(WsMessage::Text(text)) => Some(text.as_str().to_owned()),
+                Ok(WsMessage::Binary(_)) => {
+                    tracing::warn!("忽略二进制消息");
+                    None
+                }
+                _ => None,
+            })
+        })
+        .boxed()
+}
+
+/// 连接上的第一条消息是否为 `app/mux` 请求。
+fn mux_request(text: &str) -> Option<Request> {
+    match Message::parse(text) {
+        Ok(Message::Request(req)) if req.method == method::MUX => Some(req),
+        _ => None,
+    }
+}
+
+/// 多路复用连接（spec/protocol.md 第 9 节）：每个通道各跑一个 [`run_session`]，与独立连接完全相同；
+/// 本函数只负责拆帧 / 装帧、通道开关与连接级空闲超时。
+async fn run_mux<Sk>(
+    shared: Arc<HubShared>,
+    mut sink: Sk,
+    mut frames: futures::stream::BoxStream<'static, String>,
+    origin: Option<String>,
+    peer: Peer,
+    req: Request,
+) where
+    Sk: futures::Sink<WsMessage> + Unpin + Send + 'static,
+{
+    let params: MuxParams = match parse_params(&req.params) {
+        Ok(p) => p,
+        Err(e) => {
+            let err = RpcError::invalid_params(format!("app/mux 参数无效：{e}"));
+            let _ = sink.send(WsMessage::text(Message::error(req.id, err).to_json())).await;
+            let _ = sink.close().await;
+            return;
+        }
+    };
+    let max_channels = MUX_MAX_CHANNELS;
+    let result = MuxResult { version: params.version.clamp(1, MUX_VERSION), max_channels };
+    let reply = Message::result(req.id, serde_json::to_value(result).unwrap_or(Value::Null));
+    if sink.send(WsMessage::text(reply.to_json())).await.is_err() {
+        return;
+    }
+    tracing::debug!(%peer, ?origin, "多路复用连接");
+
+    // 所有通道的出站帧汇入同一个写任务。
+    let (sock_tx, mut sock_rx) = mpsc::unbounded_channel::<String>();
+    let writer = tokio::spawn(async move {
+        while let Some(text) = sock_rx.recv().await {
+            if sink.send(WsMessage::text(text)).await.is_err() {
+                break;
+            }
+        }
+        let _ = sink.close().await;
+    });
+
+    // 通道号 → (代次, 入站发送端)。代次用于区分同号通道的先后两次打开。
+    let mut channels: HashMap<u32, (u64, mpsc::UnboundedSender<String>)> = HashMap::new();
+    let (ended_tx, mut ended_rx) = mpsc::unbounded_channel::<(u32, u64)>();
+    let idle = shared.config.hidden_idle_timeout.max(shared.config.idle_timeout);
+    let mut last_rx = Instant::now();
+
+    loop {
+        tokio::select! {
+            text = frames.next() => {
+                let Some(text) = text else { break };
+                last_rx = Instant::now();
+                let frame = match MuxFrame::parse(&text) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!(%peer, "无法解析的多路复用帧：{e}");
+                        continue;
+                    }
+                };
+                match frame {
+                    MuxFrame::Open { ch } => {
+                        if ch == 0 || channels.contains_key(&ch) {
+                            tracing::warn!(%peer, ch, "通道号无效或已打开，忽略 open");
+                            continue;
+                        }
+                        if channels.len() >= max_channels as usize {
+                            let _ = sock_tx.send(MuxFrame::close_text(ch, Some("通道数已达上限")));
+                            continue;
+                        }
+                        let (in_tx, in_rx) = mpsc::unbounded_channel::<String>();
+                        let (conn, out_rx) = Connection::new(shared.next_id());
+                        tracing::debug!(%peer, ch, conn = conn.id, ?origin, "新通道");
+                        channels.insert(ch, (conn.id, in_tx));
+                        let ctx = ChannelCtx {
+                            shared: shared.clone(),
+                            sock_tx: sock_tx.clone(),
+                            ended_tx: ended_tx.clone(),
+                            origin: origin.clone(),
+                            peer,
+                        };
+                        tokio::spawn(run_channel(ctx, ch, conn, out_rx, in_rx));
+                    }
+                    MuxFrame::Msg { ch, msg } => match channels.get(&ch) {
+                        Some((_, tx)) => {
+                            let _ = tx.send(msg.get().to_owned());
+                        }
+                        None => tracing::debug!(%peer, ch, "发往未打开通道的消息，丢弃"),
+                    },
+                    MuxFrame::Close { ch, .. } => {
+                        // 丢弃发送端：该通道的会话读到流结束，按断开处理。
+                        channels.remove(&ch);
+                    }
+                }
+            }
+            Some((ch, generation)) = ended_rx.recv() => {
+                if channels.get(&ch).is_some_and(|(g, _)| *g == generation) {
+                    channels.remove(&ch);
+                }
+            }
+            // 没有通道时才计连接级空闲；有通道时由各通道自己的心跳与超时负责。
+            _ = sleep_until(last_rx + idle), if channels.is_empty() => {
+                tracing::debug!(%peer, "多路复用连接空闲，断开");
+                break;
+            }
+        }
+    }
+    // 连接断开：丢弃全部入站发送端，各通道会话随之结束并各自清理。
+    channels.clear();
+    drop(sock_tx);
+    drop(ended_tx);
+    while ended_rx.recv().await.is_some() {}
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await;
+}
+
+/// 多路复用连接上所有通道共用的上下文。
+struct ChannelCtx {
+    shared: Arc<HubShared>,
+    /// 连接写任务的输入（已装帧的文本）。
+    sock_tx: mpsc::UnboundedSender<String>,
+    /// 通道结束时报告 `(通道号, 代次)`。
+    ended_tx: mpsc::UnboundedSender<(u32, u64)>,
+    origin: Option<String>,
+    peer: Peer,
+}
+
+/// 一个多路复用通道：出站消息装帧后交给连接的写任务，会话结束时发送 `close` 帧。
+async fn run_channel(
+    ctx: ChannelCtx,
+    ch: u32,
+    conn: Arc<Connection>,
+    mut out_rx: mpsc::UnboundedReceiver<Outgoing>,
+    in_rx: mpsc::UnboundedReceiver<String>,
+) {
+    let ChannelCtx { shared, sock_tx, ended_tx, origin, peer } = ctx;
+    let generation = conn.id;
+    let forward = {
+        let sock_tx = sock_tx.clone();
+        tokio::spawn(async move {
+            while let Some(out) = out_rx.recv().await {
+                match out {
+                    Outgoing::Text(text) => match MuxFrame::wrap(ch, &text) {
+                        Ok(frame) => {
+                            if sock_tx.send(frame).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => tracing::warn!(ch, "无法装帧的出站消息：{e}"),
+                    },
+                    Outgoing::Close => break,
+                }
+            }
+            let _ = sock_tx.send(MuxFrame::close_text(ch, None));
+        })
+    };
+    let inbound = futures::stream::unfold(in_rx, |mut rx| async move { rx.recv().await.map(|t| (t, rx)) }).boxed();
+    run_session(shared, conn, inbound, origin, peer).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), forward).await;
+    let _ = ended_tx.send((ch, generation));
+}
+
+/// 一个实例会话（独立连接或多路复用的一个通道）：握手、消息分发、心跳、空闲超时与断开清理。
+/// `inbound` 结束即视为连接断开；会话结束时调用 [`Connection::close`]，由写端负责关闭底层连接 / 通道。
+async fn run_session<I>(shared: Arc<HubShared>, conn: Arc<Connection>, mut inbound: I, origin: Option<String>, peer: Peer)
+where
+    I: futures::Stream<Item = String> + Unpin,
+{
     let cfg = &shared.config;
     let mut ping = interval_at(Instant::now() + cfg.ping_interval, cfg.ping_interval);
     let mut last_rx = Instant::now();
@@ -182,32 +406,18 @@ where
             cfg.idle_timeout
         };
         tokio::select! {
-            msg = stream.next() => {
-                let Some(msg) = msg else { break };
-                let msg = match msg {
-                    Ok(m) => m,
-                    Err(e) => {
-                        tracing::debug!(conn = conn.id, "读取失败：{e}");
-                        break;
-                    }
-                };
+            text = inbound.next() => {
+                let Some(text) = text else { break };
                 last_rx = Instant::now();
-                match msg {
-                    WsMessage::Text(text) => {
-                        let pending = pairing_rx.is_some();
-                        match handle_text(&shared, &conn, registered.as_ref(), pending, origin.as_deref(), peer, text.as_str()) {
-                            Flow::Continue => {}
-                            Flow::Close => break,
-                            Flow::Paired(r) => registered = Some(r),
-                            Flow::Pending(p) => {
-                                pairing = Some((p.hello, p.token));
-                                pairing_rx = Some(p.rx);
-                            }
-                        }
+                let pending = pairing_rx.is_some();
+                match handle_text(&shared, &conn, registered.as_ref(), pending, origin.as_deref(), peer, &text) {
+                    Flow::Continue => {}
+                    Flow::Close => break,
+                    Flow::Paired(r) => registered = Some(r),
+                    Flow::Pending(p) => {
+                        pairing = Some((p.hello, p.token));
+                        pairing_rx = Some(p.rx);
                     }
-                    WsMessage::Close(_) => break,
-                    WsMessage::Binary(_) => tracing::warn!(conn = conn.id, "忽略二进制消息"),
-                    _ => {}
                 }
             }
             approved = async {
@@ -267,7 +477,6 @@ where
     }
     conn.fail_all();
     conn.close();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await;
 }
 
 fn parse_params<T: DeserializeOwned>(params: &Value) -> Result<T, String> {

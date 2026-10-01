@@ -23,6 +23,9 @@ import type {
 import { describeParseError, isZodLike, toJsonSchema } from './schema'
 import { type BroadcastChannelFactory, InstanceGuard } from './instance-guard'
 import { checkHandlerOrLoad, loadHandler } from './lazy'
+import { MuxChannel, type MuxLink } from './mux/link'
+import type { ChannelFailure } from './mux/protocol'
+import { type ConnectionBlock, NetworkGuard, type PermissionState, type PermissionsLike } from './network-guard'
 import { loadInstanceId, loadToken, saveToken } from './storage'
 import { attachToolHub, type ToolHub, type ToolHubEvent, type ToolInfo, type ToolView } from './tool-hub'
 import { ToolCallError } from './types'
@@ -86,6 +89,17 @@ export interface DriverDeps {
   createBroadcastChannel?: BroadcastChannelFactory
   /** 冲突探测的等待窗口（毫秒），默认 60。 */
   instanceProbeMs?: number
+  /**
+   * 共享连接（见 shared-connection.ts）：首次连接时调用一次，返回 undefined 表示不可用。
+   * 缺省不共享（每个实例直接连接）；`createAppMcp` 在 `sharedConnection !== false` 时传入。
+   */
+  createSharedLink?: (cspBlocked: (url: string) => boolean) => MuxLink | undefined
+  /** 本地网络访问权限查询，默认 `navigator.permissions`。 */
+  permissions?: PermissionsLike
+  /** 默认 `globalThis.isSecureContext`。 */
+  isSecureContext?: boolean
+  /** 被本地网络访问限制拦截时重新探测的间隔，默认 60000 毫秒。 */
+  blockedRetryMs?: number
 }
 
 const defaultLogger: Logger = {
@@ -247,6 +261,20 @@ export class AppMcpDriver implements AppMcp {
   private readonly pageListeners: Array<() => void> = []
   private parseWake: (args: string) => string | undefined = parseWakeTokenJs
 
+  // ---- 传输 ----
+  /** 浏览器拦截诊断（LNA / CSP）。 */
+  private readonly net: NetworkGuard
+  /** 共享连接：undefined 尚未创建，null 不可用。 */
+  private link: MuxLink | null | undefined
+  /** 共享连接在本页不可用（Host 不支持多路复用、SharedWorker 无法启动）：改为直接连接。 */
+  private sharedUnavailable = false
+  /** 连接被浏览器拦截：核心停在 `connecting`（无定时器），等待授权变化或 `wake()` 重试。 */
+  private blocked: ConnectionBlock | undefined
+  /** 当前连接是否已打开（区分"连接失败"与"连接断开"）。 */
+  private wsOpened = false
+  /** 拦截状态下的低频重新探测（LNA 判断依据是旁证，不能确定时不永久放弃）。 */
+  private blockedTimer: ReturnType<typeof setTimeout> | undefined
+
   constructor(options: AppMcpOptions, deps: DriverDeps) {
     if (!APP_ID_RE.test(options.appId)) {
       throw new Error(`无效的 appId ${JSON.stringify(options.appId)}：应匹配 [a-z][a-z0-9-]{0,62}`)
@@ -275,6 +303,18 @@ export class AppMcpDriver implements AppMcp {
     this.visibility = watchVisibility((s) => this.onVisibility(s), win, doc)
     this.lastVisibility = this.visibility.current().visibility
     this.watchPage(win, doc)
+    if (deps.createSharedLink === undefined) this.link = null
+    const nav = (globalThis as { navigator?: { permissions?: PermissionsLike } }).navigator
+    this.net = new NetworkGuard(
+      this.hostUrl,
+      {
+        pageUrl: this.currentHref(),
+        isSecureContext: deps.isSecureContext ?? (globalThis as { isSecureContext?: boolean }).isSecureContext,
+        permissions: deps.permissions ?? nav?.permissions,
+        doc,
+      },
+      (state) => this.onPermissionChange(state),
+    )
 
     this.hub = {
       list: () => [...this.toolNames.values()].map((rec) => this.toolView(rec)),
@@ -321,6 +361,7 @@ export class AppMcpDriver implements AppMcp {
   }
 
   wake(): void {
+    if (this.retryBlocked()) return
     this.lifecycleOp((c) => c.wake(this.now()))
   }
 
@@ -329,6 +370,7 @@ export class AppMcpDriver implements AppMcp {
   }
 
   connectNow(): void {
+    if (this.retryBlocked()) return
     this.lifecycleOp((c) => c.connectNow(this.now()))
   }
 
@@ -357,6 +399,11 @@ export class AppMcpDriver implements AppMcp {
     this.visibility.dispose()
     for (const off of this.pageListeners.splice(0)) off()
     this.guard.dispose()
+    this.net.dispose()
+    this.blocked = undefined
+    clearTimeout(this.blockedTimer)
+    this.link?.dispose()
+    this.link = null
     for (const rec of [...this.toolNames.values()]) this.forgetTool(rec)
     this.hubListeners.clear()
     this.hub.yieldable.clear()
@@ -606,6 +653,11 @@ export class AppMcpDriver implements AppMcp {
   }
 
   private mapState(state: CoreState): ConnectionState {
+    if (this.blocked) {
+      // 被拦截时核心停在 connecting / waking；其他状态（stopped 等）说明已不再连接
+      if (state.status === 'connecting' || state.status === 'waking') return blockedState(this.blocked)
+      this.blocked = undefined
+    }
     if (state.status === 'backoff') {
       return { status: 'backoff', retryAt: Math.round(this.wallNow() + (state.retryAt - this.now())) }
     }
@@ -629,35 +681,157 @@ export class AppMcpDriver implements AppMcp {
 
   private openSocket(): void {
     this.closeSocket()
-    let ws: WebSocketLike
-    try {
-      const factory =
-        this.deps.createWebSocket ?? ((url: string) => new WebSocket(url) as unknown as WebSocketLike)
-      ws = factory(this.hostUrl)
-    } catch (e) {
-      this.log.warn(`[app-mcp] 无法连接 ${this.hostUrl}：${errorMessage(e)}`)
-      queueMicrotask(() => this.input((c) => c.handleDisconnected(this.now())))
+    if (this.blocked) return
+    // 已观察到 CSP 拦截：不再尝试
+    const pre = this.net.cspBlocks(this.hostUrl) ? this.net.diagnose() : undefined
+    if (pre) {
+      this.block(pre)
       return
     }
-    this.ws = ws
-    ws.onopen = () => {
-      if (this.ws === ws) this.input((c) => c.handleConnected(this.now()))
+    this.openTransport()
+  }
+
+  /**
+   * 选择传输并打开：共享连接可用时经它打开一个通道，否则（或 `direct`）直接连接。
+   */
+  private openTransport(direct = false): void {
+    let ws: WebSocketLike | undefined
+    if (!direct && !this.sharedUnavailable) {
+      const link = this.sharedLink()
+      if (link) ws = link.open(this.hostUrl)
     }
-    ws.onmessage = (e) => {
-      if (this.ws !== ws) return
+    if (!ws) {
+      try {
+        const factory =
+          this.deps.createWebSocket ?? ((url: string) => new WebSocket(url) as unknown as WebSocketLike)
+        ws = factory(this.hostUrl)
+      } catch (e) {
+        this.log.warn(`[app-mcp] 无法连接 ${this.hostUrl}：${errorMessage(e)}`)
+        queueMicrotask(() => {
+          if (!this.ws && !this.disposed) this.connectFailed(undefined, false)
+        })
+        return
+      }
+    }
+    this.ws = ws
+    this.wsOpened = false
+    const socket = ws
+    socket.onopen = () => {
+      if (this.ws !== socket) return
+      this.wsOpened = true
+      // 重新探测成功：解除拦截（状态随核心的 connected 更新）
+      this.blocked = undefined
+      clearTimeout(this.blockedTimer)
+      this.blockedTimer = undefined
+      this.input((c) => c.handleConnected(this.now()))
+    }
+    socket.onmessage = (e) => {
+      if (this.ws !== socket) return
       if (typeof e.data === 'string') {
         const text = e.data
         this.input((c) => c.handleMessage(text, this.now()))
       } else this.log.warn('[app-mcp] 忽略非文本消息')
     }
     const lost = (): void => {
-      if (this.ws !== ws) return
+      if (this.ws !== socket) return
       this.ws = null
-      detach(ws)
-      this.input((c) => c.handleDisconnected(this.now()))
+      detach(socket)
+      if (this.wsOpened) this.input((c) => c.handleDisconnected(this.now()))
+      else if (socket instanceof MuxChannel) this.connectFailed(socket.failure, true)
+      else this.connectFailed(undefined, false)
     }
-    ws.onclose = lost
-    ws.onerror = lost
+    socket.onclose = lost
+    socket.onerror = lost
+  }
+
+  private sharedLink(): MuxLink | undefined {
+    if (this.link === undefined) {
+      try {
+        // 主标签页模式下持有方运行在页面里，用页面的 CSP 违规记录判断拦截
+        this.link = this.deps.createSharedLink?.((url) => this.net.cspBlocks(url)) ?? null
+      } catch (e) {
+        this.log.debug(`[app-mcp] 共享连接不可用：${errorMessage(e)}`)
+        this.link = null
+      }
+    }
+    return this.link ?? undefined
+  }
+
+  /**
+   * 连接在打开之前失败：判断是否被浏览器拦截，否则交给核心按断开处理（退避重连）。
+   * `viaShared` 为经共享连接打开的通道。
+   */
+  private connectFailed(failure: ChannelFailure | undefined, viaShared: boolean): void {
+    if (this.disposed) return
+    if (failure?.unsupported) {
+      // 能力协商结果（旧 Host 不支持多路复用 / SharedWorker 无法启动）：本页改为直接连接，核心仍在连接中
+      this.sharedUnavailable = true
+      this.log.debug(`[app-mcp] 共享连接不可用（${failure.reason ?? 'Host 不支持多路复用'}），改为直接连接`)
+      this.openTransport()
+      return
+    }
+    if (viaShared && this.net.lnaApplies && this.net.lnaPermission === 'prompt') {
+      // 本地网络访问尚未授权：worker 中的请求不会弹出授权提示，本次改由页面直接连接（可弹出提示）
+      this.openTransport(true)
+      return
+    }
+    const block = this.net.diagnose(failure?.csp === true)
+    if (block) {
+      this.block(block)
+      return
+    }
+    if (this.blocked) {
+      // 重新探测时不再满足拦截条件（如授权已变化）：回到普通的退避重连
+      this.blocked = undefined
+    }
+    this.input((c) => c.handleDisconnected(this.now()))
+  }
+
+  /**
+   * 进入拦截状态：不通知核心（核心停在 connecting，没有退避定时器）。
+   * CSP 拦截确定无疑，只在 `wake()` / `connectNow()` 时重试；本地网络访问的判断依据是授权状态这一旁证
+   * （浏览器版本不同，WebSocket 不一定受限，失败也可能只是 Host 未运行），因此除授权变化时立即重连外，
+   * 还按 `blockedRetryMs`（默认 60 秒）低频重新探测，状态保持 `blocked` 直到连接成功。
+   */
+  private block(block: ConnectionBlock): void {
+    const changed = this.blocked?.cause !== block.cause || this.blocked.message !== block.message
+    this.blocked = block
+    if (changed) this.log.warn(`[app-mcp] 连接被浏览器拦截：${block.message}`)
+    this.setState(blockedState(block))
+    clearTimeout(this.blockedTimer)
+    this.blockedTimer = undefined
+    if (block.cause === 'csp') return
+    this.blockedTimer = setTimeout(() => {
+      this.blockedTimer = undefined
+      if (this.blocked && !this.disposed && !this.ws) this.openTransport()
+    }, this.deps.blockedRetryMs ?? 60_000)
+  }
+
+  /** 被拦截时立即重试一次；返回是否处于拦截状态。 */
+  private retryBlocked(): boolean {
+    if (!this.blocked || this.disposed) return false
+    this.blocked = undefined
+    clearTimeout(this.blockedTimer)
+    this.blockedTimer = undefined
+    const core = this.core
+    if (core) this.setState(this.mapState(core.state()))
+    if (!this.ws) this.openTransport()
+    return true
+  }
+
+  private onPermissionChange(state: PermissionState): void {
+    if (this.disposed) return
+    if (this.blocked?.cause === 'local-network-access' || this.blocked?.cause === 'insecure-context') {
+      const block = this.net.diagnose()
+      if (block && state !== 'granted') this.block(block)
+      else {
+        this.log.debug(`[app-mcp] 本地网络访问授权变为 ${state}，重新连接`)
+        this.retryBlocked()
+      }
+      return
+    }
+    // 退避中获得授权：立即重连
+    if (state === 'granted' && this.currentState.status === 'backoff') this.input((c) => c.wake(this.now()))
   }
 
   /** 主动关闭（核心的 Disconnect 事件或 dispose），不通知核心。 */
@@ -737,11 +911,21 @@ export class AppMcpDriver implements AppMcp {
       this.pageListeners.push(() => target.removeEventListener(type, fn))
     }
     // bfcache：进入缓存前立即休眠，恢复时回连（所有模式）
+    // 共享连接：进入 bfcache 时请持有方暂存消息（向缓存中的页面投递消息会使其被逐出），恢复时取回；
+    // 页面卸载时关闭本页的全部通道（不等 Host 心跳超时）。
     listen(win, 'pagehide', (ev) => {
-      if ((ev as PageTransitionEvent).persisted) this.sleepForPage()
+      if ((ev as PageTransitionEvent).persisted) {
+        this.sleepForPage()
+        this.link?.park()
+      } else {
+        this.link?.dispose()
+        this.link = null
+      }
     })
     listen(win, 'pageshow', (ev) => {
-      if ((ev as PageTransitionEvent).persisted) this.resumeFromPage()
+      if (!(ev as PageTransitionEvent).persisted) return
+      this.link?.unpark()
+      this.resumeFromPage()
     })
     // Page Lifecycle 冻结：idle / on-demand 模式下休眠，恢复时回连
     listen(doc, 'freeze', () => {
@@ -1196,6 +1380,10 @@ export function stripWakeFragment(href: string): string | undefined {
   if (kept.length === parts.length) return undefined
   const base = href.slice(0, hash)
   return kept.length > 0 ? `${base}#${kept.join('&')}` : base
+}
+
+function blockedState(block: ConnectionBlock): ConnectionState {
+  return { status: 'blocked', cause: block.cause, message: block.message }
 }
 
 function tokenField(token: string | undefined): { token?: string } {

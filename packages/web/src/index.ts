@@ -13,6 +13,7 @@ import { createBridgeAppMcp, findElectronBridge } from './electron-bridge'
 import { globalBroadcastChannel } from './instance-guard'
 import { createDisabledAppMcp } from './noop'
 import type { AppMcp, AppMcpOptions } from './types'
+import { createSharedLink } from './shared-connection'
 import { loadWasmCore } from './wasm-loader'
 
 export * from './types'
@@ -35,6 +36,9 @@ export {
  * 创建 SDK 实例（同步返回）。WASM 核心在后台按需加载，加载前的注册缓存在 JS 侧。
  * `enabled: false` 时返回空操作实现，不加载 WASM、不连接。
  *
+ * 默认同一来源的多个标签页经 SharedWorker 共用一条到 Host 的连接（`sharedConnection: false` 关闭），
+ * 每个标签页仍是独立实例。
+ *
  * 在 Electron 渲染进程中（preload 用 `@app-mcp/electron/preload` 暴露了桥接对象）自动改走主进程：
  * 经 IPC 登记工具，不加载 WASM、不连接 Host（见 electron-bridge.ts）。
  */
@@ -43,5 +47,10 @@ export function createAppMcp(options: AppMcpOptions): AppMcp {
   const bridge = findElectronBridge()
   if (bridge) return createBridgeAppMcp(options, bridge)
   const createBroadcastChannel = globalBroadcastChannel()
-  return createDriver(options, { loadCore: loadWasmCore, ...(createBroadcastChannel && { createBroadcastChannel }) })
+  return createDriver(options, {
+    loadCore: loadWasmCore,
+    ...(createBroadcastChannel && { createBroadcastChannel }),
+    // 同一来源的标签页共用一条连接（spec/protocol.md 第 9 节）
+    ...(options.sharedConnection !== false && { createSharedLink }),
+  })
 }

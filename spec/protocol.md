@@ -82,6 +82,7 @@ Host 默认同时监听：
 
 | 方向 | 方法 | 类型 | 参数 → 结果 |
 |---|---|---|---|
+| SDK → Host | `app/mux` | 请求（仅作连接上的第一条消息） | `MuxParams` → `MuxResult`（第 9 节） |
 | SDK → Host | `app/hello` | 请求 | `HelloParams` → `HelloResult` |
 | SDK → Host | `app/ready` | 通知 | `{}` |
 | SDK → Host | `app/visibility` | 通知 | `VisibilityParams` |
@@ -310,6 +311,7 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
   其他 `Origin` 返回 `rejected`。
 - `protocolVersion` 不为 `"1"` 时返回 `rejected`，`reason` 说明版本不兼容。
 - 同一 `appId` 可有多个实例（`instanceId` 区分）；同一 `instanceId` 重复连接时，新连接替换旧连接。
+- 连接上的第一条消息为 `app/mux` 时进入多路复用模式（第 9 节），此后本节规则对每个通道分别适用。
 - 向 SDK 发送 `tools/invoke` 前，已按 inputSchema 校验参数；默认 `timeoutMs` 为 30000。
 - 每隔 15s 向 SDK 发送 `ping`；45s 内没有收到 SDK 的任何消息则关闭连接。
   实例处于 `hidden` / `frozen` 时（浏览器会限流后台页面的定时器），该超时放宽为 180s。
@@ -424,3 +426,52 @@ SDK 取当前租约与新值中较晚的截止时刻。租约结束后重新开�
   `wake()` / `connectNow()` 同理（原因 `app`）。休眠握手进行中收到唤醒或持有：休眠完成后立即回连。
 - 驻留：`residency` 为 `exit-always`，或为 `exit-when-idle` 且本进程由唤醒冷启动（配置带 launch token，或首次
   握手前收到唤醒）时，进入 `Dormant` 后通知 App（`onIdleExit`），由 App 决定是否退出。
+
+## 9. 多路复用（一条连接承载多个实例）
+
+用途：同一来源的多个浏览器标签页共用一条到 Host 的 WebSocket（网页 SDK 经 SharedWorker 持有），
+同时**每个标签页仍是独立实例**——各自 `instanceId`、各自注册的工具，随标签页存亡。实现：`app_mcp_protocol::mux`、
+`crates/hub/src/app_server.rs`（`run_mux`）、`packages/web/src/mux/`。
+
+### 9.1 协商
+
+- SDK 以 `app/mux` 请求作为连接上的**第一条消息**：`MuxParams { version: 1 }`（SDK 支持的最高版本）。
+- 支持的 Host 返回 `MuxResult { version, maxChannels }`（`version` ≤ 请求值，当前为 1；`maxChannels` 默认 64），
+  此后该连接上的每一帧都是 9.2 的多路复用帧。
+- 旧 Host 不认识 `app/mux`，按"握手前的请求"返回错误（`UNAUTHORIZED`）。SDK 收到**任何错误响应**即判定不支持，
+  关闭该连接，改为每个实例各开一条普通连接（能力协商，不是失败回退）；该判定在 60 秒内复用。
+- `app/mux` 只在第一条消息时有效；握手后的 `app/mux` 按未知方法返回 `-32601`。
+
+```ts
+interface MuxParams { version: number }
+interface MuxResult { version: number; maxChannels: number }
+```
+
+### 9.2 帧
+
+```ts
+type MuxFrame =
+  | { type: "open";  ch: number }                    // SDK → Host：打开通道
+  | { type: "msg";   ch: number; msg: JsonRpcMessage } // 双向：通道上的一条 v1 消息，原样嵌入
+  | { type: "close"; ch: number; reason?: string }    // 双向：关闭通道
+```
+
+- 通道号由 SDK 选择：正整数，同一连接内不重复使用。`open` 之后该通道上的第一条消息必须是 `app/hello`。
+- 每个通道等同于一条独立的 v1 连接：握手、配对、Origin 校验（使用该 WebSocket 的 `Origin`）、心跳（`ping`）、
+  45s / 180s 空闲超时、`app/sleep`、同一 `instanceId` 的替换规则都按通道分别进行。
+- `close`（任一方）等同于该通道的连接断开：Host 按断开处理该实例（已 `app/sleep` 被接受的实例保持休眠）。
+  Host 结束一个通道（握手被拒、被同一实例的新连接替换、空闲超时）时发送 `close`。
+  关闭后收到的、发往该通道的帧直接丢弃；对已关闭通道回送的 `close` 也忽略。
+- 打开的通道数达到 `maxChannels` 时，Host 以 `close`（带 `reason`）拒绝新通道。无法解析的帧记录警告后忽略。
+- 连接断开时其上全部通道断开。连接上没有通道时，Host 在 180s 内没有收到任何帧则关闭连接；
+  SDK 侧在最后一个通道关闭时即关闭连接（所有标签页都休眠时没有 WebSocket）。
+
+### 9.3 网页 SDK 的连接持有方
+
+- 首选 SharedWorker（`@app-mcp/web` 的 `mux-worker.js`）；没有 SharedWorker（Chrome Android 148 之前等）而有
+  Web Locks 与 `BroadcastChannel` 时，用锁选出一个主标签页持有连接，其他标签页经 `BroadcastChannel` 收发；
+  主标签页在 `pagehide` / `freeze` 时让位，其上的通道全部断开，由各标签页的核心按断开重连到新的主标签页。
+- 标签页进入 bfcache（`pagehide` persisted）时，先由其核心发出 `app/sleep`，再请持有方暂存发给它的消息
+  （向缓存中的页面投递消息会使其被逐出）；`pageshow` 恢复时取回。页面卸载时关闭其全部通道。
+- 本地网络访问授权（Chrome LNA）只能由页面发起：授权为 `prompt` 时经共享连接失败，该次连接改由页面直接建立。
+

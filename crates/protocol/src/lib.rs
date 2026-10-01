@@ -8,18 +8,21 @@
 //! - [`error`]：协议错误码与错误类别。
 //! - [`hash`]：工具摘要 `toolsHash`（spec/lifecycle.md 第 6 节）。
 //! - [`endpoint`]：传输端点（WebSocket / Unix 域套接字 / 命名管道）的格式与默认位置（第 1 节）。
+//! - [`mux`]：一条连接承载多个实例的多路复用帧（第 9 节）。
 
 pub mod endpoint;
 pub mod error;
 pub mod hash;
 pub mod jsonrpc;
 pub mod messages;
+pub mod mux;
 
 pub use endpoint::Endpoint;
 pub use error::{ErrorKind, ToolError};
 pub use hash::{canonical_json, tools_hash};
 pub use jsonrpc::{Message, Notification, ParseError, Request, RequestId, Response, RpcError};
 pub use messages::*;
+pub use mux::{MUX_MAX_CHANNELS, MUX_VERSION, MuxFrame, MuxParams, MuxResult};
 
 /// 当前协议版本。握手时双方交换，不一致时 Host 返回 `rejected`。
 pub const PROTOCOL_VERSION: &str = "1";

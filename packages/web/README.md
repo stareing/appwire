@@ -56,6 +56,49 @@ const appMcp = createAppMcp({
 - **Electron 渲染进程**：preload 用 `@app-mcp/electron/preload` 暴露了桥接对象（`window.appMcpBridge`，
   或页面上有 `getAppMcpBridge()`）时，`createAppMcp` 经 IPC 把工具登记到主进程，不加载 WASM、不连接 Host。
 
+## 多个标签页共用一条连接
+
+默认（`sharedConnection: true`）同一来源的所有标签页经 SharedWorker 共用**一条**到 Host 的 WebSocket
+（协议见 `spec/protocol.md` 第 9 节「多路复用」）。每个标签页仍是独立实例：各自的 instanceId、各自注册的工具，
+标签页关闭时它的工具随之消失；调用路由、焦点、`apps.select` 与之前完全相同。
+
+| 环境 | 连接持有方 |
+|---|---|
+| 有 SharedWorker（桌面 Chrome / Edge / Firefox / Safari 16+，Chrome Android 148+） | SharedWorker（`mux-worker.js`） |
+| 没有 SharedWorker，但有 Web Locks 与 BroadcastChannel | 用锁选出的主标签页；它进入 bfcache / 冻结 / 关闭时让位，其他标签页自动重连到新的主标签页 |
+| 都没有 / `sharedConnection: false` | 每个标签页直接连接 |
+| Host 不支持多路复用（旧 Host）、SharedWorker 脚本无法加载 | 自动改为每个标签页直接连接 |
+
+- 打包：源码中以 `new SharedWorker(new URL('./mux-worker.ts', import.meta.url), { type: 'module', name: 'app-mcp' })` 创建，
+  Vite / webpack 5 会单独输出 worker 文件；发布包中为 `dist/mux-worker.js`。页面 CSP 需允许 `worker-src 'self'`（否则自动改为直接连接）。
+- 生命周期不变：空闲 / 隐藏休眠只关闭本标签页的通道；bfcache 前先 `app/sleep`，再请 worker 暂存发给本页的消息
+  （向缓存中的页面投递消息会使其被逐出），恢复时取回；`#app-mcp-wake=` 唤醒照常。所有标签页都休眠时没有 WebSocket。
+
+## 连接被浏览器拦截（`blocked` 状态）
+
+浏览器拦截时 WebSocket 只报告一个无原因的错误，与"Host 没有运行"看起来一样。SDK 收集旁证判断原因，
+确认是拦截时进入 `{ status: 'blocked', cause, message }`（`message` 为可直接展示的中文说明），**不再按退避定时重试**：
+
+| `cause` | 含义 | 恢复 |
+|---|---|---|
+| `local-network-access` | Chrome 本地网络访问（LNA，Chrome 142 起 fetch、147 起 WebSocket）：公网 / 局域网页面连接本机需用户允许「本机上的应用」（权限 `loopback-network`，旧名 `local-network-access`），当前为拒绝 | 授权变为允许时（`navigator.permissions` 的 `change` 事件）立即重连；另每 60 秒低频探测一次 |
+| `insecure-context` | 非 HTTPS 的公网页面：Chrome 禁止其访问本机，也不会询问 | 改用 HTTPS 部署，或在 localhost 打开 |
+| `csp` | 页面（或 SharedWorker 脚本响应）的 CSP `connect-src` 不允许 Host 地址（`securitypolicyviolation` 事件） | 在 `connect-src` 中加入 `ws://127.0.0.1:7717` 后刷新页面 |
+
+- `appMcp.wake()` / `connectNow()` 在 `blocked` 时立即重试一次（LNA 下可重新弹出授权提示）。
+- 授权为「询问」（`prompt`）时不判定为拦截：授权提示只能由页面发起，因此经 SharedWorker 的连接失败后，
+  该次连接改由页面直接建立（触发提示）；仍失败则按普通断开退避重连（实测 Chrome 153 中该状态下 WebSocket 可能直接连通，
+  失败与 Host 未运行无法区分）。
+- Host 无需设置任何响应头：Private Network Access 的 CORS 预检（`Access-Control-Allow-Private-Network`）已被 LNA 的
+  权限提示取代，且 WebSocket 从不预检。
+- 页面在 localhost / 127.0.0.1 上时不受 LNA 限制。
+
+```tsx
+appMcp.onStateChange((s) => {
+  if (s.status === 'blocked') showBanner(s.message)
+})
+```
+
 ## 与 WebMCP 标准的关系
 
 [WebMCP](https://webmachinelearning.github.io/webmcp/) 是 W3C Web Machine Learning 社区组起草的标准：页面通过

@@ -51,6 +51,10 @@ pub mod method {
     /// 租约：Host 预计还会调用本实例，ttl 内不要休眠。参数 [`super::LeaseParams`]。
     pub const LEASE: &str = "app/lease";
 
+    // ---- SDK → Host：连接级请求（多路复用，spec/protocol.md 第 9 节）----
+    /// 把本连接切换为多路复用模式，只能作为连接上的第一条消息。参数 [`super::MuxParams`]，结果 [`super::MuxResult`]。
+    pub const MUX: &str = "app/mux";
+
     // ---- 双向：请求 ----
     /// 心跳。参数为空，结果 `{}`。
     pub const PING: &str = "ping";

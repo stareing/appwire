@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -51,4 +52,24 @@ export function lineSplitter(onLine: (line: string) => void): (chunk: Buffer | s
       onLine(line)
     }
   }
+}
+
+/**
+ * 本机到 `127.0.0.1:<port>` 的已建立 TCP 连接数（客户端一侧，读 `/proc/net/tcp`）。
+ * 非 Linux 返回 undefined（调用方跳过该断言）。
+ */
+export function establishedTo(port: number): number | undefined {
+  if (process.platform !== 'linux') return undefined
+  let text: string
+  try {
+    text = readFileSync('/proc/net/tcp', 'utf8')
+  } catch {
+    return undefined
+  }
+  const remote = `0100007F:${port.toString(16).toUpperCase().padStart(4, '0')}`
+  return text
+    .split('\n')
+    .slice(1)
+    .map((l) => l.trim().split(/\s+/))
+    .filter((f) => f[2] === remote && f[3] === '01').length
 }

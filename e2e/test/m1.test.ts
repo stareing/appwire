@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { Browser, type Page } from '../src/browser'
 import { type HostHandle, type ShopServer, startHost, startShop } from '../src/env'
 import { data, ok, texts } from '../src/mcp-client'
-import { waitFor } from '../src/util'
+import { establishedTo, waitFor } from '../src/util'
 
 let host: HostHandle
 let shop: ShopServer
@@ -190,6 +190,13 @@ describe('M1 验收', () => {
     const idA = idOf('a')
     const idB = idOf('b')
     expect(idA).not.toBe(idB)
+
+    // 两个实例共用一条 WebSocket（SharedWorker 持有，spec/protocol.md 第 9 节）
+    const targets = await browser.send<{ targetInfos: { type: string }[] }>('Target.getTargets')
+    expect(targets.targetInfos.filter((t) => t.type === 'shared_worker')).toHaveLength(1)
+    const port = Number(new URL(host.wsUrl).port)
+    const sockets = establishedTo(port)
+    if (sockets !== undefined) expect(sockets).toBe(1)
     await waitTools((n) => n.includes('shop.todos.add'), '待办工具')
 
     const addAndLocate = async (title: string): Promise<'a' | 'b'> => {

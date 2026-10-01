@@ -51,6 +51,15 @@ export interface ZodLike<I> {
   parse(input: unknown): I
 }
 
+/**
+ * 连接被浏览器拦截的原因（`blocked` 状态，见 {@link ConnectionState}）：
+ * - `local-network-access`：Chrome 本地网络访问（LNA）权限未授予——公网 / 局域网页面连接本机 Host 需要用户允许
+ *   「本机上的应用」（`loopback-network`）；授权后自动重连；
+ * - `insecure-context`：非 HTTPS 的公网页面，Chrome 禁止其连接本机且不询问用户（需改用 HTTPS 或在 localhost 打开）；
+ * - `csp`：内容安全策略 `connect-src` 不允许连接 Host 地址（修改策略后刷新页面）。
+ */
+export type ConnectionBlockCause = 'local-network-access' | 'insecure-context' | 'csp'
+
 export type ConnectionState =
   | { status: 'disabled' }
   | { status: 'idle' }
@@ -65,6 +74,11 @@ export type ConnectionState =
   | { status: 'dormant' }
   /** 收到唤醒（页面重新可见、URL 唤醒令牌、`wake()`）后正在回连，之后进入 `handshaking`。 */
   | { status: 'waking' }
+  /**
+   * 连接被浏览器拦截（不是 Host 未运行）：不再定时重试。`message` 是给用户 / 开发者的中文说明（可直接展示）。
+   * 本地网络访问授权变为允许时自动重连；`wake()` / `connectNow()` 立即重试一次（可重新弹出授权提示）。
+   */
+  | { status: 'blocked'; cause: ConnectionBlockCause; message: string }
 
 /**
  * 生命周期策略（spec/lifecycle.md 第 3 节）。Web 没有进程驻留（`residency`）概念；
@@ -106,6 +120,12 @@ export interface AppMcpOptions {
   enabled?: boolean
   /** Host 地址，默认 `ws://127.0.0.1:7717`。 */
   hostUrl?: string
+  /**
+   * 同一来源的多个标签页共用一条到 Host 的连接（SharedWorker；没有时选一个主标签页持有），默认 true。
+   * 每个标签页仍是独立实例（各自 instanceId 与工具，随标签页存亡）。Host 不支持多路复用、或共享连接
+   * 在本页不可用时自动改为每个标签页直接连接。为 false 时始终直接连接。
+   */
+  sharedConnection?: boolean
   /** WASM 文件地址，默认使用包内置的文件。 */
   wasmUrl?: string | URL
   /** 调用时高亮关联元素并显示提示条（M2 实现，M1 忽略）。 */

@@ -68,12 +68,14 @@ const STATUS_TEXT: Record<ConnectionState['status'], string> = {
   stopped: '已停止',
   dormant: '休眠中',
   waking: '唤醒中',
+  blocked: '被浏览器拦截',
 }
 
 /** 连接状态指示。只有这个组件订阅状态，其他组件不因连接变化而重新渲染。 */
 function ConnectionBadge() {
   const state = useConnectionState()
-  const detail = state.status === 'rejected' ? `：${state.reason}` : ''
+  const detail =
+    state.status === 'rejected' ? `：${state.reason}` : state.status === 'blocked' ? `：${state.message}` : ''
   return (
     <span className={`badge badge-${state.status}`} title="app-mcp 与 Host 的连接状态">
       <span className="dot" />
