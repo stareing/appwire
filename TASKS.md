@@ -246,6 +246,8 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - 第二部分：S4 审计日志 `<home>/logs/audit.jsonl` + `app-mcp-host history`（参数只存摘要、敏感字段打码）；S5 按（App, 工具）令牌桶限流，新错误码 `RATE_LIMITED`
    - 第三部分：S6 外部内容数据边界标记；S7 读取外部内容后 N 次调用内高风险工具必须确认
    - 待验证：Claude Code 是否声明 elicitation 能力；MCP 2026-07-28 下 elicitation 形态（随第 12 项）
+   - 第四部分（授权模式，2026-10-02 加入）：`interactive` / `unattended` 两种情境显式声明；判定顺序 拒绝规则 → 授权命中 → 实时确认 → 异步审批（`APPROVAL_PENDING` + 票据，凭票重试幂等）→ 拒绝（`UNATTENDED_NOT_AUTHORIZED`）；S8 授权模型（Agent × 范围 × 风险上限 × 约束 × 情境，`<home>/grants.json`）；S9 `grant add/list/revoke/pause/resume`；S10 `ApprovalHandler` 决定枚举（兼容布尔）；S11 异步审批；S12 无人值守不抢前台、不弹选择框、禁像素兜底；S13 异常熔断
+   - 待机主确认：`payment` 能否事先授权（默认不可，仅异步审批；可选受限授权：金额上限 + ≤ 30 天 + 指定收款方）
 15. [ ] 体验与生态（2026-10-02 加入；组间独立，与 4c / 4d 穿插）——计划见 `docs/plans/15-experience-ecosystem.md`
    - X 用户体验：X1 "AI 正在操作"提示与控件高亮、后台调用留痕；X2 `undo` + `history.undo`；X3 Host 托盘（已连 App、配对 / 审批弹窗、审计查看，先做选型验证）；X4 `batch` 工具（子调用逐个审批与审计）
    - Y 开发者体验：Y1 一致性测试套件（第 14 项后首先做）；Y2 DevTools 面板与调用录制回放；Y3 Vue / Svelte 适配；Y4 Agent 侧类型化客户端用法与文档

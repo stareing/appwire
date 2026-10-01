@@ -77,7 +77,7 @@ App → Hub 一段只能传 JSON：工具结果被序列化为一段文本交给
 
 ### 第三部分：系统工具（选择即授权）
 
-- **F1 `files.pick` / `files.save`**：Host 弹出系统原生选择 / 保存对话框，用户选择即授权，结果为句柄。
+- **F1 `files.pick` / `files.save`**：Host 弹出系统原生选择 / 保存对话框，用户选择即授权，结果为句柄；仅 `interactive` 情境可用，无人值守时改用预授权文件夹 / 类型（第 14 项 S8、S12）。
 - **F2 分享**：`share.send(句柄)` 调起系统分享面板；Hub 注册为分享目标，外部分享进来的内容成为句柄（U6）。
 - **F3 剪贴板**：`clipboard.read` / `clipboard.write`（文本、图片），风险 `os-sensitive`。
 

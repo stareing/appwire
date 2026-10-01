@@ -77,13 +77,13 @@
 
 ### 第三部分：多 Agent 与协同
 
-- **N5 Agent 身份与授权**：Agent 首次连接时登记身份（`clientInfo` + 本机令牌 / 进程信息），用户按 Agent 授予 App 范围、风险上限与有效期，可撤销；
+- **N5 Agent 身份与授权**：Agent 首次连接时登记身份（`clientInfo` + 本机令牌 / 进程信息），作为第 14 项授权（grant，S8）的主体；授权模型与判定顺序见 `docs/plans/14-safety.md` 第四部分，此处不另行定义；
   `apps.*` 只列授权范围内的 App。
 - **N6 并发仲裁**：SDK 提供 `busy()` / 对象锁；Hub 对写调用排队或返回明确错误；多会话对同一 App 公平排队。
 
 ### 第四部分：场景扩展
 
-- **N3 事件与触发器**：App 在清单声明可发出的事件；用户 / Agent 注册"事件 → 提示"规则，Hub 在事件到达时回调 Agent 宿主（Hub SDK 回调；Host 侧经 MCP 通知）。
+- **N3 事件与触发器**：App 在清单声明可发出的事件；用户 / Agent 注册"事件 → 提示"规则，Hub 在事件到达时回调 Agent 宿主（Hub SDK 回调；Host 侧经 MCP 通知）；触发器发起的调用一律按 `unattended` 情境判定（第 14 项第四部分）。
 - **N4 标准意图**：定义通用动词 schema（先试点 `message.send`、`calendar.create`、`media.play`、`file.share`、`navigation.open`），App 声明实现；
   Hub 按用户默认 App 路由；codegen 输出到系统意图框架。
 - **O1 工具检索**：`apps.search(query)`，按关键词、最近使用、成功率、当前可见界面（4c）排序；可选本地向量索引（U5）。
