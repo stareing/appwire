@@ -16,7 +16,7 @@
 | | Y3 Vue / Svelte 适配 | 只有 React；`@app-mcp/store` 已支持 Pinia 状态，`@app-mcp/dom` 框架无关 | M2 2.6、M4 4.5 |
 | | Y4 Agent 侧类型化客户端 | codegen 已有 TypeScript / Kotlin / Swift / Python / C# / Dart 目标（`crates/codegen/src/targets`），缺"Agent 调用侧"用法与文档 | M4 4.8 |
 | Z 覆盖面 | Z1 未改造 App 导入（URI 协议、D-Bus introspection、`.desktop` Actions、Jump List、`.sdef`） | 无实现 | 10.5、M3 3.7、M4 4.6 |
-| | Z2 OS 层（Windows UIA、macOS AX、Linux AT-SPI）L2 / L3 工具 | 无实现 | 第 9 节、M3 3.1–3.3、M4 4.1 |
+| | Z2 OS 层（Windows UIA、macOS AX、Linux AT-SPI）L2 / L3 工具：仅原生桌面（网页用 `@app-mcp/inspect`，不走 L3）；默认关闭；动作只经无障碍接口（Invoke / Toggle / Value 等模式），不截图、不按坐标注入；目标 App 无响应时按设计 9.3 子进程模式隔离 | 无实现 | 第 9 节、M3 3.1–3.3、M4 4.1 |
 | | Z3 浏览器扩展（Native Messaging、标签页激活、HTTPS 网页免直连 localhost） | 无实现；可同时解决 Chrome 本地网络访问授权与 `window.close()` 关不掉外部标签页 | M3 3.10 |
 | R 远程 | R1 远程 / 跨设备 Agent | 只支持本机；鉴权需重新设计 | 第 19 节问题 6 |
 
@@ -36,6 +36,7 @@
 | U2 | 一致性测试的驱动方式（各语言跑同一份 JSON 用例 vs 统一假 Hub 驱动各 SDK 示例进程） | **验证**：先用假 Hub + 用例表驱动 Python / Node 两个 SDK 试点，再推广 |
 | U3 | `undo` 语义：哪些工具可撤销、撤销窗口、与 App 自身撤销栈的关系 | **保守**：只由 handler 显式提供；Hub 只记录可撤销调用并转发，不推断 |
 | U4 | OS 层 L3 的权限要求（macOS 辅助功能授权、Linux AT-SPI 总线开启状态） | 各平台实测；macOS 无环境，记为待验证 |
+| U7 | 原生桌面是否已有成熟的无障碍树 MCP 方案（决定 Z2 是自研还是推荐外部工具） | **调研**后定；有成熟方案时 Z2 降为文档推荐 |
 | U5 | 远程 Agent 的鉴权与传输（TLS、设备配对、令牌轮换） | **单独设计文档**后再实施；默认关闭，不改变本机默认安全姿态 |
 | U6 | Chrome 扩展上架与 Native Messaging 主机清单在各平台的注册位置 | 以 Chrome 官方文档为准逐平台核实，由第 13 项 `setup` 写入 |
 

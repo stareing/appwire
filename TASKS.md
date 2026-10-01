@@ -185,6 +185,8 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - E 原生：Kotlin（Fragment / Compose `LifecycleResumeEffect` 绑定 + Navigation Compose 适配）、Swift（`onAppear/onDisappear` + `scenePhase` 修饰器 + `NavigationPath` 适配）、C#（WPF `IsVisible`/窗口激活、WinUI）、Dart（`RouteAware` + `go_router` 适配）、Python/Qt（`showEvent/hideEvent`）；核心层提供通用 `navigate` 回调，封装层只做框架绑定
    - F Hub：页面目录登记（清单 + SDK 上报的 `page` 字段）；渐进披露分层——L0 `apps.list`；L1 tools/list = 已接触 App 的 `app` 工具 + 焦点实例当前可见最上层的 `view` 工具；L2 `apps.tools(appId)` 含页面目录摘要；L3 新内置 `apps.page(appId, page)` 返回该页工具；调用非当前页工具 → （休眠则先唤醒）→ `app/navigate` → 等待该工具注册（复用唤醒排队 / 超时 / 取消）→ 派发；导航改变用户可见界面，按 `foreground` 处理：用户正在交互（最近输入 < N 秒）或策略要求时经 ApprovalHandler 确认；`navigable:false` 的页面拒绝；导出格式与 Hub 各语言绑定同步
    - G 示例：shop 改为多页面（商品列表 / 购物车 / 订单），覆盖 keep-alive、弹窗层级、跨页调用
+   - H 进程内控件兜底（2026-10-02 加入；`@app-mcp/inspect` 推广到各 SDK）：开发者显式开启的 `ui.outline` / `ui.click` / `ui.fill` 等 `view` 工具；模型只见"短引用 + 角色 + 名称 + 状态"，动作直接作用于控件对象，不截图、不按坐标——Android View `performClick` / Compose 语义动作、UIKit `sendActions` / `accessibilityActivate`、WPF / WinUI AutomationPeer `Invoke`、Flutter 语义动作、鸿蒙组件事件；执行前在 UI 线程重新取控件核对状态；大纲标出已声明工具的控件；注解如实声明（非只读）
+     - 待核实：SwiftUI 能否进程内定位并触发控件（不行则只支持 UIKit 并写明）；Compose 语义树、Flutter 语义动作、鸿蒙组件事件在发布构建中是否可用
    - 验收：cargo test / clippy 0；pnpm test + e2e 新增（切页后工具列表变化、弹窗压制、跨页调用自动导航、导航审批、休眠 App 唤醒后导航）；各语言 SDK 测试；Android 真机一轮（Compose 导航）；文档：spec/protocol.md、spec/manifest.md、spec/lifecycle.md、spec/hub-api.md、README 两语（原则 3 扩写）
 4d. [ ] 按名寻址 + 系统代理 + 连接即唤醒：原生 App 源头去端口（2026-10-01 加入；4c 完成后做）
    - 原则：地址是 App 身份（`appmcp://<appId>[/<instance>]`），由各平台系统名字服务解析，不用数字端口；方向反转为 Hub 拨 App（App 在系统登记名字，不常驻重连 Hub，Hub 启动顺序无关、多个 Hub 可共存）；连接即唤醒（系统按需激活拉起进程），传输与唤醒合一。协议（JSON-RPC 消息）与 sans-IO 核心不变，只换"找到对方"这一层
@@ -256,7 +258,7 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
 15. [ ] 体验与生态（2026-10-02 加入；组间独立，与 4c / 4d 穿插）——计划见 `docs/plans/15-experience-ecosystem.md`
    - X 用户体验：X1 "AI 正在操作"提示与控件高亮、后台调用留痕；X2 `undo` + `history.undo`；X3 Host 托盘（已连 App、配对 / 审批弹窗、审计查看，先做选型验证）；X4 `batch` 工具（子调用逐个审批与审计）
    - Y 开发者体验：Y1 一致性测试套件（首先做）；Y2 DevTools 面板与调用录制回放；Y3 Vue / Svelte 适配；Y4 Agent 侧类型化客户端用法与文档
-   - Z 覆盖面：Z1 未改造 App 导入器（URI、D-Bus、`.desktop`、Jump List、`.sdef`）；Z2 OS 层 L2 / L3（Windows UIA 优先，macOS AX、Linux AT-SPI）；Z3 浏览器扩展（随 4d）
+   - Z 覆盖面：Z1 未改造 App 导入器（URI、D-Bus、`.desktop`、Jump List、`.sdef`）；Z2 OS 层 L2 / L3（仅原生桌面，Windows UIA 优先，macOS AX、Linux AT-SPI；默认关闭；只经无障碍接口动作，不截图、不按坐标；先调研是否已有成熟方案）；Z3 浏览器扩展（随 4d）
    - R 远程：R1 远程 / 跨设备 Agent，先出设计文档，默认关闭
 16. [ ] Agent OS：数据、权限、事件、事务与协同（2026-10-02 加入）——计划见 `docs/plans/16-agent-os.md`（四象限；按操作系统子系统对照找差距）
    - 第一部分（正确性，随第 14 项第二部分）：N7a 写调用幂等键 `callId`（先验证断线 / 唤醒后是否重发）；O2 进度通知与取消透传到 App handler
@@ -269,7 +271,7 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - 第一部分（内容通道）：C1 `ToolsInvokeResult.content` 多媒体内容块；C2 资源 `blob`；C3 缩略图给模型、原图转句柄、去 EXIF、不支持时降级
    - 第二部分（句柄）：H1 Hub Blob 存储（`appmcp-blob://`、TTL、配额、绑定会话与授权、分块）；H2 参数 `format: "appmcp-file"`；H3 平台交付（Android `content://` + 临时授权、桌面临时文件 / fd、Flatpak 门户、网页 Blob）
    - 第三部分（选择即授权）：F1 `files.pick` / `files.save` 系统对话框；F2 `share.send` 与分享目标；F3 剪贴板（`os-sensitive`）
-   - 第四部分（逐级退让）：R1 SDK 工具 → 系统意图 → 无障碍控件树 → 截图 + 视觉，`apps.list` 标注等级；R2 像素级兜底默认关闭、逐次确认
+   - 第四部分（逐级退让）：R1 SDK 语义工具 → 系统意图 → SDK 进程内控件兜底（4c-H）→ 进程外无障碍树（第 15 项 Z2），`apps.list` 标注等级；截图 + 视觉 / 坐标点击不做（2026-10-02 决定）
    - 待验证：Claude Code 是否渲染图片 / 音频内容块；单帧上限；Android `grantUriPermission` 有效期；iOS、Flatpak 交付形态
 
 ## 进行中（子代理）
