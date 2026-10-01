@@ -15,6 +15,7 @@ import type {
   ApprovalRequest,
   CallOutcome,
   CallRequest,
+  CallToolOptions,
   ExportedTools,
   HubConfig,
   HubEvent,
@@ -196,9 +197,20 @@ export class Hub {
    * 调用工具。工具层面的失败（用户拒绝、超时、App 报错…）在 `outcome.result.error` 中；
    * 只有名称无法解析（appId 未知 / 不含 `.`）时抛 {@link HubError}。
    */
-  async callTool(req: CallRequest): Promise<CallOutcome> {
-    const json = await wrap(this.#native.callTool(JSON.stringify(req)))
-    return JSON.parse(json) as CallOutcome
+  async callTool(req: CallRequest, options: CallToolOptions = {}): Promise<CallOutcome> {
+    const { onProgress } = options
+    const request = JSON.stringify(req)
+    const pending =
+      onProgress === undefined
+        ? this.#native.callTool(request)
+        : this.#native.callToolWithProgress(request, (p) => {
+            try {
+              onProgress(p)
+            } catch (e) {
+              this.#onListenerError(e)
+            }
+          })
+    return JSON.parse(await wrap(pending)) as CallOutcome
   }
 
   cancelCall(callId: string): void {

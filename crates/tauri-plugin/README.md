@@ -146,8 +146,13 @@ scheme 由 `tauri-plugin-deep-link` 注册。
 `legacy_timers`（`false`），见 spec/lifecycle.md 第 3、11、13 节。
 
 **实时资源**：页面声明 `realtime: true` 的资源（`@app-mcp/web` 的 `resource(name, { realtime: true, ... })`）经桥接以
-`ResourceOptions { realtime: true }` 登记；Rust 侧用 `client().register_resource_with(spec, ResourceOptions { realtime: true }, reader)`。
+`ResourceOptions { realtime: true, .. }` 登记；Rust 侧用
+`client().register_resource_with(spec, ResourceOptions { realtime: true, ..Default::default() }, reader)`。
 缺省 `false`：订阅不阻止休眠（第 13 节 B3）。
+
+**资源的内容标注**：页面 `resource(name, { annotations: { audience: ['user'], priority: 0.5 }, ... })` 的 `annotations`
+经桥接（`resource.register` 的可选字段）放进 `ResourceOptions.annotations`，Hub 放到 MCP `resources/list` 的资源注解上；
+取值不合法（如 `audience` 不是 `user` / `assistant`）时该次登记被拒绝。Rust 侧同样设置 `ResourceOptions.annotations`。
 
 ## 构建与测试
 

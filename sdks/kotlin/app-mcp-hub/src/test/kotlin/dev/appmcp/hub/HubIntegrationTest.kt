@@ -366,6 +366,53 @@ class HubIntegrationTest {
         }
     }
 
+    /** 第 16 项 O2：`callTool(onProgress = …)` 在返回前收到合并后的进度；资源内容标注经 Hub 列出。 */
+    @Test
+    fun progressCallbackAndResourceAnnotations() = runBlocking {
+        val hub = Hub.start(HubConfig(listen = "127.0.0.1:0", enableIpc = false))
+        val app = AppMcp.create(
+            AppMcpConfig("work", "长任务", hostUrl = "ws://${hub.listenAddr}/app", dispatcher = Dispatchers.Default),
+        )
+        app.tool("run", "长任务", risk = AppRisk.READ) { _, ctx ->
+            ctx.progress(1.0, 2.0, "第一步")
+            delay(350) // 超过 Hub 默认合并间隔 250 ms
+            ctx.progress(2.0, 2.0)
+            delay(350)
+            buildJsonObject { put("done", true) }
+        }
+        app.resource(
+            "cart", "购物车",
+            annotations = dev.appmcp.ContentAnnotations(audience = listOf(dev.appmcp.Audience.USER), priority = 0.5),
+        ) { emptyMap<String, Any>() }
+        try {
+            app.start()
+            withTimeout(10.seconds) {
+                while (hub.tools(ToolFilter(apps = listOf("work"), includeBuiltin = false)).isEmpty() ||
+                    hub.resources().none { it.appId == "work" }
+                ) {
+                    delay(20)
+                }
+            }
+            val res = hub.resources().first { it.appId == "work" }
+            assertEquals(0.5, res.annotations?.priority)
+            assertEquals(listOf(Audience.USER), res.annotations?.audience)
+
+            val got = Collections.synchronizedList(mutableListOf<ProgressUpdate>())
+            val out = hub.callTool("work.run", onProgress = { got += it })
+            assertEquals(null, out.error, out.toString())
+            assertEquals(
+                listOf(ProgressUpdate(1.0, 2.0, "第一步"), ProgressUpdate(2.0, 2.0, null)),
+                got.toList(),
+                "结果返回前收到全部进度",
+            )
+            val failing = hub.callTool("work.run", onProgress = { error("UI 崩溃") })
+            assertEquals(null, failing.error, "回调异常不影响结果")
+        } finally {
+            app.close()
+            hub.close()
+        }
+    }
+
     /** 策略挂点（spec/hub-api.md 3.13）：hide / deny、setPolicy 不合法时保留旧规则、命中计数。 */
     @Test
     fun policyHideDenyAndReplace() = runBlocking {

@@ -149,6 +149,7 @@ class RendererSession {
           description: op.description,
           ...(op.mimeType !== undefined && { mimeType: op.mimeType }),
           ...(op.realtime === true && { realtime: true }),
+          ...(op.annotations !== undefined && { annotations: op.annotations }),
           read: () => this.forwardRead(op.id),
         })
         this.resources.set(op.id, handle)
@@ -185,7 +186,7 @@ class RendererSession {
         if (!pending) return undefined
         this.reads.delete(op.readId)
         if (op.ok) pending.resolve(op.data)
-        else pending.reject(new ToolCallError(op.kind, op.message))
+        else pending.reject(new ToolCallError(op.kind, op.message, plainDetails(op.details)))
         return undefined
       }
       case 'lifecycle.wake':

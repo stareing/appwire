@@ -65,6 +65,8 @@ final class IntegrationTests: XCTestCase {
             "--invoke", "app.foreground",
             "--invoke", "bg.echo", "--args", #"{"name":"后台"}"#,
             "--read", "cart",
+            "--read", "session",
+            "--read", "quota",
             "--timeout-ms", "15000",
         ]
         let out = Pipe()
@@ -76,7 +78,10 @@ final class IntegrationTests: XCTestCase {
         XCTAssertTrue(first.hasPrefix("LISTENING "), first)
         let addr = String(first.dropFirst("LISTENING ".count))
 
-        let client = try AppMcpClient(config: AppMcpConfig(appId: "swift-it", appName: "Swift 集成测试", hostURL: "ws://\(addr)"))
+        let client = try AppMcpClient(config: AppMcpConfig(
+            appId: "swift-it", appName: "Swift 集成测试", hostURL: "ws://\(addr)",
+            callDedup: CallDedupPolicy(ttlMs: 1_000, maxEntries: 8)
+        ))
         try client.tool("math.add", description: "两数相加", risk: .read) { (args: AddArgs, ctx) in
             dispatchPrecondition(condition: .onQueue(.main))
             ctx.addStateHint("cart")
@@ -96,7 +101,13 @@ final class IntegrationTests: XCTestCase {
             throw ToolCallError.userActionRequired(message: "请切到前台")
         }
         try client.backgroundTool("bg.echo", description: "后台回显") { (g: Greeting, _) in g.name }
-        try client.resource("cart", description: "购物车") { ["items": ["A"]] }
+        try client.resource("cart", description: "购物车", annotations: ContentAnnotations(priority: 0.5)) { ["items": ["A"]] }
+        try client.resource("session", description: "会话") { () -> [String: String] in
+            throw ToolCallError.userActionRequired(message: "登录已过期", reason: UserActionReason.login, uri: "shop://login")
+        }
+        try client.resource("quota", description: "额度") { () -> [String: String] in
+            throw ToolCallError(ErrorKind.userRejected, "额度不足", details: .object(["quota": .number(0)]))
+        }
         client.start()
 
         let handle = out.fileHandleForReading
@@ -138,6 +149,15 @@ final class IntegrationTests: XCTestCase {
         XCTAssertEqual((results["bg.echo"]?["result"] as? [String: Any])?["data"] as? String, "后台")
         let cart = (results["cart"]?["result"] as? [String: Any])?["contents"] as? [String: Any]
         XCTAssertEqual(cart?["items"] as? [String], ["A"])
+        // 资源读取失败的类别与详情原样到达 Host
+        let session = results["session"]?["error"] as? [String: Any]
+        XCTAssertEqual(
+            session?["data"] as? [String: String],
+            ["kind": "USER_ACTION_REQUIRED", "reason": "login", "uri": "shop://login"]
+        )
+        let quota = (results["quota"]?["error"] as? [String: Any])?["data"] as? [String: Any]
+        XCTAssertEqual(quota?["kind"] as? String, "USER_REJECTED")
+        XCTAssertEqual(quota?["quota"] as? Int, 0)
     }
 
     /// 工具注解 + outputSchema 到达 Host；结构化结果（pending + stateResource + summary + 内容标注）原样回给 Host；普通返回值不变。

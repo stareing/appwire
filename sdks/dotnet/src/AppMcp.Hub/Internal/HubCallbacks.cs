@@ -14,6 +14,7 @@ internal static unsafe class HubCallbacks
 {
     internal static nint FreeGCHandlePtr => (nint)(delegate* unmanaged[Cdecl]<nint, void>)&FreeGCHandle;
     internal static nint ResultPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnResult;
+    internal static nint ProgressPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnProgress;
     internal static nint EventPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnEvent;
     internal static nint ApprovalPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, nint, void>)&OnApproval;
     internal static nint PairingPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, nint, void>)&OnPairing;
@@ -46,6 +47,20 @@ internal static unsafe class HubCallbacks
             var tcs = Target<TaskCompletionSource<string>>(userData);
             Free(userData);
             tcs?.TrySetResult(text);
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>调用进度：与结果共用 user_data（<see cref="ProgressCallSink"/>），总在结果之前；不释放 GCHandle。</summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnProgress(nint userData, nint json)
+    {
+        try
+        {
+            var text = HubNativeMethods.TakeString(json);
+            if (text is not null) Target<ProgressCallSink>(userData)?.Report(text);
         }
         catch
         {
@@ -259,5 +274,23 @@ internal sealed class DecisionSink<TRequest>(
 
         if (dispatcher is null) _ = Task.Run(Run);
         else dispatcher.Post(static s => _ = ((Func<Task>)s!)(), (Func<Task>)Run);
+    }
+}
+
+/// <summary>带进度的调用：结果（<see cref="TaskCompletionSource{TResult}"/>）+ 进度接收者。</summary>
+internal sealed class ProgressCallSink(IProgress<CallProgress> progress)
+    : TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
+{
+    /// <summary>progress_json → <see cref="CallProgress"/>；无法解析时忽略（进度不保证送达）。</summary>
+    internal void Report(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var o = doc.RootElement;
+        if (!o.TryGetProperty("progress", out var p) || p.ValueKind != JsonValueKind.Number) return;
+        progress.Report(new CallProgress(
+            o.TryGetProperty("callId", out var id) ? id.GetString() ?? string.Empty : string.Empty,
+            p.GetDouble(),
+            o.TryGetProperty("total", out var t) && t.ValueKind == JsonValueKind.Number ? t.GetDouble() : null,
+            o.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null));
     }
 }

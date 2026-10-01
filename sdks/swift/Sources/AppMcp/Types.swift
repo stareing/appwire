@@ -27,6 +27,9 @@ public typealias WakeReason = AppMcpBindings.WakeReason
 public typealias SleepReason = AppMcpBindings.SleepReason
 public typealias WakeDescriptor = AppMcpBindings.WakeDescriptor
 public typealias HeartbeatMode = AppMcpBindings.HeartbeatMode
+/// 调用去重策略（spec/protocol.md 3.3）：已开始执行的 `callId` 的首次结果在 `ttlMs` 内重放，最多 `maxEntries` 条；
+/// 任一为 0 关闭。`CallDedupPolicy()` = 300000 ms、64 条。
+public typealias CallDedupPolicy = AppMcpBindings.CallDedupPolicy
 
 /// 协议错误类别（FFI 上的字符串形式）。
 public enum ErrorKind {
@@ -314,6 +317,9 @@ public struct AppMcpConfig {
     public var heartbeat: HeartbeatMode
     /// 已休眠且驻留策略允许退出进程时调用（在主 actor 上）。App 自行决定是否退出。
     public var onIdleExit: (@MainActor @Sendable () -> Void)?
+    /// 调用去重（spec/protocol.md 3.3）；为 `nil` 时 300000 ms、64 条，`CallDedupPolicy(ttlMs: 0, maxEntries: 0)` 关闭。
+    /// 命中时经 `onLog` 记一条警告日志。
+    public var callDedup: CallDedupPolicy?
 
     public init(
         appId: String,
@@ -333,7 +339,8 @@ public struct AppMcpConfig {
         lifecycle: LifecyclePolicy? = nil,
         connectTimeout: TimeInterval? = nil,
         heartbeat: HeartbeatMode = .auto,
-        onIdleExit: (@MainActor @Sendable () -> Void)? = nil
+        onIdleExit: (@MainActor @Sendable () -> Void)? = nil,
+        callDedup: CallDedupPolicy? = nil
     ) {
         self.appId = appId
         self.appName = appName
@@ -353,6 +360,7 @@ public struct AppMcpConfig {
         self.connectTimeout = connectTimeout
         self.heartbeat = heartbeat
         self.onIdleExit = onIdleExit
+        self.callDedup = callDedup
     }
 }
 
@@ -373,7 +381,8 @@ extension AppMcpConfig {
             overview: overview,
             lifecycle: lifecycle.ffi,
             connectTimeoutMs: connectTimeout.map { UInt32(max(1, min(Double(UInt32.max), $0 * 1000))) },
-            heartbeat: heartbeat
+            heartbeat: heartbeat,
+            callDedup: callDedup
         )
     }
 }

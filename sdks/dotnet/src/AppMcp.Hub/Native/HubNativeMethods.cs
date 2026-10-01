@@ -30,6 +30,7 @@ internal static unsafe partial class HubNativeMethods
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_status_json(HubSafeHandle hub, out nint json);
 
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_call(HubSafeHandle hub, byte* requestJson, nint cb, nint userData, out nint callId);
+    [LibraryImport(Lib)] internal static partial HubStatus am_hub_call_with_progress(HubSafeHandle hub, byte* requestJson, nint cb, nint onProgress, nint userData, out nint callId);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_cancel_call(HubSafeHandle hub, byte* callId);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_read_resource(HubSafeHandle hub, byte* uri, nint cb, nint userData);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_subscribe(HubSafeHandle hub, byte* uri);

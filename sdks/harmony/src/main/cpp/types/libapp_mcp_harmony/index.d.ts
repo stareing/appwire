@@ -55,6 +55,14 @@ export interface ClientConfig {
   connectTimeoutMs?: number;
   /** 'auto'（默认）| 'always' | 'off' */
   heartbeat?: string;
+  /** 调用去重（spec/protocol.md 3.3）；缺省保留 5 分钟、最多 64 条。 */
+  callDedup?: CallDedupInit;
+}
+
+/** 调用去重策略：未给出的字段取默认值；任一为 0 关闭。 */
+export interface CallDedupInit {
+  ttlMs?: number;
+  maxEntries?: number;
 }
 
 export interface JsStateInfo {
@@ -119,6 +127,8 @@ export interface ResourceSpecInit {
   mimeType?: string;
   /** 需实时推送：被订阅时保持连接、休眠中变化时回连推送。默认 false。 */
   realtime?: boolean;
+  /** 资源内容的标注（MCP 内容注解）；`audience` 取值不合法时抛出 `INVALID_ARG`。 */
+  annotations?: ContentAnnotationsInit;
 }
 
 export class Hold {
@@ -145,6 +155,8 @@ export class Read {
   readonly resourceName: string;
   complete(contentsJson: string): void;
   fail(kind: string, message: string): void;
+  /** 失败完成并附带详情（JSON 文本）；语义同 `Call.failWithDetails`。 */
+  failWithDetails(kind: string, message: string, detailsJson?: string | null): void;
 }
 
 export class Tool {

@@ -130,6 +130,7 @@ export class HarmonyAppMcp {
       lifecycle: lifecycle,
       connectTimeoutMs: options.connectTimeoutMs,
       heartbeat: options.heartbeat,
+      callDedup: options.callDedup,
       onIdleExit: options.onIdleExit,
     };
     const client = createAppMcp(full);

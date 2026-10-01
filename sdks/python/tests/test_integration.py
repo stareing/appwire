@@ -66,6 +66,8 @@ def test_invoke_tools_via_fake_host(fake_host_bin: Path):
         "--invoke", "account.login",
         "--invoke", "app.foreground",
         "--read", "cart",
+        "--read", "session",
+        "--read", "quota",
         "--timeout-ms", "15000",
     )
     client = AppMcp(app_id="py-it", app_name="Python 集成测试", host_url=f"ws://{addr}", overview="测试 App")
@@ -99,9 +101,17 @@ def test_invoke_tools_via_fake_host(fake_host_bin: Path):
     def need_foreground() -> None:
         raise ToolCallError.user_action_required("请切到前台")
 
-    @client.resource("cart", description="购物车")
+    @client.resource("cart", description="购物车", annotations={"audience": ["user"], "priority": 0.5})
     def cart() -> dict:
         return {"items": ["A"]}
+
+    @client.resource("session", description="会话")
+    def session() -> dict:
+        raise ToolCallError.user_action_required("登录已过期", UserActionReason.LOGIN, "shop://login")
+
+    @client.resource("quota", description="额度")
+    def quota() -> dict:
+        raise ToolCallError("USER_REJECTED", "额度不足", {"quota": 0})
 
     try:
         client.start()
@@ -133,6 +143,13 @@ def test_invoke_tools_via_fake_host(fake_host_bin: Path):
     }
     assert results["app.foreground"]["error"]["data"] == {"kind": "USER_ACTION_REQUIRED"}
     assert results["cart"]["result"]["contents"] == {"items": ["A"]}
+    # 资源读取失败的类别与详情原样到达 Host
+    assert results["session"]["error"]["data"] == {
+        "kind": "USER_ACTION_REQUIRED",
+        "reason": "login",
+        "uri": "shop://login",
+    }
+    assert results["quota"]["error"]["data"] == {"kind": "USER_REJECTED", "quota": 0}
     assert threads and threads[0].startswith("app-mcp")
 
 

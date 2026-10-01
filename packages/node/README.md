@@ -81,6 +81,10 @@ appMcp.tool('notes.archive', {
 - No return value (`undefined` / `null`, no `summary`, status `done`): the Hub gives the model the fixed text
   "已完成" ("done") instead of `null`.
 - `handle.update({ annotations: undefined })` / `{ outputSchema: undefined }` clears a declaration.
+- Resources take optional `annotations` too (MCP content annotations, shown on the resource in MCP
+  `resources/list`): `appMcp.resource('notes.list', { description, annotations: { audience: ['user'], priority: 0.5 }, read })`.
+  A `read` that throws `ToolCallError` (including `ToolCallError.userActionRequired`) fails the read with that kind
+  and details, exactly like a tool handler.
 
 By default the client connects immediately (`autoStart: true`) and keeps the process alive while
 connected (`keepAlive: true`); call `appMcp.dispose()` to disconnect. The Hub endpoint is resolved from
@@ -95,7 +99,10 @@ the process itself).
 
 - `createAppMcp(options)` - creates the client. Options include `appId`, `appName`, `appVersion`,
   `enabled`, `hostUrl`, `overview`, `maxConcurrentCalls`, `clientKind` (`'native'` or `'hybrid'` for
-  Electron), `instanceTitle`, `token` / `onPaired`, `autoStart`, `keepAlive`, `lifecycle`, `onIdleExit`.
+  Electron), `instanceTitle`, `token` / `onPaired`, `autoStart`, `keepAlive`, `lifecycle`, `onIdleExit`,
+  `heartbeat`, `callDedup` (`{ ttlMs?, maxEntries? }`, default 300000 ms / 64 entries, either 0 turns it off: a
+  repeated `callId` within the TTL gets the first result replayed instead of running the handler again; each hit is
+  logged as a warning).
 - `AppMcp` - `tool`, `resource`, `scope`, `state`, `onStateChange`, `dispose`, plus Node-specific
   `start`, `setVisibility`, `handleWake`, `wake`, `connectNow`, `sleep`, `hold`, `onIdleExit`, `token`.
 - `ToolCallError(kind, message, details?)` - throw from a handler to return a specific error kind.

@@ -44,9 +44,20 @@ use serde_json::Value;
 type EventTsfn = ThreadsafeFunction<String, (), String, Status, false, true>;
 /// 审批 / 配对回调：参数为请求 JSON 文本，返回 `Promise<boolean>`。
 type DecisionTsfn = ThreadsafeFunction<String, Promise<bool>, String, Status, false, true>;
+/// 调用进度回调：参数为 [`ProgressEvent`]，返回值忽略。weak、无 error-first 参数。
+type ProgressTsfn = ThreadsafeFunction<ProgressEvent, (), ProgressEvent, Status, false, true>;
 /// 唤醒回调：参数为 WakeRequest JSON 文本，返回 `Promise<string | null>`：
 /// `null` = 已发出激活；字符串 = 失败 `{"kind","message"}` 的 JSON（TS 封装层规整）。
 type WakerTsfn = ThreadsafeFunction<String, Promise<Option<String>>, String, Status, false, true>;
+
+/// 一条调用进度（`callToolWithProgress` 的回调参数）。
+#[napi(object)]
+pub struct ProgressEvent {
+    pub progress: f64,
+    /// 未知时省略。
+    pub total: Option<f64>,
+    pub message: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // 错误
@@ -134,6 +145,8 @@ struct ConfigJson {
     invoke_timeout_ms: Option<u64>,
     response_timeout_ms: Option<u64>,
     list_changed_debounce_ms: Option<u64>,
+    /// 调用进度的最小转发间隔（spec/hub-api.md 3.12），缺省 250。
+    progress_interval_ms: Option<u64>,
     pairing_timeout_ms: Option<u64>,
     lease_ttl_ms: Option<u64>,
     wake_timeout_ms: Option<u64>,
@@ -204,6 +217,9 @@ impl ConfigJson {
         }
         if let Some(v) = self.list_changed_debounce_ms {
             c.list_changed_debounce = ms(v);
+        }
+        if let Some(v) = self.progress_interval_ms {
+            c.progress_interval = ms(v);
         }
         if let Some(v) = self.pairing_timeout_ms {
             c.pairing_timeout = ms(v);
@@ -482,6 +498,36 @@ impl JsHub {
         let hub = self.hub()?;
         let outcome = hub.call_tool(req).await.map_err(hub_error)?;
         to_json(&outcome)
+    }
+
+    /// 同 `callTool`，并接收调用进度（spec/hub-api.md 3.12）：`onProgress({ progress, total?, message? })` 在 Node
+    /// 事件循环上逐条执行（已按 `progressIntervalMs` 合并、丢弃不递增的值）；全部进度先于返回的 Promise 完成投递，
+    /// 调用结束后不再回调。
+    #[napi]
+    pub async fn call_tool_with_progress(&self, request_json: String, on_progress: ProgressTsfn) -> Result<String> {
+        let req: CallRequest = serde_json::from_str(&request_json)
+            .map_err(|e| invalid_arg(format!("request 不是合法的 CallRequest：{e}")))?;
+        let hub = self.hub()?;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let forward = |p: app_mcp_hub::ProgressUpdate| {
+            let event = ProgressEvent { progress: p.progress, total: p.total, message: p.message };
+            let _ = on_progress.call(event, ThreadsafeFunctionCallMode::NonBlocking);
+        };
+        let call = hub.call_tool_with_progress(req, tx);
+        tokio::pin!(call);
+        let outcome = loop {
+            tokio::select! {
+                biased;
+                Some(p) = rx.recv() => forward(p),
+                out = &mut call => {
+                    while let Ok(p) = rx.try_recv() {
+                        forward(p);
+                    }
+                    break out;
+                }
+            }
+        };
+        to_json(&outcome.map_err(hub_error)?)
     }
 
     #[napi]

@@ -33,7 +33,7 @@ fn tool(name: &str) -> ToolDef {
 }
 
 fn resource(name: &str) -> ResourceDef {
-    ResourceDef { name: name.into(), description: format!("{name} 资源"), mime_type: None, scope: None, realtime: false }
+    ResourceDef { name: name.into(), description: format!("{name} 资源"), mime_type: None, scope: None, realtime: false, annotations: None }
 }
 
 /// 从事件中取出所有发送的消息。
@@ -802,7 +802,8 @@ fn duplicate_call_id_attaches_or_is_rejected_when_dedup_off() {
     h.connect();
     h.invoke(1, "c1", "a", None);
     let ev = h.invoke(2, "c1", "a", None);
-    assert!(ev.is_empty(), "不执行、不立即回复：{ev:?}");
+    assert!(sends(&ev).is_empty() && invoked(&ev).is_empty(), "不执行、不立即回复：{ev:?}");
+    assert_eq!(warnings(&ev), 1, "命中记一条警告日志");
     h.c.complete_call("c1", Ok(CallOutput { data: json!(5), ..CallOutput::default() }), h.now).unwrap();
     let msgs = sends(&h.drain());
     assert_eq!(msgs.iter().map(|m| m["id"].clone()).collect::<Vec<_>>(), vec![json!(2), json!(1)]);
@@ -814,7 +815,8 @@ fn duplicate_call_id_attaches_or_is_rejected_when_dedup_off() {
     h.connect();
     h.invoke(1, "c1", "a", None);
     h.invoke(2, "c2", "a", None);
-    assert!(h.invoke(3, "c2", "a", None).is_empty());
+    let ev = h.invoke(3, "c2", "a", None);
+    assert!(sends(&ev).is_empty() && invoked(&ev).is_empty(), "{ev:?}");
     h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
     assert_eq!(invoked(&h.drain()), vec!["c2".to_owned()], "c2 只执行一次");
 
@@ -836,6 +838,29 @@ fn duplicate_call_id_attaches_or_is_rejected_when_dedup_off() {
 // ---------------------------------------------------------------------------
 // 资源
 // ---------------------------------------------------------------------------
+
+/// 第 14 项：资源的内容标注随 `resources/sync` / `resources/changed` 同步；未声明时不序列化。
+#[test]
+fn resource_annotations_are_synced() {
+    let mut h = Harness::new();
+    let annotated = ResourceDef {
+        annotations: Some(ContentAnnotations { priority: Some(0.5), ..Default::default() }),
+        ..resource("a")
+    };
+    h.c.register_resource(annotated).unwrap();
+    h.c.register_resource(resource("b")).unwrap();
+    let ev = h.connect();
+    let sync = sends(&ev).into_iter().find(|m| m["method"] == "resources/sync").unwrap();
+    assert_eq!(sync["params"]["resources"][0]["annotations"], json!({"priority": 0.5}));
+    assert!(sync["params"]["resources"][1].get("annotations").is_none());
+    let c = ResourceDef {
+        annotations: Some(ContentAnnotations { audience: Some(vec![Audience::User]), ..Default::default() }),
+        ..resource("c")
+    };
+    h.c.register_resource(c).unwrap();
+    let msgs = sends(&h.drain());
+    assert_eq!(msgs[0]["params"]["upserted"][0]["annotations"], json!({"audience": ["user"]}));
+}
 
 #[test]
 fn resource_read() {
@@ -1390,6 +1415,7 @@ fn dedup_records_only_started_calls() {
     let ev = h.invoke(3, "run", "a", None);
     assert!(invoked(&ev).is_empty());
     assert_eq!(error_kind(&sends(&ev)[0]), "TIMEOUT", "超时结果被重放");
+    assert_eq!(warnings(&ev), 1, "重放记一条警告日志");
     assert_eq!(invoked(&h.invoke(4, "queued", "a", None)), vec!["queued".to_owned()], "排队中取消的可重新执行");
     h.recv(json!({"jsonrpc": "2.0", "method": "tools/cancel", "params": {"callId": "queued"}}));
     assert_eq!(error_kind(&sends(&h.invoke(5, "queued", "a", None))[0]), "CANCELLED", "执行中取消记为首次结果");

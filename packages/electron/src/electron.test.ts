@@ -324,6 +324,34 @@ describe('Electron 桥接', () => {
     await flush()
     expect(native.resources.get('order.status')?.spec).toMatchObject({ name: 'order.status', realtime: true })
     expect(native.resources.get('cart')?.spec).not.toHaveProperty('realtime')
+    expect(native.resources.get('cart')?.spec).not.toHaveProperty('annotations')
+  })
+
+  it('资源的内容标注经桥转给 @app-mcp/node；页面读取失败的类别与详情（reason / uri）到达主进程客户端', async () => {
+    const { ipcMain, native } = setupMain()
+    const { page } = setupPage(ipcMain, new FakeWebContents(1))
+    page.resource('profile', {
+      description: '个人资料',
+      annotations: { audience: ['user'], priority: 0.5 },
+      read: () => {
+        throw RendererToolCallError.userActionRequired('登录已过期', { reason: 'login', uri: 'shop://login' })
+      },
+    })
+    page.resource('stock', {
+      description: '库存',
+      read: () => {
+        throw new ToolCallError('RESOURCE_NOT_FOUND', '仓库离线')
+      },
+    })
+    await flush()
+    expect(native.resources.get('profile')?.spec).toMatchObject({ annotations: { audience: ['user'], priority: 0.5 } })
+    expect(await native.read('profile')).toEqual({
+      ok: false,
+      kind: 'USER_ACTION_REQUIRED',
+      message: '登录已过期',
+      details: { reason: 'login', uri: 'shop://login' },
+    })
+    expect(await native.read('stock')).toEqual({ ok: false, kind: 'RESOURCE_NOT_FOUND', message: '仓库离线' })
   })
 
   it('update / dispose 同步到主进程', async () => {

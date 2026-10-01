@@ -1551,6 +1551,22 @@ pub struct ToolErrorInfo {
     pub details_json: Option<String>,
 }
 
+/// 调用进度（[`crate::AppMcpHub::call_tool_with_progress`]，spec/hub-api.md 3.12）：App 报告、Hub 合并后的一条。
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct ProgressUpdate {
+    pub progress: f64,
+    /// 总量；未知时为空。
+    pub total: Option<f64>,
+    /// 说明（截断到 200 字符）。
+    pub message: Option<String>,
+}
+
+impl From<hub::ProgressUpdate> for ProgressUpdate {
+    fn from(u: hub::ProgressUpdate) -> Self {
+        Self { progress: u.progress, total: u.total, message: u.message }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct CallOutcome {
     pub call_id: String,

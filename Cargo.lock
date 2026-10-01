@@ -286,6 +286,7 @@ name = "app-mcp-uniffi"
 version = "0.1.0"
 dependencies = [
  "app-mcp-native",
+ "serde_json",
  "thiserror",
  "uniffi",
 ]

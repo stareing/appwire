@@ -214,6 +214,20 @@ function toolAnnotationsInit(a: ToolAnnotations): ToolAnnotationsInit {
   return init;
 }
 
+/**
+ * 以失败完成调用或读取（原生 `Call` / `Read`）：带详情（如 `USER_ACTION_REQUIRED` 的 `reason` / `uri`）时用 `failWithDetails`。
+ * @why 以函数传入而非接口：ArkTS 不支持结构化类型，`Call` / `Read` 不能直接当作同一接口。
+ */
+function submitFailure(failure: Failure, fail: (kind: string, message: string) => void,
+  failWithDetails: (kind: string, message: string, detailsJson: string) => void): void {
+  const detailsJson = failure.detailsJson;
+  if (detailsJson !== undefined) {
+    failWithDetails(failure.kind, failure.message, detailsJson);
+  } else {
+    fail(failure.kind, failure.message);
+  }
+}
+
 function contentAnnotationsInit(a: ContentAnnotations): ContentAnnotationsInit {
   const init: ContentAnnotationsInit = {};
   if (a.audience !== undefined) {
@@ -349,12 +363,8 @@ class ToolEntry<I, O> implements ToolHandle, Child {
       }
     };
     const fail = (failure: Failure): void => {
-      const detailsJson = failure.detailsJson;
-      if (detailsJson !== undefined) {
-        finish(() => call.failWithDetails(failure.kind, failure.message, detailsJson));
-      } else {
-        finish(() => call.fail(failure.kind, failure.message));
-      }
+      finish(() => submitFailure(failure, (k: string, m: string): void => call.fail(k, m),
+        (k: string, m: string, d: string): void => call.failWithDetails(k, m, d)));
     };
 
     try {
@@ -449,6 +459,9 @@ class ResourceEntry<T> implements ResourceHandle, Child {
       mimeType: definition.mimeType ?? 'application/json',
       realtime: definition.realtime,
     };
+    if (definition.annotations !== undefined) {
+      spec.annotations = contentAnnotationsInit(definition.annotations);
+    }
     this.native = registrar.registerResource(spec, (read: Read): void => this.onRead(read));
     if (owner !== null) {
       owner.add(this);
@@ -483,6 +496,11 @@ class ResourceEntry<T> implements ResourceHandle, Child {
     this.disposed = true;
   }
 
+  private failRead(read: Read, failure: Failure): void {
+    submitFailure(failure, (k: string, m: string): void => read.fail(k, m),
+      (k: string, m: string, d: string): void => read.failWithDetails(k, m, d));
+  }
+
   private onRead(read: Read): void {
     const submit = (action: () => void): void => {
       try {
@@ -498,7 +516,7 @@ class ResourceEntry<T> implements ResourceHandle, Child {
       pending = Promise.resolve(this.def.read());
     } catch (error) {
       const failure = toFailure(error as Object);
-      submit(() => read.fail(failure.kind, failure.message));
+      submit(() => this.failRead(read, failure));
       return;
     }
     pending.then((value: T): void => {
@@ -512,7 +530,7 @@ class ResourceEntry<T> implements ResourceHandle, Child {
       submit(() => read.complete(json));
     }, (error: Object): void => {
       const failure = toFailure(error);
-      submit(() => read.fail(failure.kind, failure.message));
+      submit(() => this.failRead(read, failure));
     });
   }
 }
@@ -631,6 +649,9 @@ export class AppMcp extends RegistrarBase {
     config.maxConcurrentCalls = options.maxConcurrentCalls;
     config.connectTimeoutMs = options.connectTimeoutMs;
     config.heartbeat = options.heartbeat;
+    if (options.callDedup !== undefined) {
+      config.callDedup = { ttlMs: options.callDedup.ttlMs, maxEntries: options.callDedup.maxEntries };
+    }
     if (options.overview !== undefined) {
       config.overview = { summary: options.overview.summary, body: options.overview.body, locale: options.overview.locale };
     }

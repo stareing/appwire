@@ -25,6 +25,7 @@ export type {
   AppMcp,
   AppOverview,
   Audience,
+  CallDedupOptions,
   ConnectionState,
   ContentAnnotations,
   ErrorKind,

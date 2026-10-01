@@ -348,7 +348,13 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
   `TOOL_NOT_FOUND` / `TOOL_DISABLED` 等检查处被拒绝的调用 handler 没有执行过，不记录，同一 `callId` 可以再次执行。
   - 规则对所有工具一致（不区分只读与写）：Host 不复用 `callId`，只读工具只在调用方显式重试同一 `callId` 时得到缓存结果。
   - 有效期与容量由 SDK 配置 `callDedup`（`ttlMs` 默认 300000、`maxEntries` 默认 64，超出淘汰最早的；任一为 0 关闭，关闭时
-    执行中重复的 `callId` 按旧行为返回 -32602）。去重表跨连接、跨休眠保留，进程退出即清空。
+    执行中重复的 `callId` 按旧行为返回 -32602）。去重表跨连接、跨休眠保留，进程退出即清空。各语言 SDK 的配置入口：
+    Rust `ClientConfig.call_dedup` / `NativeConfig.call_dedup`；网页、Node、鸿蒙 `callDedup: { ttlMs, maxEntries }`；C ABI（v13）
+    `AmClientOptions.call_dedup_ttl_ms` / `call_dedup_max_entries`（0 = 缺省，负数 = 关闭）；C++ `ClientConfig::call_dedup`；
+    C# `AppMcpClientOptions.CallDedup`；Dart `AppMcp(callDedup:)`；uniffi `ClientConfig.call_dedup`（Kotlin / Swift `callDedup`、
+    Python `AppMcp(call_dedup=CallDedup(...))`）。
+  - 可观测性：命中（重放首次结果或挂到执行中的调用）只在 SDK 本地记一条警告日志（核心 `Event::Warning`，经各 SDK 的日志回调输出，
+    带 `callId`），不计数、不上报 Host——`app/diagnostic` 专用于连接问题（第 10 节）。调用方自带 `callId` 重试时可在 App 日志中确认是否命中。
 - **进度 `tools/progress`（SDK → Host，通知）**：handler 经 `ctx.progress(progress, total?, message?)` 报告；只对执行中的调用发送，
   未连接时丢弃（不排队、不补发）。`progress` 应递增；非有限数不发送，非有限的 `total` 视为未知。
   Host 只接受被路由到该调用的那条连接发来的进度，按配置的最小间隔合并（间隔内只保留最新一条）、丢弃不递增的值、`message`

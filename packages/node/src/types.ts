@@ -170,6 +170,14 @@ export interface WakeDescriptor {
 /** 心跳策略（spec/lifecycle.md 第 11 节）。 */
 export type HeartbeatMode = 'auto' | 'always' | 'off'
 
+/** 调用去重策略（{@link NodeAppMcpOptions.callDedup}）。未给出的字段取默认值；任一为 0 关闭去重。 */
+export interface CallDedupOptions {
+  /** 首次结果的保留时长（毫秒），默认 300000。 */
+  ttlMs?: number
+  /** 最多保留的结果数，超出淘汰最早的，默认 64。 */
+  maxEntries?: number
+}
+
 export interface LifecycleOptions {
   /** 缺省 `'persistent'`。 */
   mode?: LifecycleMode
@@ -284,6 +292,11 @@ export interface NodeAppMcpOptions {
    * 远程端点发；`'always'` / `'off'` 强制。
    */
   heartbeat?: HeartbeatMode
+  /**
+   * 调用去重（spec/protocol.md 3.3）：已开始执行的 `callId` 在有效期内再次到达时重放首次结果、不再执行。
+   * 缺省 `{ ttlMs: 300000, maxEntries: 64 }`；任一为 0 关闭。命中时经 `logger` 记一条警告。
+   */
+  callDedup?: CallDedupOptions
   /**
    * 已休眠且 `lifecycle.residency` 允许退出进程时调用。SDK **不会**自行退出进程：
    * App 在这里自行 `process.exit()`（Electron 为 `app.quit()`），或什么都不做。
@@ -421,6 +434,9 @@ export interface ResourceDefinition<T = unknown> {
    * 默认 false：订阅不阻止休眠，变化在下次连接时补发。
    */
   realtime?: boolean
+  /** 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；缺省未声明。 */
+  annotations?: ContentAnnotations
+  /** 读取内容；抛出 `ToolCallError`（含 `ToolCallError.userActionRequired`）时类别与详情原样交给 Host。 */
   read: () => T | Promise<T>
 }
 

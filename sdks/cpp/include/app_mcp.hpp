@@ -24,6 +24,7 @@
 // - ToolOptions::annotations（标准 MCP 工具注解）、ToolOptions::output_schema_json（MCP outputSchema）；
 //   ToolOptions::risk 为旧写法，优先用 annotations（同时声明时注解中的字段优先）。
 // - Call::complete(const CallResult&)：业务状态（done / pending / partial / noop）、state_resource、summary、内容注解。
+// - ResourceOptions::annotations（资源内容的标注，app_mcp.h v13）；ClientConfig::call_dedup（调用去重，v13）。
 #ifndef APP_MCP_HPP
 #define APP_MCP_HPP
 
@@ -255,6 +256,17 @@ struct ResourceOptions {
     std::optional<std::string> mime_type;
     /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时保持连接、休眠中变化时回连推送。
     bool realtime = false;
+    /// 资源内容的标注（MCP 内容注解，app_mcp.h v13），Hub 放到 MCP resources/list 的资源注解上；为空表示不声明。
+    std::optional<ContentAnnotations> annotations;
+};
+
+/// 调用去重（spec/protocol.md 3.3，app_mcp.h v13）：同一 callId 在有效期内重复到达时重放首次结果，不再执行 handler。
+/// 任一字段为 0 关闭去重。
+struct CallDedup {
+    /// 首次结果的保留时长。
+    uint64_t ttl_ms = 300000;
+    /// 最多保留的结果数，超出淘汰最早的。
+    uint32_t max_entries = 64;
 };
 
 /// App 总览（Host 在模型首次接触该 App 时附带）。
@@ -281,6 +293,8 @@ struct ClientConfig {
     uint32_t connect_timeout_ms = 0;
     /// 心跳策略（spec/lifecycle.md 第 11 节 A3）；AUTO：本地 IPC / 桌面本机回环不发。
     HeartbeatMode heartbeat = AM_HEARTBEAT_AUTO;
+    /// 调用去重（默认保留 5 分钟、最多 64 条；任一字段为 0 关闭）。
+    CallDedup call_dedup;
 };
 
 struct ClientCallbacks {
@@ -333,6 +347,16 @@ inline int64_t encode_merge_window_ms(uint64_t ms) noexcept {
     return ms > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(ms);
 }
 
+/// @compat C ABI 的 call_dedup_*：0 = 默认、负数 = 关闭；封装层 0 = 关闭。
+inline int64_t encode_dedup_ttl_ms(uint64_t ms) noexcept {
+    if (ms == 0) return -1;
+    return ms > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(ms);
+}
+inline int32_t encode_dedup_max_entries(uint32_t n) noexcept {
+    if (n == 0) return -1;
+    return n > static_cast<uint32_t>(INT32_MAX) ? INT32_MAX : static_cast<int32_t>(n);
+}
+
 /// ClientConfig → AmLifecycle + AmClientOptions（不含回调）。
 /// @invariant opts->lifecycle 指向 *lc，lc.wake_target 借用 config 的字符串；二者都不能比 config 活得久。
 inline void fill_client_options(const ClientConfig& config, AmLifecycle* lc, AmClientOptions* opts) {
@@ -356,6 +380,8 @@ inline void fill_client_options(const ClientConfig& config, AmLifecycle* lc, AmC
     opts->legacy_timers = config.lifecycle.legacy_timers;
     opts->merge_window_ms = encode_merge_window_ms(config.lifecycle.merge_window_ms);
     opts->sleep_on_background = config.lifecycle.sleep_on_background;
+    opts->call_dedup_ttl_ms = encode_dedup_ttl_ms(config.call_dedup.ttl_ms);
+    opts->call_dedup_max_entries = encode_dedup_max_entries(config.call_dedup.max_entries);
 }
 
 /// 逐个追加 JSON 对象成员（跳过未设置的可选值）。
@@ -873,7 +899,7 @@ public:
 
     Resource register_resource(const std::string& name, const std::string& description, ResourceReader reader,
                                const std::optional<std::string>& mime_type = std::nullopt) {
-        return register_resource(name, description, std::move(reader), ResourceOptions{mime_type, false});
+        return register_resource(name, description, std::move(reader), ResourceOptions{mime_type, false, std::nullopt});
     }
 
     Resource register_resource(const std::string& name, const std::string& description, ResourceReader reader,
@@ -882,9 +908,12 @@ public:
         spec.name = name.c_str();
         spec.description = description.c_str();
         spec.mime_type = detail::c_str_or_null(options.mime_type);
+        std::optional<std::string> annotations;
+        if (options.annotations) annotations = detail::to_json(*options.annotations);
         AmResourceOptions ropts{};
         ropts.struct_size = sizeof(AmResourceOptions);
         ropts.realtime = options.realtime;
+        ropts.annotations_json = detail::c_str_or_null(annotations);
         auto* holder = new ResourceReader(std::move(reader));
         AmResource* out = nullptr;
         detail::check(am_resource_register_ex(h_, &spec, &ropts, &detail::read_trampoline, holder,

@@ -21,6 +21,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from ._client import (
         ERROR_KINDS,
         AppMcp,
+        CallDedup,
         Dispatcher,
         Hold,
         ResourceHandle,
@@ -54,6 +55,7 @@ _LAZY: dict[str, tuple[str, str]] = {
         for name in (
             "ERROR_KINDS",
             "AppMcp",
+            "CallDedup",
             "Dispatcher",
             "Hold",
             "ResourceHandle",
@@ -110,6 +112,7 @@ __all__ = [
     "AppMcpError",
     "AppOverview",
     "Audience",
+    "CallDedup",
     "CancelReason",
     "ContentAnnotations",
     "Dispatcher",

@@ -72,6 +72,8 @@ export interface NativeClientConfig {
   lifecycle?: NativeLifecycleConfig
   connectTimeoutMs?: number
   heartbeat?: 'auto' | 'always' | 'off'
+  /** 调用去重（旧版原生模块忽略）。 */
+  callDedup?: { ttlMs?: number; maxEntries?: number }
 }
 
 export interface NativeToolSpec {
@@ -118,6 +120,8 @@ export interface NativeResourceSpec {
   description: string
   mimeType?: string
   realtime?: boolean
+  /** 资源内容的标注（旧版原生模块忽略）。 */
+  annotations?: NativeContentAnnotations
 }
 
 export type NativeCancelReason = 'requested' | 'timeout' | 'disconnected' | 'stopped'
@@ -144,6 +148,8 @@ export interface NativeRead {
   readonly resourceName: string
   complete(contentsJson: string): void
   fail(kind: string, message: string): void
+  /** 失败完成并附带详情（JSON 文本）。旧版原生模块没有此方法。 */
+  failWithDetails?(kind: string, message: string, detailsJson?: string | null): void
 }
 
 export interface NativeTool {

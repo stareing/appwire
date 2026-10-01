@@ -9,6 +9,8 @@
 //!   （Kotlin `suspend`、Swift `async`、Python `async def`）。Hub 的 future 在自带运行时上执行，
 //!   外部语言只轮询 `JoinHandle`，因此不依赖外部语言的执行器类型。
 //!   `call_tool` 的 future 被外部取消（如 Kotlin 协程取消）时，自动 `cancel_call`。
+//! - 进度：`call_tool_with_progress` 的 [`ProgressListener`] 在专用阻塞线程上按顺序**同步**回调，
+//!   全部回调在调用结果返回之前完成。
 //! - 事件：外部实现 [`HubEventListener`]，在专用分发线程上**同步**回调（须尽快返回）；
 //!   接收方落后时回调 `on_lagged(skipped)`。
 //! - 审批 / 配对 / 唤醒：外部实现**同步**回调接口 [`ApprovalHandler`] / [`PairingHandler`] /
@@ -47,6 +49,13 @@ pub trait HubEventListener: Send + Sync {
     fn on_event(&self, event: HubEvent);
     /// 监听方处理过慢，跳过了 `skipped` 个事件；应重新拉取 `apps()` / `tools()`。
     fn on_lagged(&self, skipped: u64);
+}
+
+/// 调用进度接收方（[`AppMcpHub::call_tool_with_progress`]）。在专用阻塞线程上按顺序同步调用，必须尽快返回；
+/// 同一次调用的全部进度回调都在该调用的结果返回之前完成。
+#[uniffi::export(foreign)]
+pub trait ProgressListener: Send + Sync {
+    fn on_progress(&self, update: ProgressUpdate);
 }
 
 /// 厂商 UI 接管调用确认。
@@ -420,6 +429,42 @@ impl AppMcpHub {
             armed: true,
         };
         let res = self.run(async move { hub.call_tool(req).await }).await;
+        guard.armed = false;
+        Ok(res??.into())
+    }
+
+    /// 同 [`AppMcpHub::call_tool`]，并接收调用进度（spec/hub-api.md 3.12）：App 报告的进度经 Hub 合并
+    /// （`HubConfig.progress_interval_ms`）、丢弃不递增的值后逐条回调 `listener`；调用结束后不再回调。
+    ///
+    /// @side-effect 回调在专用阻塞线程上按顺序执行；回调抛出异常时忽略该条、继续接收。
+    /// @invariant 返回（或被外部取消而结束）之前，已收到的进度都已回调完毕。
+    pub async fn call_tool_with_progress(
+        &self,
+        request: CallRequest,
+        listener: Arc<dyn ProgressListener>,
+    ) -> Result<CallOutcome, HubError> {
+        let hub = self.hub()?;
+        let mut req = request.into_hub()?;
+        let call_id = req.call_id.get_or_insert_with(new_call_id).clone();
+        let mut guard = CancelOnDrop {
+            hub: hub.clone(),
+            call_id,
+            armed: true,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<hub::ProgressUpdate>();
+        let forward = self.handle.spawn_blocking(move || {
+            while let Some(update) = rx.blocking_recv() {
+                guarded(|| listener.on_progress(update.into()));
+            }
+        });
+        let res = self
+            .run(async move {
+                let out = hub.call_tool_with_progress(req, tx).await;
+                // 调用结束时 Hub 已释放进度出口，转发线程收完剩余进度后退出。
+                let _ = forward.await;
+                out
+            })
+            .await;
         guard.armed = false;
         Ok(res??.into())
     }

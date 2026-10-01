@@ -172,6 +172,32 @@ void main() {
       expect(fake.resourceRealtime('cart'), 0);
       expect(fake.resourceRealtime('page.live'), 1);
     });
+
+    test('资源内容标注经 am_resource_register_ex 传入（v13）', () {
+      client.resource('order.status',
+          description: '订单状态',
+          annotations: const ContentAnnotations(audience: [ContentAudience.user], priority: 0.5),
+          read: () => null);
+      client.resource('cart', description: '购物车', read: () => null);
+      expect(fake.resourceAnnotations('order.status'), '{"audience":["user"],"priority":0.5}');
+      expect(fake.resourceAnnotations('cart'), isNull);
+    });
+
+    test('调用去重经 am_client_new_ex 传入（v13）', () {
+      // 默认 5 分钟 / 64 条，原样传递。
+      expect(fake.callDedup(), '300000|64');
+      client.dispose();
+      client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path, callDedup: CallDedupPolicy.off);
+      // 0 = 关闭 → C ABI 负数。
+      expect(fake.callDedup(), '-1|-1');
+      client.dispose();
+      client = AppMcp(
+          appId: 'shop',
+          appName: '商店',
+          libraryPath: path,
+          callDedup: const CallDedupPolicy(ttl: Duration(seconds: 1), maxEntries: 3));
+      expect(fake.callDedup(), '1000|3');
+    });
   });
 
   group('生命周期（v3）', () {

@@ -171,7 +171,8 @@ pub struct CallResult {
 pub struct ResourceOptions {
     /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被 Host 订阅时阻止休眠，休眠期间变化时回连推送。
     /// 默认 `false`：订阅不阻止休眠，变化在下次连接时补发。
-    pub realtime: bool,
+    pub realtime: bool,    /// 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；`None` = 未声明。
+    pub annotations: Option<ContentAnnotations>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1274,6 +1275,7 @@ impl Shared {
                 mime_type: spec.mime_type,
                 scope,
                 realtime: options.realtime,
+                annotations: options.annotations,
             })
             .map_err(core_error)?;
         st.resources.insert(id, ResourceEntry { reader, scope });

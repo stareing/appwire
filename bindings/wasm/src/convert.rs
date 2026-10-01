@@ -725,7 +725,8 @@ pub struct JsResourceDef {
     pub mime_type: Option<String>,
     pub scope: Option<f64>,
     /// 缺省 `false`（spec/lifecycle.md 第 13 节 B3）。
-    pub realtime: bool,
+    pub realtime: bool,    /// 资源内容的标注（MCP 内容注解）；缺省未声明。
+    pub annotations: Option<ContentAnnotations>,
 }
 
 impl FromJson for JsResourceDef {
@@ -737,6 +738,7 @@ impl FromJson for JsResourceDef {
             mime_type: f.string("mimeType"),
             scope: f.f64("scope"),
             realtime: f.bool("realtime").unwrap_or(false),
+            annotations: f.object("annotations"),
         };
         f.finish(d)
     }
@@ -750,6 +752,7 @@ impl JsResourceDef {
             mime_type: self.mime_type,
             scope: scope_handle(self.scope)?,
             realtime: self.realtime,
+            annotations: self.annotations,
         })
     }
 }
@@ -1023,6 +1026,15 @@ mod tests {
         assert!(r.realtime);
         let r = JsResourceDef::from_json(json!({ "name": "cart" })).unwrap().into_core().unwrap();
         assert!(!r.realtime);
+        assert_eq!(r.annotations, None);
+        let r = JsResourceDef::from_json(json!({ "name": "cart", "annotations": { "audience": ["user"], "priority": 0.5 } }))
+            .unwrap()
+            .into_core()
+            .unwrap();
+        let want = ContentAnnotations { audience: Some(vec![Audience::User]), priority: Some(0.5), last_modified: None };
+        assert_eq!(r.annotations, Some(want));
+        let bad = JsResourceDef::from_json(json!({ "name": "cart", "annotations": { "audience": ["bot"] } }));
+        assert!(bad.is_err(), "非法内容标注报错");
         let bad = JsConfig::from_json(json!({ "appId": "shop", "appName": "商城", "instanceId": "i1", "transport": "x" }));
         assert!(bad.is_err_and(|e| e.contains("无效的传输类别")));
     }

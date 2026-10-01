@@ -5,7 +5,7 @@
 //! - 对象（`uniffi::Object`）：[`AppMcpClient`]、[`Scope`]、[`Tool`]、[`Resource`]、[`Call`]、[`Read`]、
 //!   [`Hold`]，分别包装原生运行时的 `NativeClient` 与各类句柄。
 //! - 记录（`uniffi::Record`）：[`ClientConfig`]、[`AppOverview`]、[`ToolSpec`]、[`ToolAnnotations`]、[`ResourceSpec`]、
-//!   [`CallResult`]、[`ContentAnnotations`]、[`StateInfo`]、[`LifecyclePolicy`]、[`WakeDescriptor`]。
+//!   [`CallResult`]、[`ContentAnnotations`]、[`StateInfo`]、[`LifecyclePolicy`]、[`WakeDescriptor`]、[`CallDedupPolicy`]。
 //! - 枚举（`uniffi::Enum`）：[`Risk`]、[`ResultStatus`]、[`Audience`]、[`Activation`]、[`Visibility`]、[`ClientKind`]、[`CancelReason`]、
 //!   [`StateStatus`]、[`LogLevel`]、[`LifecycleMode`]、[`Residency`]、[`WakeKind`]、[`WakeReason`]、[`SleepReason`]。
 //! - 函数：[`error_kinds`]、[`parse_wake_token`]。
@@ -509,6 +509,26 @@ pub struct ClientConfig {
     /// 心跳策略（spec/lifecycle.md 第 11 节）。为空时为 `Auto`。
     #[uniffi(default = None)]
     pub heartbeat: Option<HeartbeatMode>,
+    /// 调用去重（spec/protocol.md 3.3）。为空时保留 5 分钟、最多 64 条；任一字段为 0 关闭。
+    #[uniffi(default = None)]
+    pub call_dedup: Option<CallDedupPolicy>,
+}
+
+/// 调用去重策略（spec/protocol.md 3.3）：已开始执行的 `callId` 的首次结果在有效期内重放。任一字段为 0 关闭去重。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CallDedupPolicy {
+    /// 首次结果的保留时长（毫秒）。
+    #[uniffi(default = 300000)]
+    pub ttl_ms: u64,
+    /// 最多保留的结果数，超出时淘汰最早的。
+    #[uniffi(default = 64)]
+    pub max_entries: u32,
+}
+
+impl From<CallDedupPolicy> for native::CallDedupPolicy {
+    fn from(p: CallDedupPolicy) -> Self {
+        native::CallDedupPolicy { ttl_ms: p.ttl_ms, max_entries: p.max_entries as usize }
+    }
 }
 
 /// 本实例的唤醒描述，随 `app/sleep` 上报。
@@ -641,6 +661,9 @@ impl From<ClientConfig> for native::NativeConfig {
         }
         if let Some(h) = c.heartbeat {
             n.heartbeat = h.into();
+        }
+        if let Some(d) = c.call_dedup {
+            n.call_dedup = d.into();
         }
         n
     }
@@ -793,12 +816,16 @@ pub struct ResourceSpec {
     /// 默认 `false`：订阅不阻止休眠，变化在下次连接时补发。
     #[uniffi(default = false)]
     pub realtime: bool,
+    /// 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；为空表示未声明。
+    #[uniffi(default = None)]
+    pub annotations: Option<ContentAnnotations>,
 }
 
 impl From<ResourceSpec> for (native::ResourceSpec, native::ResourceOptions) {
     fn from(s: ResourceSpec) -> Self {
         let spec = native::ResourceSpec { name: s.name, description: s.description, mime_type: s.mime_type };
-        (spec, native::ResourceOptions { realtime: s.realtime })
+        let options = native::ResourceOptions { realtime: s.realtime, annotations: s.annotations.map(Into::into) };
+        (spec, options)
     }
 }
 
@@ -975,6 +1002,18 @@ impl Call {
             .inner
             .fail_with_details(kind, &message, details_json.as_deref())?)
     }
+    /// 以 `USER_ACTION_REQUIRED` 失败完成（spec/protocol.md 第 4 节）：需要用户本人操作后才能继续。
+    /// `reason` 建议取 `login` / `permission` / `foreground` / `confirm`；`uri` 为 App 内入口。为空的字段不出现在错误的 `data` 中。
+    pub fn fail_user_action(
+        &self,
+        message: String,
+        reason: Option<String>,
+        uri: Option<String>,
+    ) -> Result<(), AppMcpError> {
+        Ok(self
+            .inner
+            .fail_user_action(&message, reason.as_deref(), uri.as_deref())?)
+    }
     /// 报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent。`progress` 应递增，`total` 未知时为 `None`。
     /// 未连接时丢弃；调用已结束时返回 `AlreadyCompleted`。
     pub fn report_progress(
@@ -1026,6 +1065,29 @@ impl Read {
     pub fn fail(&self, kind: String, message: String) -> Result<(), AppMcpError> {
         let kind = parse_error_kind(&kind)?;
         Ok(self.inner.fail(kind, &message)?)
+    }
+    /// 失败完成并附带结构化详情；语义同 [`Call::fail_with_details`]（非法 JSON 返回 `InvalidJson`，读取仍未完成）。
+    pub fn fail_with_details(
+        &self,
+        kind: String,
+        message: String,
+        details_json: Option<String>,
+    ) -> Result<(), AppMcpError> {
+        let kind = parse_error_kind(&kind)?;
+        Ok(self
+            .inner
+            .fail_with_details(kind, &message, details_json.as_deref())?)
+    }
+    /// 以 `USER_ACTION_REQUIRED` 失败完成；语义同 [`Call::fail_user_action`]。
+    pub fn fail_user_action(
+        &self,
+        message: String,
+        reason: Option<String>,
+        uri: Option<String>,
+    ) -> Result<(), AppMcpError> {
+        Ok(self
+            .inner
+            .fail_user_action(&message, reason.as_deref(), uri.as_deref())?)
     }
 }
 
@@ -1264,9 +1326,16 @@ mod tests {
             lifecycle: None,
             connect_timeout_ms: None,
             heartbeat: None,
+            call_dedup: None,
         };
         let n: native::NativeConfig = cfg.clone().into();
         assert_eq!(n, native::NativeConfig::new("shop", "Shop"));
+        let d = CallDedupPolicy { ttl_ms: 300_000, max_entries: 64 };
+        assert_eq!(native::CallDedupPolicy::from(d), native::CallDedupPolicy::default(), "记录默认值与原生一致");
+        let n: native::NativeConfig =
+            ClientConfig { call_dedup: Some(CallDedupPolicy { ttl_ms: 0, max_entries: 8 }), ..cfg.clone() }.into();
+        assert_eq!(n.call_dedup, native::CallDedupPolicy { ttl_ms: 0, max_entries: 8 });
+        assert!(!n.call_dedup.enabled());
 
         let n: native::NativeConfig = ClientConfig {
             client_kind: Some(ClientKind::Hybrid),
@@ -1394,8 +1463,25 @@ mod tests {
             LifecyclePolicy { merge_window_ms: 500, sleep_on_background: true, ..p.clone() }.into();
         assert_eq!((n.merge_window_ms, n.sleep_on_background), (500, true));
         let (_, options): (native::ResourceSpec, native::ResourceOptions) =
-            ResourceSpec { name: "r".into(), description: "d".into(), mime_type: None, realtime: true }.into();
+            ResourceSpec { name: "r".into(), description: "d".into(), mime_type: None, realtime: true, annotations: None }
+                .into();
         assert!(options.realtime);
+        assert_eq!(options.annotations, None);
+        let (_, options): (native::ResourceSpec, native::ResourceOptions) = ResourceSpec {
+            name: "r".into(),
+            description: "d".into(),
+            mime_type: None,
+            realtime: false,
+            annotations: Some(ContentAnnotations {
+                audience: Some(vec![Audience::Assistant]),
+                priority: Some(0.2),
+                last_modified: Some("2026-10-02T00:00:00Z".into()),
+            }),
+        }
+        .into();
+        let a = options.annotations.expect("annotations");
+        assert_eq!(a.audience, Some(vec![native::Audience::Assistant]));
+        assert_eq!((a.priority, a.last_modified.as_deref()), (Some(0.2), Some("2026-10-02T00:00:00Z")));
         let n: native::LifecyclePolicy = LifecyclePolicy {
             mode: Some(LifecycleMode::Idle),
             hidden_idle_timeout_ms: 0,
@@ -1454,6 +1540,7 @@ mod tests {
             }),
             connect_timeout_ms: Some(1000),
             heartbeat: Some(HeartbeatMode::Off),
+            call_dedup: Some(CallDedupPolicy { ttl_ms: 1_000, max_entries: 4 }),
         };
         let client = AppMcpClient::new(cfg, None).expect("client");
         assert!(!client.handle_wake("not-a-wake".into()));
@@ -1462,6 +1549,127 @@ mod tests {
         hold.release();
         hold.release();
         client.stop();
+    }
+
+    /// `session`：USER_ACTION_REQUIRED（reason / uri）；`quota`：带详情失败（非法详情不消费 read，可重试）。
+    struct FailingReader;
+
+    impl ResourceReader for FailingReader {
+        fn read(&self, read: Arc<Read>) {
+            if read.resource_name() == "session" {
+                let _ = read.fail_user_action(
+                    "登录已过期，请在 App 内重新登录".into(),
+                    Some("login".into()),
+                    Some("shop://login".into()),
+                );
+                return;
+            }
+            let bad = read.fail_with_details("USER_REJECTED".into(), "额度不足".into(), Some("{bad".into()));
+            assert!(matches!(bad, Err(AppMcpError::InvalidJson { .. })), "{bad:?}");
+            let unknown = read.fail_with_details("NOPE".into(), "x".into(), None);
+            assert!(matches!(unknown, Err(AppMcpError::UnknownErrorKind { .. })), "{unknown:?}");
+            let _ = read.fail_with_details("USER_REJECTED".into(), "额度不足".into(), Some(r#"{"quota":0}"#.into()));
+        }
+    }
+
+    /// 需要用户操作的工具：`login` 带 reason / uri，`front` 只带说明。
+    struct UserActionTool;
+
+    impl ToolHandler for UserActionTool {
+        fn invoke(&self, call: Arc<Call>) {
+            let (reason, uri) = if call.tool_name() == "login" {
+                (Some("login".to_owned()), Some("shop://login".to_owned()))
+            } else {
+                (None, None)
+            };
+            let _ = call.fail_user_action("请处理后重试".into(), reason, uri);
+        }
+    }
+
+    /// 端到端：资源读取失败的详情与 USER_ACTION_REQUIRED（reason / uri）经 uniffi 层到达 Host（fake_host）。
+    #[test]
+    fn read_and_call_failures_reach_host() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+
+        let bin = native::test_support::fake_host_path().unwrap_or_else(|e| panic!("{e}"));
+        let mut child = Command::new(bin)
+            .args([
+                "--invoke", "login", "--invoke", "front", "--read", "session", "--read", "quota", "--timeout-ms", "8000",
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("启动 fake_host");
+        let stdout = child.stdout.take().expect("stdout");
+        let mut lines = BufReader::new(stdout).lines();
+        let first = lines.next().and_then(Result::ok).unwrap_or_default();
+        let addr = first.strip_prefix("LISTENING ").unwrap_or_default().to_owned();
+        assert!(!addr.is_empty(), "LISTENING 行：{first}");
+
+        let cfg = ClientConfig {
+            app_id: "uniffi-read".into(),
+            app_name: "uniffi read".into(),
+            instance_id: None,
+            client_kind: None,
+            host_url: Some(format!("ws://{addr}")),
+            app_version: None,
+            instance_title: None,
+            token: None,
+            launch_token: None,
+            max_concurrent_calls: 1,
+            overview: None,
+            lifecycle: None,
+            connect_timeout_ms: None,
+            heartbeat: None,
+            call_dedup: None,
+        };
+        let client = AppMcpClient::new(cfg, None).expect("client");
+        let mut keep = Vec::new();
+        for n in ["login", "front"] {
+            let spec = ToolSpec {
+                name: n.into(),
+                description: "d".into(),
+                input_schema_json: None,
+                risk: Some(Risk::Read),
+                activation: None,
+                title: None,
+                enabled: true,
+                annotations: None,
+                output_schema_json: None,
+            };
+            keep.push(client.register_tool(spec, Arc::new(UserActionTool)).expect("tool"));
+        }
+        let mut res = Vec::new();
+        for n in ["session", "quota"] {
+            let spec = ResourceSpec {
+                name: n.into(),
+                description: "d".into(),
+                mime_type: None,
+                realtime: false,
+                annotations: Some(ContentAnnotations { priority: Some(1.0), ..ContentAnnotations::default() }),
+            };
+            res.push(client.register_resource(spec, Arc::new(FailingReader)).expect("resource"));
+        }
+        client.start();
+        let out: Vec<serde_json::Value> =
+            lines.map_while(Result::ok).filter_map(|l| serde_json::from_str(&l).ok()).collect();
+        let ok = child.wait().is_ok_and(|s| s.success());
+        client.stop();
+        assert!(ok, "fake_host 退出码非 0：{out:?}");
+        let ua = serde_json::json!({
+            "code": -32019, "message": "请处理后重试",
+            "data": { "kind": "USER_ACTION_REQUIRED", "reason": "login", "uri": "shop://login" }
+        });
+        assert_eq!(out[1]["error"], ua);
+        assert_eq!(out[2]["error"]["data"], serde_json::json!({ "kind": "USER_ACTION_REQUIRED" }));
+        assert_eq!(
+            out[3]["error"],
+            serde_json::json!({
+                "code": -32019, "message": "登录已过期，请在 App 内重新登录",
+                "data": { "kind": "USER_ACTION_REQUIRED", "reason": "login", "uri": "shop://login" }
+            })
+        );
+        assert_eq!(out[4]["error"]["data"], serde_json::json!({ "kind": "USER_REJECTED", "quota": 0 }));
     }
 
     #[test]

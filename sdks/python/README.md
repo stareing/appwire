@@ -65,7 +65,13 @@ def submit() -> ToolResult:
 - Raise `ToolCallError(kind, message, details=None)` to fail with a specific error kind. When only the user can
   unblock the call (expired login, missing OS permission, app must be in the foreground, in-app confirmation), raise
   `ToolCallError.user_action_required("Login expired, sign in again", UserActionReason.LOGIN, "notes://login")`
-  (`USER_ACTION_REQUIRED`; `reason` and `uri` are optional and omitted when `None`).
+  (`USER_ACTION_REQUIRED`; `reason` and `uri` are optional and omitted when `None`). Resource readers can raise
+  the same errors; the kind and details reach the Host unchanged.
+- Resources take content annotations too: `add_resource(fn, "cart", annotations={"audience": ["user"], "priority": 0.5})`
+  (or `@app.resource(..., annotations=...)`); the Hub puts them on the resource in MCP `resources/list`.
+- Call de-duplication (`spec/protocol.md` §3.3): a retried `callId` replays the first result for 300 s / 64 entries by
+  default. Tune or disable it with `AppMcp(..., call_dedup=CallDedup(ttl=60, max_entries=16))` /
+  `call_dedup=CallDedup.OFF`; each hit is logged as a warning.
 
 ## Lifecycle and power
 
@@ -107,6 +113,10 @@ Ordinary resources (the default) do not block sleep; their changes are delivered
 `app_mcp.hub.Hub` embeds the hub in a Python agent: export tools in MCP, OpenAI, Anthropic or
 Gemini format, dispatch the model's tool calls, and handle approvals in your own UI. See
 [`examples/hub_llm_loop.py`](examples/hub_llm_loop.py).
+
+Progress (`spec/hub-api.md` §3.12): `await hub.call_tool("files.export", on_progress=lambda u: print(u.progress, u.total,
+u.message))` receives the progress the app reports (merged by the Hub) on the caller's event loop, all before the
+result is returned.
 
 Resource protection and result checks (`spec/hub-api.md` §3.11):
 

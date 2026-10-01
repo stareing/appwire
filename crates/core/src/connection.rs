@@ -525,12 +525,15 @@ impl Client {
     fn on_invoke(&mut self, id: RequestId, p: ToolsInvokeParams, now: Millis) {
         self.session.served_call = true;
         // 去重（spec/protocol.md 3.3）：已开始执行过的 callId 重放首次结果；进行中 / 排队中的挂到同一次执行上。
+        // @why 命中只记一条警告日志（SDK 本地可观测，spec/protocol.md 3.3），不另设计数器或上报 Host。
         if let Some(outcome) = self.dedup.lookup(&self.config.call_dedup, &p.call_id, now) {
+            self.warn(format!("callId {:?} 重复到达（调用去重）：重放首次结果，不再执行", p.call_id));
             self.respond(id, outcome);
             return;
         }
         if self.calls.contains(&p.call_id) {
             if self.config.call_dedup.enabled() {
+                self.warn(format!("callId {:?} 重复到达（调用去重）：挂到执行中的同一次调用", p.call_id));
                 self.calls.attach(&p.call_id, id);
             } else {
                 let err = RpcError::invalid_params(format!("callId {:?} 已存在", p.call_id));

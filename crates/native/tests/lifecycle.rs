@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use app_mcp_native::{
-    CallHandle, ClientListener, ErrorKind, LifecycleMode, LogLevel, NativeClient, NativeConfig,
+    CallHandle, ClientListener, ContentAnnotations, ErrorKind, LifecycleMode, LogLevel, NativeClient, NativeConfig,
     NativeError, ReadHandle, Residency, ResourceOptions, ResourceReader, ResourceSpec, StateInfo,
     StateStatus, ToolHandler, ToolSpec, Visibility,
 };
@@ -378,12 +378,17 @@ fn realtime_resource_and_background_sleep_reach_the_wire() {
     config.lifecycle.merge_window_ms = 500;
     let client = NativeClient::new(config, None).unwrap();
     let spec = ResourceSpec { name: "order".into(), description: "订单".into(), mime_type: None };
+    let options = ResourceOptions {
+        realtime: true,
+        annotations: Some(ContentAnnotations { priority: Some(0.8), ..ContentAnnotations::default() }),
+    };
     let _order = client
-        .register_resource_with(spec, ResourceOptions { realtime: true }, Arc::new(Order))
+        .register_resource_with(spec, options, Arc::new(Order))
         .unwrap();
     client.start();
     let sync = host.wait_notification(method::RESOURCES_SYNC);
     assert_eq!(sync["resources"][0]["realtime"], true, "{sync}");
+    assert_eq!(sync["resources"][0]["annotations"], json!({"priority": 0.8}), "资源内容标注随同步上报：{sync}");
     host.wait_ready();
     client.set_visibility(Visibility::Hidden, false);
     let sleep = host.wait_request(method::SLEEP);

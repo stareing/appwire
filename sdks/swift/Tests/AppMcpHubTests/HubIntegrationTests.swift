@@ -276,6 +276,47 @@ final class HubIntegrationTests: XCTestCase {
         XCTAssertTrue(decl.outputSchema)
     }
 
+    /// 第 16 项 O2：`callTool(onProgress:)` 在返回前收到合并后的进度；资源内容标注经 Hub 列出。
+    func testProgressCallbackAndResourceAnnotations() async throws {
+        let hub = try Hub(config: HubConfig(listen: "127.0.0.1:0", enableIpc: false))
+        defer { hub.close() }
+        let app = try AppMcpClient(config: AppMcpConfig(
+            appId: "work", appName: "长任务", hostURL: "ws://\(hub.listenAddr ?? "")/app"
+        ))
+        try app.backgroundTool("run", description: "长任务", risk: .read) { (_: NoArguments, ctx) in
+            ctx.progress(1, total: 2, message: "第一步")
+            try await Task.sleep(nanoseconds: 350_000_000) // 超过 Hub 默认合并间隔 250 ms
+            ctx.progress(2, total: 2)
+            try await Task.sleep(nanoseconds: 350_000_000)
+            return ["done": true]
+        }
+        try app.resource(
+            "cart", description: "购物车",
+            annotations: AppMcp.ContentAnnotations(audience: [.user], priority: 0.5)
+        ) { [String: String]() }
+        app.start()
+        defer { app.stop() }
+
+        let deadline = Date().addingTimeInterval(10)
+        while hub.tools(ToolFilter(apps: ["work"], includeBuiltin: false)).isEmpty
+            || !hub.resources().contains(where: { $0.appId == "work" }) {
+            if Date() > deadline { return XCTFail("等待注册超时") }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let res = try XCTUnwrap(hub.resources().first { $0.appId == "work" })
+        XCTAssertEqual(res.annotations?.priority, 0.5)
+        XCTAssertEqual(res.annotations?.audience, [.user])
+
+        let got = ProgressLog()
+        let out = try await hub.callTool("work.run", onProgress: { got.append($0) })
+        XCTAssertNil(out.error)
+        XCTAssertEqual(
+            got.items,
+            [ProgressUpdate(progress: 1, total: 2, message: "第一步"), ProgressUpdate(progress: 2, total: 2, message: nil)],
+            "结果返回前收到全部进度"
+        )
+    }
+
     /// 策略挂点（spec/hub-api.md 3.13）：hide → 不在列表、调用 TOOL_NOT_FOUND；deny → POLICY_DENIED；
     /// setPolicy 不合法时抛错且旧规则继续生效；清空后恢复原行为。
     func testPolicyHideDenyAndSetPolicy() async throws {
@@ -408,4 +449,12 @@ final class HubIntegrationTests: XCTestCase {
         let instance = hub.apps().first { $0.appId == "notes" }?.instances.first
         XCTAssertEqual(instance?.pid, UInt32(ProcessInfo.processInfo.processIdentifier))
     }
+}
+
+/// 进度回调记录（回调在 Hub 线程上）。
+private final class ProgressLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [ProgressUpdate] = []
+    func append(_ u: ProgressUpdate) { lock.lock(); list.append(u); lock.unlock() }
+    var items: [ProgressUpdate] { lock.lock(); defer { lock.unlock() }; return list }
 }

@@ -471,6 +471,30 @@ final class WakeDescriptor {
 }
 
 /// 生命周期策略。
+/// 调用去重策略（spec/protocol.md 3.3，[AppMcp] 的 `callDedup`）：同一 callId 在有效期内重复到达时重放首次结果、
+/// 不再执行 handler。任一项为 0 关闭去重。
+final class CallDedupPolicy {
+  const CallDedupPolicy({this.ttl = const Duration(minutes: 5), this.maxEntries = 64});
+
+  /// 关闭去重。
+  static const off = CallDedupPolicy(ttl: Duration.zero, maxEntries: 0);
+
+  /// 首次结果的保留时长。
+  final Duration ttl;
+
+  /// 最多保留的结果数（超出淘汰最早的）。
+  final int maxEntries;
+
+  @override
+  bool operator ==(Object other) => other is CallDedupPolicy && other.ttl == ttl && other.maxEntries == maxEntries;
+
+  @override
+  int get hashCode => Object.hash(ttl, maxEntries);
+
+  @override
+  String toString() => 'CallDedupPolicy(ttl: $ttl, maxEntries: $maxEntries)';
+}
+
 final class LifecyclePolicy {
   const LifecyclePolicy({
     this.mode = LifecycleMode.persistent,
@@ -678,7 +702,8 @@ final class AppOverview {
 
 /// 资源定义。
 final class ResourceSpec {
-  const ResourceSpec({required this.name, required this.description, this.mimeType, this.realtime = false});
+  const ResourceSpec(
+      {required this.name, required this.description, this.mimeType, this.realtime = false, this.annotations});
 
   final String name;
   final String description;
@@ -688,4 +713,7 @@ final class ResourceSpec {
 
   /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时保持连接、休眠中变化时回连推送。
   final bool realtime;
+
+  /// 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；null 表示不声明。
+  final ContentAnnotations? annotations;
 }

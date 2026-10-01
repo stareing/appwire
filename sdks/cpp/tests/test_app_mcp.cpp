@@ -241,6 +241,9 @@ void test_power_options() {
     EXPECT(opts.struct_size == sizeof(AmClientOptions) && opts.lifecycle == &lc);
     EXPECT(opts.heartbeat == AM_HEARTBEAT_AUTO && opts.host_absent_retries == 3 && !opts.legacy_timers &&
            opts.merge_window_ms == 2000 && !opts.sleep_on_background);
+    // 调用去重（v13）：默认 5 分钟 / 64 条，原样传给 C ABI。
+    EXPECT(config.call_dedup.ttl_ms == 300000 && config.call_dedup.max_entries == 64);
+    EXPECT(opts.call_dedup_ttl_ms == 300000 && opts.call_dedup_max_entries == 64);
 
     // 显式值逐项映射；0 = 一直重连 / 不留窗口 → C ABI 负数。
     config.heartbeat = AM_HEARTBEAT_OFF;
@@ -249,8 +252,14 @@ void test_power_options() {
     config.lifecycle.legacy_timers = true;
     config.lifecycle.merge_window_ms = 0;
     config.lifecycle.sleep_on_background = true;
+    config.call_dedup.ttl_ms = 0;
     app_mcp::detail::fill_client_options(config, &lc, &opts);
     EXPECT(lc.mode == AM_LIFECYCLE_IDLE);
+    EXPECT(opts.call_dedup_ttl_ms < 0 && opts.call_dedup_max_entries == 64);  // 0 = 关闭 → C ABI 负数
+    config.call_dedup = app_mcp::CallDedup{1000, 0};
+    app_mcp::detail::fill_client_options(config, &lc, &opts);
+    EXPECT(opts.call_dedup_ttl_ms == 1000 && opts.call_dedup_max_entries < 0);
+    config.call_dedup = app_mcp::CallDedup{};
     EXPECT(opts.heartbeat == AM_HEARTBEAT_OFF && opts.host_absent_retries < 0 && opts.legacy_timers &&
            opts.merge_window_ms < 0 && opts.sleep_on_background);
     config.heartbeat = AM_HEARTBEAT_ALWAYS;
@@ -262,6 +271,8 @@ void test_power_options() {
     // 超出 C ABI 范围时截断而不是回绕成负数（负数在 C ABI 中另有含义）。
     EXPECT(app_mcp::detail::encode_host_absent_retries(UINT32_MAX) == INT32_MAX);
     EXPECT(app_mcp::detail::encode_merge_window_ms(UINT64_MAX) == INT64_MAX);
+    EXPECT(app_mcp::detail::encode_dedup_ttl_ms(UINT64_MAX) == INT64_MAX);
+    EXPECT(app_mcp::detail::encode_dedup_max_entries(UINT32_MAX) == INT32_MAX);
 
     // 非法心跳枚举值 → AM_ERR_INVALID_ARGUMENT（说明字段确实传到了库）。
     config.host_url = "ws://127.0.0.1:1";
@@ -282,6 +293,13 @@ void test_power_options() {
     text.mime_type = std::string("text/plain");
     auto r2 = client.register_resource("app.note", "备注", [](app_mcp::Read read) { read.complete("\"x\""); }, text);
     EXPECT(static_cast<bool>(r2));
+    // 资源内容标注（v13）。
+    app_mcp::ResourceOptions annotated;
+    annotated.annotations = app_mcp::ContentAnnotations{};
+    annotated.annotations->audience = std::vector<app_mcp::Audience>{app_mcp::Audience::User};
+    annotated.annotations->priority = 0.5;
+    auto r3 = client.register_resource("app.summary", "摘要", [](app_mcp::Read read) { read.complete("{}"); }, annotated);
+    EXPECT(static_cast<bool>(r3));
     EXPECT(status_of([&] {
                client.register_resource("order.status", "重名", [](app_mcp::Read) {}, rt);
            }) == AM_ERR_DUPLICATE_NAME);

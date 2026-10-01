@@ -106,6 +106,17 @@ class UnitTest {
     }
 
     @Test
+    fun callDedupMapsToFfi() {
+        assertEquals(null, AppMcpConfig("kotlin-unit", "去重").toFfi().callDedup)
+        val d = CallDedupPolicy()
+        assertEquals(300_000uL, d.ttlMs)
+        assertEquals(64u, d.maxEntries)
+        val off = CallDedupPolicy(0u, 0u)
+        assertEquals(off, AppMcpConfig("kotlin-unit", "去重", callDedup = off).toFfi().callDedup)
+        AppMcp.create(AppMcpConfig("kotlin-unit", "去重关", hostUrl = "ws://127.0.0.1:9", callDedup = off)).close()
+    }
+
+    @Test
     fun heartbeatMapsToFfi() {
         assertEquals(HeartbeatMode.AUTO, AppMcpConfig("kotlin-unit", "心跳").toFfi().heartbeat)
         for (mode in HeartbeatMode.entries) {
@@ -132,6 +143,12 @@ class UnitTest {
         val realtime = hashWith { it.resource("order", "订单", realtime = true) { null } }
         assertEquals(plain, explicitFalse)
         assertTrue(plain != realtime)
+        // 资源内容标注随同步上报（计入摘要），未声明时不变
+        val annotated = hashWith {
+            it.resource("order", "订单", annotations = ContentAnnotations(audience = listOf(Audience.USER), priority = 0.5)) { null }
+        }
+        assertTrue(plain != annotated)
+        assertEquals(plain, hashWith { it.resource("order", "订单", annotations = null) { null } })
         client.scope("s").use { it.resource("s.order", "订单", realtime = true) { null } }
     }
 

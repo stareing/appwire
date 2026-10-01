@@ -89,6 +89,9 @@ class FakeRead {
   fail(kind, message) {
     this.resolve({ ok: false, kind, message });
   }
+  failWithDetails(kind, message, detailsJson) {
+    this.resolve({ ok: false, kind, message, detailsJson });
+  }
 }
 
 class FakeRegistrar {

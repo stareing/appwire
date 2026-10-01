@@ -235,16 +235,20 @@ abstract class AppMcpRegistrar internal constructor() {
      *
      * @param realtime 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时阻止休眠、休眠中变化时回连推送。
      *   默认 false：订阅不阻止休眠，变化在下次连接时补发。
+     * @param annotations 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上。
+     * @error [reader] 抛出 [ToolCallException]（含 [ToolCallException.userActionRequired]）时类别与详情原样交给 Host。
      */
     fun resource(
         name: String,
         description: String,
         mimeType: String? = null,
         realtime: Boolean = false,
+        annotations: ContentAnnotations? = null,
         reader: ResourceFunction,
     ): ResourceHandle {
         val o = owner
-        val raw = registerRaw(ResourceSpec(name, description, mimeType, realtime), object : ResourceReader {
+        val spec = ResourceSpec(name, description, mimeType, realtime, annotations)
+        val raw = registerRaw(spec, object : ResourceReader {
             override fun read(read: Read) = o.runRead(read, reader)
         })
         return ResourceHandle(raw)
@@ -493,7 +497,7 @@ class AppMcp private constructor(
 
     /** 在分发线程上调用。 */
     internal fun runRead(read: Read, reader: ResourceFunction) {
-        launchGuarded(fail = { kind, msg, _ -> failQuietly(read, kind, msg) }) {
+        launchGuarded(fail = { kind, msg, details -> failQuietly(read, kind, msg, details) }) {
             val data = anyToJson(reader())
             try {
                 read.complete(data.toString())
@@ -551,12 +555,12 @@ class AppMcp private constructor(
         }
     }
 
-    private fun failQuietly(read: Read, kind: String, message: String) {
+    private fun failQuietly(read: Read, kind: String, message: String, details: JsonElement? = null) {
         try {
-            read.fail(kind, message)
+            read.failWithDetails(kind, message, details?.toString())
         } catch (_: AppMcpException.AlreadyCompleted) {
         } catch (_: AppMcpException.UnknownErrorKind) {
-            failQuietly(read, ErrorKind.HANDLER_ERROR, message)
+            failQuietly(read, ErrorKind.HANDLER_ERROR, message, details)
         } catch (_: AppMcpException) {
         }
     }

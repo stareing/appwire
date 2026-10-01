@@ -16,7 +16,7 @@ import pytest
 
 hub_mod = pytest.importorskip("app_mcp.hub", reason="没有 app_mcp_hub 生成物")
 
-from app_mcp import AppMcp  # noqa: E402
+from app_mcp import AppMcp, ToolContext  # noqa: E402
 from app_mcp.hub import CallResult, Hub, HubError, ToolError, ToolFormat  # noqa: E402
 
 pytestmark = pytest.mark.hub
@@ -485,3 +485,51 @@ def test_policy_hide_deny_and_set_policy() -> None:
             assert hub.policy().rules == []
         finally:
             app.stop()
+
+
+def test_progress_callback_and_resource_annotations() -> None:
+    """第 16 项 O2：``call_tool(on_progress=...)`` 在结果返回前收到合并后的进度；资源内容标注经 Hub 列出。"""
+    from app_mcp.hub import ProgressUpdate
+
+    async def main() -> None:
+        with Hub(listen="127.0.0.1:0", enable_ipc=False) as hub:
+            app = AppMcp("work", "长任务", host_url=f"ws://{hub.listen_addr}/app")
+
+            @app.tool("run", description="长任务", risk="read")
+            def run(ctx: ToolContext) -> dict:
+                ctx.progress(1, 2, "第一步")
+                time.sleep(0.35)  # 超过 Hub 默认合并间隔 250 ms
+                ctx.progress(2, 2)
+                time.sleep(0.35)
+                return {"done": True}
+
+            @app.resource("cart", description="购物车", annotations={"audience": ["user"], "priority": 0.5})
+            def cart() -> dict:
+                return {}
+
+            app.start()
+            try:
+                deadline = time.monotonic() + 10
+                while not hub.tools(apps=["work"], include_builtin=False) or not hub.resources():
+                    assert time.monotonic() < deadline, "等待注册超时"
+                    await asyncio.sleep(0.02)
+                (res,) = [r for r in hub.resources() if r.app_id == "work"]
+                assert res.annotations is not None
+                assert (res.annotations.priority, [a.name for a in res.annotations.audience]) == (0.5, ["USER"])
+
+                loop_thread = threading.get_ident()
+                got: list[tuple[ProgressUpdate, int]] = []
+                out = await hub.call_tool("work.run", on_progress=lambda u: got.append((u, threading.get_ident())))
+                assert out.error is None and out.data == {"done": True}
+                assert [(u.progress, u.total, u.message) for u, _ in got] == [(1.0, 2.0, "第一步"), (2.0, 2.0, None)]
+                assert all(t == loop_thread for _, t in got), "在调用方的事件循环线程上回调"
+
+                def boom(_u: ProgressUpdate) -> None:
+                    raise RuntimeError("UI 崩溃")
+
+                out = await hub.call_tool("work.run", on_progress=boom)
+                assert out.error is None, "回调异常不影响结果"
+            finally:
+                app.close()
+
+    asyncio.run(main())

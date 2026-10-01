@@ -111,6 +111,16 @@ final class FakeNative {
 
   /// 资源注册时的 realtime：1 / 0；找不到时 -1。
   int resourceRealtime(String name) => using((a) => _resourceRealtime(name.toNativeUtf8(allocator: a)));
+  late final _resourceAnnotations = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
+      Pointer<Utf8> Function(Pointer<Utf8>)>('fake_resource_annotations');
+
+  /// v13：资源注册时的内容标注 JSON；未声明或找不到时 null。
+  String? resourceAnnotations(String name) => _take(using((a) => _resourceAnnotations(name.toNativeUtf8(allocator: a))));
+  late final _callDedup =
+      lib.lookupFunction<Pointer<Utf8> Function(), Pointer<Utf8> Function()>('fake_call_dedup');
+
+  /// v13：最近一次 am_client_new_ex 的调用去重 `ttlMs|maxEntries`（C ABI 编码）。
+  String? callDedup() => _take(_callDedup());
   late final _toolEnabled = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>(
       'fake_tool_enabled');
   late final _toolDescription = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),

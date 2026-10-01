@@ -85,6 +85,10 @@ client.onIdleExit.listen((_) { /* residency 允许时：App 自行决定是否�
   | `LifecyclePolicy.sleepOnBackground` | false（移动端默认 true） | idle / onDemand 下进入后台且空闲时立即休眠，不等租约 |
   | `LifecyclePolicy.legacyTimers` | false | 回退到 4e 之前的定时器行为 |
   | `resource(..., realtime: true)` / `McpResource(realtime: true)` | false | 模型在等待变化的资源：被订阅时保持连接、休眠中变化时回连推送；普通资源的订阅不阻止休眠 |
+- `resource(..., annotations: ContentAnnotations(audience: [ContentAudience.user], priority: 0.5))` /
+  `McpResource(annotations: ...)`：资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；缺省不声明。
+- 调用去重（spec/protocol.md 3.3）：`AppMcp(callDedup: CallDedupPolicy(ttl: Duration(minutes: 5), maxEntries: 64))`（即默认值）——
+  同一 callId 在有效期内重复到达时重放首次结果、不再执行 handler；`CallDedupPolicy.off` 或任一项为 0 关闭。命中时 SDK 记一条警告日志。
 - handler 内的长任务用 `ctx.hold()` 延长持有（必须在调用完成前获取）；调用进行中本身就视为非空闲。
 - `throw ToolCallError(kind, message, details: {...})`：`details` 经 `am_call_fail_with_details` 上报，
   对象字段合并进协议错误的 `data`。

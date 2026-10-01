@@ -53,6 +53,10 @@ if (out.overview) addToContext(out.overview.text)   // 该会话首次接触此 
 `CallOutcome` 另有 `status`（`'done'` / `'pending'` / `'partial'` / `'noop'`）、`stateResource`（`pending` 时可读后续状态的资源 URI）、
 `summary` 与 `annotations`（App 对结果内容的 MCP 内容注解，原样）；`result.ok` 为原始返回值（无返回值为 `null`）。
 
+接收进度：`hub.callTool(req, { onProgress: (p) => console.log(p.progress, p.total, p.message) })`——App 端 `ctx.progress(...)`
+报告的进度经 Hub 合并（最小间隔 `progressIntervalMs`，缺省 250，丢弃不递增的值，`message` 截断到 200 字符）后在 Node 事件循环上
+逐条回调，全部先于返回的 Promise 完成；调用结束后不再回调；回调抛错交给 `onListenerError`。不传 `onProgress` 时进度被丢弃。
+
 ### B. 自有 LLM：导出 + dispatch
 
 `exportTools(format, filter?)` 与 `dispatch(format, toolCall, session?)` 支持 `mcp`、`openai-chat`、`openai-responses`、
@@ -239,7 +243,7 @@ await hub.shutdown()
 | `shutdown()` | 关闭 App 连接与后台任务；之后调用抛 `HubError('SHUTDOWN')` |
 | `apps()` / `tools(filter?)` / `resources()` / `overview(appId)` | 查询快照 |
 | `status()` | 运行状态（`HubStatus`：监听、令牌策略、各 App 状态与最近错误、限流 / 超限计数与工具声明、SDK 诊断上报；与 `GET /status` 相同） |
-| `callTool(req)` / `cancelCall(callId)` | 调用与取消（`req.timeout` 毫秒） |
+| `callTool(req, { onProgress? }?)` / `cancelCall(callId)` | 调用（可接收进度）与取消（`req.timeout` 毫秒） |
 | `readResource(uri)` / `subscribe(uri)` / `unsubscribe(uri)` | 资源（`app-mcp://<appId>/<name>`） |
 | `selectInstance(appId, instanceId?)` / `resetSession(session?)` | 路由与会话 |
 | `exportTools(format, filter?)` / `dispatch(format, call, session?)` | 格式导出与分派 |

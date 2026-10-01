@@ -234,6 +234,8 @@ export interface HubConfig {
   responseTimeoutMs?: number
   /** 列表变化通知的合并窗口，缺省 50。 */
   listChangedDebounceMs?: number
+  /** 调用进度的最小转发间隔（`callTool` 的 `onProgress`，spec/hub-api.md 3.12），缺省 250。 */
+  progressIntervalMs?: number
   /** 等待配对回调的上限，缺省 120000。 */
   pairingTimeoutMs?: number
   // ---- 生命周期（spec/hub-api.md 3.5）----
@@ -409,6 +411,23 @@ export interface CallRequest {
   callId?: string | null
   /** 厂商会话 ID：总览首次附带、`apps.select` 按会话计算。 */
   session?: string | null
+}
+
+/** 一条调用进度（spec/hub-api.md 3.12）：已按 `progressIntervalMs` 合并、丢弃不递增的值；`message` 最长 200 字符。 */
+export interface ProgressUpdate {
+  progress: number
+  /** 未知时缺省。 */
+  total?: number | null
+  message?: string | null
+}
+
+/** {@link Hub.callTool} 的选项。 */
+export interface CallToolOptions {
+  /**
+   * 接收调用进度：在 Node 事件循环上逐条调用，全部先于返回的 Promise 完成；调用结束后不再回调。
+   * 抛错交给 `onListenerError`，不影响调用。
+   */
+  onProgress?: (progress: ProgressUpdate) => void
 }
 
 export interface ToolErrorInfo {

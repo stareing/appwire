@@ -88,6 +88,12 @@ int hostAbsentRetriesToNative(int retries) =>
 /// @compat C ABI 的 merge_window_ms：0 = 默认 2000、负数 = 不留窗口；封装层 [Duration.zero]（或负数）= 不留窗口。
 int mergeWindowToNative(Duration window) => window.inMilliseconds <= 0 ? -1 : window.inMilliseconds;
 
+/// 调用去重的保留时长 → C ABI（0 = 默认、负数 = 关闭）；封装层 0 = 关闭。
+int dedupTtlToNative(Duration ttl) => ttl.inMilliseconds <= 0 ? -1 : ttl.inMilliseconds;
+
+/// 调用去重的条数 → C ABI（0 = 默认、负数 = 关闭）；封装层 0 = 关闭，超出 int32 截断。
+int dedupMaxEntriesToNative(int n) => n <= 0 ? -1 : (n > 0x7FFFFFFF ? 0x7FFFFFFF : n);
+
 /// 未知值按 [ConnectionStatus.idle] 处理（不应发生）。
 ConnectionStatus statusFromNative(int status) => switch (status) {
       AmStateStatus.idle => ConnectionStatus.idle,

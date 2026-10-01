@@ -742,6 +742,55 @@ public class HubIntegrationTests
         Assert.Null(hub.Status().Policy!.LastError);
     }
 
+    /// <summary>同步收集进度（不经同步上下文转发）。</summary>
+    private sealed class ProgressLog : IProgress<CallProgress>
+    {
+        public ConcurrentQueue<CallProgress> Items { get; } = new();
+        public void Report(CallProgress value) => Items.Enqueue(value);
+    }
+
+    [Fact]
+    public async Task CallWithProgressReportsBeforeResult()
+    {
+        await using var hub = AppMcpHub.Start(new HubOptions
+        {
+            DisableIpc = true,
+            Listen = "127.0.0.1:0",
+            Dispatcher = null,
+            ProgressInterval = TimeSpan.FromMilliseconds(10),
+        });
+        await using var app = AppMcp.AppMcpClient.Create(new AppMcp.AppMcpClientOptions
+        {
+            AppId = "steps",
+            AppName = "步骤",
+            HostUrl = $"ws://{hub.ListenAddress}/app",
+            Dispatcher = null,
+        });
+        using var run = app.RegisterTool("run", "分步执行", async (_, ctx) =>
+        {
+            ctx.Progress(1, 2, "第一步");
+            await Task.Delay(150);
+            ctx.Progress(2);
+            await Task.Delay(150);
+            return (object?)new { done = true };
+        });
+        app.Start();
+        await WaitUntil(() => hub.ListTools(new ToolFilter { Apps = ["steps"], OnlyAvailable = true, IncludeBuiltin = false }).Count == 1,
+            "工具未同步");
+
+        var log = new ProgressLog();
+        var outcome = await hub.CallAsync(new CallRequest("steps.run") { CallId = "p1" }, log);
+        Assert.True(outcome.IsSuccess, outcome.Json.GetRawText());
+        Assert.True(outcome.Data!.Value.GetProperty("done").GetBoolean());
+        Assert.Equal(
+            [new CallProgress("p1", 1, 2, "第一步"), new CallProgress("p1", 2, null, null)],
+            log.Items.ToArray());
+
+        // progress 为 null：等同普通调用
+        var plain = await hub.CallAsync(new CallRequest("steps.run"), null);
+        Assert.True(plain.IsSuccess, plain.Json.GetRawText());
+    }
+
     private static async Task WaitUntil(Func<bool> condition, string message)
     {
         var deadline = DateTime.UtcNow + Wait;

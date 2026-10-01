@@ -633,6 +633,22 @@ App 报告进度的消息与 SDK 行为见 spec/protocol.md 3.3（唯一定义�
 - **合并**：`HubConfig::progress_interval`（默认 250 ms；`app-mcp-host` 配置文件 `tools.progressIntervalMs`）——两次转发至少间隔该时长，
   间隔内只保留最新一条、到期再发；0 = 不合并。任何情况下不递增的进度都丢弃（MCP 要求递增），`message` 截断到 200 字符
   （`crates/hub/src/progress.rs`）。调用结束时未发出的进度丢弃。
+- **各语言绑定**（与 `call_tool` 同语义，只多一个进度回调；不传回调时等同于普通调用、进度丢弃；回调全部先于结果送达，结果之后不再有进度）：
+  - C（`app_mcp_hub.h` v11）：`typedef void (*AmHubProgressFn)(void *user_data, char *progress_json)`（`{"callId","progress","total"?,"message"?}`）；
+    `am_hub_call_with_progress(hub, request_json, cb, on_progress, user_data, out_call_id)`，`on_progress` 可为 NULL，与 `cb` 共用
+    `user_data`，二者在同一分发线程串行。
+  - uniffi：`async fn call_tool_with_progress(request: CallRequest, listener: ProgressListener) -> CallOutcome`，
+    `callback interface ProgressListener { on_progress(update: ProgressUpdate) }`，`record ProgressUpdate { progress, total?, message? }`；
+    回调在专用线程上按序执行，panic 被捕获并跳过该条；future 被丢弃时取消调用（同 `call_tool`）。
+  - Kotlin `hub.callTool(..., onProgress: ((ProgressUpdate) -> Unit)? = null)`、Swift `callTool(..., onProgress: (@Sendable (ProgressUpdate) -> Void)? = nil)`
+    （在 Hub 进度线程上调用，须尽快返回）；Python `await hub.call_tool(..., on_progress=callable)`（在调用方事件循环上按序调用，
+    返回 awaitable 时调度为任务，异常记日志后忽略）。
+  - Node 原生模块 `callToolWithProgress(requestJson, onProgress)`（弱 threadsafe function，不阻止进程退出）；`@app-mcp/hub`
+    `hub.callTool(req, { onProgress })`，回调抛错交给 `onListenerError`，不影响调用。
+  - .NET `AppMcpHub.CallAsync(request, IProgress<CallProgress>? progress, CancellationToken ct = default)`，
+    `record CallProgress(string CallId, double Progress, double? Total, string? Message)`。
+  - 合并间隔配置：C `am_hub_start` 配置 `progressIntervalMs`、Node / `@app-mcp/hub` `progressIntervalMs`、.NET `HubOptions.ProgressInterval`
+    （缺省 250 ms，即 `HubConfig::progress_interval`）；uniffi `HubConfig` 暂未提供，用默认值。
 - **路由**：只接受被路由到该调用的那条 App 连接发来的 `tools/progress`，其他连接以同一 `callId` 发来的进度忽略（记 warn 日志）。
 - **取消**：MCP `notifications/cancelled`（rmcp 取消请求的 `CancellationToken`）与 `Hub::cancel_call` 共用一条路径：等待审批 / 唤醒中
   直接结束；已转发给 App 时发送 `tools/cancel`，SDK 取消 handler（各语言的取消信号 / 监听），调用以 `CANCELLED` 结束。

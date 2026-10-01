@@ -759,6 +759,8 @@ fn options_are_read_up_to_struct_size() {
         legacy_timers: true,
         merge_window_ms: 500,
         sleep_on_background: true,
+        call_dedup_ttl_ms: 1000,
+        call_dedup_max_entries: -1,
     };
     let v = unsafe { read_options(&o) }.ok();
     assert!(v.as_ref().is_some_and(|v| std::ptr::eq(v.lifecycle, &lc)
@@ -768,7 +770,13 @@ fn options_are_read_up_to_struct_size() {
         && v.host_absent_retries == -1
         && v.legacy_timers
         && v.merge_window_ms == 500
-        && v.sleep_on_background));
+        && v.sleep_on_background
+        && v.call_dedup_ttl_ms == 1000
+        && v.call_dedup_max_entries == -1));
+    // v8–v12 调用方（到 sleep_on_background 为止）：v13 去重字段取默认值。
+    o.struct_size = std::mem::offset_of!(AmClientOptions, call_dedup_ttl_ms) as u32;
+    let v = unsafe { read_options(&o) }.ok();
+    assert!(v.as_ref().is_some_and(|v| v.sleep_on_background && v.call_dedup_ttl_ms == 0 && v.call_dedup_max_entries == 0));
     // v7 调用方（到 legacy_timers 为止）：v8 字段取默认值。
     o.struct_size = std::mem::offset_of!(AmClientOptions, merge_window_ms) as u32;
     let v = unsafe { read_options(&o) }.ok();
@@ -790,6 +798,16 @@ fn options_are_read_up_to_struct_size() {
     assert!(unsafe { read_options(&o) }.is_err());
     let v = unsafe { read_options(ptr::null()) }.ok();
     assert!(v.is_some_and(|v| v.lifecycle.is_null()));
+}
+
+#[test]
+fn call_dedup_values() {
+    let d = CallDedupPolicy::default();
+    assert_eq!(call_dedup_from(d, 0, 0), d, "0 保留默认值");
+    assert_eq!(call_dedup_from(d, 10, 3), CallDedupPolicy { ttl_ms: 10, max_entries: 3 });
+    assert!(!call_dedup_from(d, -1, 0).enabled(), "负数关闭");
+    assert!(!call_dedup_from(d, 0, -1).enabled());
+    assert_eq!(call_dedup_from(d, 0, 5), CallDedupPolicy { ttl_ms: d.ttl_ms, max_entries: 5 });
 }
 
 #[test]
@@ -874,6 +892,8 @@ fn lifecycle_through_c_abi() {
         legacy_timers: false,
         merge_window_ms: 0,
         sleep_on_background: false,
+        call_dedup_ttl_ms: 0,
+        call_dedup_max_entries: 0,
     };
     let mut client: *mut AmClient = ptr::null_mut();
     assert_eq!(
@@ -1018,14 +1038,35 @@ fn call_fail_with_details_null_call() {
 
 #[test]
 fn resource_options_are_read_up_to_struct_size() {
-    let full = AmResourceOptions { struct_size: std::mem::size_of::<AmResourceOptions>() as u32, realtime: true };
-    assert_eq!(unsafe { read_resource_options(&full) }.ok(), Some(ResourceOptions { realtime: true }));
+    let ann = CString::new(r#"{"audience":["user"],"priority":0.5}"#).unwrap_or_default();
+    let full = AmResourceOptions {
+        struct_size: std::mem::size_of::<AmResourceOptions>() as u32,
+        realtime: true,
+        annotations_json: ann.as_ptr(),
+    };
+    let want = ContentAnnotations { audience: Some(vec![app_mcp_native::Audience::User]), priority: Some(0.5), last_modified: None };
+    assert_eq!(
+        unsafe { read_resource_options(&full) }.ok(),
+        Some(ResourceOptions { realtime: true, annotations: Some(want) })
+    );
     assert_eq!(unsafe { read_resource_options(ptr::null()) }.ok(), Some(ResourceOptions::default()));
+    // v8–v12 调用方（到 realtime 为止）：annotations 不读取
+    let v8 = AmResourceOptions {
+        struct_size: std::mem::offset_of!(AmResourceOptions, annotations_json) as u32,
+        ..full
+    };
+    assert_eq!(
+        unsafe { read_resource_options(&v8) }.ok(),
+        Some(ResourceOptions { realtime: true, annotations: None })
+    );
     // 只含 struct_size 的调用方：realtime 取默认值
-    let short = AmResourceOptions { struct_size: std::mem::size_of::<u32>() as u32, realtime: true };
+    let short = AmResourceOptions { struct_size: std::mem::size_of::<u32>() as u32, ..full };
     assert_eq!(unsafe { read_resource_options(&short) }.ok(), Some(ResourceOptions::default()));
-    let bad = AmResourceOptions { struct_size: 0, realtime: true };
+    let bad = AmResourceOptions { struct_size: 0, ..full };
     assert!(unsafe { read_resource_options(&bad) }.is_err());
+    let invalid = CString::new(r#"{"audience":["bot"]}"#).unwrap_or_default();
+    let bad_json = AmResourceOptions { annotations_json: invalid.as_ptr(), ..full };
+    assert!(unsafe { read_resource_options(&bad_json) }.is_err_and(|e| e.status == AmStatus::InvalidJson));
 }
 
 #[test]

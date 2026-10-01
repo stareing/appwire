@@ -197,6 +197,32 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     await until(() => events.some((e) => e.type === 'appDisconnected' && e.appId === 'shop'), 'appDisconnected 事件')
   })
 
+  it('callTool 的 onProgress：App 报告的进度经 Hub 逐条到达，先于结果', async () => {
+    const { hub } = await startHub({ progressIntervalMs: 0 })
+    const app = createAppMcp({ appId: 'job', appName: '任务', hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false })
+    apps.push(app)
+    app.tool('run', {
+      description: '分三步执行',
+      risk: 'read',
+      handler: async (_input, ctx) => {
+        for (const step of [1, 2, 3]) {
+          ctx.progress(step, 3, `第 ${step} 步`)
+          await new Promise((r) => setTimeout(r, 30))
+        }
+        return { done: true }
+      },
+    })
+    app.start()
+    await until(() => hub.tools({ apps: ['job'], onlyAvailable: true }).some((t) => t.name === 'job.run'), 'job 工具登记')
+    const seen: { progress: number; total?: number | null; message?: string | null }[] = []
+    const out = await hub.callTool({ name: 'job.run' }, { onProgress: (p) => seen.push(p) })
+    expect(out.result).toEqual({ ok: { done: true } })
+    expect(seen.map((p) => p.progress)).toEqual([1, 2, 3])
+    expect(seen[0]).toMatchObject({ total: 3, message: '第 1 步' })
+    // 不请求进度时照常调用
+    expect((await hub.callTool({ name: 'job.run' })).result).toEqual({ ok: { done: true } })
+  })
+
   it('callTool：结果、stateHints、按会话首次附带总览、错误', async () => {
     const { hub } = await startHub()
     const log = await startShop(hub)

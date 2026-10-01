@@ -36,9 +36,11 @@ test('配置映射：默认端点、生命周期、自动 start', () => {
 test('配置映射：生命周期新字段、heartbeat 透传；未给出时不传（取原生默认）', () => {
   const { client } = create({
     heartbeat: 'always',
+    callDedup: { ttlMs: 1000, maxEntries: 0 },
     lifecycle: { mode: 'on-demand', hostAbsentRetries: 0, legacyTimers: true, mergeWindowMs: 0, sleepOnBackground: true },
   });
   assert.equal(client.config.heartbeat, 'always');
+  assert.deepEqual(client.config.callDedup, { ttlMs: 1000, maxEntries: 0 });
   const l = client.config.lifecycle;
   assert.equal(l.mode, 'on-demand');
   // 0 = 一直重连（napi 与 spec 同义，不做编码转换）。
@@ -49,6 +51,7 @@ test('配置映射：生命周期新字段、heartbeat 透传；未给出时不�
 
   const plain = create({ lifecycle: { mode: 'idle' } }).client.config;
   assert.equal(plain.heartbeat, undefined);
+  assert.equal(plain.callDedup, undefined);
   for (const key of ['hostAbsentRetries', 'legacyTimers', 'mergeWindowMs', 'sleepOnBackground']) {
     assert.equal(plain.lifecycle[key], undefined, key);
   }
@@ -355,6 +358,32 @@ test('资源读取与变更通知', async () => {
     },
   });
   assert.deepEqual(await client.read('bad').done, { ok: false, kind: 'RESOURCE_NOT_FOUND', message: '无' });
+  assert.equal(client.resources.get('cart').spec.annotations, undefined);
+});
+
+test('资源的内容标注随登记下发；读取失败携带详情（userActionRequired 的 reason / uri）', async () => {
+  const { mcp, client } = create();
+  mcp.resource('profile', {
+    description: '个人资料',
+    annotations: { audience: ['user'], priority: 0.5 },
+    read: () => {
+      throw ToolCallError.userActionRequired('登录已过期', { reason: 'login', uri: 'shop://login' });
+    },
+  });
+  assert.deepEqual(client.resources.get('profile').spec.annotations, { audience: ['user'], priority: 0.5, lastModified: undefined });
+  assert.deepEqual(await client.read('profile').done, {
+    ok: false,
+    kind: 'USER_ACTION_REQUIRED',
+    message: '登录已过期',
+    detailsJson: '{"reason":"login","uri":"shop://login"}',
+  });
+  mcp.resource('stock', { description: '库存', read: async () => Promise.reject(new ToolCallError('RESOURCE_NOT_FOUND', '离线', { warehouse: 'sh' })) });
+  assert.deepEqual(await client.read('stock').done, {
+    ok: false,
+    kind: 'RESOURCE_NOT_FOUND',
+    message: '离线',
+    detailsJson: '{"warehouse":"sh"}',
+  });
 });
 
 test('状态事件映射与监听', () => {

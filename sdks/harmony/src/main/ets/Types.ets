@@ -92,6 +92,14 @@ export type CancelReason = 'requested' | 'timeout' | 'disconnected' | 'stopped';
 /** 心跳策略（spec/lifecycle.md 第 11 节 A3）：`auto` 按传输决定（鸿蒙上回环地址按远程，发心跳）。 */
 export type HeartbeatMode = 'auto' | 'always' | 'off';
 
+/** 调用去重策略（spec/protocol.md 3.3）：未给出的字段取默认值；任一为 0 关闭去重。 */
+export interface CallDedupOptions {
+  /** 首次结果的保留时长（毫秒），缺省 300000。 */
+  ttlMs?: number;
+  /** 最多保留的结果数，超出淘汰最早的，缺省 64。 */
+  maxEntries?: number;
+}
+
 /** 本实例的唤醒描述（spec/lifecycle.md 第 5 节）。鸿蒙用 `uri`：`<scheme>://app-mcp/wake`。 */
 export interface WakeDescriptor {
   kind: WakeKind;
@@ -240,6 +248,9 @@ export interface ResourceDefinition<T> {
   mimeType?: string;
   /** 模型在等待其变化：被订阅时保持连接、休眠中变化时回连推送（spec/lifecycle.md 第 13 节 B3）。缺省 false。 */
   realtime?: boolean;
+  /** 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；缺省未声明。 */
+  annotations?: ContentAnnotations;
+  /** 读取内容；抛出 `ToolCallError`（含 `ToolCallError.userActionRequired`）时类别与详情原样交给 Host。 */
   read: () => T | Promise<T>;
 }
 
@@ -289,6 +300,11 @@ export interface AppMcpOptions {
   connectTimeoutMs?: number;
   /** 缺省 `auto`。在设备上嵌入 Hub 时可设 `off`。 */
   heartbeat?: HeartbeatMode;
+  /**
+   * 调用去重：已开始执行的 `callId` 在有效期内再次到达时重放首次结果、不再执行（命中记一条警告日志）。
+   * 缺省 `{ ttlMs: 300000, maxEntries: 64 }`。
+   */
+  callDedup?: CallDedupOptions;
   /** 已休眠且 `lifecycle.residency` 允许退出进程时调用；SDK 不会自行退出（可在此 `terminateSelf()`）。 */
   onIdleExit?: () => void;
 }

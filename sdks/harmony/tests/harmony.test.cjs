@@ -55,6 +55,7 @@ test('首次进入前台回连（on-demand 启动后 dormant），进入后台�
 test('显式生命周期整体生效，不与平台默认合并；新字段与 heartbeat 透传', () => {
   const { mcp, client } = create({
     heartbeat: 'off',
+    callDedup: { ttlMs: 5, maxEntries: 2 },
     lifecycle: { mode: 'idle', hostAbsentRetries: 0, legacyTimers: true, mergeWindowMs: 500, sleepOnBackground: false },
   });
   const l = client.config.lifecycle;
@@ -67,6 +68,7 @@ test('显式生命周期整体生效，不与平台默认合并；新字段与 h
   // 未给 wake 时仍按 scheme 补唤醒描述。
   assert.equal(l.wake.target, 'shopapp://app-mcp/wake');
   assert.equal(client.config.heartbeat, 'off');
+  assert.deepEqual(client.config.callDedup, { ttlMs: 5, maxEntries: 2 });
   mcp.dispose();
 });
 

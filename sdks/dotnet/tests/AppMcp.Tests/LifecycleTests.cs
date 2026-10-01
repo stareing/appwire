@@ -30,7 +30,7 @@ public class LifecycleUnitTests
         Assert.Equal(32, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.Residency)));
         Assert.Equal(40, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.WakeTarget)));
         Assert.Equal(48, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.WakeBackground)));
-        Assert.Equal(64, Marshal.SizeOf<AmClientOptions>());
+        Assert.Equal(80, Marshal.SizeOf<AmClientOptions>());
         Assert.Equal(8, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.Lifecycle)));
         Assert.Equal(24, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.OnIdleExit)));
         Assert.Equal(32, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.Heartbeat)));
@@ -38,8 +38,11 @@ public class LifecycleUnitTests
         Assert.Equal(40, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.LegacyTimers)));
         Assert.Equal(48, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.MergeWindowMs)));
         Assert.Equal(56, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.SleepOnBackground)));
-        Assert.Equal(8, Marshal.SizeOf<AmResourceOptions>());
+        Assert.Equal(64, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.CallDedupTtlMs)));
+        Assert.Equal(72, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.CallDedupMaxEntries)));
+        Assert.Equal(16, Marshal.SizeOf<AmResourceOptions>());
         Assert.Equal(4, (int)Marshal.OffsetOf<AmResourceOptions>(nameof(AmResourceOptions.Realtime)));
+        Assert.Equal(8, (int)Marshal.OffsetOf<AmResourceOptions>(nameof(AmResourceOptions.AnnotationsJson)));
     }
 
     private static AppMcpClientOptions BaseOptions(LifecycleOptions? lifecycle = null, HeartbeatMode heartbeat = HeartbeatMode.Auto) => new()
@@ -70,6 +73,28 @@ public class LifecycleUnitTests
         Assert.Equal(0, n.LegacyTimers);
         Assert.Equal(2000L, n.MergeWindowMs);
         Assert.Equal(0, n.SleepOnBackground);
+        Assert.Equal(300000L, n.CallDedupTtlMs);
+        Assert.Equal(64, n.CallDedupMaxEntries);
+    }
+
+    [Fact]
+    public void CallDedupMapsToCAbiEncoding()
+    {
+        // 0 = 关闭 → C ABI 负数；其他值原样传递。
+        var off = AppMcpClient.ToNativeOptions(new AppMcpClientOptions { AppId = "d", AppName = "D", CallDedup = CallDedupOptions.Off }, new LifecycleOptions());
+        Assert.True(off.CallDedupTtlMs < 0 && off.CallDedupMaxEntries < 0);
+        var custom = AppMcpClient.ToNativeOptions(
+            new AppMcpClientOptions { AppId = "d", AppName = "D", CallDedup = new CallDedupOptions { Ttl = TimeSpan.FromSeconds(1), MaxEntries = 3 } },
+            new LifecycleOptions());
+        Assert.Equal(1000L, custom.CallDedupTtlMs);
+        Assert.Equal(3, custom.CallDedupMaxEntries);
+        Assert.Throws<ArgumentOutOfRangeException>(() => AppMcpClient.ToNativeOptions(
+            new AppMcpClientOptions { AppId = "d", AppName = "D", CallDedup = new CallDedupOptions { MaxEntries = -1 } }, new LifecycleOptions()));
+        using var client = AppMcpClient.Create(new AppMcpClientOptions
+        {
+            AppId = "dotnet-dedup", AppName = "Dedup", HostUrl = "ws://127.0.0.1:1", Dispatcher = null, CallDedup = CallDedupOptions.Off,
+        });
+        client.Stop();
     }
 
     [Fact]
@@ -131,6 +156,21 @@ public class LifecycleUnitTests
         }
         Assert.NotEqual(HashWith(false), HashWith(true));
         Assert.Equal(HashWith(false), HashWith(false));
+    }
+
+    [Fact]
+    public void ResourceAnnotationsAreDeclared()
+    {
+        // 内容标注随资源声明同步（app_mcp.h v13）：声明后 toolsHash 变化，未声明时不变。
+        string HashWith(ContentAnnotations? annotations)
+        {
+            using var c = AppMcpClient.Create(BaseOptions());
+            using var r = c.RegisterResource("x.state", "状态", _ => Task.FromResult<object?>(null), annotations: annotations);
+            return c.ToolsHash;
+        }
+        var annotated = new ContentAnnotations { Audience = [ContentAudience.User], Priority = 0.5 };
+        Assert.NotEqual(HashWith(null), HashWith(annotated));
+        Assert.Equal(HashWith(annotated), HashWith(annotated));
     }
 
     [Fact]

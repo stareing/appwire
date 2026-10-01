@@ -1,3 +1,5 @@
+import 'dart:convert' show jsonEncode;
+
 import 'package:app_mcp/app_mcp.dart';
 import 'package:flutter/widgets.dart';
 
@@ -142,6 +144,7 @@ class McpResource extends StatefulWidget {
     required this.description,
     this.mimeType,
     this.realtime = false,
+    this.annotations,
     required this.read,
     this.changeToken,
     this.child,
@@ -153,6 +156,9 @@ class McpResource extends StatefulWidget {
 
   /// 需实时推送（spec/lifecycle.md 第 13 节 B3），见 [McpScope.resource]。
   final bool realtime;
+
+  /// 资源内容的标注（MCP 内容注解），见 [McpScope.resource]；内容变化时重新注册。
+  final ContentAnnotations? annotations;
   final ResourceReader read;
   final Object? changeToken;
   final Widget? child;
@@ -184,7 +190,8 @@ class _McpResourceState extends State<McpResource> {
     if (oldWidget.name != widget.name ||
         oldWidget.description != widget.description ||
         oldWidget.mimeType != widget.mimeType ||
-        oldWidget.realtime != widget.realtime) {
+        oldWidget.realtime != widget.realtime ||
+        !_sameAnnotations(oldWidget.annotations, widget.annotations)) {
       _handle?.dispose();
       _register();
       return;
@@ -208,6 +215,7 @@ class _McpResourceState extends State<McpResource> {
           description: widget.description,
           mimeType: widget.mimeType,
           realtime: widget.realtime,
+          annotations: widget.annotations,
           read: _read);
     } on AppMcpException catch (e, st) {
       _report(e, st, '注册资源 ${widget.name} 时');
@@ -304,3 +312,7 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
     super.dispose();
   }
 }
+
+/// 按内容比较（[ContentAnnotations] 没有值相等）。
+bool _sameAnnotations(ContentAnnotations? a, ContentAnnotations? b) =>
+    identical(a, b) || (a != null && b != null && jsonEncode(a.toJson()) == jsonEncode(b.toJson()));

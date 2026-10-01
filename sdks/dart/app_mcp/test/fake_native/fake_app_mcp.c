@@ -14,6 +14,8 @@
  * v9：am_tool_register_ex / am_tool_update_ex 记录注解与 outputSchema（fake_tool_options；outputSchema 为 "{" 时
  * 返回 AM_ERR_INVALID_SCHEMA）；am_call_complete_ex 的结果另带 status / stateResource / summary / annotations
  * （annotations_json 为 "{bad" 时返回 AM_ERR_INVALID_JSON）。
+ * v13：am_client_new_ex 记录调用去重（fake_call_dedup："<ttl_ms>|<max_entries>"）；am_resource_register_ex 记录
+ * 资源内容标注（fake_resource_annotations；annotations_json 为 "{bad" 时返回 AM_ERR_INVALID_JSON）。
  *
  * 编译：cc -shared -fPIC -o libfake_app_mcp.so fake_app_mcp.c -lpthread
  * Windows（MSVC）：cl /c /utf-8 编译后按 dumpbin /symbols 中的外部函数生成 .def 再 link /DLL
@@ -87,6 +89,7 @@ typedef struct ResRec {
     AmFreeFn free_user_data;
     int freed;
     int realtime;
+    char *annotations; /* v13 */
 } ResRec;
 
 #define MAX_ITEMS 256
@@ -218,6 +221,7 @@ void am_string_free(char *s) {
 /* ------------------------------------------------------------------ 客户端 */
 
 static char *g_lifecycle = NULL; /* 最近一次配置的生命周期，见 am_client_new_ex */
+static char *g_call_dedup = NULL; /* v13：最近一次配置的调用去重，见 am_client_new_ex */
 static AmStatus client_new(const AmClientConfig *config, const AmClientCallbacks *callbacks, AmClient **out) {
     if (!config || !out || !config->app_id || !config->app_name) {
         set_error("缺少必填参数");
@@ -271,7 +275,13 @@ AmStatus am_client_new_ex(const AmClientConfig *config, const AmClientCallbacks 
     if (st != AM_OK) return st;
     free(g_lifecycle);
     g_lifecycle = NULL;
+    free(g_call_dedup);
+    g_call_dedup = NULL;
     if (options) {
+        char dedup[64];
+        snprintf(dedup, sizeof dedup, "%lld|%d", (long long)options->call_dedup_ttl_ms,
+                 (int)options->call_dedup_max_entries);
+        g_call_dedup = dup_str(dedup);
         (*out)->on_idle_exit = options->on_idle_exit;
         const AmLifecycle *l = options->lifecycle;
         char buf[512];
@@ -487,6 +497,8 @@ int fake_hold_count(void) {
 }
 /* 最近一次生命周期配置（需 am_string_free）；没有 options 时返回 NULL。 */
 char *fake_lifecycle(void) { return dup_str(g_lifecycle); }
+/* v13：最近一次 am_client_new_ex 的调用去重，"<ttl_ms>|<max_entries>"（需 am_string_free）；没有 options 时 NULL。 */
+char *fake_call_dedup(void) { return dup_str(g_call_dedup); }
 /* 最近一次 sleep 的原因（需 am_string_free）。 */
 char *fake_last_sleep(void) {
     lock_global();
@@ -653,8 +665,15 @@ AmStatus am_resource_register_ex(AmScope *scope, const AmResourceSpec *spec, con
         set_error("struct_size 不匹配");
         return AM_ERR_INVALID_ARGUMENT;
     }
+    if (options && options->annotations_json && strcmp(options->annotations_json, "{bad") == 0) {
+        set_error("annotations_json 不合法");
+        return AM_ERR_INVALID_JSON;
+    }
     AmStatus st = am_resource_register(scope, spec, reader, user_data, free_user_data, out);
-    if (st == AM_OK && options) (*out)->rec->realtime = options->realtime ? 1 : 0;
+    if (st == AM_OK && options) {
+        (*out)->rec->realtime = options->realtime ? 1 : 0;
+        if (options->annotations_json) (*out)->rec->annotations = dup_str(options->annotations_json);
+    }
     return st;
 }
 
@@ -1061,6 +1080,14 @@ int fake_resource_realtime(const char *name) {
         if (!c->res[i]->disposed && strcmp(c->res[i]->name, name) == 0) return c->res[i]->realtime;
     return -1;
 }
+/* v13：资源注册时的内容标注（需 am_string_free）；未声明或找不到时 NULL。 */
+char *fake_resource_annotations(const char *name) {
+    AmClient *c = g_client;
+    if (!c || !name) return NULL;
+    for (int i = c->n_res - 1; i >= 0; i--)
+        if (!c->res[i]->disposed && strcmp(c->res[i]->name, name) == 0) return dup_str(c->res[i]->annotations);
+    return NULL;
+}
 /* 工具当前的 enabled / risk / 描述，供测试断言 update。 */
 int fake_tool_enabled(const char *name) { ToolRec *t = find_tool(g_client, name); return t ? t->enabled : -1; }
 char *fake_tool_description(const char *name) { ToolRec *t = find_tool(g_client, name); return t ? dup_str(t->description) : NULL; }
@@ -1101,6 +1128,9 @@ size_t fake_sizeof(int which) {
     case 17: return sizeof(AmCallResult);
     case 18: return offsetof(AmCallResult, status);
     case 19: return offsetof(AmCallResult, annotations_json);
+    case 20: return offsetof(AmClientOptions, call_dedup_ttl_ms);
+    case 21: return offsetof(AmClientOptions, call_dedup_max_entries);
+    case 22: return offsetof(AmResourceOptions, annotations_json);
     default: return 0;
     }
 }

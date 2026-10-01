@@ -38,6 +38,7 @@ import type {
   ConnectionBlockCause,
   ConnectionBlockCode,
   ConnectionState,
+  ContentAnnotations,
   ErrorKind,
   HoldHandle,
   JsonSchema,
@@ -1411,6 +1412,7 @@ export class AppMcpDriver implements AppMcp {
           description: def.description,
           mimeType: def.mimeType ?? 'application/json',
           ...(def.realtime && { realtime: true }),
+          ...(def.annotations !== undefined && { annotations: toJsonValue(def.annotations) as ContentAnnotations }),
           ...(scope && { scope: scope.coreId }),
         })
       } catch (e) {

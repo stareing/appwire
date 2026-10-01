@@ -23,6 +23,7 @@
 // 也不会因为回调而阻止 isolate 退出。注册表条目在库调用 free_user_data 或客户端 dispose 时删除。
 
 import 'dart:async';
+import 'dart:convert' show jsonEncode;
 import 'dart:ffi';
 import 'dart:io' show Platform;
 
@@ -328,6 +329,7 @@ final class AppMcp {
   ///
   /// [lifecycle] 缺省时按平台取 [LifecyclePolicy.platformDefault]；显式传入的策略原样使用。
   /// [heartbeat] 为心跳策略（spec/lifecycle.md 第 11 节 A3）。
+  /// [callDedup] 为调用去重策略（spec/protocol.md 3.3，默认保留 5 分钟、最多 64 条；[CallDedupPolicy.off] 关闭）。
   ///
   /// [libraryPath] 指定原生库路径；缺省时读取环境变量 `APP_MCP_NATIVE_PATH`，
   /// 否则按平台默认名加载。失败时抛出 [AppMcpException]。
@@ -346,6 +348,7 @@ final class AppMcp {
     LifecyclePolicy? lifecycle,
     Duration? connectTimeout,
     HeartbeatMode heartbeat = HeartbeatMode.auto,
+    CallDedupPolicy callDedup = const CallDedupPolicy(),
     String? libraryPath,
     AppMcpBindings? bindings,
   }) {
@@ -401,7 +404,9 @@ final class AppMcp {
           ..host_absent_retries = hostAbsentRetriesToNative(policy.hostAbsentRetries)
           ..legacy_timers = policy.legacyTimers
           ..merge_window_ms = mergeWindowToNative(policy.mergeWindow)
-          ..sleep_on_background = policy.sleepOnBackground;
+          ..sleep_on_background = policy.sleepOnBackground
+          ..call_dedup_ttl_ms = dedupTtlToNative(callDedup.ttl)
+          ..call_dedup_max_entries = dedupMaxEntriesToNative(callDedup.maxEntries);
         final out = arena<Pointer<AmClient>>();
         rt.check(b.am_client_new_ex(config, callbacks, options, out));
         client._ptr = out.value;
@@ -610,8 +615,10 @@ final class AppMcp {
           {required String description,
           String? mimeType,
           bool realtime = false,
+          ContentAnnotations? annotations,
           required ResourceReader read}) =>
-      _root.resource(name, description: description, mimeType: mimeType, realtime: realtime, read: read);
+      _root.resource(name,
+          description: description, mimeType: mimeType, realtime: realtime, annotations: annotations, read: read);
 
   /// 在根作用域下创建子作用域。
   McpScope scope(String name) => _root.scope(name);
@@ -883,12 +890,15 @@ final class McpScope {
   ///
   /// [realtime]：需实时推送（spec/lifecycle.md 第 13 节 B3）——被订阅时保持连接、休眠中变化时回连推送。
   /// 默认 false：订阅不阻止休眠，变化在下次连接时补发；只用于"模型在等待变化"的资源。
+  /// [annotations]：资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上。
   ResourceHandle resource(String name,
       {required String description,
       String? mimeType,
       bool realtime = false,
+      ContentAnnotations? annotations,
       required ResourceReader read}) {
     _ensureAlive();
+    final annotationsJson = annotations == null ? null : jsonEncode(annotations.toJson());
     final rt = _client._rt;
     final entry = _ResourceEntry(_client, read);
     final id = rt.register(entry);
@@ -901,7 +911,8 @@ final class McpScope {
       final options = arena<AmResourceOptions>();
       options.ref
         ..struct_size = sizeOf<AmResourceOptions>()
-        ..realtime = realtime;
+        ..realtime = realtime
+        ..annotations_json = _optStr(annotationsJson, arena);
       final out = arena<Pointer<AmResource>>();
       final status = rt.b.am_resource_register_ex(
           _ptr, s, options, rt.read.nativeFunction, Pointer<Void>.fromAddress(id), rt.free.nativeFunction, out);

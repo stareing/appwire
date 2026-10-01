@@ -532,4 +532,26 @@ void main() {
     expect(hashWith(realtime: true), isNot(hashWith(realtime: false)));
     await Future<void>.delayed(const Duration(milliseconds: 50));
   }, skip: nativePath == null ? '找不到原生库' : false);
+
+  test('真实原生库：资源内容标注进入资源声明；调用去重选项被接受（v13）', () async {
+    String hashWith(ContentAnnotations? annotations) {
+      final c = AppMcp(
+        appId: 'dart-v13',
+        appName: 'v13',
+        hostUrl: 'ws://127.0.0.1:9',
+        libraryPath: nativePath,
+        callDedup: CallDedupPolicy.off,
+      );
+      c.resource('order.status', description: '订单状态', annotations: annotations, read: () => 1);
+      final h = c.toolsHash;
+      c.dispose();
+      return h;
+    }
+
+    const annotated = ContentAnnotations(audience: [ContentAudience.user], priority: 0.5);
+    expect(hashWith(null), hashWith(null));
+    expect(hashWith(annotated), isNot(hashWith(null)));
+    expect(hashWith(annotated), hashWith(annotated));
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }, skip: nativePath == null ? '找不到原生库' : false);
 }

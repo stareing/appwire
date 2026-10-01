@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { ProgressUpdate } from './types.js'
 
 export interface NativeHub {
   readonly listenAddr: string | null
@@ -24,6 +25,7 @@ export interface NativeHub {
   resources(): string
   overview(appId: string): string | null
   callTool(requestJson: string): Promise<string>
+  callToolWithProgress(requestJson: string, onProgress: (progress: ProgressUpdate) => void): Promise<string>
   cancelCall(callId: string): void
   readResource(uri: string): Promise<string>
   subscribe(uri: string): void

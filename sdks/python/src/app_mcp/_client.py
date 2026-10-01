@@ -24,7 +24,8 @@ import logging
 import threading
 from collections.abc import Callable, Mapping
 from collections.abc import Sequence
-from typing import Any, Literal, TypeVar, Union
+from dataclasses import dataclass
+from typing import Any, ClassVar, Literal, TypeVar, Union
 
 from . import app_mcp_uniffi as ffi
 from ._lifecycle import LifecyclePolicy, WakeDescriptor
@@ -41,6 +42,7 @@ __all__ = [
     "UserActionReason",
     "Dispatcher",
     "Hold",
+    "CallDedup",
 ]
 
 logger = logging.getLogger("app_mcp")
@@ -218,6 +220,29 @@ def _activation(value: ActivationLike | None) -> ffi.Activation | None:
 # ---------------------------------------------------------------------------
 # 公开类型
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CallDedup:
+    """调用去重（spec/protocol.md 3.3）：已开始执行的 ``callId`` 的首次结果在 ``ttl`` 秒内重放，最多保留 ``max_entries`` 条。
+
+    任一为 0 关闭去重（:attr:`OFF`）。缺省（``AppMcp(call_dedup=None)``）为 300 秒、64 条。命中时记一条 warning 日志。
+    """
+
+    ttl: float = 300.0
+    max_entries: int = 64
+
+    OFF: ClassVar[CallDedup]
+
+    def __post_init__(self) -> None:
+        if self.ttl < 0 or self.max_entries < 0:
+            raise ValueError(f"call_dedup 的 ttl / max_entries 不能为负：{self!r}")
+
+    def _ffi(self) -> ffi.CallDedupPolicy:
+        return ffi.CallDedupPolicy(ttl_ms=_ms(self.ttl), max_entries=self.max_entries)
+
+
+CallDedup.OFF = CallDedup(0, 0)
 
 
 class ToolCallError(Exception):
@@ -549,7 +574,7 @@ class _ResourceAdapter(ffi.ResourceReader):
             self._reg,
             dict,
             lambda value: _complete_ok(read, value, None),
-            lambda k, m, d=None: _complete_err(read, k, m),
+            lambda k, m, d=None: _complete_err(read, k, m, d),
             None,
         )
 
@@ -762,17 +787,22 @@ class _Registrar:
         *,
         mime_type: str | None = None,
         realtime: bool = False,
+        annotations: ContentAnnotationsLike | None = None,
     ) -> ResourceHandle:
         """注册资源读取函数（无参数，返回可 JSON 序列化的内容）。
 
         ``realtime``：需实时推送（spec/lifecycle.md 第 13 节 B3）——被订阅时阻止休眠、休眠中变化时回连推送；
         默认 ``False``：订阅不阻止休眠，变化在下次连接时补发。
+        ``annotations``：资源内容的标注（``{"audience": ["user"], "priority": 0.5}``），Hub 放到 MCP ``resources/list``
+        的资源注解上。读取函数抛出 :class:`ToolCallError`（含 :meth:`ToolCallError.user_action_required`）时，
+        类别与详情原样交给 Host。
         """
         spec = ffi.ResourceSpec(
             name=name or fn.__name__,
             description=description if description is not None else inspect.getdoc(fn) or "",
             mime_type=mime_type,
             realtime=realtime,
+            annotations=_content_annotations(annotations),
         )
         adapter = _ResourceAdapter(_Registration(self._owner, fn, None))
         return ResourceHandle(self._raw().register_resource(spec, adapter))
@@ -784,11 +814,14 @@ class _Registrar:
         *,
         mime_type: str | None = None,
         realtime: bool = False,
+        annotations: ContentAnnotationsLike | None = None,
     ) -> Callable[[F], F]:
         """装饰器形式的 :meth:`add_resource`。句柄可用 ``client.resources[name]`` 取得。"""
 
         def decorator(fn: F) -> F:
-            handle = self.add_resource(fn, name, description, mime_type=mime_type, realtime=realtime)
+            handle = self.add_resource(
+                fn, name, description, mime_type=mime_type, realtime=realtime, annotations=annotations
+            )
             self._owner.resources[handle.name] = handle
             return fn
 
@@ -833,7 +866,8 @@ class AppMcp(_Registrar):
     >>> client.start()
 
     ``lifecycle`` 为空时 ``persistent``（不休眠）；``heartbeat``：``"auto"``（默认，按传输：本地 IPC / 桌面回环不发）/
-    ``"always"`` / ``"off"``（spec/lifecycle.md 第 11 节 A3）。
+    ``"always"`` / ``"off"``（spec/lifecycle.md 第 11 节 A3）；``call_dedup``：调用去重（:class:`CallDedup`，
+    缺省 300 秒、64 条，``CallDedup.OFF`` 关闭）。
     """
 
     def __init__(
@@ -858,6 +892,7 @@ class AppMcp(_Registrar):
         connect_timeout: float | None = None,
         on_idle_exit: Callable[[], None] | None = None,
         heartbeat: Literal["auto", "always", "off"] | ffi.HeartbeatMode = "auto",
+        call_dedup: CallDedup | None = None,
     ) -> None:
         self._owner = self
         self._on_idle_exit = on_idle_exit
@@ -901,6 +936,7 @@ class AppMcp(_Registrar):
             lifecycle=None if lifecycle is None else _lifecycle_to_ffi(lifecycle),
             connect_timeout_ms=None if connect_timeout is None else max(1, _ms(connect_timeout)),
             heartbeat=_enum_arg(heartbeat, _HEARTBEATS, "心跳策略"),
+            call_dedup=None if call_dedup is None else call_dedup._ffi(),
         )
         self._inner = ffi.AppMcpClient(config, _ClientListener(self))
         self._state: ffi.StateInfo = self._inner.state()

@@ -837,3 +837,76 @@ fn policy_hide_deny_and_replace() {
     app.stop();
     hub.shutdown();
 }
+
+/// 报告两次进度（间隔超过 Hub 默认合并间隔 250 ms）后完成。
+struct SlowWithProgress;
+
+impl native::ToolHandler for SlowWithProgress {
+    fn invoke(&self, call: native::CallHandle) {
+        std::thread::spawn(move || {
+            let _ = call.report_progress(1.0, Some(2.0), Some("第一步"));
+            std::thread::sleep(Duration::from_millis(350));
+            let _ = call.report_progress(2.0, Some(2.0), None);
+            std::thread::sleep(Duration::from_millis(350));
+            let _ = call.complete(Some(r#"{"done":true}"#), vec![]);
+        });
+    }
+}
+
+struct Progress(Mutex<Vec<ProgressUpdate>>);
+
+impl ProgressListener for Progress {
+    fn on_progress(&self, update: ProgressUpdate) {
+        lock(&self.0).push(update);
+    }
+}
+
+/// 回调 panic（外部未预期异常）不影响后续进度与调用结果。
+struct PanickingProgress(Mutex<usize>);
+
+impl ProgressListener for PanickingProgress {
+    fn on_progress(&self, _update: ProgressUpdate) {
+        *lock(&self.0) += 1;
+        panic!("UI 崩溃");
+    }
+}
+
+/// 第 16 项 O2：Hub 绑定的进度回调——结果返回前收到合并后的全部进度；普通 `call_tool` 不受影响。
+#[test]
+fn call_tool_with_progress_delivers_updates() {
+    let hub = start_hub(None);
+    let (tx, rx) = mpsc::channel();
+    hub.set_event_listener(Some(Arc::new(Events(Mutex::new(tx)))));
+    let mut cfg = native::NativeConfig::new("slow", "慢");
+    cfg.host_url = format!("ws://{}/app", hub.listen_addr().expect("监听地址"));
+    let app = native::NativeClient::new(cfg, None).expect("App");
+    let mut spec = native::ToolSpec::new("work", "长任务");
+    spec.risk = native::Risk::Read;
+    app.register_tool(spec, Arc::new(SlowWithProgress)).expect("注册");
+    app.start();
+    wait_for(&rx, |e| matches!(e, HubEvent::AppConnected { app_id, .. } if app_id == "slow"));
+    wait_for(&rx, |e| matches!(e, HubEvent::ToolsChanged));
+
+    let listener = Arc::new(Progress(Mutex::new(Vec::new())));
+    let out = wait(hub.call_tool_with_progress(req("slow.work", json!({})), listener.clone())).expect("调用");
+    assert_eq!(out.error, None);
+    assert_eq!(out.data_json.as_deref().map(|d| serde_json::from_str::<Value>(d).unwrap_or_default()), Some(json!({"done": true})));
+    let got = lock(&listener.0).clone();
+    assert_eq!(
+        got,
+        vec![
+            ProgressUpdate { progress: 1.0, total: Some(2.0), message: Some("第一步".into()) },
+            ProgressUpdate { progress: 2.0, total: Some(2.0), message: None },
+        ]
+    );
+
+    let panicking = Arc::new(PanickingProgress(Mutex::new(0)));
+    let out = wait(hub.call_tool_with_progress(req("slow.work", json!({})), panicking.clone())).expect("调用");
+    assert_eq!(out.error, None, "回调异常不影响结果");
+    assert_eq!(*lock(&panicking.0), 2, "回调异常后继续接收");
+
+    let out = wait(hub.call_tool(req("slow.work", json!({})))).expect("调用");
+    assert_eq!(out.error, None);
+    app.stop();
+    hub.shutdown();
+}

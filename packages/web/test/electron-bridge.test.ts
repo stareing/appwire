@@ -220,7 +220,7 @@ describe('createBridgeAppMcp', () => {
       },
     })
     const scope = app.scope('dialog')
-    scope.resource('dialog.state', { description: 'd', read: () => ({ open: true }) })
+    scope.resource('dialog.state', { description: 'd', annotations: { priority: 1 }, read: () => ({ open: true }) })
     const t = scope.tool('dialog.close', { description: '关闭', handler: () => 'old' })
     await settle()
     t.update({ description: '关闭对话框', enabled: false })
@@ -232,7 +232,12 @@ describe('createBridgeAppMcp', () => {
       spec: { description: '关闭对话框', enabled: false },
     })
     expect(ops.find((o) => o.op === 'scope.create')).toEqual({ op: 'scope.create', id: 3, name: 'dialog' })
-    expect(ops.find((o) => o.op === 'resource.register')).toMatchObject({ id: 4, scopeId: 3, name: 'dialog.state' })
+    expect(ops.find((o) => o.op === 'resource.register')).toMatchObject({
+      id: 4,
+      scopeId: 3,
+      name: 'dialog.state',
+      annotations: { priority: 1 },
+    })
 
     emit({ type: 'call', callId: 'c1', toolId: 1, input: {} })
     emit({ type: 'call', callId: 'c2', toolId: 2, input: {} })

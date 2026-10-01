@@ -79,6 +79,9 @@ internal struct AmClientOptions
     // v8（4e 第二部分，spec/lifecycle.md 第 13 节）
     public long MergeWindowMs;    // 0 = 默认 2000，负数 = 不留窗口
     public byte SleepOnBackground; // C bool
+    // v13（调用去重，spec/protocol.md 3.3）
+    public long CallDedupTtlMs;    // 0 = 默认 300000，负数 = 关闭
+    public int CallDedupMaxEntries; // 0 = 默认 64，负数 = 关闭
 }
 
 /// <summary>v8：am_resource_register_ex 的资源选项。StructSize = sizeof(AmResourceOptions)。</summary>
@@ -87,6 +90,7 @@ internal struct AmResourceOptions
 {
     public uint StructSize;
     public byte Realtime; // C bool
+    public nint AnnotationsJson; // v13：const char*，可为 0
 }
 
 [StructLayout(LayoutKind.Sequential)]

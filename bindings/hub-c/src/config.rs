@@ -40,6 +40,8 @@ pub(crate) struct ConfigJson {
     pub response_timeout_ms: Option<u64>,
     pub list_changed_debounce_ms: Option<u64>,
     pub pairing_timeout_ms: Option<u64>,
+    /// v11：进度转发的最小间隔（spec/hub-api.md 3.12），缺省 250。
+    pub progress_interval_ms: Option<u64>,
     pub lease_ttl_ms: Option<u64>,
     pub wake_timeout_ms: Option<u64>,
     pub wake_token_ttl_ms: Option<u64>,
@@ -87,6 +89,7 @@ impl Default for ConfigJson {
             response_timeout_ms: None,
             list_changed_debounce_ms: None,
             pairing_timeout_ms: None,
+            progress_interval_ms: None,
             lease_ttl_ms: None,
             wake_timeout_ms: None,
             wake_token_ttl_ms: None,
@@ -159,6 +162,7 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     set_ms(&mut hub.response_timeout, c.response_timeout_ms);
     set_ms(&mut hub.list_changed_debounce, c.list_changed_debounce_ms);
     set_ms(&mut hub.pairing_timeout, c.pairing_timeout_ms);
+    set_ms(&mut hub.progress_interval, c.progress_interval_ms);
     // 生命周期（spec/hub-api.md 3.5）。
     set_ms(&mut hub.lease_ttl, c.lease_ttl_ms);
     set_ms(&mut hub.wake_timeout, c.wake_timeout_ms);

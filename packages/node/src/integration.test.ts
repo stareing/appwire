@@ -134,6 +134,7 @@ describe.skipIf(!existsSync(nativePath))('真实原生模块', () => {
         '--invoke', 'fail.boom', '--args', '{}',
         '--invoke', 'fail.login', '--args', '{}',
         '--read', 'cart',
+        '--read', 'profile',
       ])
       const paired: string[] = []
       const app = createAppMcp({
@@ -162,6 +163,13 @@ describe.skipIf(!existsSync(nativePath))('真实原生模块', () => {
       const scope = app.scope('cart')
       scope.tool('cart.add', { description: '加入购物车', handler: () => ({ data: { count: 1 }, stateHints: ['cart'] }) })
       scope.resource('cart', { description: '购物车', read: () => ({ items: 1 }) })
+      app.resource('profile', {
+        description: '个人资料',
+        annotations: { audience: ['user'] },
+        read: () => {
+          throw ToolCallError.userActionRequired('登录已过期', { reason: 'login', uri: 'demo://login' })
+        },
+      })
       app.tool('fail.reject', {
         description: 'r',
         handler: () => {
@@ -188,7 +196,7 @@ describe.skipIf(!existsSync(nativePath))('真实原生模块', () => {
       const byType = (t: string) => host.lines.filter((l) => l.type === t)
       const tools = byType('tools')[0]
       expect(tools?.tools).toEqual(expect.arrayContaining(['math.add', 'cart.add', 'fail.reject', 'fail.boom']))
-      expect(tools?.resources).toEqual(['cart'])
+      expect(tools?.resources).toEqual(['cart', 'profile'])
       const invokes = byType('invoke')
       expect(invokes[0]).toMatchObject({ name: 'math.add', result: { data: { sum: 5 } } })
       expect(invokes[1]).toMatchObject({ name: 'cart.add', result: { data: { count: 1 }, stateHints: ['cart'] } })
@@ -199,6 +207,10 @@ describe.skipIf(!existsSync(nativePath))('真实原生模块', () => {
         error: { code: -32019, message: '请先登录', data: { kind: 'USER_ACTION_REQUIRED', reason: 'login', uri: 'demo://login' } },
       })
       expect(byType('read')[0]).toMatchObject({ name: 'cart', result: { contents: { items: 1 } } })
+      expect(byType('read')[1]).toMatchObject({
+        name: 'profile',
+        error: { code: -32019, message: '登录已过期', data: { kind: 'USER_ACTION_REQUIRED', reason: 'login', uri: 'demo://login' } },
+      })
       expect(byType('progress')).toEqual([expect.objectContaining({ progress: 1, total: 2, message: '相加' })])
       expect(states).toContain('connected')
       expect(paired).toEqual(['fake-token'])

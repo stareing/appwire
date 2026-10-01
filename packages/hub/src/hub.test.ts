@@ -54,6 +54,13 @@ function fakeBinding() {
       if (!r.name.includes('.')) throw new Error('[TOOL_NOT_FOUND] 不存在')
       return JSON.stringify({ callId: 'c', result: { ok: r }, stateHints: [], instanceId: null, overview: null })
     },
+    callToolWithProgress: async (req, onProgress) => {
+      const r = JSON.parse(req) as { name: string }
+      if (!r.name.includes('.')) throw new Error('[TOOL_NOT_FOUND] 不存在')
+      onProgress({ progress: 1, total: 2, message: '一半' })
+      onProgress({ progress: 2, total: null, message: null })
+      return JSON.stringify({ callId: 'p', result: { ok: r }, stateHints: [], instanceId: null, overview: null })
+    },
     cancelCall: () => {},
     readResource: async () => '{"uri":"u","mimeType":null,"text":"1","blob":null}',
     subscribe: (uri) => {
@@ -133,6 +140,31 @@ describe('Hub 封装', () => {
     })()
     expect(e).toBeInstanceOf(HubError)
     expect(e).toMatchObject({ kind: 'INVALID_INPUT' })
+  })
+
+  it('callTool 的 onProgress 收到进度；回调抛错交给 onListenerError；不传时走普通调用', async () => {
+    const { binding } = fakeBinding()
+    const errors: unknown[] = []
+    const hub = await Hub.start({ binding, keepAlive: false, onListenerError: (e) => errors.push(e) })
+    const seen: unknown[] = []
+    const out = await hub.callTool({ name: 'a.b' }, { onProgress: (p) => seen.push(p) })
+    expect(out.callId).toBe('p')
+    expect(seen).toEqual([
+      { progress: 1, total: 2, message: '一半' },
+      { progress: 2, total: null, message: null },
+    ])
+    const bad = await hub.callTool(
+      { name: 'a.b' },
+      {
+        onProgress: () => {
+          throw new Error('回调炸了')
+        },
+      },
+    )
+    expect(bad.callId).toBe('p')
+    expect(errors).toHaveLength(2)
+    expect((await hub.callTool({ name: 'a.b' })).callId).toBe('c')
+    await expect(hub.callTool({ name: 'x' }, { onProgress: () => {} })).rejects.toMatchObject({ kind: 'TOOL_NOT_FOUND' })
   })
 
   it('原生错误转为 HubError', async () => {

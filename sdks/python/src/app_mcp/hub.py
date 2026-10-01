@@ -62,6 +62,8 @@ AppOverviewInfo = ffi.AppOverviewInfo
 HubTool = ffi.HubTool
 HubResource = ffi.HubResource
 ResourceContent = ffi.ResourceContent
+#: 调用进度（``progress``、``total``、``message``；:meth:`Hub.call_tool` 的 ``on_progress``，spec/hub-api.md 3.12）。
+ProgressUpdate = ffi.ProgressUpdate
 ToolErrorInfo = ffi.ToolErrorInfo
 ApprovalRequest = ffi.ApprovalRequest
 PairingRequest = ffi.PairingRequest
@@ -162,6 +164,7 @@ __all__ = [
     "DiagnosticReport",
     "EventStream",
     "Hub",
+    "ProgressUpdate",
     "HubConfig",
     "HubError",
     "HubEvent",
@@ -501,6 +504,25 @@ class _WakerAdapter(ffi.HubWaker):
         _schedule(self._fn, request, self._loop, self._dispatcher, done)
 
 
+class _ProgressAdapter(ffi.ProgressListener):
+    """进度回调（Hub 线程）→ 调用方事件循环线程上按顺序执行 ``fn``；返回 awaitable 时作为任务执行。"""
+
+    def __init__(self, fn: Callable[[ProgressUpdate], Any], loop: asyncio.AbstractEventLoop) -> None:
+        self._fn, self._loop = fn, loop
+
+    def _deliver(self, update: ProgressUpdate) -> None:
+        try:
+            result = self._fn(update)
+            if inspect.isawaitable(result):
+                asyncio.ensure_future(result)
+        except Exception:  # noqa: BLE001 - 进度回调异常不影响调用
+            _log.exception("进度回调抛出异常，已忽略")
+
+    def on_progress(self, update: ProgressUpdate) -> None:  # Hub 线程
+        if not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._deliver, update)
+
+
 class _Listener(ffi.HubEventListener):
     def __init__(self, hub: Hub) -> None:
         self._hub = hub
@@ -683,11 +705,14 @@ class Hub:
         timeout: float | None = None,
         session: str | None = None,
         call_id: str | None = None,
+        on_progress: Callable[[ProgressUpdate], Any] | None = None,
     ) -> CallResult:
         """调用工具（全名 ``<appId>.<tool>``，``timeout`` 单位秒）。
 
         工具层面的失败（用户拒绝、超时、App 报错……）放在 ``CallResult.error``；
         名称无法解析时抛出 :data:`HubError`。任务被取消时自动取消调用。
+        ``on_progress``：接收调用进度（:data:`ProgressUpdate`，Hub 合并后），在调用方的事件循环线程上按顺序调用，
+        都在结果返回之前；回调抛出的异常记日志后忽略。
         """
         req = ffi.CallRequest(
             name=name,
@@ -697,7 +722,11 @@ class Hub:
             call_id=call_id,
             session=session,
         )
-        out = await self._inner.call_tool(req)
+        if on_progress is None:
+            out = await self._inner.call_tool(req)
+        else:
+            listener = _ProgressAdapter(on_progress, asyncio.get_running_loop())
+            out = await self._inner.call_tool_with_progress(req, listener)
         return CallResult(
             call_id=out.call_id,
             data=_loads(out.data_json),

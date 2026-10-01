@@ -426,6 +426,51 @@ describe('资源与 scope', () => {
     expect(native.resources.get('order')?.spec).toMatchObject({ name: 'order', realtime: true })
   })
 
+  it('资源的内容标注随注册下发；读取失败携带详情（含 userActionRequired 的 reason / uri）', async () => {
+    const { app, native } = setup()
+    app.resource('profile', {
+      description: '个人资料',
+      annotations: { audience: ['user'], priority: 0.5 },
+      read: () => {
+        throw ToolCallError.userActionRequired('登录已过期', { reason: 'login', uri: 'shop://login' })
+      },
+    })
+    expect(native.resources.get('profile')?.spec).toMatchObject({ annotations: { audience: ['user'], priority: 0.5 } })
+    expect(await native.read('profile')).toEqual({
+      ok: false,
+      kind: 'USER_ACTION_REQUIRED',
+      message: '登录已过期',
+      details: { reason: 'login', uri: 'shop://login' },
+    })
+    app.resource('stock', {
+      description: '库存',
+      read: () => {
+        throw new ToolCallError('RESOURCE_NOT_FOUND', '仓库离线', { warehouse: 'sh' })
+      },
+    })
+    expect(native.resources.get('stock')?.spec).not.toHaveProperty('annotations')
+    expect(await native.read('stock')).toEqual({
+      ok: false,
+      kind: 'RESOURCE_NOT_FOUND',
+      message: '仓库离线',
+      details: { warehouse: 'sh' },
+    })
+  })
+
+  it('旧版原生模块的读取没有 failWithDetails：按无详情失败', async () => {
+    const { app, native } = setup()
+    app.resource('old', {
+      description: '旧',
+      read: () => {
+        throw new ToolCallError('RESOURCE_NOT_FOUND', '没有', { a: 1 })
+      },
+    })
+    const rec = native.resources.get('old')!
+    const reader = rec.reader
+    rec.reader = (read) => reader(Object.assign(Object.create(read), { failWithDetails: undefined }))
+    expect(await native.read('old')).toEqual({ ok: false, kind: 'RESOURCE_NOT_FOUND', message: '没有' })
+  })
+
   it('scope 注销时递归注销子项，子句柄变为空操作', () => {
     const { app, native } = setup()
     const s = app.scope('page')
@@ -462,6 +507,7 @@ describe('生命周期', () => {
       },
       connectTimeoutMs: 2000,
       heartbeat: 'off',
+      callDedup: { ttlMs: 1000, maxEntries: 8 },
     })
     expect(native.config).toMatchObject({
       lifecycle: {
@@ -476,7 +522,9 @@ describe('生命周期', () => {
       },
       connectTimeoutMs: 2000,
       heartbeat: 'off',
+      callDedup: { ttlMs: 1000, maxEntries: 8 },
     })
+    expect(setup().native.config).not.toHaveProperty('callDedup')
   })
 
   it('handleWake 接受字符串或数组，识别到即返回 true', () => {

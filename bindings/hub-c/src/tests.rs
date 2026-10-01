@@ -716,13 +716,13 @@ fn header_matches_implementation() {
         "am_hub_unsubscribe", "am_hub_select_instance", "am_hub_reset_session",
         "am_hub_export_tools", "am_hub_dispatch", "am_hub_set_event_cb", "am_hub_set_approval_cb",
         "am_hub_approval_complete", "am_hub_set_pairing_cb", "am_hub_pairing_complete",
-        "am_hub_set_waker_cb", "am_hub_waker_complete", "am_hub_set_policy",
+        "am_hub_set_waker_cb", "am_hub_waker_complete", "am_hub_set_policy", "am_hub_call_with_progress",
     ] {
         assert!(h.contains(&format!("{f}(")), "{f}");
     }
     let src = include_str!("lib.rs");
     let exported = src.matches("#[unsafe(no_mangle)]").count();
-    assert_eq!(exported, 31, "导出函数数量与头文件清单一致");
+    assert_eq!(exported, 32, "导出函数数量与头文件清单一致");
 }
 
 #[test]
@@ -1062,3 +1062,100 @@ fn policy_hide_deny_and_set_policy() {
     // SAFETY: 有效句柄。
     unsafe { am_hub_free(hub) };
 }
+
+// ---------------------------------------------------------------------------
+// v11：调用进度
+// ---------------------------------------------------------------------------
+
+/// 报告两次进度（间隔超过 Hub 的合并间隔）后完成。
+struct Progressing;
+
+impl ToolHandler for Progressing {
+    fn invoke(&self, call: CallHandle) {
+        std::thread::spawn(move || {
+            let _ = call.report_progress(1.0, Some(2.0), Some("第一步"));
+            std::thread::sleep(Duration::from_millis(150));
+            let _ = call.report_progress(2.0, None, None);
+            std::thread::sleep(Duration::from_millis(150));
+            let _ = call.complete(Some(r#"{"done":true}"#), Vec::new());
+        });
+    }
+}
+
+/// user_data = `*const Sender<String>`；进度以 `progress:` 前缀与结果区分。
+unsafe extern "C" fn on_progress(ud: *mut c_void, json: *mut c_char) {
+    // SAFETY: 测试传入的 Sender。
+    let tx = unsafe { &*(ud as *const Sender<String>) };
+    // SAFETY: 库分配的字符串。
+    let _ = tx.send(format!("progress:{}", unsafe { take(json) }));
+}
+
+#[test]
+fn call_with_progress_delivers_progress_before_result() {
+    let hub = start_hub(r#"{"listen": "127.0.0.1:0", "progressIntervalMs": 10}"#);
+    // SAFETY: 有效句柄。
+    let addr = unsafe { take(am_hub_listen_addr(hub)) };
+    let mut cfg = NativeConfig::new("steps", "步骤");
+    cfg.host_url = format!("ws://{addr}/app");
+    let client = NativeClient::new(cfg, None).expect("创建 App");
+    let _tool = client
+        .register_tool(ToolSpec::new("run", "分步执行"), Arc::new(Progressing))
+        .expect("注册");
+    let _echo = client.register_tool(ToolSpec::new("echo", "回显"), Arc::new(Echo)).expect("注册");
+    client.start();
+    // 等工具同步完成
+    let deadline = Instant::now() + WAIT;
+    let filter = c(r#"{"apps":["steps"],"onlyAvailable":true,"includeBuiltin":false}"#);
+    loop {
+        // SAFETY: 有效参数。
+        let t = query_json(|o| unsafe { am_hub_tools_json(hub, filter.as_ptr(), o) });
+        if t.as_array().map(Vec::len) == Some(2) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "工具未同步：{t}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let (tx, rx) = mpsc::channel::<String>();
+    let req = c(&json!({"name": "steps.run", "arguments": {}, "callId": "p1"}).to_string());
+    let mut id = ptr::null_mut();
+    // SAFETY: 有效参数；tx 比回调活得久。
+    let st = unsafe { am_hub_call_with_progress(hub, req.as_ptr(), Some(on_result), Some(on_progress), ud(&tx), &mut id) };
+    assert_eq!(st, AmHubStatus::Ok, "{}", last_error());
+    // SAFETY: 库分配的字符串。
+    assert_eq!(unsafe { take(id) }, "p1");
+    let mut got = Vec::new();
+    while let Ok(s) = rx.recv_timeout(WAIT) {
+        let done = !s.starts_with("progress:");
+        got.push(s);
+        if done {
+            break;
+        }
+    }
+    let (result, progress) = got.split_last().expect("收到结果");
+    assert_eq!(parse(result)["result"]["ok"], json!({"done": true}), "{result}");
+    let progress: Vec<Value> = progress.iter().map(|s| parse(&s["progress:".len()..])).collect();
+    assert_eq!(
+        progress,
+        vec![
+            json!({"callId": "p1", "progress": 1.0, "total": 2.0, "message": "第一步"}),
+            json!({"callId": "p1", "progress": 2.0}),
+        ]
+    );
+
+    // on_progress 为 NULL：等同 am_hub_call。
+    let req = c(&json!({"name": "steps.echo", "arguments": {}}).to_string());
+    // SAFETY: 有效参数。
+    let st = unsafe { am_hub_call_with_progress(hub, req.as_ptr(), Some(on_result), None, ud(&tx), ptr::null_mut()) };
+    assert_eq!(st, AmHubStatus::Ok);
+    assert!(recv(&rx)["result"]["ok"].is_object());
+    // 缺少 cb：参数错误。
+    // SAFETY: 同上。
+    let st = unsafe { am_hub_call_with_progress(hub, req.as_ptr(), None, Some(on_progress), ud(&tx), ptr::null_mut()) };
+    assert_eq!(st, AmHubStatus::InvalidArgument);
+
+    client.stop();
+    // SAFETY: 有效句柄。
+    unsafe { am_hub_free(hub) };
+}
+

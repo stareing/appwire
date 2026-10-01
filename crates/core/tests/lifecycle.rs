@@ -31,7 +31,7 @@ fn tool(name: &str) -> ToolDef {
 }
 
 fn resource(name: &str) -> ResourceDef {
-    ResourceDef { name: name.into(), description: format!("{name} 资源"), mime_type: None, scope: None, realtime: false }
+    ResourceDef { name: name.into(), description: format!("{name} 资源"), mime_type: None, scope: None, realtime: false, annotations: None }
 }
 
 fn sends(events: &[Event]) -> Vec<Value> {
@@ -876,6 +876,7 @@ fn tools_hash_fixed_vector() {
         mime_type: None,
         scope: None,
         realtime: false,
+        annotations: None,
     })
     .unwrap();
     assert_eq!(h.c.tools_hash(), "ba703035ddca2f91");

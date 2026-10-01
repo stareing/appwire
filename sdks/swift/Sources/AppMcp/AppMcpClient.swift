@@ -103,12 +103,16 @@ private func failQuietly(_ call: Call, _ kind: String, _ message: String, _ deta
     }
 }
 
-private func failQuietly(_ read: Read, _ kind: String, _ message: String) {
+private func failQuietly(_ read: Read, _ kind: String, _ message: String, _ details: String? = nil) {
     do {
-        try read.fail(kind: kind, message: message)
+        try read.failWithDetails(kind: kind, message: message, detailsJson: details)
     } catch AppMcpError.UnknownErrorKind {
-        failQuietly(read, ErrorKind.handlerError, message)
-    } catch {}
+        failQuietly(read, ErrorKind.handlerError, message, details)
+    } catch AppMcpError.InvalidJson {
+        failQuietly(read, kind, message, nil)
+    } catch {
+        // AlreadyCompleted：已取消或超时，忽略
+    }
 }
 
 /// 类型擦除后的工具实现：参数 JSON → 原生调用结果（`dataJson` 为 `nil` 表示 null）。
@@ -170,7 +174,7 @@ final class ReaderBridge: ResourceReader, @unchecked Sendable {
 
     func read(read: Read) {
         let body = self.body
-        _ = launch(on: target, timeout: timeout, fail: { kind, message, _ in failQuietly(read, kind, message) }) {
+        _ = launch(on: target, timeout: timeout, fail: { failQuietly(read, $0, $1, $2) }) {
             let json = try await body()
             do {
                 try read.complete(contentsJson: json)
@@ -377,18 +381,24 @@ public class ToolRegistrar: @unchecked Sendable {
     ///
     /// `realtime`：需实时推送（spec/lifecycle.md 第 13 节 B3）——被订阅时阻止休眠、休眠中变化时回连推送；
     /// 默认 `false`：订阅不阻止休眠，变化在下次连接时补发。
+    /// `annotations`：资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上。
+    /// 读取函数抛出 `ToolCallError`（含 `ToolCallError.userActionRequired`）时类别与详情原样交给 Host。
     @discardableResult
     public func resource<Output: Encodable>(
         _ name: String,
         description: String,
         mimeType: String? = nil,
         realtime: Bool = false,
+        annotations: ContentAnnotations? = nil,
         reader: @escaping @MainActor () async throws -> Output
     ) throws -> ResourceHandle {
         let bridge = ReaderBridge(target: .mainActor, timeout: dispatchTimeout) {
             try encodeJSON(try await reader())
         }
-        let raw = try registerRaw(ResourceSpec(name: name, description: description, mimeType: mimeType, realtime: realtime), bridge)
+        let spec = ResourceSpec(
+            name: name, description: description, mimeType: mimeType, realtime: realtime, annotations: annotations
+        )
+        let raw = try registerRaw(spec, bridge)
         return ResourceHandle(inner: raw)
     }
 

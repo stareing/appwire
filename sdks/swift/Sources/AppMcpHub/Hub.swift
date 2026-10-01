@@ -28,6 +28,8 @@ public typealias AppOverviewInfo = AppMcpHubBindings.AppOverviewInfo
 public typealias HubTool = AppMcpHubBindings.HubTool
 public typealias HubResource = AppMcpHubBindings.HubResource
 public typealias ResourceContent = AppMcpHubBindings.ResourceContent
+/// 调用进度（`progress`、`total`、`message`；`Hub.callTool(…, onProgress:)`，spec/hub-api.md 3.12）。
+public typealias ProgressUpdate = AppMcpHubBindings.ProgressUpdate
 public typealias ToolErrorInfo = AppMcpHubBindings.ToolErrorInfo
 public typealias ApprovalRequest = AppMcpHubBindings.ApprovalRequest
 public typealias PairingRequest = AppMcpHubBindings.PairingRequest
@@ -324,22 +326,31 @@ public final class Hub: @unchecked Sendable {
     ///
     /// 工具层面的失败（用户拒绝、超时、App 报错……）放在 `CallResult.error`；名称无法解析时抛出 `HubError`。
     /// Task 被取消时自动取消调用。
+    /// `onProgress`：接收调用进度（Hub 合并后，spec/hub-api.md 3.12），在 Hub 的进度线程上按顺序同步调用、须尽快返回
+    /// （需要时自行切到主 actor）；全部回调在本函数返回之前完成。
     public func callTool(
         _ name: String,
         argumentsJSON: String? = nil,
         instanceId: String? = nil,
         timeout: TimeInterval? = nil,
         session: String? = nil,
-        callId: String? = nil
+        callId: String? = nil,
+        onProgress: (@Sendable (ProgressUpdate) -> Void)? = nil
     ) async throws -> CallResult {
-        let out = try await inner.callTool(request: CallRequest(
+        let request = CallRequest(
             name: name,
             argumentsJson: argumentsJSON,
             instanceId: instanceId,
             timeoutMs: timeout.map { UInt64(max(0, $0 * 1000)) },
             callId: callId,
             session: session
-        ))
+        )
+        let out: CallOutcome
+        if let onProgress {
+            out = try await inner.callToolWithProgress(request: request, listener: ProgressBridge(onProgress))
+        } else {
+            out = try await inner.callTool(request: request)
+        }
         return CallResult(
             callId: out.callId,
             dataJSON: out.dataJson,
@@ -361,11 +372,13 @@ public final class Hub: @unchecked Sendable {
         instanceId: String? = nil,
         timeout: TimeInterval? = nil,
         session: String? = nil,
-        callId: String? = nil
+        callId: String? = nil,
+        onProgress: (@Sendable (ProgressUpdate) -> Void)? = nil
     ) async throws -> CallResult {
         let json = String(decoding: try JSONEncoder().encode(arguments), as: UTF8.self)
         return try await callTool(
-            name, argumentsJSON: json, instanceId: instanceId, timeout: timeout, session: session, callId: callId
+            name, argumentsJSON: json, instanceId: instanceId, timeout: timeout, session: session, callId: callId,
+            onProgress: onProgress
         )
     }
 
@@ -437,4 +450,11 @@ public final class Hub: @unchecked Sendable {
             continuation.onTermination = { [eventHub] _ in eventHub.remove(id) }
         }
     }
+}
+
+/// 进度回调桥：在 Hub 的进度线程上按顺序同步调用 `onProgress`（须尽快返回；全部回调在 `callTool` 返回前完成）。
+final class ProgressBridge: ProgressListener, @unchecked Sendable {
+    let action: @Sendable (ProgressUpdate) -> Void
+    init(_ action: @escaping @Sendable (ProgressUpdate) -> Void) { self.action = action }
+    func onProgress(update: ProgressUpdate) { action(update) }
 }

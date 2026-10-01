@@ -119,12 +119,15 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
 
     /// <summary>托管选项 → AmClientOptions（不含 Lifecycle 指针与回调）。</summary>
     /// <remarks>@compat C ABI 的 host_absent_retries 0 = 默认 3、负数 = 一直重连；merge_window_ms 0 = 默认 2000、负数 = 不留窗口；
-    /// 托管层 0 表示"一直重连 / 不留窗口"，在此转换。</remarks>
+    /// call_dedup_* 0 = 默认、负数 = 关闭；托管层 0 表示"一直重连 / 不留窗口 / 关闭去重"，在此转换。</remarks>
     internal static unsafe AmClientOptions ToNativeOptions(AppMcpClientOptions options, LifecycleOptions l)
     {
         if (l.HostAbsentRetries < 0) throw new ArgumentOutOfRangeException(nameof(l.HostAbsentRetries), "HostAbsentRetries 不能为负数（0 = 一直重连）");
         if (!Enum.IsDefined(options.Heartbeat)) throw new ArgumentOutOfRangeException(nameof(options.Heartbeat), "非法的 Heartbeat");
         var merge = ToMillis(l.MergeWindow, nameof(l.MergeWindow));
+        var dedup = options.CallDedup ?? new CallDedupOptions();
+        if (dedup.MaxEntries < 0) throw new ArgumentOutOfRangeException(nameof(dedup.MaxEntries), "CallDedup.MaxEntries 不能为负数（0 = 关闭）");
+        var dedupTtl = ToMillis(dedup.Ttl, nameof(dedup.Ttl));
         return new AmClientOptions
         {
             StructSize = (uint)sizeof(AmClientOptions),
@@ -134,6 +137,8 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
             LegacyTimers = l.LegacyTimers ? (byte)1 : (byte)0,
             MergeWindowMs = merge == 0 ? -1 : (long)Math.Min(merge, long.MaxValue),
             SleepOnBackground = l.SleepOnBackground ? (byte)1 : (byte)0,
+            CallDedupTtlMs = dedupTtl == 0 ? -1 : (long)Math.Min(dedupTtl, long.MaxValue),
+            CallDedupMaxEntries = dedup.MaxEntries == 0 ? -1 : dedup.MaxEntries,
         };
     }
 
@@ -281,13 +286,14 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         Func<TInput, ToolContext, Task<TOutput>> handler,
         ToolOptions? options = null) => _root.RegisterTool(name, description, handler, options);
 
-    /// <inheritdoc cref="ToolScope.RegisterResource(string, string, Func{CancellationToken, Task{object?}}, string?, bool)"/>
+    /// <inheritdoc cref="ToolScope.RegisterResource(string, string, Func{CancellationToken, Task{object?}}, string?, bool, ContentAnnotations?)"/>
     public ResourceRegistration RegisterResource(
         string name,
         string description,
         Func<CancellationToken, Task<object?>> reader,
         string? mimeType = null,
-        bool realtime = false) => _root.RegisterResource(name, description, reader, mimeType, realtime);
+        bool realtime = false,
+        ContentAnnotations? annotations = null) => _root.RegisterResource(name, description, reader, mimeType, realtime, annotations);
 
     /// <inheritdoc cref="ToolScope.RegisterResource{T}"/>
     public ResourceRegistration RegisterResource<T>(
@@ -295,7 +301,8 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         string description,
         Func<CancellationToken, Task<T>> reader,
         string? mimeType = null,
-        bool realtime = false) => _root.RegisterResource(name, description, reader, mimeType, realtime);
+        bool realtime = false,
+        ContentAnnotations? annotations = null) => _root.RegisterResource(name, description, reader, mimeType, realtime, annotations);
 
     /// <summary>注销全部工具与资源（客户端继续运行）。</summary>
     public void UnregisterAll() => _root.Unregister();

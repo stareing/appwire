@@ -276,6 +276,28 @@ pub struct ClientConfig {
     pub connect_timeout_ms: Option<u32>,
     /// 心跳策略（spec/lifecycle.md 第 11 节）：`'auto'`（默认）| `'always'` | `'off'`。
     pub heartbeat: Option<String>,
+    /// 调用去重（spec/protocol.md 3.3）：同一 `callId` 在有效期内重放首次结果。缺省保留 5 分钟、最多 64 条。
+    pub call_dedup: Option<CallDedupInit>,
+}
+
+/// 调用去重策略。未提供的字段取默认值（`ttlMs` 300000、`maxEntries` 64）；任一为 0 关闭去重。
+#[napi(object)]
+pub struct CallDedupInit {
+    pub ttl_ms: Option<f64>,
+    pub max_entries: Option<u32>,
+}
+
+impl CallDedupInit {
+    fn into_policy(self) -> Result<native::CallDedupPolicy, String> {
+        let mut p = native::CallDedupPolicy::default();
+        if let Some(v) = self.ttl_ms {
+            p.ttl_ms = parse_millis("callDedup.ttlMs", v)?;
+        }
+        if let Some(n) = self.max_entries {
+            p.max_entries = n as usize;
+        }
+        Ok(p)
+    }
 }
 
 /// 生命周期策略。未提供的字段取默认值（见 spec/lifecycle.md 第 3 节）。
@@ -515,12 +537,19 @@ pub struct ResourceSpecInit {
     pub mime_type: Option<String>,
     /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时保持连接、休眠中变化时回连推送。默认 `false`。
     pub realtime: Option<bool>,
+    /// 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上。缺省未声明。
+    pub annotations: Option<ContentAnnotationsInit>,
 }
 
-impl From<ResourceSpecInit> for (native::ResourceSpec, native::ResourceOptions) {
-    fn from(s: ResourceSpecInit) -> Self {
-        let spec = native::ResourceSpec { name: s.name, description: s.description, mime_type: s.mime_type };
-        (spec, native::ResourceOptions { realtime: s.realtime.unwrap_or(false) })
+impl ResourceSpecInit {
+    /// 拆成定义与选项；`annotations.audience` 取值不合法时返回 `INVALID_ARG`。
+    fn into_parts(self) -> Result<(native::ResourceSpec, native::ResourceOptions), String> {
+        let options = native::ResourceOptions {
+            realtime: self.realtime.unwrap_or(false),
+            annotations: self.annotations.map(ContentAnnotationsInit::into_annotations).transpose()?,
+        };
+        let spec = native::ResourceSpec { name: self.name, description: self.description, mime_type: self.mime_type };
+        Ok((spec, options))
     }
 }
 
@@ -740,6 +769,13 @@ impl Read {
         let kind = parse_error_kind(&kind)?;
         self.inner.fail(kind, &message).map_err(to_js_error)
     }
+
+    /// 失败完成并附带结构化详情；语义同 `Call.failWithDetails`（`USER_ACTION_REQUIRED` 的 `reason` / `uri` 放在详情对象中）。
+    #[napi]
+    pub fn fail_with_details(&self, kind: String, message: String, details_json: Option<String>) -> Result<(), String> {
+        let kind = parse_error_kind(&kind)?;
+        self.inner.fail_with_details(kind, &message, details_json.as_deref()).map_err(to_js_error)
+    }
 }
 
 /// 已注册的工具。
@@ -824,7 +860,7 @@ impl Scope {
 
     #[napi]
     pub fn register_resource(&self, spec: ResourceSpecInit, reader: WeakTsfn<Read>) -> Result<Resource, String> {
-        let (spec, options) = spec.into();
+        let (spec, options) = spec.into_parts()?;
         let inner = self
             .inner
             .register_resource_with(spec, options, Arc::new(JsResourceReader { tsfn: reader }))
@@ -880,6 +916,9 @@ impl JsNativeClient {
         }
         if let Some(h) = config.heartbeat.as_deref() {
             cfg.heartbeat = parse_heartbeat(h)?;
+        }
+        if let Some(d) = config.call_dedup {
+            cfg.call_dedup = d.into_policy()?;
         }
 
         let listener = listener.map(|tsfn| Arc::new(JsClientListener { tsfn: Mutex::new(Some(Arc::new(tsfn))) }));
@@ -995,7 +1034,7 @@ impl JsNativeClient {
 
     #[napi]
     pub fn register_resource(&self, spec: ResourceSpecInit, reader: WeakTsfn<Read>) -> Result<Resource, String> {
-        let (spec, options) = spec.into();
+        let (spec, options) = spec.into_parts()?;
         let inner = self
             .inner
             .register_resource_with(spec, options, Arc::new(JsResourceReader { tsfn: reader }))

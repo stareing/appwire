@@ -100,6 +100,30 @@ function wrapHold(hold: { release(): void }): HoldHandle {
   }
 }
 
+/**
+ * 以失败完成调用或资源读取：`ToolCallError` 的类别与详情（含 `userActionRequired` 的 `reason` / `uri`）原样提交。
+ *
+ * @error 详情无法序列化为 JSON 时记警告并按无详情提交；原生模块旧（无 `failWithDetails`）时同样丢弃详情。
+ */
+function submitFailure(
+  target: Pick<NativeCall, 'fail' | 'failWithDetails'>,
+  error: unknown,
+  logger: Logger,
+  label: string,
+): void {
+  const { kind, message, details } = toFailure(error)
+  let detailsJson: string | undefined
+  if (details !== undefined && target.failWithDetails) {
+    try {
+      detailsJson = JSON.stringify(details)
+    } catch (e) {
+      logger.warn(`[app-mcp] ${label} 的错误详情无法序列化为 JSON，已忽略`, e)
+    }
+  }
+  if (detailsJson !== undefined) target.failWithDetails!(kind, message, detailsJson)
+  else target.fail(kind, message)
+}
+
 function stringifyJson(value: unknown): string {
   const text = JSON.stringify(value === undefined ? null : value)
   return text === undefined ? 'null' : text
@@ -279,19 +303,7 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
         }
       }
     }
-    const fail = (error: unknown) => {
-      const { kind, message, details } = toFailure(error)
-      let detailsJson: string | undefined
-      if (details !== undefined && call.failWithDetails) {
-        try {
-          detailsJson = JSON.stringify(details)
-        } catch (e) {
-          this.logger.warn(`[app-mcp] 工具 ${this.name} 的错误详情无法序列化为 JSON，已忽略`, e)
-        }
-      }
-      if (detailsJson !== undefined) finish(() => call.failWithDetails!(kind, message, detailsJson))
-      else finish(() => call.fail(kind, message))
-    }
+    const fail = (error: unknown) => finish(() => submitFailure(call, error, this.logger, `工具 ${this.name}`))
 
     try {
       call.setCancelListener((reason) => {
@@ -394,6 +406,7 @@ class ResourceEntry implements ResourceHandle, Child {
         description: definition.description,
         mimeType: definition.mimeType ?? 'application/json',
         ...(definition.realtime && { realtime: true }),
+        ...(definition.annotations !== undefined && { annotations: { ...definition.annotations } }),
       },
       (read) => this.onRead(read),
     )
@@ -448,10 +461,7 @@ class ResourceEntry implements ResourceHandle, Child {
           }
           submit(() => read.complete(json))
         },
-        (error: unknown) => {
-          const { kind, message } = toFailure(error)
-          submit(() => read.fail(kind, message))
-        },
+        (error: unknown) => submit(() => submitFailure(read, error, this.logger, `资源 ${this.name}`)),
       )
   }
 }
@@ -563,6 +573,7 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
       ...(options.lifecycle !== undefined && { lifecycle: { ...options.lifecycle } }),
       ...(options.connectTimeoutMs !== undefined && { connectTimeoutMs: options.connectTimeoutMs }),
       ...(options.heartbeat !== undefined && { heartbeat: options.heartbeat }),
+      ...(options.callDedup !== undefined && { callDedup: { ...options.callDedup } }),
     }
     this.client = new binding.NativeClient(config, (event) => this.onEvent(event))
     this.currentState = mapState(this.client.state)

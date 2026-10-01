@@ -61,7 +61,9 @@ Identity and connection belong to the main process: `appId`, `appName` and `host
 Each webContents gets its own scope, unregistered on reload, navigation, destroy or renderer crash
 (in-flight calls fail with `APP_DISCONNECTED`).
 Page resources declared with `realtime: true` are registered as realtime in the main process too (subscriptions keep the
-connection alive and changes while dormant reconnect to push; default `false`).
+connection alive and changes while dormant reconnect to push; default `false`). Resource `annotations` (MCP content
+annotations) are forwarded the same way, and a page `read` that throws `ToolCallError` (including
+`ToolCallError.userActionRequired`) reaches the Hub with its kind and details (`reason` / `uri`).
 
 Lifecycle: the main-process client is created by `@app-mcp/node`, so its defaults apply (mode `persistent`;
 `heartbeat`, `lifecycle.hostAbsentRetries` / `mergeWindowMs` / `sleepOnBackground` / `legacyTimers` as documented there).

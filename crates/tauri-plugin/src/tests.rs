@@ -653,8 +653,8 @@ async fn page_resource_realtime_reaches_hub() {
     let page = Arc::new(FakePage::default());
     fx.connected("realtime").await;
 
-    let plain =
-        json!({ "op": "resource.register", "id": 1, "name": "cart", "description": "购物车" });
+    let plain = json!({ "op": "resource.register", "id": 1, "name": "cart", "description": "购物车",
+                        "annotations": { "audience": ["user"], "priority": 0.5 } });
     assert_eq!(fx.op(&page, "main", "main", plain)["ok"], true);
     let scope = json!({ "op": "scope.create", "id": 2, "name": "orders" });
     assert_eq!(fx.op(&page, "main", "main", scope)["ok"], true);
@@ -673,6 +673,22 @@ async fn page_resource_realtime_reaches_hub() {
         uri("cart").is_some() && uri("order").is_some()
     })
     .await;
+    // 资源的内容标注随登记到达 Hub；未声明的不带。
+    let annotations = |name: &str| {
+        fx.hub
+            .resources()
+            .into_iter()
+            .find(|r| r.name == format!("realtime.{name}"))
+            .and_then(|r| r.annotations)
+    };
+    assert_eq!(
+        annotations("cart").map(|a| serde_json::to_value(a).unwrap_or_default()),
+        Some(json!({ "audience": ["user"], "priority": 0.5 }))
+    );
+    assert_eq!(annotations("order"), None);
+    let bad = json!({ "op": "resource.register", "id": 9, "name": "bad", "description": "x",
+                      "annotations": { "audience": ["bot"] } });
+    assert_ne!(fx.op(&page, "main", "main", bad)["ok"], true, "非法内容标注被拒绝");
     let subscribed_realtime = || {
         fx.hub
             .status()

@@ -197,6 +197,18 @@ public sealed class LogEventArgs(LogLevel level, string message) : EventArgs
     public string Message { get; } = message;
 }
 
+/// <summary>调用去重策略（<see cref="AppMcpClientOptions.CallDedup"/>）。任一项为 0 关闭去重。</summary>
+public sealed record CallDedupOptions
+{
+    /// <summary>首次结果的保留时长。默认 5 分钟。</summary>
+    public TimeSpan Ttl { get; init; } = TimeSpan.FromMinutes(5);
+    /// <summary>最多保留的结果数（超出淘汰最早的）。默认 64。</summary>
+    public int MaxEntries { get; init; } = 64;
+
+    /// <summary>关闭去重。</summary>
+    public static CallDedupOptions Off { get; } = new() { Ttl = TimeSpan.Zero, MaxEntries = 0 };
+}
+
 /// <summary>App 总览：Host 在模型首次接触该 App 时附带。</summary>
 public sealed record AppOverview(string Summary, string? Body = null, string? Locale = null);
 
@@ -234,6 +246,10 @@ public sealed class AppMcpClientOptions
 
     /// <summary>心跳策略（spec/lifecycle.md 第 11 节 A3）。默认 <see cref="HeartbeatMode.Auto"/>。</summary>
     public HeartbeatMode Heartbeat { get; init; } = HeartbeatMode.Auto;
+
+    /// <summary>调用去重（spec/protocol.md 3.3）：同一 callId 在有效期内重复到达时重放首次结果、不再执行 handler。
+    /// 为 null 时默认（保留 5 分钟、最多 64 条）；见 <see cref="CallDedupOptions"/>。</summary>
+    public CallDedupOptions? CallDedup { get; init; }
 
     /// <summary>
     /// handler 与事件执行的线程。未设置时捕获 <see cref="AppMcpClient.Create"/> 调用时的

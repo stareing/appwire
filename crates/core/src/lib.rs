@@ -297,7 +297,9 @@ pub struct ResourceDef {
     pub scope: Option<ScopeId>,
     /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被 Host 订阅时阻止休眠，休眠期间变化时回连推送。
     /// `false`（常用）时订阅不阻止休眠，变化在下次连接时补发 `resources/updated`。
-    pub realtime: bool,
+    pub realtime: bool,    /// 资源内容的标注（MCP 内容注解：`audience` / `priority` / `lastModified`），原样同步给 Host，Hub 放到
+    /// MCP `resources/list` 的资源注解上；`None` = 未声明（不序列化，`toolsHash` 不变）。
+    pub annotations: Option<ContentAnnotations>,
 }
 
 /// handler 成功返回的内容。

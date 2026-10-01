@@ -142,6 +142,11 @@ HarmonyAppMcp.create(this.context, { appId: 'shop', appName: '示例商城', lif
 （在设备上嵌入 Hub 时可用）。资源声明 `realtime: true`（缺省 `false`）表示模型在等待其变化：被 Host 订阅时阻止休眠、
 休眠中变化时回连推送；普通状态（购物车、列表）不要声明。
 
+`AppMcpOptions.callDedup`：`{ ttlMs?, maxEntries? }`（缺省 300000 ms / 64 条，任一为 0 关闭）——同一 `callId` 在有效期内再次到达时
+重放首次结果、不再执行 handler（spec/protocol.md 3.3），命中时记一条警告日志。
+资源可声明 `annotations`（MCP 内容注解 `audience` / `priority` / `lastModified`，Hub 放到 `resources/list` 的资源注解上）；
+`read` 抛出 `ToolCallError`（含 `ToolCallError.userActionRequired`）时类别与详情（`reason` / `uri`）原样交给 Host，与工具一致。
+
 `HarmonyAppMcp.handleWant(want)` 识别两种唤醒：`want.uri` 为 `<scheme>://app-mcp/wake?token=<令牌>`，或
 `want.parameters['app-mcp-wake']` 为令牌。要让 URI 拉起 App，在入口 Ability 的 `skills` 中声明：
 

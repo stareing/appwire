@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use hub::{
     ApprovalHandler, ApprovalRequest, CallOutcome, CallRequest, ErrorKind, Hub, HubError,
-    PairingHandler, PairingRequest, ToolError, ToolFilter, ToolFormat, WakeRequest,
+    PairingHandler, PairingRequest, ProgressUpdate, ToolError, ToolFilter, ToolFormat, WakeRequest,
     Waker, async_trait, format,
 };
 use serde_json::{Value, json};
@@ -695,6 +695,91 @@ pub unsafe extern "C" fn am_hub_call(
         let id = call_id.clone();
         h.spawn_result(rc, move |hub| async move {
             match hub.call_tool(req).await {
+                Ok(o) => serde_json::to_string(&o).unwrap_or_default(),
+                Err(e) => outcome_error_json(&id, e.0),
+            }
+        })?;
+        // SAFETY: 同上。
+        unsafe { write_out_str(out_call_id, Some(&call_id)) };
+        Ok(())
+    })
+}
+
+/// v11：调用进度回调（spec/hub-api.md 3.12）。`progress_json` 归回调方所有。
+pub type AmHubProgressFn = unsafe extern "C" fn(user_data: *mut c_void, progress_json: *mut c_char);
+
+/// 一条进度 → `{"callId", "progress", "total"?, "message"?}`。
+fn progress_json(call_id: &str, p: &ProgressUpdate) -> String {
+    let mut v = json!({ "callId": call_id, "progress": p.progress });
+    if let Some(t) = p.total {
+        v["total"] = json!(t);
+    }
+    if let Some(m) = &p.message {
+        v["message"] = json!(m);
+    }
+    v.to_string()
+}
+
+/// 把一条进度排到分发线程上回调（与结果回调同一队列，因此先于结果到达）。
+fn post_progress(dispatcher: &Dispatcher, f: AmHubProgressFn, user_data: dispatch::SendPtr, json: String) {
+    let job: Box<dyn FnOnce() + Send> = Box::new(move || {
+        let ud = user_data;
+        // SAFETY: 调用方提供的回调；字符串所有权转移给回调方。
+        unsafe { f(ud.0, ffi_util::into_raw_cstring(&json)) };
+    });
+    // 分发线程已关闭（Hub 释放中）时丢弃进度：进度不保证送达。
+    let _ = dispatcher.post(job);
+}
+
+/// v11：同 [`am_hub_call`]，并接收调用进度（`Hub::call_tool_with_progress`）。
+///
+/// @input on_progress 可为 NULL（等同 [`am_hub_call`]）；与 `cb` 共用 `user_data`。
+/// @invariant 进度回调与结果回调在同一分发线程上串行执行，全部进度回调先于结果回调；结果回调之后不再有进度回调。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_hub_call_with_progress(
+    hub: *mut AmHub,
+    request_json: *const c_char,
+    cb: Option<AmHubResultFn>,
+    on_progress: Option<AmHubProgressFn>,
+    user_data: *mut c_void,
+    out_call_id: *mut *mut c_char,
+) -> AmHubStatus {
+    let Some(on_progress) = on_progress else {
+        // SAFETY: 由调用方保证。
+        return unsafe { am_hub_call(hub, request_json, cb, user_data, out_call_id) };
+    };
+    guard(|| {
+        // SAFETY: 由调用方保证。
+        unsafe { write_out_str(out_call_id, None) };
+        // SAFETY: 同上。
+        let h = unsafe { hub_ref(hub) }?;
+        // SAFETY: 同上。
+        let text = unsafe { req_str(request_json, "request_json") }?;
+        let cb = cb.ok_or_else(|| FfiError::null("cb"))?;
+        let mut req: CallRequest =
+            serde_json::from_str(text).map_err(|e| FfiError::json("request_json", e))?;
+        let call_id = req.call_id.get_or_insert_with(|| h.next_call_id()).clone();
+        let fallback =
+            outcome_error_json(&call_id, ToolError::new(ErrorKind::Cancelled, STOPPED_MESSAGE));
+        let rc = ResultCb::new(cb, user_data, h.dispatcher.clone(), fallback);
+        let id = call_id.clone();
+        let dispatcher = h.dispatcher.clone();
+        let ud = dispatch::SendPtr(user_data);
+        h.spawn_result(rc, move |hub| async move {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProgressUpdate>();
+            let call = hub.call_tool_with_progress(req, tx);
+            tokio::pin!(call);
+            let res = loop {
+                tokio::select! {
+                    biased;
+                    Some(p) = rx.recv() => post_progress(&dispatcher, on_progress, ud, progress_json(&id, &p)),
+                    res = &mut call => break res,
+                }
+            };
+            while let Ok(p) = rx.try_recv() {
+                post_progress(&dispatcher, on_progress, ud, progress_json(&id, &p));
+            }
+            match res {
                 Ok(o) => serde_json::to_string(&o).unwrap_or_default(),
                 Err(e) => outcome_error_json(&id, e.0),
             }

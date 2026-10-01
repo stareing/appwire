@@ -36,6 +36,8 @@ typealias AppOverviewInfo = dev.appmcp.hub.ffi.AppOverviewInfo
 typealias HubTool = dev.appmcp.hub.ffi.HubTool
 typealias HubResource = dev.appmcp.hub.ffi.HubResource
 typealias ResourceContent = dev.appmcp.hub.ffi.ResourceContent
+/** 调用进度（`progress`、`total`、`message`；[Hub.callTool] 的 `onProgress`，spec/hub-api.md 3.12）。 */
+typealias ProgressUpdate = dev.appmcp.hub.ffi.ProgressUpdate
 typealias ToolErrorInfo = dev.appmcp.hub.ffi.ToolErrorInfo
 typealias ApprovalRequest = dev.appmcp.hub.ffi.ApprovalRequest
 typealias PairingRequest = dev.appmcp.hub.ffi.PairingRequest
@@ -259,6 +261,9 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
     /**
      * 调用工具（全名 `<appId>.<tool>`）。工具层面的失败（用户拒绝、超时、App 报错……）放在
      * [CallResult.error]；名称无法解析时抛出 [HubException]。协程取消时自动取消调用。
+     *
+     * @param onProgress 接收调用进度（Hub 合并后，spec/hub-api.md 3.12）：在 Hub 的进度线程上按顺序同步调用，须尽快返回
+     *   （需要时自行切换线程）；全部回调都在本函数返回之前完成。回调抛出的异常被忽略。为空时不接收进度。
      */
     suspend fun callTool(
         name: String,
@@ -267,17 +272,29 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
         timeout: Duration? = null,
         session: String? = null,
         callId: String? = null,
+        onProgress: ((ProgressUpdate) -> Unit)? = null,
     ): CallResult {
-        val out = inner.callTool(
-            dev.appmcp.hub.ffi.CallRequest(
-                name = name,
-                argumentsJson = arguments?.toString(),
-                instanceId = instanceId,
-                timeoutMs = timeout?.inWholeMilliseconds?.coerceAtLeast(0)?.toULong(),
-                callId = callId,
-                session = session,
-            ),
+        val request = dev.appmcp.hub.ffi.CallRequest(
+            name = name,
+            argumentsJson = arguments?.toString(),
+            instanceId = instanceId,
+            timeoutMs = timeout?.inWholeMilliseconds?.coerceAtLeast(0)?.toULong(),
+            callId = callId,
+            session = session,
         )
+        val out = if (onProgress == null) {
+            inner.callTool(request)
+        } else {
+            inner.callToolWithProgress(request, object : dev.appmcp.hub.ffi.ProgressListener {
+                override fun onProgress(update: ProgressUpdate) {
+                    try {
+                        onProgress(update)
+                    } catch (_: Throwable) {
+                        // @why 回调异常不影响调用：在原生线程上抛出会被 uniffi 视为 panic（被兜底后同样忽略）。
+                    }
+                }
+            })
+        }
         return CallResult(
             callId = out.callId,
             data = parseJson(out.dataJson),

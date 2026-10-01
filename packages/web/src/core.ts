@@ -6,7 +6,7 @@
  */
 
 import type { NormalizedResult } from './result'
-import type { Activation, AppOverview, CallDedupOptions, ErrorKind, JsonSchema, OutputSchema, Risk, ToolAnnotations, Visibility } from './types'
+import type { Activation, AppOverview, CallDedupOptions, ContentAnnotations, ErrorKind, JsonSchema, OutputSchema, Risk, ToolAnnotations, Visibility } from './types'
 
 export interface CoreConfig {
   appId: string
@@ -89,6 +89,7 @@ export interface CoreResourceDef {
   mimeType?: string
   scope?: number
   realtime?: boolean
+  annotations?: ContentAnnotations
 }
 
 export interface CoreToolError {

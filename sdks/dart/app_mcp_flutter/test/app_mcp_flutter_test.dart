@@ -103,6 +103,34 @@ void main() {
     expect(realtime('order.status'), -1);
   }, skip: path == null);
 
+  testWidgets('McpResource：内容标注传入注册，内容变化时重新注册（v13）', (tester) async {
+    final lib = DynamicLibrary.open(path!);
+    final annotationsOf = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>), Pointer<Utf8> Function(Pointer<Utf8>)>(
+        'fake_resource_annotations');
+    String? annotations(String name) => using((a) {
+          final p = annotationsOf(name.toNativeUtf8(allocator: a));
+          return p == nullptr ? null : p.toDartString();
+        });
+    final client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path);
+    addTearDown(client.dispose);
+    Widget app(double? priority) => AppMcpScope(
+          client: client,
+          trackLifecycle: false,
+          child: McpResource(
+              name: 'order.status',
+              description: '订单状态',
+              annotations: priority == null ? null : ContentAnnotations(priority: priority),
+              read: () => 1),
+        );
+    await tester.pumpWidget(app(0.5));
+    expect(annotations('order.status'), '{"priority":0.5}');
+    await tester.pumpWidget(app(1.0));
+    expect(annotations('order.status'), '{"priority":1.0}');
+    await tester.pumpWidget(app(null));
+    expect(annotations('order.status'), isNull);
+    await tester.pumpWidget(const SizedBox());
+  }, skip: path == null);
+
   testWidgets('AppMcpScope：AppLifecycleListener 上报可见性，idle 模式回到前台时回连', (tester) async {
     final lib = DynamicLibrary.open(path!);
     final visibility = lib.lookupFunction<Int32 Function(), int Function()>('fake_visibility');

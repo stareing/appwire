@@ -366,6 +366,47 @@ def test_resource_adapter(client):
     assert read.wait() == ("ok", {"items": []})
 
 
+class FakeDetailedRead(FakeRead):
+    def fail_with_details(self, kind, message, details_json):
+        self.result = ("err", kind, message, None if details_json is None else json.loads(details_json))
+        self.done.set()
+
+
+def test_resource_reader_errors_carry_details(client):
+    def need_login():
+        raise ToolCallError.user_action_required("登录已过期", "login", "shop://login")
+
+    read = FakeDetailedRead({})
+    _ResourceAdapter(_Registration(client, need_login, None)).read(read)
+    assert read.wait() == ("err", "USER_ACTION_REQUIRED", "登录已过期", {"reason": "login", "uri": "shop://login"})
+
+    def plain():
+        raise ToolCallError("USER_REJECTED", "没有")
+
+    read = FakeDetailedRead({})
+    _ResourceAdapter(_Registration(client, plain, None)).read(read)
+    assert read.wait() == ("err", "USER_REJECTED", "没有"), "无详情时走 fail"
+
+
+def test_resource_annotations(client):
+    client.add_resource(lambda: 1, "a", "a", annotations={"audience": ["user"], "priority": 0.5})
+    client.add_resource(lambda: 1, "b", "b", annotations=app_mcp.ContentAnnotations(priority=1.0))
+    with pytest.raises(ValueError):
+        client.add_resource(lambda: 1, "c", "c", annotations={"bogus": 1})
+    with pytest.raises(ValueError):
+        client.add_resource(lambda: 1, "d", "d", annotations={"audience": ["bot"]})
+
+
+def test_call_dedup_config():
+    assert app_mcp.CallDedup(ttl=1.5, max_entries=3)._ffi() == ffi.CallDedupPolicy(ttl_ms=1500, max_entries=3)
+    assert app_mcp.CallDedup()._ffi() == ffi.CallDedupPolicy(ttl_ms=300000, max_entries=64)
+    assert app_mcp.CallDedup.OFF == app_mcp.CallDedup(0, 0)
+    with pytest.raises(ValueError):
+        app_mcp.CallDedup(ttl=-1)
+    for d in (None, app_mcp.CallDedup.OFF, app_mcp.CallDedup(10, 4)):
+        AppMcp("py-dedup", "Py", host_url="ws://127.0.0.1:9", call_dedup=d).close()
+
+
 # ---------------------------------------------------------------------------
 # 原生客户端（不连接 Host）
 # ---------------------------------------------------------------------------

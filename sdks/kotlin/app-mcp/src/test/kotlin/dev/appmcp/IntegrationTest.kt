@@ -54,6 +54,8 @@ class IntegrationTest {
             "--invoke", "account.login",
             "--invoke", "app.foreground",
             "--read", "cart",
+            "--read", "session",
+            "--read", "quota",
             "--timeout-ms", "15000",
         ).redirectError(ProcessBuilder.Redirect.INHERIT).start()
         val out = host.inputStream.bufferedReader()
@@ -61,7 +63,9 @@ class IntegrationTest {
         assertTrue(first.startsWith("LISTENING "), first)
         val addr = first.removePrefix("LISTENING ").trim()
 
-        val client = AppMcp.create(AppMcpConfig("kotlin-it", "Kotlin 集成测试", hostUrl = "ws://$addr"))
+        val client = AppMcp.create(
+            AppMcpConfig("kotlin-it", "Kotlin 集成测试", hostUrl = "ws://$addr", callDedup = CallDedupPolicy(ttlMs = 1_000u)),
+        )
         val threads = mutableListOf<String>()
         client.tool("math.add", "两数相加", risk = Risk.READ) { args, ctx ->
             threads += Thread.currentThread().name
@@ -80,6 +84,12 @@ class IntegrationTest {
         }
         client.tool("app.foreground", "需前台") { _, _ -> throw ToolCallException.userActionRequired("请切到前台") }
         client.resource("cart", "购物车") { mapOf("items" to listOf("A")) }
+        client.resource("session", "会话") {
+            throw ToolCallException.userActionRequired("登录已过期", UserActionReason.LOGIN, "shop://login")
+        }
+        client.resource("quota", "额度") {
+            throw ToolCallException(ErrorKind.USER_REJECTED, "额度不足", JsonObject(mapOf("quota" to JsonPrimitive(0))))
+        }
 
         val lines = try {
             client.start()
@@ -135,6 +145,12 @@ class IntegrationTest {
         assertEquals(
             JsonObject(mapOf("items" to kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("A"))))),
             results["cart"]!!["result"]!!.jsonObject["contents"],
+        )
+        // 资源读取失败的类别与详情原样到达 Host
+        assertEquals(login["data"], results["session"]!!["error"]!!.jsonObject["data"])
+        assertEquals(
+            JsonObject(mapOf("kind" to JsonPrimitive("USER_REJECTED"), "quota" to JsonPrimitive(0))),
+            results["quota"]!!["error"]!!.jsonObject["data"],
         )
         assertTrue(threads.isNotEmpty() && threads[0].startsWith("DefaultDispatcher"), threads.toString())
     }

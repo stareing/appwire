@@ -123,14 +123,7 @@ class FakeCall implements NativeCall {
 
   failWithDetails(kind: string, message: string, detailsJson?: string | null): void {
     if (this.done) throw new NativeErrorWithCode('ALREADY_COMPLETED', 'call or read already completed or cancelled')
-    let details: unknown
-    if (detailsJson != null) {
-      try {
-        details = JSON.parse(detailsJson)
-      } catch (error) {
-        throw new NativeErrorWithCode('INVALID_JSON', String(error))
-      }
-    }
+    const details = parseDetails(detailsJson)
     this.done = true
     this.settle(details === undefined ? { ok: false, kind, message } : { ok: false, kind, message, details })
   }
@@ -178,6 +171,22 @@ class FakeRead implements NativeRead {
     if (this.done) throw new NativeErrorWithCode('ALREADY_COMPLETED', 'already completed')
     this.done = true
     this.settle({ ok: false, kind, message })
+  }
+  failWithDetails(kind: string, message: string, detailsJson?: string | null): void {
+    if (this.done) throw new NativeErrorWithCode('ALREADY_COMPLETED', 'already completed')
+    const details = parseDetails(detailsJson)
+    this.done = true
+    this.settle(details === undefined ? { ok: false, kind, message } : { ok: false, kind, message, details })
+  }
+}
+
+/** 与原生绑定一致：非法 JSON 抛出 `INVALID_JSON`（调用 / 读取仍未完成）；`null` / 省略为无详情。 */
+function parseDetails(detailsJson: string | null | undefined): unknown {
+  if (detailsJson == null) return undefined
+  try {
+    return JSON.parse(detailsJson)
+  } catch (error) {
+    throw new NativeErrorWithCode('INVALID_JSON', String(error))
   }
 }
 

@@ -120,6 +120,9 @@ enum PageOp {
         /// @compat 旧页面 SDK 不发送该字段，缺省 `false`（spec/lifecycle.md 第 13 节 B3）。
         #[serde(default)]
         realtime: bool,
+        /// 资源内容的标注（MCP 内容注解）。@compat 旧页面 SDK 不发送，缺省未声明；取值不合法时整条登记被拒绝。
+        #[serde(default)]
+        annotations: Option<ContentAnnotations>,
     },
     #[serde(rename = "resource.notify")]
     ResourceNotify { id: u64 },
@@ -716,6 +719,7 @@ impl Session {
                 description,
                 mime_type,
                 realtime,
+                annotations,
             } => {
                 let mut st = self.live()?;
                 let registrar = self.registrar(&st, scope_id)?;
@@ -731,7 +735,10 @@ impl Session {
                     session: Arc::downgrade(self),
                     resource_id: id,
                 });
-                let options = ResourceOptions { realtime };
+                let options = ResourceOptions {
+                    realtime,
+                    annotations,
+                };
                 let handle = match registrar {
                     Some(scope) => scope.register_resource_with(spec, options, reader)?,
                     None => self.scope.register_resource_with(spec, options, reader)?,

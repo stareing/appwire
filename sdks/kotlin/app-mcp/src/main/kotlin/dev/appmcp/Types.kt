@@ -22,6 +22,11 @@ typealias StateInfo = dev.appmcp.ffi.StateInfo
 typealias StateStatus = dev.appmcp.ffi.StateStatus
 typealias LogLevel = dev.appmcp.ffi.LogLevel
 typealias AppOverview = dev.appmcp.ffi.AppOverview
+/**
+ * 调用去重策略（spec/protocol.md 3.3）：已开始执行的 `callId` 的首次结果在 `ttlMs` 内重放，最多保留 `maxEntries` 条；
+ * 任一为 0 关闭。默认 `CallDedupPolicy()` = 300000 ms、64 条。
+ */
+typealias CallDedupPolicy = dev.appmcp.ffi.CallDedupPolicy
 /** 原生层错误的基类。具体子类（如 `AlreadyCompleted`）需通过 `dev.appmcp.ffi.AppMcpException` 访问（typealias 不能访问嵌套类）。 */
 typealias AppMcpException = dev.appmcp.ffi.AppMcpException
 
@@ -156,6 +161,11 @@ data class AppMcpConfig(
      * （如 `exitProcess(0)` 或关闭最后一个窗口）。
      */
     val onIdleExit: (() -> Unit)? = null,
+    /**
+     * 调用去重（spec/protocol.md 3.3）；为空时 300000 ms、64 条，`CallDedupPolicy(0u, 0u)` 关闭。
+     * 命中时经 [onLog] 记一条 WARN 日志。
+     */
+    val callDedup: CallDedupPolicy? = null,
 ) {
     internal fun toFfi() = dev.appmcp.ffi.ClientConfig(
         appId = appId,
@@ -171,5 +181,6 @@ data class AppMcpConfig(
         lifecycle = lifecycle?.toFfi(),
         connectTimeoutMs = connectTimeoutMillis?.coerceIn(1, UInt.MAX_VALUE.toLong())?.toUInt(),
         heartbeat = heartbeat,
+        callDedup = callDedup,
     )
 }

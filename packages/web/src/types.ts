@@ -443,6 +443,8 @@ export interface ResourceDefinition<T = unknown> {
    * 默认 false：订阅不阻止休眠，变化在下次连接时补发 `resources/updated`。
    */
   realtime?: boolean
+  /** 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；缺省未声明。 */
+  annotations?: ContentAnnotations
   read: () => T | Promise<T>
 }
 

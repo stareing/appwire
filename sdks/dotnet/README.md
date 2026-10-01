@@ -90,6 +90,8 @@ var outcome = await hub.CallAsync("notes.add", new { text = "买牛奶" });  // 
 - 审批 / 配对 handler 抛异常按拒绝处理；其 `CancellationToken` 在 Hub 释放时取消。
 - `CallAsync` 的取消令牌会调用 `am_hub_cancel_call`（结果为 `CANCELLED`）。工具失败不抛异常，见 `CallOutcome.Error`；
   `ReadResourceAsync` 失败抛 `HubCallException`；FFI 层错误抛 `HubException`（带 `HubStatus`）。
+- 进度：`CallAsync(request, IProgress<CallProgress> progress, ct)`（`am_hub_call_with_progress`）——结果返回前按顺序收到
+  `CallProgress(CallId, Progress, Total?, Message?)`，结果返回后不再报告；合并间隔 `HubOptions.ProgressInterval`（默认 250 毫秒）。
 - handler 以 GCHandle 交给原生库，务必 `Dispose` / `DisposeAsync`。
 - `ListApps()` / `ListTools()` 返回类型化的 `AppInfo` / `HubToolInfo`（`GetApps()` / `GetTools()` 返回原始 JSON）。
 - `Status()` 返回运行状态 `HubStatusInfo`（监听、令牌策略、各 App 状态与最近错误、SDK 诊断上报，与 `GET /status` 相同；
@@ -173,6 +175,13 @@ var client = AppMcpClient.Create(new AppMcpClientOptions
 | `LifecycleOptions.SleepOnBackground` | false | idle / on-demand 下进入后台（`SetVisibility(Hidden)`）且空闲时立即休眠，不等租约 |
 | `LifecycleOptions.LegacyTimers` | false | 回退到 4e 之前的定时器行为 |
 | `RegisterResource(..., realtime: true)` | false | 模型在等待变化的资源：被订阅时保持连接、休眠中变化时回连推送；普通资源的订阅不阻止休眠 |
+
+`RegisterResource(..., annotations: new ContentAnnotations { Audience = [ContentAudience.User], Priority = 0.5 })`：资源内容的标注
+（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；缺省不声明。
+
+调用去重（spec/protocol.md 3.3）：同一 `callId` 在有效期内重复到达时重放首次结果、不再执行 handler。
+`AppMcpClientOptions.CallDedup = new CallDedupOptions { Ttl = TimeSpan.FromMinutes(5), MaxEntries = 64 }`（为 null 时即此默认值；
+`CallDedupOptions.Off` 或任一项为 0 关闭）。命中时 SDK 记一条警告日志。
 
 `LifecycleOptions` 为 record，可用 `with` 改个别字段。
 

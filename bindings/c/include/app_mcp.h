@@ -58,7 +58,11 @@
  * - v12（spec/protocol.md 第 4 节）：只新增函数 am_read_fail_with_details、am_read_fail_user_action（资源读取失败时附带
  *   结构化详情 / 以 USER_ACTION_REQUIRED 结束并带 reason / uri，语义与 am_call_fail_with_details、
  *   am_call_fail_user_action 相同）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v12 仍为 3。）
+ * - v13（spec/protocol.md 3.3、第 14 项）：只在结构体末尾追加字段（按 struct_size 读取，旧调用方不受影响）。
+ *   · AmClientOptions：call_dedup_ttl_ms、call_dedup_max_entries（调用去重的保留时长与条数；0 = 默认 300000 ms / 64 条，
+ *     负数 = 关闭去重）。
+ *   · AmResourceOptions：annotations_json（资源内容的标注，MCP 内容注解；Hub 放到 resources/list 的资源注解上）。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v13 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -292,6 +296,9 @@ typedef struct AmClientOptions {
     /* v8（4e 第二部分，spec/lifecycle.md 第 13 节）：旧调用方的 struct_size 不含以下字段时取默认值。 */
     int64_t merge_window_ms;         /* 调用 / 资源读取后的合并窗口；0 = 默认 2000，负数 = 不留窗口（调用后只看租约） */
     bool sleep_on_background;        /* true：idle / on-demand 下进入后台（可见 → 隐藏 / 冻结）且空闲时立即休眠，不等租约 */
+    /* v13（调用去重，spec/protocol.md 3.3）：旧调用方的 struct_size 不含以下字段时取默认值。 */
+    int64_t call_dedup_ttl_ms;       /* 同一 callId 首次结果的保留时长；0 = 默认 300000，负数 = 关闭去重 */
+    int32_t call_dedup_max_entries;  /* 最多保留的结果数（超出淘汰最早的）；0 = 默认 64，负数 = 关闭去重 */
 } AmClientOptions;
 
 typedef struct AmToolSpec {
@@ -327,6 +334,10 @@ typedef struct AmResourceOptions {
     uint32_t struct_size;
     bool realtime;                 /* 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时保持连接、休眠中变化时回连推送；
                                       默认 false：订阅不阻止休眠，变化在下次连接时补发 */
+    /* v13：可为 NULL：未声明；旧调用方的 struct_size 不含此字段时按 NULL 处理。资源内容的标注（MCP 内容注解）JSON 对象，
+     * 字段均可选：{"audience": ["user" | "assistant", ...], "priority": 0..1, "lastModified": "<ISO 8601>"}；
+     * Hub 放到 MCP resources/list 的资源注解上。非法时 am_resource_register_ex 返回 AM_ERR_INVALID_JSON。 */
+    const char *annotations_json;
 } AmResourceOptions;
 
 /* v9：am_call_complete_ex 的调用结果。struct_size 必须设为 sizeof(AmCallResult)；struct_size 不含的字段取默认值

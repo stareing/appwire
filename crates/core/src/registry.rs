@@ -54,7 +54,7 @@ fn resource_info(def: &ResourceDef) -> ResourceInfo {
         description: def.description.clone(),
         mime_type: def.mime_type.clone(),
         realtime: def.realtime,
-        annotations: None,
+        annotations: def.annotations.clone(),
     }
 }
 
@@ -362,7 +362,7 @@ mod tests {
         r.register_tool(tool("a", None)).unwrap();
         assert_eq!(r.register_tool(tool("a", None)), Err(CoreError::DuplicateName("a".into())));
         // 工具与资源可以同名
-        r.register_resource(ResourceDef { name: "a".into(), description: "r".into(), mime_type: None, scope: None, realtime: false })
+        r.register_resource(ResourceDef { name: "a".into(), description: "r".into(), mime_type: None, scope: None, realtime: false, annotations: None })
             .unwrap();
     }
 

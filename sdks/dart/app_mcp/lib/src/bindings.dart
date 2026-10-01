@@ -248,6 +248,14 @@ final class AmClientOptions extends Struct {
   external int merge_window_ms;
   @Bool()
   external bool sleep_on_background;
+  // v13（调用去重，spec/protocol.md 3.3）
+  /// 0 = 默认 300000，负数 = 关闭去重。
+  @Int64()
+  external int call_dedup_ttl_ms;
+
+  /// 0 = 默认 64，负数 = 关闭去重。
+  @Int32()
+  external int call_dedup_max_entries;
 }
 
 /// v8：`am_resource_register_ex` 的资源选项。
@@ -256,6 +264,9 @@ final class AmResourceOptions extends Struct {
   external int struct_size;
   @Bool()
   external bool realtime;
+
+  /// v13：资源内容的标注（MCP 内容注解 JSON），可为 nullptr。
+  external Pointer<Utf8> annotations_json;
 }
 
 final class AmToolSpec extends Struct {

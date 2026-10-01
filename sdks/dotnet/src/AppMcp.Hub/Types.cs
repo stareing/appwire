@@ -253,6 +253,8 @@ public sealed class HubOptions
     public TimeSpan? ResponseTimeout { get; set; }
     public TimeSpan? ListChangedDebounce { get; set; }
     public TimeSpan? PairingTimeout { get; set; }
+    /// <summary>进度转发的最小间隔（默认 250 毫秒，间隔内只保留最新一条），见 <see cref="AppMcpHub.CallAsync(CallRequest, IProgress{CallProgress}, CancellationToken)"/>。</summary>
+    public TimeSpan? ProgressInterval { get; set; }
 
     // ---- 生命周期（spec/hub-api.md 3.5）----
 
@@ -349,6 +351,7 @@ public sealed class HubOptions
         AddMs(o, "responseTimeoutMs", ResponseTimeout);
         AddMs(o, "listChangedDebounceMs", ListChangedDebounce);
         AddMs(o, "pairingTimeoutMs", PairingTimeout);
+        AddMs(o, "progressIntervalMs", ProgressInterval);
         AddMs(o, "leaseTtlMs", LeaseTtl);
         AddMs(o, "wakeTimeoutMs", WakeTimeout);
         AddMs(o, "wakeTokenTtlMs", WakeTokenTtl);
@@ -559,6 +562,9 @@ public sealed record HubToolAnnotations(
 
 /// <summary>MCP 内容注解（结果 / 资源内容的标注）。Audience 的元素为 "user" / "assistant"。</summary>
 public sealed record HubContentAnnotations(IReadOnlyList<string>? Audience, double? Priority, string? LastModified);
+
+/// <summary>调用进度（spec/hub-api.md 3.12）：App 报告、经 Hub 合并且递增。Total 未知时为 null；Message 最长 200 字符。</summary>
+public sealed record CallProgress(string CallId, double Progress, double? Total, string? Message);
 
 /// <summary>工具调用结果（CallOutcome）。</summary>
 public sealed class CallOutcome

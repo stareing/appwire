@@ -420,6 +420,7 @@ fn subscribed_hour(realtime: bool, legacy: bool) -> Sim {
             mime_type: None,
             scope: None,
             realtime,
+            annotations: None,
         })
         .unwrap();
     s.start();

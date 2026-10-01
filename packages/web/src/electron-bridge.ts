@@ -22,6 +22,7 @@ import type {
   AppMcp,
   AppMcpOptions,
   ConnectionState,
+  ContentAnnotations,
   ErrorKind,
   HoldHandle,
   JsonSchema,
@@ -89,6 +90,7 @@ export type RendererOp =
       description: string
       mimeType?: string
       realtime?: boolean
+      annotations?: ContentAnnotations
     }
   | { op: 'resource.notify'; id: number }
   | { op: 'resource.dispose'; id: number }
@@ -508,6 +510,7 @@ class ResourceEntry implements ResourceHandle, Detachable {
       description: definition.description,
       ...(definition.mimeType !== undefined && { mimeType: definition.mimeType }),
       ...(definition.realtime && { realtime: true }),
+      ...(definition.annotations !== undefined && { annotations: toJsonValue(definition.annotations) as ContentAnnotations }),
     }))
   }
 

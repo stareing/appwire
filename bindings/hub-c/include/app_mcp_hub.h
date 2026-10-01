@@ -70,6 +70,9 @@
  *   · HubStatus JSON 中新增：policy（rules[{规则字段…, hits}]、loadedAtMs、lastError?{message, atMs}）。
  *   · 错误类别新增 "POLICY_DENIED"（details：ruleId、hook、appId、tool）与 "USER_ACTION_REQUIRED"
  *     （details：reason?、uri?，需要用户本人操作后才能继续）。被 hide 的工具调用为 "TOOL_NOT_FOUND"。
+ * - v11（调用进度，spec/hub-api.md 3.12）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · AmHubProgressFn + am_hub_call_with_progress：调用时接收 App 报告的进度。
+ *   · am_hub_start 配置新增可选字段 progressIntervalMs（进度转发的最小间隔，缺省 250）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -186,6 +189,7 @@ void am_hub_string_free(char *s);
  *   allowOrigins         额外允许的 Origin 模式数组
  *   pingIntervalMs / idleTimeoutMs / hiddenIdleTimeoutMs / invokeTimeoutMs / responseTimeoutMs /
  *   listChangedDebounceMs / pairingTimeoutMs
+ *   progressIntervalMs   v11：进度转发的最小间隔（间隔内只保留最新一条），缺省 250
  *   upstreams            {"<name>": {"command":…, "args":[…], "env":{…}}}
  *   approval             {"requireAtOrAbove": "destructive", "timeout": <ms>}（默认不审批）
  *   —— v2 生命周期（spec/hub-api.md 3.5）——
@@ -286,6 +290,14 @@ AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
  * 名称无法解析（appId 未知等）也以 CallOutcome 形式返回（result.error，kind 为 TOOL_NOT_FOUND）。 */
 AmHubStatus am_hub_call(AmHub *hub, const char *request_json, AmHubResultFn cb, void *user_data,
                         char **out_call_id);
+/* v11：调用进度。progress_json 为 {"callId":…, "progress": <number>, "total"?: <number>, "message"?: <string>}
+ * （App 报告、经 Hub 按 progressIntervalMs 合并且递增；message 最长 200 字符）。 */
+typedef void (*AmHubProgressFn)(void *user_data, char *progress_json);
+/* v11：同 am_hub_call，并接收进度。on_progress 可为 NULL（等同 am_hub_call）；与 cb 共用 user_data。
+ * 进度回调与结果回调在同一分发线程上串行执行：全部进度回调先于 cb，cb 之后不再有进度回调（user_data 可在 cb 中释放）。
+ * 进度不保证送达（未连接、合并、Hub 释放中时丢弃）。 */
+AmHubStatus am_hub_call_with_progress(AmHub *hub, const char *request_json, AmHubResultFn cb,
+                                      AmHubProgressFn on_progress, void *user_data, char **out_call_id);
 /* 取消进行中的调用（含等待审批中的）；未知 callId 忽略。 */
 AmHubStatus am_hub_cancel_call(AmHub *hub, const char *call_id);
 

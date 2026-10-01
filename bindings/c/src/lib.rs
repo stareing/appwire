@@ -20,7 +20,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use app_mcp_native::{
-    Activation, AppOverview, CallResult, ClientKind, ClientListener, ContentAnnotations, ErrorKind, HeartbeatMode,
+    Activation, AppOverview, CallDedupPolicy, CallResult, ClientKind, ClientListener, ContentAnnotations, ErrorKind, HeartbeatMode,
     LifecycleMode, LifecyclePolicy, NativeClient, NativeConfig, Residency, ResourceOptions, ResourceSpec, ResultStatus,
     Risk, SleepReason, ToolAnnotations, ToolOptions, ToolSpec, Visibility, WakeDescriptor, WakeKind, WakeReason,
 };
@@ -100,6 +100,10 @@ pub struct AmClientOptions {
     pub merge_window_ms: i64,
     /// v8（B4）：进入后台且空闲时立即休眠。
     pub sleep_on_background: bool,
+    /// v13（spec/protocol.md 3.3 调用去重）：首次结果的保留时长；0 = 默认（300000），负数 = 关闭去重。
+    pub call_dedup_ttl_ms: i64,
+    /// v13：最多保留的结果数；0 = 默认（64），负数 = 关闭去重。
+    pub call_dedup_max_entries: i32,
 }
 
 /// v8：`am_resource_register_ex` 的资源选项（带 `struct_size`，按调用方给出的大小读取）。
@@ -108,6 +112,8 @@ pub struct AmResourceOptions {
     pub struct_size: u32,
     /// 需实时推送（spec/lifecycle.md 第 13 节 B3）。
     pub realtime: bool,
+    /// v13：资源内容的标注（MCP 内容注解 JSON 对象）；NULL = 未声明。
+    pub annotations_json: *const c_char,
 }
 
 #[repr(C)]
@@ -310,6 +316,8 @@ struct OptionsView {
     legacy_timers: bool,
     merge_window_ms: i64,
     sleep_on_background: bool,
+    call_dedup_ttl_ms: i64,
+    call_dedup_max_entries: i32,
 }
 
 /// 按 `struct_size` 读取扩展选项：只读取完整包含在调用方结构体中的字段。
@@ -363,7 +371,28 @@ unsafe fn read_options(p: *const AmClientOptions) -> FfiResult<OptionsView> {
     if has(offset_of!(AmClientOptions, sleep_on_background), size_of::<bool>()) {
         view.sleep_on_background = unsafe { std::ptr::addr_of!((*p).sleep_on_background).read() };
     }
+    if has(offset_of!(AmClientOptions, call_dedup_ttl_ms), size_of::<i64>()) {
+        view.call_dedup_ttl_ms = unsafe { std::ptr::addr_of!((*p).call_dedup_ttl_ms).read() };
+    }
+    if has(offset_of!(AmClientOptions, call_dedup_max_entries), size_of::<i32>()) {
+        view.call_dedup_max_entries = unsafe { std::ptr::addr_of!((*p).call_dedup_max_entries).read() };
+    }
     Ok(view)
+}
+
+/// v13 调用去重：0 = 保留默认值，负数 = 关闭（对应字段取 0），正数按字面使用。
+fn call_dedup_from(base: CallDedupPolicy, ttl_ms: i64, max_entries: i32) -> CallDedupPolicy {
+    let ttl_ms = match ttl_ms {
+        0 => base.ttl_ms,
+        n if n < 0 => 0,
+        n => n.unsigned_abs(),
+    };
+    let max_entries = match max_entries {
+        0 => base.max_entries,
+        n if n < 0 => 0,
+        n => n.unsigned_abs() as usize,
+    };
+    CallDedupPolicy { ttl_ms, max_entries }
 }
 
 /// 按 `struct_size` 读取资源选项；`p` 为 NULL 时取默认值。
@@ -382,6 +411,10 @@ unsafe fn read_resource_options(p: *const AmResourceOptions) -> FfiResult<Resour
     }
     if offset_of!(AmResourceOptions, realtime) + size_of::<bool>() <= size {
         options.realtime = unsafe { std::ptr::addr_of!((*p).realtime).read() };
+    }
+    if offset_of!(AmResourceOptions, annotations_json) + size_of::<*const c_char>() <= size {
+        let text = unsafe { std::ptr::addr_of!((*p).annotations_json).read() };
+        options.annotations = unsafe { opt_json::<ContentAnnotations>(text, "options->annotations_json") }?;
     }
     Ok(options)
 }
@@ -682,6 +715,7 @@ pub unsafe extern "C" fn am_client_new_ex(
             n => cfg.lifecycle.merge_window_ms = n.unsigned_abs(),
         }
         cfg.lifecycle.sleep_on_background = opts.sleep_on_background;
+        cfg.call_dedup = call_dedup_from(cfg.call_dedup, opts.call_dedup_ttl_ms, opts.call_dedup_max_entries);
         let listener: Option<Arc<dyn ClientListener>> = match listener {
             Some(l) if l.has_any() => Some(Arc::new(l)),
             _ => None,

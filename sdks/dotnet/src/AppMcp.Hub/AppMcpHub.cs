@@ -177,20 +177,40 @@ public sealed class AppMcpHub : IDisposable, IAsyncDisposable
         return new CallOutcome(Parse(await task.ConfigureAwait(false)));
     }
 
+    /// <summary>调用工具并接收进度（spec/hub-api.md 3.12）。<paramref name="progress"/> 在结果返回前按顺序收到 App 报告的进度
+    /// （<see cref="Progress{T}"/> 回到创建它时的同步上下文）；结果返回后不再报告。进度不保证送达（合并、未连接时丢弃）。
+    /// 其余同 <see cref="CallAsync(CallRequest, CancellationToken)"/>。</summary>
+    public async Task<CallOutcome> CallAsync(CallRequest request, IProgress<CallProgress>? progress, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (progress is null) return await CallAsync(request, cancellationToken).ConfigureAwait(false);
+        var (task, callId) = StartCall(request.ToJson(SerializerOptions), progress);
+        await using var reg = cancellationToken.Register(() =>
+        {
+            try { CancelCall(callId); } catch { }
+        });
+        return new CallOutcome(Parse(await task.ConfigureAwait(false)));
+    }
+
     /// <summary>调用工具（简写）。</summary>
     public Task<CallOutcome> CallAsync(string name, object? arguments = null, CancellationToken cancellationToken = default) =>
         CallAsync(new CallRequest(name, arguments), cancellationToken);
 
-    private unsafe (Task<string>, string) StartCall(string requestJson)
+    private unsafe (Task<string>, string) StartCall(string requestJson, IProgress<CallProgress>? progress = null)
     {
-        var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tcs = progress is null
+            ? new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
+            : new ProgressCallSink(progress);
         var ud = HubCallbacks.Alloc(tcs);
         using var s = new Utf8Strings();
         HubStatus st;
         nint callId;
         try
         {
-            st = HubNativeMethods.am_hub_call(_handle, s.Add(requestJson), HubCallbacks.ResultPtr, ud, out callId);
+            st = progress is null
+                ? HubNativeMethods.am_hub_call(_handle, s.Add(requestJson), HubCallbacks.ResultPtr, ud, out callId)
+                : HubNativeMethods.am_hub_call_with_progress(
+                    _handle, s.Add(requestJson), HubCallbacks.ResultPtr, HubCallbacks.ProgressPtr, ud, out callId);
         }
         catch
         {
