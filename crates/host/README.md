@@ -50,6 +50,47 @@ app-mcp-host serve
 `http.addr` / `--http 127.0.0.1:7718`，Host 另开一个同样的监听器并记录弃用提示（默认不开）；配置文件中的 `wsAddr` /
 `--ws-addr` 按 `listen` 使用并提示改名（与 `listen` 同时设置且不同时报错）。
 
+### 一条命令安装：`setup` / `uninstall`
+
+```bash
+app-mcp-host setup                 # 或 npx appwire-cli setup / uvx appwire-cli setup；幂等，可重复执行
+app-mcp-host setup --dry-run       # 只列出计划（读取 Agent 现有配置，不做任何修改）
+app-mcp-host setup --agents claude-code,cursor --force --json
+app-mcp-host uninstall [--purge] [--dry-run] [--json]
+```
+
+`setup` 依次：
+
+1. **二进制就位**：当前程序位于包管理器目录（路径含 `node_modules`、`site-packages` 或 `_npx`，即 npx / uvx 缓存、
+   全局 npm、pip）时复制到 `<home>/bin/`（Windows 连同 `app-mcp-hostw.exe`），内容相同时不复制；否则原地使用。
+   选 `<home>/bin/`：与配置同在每用户目录、无需管理员、服务用绝对路径不依赖 PATH，`uninstall --purge` 可整体删除，
+   也不会覆盖用户 PATH 中自行管理的同名程序。
+2. **登录自启**：与 `service install` 同一实现（写 `config.json`、端口预检、令牌、安装并启动），等待 `/healthz` 就绪，
+   从 `<home>/run/endpoints.json` 取实际监听地址（不假设 7717）。
+3. **写入已安装 Agent 的 MCP 配置**（条目名 `app-mcp`，Streamable HTTP）：
+
+   | Agent（`--agents`） | 检测 | 写入方式 | 依据 |
+   |---|---|---|---|
+   | `claude-code` | PATH 中的 `claude` | `claude mcp add --scope user --transport http`，读 `claude mcp get`，删 `claude mcp remove --scope user` | 本机 Claude Code 2.1.281 `--help` 与隔离 `CLAUDE_CONFIG_DIR` 实测 |
+   | `codex` | PATH 中的 `codex` | `codex mcp add <名> --url`，读 `codex mcp get --json`，删 `codex mcp remove` | 本机 codex-cli 0.156.1 `--help` 与隔离 `CODEX_HOME` 实测 |
+   | `gemini` | PATH 中的 `gemini` | `gemini mcp add --scope user --transport http`，读 `~/.gemini/settings.json`，删 `gemini mcp remove --scope user` | 本机 gemini 0.46.0 `--help` 与隔离 `HOME` 实测 |
+   | `cursor` | `~/.cursor` 存在 | 文件 `~/.cursor/mcp.json`：`mcpServers.app-mcp = {"url": …}` | cursor.com/docs/context/mcp |
+   | `vscode` | `<用户配置目录>/Code/User` 存在 | 文件 `…/Code/User/mcp.json`：`servers.app-mcp = {"type": "http", "url": …}`（默认 profile） | code.visualstudio.com 文档 mcp-servers、profiles |
+   | `windsurf`、`claude-desktop` | 不检测 | 只打印手动说明（`--agents` 显式列出时） | 位置 / 格式无法从官方文档确认 |
+
+   - 已有同名条目：URL 相同 → 不动；是本程序以前写入的（`setup.json` 中的 URL，如 Host 换了端口）→ 更新；
+     其他内容 → **不覆盖**并报冲突，加 `--force` 才替换；Claude Code 中不在用户作用域的同名条目 `--force` 也不动。
+   - 写入前把被修改的配置文件备份到 `<home>/backups/`；写入后用同一方式回读校验，不符即回滚
+     （文件自写入后未再变化时恢复备份，否则只删本条目）。
+   - 配置文件不是标准 JSON（含注释、尾逗号）时不写，打印手动配置说明。
+   - 令牌策略为 `all` 时不写任何 Agent（不把令牌写进 Agent 配置），打印带 `Authorization` 头的手动说明。
+4. **doctor 自检**并输出摘要。改动清单写入 `<home>/setup.json`；有失败 / 冲突 / doctor 错误时退出码 1。
+
+`uninstall` 只按 `setup.json` 撤销：Agent 配置文件自 setup 写入后未变化 → 逐字节恢复为备份（原本不存在则删除）；
+已有其他变化 → 只删除 URL 仍为写入值的 `app-mcp` 条目（被 `--force` 替换的原条目此时不能自动还原，提示备份位置）；
+卸载 setup 安装的服务；`--purge` 同时删除 `<home>/bin`。没有 `setup.json` 时什么都不做（手动安装的服务用
+`service uninstall`）。实现见 `src/setup/`（Agent 策略表 `src/setup/agents/`，每种 Agent 一个模块并注明依据）。
+
 ### 各平台的服务形式
 
 | 平台 | 形式 | 位置 | 说明 |

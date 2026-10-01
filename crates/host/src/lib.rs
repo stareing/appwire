@@ -6,6 +6,7 @@
 //!   实际监听位置写在 `<home>/run/endpoints.json`。
 //! - `service install|uninstall|status|start|stop`：当前用户的登录自启服务（[`service`]）；`install` 先检查端口占用。
 //! - `doctor`：逐项诊断（[`doctor`]）；`status`：一行状态摘要。
+//! - `setup` / `uninstall`：一条命令安装（二进制就位、自启、写入已装 Agent 的 MCP 配置、自检）与撤销（[`setup`]）。
 //! - `stdio` / 不带子命令：单客户端 stdio 模式（兼容旧用法）。
 //!
 //! stdout 在 stdio 模式下专用于 MCP 协议，所有日志写 stderr（常驻模式另写 `<home>/logs/`）。
@@ -17,6 +18,7 @@ pub mod logging;
 pub mod ports;
 pub mod probe;
 pub mod service;
+pub mod setup;
 pub mod token;
 
 use std::net::SocketAddr;
@@ -30,7 +32,7 @@ use app_mcp_protocol::ConnectionErrorCode;
 use app_mcp_protocol::registry::EndpointRegistry;
 use clap::Parser;
 
-use crate::cli::{Cli, Command, HomeArg, LegacyArgs, ServeArgs, ServiceAction};
+use crate::cli::{Cli, Command, HomeArg, LegacyArgs, ServeArgs, ServiceAction, SetupArgs, UninstallArgs};
 use crate::config::{AppHome, AuthMode, FileConfig, Overrides, Settings};
 use crate::probe::Probe;
 
@@ -85,6 +87,8 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(if report.has_errors() { ExitCode::FAILURE } else { ExitCode::SUCCESS })
         }
         Some(Command::Status(HomeArg { home })) => status_line(&home).await,
+        Some(Command::Setup(args)) => setup_cmd(args).await,
+        Some(Command::Uninstall(args)) => uninstall_cmd(args).await,
         Some(Command::Token { home, regenerate }) => {
             let home = AppHome::resolve(home.home.as_deref())?;
             let t = if regenerate {
@@ -381,7 +385,7 @@ async fn shutdown_signal() {
 // ---------------------------------------------------------------------------
 
 /// 读取 `<home>/config.json` 合并后的设置（服务命令用来确定探测地址）。
-fn service_settings(home: &AppHome) -> anyhow::Result<Settings> {
+pub(crate) fn service_settings(home: &AppHome) -> anyhow::Result<Settings> {
     let file = FileConfig::load(&home.config_file(), false)?;
     Settings::resolve(&file, &Overrides::default(), home)
 }
@@ -486,77 +490,103 @@ async fn status_line(home: &Option<std::path::PathBuf>) -> anyhow::Result<ExitCo
     }
 }
 
+/// `service install` 的结果（`setup` 复用；输出由调用方决定，`setup --json` 时不打印）。
+pub(crate) struct ServiceInstalled {
+    pub home: AppHome,
+    pub settings: Settings,
+    /// 安装前的提示（配置弃用项、端口检查），已带前缀，按顺序输出。
+    pub messages: Vec<String>,
+    /// 服务文件 / 注册表项位置。
+    pub location: String,
+    /// 等待 `/healthz` 就绪的结果：运行中实例的登记信息，或未就绪的原因。
+    pub registry: Result<EndpointRegistry, String>,
+}
+
+/// 写入 `<home>/config.json`、端口预检、生成令牌、以 `exe` 安装并启动登录自启服务，等待最多 10 秒就绪。
+///
+/// @input exe 服务运行的可执行文件（Windows 上为同目录的无窗口版，见 [`service::background_exe_for`]）。
+/// @error 不支持 `--config`；监听地址均被占用时不安装（PORT_BUSY）。
+pub(crate) async fn install_service(args: &ServeArgs, exe: std::path::PathBuf) -> anyhow::Result<ServiceInstalled> {
+    if args.hub.config.is_some() {
+        anyhow::bail!("service install 使用 <home>/config.json，不支持 --config；可用 --home 指定配置目录");
+    }
+    let home = AppHome::resolve(args.hub.home.home.as_deref())?;
+    std::fs::create_dir_all(&home.dir).with_context(|| format!("创建目录 {} 失败", home.dir.display()))?;
+    let mut file = FileConfig::load(&home.config_file(), false)?;
+    file.apply(&args.overrides()?)?;
+    file.save(&home.config_file())?;
+    let s = Settings::resolve(&file, &Overrides::default(), &home)?;
+    let mut messages: Vec<String> = s.notices.iter().map(|n| format!("提示：{n}")).collect();
+    // 端口预检（本配置目录的实例已在运行时跳过：端口由它占用）。
+    if running_instance(&home).await.is_none() {
+        let plan = doctor::port_preflight(&s).await;
+        messages.extend(plan.busy.iter().map(|(_, why)| format!("端口检查：{why}")));
+        match &plan.chosen {
+            None => anyhow::bail!(
+                "[{code}] 监听地址均被占用，未安装服务。建议：{}",
+                ConnectionErrorCode::PortBusy.hint(),
+                code = ConnectionErrorCode::PortBusy
+            ),
+            Some(addr) if !plan.busy.is_empty() => messages.push(format!(
+                "提示：默认端口被占用，Host 将改用 {addr}（网页 SDK 会依次尝试 7717、7737、7757）；建议停止占用者以使用默认端口"
+            )),
+            Some(_) => {}
+        }
+    }
+    if s.auth != AuthMode::Off {
+        token::load_or_create(&home.token_file())?;
+    }
+    let spec = service::ServiceSpec { exe, home: home.dir.clone() };
+    let location = service::install(&spec)?;
+    if cfg!(windows) {
+        service::start(&spec)?;
+    }
+    let registry = match wait_status(&home, &s, true, Duration::from_secs(10)).await {
+        Status::Running(reg) => Ok(reg),
+        Status::NotRunning(why) => Err(why),
+    };
+    Ok(ServiceInstalled { home, settings: s, messages, location, registry })
+}
+
+/// 卸载登录自启服务；Windows 上（登录启动项不管理进程）同时结束本配置目录运行中的实例。返回是否曾安装。
+pub(crate) async fn uninstall_service(home: &AppHome) -> anyhow::Result<bool> {
+    let removed = service::uninstall()?;
+    if !service::MANAGED_BY_OS
+        && let Some(reg) = running_instance(home).await
+    {
+        service::kill_pid(reg.identity.pid)?;
+    }
+    Ok(removed)
+}
+
 async fn service_cmd(action: ServiceAction) -> anyhow::Result<ExitCode> {
     match action {
         ServiceAction::Install(args) => {
-            if args.hub.config.is_some() {
-                anyhow::bail!(
-                    "service install 使用 <home>/config.json，不支持 --config；可用 --home 指定配置目录"
-                );
+            let out = install_service(&args, service::service_exe()?).await?;
+            for line in &out.messages {
+                println!("{line}");
             }
-            let home = AppHome::resolve(args.hub.home.home.as_deref())?;
-            std::fs::create_dir_all(&home.dir)
-                .with_context(|| format!("创建目录 {} 失败", home.dir.display()))?;
-            let mut file = FileConfig::load(&home.config_file(), false)?;
-            file.apply(&args.overrides()?)?;
-            file.save(&home.config_file())?;
-            let s = Settings::resolve(&file, &Overrides::default(), &home)?;
-            for n in &s.notices {
-                println!("提示：{n}");
-            }
-            // 端口预检（本配置目录的实例已在运行时跳过：端口由它占用）。
-            if running_instance(&home).await.is_none() {
-                let plan = doctor::port_preflight(&s).await;
-                for (_, why) in &plan.busy {
-                    println!("端口检查：{why}");
+            println!("已安装登录自启服务：{}", out.location);
+            println!("配置文件：{}", out.home.config_file().display());
+            let listen = match &out.registry {
+                Ok(reg) => {
+                    println!("{}", describe_registry(reg));
+                    reg.listen.clone().unwrap_or_else(|| out.settings.listen.clone())
                 }
-                match &plan.chosen {
-                    None => anyhow::bail!(
-                        "[{code}] 监听地址均被占用，未安装服务。建议：{}",
-                        ConnectionErrorCode::PortBusy.hint(),
-                        code = ConnectionErrorCode::PortBusy
-                    ),
-                    Some(addr) if !plan.busy.is_empty() => println!(
-                        "提示：默认端口被占用，Host 将改用 {addr}（网页 SDK 会依次尝试 7717、7737、7757）；建议停止占用者以使用默认端口"
-                    ),
-                    Some(_) => {}
-                }
-            }
-            if s.auth != AuthMode::Off {
-                token::load_or_create(&home.token_file())?;
-            }
-            let spec = spec_for(&home)?;
-            let location = service::install(&spec)?;
-            println!("已安装登录自启服务：{location}");
-            println!("配置文件：{}", home.config_file().display());
-            if cfg!(windows) {
-                service::start(&spec)?;
-            }
-            let listen = match wait_status(&home, &s, true, Duration::from_secs(10)).await {
-                Status::Running(reg) => {
-                    println!("{}", describe_registry(&reg));
-                    reg.listen.unwrap_or_else(|| s.listen.clone())
-                }
-                Status::NotRunning(why) => {
+                Err(why) => {
                     println!(
                         "服务尚未就绪（{why}）；可用 `app-mcp-host service status` 查看，日志在 {}",
-                        home.log_dir().display()
+                        out.home.log_dir().display()
                     );
-                    s.listen.clone()
+                    out.settings.listen.clone()
                 }
             };
-            print_client_hint(&listen, s.auth);
+            print_client_hint(&listen, out.settings.auth);
             Ok(ExitCode::SUCCESS)
         }
         ServiceAction::Uninstall(HomeArg { home }) => {
             let home = AppHome::resolve(home.as_deref())?;
-            let removed = service::uninstall()?;
-            if !service::MANAGED_BY_OS {
-                // Windows：登录启动项不管理进程，结束当前运行的实例。
-                if let Some(reg) = running_instance(&home).await {
-                    service::kill_pid(reg.identity.pid)?;
-                }
-            }
+            let removed = uninstall_service(&home).await?;
             println!(
                 "{}",
                 if removed {
@@ -633,4 +663,49 @@ async fn service_cmd(action: ServiceAction) -> anyhow::Result<ExitCode> {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// setup / uninstall
+// ---------------------------------------------------------------------------
+
+/// 运行 Agent 命令的工作目录：配置目录（不含 `.mcp.json`，避免读到项目作用域的条目）；dry-run 且尚不存在时用临时目录。
+fn agent_env(home: &AppHome) -> anyhow::Result<setup::agents::AgentEnv> {
+    let work = if home.dir.is_dir() { home.dir.clone() } else { std::env::temp_dir() };
+    setup::agents::AgentEnv::from_system(&work)
+}
+
+fn print_report<T: serde::Serialize>(json: bool, report: &T, text: impl FnOnce() -> String) -> anyhow::Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(report)?);
+    } else {
+        print!("{}", text());
+    }
+    Ok(())
+}
+
+async fn setup_cmd(args: SetupArgs) -> anyhow::Result<ExitCode> {
+    let home = AppHome::resolve(args.home.home.as_deref())?;
+    if !args.dry_run {
+        std::fs::create_dir_all(&home.dir).with_context(|| format!("创建目录 {} 失败", home.dir.display()))?;
+    }
+    let opts = setup::SetupOptions { home: home.clone(), agents: args.agents, force: args.force, dry_run: args.dry_run };
+    let report = setup::setup(
+        &opts,
+        &setup::ops::SystemHost,
+        &setup::ops::SystemRunner::default(),
+        &agent_env(&home)?,
+        &service::current_exe()?,
+    )
+    .await?;
+    print_report(args.json, &report, || report.render())?;
+    Ok(if report.ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
+async fn uninstall_cmd(args: UninstallArgs) -> anyhow::Result<ExitCode> {
+    let home = AppHome::resolve(args.home.home.as_deref())?;
+    let opts = setup::UninstallOptions { home: home.clone(), purge: args.purge, dry_run: args.dry_run };
+    let report = setup::uninstall(&opts, &setup::ops::SystemHost, &setup::ops::SystemRunner::default(), &agent_env(&home)?).await?;
+    print_report(args.json, &report, || report.render())?;
+    Ok(if report.ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }

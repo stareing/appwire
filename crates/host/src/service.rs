@@ -188,14 +188,18 @@ pub fn location() -> anyhow::Result<String> {
     platform::location()
 }
 
-/// 当前平台上服务应使用的可执行文件。
-pub fn service_exe() -> anyhow::Result<PathBuf> {
+/// 当前运行的可执行文件（解析符号链接后的绝对路径）。
+pub fn current_exe() -> anyhow::Result<PathBuf> {
     let exe =
         std::env::current_exe().map_err(|e| anyhow::anyhow!("无法确定当前可执行文件路径：{e}"))?;
-    let exe = std::fs::canonicalize(&exe)
+    Ok(std::fs::canonicalize(&exe)
         .map(|p| strip_verbatim(&p))
-        .unwrap_or(exe);
-    Ok(background_exe_for(&exe))
+        .unwrap_or(exe))
+}
+
+/// 当前平台上服务应使用的可执行文件。
+pub fn service_exe() -> anyhow::Result<PathBuf> {
+    Ok(background_exe_for(&current_exe()?))
 }
 
 /// Windows 上 `canonicalize` 返回 `\\?\D:\...` 形式：去掉前缀（UNC 路径 `\\?\UNC\` 保留原样）。

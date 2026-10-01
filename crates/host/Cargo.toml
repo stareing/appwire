@@ -44,6 +44,8 @@ clap.workspace = true
 dirs.workspace = true
 serde.workspace = true
 rand.workspace = true
+# setup：Agent 配置文件指纹（卸载时判断文件自写入后是否变化）；与 app-mcp-protocol 同版本。
+sha2 = "0.10"
 # 以下仅 test_upstream 可执行程序使用。
 rmcp = { workspace = true, features = ["server", "transport-io"] }
 serde_json.workspace = true

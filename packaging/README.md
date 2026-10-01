@@ -42,6 +42,8 @@ node_modules/.bin/tsc --noEmit -p packaging/npm/tsconfig.json
 ## 已知限制
 
 - 未做代码签名 / 公证（Windows SmartScreen、macOS Gatekeeper），见计划 U2。
-- 经 `npx` / `uvx` 临时运行时二进制在包管理器缓存中；`service install` 会把该路径写进登录自启项，缓存清理后失效。
-  在 D3 `setup` 把二进制复制到稳定位置之前，README 只推荐全局安装后再 `service install`。
+- 经 `npx` / `uvx` 临时运行时二进制在包管理器缓存中，`service install` 会把该路径写进登录自启项，缓存清理后失效：
+  请用 `npx appwire-cli setup` / `uvx appwire-cli setup`（D3）——`setup` 检测到程序位于包管理器目录（`node_modules`、
+  `site-packages`、`_npx`）时先复制到 `<home>/bin/`（默认 `~/.app-mcp/bin/`，Windows 连同 `app-mcp-hostw.exe`），
+  再从那里注册自启，并写入已安装 Agent 的 MCP 配置；`appwire uninstall --purge` 撤销并删除该副本。见 `crates/host/README.md`。
 - Linux 产物为 musl 静态链接（glibc / musl 发行版通用）；`linux-arm64` 依赖 GitHub 的 `ubuntu-24.04-arm` runner。

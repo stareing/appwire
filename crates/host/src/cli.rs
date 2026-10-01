@@ -7,6 +7,7 @@ use app_mcp_hub::upstream::parse_cli_spec;
 use clap::{Args, Parser, Subcommand};
 
 use crate::config::{AuthMode, Overrides};
+use crate::setup::agents::{AgentSelection, parse_selection};
 
 /// 本地 MCP Host：聚合本机各 App 的工具并以 MCP 暴露给模型。
 ///
@@ -51,6 +52,13 @@ pub enum Command {
     },
     /// 一行状态摘要（运行中的 Host、App 在线 / 休眠数）；未运行时退出码 3。
     Status(HomeArg),
+    /// 一条命令完成安装（幂等）：从 npx / uvx 等包管理器目录运行时把二进制复制到 <home>/bin → 登录自启服务 →
+    /// 等待 /healthz → 把 Host 写入已安装 MCP Agent 的配置（已有不同的同名条目时需 --force；写前备份、写后校验、
+    /// 失败回滚）→ doctor 自检。改动记录在 <home>/setup.json，供 uninstall 撤销。有失败 / 冲突时退出码 1。
+    Setup(SetupArgs),
+    /// 撤销 setup：按 <home>/setup.json 只删除 setup 写入的 Agent 条目（文件自写入后未变化时整文件恢复备份）、
+    /// 卸载 setup 安装的服务；--purge 同时删除 <home>/bin。
+    Uninstall(UninstallArgs),
     /// 打印本地访问令牌（不存在时生成），供 MCP 客户端配置 `Authorization: Bearer <令牌>`。
     Token {
         #[command(flatten)]
@@ -73,6 +81,40 @@ pub enum ServiceAction {
     Start(HomeArg),
     /// 停止。
     Stop(HomeArg),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SetupArgs {
+    #[command(flatten)]
+    pub home: HomeArg,
+    /// 要配置的 MCP Agent：all（默认，检测到的全部）/ none / 逗号分隔的列表：claude-code、codex、gemini、cursor、
+    /// vscode、windsurf、claude-desktop（后两者只打印手动配置说明）。
+    #[arg(long, value_name = "LIST|all|none", default_value = "all", value_parser = parse_selection)]
+    pub agents: AgentSelection,
+    /// 替换 Agent 配置中已有的不同的同名条目（app-mcp）。
+    #[arg(long)]
+    pub force: bool,
+    /// 只列出将要执行的操作，不做任何修改。
+    #[arg(long)]
+    pub dry_run: bool,
+    /// 输出 JSON（机器可读）。
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct UninstallArgs {
+    #[command(flatten)]
+    pub home: HomeArg,
+    /// 同时删除 <home>/bin（setup 复制的二进制）。
+    #[arg(long)]
+    pub purge: bool,
+    /// 只列出将要执行的操作，不做任何修改。
+    #[arg(long)]
+    pub dry_run: bool,
+    /// 输出 JSON（机器可读）。
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Clone, Default, Args)]
@@ -417,5 +459,21 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Doctor { json: true, .. })));
         let cli = Cli::try_parse_from(["app-mcp-host", "status"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Status(_))));
+
+        let cli = Cli::try_parse_from(["app-mcp-host", "setup"]).unwrap();
+        let Some(Command::Setup(a)) = cli.command else { panic!() };
+        assert_eq!(a.agents, AgentSelection::All);
+        assert!(!a.force && !a.dry_run && !a.json);
+        let cli = Cli::try_parse_from([
+            "app-mcp-host", "setup", "--agents", "claude-code,cursor", "--force", "--dry-run", "--json", "--home", "/x",
+        ])
+        .unwrap();
+        let Some(Command::Setup(a)) = cli.command else { panic!() };
+        assert!(matches!(a.agents, AgentSelection::List(ref l) if l.len() == 2));
+        assert!(a.force && a.dry_run && a.json);
+        assert_eq!(a.home.home, Some(PathBuf::from("/x")));
+        assert!(Cli::try_parse_from(["app-mcp-host", "setup", "--agents", "nope"]).is_err());
+        let cli = Cli::try_parse_from(["app-mcp-host", "uninstall", "--purge"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Uninstall(UninstallArgs { purge: true, .. }))));
     }
 }

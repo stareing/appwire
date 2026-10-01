@@ -754,10 +754,18 @@ fn reports_check(status: Option<&Result<HubStatus, String>>) -> Check {
         .details(details)
 }
 
-/// PATH 中的可执行文件。
-fn find_in_path(name: &str) -> Option<std::path::PathBuf> {
-    let exe = if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(&exe)).find(|p| p.is_file())
+/// PATH 中的可执行文件（`setup` 检测 Agent 时同样使用）。
+///
+/// @compat Windows 上按 `.exe`、`.cmd`、`.bat` 依次查找（npm 全局安装的命令是 `.cmd` 包装脚本）。
+pub(crate) fn find_in_path(name: &str) -> Option<std::path::PathBuf> {
+    let names: Vec<String> = if cfg!(windows) {
+        [".exe", ".cmd", ".bat"].iter().map(|ext| format!("{name}{ext}")).collect()
+    } else {
+        vec![name.to_owned()]
+    };
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .flat_map(|d| names.iter().map(move |n| d.join(n)))
+        .find(|p| p.is_file())
 }
 
 async fn adb_check(host_port: u16) -> Check {
