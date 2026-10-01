@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+# 只发平台 wheel（packaging/scripts/build_wheels.py：放入二进制后打 py3-none-<平台> 标签），不发 sdist：
+# 源码包里没有二进制，在不支持的平台上安装后也无法运行。
+[project]
+name = "appwire-cli"
+version = "0.1.0"
+description = "AppWire command line: run the prebuilt AppWire Host (app-mcp-host), the local MCP server that exposes the tools of every app on this device to Claude, ChatGPT, Gemini and other MCP clients"
+readme = "README.md"
+keywords = ["appwire", "mcp", "mcp-server", "model-context-protocol", "ai-agent", "claude", "llm", "tool-calling", "cli"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Rust",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries",
+]
+requires-python = ">=3.9"
+license = "MIT OR Apache-2.0"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+# `uvx appwire-cli` 按包名找同名命令；安装后的常用命令是 `appwire`。
+[project.scripts]
+appwire = "appwire_cli.launcher:main"
+appwire-cli = "appwire_cli.launcher:main"
+
+[project.urls]
+Homepage = "https://github.com/stareing/appwire"
+Repository = "https://github.com/stareing/appwire"
+Issues = "https://github.com/stareing/appwire/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# 由 build_wheels.py 放入：app-mcp-host[.exe]（Windows 另有 app-mcp-hostw.exe）
+appwire_cli = ["bin/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -31,7 +31,7 @@
 |---|---|---|
 | U1 | 各 Agent 的 MCP 配置写入方式与位置（Claude Code `claude mcp add` 的作用域与参数、Cursor、VS Code、Windsurf、Codex 等） | **验证**：逐个以本机安装版本的 `--help` / 官方文档为准，写入前核对；不认识的版本只打印手动配置说明，不写文件 |
 | U2 | 发布渠道账号与签名：npm、PyPI、crates.io、Homebrew tap、winget；Windows 代码签名（SmartScreen）、macOS 公证 | **待确认**（需机主提供账号 / 证书）；无签名时先发 npm / PyPI 包装的预编译二进制，并在文档注明 |
-| U3 | npm / PyPI 分发原生二进制的方式（按平台的可选依赖包 vs 首次运行下载） | **保守**：按平台可选依赖包（不在运行时联网下载）；以本仓库 napi-rs 已用的发布方式为参照 |
+| U3 | npm / PyPI 分发原生二进制的方式（按平台的可选依赖包 vs 首次运行下载） | **已解决（2026-10-02）**：npm = 主包 + 6 个平台包（`optionalDependencies`，npm `os`/`cpu` 过滤，运行时不下载）；PyPI = 每平台一个 `py3-none-<平台标签>` wheel（二进制为包数据，`wheel tags` 打复合标签，不发 sdist）。实现与平台表见 `packaging/`。证据：本机以 musl 静态 `app-mcp-host` 走完 stage → `node_modules` 布局 → `appwire --version` / `status`（退出码 3 透传），wheel 经 `uvx --from <wheel> appwire-cli --version` 运行、`twine check --strict` 通过。更正第 3 节：`@app-mcp/hub` / `@app-mcp/node` 目前是单包内 `native/<名>.<platform>-<arch>.node`，并无按平台拆包，可借鉴的只有 `<platform>-<arch>` 命名 |
 | U4 | 网页 App 连接 `/app` 是否也受 `browser` 令牌策略约束、首次授权能否免令牌 | **验证**：读 `crates/hub/src/app_server.rs` 鉴权路径并补测试 |
 | U5 | macOS launchd 自启与 IPC（`getpeereid`）路径 | 无环境，**记为待验证** |
 | U6 | 写入 Agent 配置时与用户已有条目冲突（同名 `app-mcp`、不同 URL） | **显式失败**：已存在且不同 → 提示并要求 `--force`，不静默覆盖 |

@@ -1,0 +1,231 @@
+# 发布流水线（docs/plans/13-out-of-box.md D1 / D2）。
+#
+# 触发：推送 tag `v<版本>`（必须等于根 Cargo.toml 的 workspace 版本）→ 构建各平台 app-mcp-host → GitHub Release
+#       → npm（appwire-cli + 平台包）/ PyPI（appwire-cli 平台 wheel）。
+# 手动运行（workflow_dispatch）：只构建、打包与校验，不建 Release、不发布。
+# 平台表：packaging/platforms.json（唯一定义）。发布步骤说明与所需 secrets：packaging/README.md。
+#
+# secrets（均可缺省；缺省时跳过对应发布步骤并给出 notice）：
+#   NPM_TOKEN        npm 自动化令牌（需能发布 appwire-cli 与 appwire-cli-<平台> 包）
+#   PYPI_API_TOKEN   PyPI API 令牌（项目 appwire-cli）
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: version
+        name: 版本号（tag 必须与 Cargo workspace 版本一致）
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "app-mcp-host") | .version')
+          if [ -z "$version" ]; then
+            echo "::error::cargo metadata 中找不到 app-mcp-host"
+            exit 1
+          fi
+          publish=false
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME 与 Cargo workspace 版本 $version 不一致（应为 v$version）"
+              exit 1
+            fi
+            publish=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+      - id: matrix
+        name: 构建矩阵（packaging/platforms.json）
+        run: |
+          echo "matrix=$(jq -c '{include: .platforms}' packaging/platforms.json)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build ${{ matrix.id }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      # 只在 macOS 条目中有值；与 platforms.json 中 wheel 的 macosx 标签一致。
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosDeploymentTarget }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustTarget }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.rustTarget }}
+      - name: cargo build
+        run: >-
+          cargo build --release --locked -p app-mcp-host
+          --target ${{ matrix.rustTarget }}
+          --bin ${{ join(matrix.binaries, ' --bin ') }}
+      - name: 收集二进制
+        run: |
+          mkdir -p "dist/bin/${{ matrix.id }}"
+          for b in ${{ join(matrix.binaries, ' ') }}; do
+            cp "target/${{ matrix.rustTarget }}/release/${b}${{ matrix.exeSuffix }}" "dist/bin/${{ matrix.id }}/"
+          done
+      - name: 冒烟（--version）
+        if: matrix.smoke
+        run: |
+          out=$("dist/bin/${{ matrix.id }}/app-mcp-host${{ matrix.exeSuffix }}" --version)
+          echo "$out"
+          [ "$out" = "app-mcp-host $VERSION" ]
+      - name: 打包（Release 附件）
+        id: archive
+        run: |
+          name="app-mcp-host-v$VERSION-${{ matrix.id }}"
+          mkdir -p "dist/archive/$name"
+          cp dist/bin/${{ matrix.id }}/* LICENSE-MIT LICENSE-APACHE "dist/archive/$name/"
+          cd dist/archive
+          if [ "${{ matrix.exeSuffix }}" = ".exe" ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+          else
+            tar -czf "$name.tar.gz" "$name"
+          fi
+          rm -rf "$name"
+      # 注意：artifact 不保留可执行位，下游打包脚本会重新设置。
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bin-${{ matrix.id }}
+          path: dist/bin/${{ matrix.id }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: archive-${{ matrix.id }}
+          path: dist/archive
+          if-no-files-found: error
+
+  github-release:
+    name: GitHub Release
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: archive-*
+          path: dist
+          merge-multiple: true
+      - name: 校验和
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - name: 创建或更新 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "AppWire $GITHUB_REF_NAME"
+          fi
+
+  npm:
+    name: npm
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: bin-*
+          path: dist/artifacts
+      - name: 整理产物（bin-<平台> → <平台>）
+        run: |
+          mkdir -p dist/bins
+          for d in dist/artifacts/bin-*; do mv "$d" "dist/bins/${d#dist/artifacts/bin-}"; done
+      - name: 生成 npm 包
+        run: node packaging/scripts/stage-npm.mjs --version "$VERSION" --bins dist/bins --out dist/npm | tee dist/npm-order.txt
+      - name: 校验（npm pack --dry-run）
+        run: while read -r dir; do (cd "$dir" && npm pack --dry-run); done < dist/npm-order.txt
+      - name: 未配置 NPM_TOKEN
+        if: env.NODE_AUTH_TOKEN == '' && needs.plan.outputs.publish == 'true'
+        run: echo "::notice::未配置 secret NPM_TOKEN，跳过 npm 发布"
+      - name: 发布（平台包在前、主包最后；已发布的版本跳过，可重跑）
+        if: env.NODE_AUTH_TOKEN != '' && needs.plan.outputs.publish == 'true'
+        run: |
+          while read -r dir; do
+            name=$(jq -r .name "$dir/package.json")
+            if npm view "$name@$VERSION" version > /dev/null 2>&1; then
+              echo "$name@$VERSION 已存在，跳过"
+              continue
+            fi
+            npm publish "$dir" --access public --provenance
+          done < dist/npm-order.txt
+
+  pypi:
+    name: PyPI
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: 打包工具
+        run: python -m pip install --upgrade "setuptools>=77" build wheel twine
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: bin-*
+          path: dist/artifacts
+      - name: 整理产物（bin-<平台> → <平台>）
+        run: |
+          mkdir -p dist/bins
+          for d in dist/artifacts/bin-*; do mv "$d" "dist/bins/${d#dist/artifacts/bin-}"; done
+      - name: 生成平台 wheel
+        run: python packaging/scripts/build_wheels.py --version "$VERSION" --bins dist/bins --out dist/wheels
+      - name: 校验（twine check）
+        run: twine check --strict dist/wheels/*
+      - name: 未配置 PYPI_API_TOKEN
+        if: env.PYPI_API_TOKEN == '' && needs.plan.outputs.publish == 'true'
+        run: echo "::notice::未配置 secret PYPI_API_TOKEN，跳过 PyPI 发布"
+      - name: 发布（已存在的文件跳过，可重跑）
+        if: env.PYPI_API_TOKEN != '' && needs.plan.outputs.publish == 'true'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload --skip-existing --non-interactive dist/wheels/*

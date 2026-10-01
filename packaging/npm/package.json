@@ -1,0 +1,21 @@
+{
+  "name": "appwire-cli",
+  "version": "0.1.0",
+  "description": "AppWire command line: run the prebuilt AppWire Host (app-mcp-host), the local MCP server that exposes the tools of every app on this device to Claude, ChatGPT, Gemini and other MCP clients",
+  "keywords": ["appwire", "mcp", "mcp-server", "model-context-protocol", "ai-agent", "claude", "llm", "tool-calling", "cli"],
+  "homepage": "https://github.com/stareing/appwire#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/stareing/appwire.git", "directory": "packaging/npm" },
+  "bugs": { "url": "https://github.com/stareing/appwire/issues" },
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "bin": {
+    "appwire": "bin/appwire.js",
+    "appwire-cli": "bin/appwire.js"
+  },
+  "files": ["bin", "lib"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

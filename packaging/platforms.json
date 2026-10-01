@@ -1,0 +1,67 @@
+{
+  "$comment": "预编译 app-mcp-host 的平台表（唯一定义）：发布流水线矩阵、npm 平台包、PyPI 平台 wheel 都从这里取。id = Node 的 `${process.platform}-${process.arch}`；smoke = 构建机能否直接运行产物（交叉编译为 false）。",
+  "platforms": [
+    {
+      "id": "linux-x64",
+      "runner": "ubuntu-24.04",
+      "rustTarget": "x86_64-unknown-linux-musl",
+      "binaries": ["app-mcp-host"],
+      "exeSuffix": "",
+      "smoke": true,
+      "npm": { "os": "linux", "cpu": "x64" },
+      "wheelPlatformTag": "manylinux_2_17_x86_64.manylinux2014_x86_64.musllinux_1_1_x86_64"
+    },
+    {
+      "id": "linux-arm64",
+      "runner": "ubuntu-24.04-arm",
+      "rustTarget": "aarch64-unknown-linux-musl",
+      "binaries": ["app-mcp-host"],
+      "exeSuffix": "",
+      "smoke": true,
+      "npm": { "os": "linux", "cpu": "arm64" },
+      "wheelPlatformTag": "manylinux_2_17_aarch64.manylinux2014_aarch64.musllinux_1_1_aarch64"
+    },
+    {
+      "id": "win32-x64",
+      "runner": "windows-2022",
+      "rustTarget": "x86_64-pc-windows-msvc",
+      "binaries": ["app-mcp-host", "app-mcp-hostw"],
+      "exeSuffix": ".exe",
+      "smoke": true,
+      "npm": { "os": "win32", "cpu": "x64" },
+      "wheelPlatformTag": "win_amd64"
+    },
+    {
+      "id": "win32-arm64",
+      "runner": "windows-2022",
+      "rustTarget": "aarch64-pc-windows-msvc",
+      "binaries": ["app-mcp-host", "app-mcp-hostw"],
+      "exeSuffix": ".exe",
+      "smoke": false,
+      "npm": { "os": "win32", "cpu": "arm64" },
+      "wheelPlatformTag": "win_arm64"
+    },
+    {
+      "id": "darwin-x64",
+      "runner": "macos-14",
+      "rustTarget": "x86_64-apple-darwin",
+      "binaries": ["app-mcp-host"],
+      "exeSuffix": "",
+      "smoke": false,
+      "macosDeploymentTarget": "10.12",
+      "npm": { "os": "darwin", "cpu": "x64" },
+      "wheelPlatformTag": "macosx_10_12_x86_64"
+    },
+    {
+      "id": "darwin-arm64",
+      "runner": "macos-14",
+      "rustTarget": "aarch64-apple-darwin",
+      "binaries": ["app-mcp-host"],
+      "exeSuffix": "",
+      "smoke": true,
+      "macosDeploymentTarget": "11.0",
+      "npm": { "os": "darwin", "cpu": "arm64" },
+      "wheelPlatformTag": "macosx_11_0_arm64"
+    }
+  ]
+}

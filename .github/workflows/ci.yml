@@ -1,0 +1,90 @@
+# 持续集成：Rust（clippy + test）、JS（各包 vitest，不含需要浏览器与常驻 Host 的 e2e）、发布打包脚本与启动器。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: rust (clippy + test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  js:
+    name: js (vitest)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      # 与根 Cargo.toml 固定的 wasm-bindgen 版本一致。
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.129
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: 构建 WASM 核心与 napi 原生模块（测试依赖的生成物）
+        run: |
+          pnpm --filter @app-mcp/web build:wasm
+          pnpm --filter @app-mcp/node build:native
+          pnpm --filter @app-mcp/hub build:native
+      - run: pnpm -r --filter '!e2e' typecheck
+      - run: pnpm -r --filter '!e2e' test
+
+  packaging:
+    name: packaging (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pnpm install --frozen-lockfile
+      # packaging/npm 不在 pnpm workspace 内（无依赖），直接用根 node_modules 中的 vitest / tsc。
+      - name: npm 启动器（vitest + 类型检查）
+        run: |
+          node_modules/.bin/vitest run --root packaging/npm
+          node_modules/.bin/tsc --noEmit -p packaging/npm/tsconfig.json
+      - name: PyPI 启动器与 wheel 构建（pytest）
+        working-directory: packaging/pypi
+        run: |
+          python -m pip install "setuptools>=77" build wheel pytest
+          python -m pytest -q
