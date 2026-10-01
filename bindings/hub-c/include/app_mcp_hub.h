@@ -76,7 +76,10 @@ typedef enum AmHubStatus {
     AM_HUB_ERR_ALREADY_COMPLETED = 6,  /* 审批 / 配对已超时或被取消（句柄仍被消费） */
     AM_HUB_ERR_STOPPED = 7,            /* Hub 已停止 */
     AM_HUB_ERR_INTERNAL = 8,
-    AM_HUB_ERR_PANIC = 9
+    AM_HUB_ERR_PANIC = 9,
+    /* 本构建未包含所需能力（cargo feature，spec/hub-api.md 3.10）：mcpHttp / upstreams / am_hub_serve_http；
+     * 错误说明含缺少的 feature 名。v3 之后新增（API 版本号不变），此前同类错误报 AM_HUB_ERR_IO。 */
+    AM_HUB_ERR_UNSUPPORTED = 10
 } AmHubStatus;
 
 /* 工具格式（spec/hub-api.md 第 5 节）。 */

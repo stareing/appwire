@@ -118,6 +118,13 @@ describe('Hub 封装', () => {
     expect(fromNativeError(plain)).toBe(plain)
   })
 
+  it('缺少 cargo feature → UNSUPPORTED（与 START_FAILED 区分）', () => {
+    const e = fromNativeError(new Error('[UNSUPPORTED] Hub 启动失败：本构建未包含上游聚合（… `upstream` 未开启）'))
+    expect(e).toBeInstanceOf(HubError)
+    expect(e).toMatchObject({ kind: 'UNSUPPORTED', code: 'UNSUPPORTED' })
+    expect((e as HubError).message).toContain('`upstream`')
+  })
+
   it('事件多播、监听器异常隔离、全部取消后注销原生回调', async () => {
     const { binding, state } = fakeBinding()
     const onListenerError = vi.fn()

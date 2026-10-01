@@ -29,8 +29,11 @@ export type ErrorKind =
   | 'UNAUTHORIZED'
   | 'UNSUPPORTED_PROTOCOL'
 
-/** 绑定层自身的错误代码（非协议错误）。 */
-export type BindingErrorCode = 'INVALID_ARG' | 'SHUTDOWN' | 'START_FAILED' | 'INTERNAL'
+/**
+ * 绑定层自身的错误代码（非协议错误）。`UNSUPPORTED`：原生模块未包含所需能力（cargo feature，spec/hub-api.md 3.10，
+ * 如精简构建上的 `mcpHttp` / `upstreams` / `serveHttp`），说明含缺少的 feature 名；换完整构建或关闭该配置，重试无效。
+ */
+export type BindingErrorCode = 'INVALID_ARG' | 'SHUTDOWN' | 'START_FAILED' | 'UNSUPPORTED' | 'INTERNAL'
 
 // ---------------------------------------------------------------------------
 // 配置

@@ -3,6 +3,7 @@ package dev.appmcp.hub
 import dev.appmcp.AppMcp
 import dev.appmcp.AppMcpConfig
 import dev.appmcp.hub.ffi.HubEvent as Ev
+import dev.appmcp.hub.ffi.HubException as FfiHubException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -231,6 +232,21 @@ class HubIntegrationTest {
             hub.close()
         }
         Unit
+    }
+
+    /** 关闭的能力报 [HubException.Unsupported]（与 `Io` 区分）。本机库为完整能力，调用成功；精简构建由 HubSelfTest 真机覆盖。 */
+    @Test
+    fun unsupportedFeatureIsDistinctCategory() = runBlocking {
+        val base = HubConfig(listen = "127.0.0.1:0", enableIpc = false)
+        runCatching { Hub.start(base.copy(mcpHttp = true)).close() }
+            .exceptionOrNull()?.let { assertTrue(it is FfiHubException.Unsupported, "应为 Unsupported：$it") }
+        Hub.start(base).use { hub ->
+            runCatching { hub.serveHttp("127.0.0.1:0") }
+                .exceptionOrNull()?.let { assertTrue(it is FfiHubException.Unsupported, "应为 Unsupported：$it") }
+        }
+        val e: HubException = FfiHubException.Unsupported("缺少 `mcp-server`")
+        assertTrue(e !is FfiHubException.Io)
+        assertTrue(e.message.orEmpty().contains("`mcp-server`"))
     }
 
     @Test

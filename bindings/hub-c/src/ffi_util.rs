@@ -21,6 +21,8 @@ pub enum AmHubStatus {
     Stopped = 7,
     Internal = 8,
     Panic = 9,
+    /// 本构建未包含所需能力（cargo feature，spec/hub-api.md 3.10）。
+    Unsupported = 10,
 }
 
 /// FFI 层内部错误：状态码 + 说明。
@@ -50,6 +52,15 @@ impl FfiError {
 
     pub fn stopped() -> Self {
         Self::new(AmHubStatus::Stopped, "Hub 已停止")
+    }
+
+    /// I/O 错误：`ErrorKind::Unsupported`（缺少 cargo feature）→ `Unsupported`，其余 → `Io`。
+    pub fn io(context: &str, e: &std::io::Error) -> Self {
+        let status = match e.kind() {
+            std::io::ErrorKind::Unsupported => AmHubStatus::Unsupported,
+            _ => AmHubStatus::Io,
+        };
+        Self::new(status, format!("{context}：{e}"))
     }
 
     pub fn json(what: &str, e: impl std::fmt::Display) -> Self {

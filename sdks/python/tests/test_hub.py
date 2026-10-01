@@ -201,6 +201,25 @@ def test_formats_and_shutdown() -> None:
         hub.call_tool_sync("apps.list")
 
 
+def test_unsupported_feature_is_distinct_category() -> None:
+    """关闭的能力报 ``HubError.Unsupported``（与 ``Io`` 区分）。本机库为完整能力，调用成功；精简构建由 Android HubSelfTest 覆盖。"""
+    def check(fn) -> None:  # type: ignore[no-untyped-def]
+        try:
+            fn()
+        except HubError as e:
+            assert isinstance(e, HubError.Unsupported), repr(e)
+
+    check(lambda: Hub(listen="127.0.0.1:0", enable_ipc=False, mcp_http=True).close())
+    hub = Hub(listen="127.0.0.1:0", enable_ipc=False)
+    try:
+        check(lambda: asyncio.run(hub.serve_http("127.0.0.1:0")))
+    finally:
+        hub.close()
+    e = HubError.Unsupported("缺少 `mcp-server`")
+    assert isinstance(e, HubError) and not isinstance(e, HubError.Io)
+    assert "`mcp-server`" in str(e)
+
+
 def test_progressive_exposure() -> None:
     from app_mcp.hub import ToolExposure, WakerConfig
 

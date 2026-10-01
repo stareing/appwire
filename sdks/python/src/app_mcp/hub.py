@@ -68,7 +68,9 @@ PairingRequest = ffi.PairingRequest
 #: 事件（``HubEvent.APP_CONNECTED`` 等变体；SDK 诊断上报为 ``HubEvent.APP_DIAGNOSTIC(app_id, instance_id,
 #: code, message, count)``，spec/protocol.md 10.2；未单独映射的新事件为 ``HubEvent.OTHER(kind, json)``）。
 HubEvent = ffi.HubEvent
-#: Hub 操作错误（``HubError.Tool``、``InvalidJson``、``InvalidConfig``、``Io``、``Shutdown``）。
+#: Hub 操作错误（``HubError.Tool``、``InvalidJson``、``InvalidConfig``、``Io``、``Shutdown``、``Unsupported``）。
+#: ``HubError.Unsupported``：本构建未包含所需能力（``mcp_http``、``upstreams``、``serve_http``），``detail`` 说明缺哪个
+#: cargo feature（spec/hub-api.md 3.10）；重试无效。
 HubError = ffi.HubError
 WakeKind = ffi.WakeKind
 WakeDescriptor = ffi.WakeDescriptor

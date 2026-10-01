@@ -60,6 +60,15 @@ fn err(code: &str, message: impl Into<String>) -> napi::Error {
     )
 }
 
+/// 启动类 I/O 错误：缺少 cargo feature（`ErrorKind::Unsupported`，spec/hub-api.md 3.10）→ `UNSUPPORTED`，其余 → `START_FAILED`。
+fn start_error(context: &str, e: &std::io::Error) -> napi::Error {
+    let code = match e.kind() {
+        std::io::ErrorKind::Unsupported => "UNSUPPORTED",
+        _ => "START_FAILED",
+    };
+    err(code, format!("{context}：{e}"))
+}
+
 fn invalid_arg(message: impl Into<String>) -> napi::Error {
     err("INVALID_ARG", message)
 }
@@ -333,7 +342,7 @@ impl JsHub {
         let cfg: ConfigJson = parse_json("config", config_json.as_deref())?;
         let hub = Hub::start(cfg.into_config())
             .await
-            .map_err(|e| err("START_FAILED", format!("Hub 启动失败：{e}")))?;
+            .map_err(|e| start_error("Hub 启动失败", &e))?;
         let listen_addr = hub.listen_addr().map(|a| a.to_string());
         let ipc_endpoint = hub.ipc_endpoint().map(str::to_owned);
         Ok(JsHub {
@@ -503,7 +512,7 @@ impl JsHub {
         let local = hub
             .serve_http(&addr, allow_remote.unwrap_or(false))
             .await
-            .map_err(|e| err("START_FAILED", format!("HTTP 服务启动失败：{e}")))?;
+            .map_err(|e| start_error("HTTP 服务启动失败", &e))?;
         Ok(local.to_string())
     }
 

@@ -704,6 +704,7 @@ fn header_matches_implementation() {
         ("AM_HUB_ERR_STOPPED", AmHubStatus::Stopped),
         ("AM_HUB_ERR_INTERNAL", AmHubStatus::Internal),
         ("AM_HUB_ERR_PANIC", AmHubStatus::Panic),
+        ("AM_HUB_ERR_UNSUPPORTED", AmHubStatus::Unsupported),
     ] {
         assert!(h.contains(&format!("{name} = {}", v as i32)), "{name}");
     }
@@ -865,4 +866,26 @@ fn waker_failure_maps_error_kind() {
     client.stop();
     // SAFETY: 有效句柄。
     unsafe { am_hub_free(hub) };
+}
+
+/// 缺少 cargo feature 的错误（spec/hub-api.md 3.10）报 `AM_HUB_ERR_UNSUPPORTED`，其余 I/O 错误仍为 `AM_HUB_ERR_IO`。
+#[test]
+fn unsupported_io_error_maps_to_own_status() {
+    let e = FfiError::io("启动 Hub 失败", &std::io::Error::new(std::io::ErrorKind::Unsupported, "缺少 `upstream`"));
+    assert_eq!(e.status, AmHubStatus::Unsupported);
+    assert!(e.message.contains("`upstream`"), "{}", e.message);
+    let e = FfiError::io("启动 Hub 失败", &std::io::Error::new(std::io::ErrorKind::AddrInUse, "占用"));
+    assert_eq!(e.status, AmHubStatus::Io);
+
+    // 端到端：本库以 app-mcp-hub 默认（完整）能力构建时成功；缺少 feature 时为 UNSUPPORTED。
+    let cfg = c(r#"{"listen":"127.0.0.1:0","ipcEndpoint":null,"mcpHttp":true}"#);
+    let mut hub = ptr::null_mut();
+    // SAFETY: 有效参数。
+    let st = unsafe { am_hub_start(cfg.as_ptr(), &mut hub) };
+    let want = if hub::features::MCP_SERVER { AmHubStatus::Ok } else { AmHubStatus::Unsupported };
+    assert_eq!(st, want, "{}", last_error());
+    if !hub.is_null() {
+        // SAFETY: am_hub_start 成功返回的句柄。
+        unsafe { am_hub_free(hub) };
+    }
 }

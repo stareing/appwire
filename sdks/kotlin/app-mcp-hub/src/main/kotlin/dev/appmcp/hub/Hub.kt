@@ -70,7 +70,12 @@ typealias WakeRequest = dev.appmcp.hub.ffi.WakeRequest
  */
 typealias HubEvent = dev.appmcp.hub.ffi.HubEvent
 
-/** Hub 操作错误的基类（`Tool`、`InvalidJson`、`InvalidConfig`、`Io`、`Shutdown`）。 */
+/**
+ * Hub 操作错误的基类（`Tool`、`InvalidJson`、`InvalidConfig`、`Io`、`Shutdown`、`Unsupported`）。
+ * `Unsupported`：本构建未包含所需能力（Android 精简库上 `mcpHttp = true`、`upstreams` 非空、`serveHttp`），
+ * `detail` 说明缺哪个 cargo feature（spec/hub-api.md 3.10）；重试无效。
+ * 嵌套类别不能经 typealias 访问：按类别捕获时用 `dev.appmcp.hub.ffi.HubException.Unsupported` 等。
+ */
 typealias HubException = dev.appmcp.hub.ffi.HubException
 
 internal val HubJson = Json { ignoreUnknownKeys = true }

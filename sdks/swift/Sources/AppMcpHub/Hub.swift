@@ -45,7 +45,9 @@ public typealias HubWakeKind = AppMcpHubBindings.WakeKind
 /// SDK 诊断上报：`.appDiagnostic(appId:instanceId:code:message:count:)`（spec/protocol.md 10.2）。
 /// 未单独映射的新事件以 `.other(kind:json:)` 送达。
 public typealias HubEvent = AppMcpHubBindings.HubEvent
-/// Hub 操作错误（`.Tool`、`.InvalidJson`、`.InvalidConfig`、`.Io`、`.Shutdown`）。
+/// Hub 操作错误（`.Tool`、`.InvalidJson`、`.InvalidConfig`、`.Io`、`.Shutdown`、`.Unsupported`）。
+/// `.Unsupported(detail:)`：本构建未包含所需能力（`mcpHttp`、`upstreams`、`serveHttp`），`detail` 说明缺哪个 cargo feature
+/// （spec/hub-api.md 3.10）；重试无效。
 public typealias HubError = AppMcpHubBindings.HubError
 // 运行状态（`Hub.status()`，spec/hub-api.md 3.9）。
 public typealias HubStatus = AppMcpHubBindings.HubStatus

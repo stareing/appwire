@@ -208,6 +208,10 @@ pub enum HubError {
     Io { detail: String },
     #[error("Hub 已停止")]
     Shutdown,
+    /// 本构建未包含所需能力（cargo feature，spec/hub-api.md 3.10），如 Android 精简库上 `mcp_http = true`、
+    /// `upstreams` 非空或 `serve_http`。`detail` 说明缺哪个 feature。换完整构建或关闭该配置；重试无效。
+    #[error("不支持：{detail}")]
+    Unsupported { detail: String },
 }
 
 impl From<hub::HubError> for HubError {
@@ -223,8 +227,10 @@ impl From<hub::HubError> for HubError {
 
 impl From<std::io::Error> for HubError {
     fn from(e: std::io::Error) -> Self {
-        HubError::Io {
-            detail: e.to_string(),
+        let detail = e.to_string();
+        match e.kind() {
+            std::io::ErrorKind::Unsupported => HubError::Unsupported { detail },
+            _ => HubError::Io { detail },
         }
     }
 }
@@ -1340,6 +1346,12 @@ mod tests {
         assert_eq!(e.kind, "USER_REJECTED");
         assert_eq!(e.details_json.as_deref(), Some(r#"{"a":1}"#));
         assert!(o.data_json.is_none());
+
+        let unsupported: HubError =
+            std::io::Error::new(std::io::ErrorKind::Unsupported, "缺少 `mcp-server`").into();
+        assert_eq!(unsupported, HubError::Unsupported { detail: "缺少 `mcp-server`".into() });
+        let io: HubError = std::io::Error::new(std::io::ErrorKind::AddrInUse, "占用").into();
+        assert_eq!(io, HubError::Io { detail: "占用".into() });
 
         let err: HubError = hub::HubError::new(hub::ErrorKind::ToolNotFound, "x").into();
         assert_eq!(

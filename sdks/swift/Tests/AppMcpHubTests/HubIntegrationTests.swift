@@ -212,6 +212,21 @@ final class HubIntegrationTests: XCTestCase {
         hub.close()
     }
 
+    /// 关闭的能力报 `.Unsupported`（与 `.Io` 区分）。本机库为完整能力，调用成功；精简构建由 Android HubSelfTest 覆盖。
+    func testUnsupportedFeatureIsDistinctCategory() async throws {
+        func check(_ body: () async throws -> Void) async {
+            do { try await body() } catch {
+                guard case .Unsupported? = error as? HubError else { return XCTFail("应为 Unsupported：\(error)") }
+            }
+        }
+        await check { try Hub(config: HubConfig(listen: "127.0.0.1:0", mcpHttp: true, enableIpc: false)).close() }
+        let hub = try Hub(config: HubConfig(listen: "127.0.0.1:0", enableIpc: false))
+        await check { _ = try await hub.serveHTTP("127.0.0.1:0") }
+        hub.close()
+        let e = HubError.Unsupported(detail: "缺少 `mcp-server`")
+        XCTAssertNotEqual(e, .Io(detail: "缺少 `mcp-server`"))
+    }
+
     func testFormatsAndShutdown() async throws {
         XCTAssertEqual(try ToolFormat.parse("anthropic"), .anthropic)
         XCTAssertThrowsError(try ToolFormat.parse("nope"))

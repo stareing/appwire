@@ -472,6 +472,16 @@ uniffi 的 `HubStatus` 把 `identity` 展开为 `service` / `version` / `user` /
 | `upstream` | 上游聚合：以子进程启动其他 MCP 服务器并汇入工具 | `upstreams` 非空 → `Unsupported`；`UpstreamConfig` 与配置解析保留 |
 | `schema-validation` | 调用前按 inputSchema 校验参数（jsonschema） | `schema::check` 返回 `SchemaCheck::Unchecked`，参数原样交给 App（由 App 的处理函数报参数错误；与 spec/protocol.md 第 6 节"Host 校验参数"不同） |
 
+各绑定把 `ErrorKind::Unsupported` 映射为**专门的错误类别**（不与其他 I/O 错误混在一起；说明文字含缺少的 feature 名，重试无效）：
+
+| 绑定 | 类别 | 其他启动 / 绑定错误 |
+|---|---|---|
+| hub-uniffi（Kotlin / Swift / Python） | `HubError::Unsupported { detail }`（Kotlin `dev.appmcp.hub.ffi.HubException.Unsupported`——嵌套类别不能经 `dev.appmcp.hub.HubException` typealias 访问；Swift `.Unsupported(detail:)`；Python `HubError.Unsupported`） | `Io { detail }` |
+| hub-c | `AM_HUB_ERR_UNSUPPORTED = 10`（`am_hub_start`、`am_hub_serve_http`；说明经 `am_hub_last_error_message`） | `AM_HUB_ERR_IO` |
+| hub-node / `@app-mcp/hub` | `HubError.kind` / `code` = `'UNSUPPORTED'`（`BindingErrorCode`） | `'START_FAILED'` |
+
+这些类别为新增（2026-10-01）：此前同类错误分别报 `Io` / `AM_HUB_ERR_IO` / `START_FAILED`。`AM_HUB_API_VERSION` 不变（只新增枚举值）。
+
 HTTP 服务（`/app`、`/healthz`、`/status`）与本地 IPC 始终编译：移动端 App 也经 `ws://127.0.0.1:7717/app` 连接 Hub。
 rmcp 的 `server` / `client` 始终开启（模型类型与 `Peer`）。
 

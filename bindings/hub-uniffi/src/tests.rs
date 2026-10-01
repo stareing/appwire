@@ -185,9 +185,11 @@ fn end_to_end() {
     assert!(out.overview.is_some());
     assert!(out.call_id.starts_with("ffi-"));
 
-    // 参数不合法 → INVALID_INPUT（在 outcome 中）
-    let bad = wait(hub.call_tool(req("notes.notes.add", json!({})))).unwrap();
-    assert_eq!(bad.error.unwrap().kind, "INVALID_INPUT");
+    // 参数不合法 → INVALID_INPUT（在 outcome 中）；无 schema-validation 时参数原样交给 App（spec/hub-api.md 3.10）
+    if hub::features::SCHEMA_VALIDATION {
+        let bad = wait(hub.call_tool(req("notes.notes.add", json!({})))).unwrap();
+        assert_eq!(bad.error.unwrap().kind, "INVALID_INPUT");
+    }
 
     // 名称无法解析 → HubError
     let err = wait(hub.call_tool(req("nope.x", json!({})))).unwrap_err();
@@ -611,5 +613,31 @@ fn diagnostic_report_event_and_status() {
     assert_eq!(cid.as_deref(), Some(r.connection_id.as_str()));
     drop(ws);
     drop(rt);
+    hub.shutdown();
+}
+
+/// 关闭的能力（spec/hub-api.md 3.10）以 `HubError::Unsupported` 报告，可按类别区分；完整构建下这些调用成功。
+/// 两种组合都要跑：`cargo test -p app-mcp-hub-uniffi` 与 `--no-default-features --features mobile`。
+#[test]
+fn disabled_features_report_unsupported() {
+    let base = HubConfig { listen: Some("127.0.0.1:0".into()), enable_ipc: false, ..Default::default() };
+    let expect = |present: bool, feature: &str, r: Result<(), HubError>| match (present, r) {
+        (true, r) => r.expect("完整构建应支持"),
+        (false, Err(HubError::Unsupported { detail })) => {
+            assert!(detail.contains(&format!("`{feature}`")), "说明缺少 feature 名：{detail}")
+        }
+        (false, other) => panic!("缺少 {feature} 时应为 Unsupported：{other:?}"),
+    };
+
+    let mcp = AppMcpHub::start(HubConfig { mcp_http: true, ..base.clone() }).map(|h| h.shutdown());
+    expect(hub::features::MCP_SERVER, "mcp-server", mcp);
+
+    let up = UpstreamSpec { name: "up".into(), command: "true".into(), args: vec![], env: Default::default() };
+    let upstream = AppMcpHub::start(HubConfig { upstreams: vec![up], ..base.clone() }).map(|h| h.shutdown());
+    expect(hub::features::UPSTREAM, "upstream", upstream);
+
+    let hub = AppMcpHub::start(base).expect("启动 Hub");
+    let serve = wait(hub.serve_http("127.0.0.1:0".into(), false)).map(drop);
+    expect(hub::features::MCP_SERVER, "mcp-server", serve);
     hub.shutdown();
 }

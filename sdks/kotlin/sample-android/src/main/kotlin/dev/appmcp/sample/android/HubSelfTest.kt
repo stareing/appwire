@@ -5,10 +5,11 @@ import dev.appmcp.AppMcp
 import dev.appmcp.AppMcpConfig
 import dev.appmcp.hub.Hub
 import dev.appmcp.hub.HubConfig
-import dev.appmcp.hub.HubException
 import dev.appmcp.hub.InstanceState
 import dev.appmcp.hub.UpstreamSpec
 import dev.appmcp.hub.ffi.HubEvent
+// 嵌套的错误类别（Unsupported 等）不能经 typealias 访问，直接用生成的类型。
+import dev.appmcp.hub.ffi.HubException
 import dev.appmcp.hub.Risk
 import dev.appmcp.hub.ToolFilter
 import dev.appmcp.hub.ToolFormat
@@ -138,7 +139,8 @@ object HubSelfTest {
     }
 
     /**
-     * 本构建未包含的能力应在调用时返回说明缺哪个 cargo feature 的错误（spec/hub-api.md 3.10），不能崩溃或静默忽略。
+     * 本构建未包含的能力应在调用时抛 [HubException.Unsupported]（说明缺哪个 cargo feature，spec/hub-api.md 3.10），
+ * 不能崩溃、静默忽略或混入其他错误类别。
      * 完整构建（`--android-features desktop`）下这些调用成功，记为 `present`。返回每项的结果。
      */
     private suspend fun checkUnsupportedFeatures(hub: Hub): String {
@@ -151,14 +153,16 @@ object HubSelfTest {
         return "mcpHttp=$mcpHttp upstreams=$upstream serveHttp=$serveHttp"
     }
 
-    /** 成功 → `present`；`HubException` 且说明中带 feature 名 → `unsupported`；其他异常原样抛出（判为失败）。 */
+    /**
+     * 成功 → `present`；[HubException.Unsupported]（按类别判断）且说明中带 feature 名 → `unsupported`；
+     * 其他异常（包括 `HubException.Io` 等其他类别）原样抛出（判为失败）。
+     */
     private suspend fun expectUnsupported(feature: String, block: suspend () -> Unit): String {
         try {
             block()
             return "present"
-        } catch (e: HubException) {
-            val text = e.message.orEmpty()
-            check(text.contains("`$feature`")) { "缺少 $feature 时的错误未说明 feature：$e" }
+        } catch (e: HubException.Unsupported) {
+            check(e.detail.contains("`$feature`")) { "缺少 $feature 时的错误未说明 feature：$e" }
             return "unsupported"
         }
     }

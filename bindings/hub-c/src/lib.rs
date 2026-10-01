@@ -454,7 +454,7 @@ fn start(config_json: Option<&str>) -> FfiResult<Box<AmHub>> {
         Err(e) => {
             dispatcher.close_and_join();
             rt.shutdown_background();
-            return Err(FfiError::new(AmHubStatus::Io, format!("启动 Hub 失败：{e}")));
+            return Err(FfiError::io("启动 Hub 失败", &e));
         }
     };
     let events = Arc::new(Slot::<AmHubEventFn>::new());
@@ -582,7 +582,7 @@ pub unsafe extern "C" fn am_hub_serve_http(
         let inner = h.hub()?;
         let local = h
             .block_on(async move { inner.serve_http(&addr, allow_remote).await })
-            .map_err(|e| FfiError::new(AmHubStatus::Io, format!("启动 HTTP 出口失败：{e}")))?;
+            .map_err(|e| FfiError::io("启动 HTTP 出口失败", &e))?;
         // SAFETY: 同上。
         unsafe { write_out_str(out_addr, Some(&local.to_string())) };
         Ok(())
