@@ -130,6 +130,17 @@ pub struct WakePlan {
     pub tool: Option<ToolInfo>,
 }
 
+/// [`Registry::wake_target_presence`] 的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WakeTargetPresence {
+    /// 已连接并就绪（`app/ready`）：直接派发，不必唤醒。
+    Ready(String),
+    /// 已连接、握手未完成：等它的 `app/ready`，不再激活。
+    Handshaking,
+    /// 没有连接：需要激活。
+    Absent,
+}
+
 #[derive(Debug, Default)]
 struct AppEntry {
     manifest: Option<Manifest>,
@@ -469,6 +480,35 @@ impl Registry {
         }
         let d = *entry.dormant_ordered(selected, |d| d.resources.contains_key(name)).first()?;
         Some(self.plan_for(app_id, d, None))
+    }
+
+    /// 唤醒目标当前是否已有连接（spec/lifecycle.md §9 唤醒去重）。
+    ///
+    /// `instance_id = None`（冷启动）时该 App 的任一已连接实例都算。
+    pub(crate) fn wake_target_presence(&self, app_id: &str, instance_id: Option<&str>) -> WakeTargetPresence {
+        let Some(entry) = self.apps.get(app_id) else {
+            return WakeTargetPresence::Absent;
+        };
+        let mut matching = entry
+            .instances
+            .iter()
+            .filter(|i| instance_id.is_none_or(|id| i.instance_id == id))
+            .peekable();
+        if matching.peek().is_none() {
+            return WakeTargetPresence::Absent;
+        }
+        match matching.find(|i| i.ready) {
+            Some(i) => WakeTargetPresence::Ready(i.instance_id.clone()),
+            None => WakeTargetPresence::Handshaking,
+        }
+    }
+
+    /// 实例是否仍有记录（已连接或休眠）。
+    pub(crate) fn instance_known(&self, app_id: &str, instance_id: &str) -> bool {
+        self.apps.get(app_id).is_some_and(|e| {
+            e.instances.iter().any(|i| i.instance_id == instance_id)
+                || e.dormant.iter().any(|d| d.instance_id == instance_id)
+        })
     }
 
     fn plan_for(&self, app_id: &str, d: &DormantInstance, tool: Option<ToolInfo>) -> WakePlan {
@@ -1455,5 +1495,27 @@ mod tests {
         let (b, _) = add(&mut reg, "app", "b", 2);
         reg.make_dormant("app", b.id, "r".into(), String::new(), None);
         assert_eq!(reg.clear_dormant("app"), vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn wake_target_presence_and_known() {
+        let mut reg = Registry::new();
+        assert_eq!(reg.wake_target_presence("shop", None), WakeTargetPresence::Absent);
+        let (a, _) = add(&mut reg, "shop", "a", 1);
+        // 已连接、未就绪：握手中
+        assert_eq!(reg.wake_target_presence("shop", Some("a")), WakeTargetPresence::Handshaking);
+        assert_eq!(reg.wake_target_presence("shop", None), WakeTargetPresence::Handshaking);
+        assert_eq!(reg.wake_target_presence("shop", Some("b")), WakeTargetPresence::Absent);
+        reg.set_ready("shop", a.id);
+        assert_eq!(reg.wake_target_presence("shop", Some("a")), WakeTargetPresence::Ready("a".into()));
+        assert_eq!(reg.wake_target_presence("shop", None), WakeTargetPresence::Ready("a".into()));
+        assert!(reg.instance_known("shop", "a"));
+        // 休眠：仍有记录，但不算已连接
+        reg.make_dormant("shop", a.id, "rt".into(), String::new(), None);
+        assert_eq!(reg.wake_target_presence("shop", Some("a")), WakeTargetPresence::Absent);
+        assert!(reg.instance_known("shop", "a"));
+        reg.clear_dormant("shop");
+        assert!(!reg.instance_known("shop", "a"));
+        assert!(!reg.instance_known("other", "a"));
     }
 }

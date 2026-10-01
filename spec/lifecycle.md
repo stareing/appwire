@@ -66,6 +66,10 @@ stateDiagram-v2
   休眠握手进行中收到上述任一唤醒或 `hold()`（休眠完成后立即回连）。
 - 已连接且不在休眠握手中时收到唤醒令牌（如前台广播、Android 被强制停止后 WorkManager 重新排入的旧唤醒任务）：只重新开始空闲计时，
   令牌丢弃——Host 按实例 ID 认领现有连接，令牌不再有用途；不得因此在下一次休眠后立即回连。
+- 平台封装在唤醒入口先看连接状态，不为无用唤醒付出进程 / 后台任务开销（Android 见第 5 节）：连接已建立或正在建立
+  （已连接、连接中、握手中、等待配对、回连中）时把令牌直接交给客户端（由核心按上条处理），不排后台任务、不等待休眠；
+  本机收到唤醒后超过令牌有效期（4.4）才开始处理的唤醒直接丢弃，不创建 / 唤醒客户端。`backoff` 不算"正在建立"：
+  令牌让客户端立即重连。
 
 ## 4. 协议新增（合入 spec/protocol.md）
 
@@ -102,6 +106,11 @@ Host 的 `HelloResult` 新增可选 `toolsCurrent: bool`。
 Host 唤醒时生成一次性 `wakeToken`（≥128 位随机，60 秒有效），通过激活参数传给 App；
 SDK 回连时在 `app/hello.launchToken` 中携带（沿用现有字段），Host 据此把挂起的调用派发给这个实例。
 
+- 有效期：Hub 配置 `HubConfig.wake_token_ttl`（默认 60 秒）。令牌格式与激活参数不携带签发时间 / 有效期，SDK 不解析令牌；
+  需要本地判断过期的封装（Android `WakeWorker`）以本机收到唤醒的时刻计时，上限默认同为 60 秒（Host 改了有效期时同步调整）。
+- 一次性：唤醒被认领（第 9 节）即从 Host 的等待表移除，令牌随之作废。
+- 过期 / 已作废 / 未知的令牌：握手照常成功，按普通连接处理（不认领任何唤醒、不报错）。
+
 ## 5. 唤醒描述（WakeDescriptor）与各平台实现
 
 ```jsonc
@@ -117,7 +126,7 @@ SDK 回连时在 `app/hello.launchToken` 中携带（沿用现有字段），Hos
 | Windows（WinUI / WPF / Win32） | `aumid`：`IApplicationActivationManager::ActivateApplication(aumid, "app-mcp-wake:<token>")`；未打包应用用 `uri`：`<scheme>:app-mcp/wake?token=` | 单实例重定向（`AppInstance.FindOrRegisterForKey` / 命名管道）把参数交给已运行实例 → `handleWake` | 否（激活会前置窗口；`background:false`）；托盘 / 无窗口进程为 `true` | 休眠后释放运行时；`exit-when-idle` 由 App 决定 |
 | macOS（SwiftUI / AppKit） | `uri` 或 `apple-event`：`open -g <scheme>://app-mcp/wake?token=`（`-g` 不激活）| `onOpenURL` / `NSAppleEventManager` → `handleWake` | 是 | 同上；App Nap 期间休眠态无定时器，不被打断 |
 | Linux（GTK / Qt） | `dbus`：`org.freedesktop.Application.ActivateAction("app-mcp-wake", [token])`（D-Bus 可激活服务会自动拉起进程）；否则 `uri` | GApplication action / Qt D-Bus adaptor → `handleWake` | 是 | 同上 |
-| Android（Kotlin / Flutter） | `android-intent`：显式广播 `dev.appmcp.action.WAKE` 到 App 的 `WakeReceiver`（token 为 extra）| `WakeReceiver` 立即 `goAsync()` 并以 **加急 WorkManager 任务** 回连处理（绕开 Android 12+ 后台启动前台服务限制）；有界面时交给前台实例 | 是 | 不持有前台服务 / WakeLock；任务完成即休眠，进程交给系统回收 |
+| Android（Kotlin / Flutter） | `android-intent`：显式广播 `dev.appmcp.action.WAKE` 到 App 的 `WakeReceiver`（token 为 extra）| `WakeReceiver` 立即 `goAsync()` 并以 **加急 WorkManager 任务** 回连处理（绕开 Android 12+ 后台启动前台服务限制）；有界面或连接已建立 / 正在建立时直接交给运行中的客户端、不排任务；任务开始时连接已在则交出令牌后立即结束，距收到广播超过令牌有效期则丢弃 | 是 | 不持有前台服务 / WakeLock；任务完成即休眠，进程交给系统回收 |
 | iOS（Swift / Flutter） | `uri`：`<scheme>://app-mcp/wake?token=`（系统会把 App 带到前台）| `onOpenURL` / `scene(_:openURLContexts:)` → `handleWake` | 否（iOS 无后台唤醒；后台调用走 App Intents，见 codegen）| 进入后台即休眠（`hidden` → `hiddenIdleTimeoutMs`，iOS 封装默认 0）|
 | Web | `web-url`：没有可达连接时由 Host 打开 / 聚焦 URL（带 `#app-mcp-wake=<token>`）| 页面加载或 `visibilitychange` → 可见时回连；URL 中的令牌由 SDK 读取后从地址栏移除 | 否 | 标签页隐藏 `hiddenIdleTimeoutMs` 后休眠；bfcache（`pagehide persisted`）前立即 `app/sleep`；`pageshow` 恢复。多个标签页经 SharedWorker 共用一条连接时（spec/protocol.md 第 9 节），休眠只关闭本标签页的通道，所有标签页都休眠时连接随之关闭 |
 | Electron / Tauri | 主进程常驻时同原生桌面；主进程由 `uri` 拉起 | 主进程 `second-instance` / `open-url` → `handleWake` | 视窗口是否显示 | 同原生 |
@@ -154,6 +163,15 @@ ConnectionState += dormant, waking
 
 - 休眠实例：保留工具快照，`apps.list` 中显示 `dormant`；工具仍列出，可用性标记为可唤醒。
 - 路由到休眠实例：生成 `wakeToken` → 按唤醒描述激活 → 等待带令牌的回连（默认 15 秒，超时 `APP_NOT_RESPONDING`）→ 派发。
+- 唤醒去重：
+  - 目标实例已连接并就绪时不唤醒，直接派发；已连接但握手未完成时不激活，等它的 `app/ready`（在等待表加锁后复查，
+    覆盖路由决定唤醒之后、审批期间实例先回连的情况）。
+  - 同一目标（同一 App 的同一休眠实例，或同一 App 的冷启动）已有唤醒在等待时，后来的调用加入等待，不再激活；多次待派调用
+    合并为一次唤醒。
+  - 激活任务开始前唤醒已被认领时不再激活。
+- 唤醒的认领（实例 `app/ready` 时，满足任一）：带有效令牌；同一实例 ID（可见回连、App 主动 `wake()` 先于激活到达，
+  不带令牌也算）；冷启动唤醒中该 App 的任何实例；被唤醒的休眠实例已没有记录（被新实例 ID 替换 / 过期）时该 App 的任何实例。
+  认领后令牌作废（4.4）。
 - 租约：MCP 会话每次调用某 App 后发送 `app/lease { ttlMs: 60000 }`；会话关闭时 `ttlMs: 0`。
 - 休眠实例的空闲超时不适用；实例记录保留 24 小时或直到 App 下次以新实例 ID 连接。
 

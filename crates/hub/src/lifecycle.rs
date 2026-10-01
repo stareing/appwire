@@ -10,7 +10,7 @@ use tokio::time::Instant;
 
 use crate::connection::Connection;
 use crate::hub::{HubShared, lock};
-use crate::registry::WakePlan;
+use crate::registry::{WakePlan, WakeTargetPresence};
 use crate::types::HubEvent;
 use crate::wake::{self, Platform, WakeDescriptor, WakeRequest};
 
@@ -56,9 +56,6 @@ impl HubShared {
         lock(&self.waker).is_some()
     }
 
-    /// 执行唤醒并等待回连，返回就绪实例的 ID。
-    ///
-    /// 同一目标已有唤醒进行中时加入等待，不重复激活。
     /// 唤醒描述：休眠实例上报的优先，其次清单（spec/manifest.md 2.2）。
     pub(crate) fn resolve_wake_descriptor(&self, plan: &WakePlan) -> Option<WakeDescriptor> {
         if let Some(d) = &plan.descriptor {
@@ -69,6 +66,10 @@ impl HubShared {
             .and_then(|m| wake::manifest_descriptor(m, Platform::current(), self.config.wake_from_launch))
     }
 
+    /// 执行唤醒并等待回连，返回就绪实例的 ID。
+    ///
+    /// 去重（spec/lifecycle.md §9）：同一目标已有唤醒进行中时加入等待，不重复激活；目标实例已连接并就绪时
+    /// 直接返回；已连接但握手未完成时只等它的 `app/ready`，不激活。
     pub(crate) async fn wake_and_wait(
         self: &Arc<Self>,
         plan: &WakePlan,
@@ -85,30 +86,40 @@ impl HubShared {
         let (trigger, deadline) = {
             let mut wakes = lock(&self.wakes);
             wakes.retain(|w| w.deadline > now);
-            match wakes
+            if let Some(w) = wakes
                 .iter_mut()
                 .find(|w| w.app_id == app_id && w.instance_id == plan.instance_id)
             {
-                Some(w) => {
-                    w.waiters.push(tx);
-                    (None, w.deadline)
-                }
-                None => {
-                    let Some(descriptor) = descriptor else {
-                        return Err(not_wakeable(&app_id, plan.instance_id.is_some()));
-                    };
-                    let token = wake::new_token();
-                    let deadline = now + self.config.wake_timeout;
-                    wakes.push(PendingWake {
-                        app_id: app_id.clone(),
-                        instance_id: plan.instance_id.clone(),
-                        token: token.clone(),
-                        token_expires: now + self.config.wake_token_ttl,
-                        deadline,
-                        waiters: vec![tx],
-                    });
-                    (Some((token, descriptor)), deadline)
-                }
+                w.waiters.push(tx);
+                (None, w.deadline)
+            } else {
+                // @why 在 wakes 锁内复查：路由计划之后实例可能已因可见回连 / App 主动 wake 连上；
+                // `app/ready` 先置 ready 再取 wakes 锁，锁内看到未就绪则一定能被随后的 wake_arrived 匹配。
+                let presence = self
+                    .registry()
+                    .wake_target_presence(&app_id, plan.instance_id.as_deref());
+                let activation = match presence {
+                    WakeTargetPresence::Ready(id) => {
+                        tracing::debug!(app_id, instance_id = %id, "唤醒目标已连接，不再唤醒");
+                        return Ok(id);
+                    }
+                    WakeTargetPresence::Handshaking => None,
+                    WakeTargetPresence::Absent => match descriptor {
+                        Some(d) => Some(d),
+                        None => return Err(not_wakeable(&app_id, plan.instance_id.is_some())),
+                    },
+                };
+                let token = wake::new_token();
+                let deadline = now + self.config.wake_timeout;
+                wakes.push(PendingWake {
+                    app_id: app_id.clone(),
+                    instance_id: plan.instance_id.clone(),
+                    token: token.clone(),
+                    token_expires: now + self.config.wake_token_ttl,
+                    deadline,
+                    waiters: vec![tx],
+                });
+                (activation.map(|d| (token, d)), deadline)
             }
         };
         if let Some((token, descriptor)) = trigger {
@@ -127,6 +138,11 @@ impl HubShared {
             let shared = self.clone();
             // 独立任务：调用方取消不影响已发出的激活。
             tokio::spawn(async move {
+                // 激活前实例已被其他原因的回连认领（令牌已作废）：不再激活。
+                if !shared.wake_token_pending(&token) {
+                    tracing::debug!(app_id = %app_id, "唤醒已被回连认领，跳过激活");
+                    return;
+                }
                 if let Err(e) = waker.wake(req).await {
                     tracing::warn!(app_id = %app_id, error = %e, "唤醒失败");
                     let mut err = e.0;
@@ -166,15 +182,37 @@ impl HubShared {
         });
     }
 
-    /// 实例就绪（`app/ready`）：若它是某次唤醒等待的回连（带有效令牌、同一实例 ID，
-    /// 或冷启动唤醒中该 App 的任何实例），通知等待方。
+    /// 该令牌对应的唤醒是否仍在等待回连（未被认领、未超时）。
+    pub(crate) fn wake_token_pending(&self, token: &str) -> bool {
+        let now = Instant::now();
+        lock(&self.wakes).iter().any(|w| w.token == token && w.is_active(now))
+    }
+
+    /// 实例就绪（`app/ready`）：认领匹配的唤醒并通知等待方。匹配任一即可：
+    /// - 带有效（未过期）令牌；
+    /// - 同一实例 ID（无论是否带令牌：可见回连、App 主动 `wake()` 先于激活到达）；
+    /// - 冷启动唤醒中该 App 的任何实例；
+    /// - 被唤醒的休眠实例已没有记录（被新实例 ID 替换 / 过期）时，该 App 的任何实例。
+    ///
+    /// @invariant 认领即从等待表移除，令牌随之作废：之后携带它的握手按普通连接处理（不再匹配任何唤醒）。
     pub(crate) fn wake_arrived(&self, app_id: &str, instance_id: &str, launch_token: Option<&str>) {
         let now = Instant::now();
+        let targets: Vec<String> = lock(&self.wakes)
+            .iter()
+            .filter(|w| w.app_id == app_id)
+            .filter_map(|w| w.instance_id.clone())
+            .collect();
+        let superseded: Vec<String> = {
+            let reg = self.registry();
+            targets.into_iter().filter(|t| !reg.instance_known(app_id, t)).collect()
+        };
         self.finish_wake(
             |w| {
                 w.app_id == app_id
                     && (launch_token.is_some_and(|t| t == w.token && now < w.token_expires)
-                        || w.instance_id.as_deref().is_none_or(|i| i == instance_id))
+                        || w.instance_id
+                            .as_deref()
+                            .is_none_or(|i| i == instance_id || superseded.iter().any(|s| s == i)))
             },
             Ok(instance_id.to_owned()),
         );

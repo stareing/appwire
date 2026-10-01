@@ -12,6 +12,7 @@ import dev.appmcp.AppMcpConfig
 import dev.appmcp.LifecycleMode
 import dev.appmcp.LifecyclePolicy
 import dev.appmcp.Residency
+import dev.appmcp.StateStatus
 import dev.appmcp.Visibility
 import dev.appmcp.WakeDescriptor
 import dev.appmcp.WakeKind
@@ -42,6 +43,13 @@ interface WakeTarget {
 
     /** 处理唤醒参数并挂起到任务完成、再次休眠（由 [WakeWorker] 调用）。不是唤醒参数时返回 false。 */
     suspend fun handleWakeAndAwaitSleep(args: String, timeoutMillis: Long): Boolean
+
+    /**
+     * 连接是否已建立或正在建立（已连接、连接中、握手中、等待配对、回连中）。为 true 时唤醒令牌没有用途：
+     * Host 按实例 ID 认领这条连接，[WakeReceiver] / [WakeWorker] 不再排后台任务、不等待休眠。
+     * 默认 false（按休眠处理，兼容旧实现）。
+     */
+    fun isLinkActive(): Boolean = false
 }
 
 /** 把 [AppMcp] 适配为 [WakeTarget]。 */
@@ -49,6 +57,29 @@ class AppMcpWakeTarget(val client: AppMcp) : WakeTarget {
     override fun handleWake(args: String) = client.handleWake(args)
     override suspend fun handleWakeAndAwaitSleep(args: String, timeoutMillis: Long) =
         client.handleWakeAndAwaitSleep(args, timeoutMillis) != WakeOutcome.NOT_A_WAKE
+
+    override fun isLinkActive(): Boolean = isLinkActiveStatus(client.currentState().status)
+
+    companion object {
+        /**
+         * 该状态下连接是否已建立或正在建立。`BACKOFF` 不算：令牌会让客户端立即重连（Host 刚恢复时有用）；
+         * `DORMANT` / `IDLE` / `STOPPED` / `REJECTED` / `HOST_MISMATCH` 也不算（交给客户端按状态处理）。
+         */
+        @JvmStatic
+        fun isLinkActiveStatus(status: StateStatus): Boolean = when (status) {
+            StateStatus.CONNECTED,
+            StateStatus.CONNECTING,
+            StateStatus.HANDSHAKING,
+            StateStatus.PENDING_PAIRING,
+            StateStatus.WAKING -> true
+            StateStatus.IDLE,
+            StateStatus.BACKOFF,
+            StateStatus.REJECTED,
+            StateStatus.STOPPED,
+            StateStatus.DORMANT,
+            StateStatus.HOST_MISMATCH -> false
+        }
+    }
 }
 
 /**
@@ -72,6 +103,15 @@ object AppMcpAndroid {
 
     /** [WakeReceiver] 的类名（WakeDescriptor.target 的组件部分）。 */
     const val RECEIVER_CLASS = "dev.appmcp.android.WakeReceiver"
+
+    /**
+     * 唤醒广播在本机的最长有效时间：[WakeWorker] 开始运行时距 [WakeReceiver] 收到广播超过此值则丢弃，
+     * 不创建 / 唤醒客户端（如被强制停止后 WorkManager 重新排入的旧任务）。默认 60 秒，与 Host 唤醒令牌有效期
+     * （spec/lifecycle.md 4.4、`HubConfig.wake_token_ttl`）一致；Host 改了有效期时同步调整。`<= 0` 关闭检查。
+     */
+    @JvmStatic
+    @Volatile
+    var wakeTokenMaxAgeMillis: Long = 60_000
 
     /** [WakeWorker] 等待再次休眠的最长时间。 */
     @JvmStatic

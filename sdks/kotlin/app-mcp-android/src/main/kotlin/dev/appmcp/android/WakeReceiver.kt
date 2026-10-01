@@ -18,11 +18,15 @@ import androidx.work.WorkManager
  * adb shell am broadcast -a dev.appmcp.action.WAKE -n <package>/dev.appmcp.android.WakeReceiver --es token <t>
  * ```
  *
- * - App 在前台：直接交给已运行的客户端（`handleWake`），立即返回；
+ * - App 在前台，或客户端已连接 / 正在连接（[WakeTarget.isLinkActive]）：直接交给已运行的客户端（`handleWake`），
+ *   立即返回，不排后台任务。客户端已连接时令牌被丢弃（Host 按实例 ID 认领现有连接，spec/lifecycle.md 第 3 节），
+ *   休眠握手进行中则在休眠完成后回连；
  * - 否则 `goAsync()`，入队一个**加急** WorkManager 任务 [WakeWorker]（配额不足时按普通任务运行），
  *   入队完成后结束广播。Worker 回连、等调用完成且再次休眠后结束，进程交给系统回收。
  *
  * 不启动前台服务、不持有 WakeLock（Android 12+ 禁止后台启动前台服务，加急任务是官方替代）。
+ *
+ * 入队时记下收到广播的本机时刻（[WakeWorker.KEY_RECEIVED_AT]），过期的任务由 [WakeWorker] 丢弃。
  *
  * 安全：receiver 需要 `exported=true` 才能收到 Host（adb shell / 桌面伴侣进程）的显式广播。令牌格式不合法的广播
  * 直接丢弃；合法格式的伪造广播最多触发一次回连——Host 只接受自己签发的一次性令牌（≥128 位、60 秒有效），
@@ -38,16 +42,20 @@ class WakeReceiver : BroadcastReceiver() {
             return
         }
         val args = "app-mcp-wake:$token"
-        // 有界面：交给前台实例，不需要后台任务。
+        // 有界面或连接已在：交给运行中的客户端，不需要后台任务。
         val target = AppMcpAndroid.wakeTarget
-        if (target != null && AppMcpAndroid.isForeground()) {
+        if (target != null && (AppMcpAndroid.isForeground() || target.isLinkActive())) {
             target.handleWake(args)
             return
         }
         val pending = goAsync()
         try {
             val op = WorkManager.getInstance(context.applicationContext)
-                .enqueueUniqueWork(WakeWorker.UNIQUE_NAME, ExistingWorkPolicy.REPLACE, buildRequest(token))
+                .enqueueUniqueWork(
+                    WakeWorker.UNIQUE_NAME,
+                    ExistingWorkPolicy.REPLACE,
+                    buildRequest(token, receivedAtMillis = System.currentTimeMillis()),
+                )
             val result = op.result
             if (pending == null) return
             result.addListener({ pending.finish() }, { it.run() })
@@ -70,9 +78,16 @@ class WakeReceiver : BroadcastReceiver() {
          * 通知（`getForegroundInfo`），这里不申请前台服务，改为普通任务（这些版本对后台任务限制较少，通常立即运行）。
          */
         @JvmStatic
-        fun buildRequest(token: String, sdkInt: Int = Build.VERSION.SDK_INT): OneTimeWorkRequest {
+        @JvmOverloads
+        fun buildRequest(
+            token: String,
+            sdkInt: Int = Build.VERSION.SDK_INT,
+            receivedAtMillis: Long? = null,
+        ): OneTimeWorkRequest {
+            val input = Data.Builder().putString(WakeWorker.KEY_TOKEN, token)
+            if (receivedAtMillis != null) input.putLong(WakeWorker.KEY_RECEIVED_AT, receivedAtMillis)
             val builder = OneTimeWorkRequest.Builder(WakeWorker::class.java)
-                .setInputData(Data.Builder().putString(WakeWorker.KEY_TOKEN, token).build())
+                .setInputData(input.build())
                 .addTag(WakeWorker.TAG)
             if (sdkInt >= Build.VERSION_CODES.S) {
                 builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)

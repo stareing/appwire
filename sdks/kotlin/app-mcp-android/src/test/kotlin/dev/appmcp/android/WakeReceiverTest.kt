@@ -36,6 +36,8 @@ class WakeReceiverTest {
     private class FakeTarget : WakeTarget {
         val immediate = CopyOnWriteArrayList<String>()
         val awaited = CopyOnWriteArrayList<String>()
+        @Volatile var linkActive = false
+        override fun isLinkActive() = linkActive
         override fun handleWake(args: String): Boolean = immediate.add(args)
         override suspend fun handleWakeAndAwaitSleep(args: String, timeoutMillis: Long): Boolean {
             awaited += args
@@ -58,7 +60,17 @@ class WakeReceiverTest {
     @After
     fun tearDown() {
         AppMcpAndroid.wakeTarget = null
+        AppMcpAndroid.wakeTokenMaxAgeMillis = 60_000
     }
+
+    private fun worker(token: String, receivedAt: Long? = null) =
+        TestListenableWorkerBuilder<WakeWorker>(context)
+            .setInputData(
+                androidx.work.Data.Builder().putString(WakeWorker.KEY_TOKEN, token).apply {
+                    if (receivedAt != null) putLong(WakeWorker.KEY_RECEIVED_AT, receivedAt)
+                }.build(),
+            )
+            .build()
 
     private fun wakeIntent(token: String?) = Intent(AppMcpAndroid.ACTION_WAKE).apply {
         component = ComponentName(context, WakeReceiver::class.java)
@@ -137,5 +149,88 @@ class WakeReceiverTest {
         val p = AppMcpAndroid.defaultLifecycle(context)
         assertEquals(dev.appmcp.LifecycleMode.IDLE, p.mode)
         assertEquals(dev.appmcp.Residency.KEEP, p.residency)
+    }
+
+    // -- 拒绝无用唤醒 ---------------------------------------------------------
+
+    @Test
+    fun broadcastWhileLinkActiveIsHandledInlineWithoutWork() {
+        target.linkActive = true
+        context.sendBroadcast(wakeIntent("tok-live"))
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue("连接已在时不应排后台任务", uniqueWork().isEmpty())
+        assertEquals(listOf("app-mcp-wake:tok-live"), target.immediate.toList())
+        assertTrue(target.awaited.isEmpty())
+    }
+
+    @Test
+    fun repeatedBroadcastsWhileLinkActiveNeverEnqueue() {
+        target.linkActive = true
+        repeat(3) { context.sendBroadcast(wakeIntent("tok-$it")) }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(uniqueWork().isEmpty())
+        assertEquals(3, target.immediate.size)
+    }
+
+    @Test
+    fun workerSkipsAwaitWhenLinkBecameActive() = runBlocking {
+        target.linkActive = true
+        assertEquals(ListenableWorker.Result.success(), worker("abc").doWork())
+        assertEquals(listOf("app-mcp-wake:abc"), target.immediate.toList())
+        assertTrue("不应等待再次休眠", target.awaited.isEmpty())
+    }
+
+    @Test
+    fun expiredWorkIsDroppedBeforeResolvingClient() = runBlocking {
+        // 没有客户端也返回 success：过期检查先于取得客户端（不会冷启动客户端）。
+        AppMcpAndroid.wakeTarget = null
+        val old = System.currentTimeMillis() - 61_000
+        assertEquals(ListenableWorker.Result.success(), worker("abc", old).doWork())
+        AppMcpAndroid.wakeTarget = target
+        assertEquals(ListenableWorker.Result.success(), worker("abc", old).doWork())
+        assertTrue(target.immediate.isEmpty() && target.awaited.isEmpty())
+    }
+
+    @Test
+    fun freshWorkIsProcessed() = runBlocking {
+        assertEquals(ListenableWorker.Result.success(), worker("fresh", System.currentTimeMillis() - 1_000).doWork())
+        assertEquals(listOf("app-mcp-wake:fresh"), target.awaited.toList())
+    }
+
+    @Test
+    fun maxAgeCanBeDisabled() = runBlocking {
+        AppMcpAndroid.wakeTokenMaxAgeMillis = 0
+        assertEquals(ListenableWorker.Result.success(), worker("old", 1L).doWork())
+        assertEquals(listOf("app-mcp-wake:old"), target.awaited.toList())
+    }
+
+    @Test
+    fun expiryRules() {
+        assertFalse("旧版本任务没有时间戳", WakeWorker.isExpired(-1, 1_000_000, 60_000))
+        assertFalse(WakeWorker.isExpired(1_000, 61_000, 60_000))
+        assertTrue(WakeWorker.isExpired(1_000, 61_001, 60_000))
+        assertFalse("时钟回拨按未过期处理", WakeWorker.isExpired(10_000, 5_000, 60_000))
+        assertFalse("<= 0 关闭检查", WakeWorker.isExpired(0, Long.MAX_VALUE, 0))
+    }
+
+    @Test
+    fun requestCarriesReceivedAt() {
+        val r = WakeReceiver.buildRequest("t", Build.VERSION_CODES.S, 1234L)
+        assertEquals(1234L, r.workSpec.input.getLong(WakeWorker.KEY_RECEIVED_AT, -1))
+        assertFalse(WakeReceiver.buildRequest("t").workSpec.input.keyValueMap.containsKey(WakeWorker.KEY_RECEIVED_AT))
+    }
+
+    @Test
+    fun linkActiveStatusTable() {
+        val active = setOf(
+            dev.appmcp.StateStatus.CONNECTED,
+            dev.appmcp.StateStatus.CONNECTING,
+            dev.appmcp.StateStatus.HANDSHAKING,
+            dev.appmcp.StateStatus.PENDING_PAIRING,
+            dev.appmcp.StateStatus.WAKING,
+        )
+        for (s in dev.appmcp.StateStatus.entries) {
+            assertEquals(s.name, s in active, AppMcpWakeTarget.isLinkActiveStatus(s))
+        }
     }
 }

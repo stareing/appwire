@@ -234,6 +234,11 @@ struct Raw {
 impl Raw {
     /// 连接并握手；`paired` 且 `sync` 时发送 tools/sync（未 toolsCurrent 时）、visibility、ready。
     async fn connect(hub: &Hub, instance_id: &str, extra: Value, tools: Value) -> Raw {
+        Self::connect_opts(hub, instance_id, extra, tools, true).await
+    }
+
+    /// 同 [`Raw::connect`]；`ready = false` 时不发 `app/ready`（握手未完成，之后用 [`Raw::ready`]）。
+    async fn connect_opts(hub: &Hub, instance_id: &str, extra: Value, tools: Value, ready: bool) -> Raw {
         let url = format!("ws://{}/app", hub.listen_addr().unwrap());
         let (ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
         let (mut sink, mut stream) = ws.split();
@@ -262,7 +267,9 @@ impl Raw {
             sink.send(Ws::text(note("resources/sync", json!({ "resources": [] })))).await.unwrap();
         }
         sink.send(Ws::text(note("app/visibility", json!({"visibility": "visible", "focused": false})))).await.unwrap();
-        sink.send(Ws::text(note("app/ready", json!({})))).await.unwrap();
+        if ready {
+            sink.send(Ws::text(note("app/ready", json!({})))).await.unwrap();
+        }
 
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Option<String>>();
         let (in_tx, in_rx) = mpsc::unbounded_channel();
@@ -294,6 +301,10 @@ impl Raw {
 
     fn close(&self) {
         let _ = self.out.send(None);
+    }
+
+    fn ready(&self) {
+        self.send(json!({"jsonrpc": "2.0", "method": "app/ready", "params": {}}));
     }
 
     async fn expect(&mut self, pred: impl Fn(&Value) -> bool) -> Value {
@@ -627,4 +638,234 @@ async fn exec_waker_from_config() {
     let mut cfg = config(0);
     cfg.waker = app_mcp_hub::WakerConfig::Exec(vec![]);
     assert!(Hub::start(cfg).await.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// 唤醒去重与令牌作废（spec/lifecycle.md §9）
+// ---------------------------------------------------------------------------
+
+/// 连接后带唤醒描述休眠并断开，等到工具变为可唤醒。
+async fn raw_dormant(hub: &Hub, instance_id: &str) {
+    let tools = raw_tools();
+    let mut raw = Raw::connect(hub, instance_id, json!({}), tools.clone()).await;
+    eventually("工具可用", || availability(hub, "raw.echo") == Some(Availability::Available)).await;
+    raw.send(json!({"jsonrpc": "2.0", "id": 1, "method": "app/sleep",
+        "params": {"reason": "idle", "toolsHash": raw_hash(&tools), "wake": {"kind": "uri", "target": "raw-app"}}}));
+    assert_eq!(raw.expect(|v| v["id"] == 1).await["result"]["accepted"], true);
+    raw.close();
+    eventually("工具可唤醒", || availability(hub, "raw.echo") == Some(Availability::Dormant)).await;
+}
+
+fn spawn_echo(hub: &Arc<Hub>) -> tokio::task::JoinHandle<Result<app_mcp_hub::CallOutcome, HubError>> {
+    let h = hub.clone();
+    tokio::spawn(async move { h.call_tool(CallRequest::new("raw.echo", json!({}))).await })
+}
+
+/// 回答下一个 `tools/invoke`。
+async fn answer_invoke(raw: &mut Raw) {
+    let inv = raw.expect(|v| v["method"] == "tools/invoke").await;
+    raw.send(json!({"jsonrpc": "2.0", "id": inv["id"], "result": {"data": "ok"}}));
+}
+
+/// 在 `ms` 毫秒内没有收到 `tools/invoke`。
+async fn no_invoke_within(raw: &mut Raw, ms: u64) -> bool {
+    timeout(Duration::from_millis(ms), raw.expect(|v| v["method"] == "tools/invoke"))
+        .await
+        .is_err()
+}
+
+fn wake_tokens(waker: &FakeWaker) -> Vec<String> {
+    waker.requests.lock().unwrap().iter().map(|r| r.token.clone()).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connected_instance_not_woken_and_concurrent_calls_share_one_wake() {
+    let hub = Arc::new(Hub::start(config(0)).await.unwrap());
+    let waker = Arc::new(FakeWaker::default());
+    hub.set_waker(waker.clone());
+
+    // 已连接：直接派发，不唤醒
+    let mut raw = Raw::connect(&hub, "d1", json!({}), raw_tools()).await;
+    eventually("工具可用", || availability(&hub, "raw.echo") == Some(Availability::Available)).await;
+    let call = spawn_echo(&hub);
+    answer_invoke(&mut raw).await;
+    assert!(call.await.unwrap().unwrap().result.is_ok());
+    assert!(wake_tokens(&waker).is_empty());
+    raw.close();
+    eventually("实例断开", || availability(&hub, "raw.echo") != Some(Availability::Available)).await;
+
+    // 休眠：三个并发调用只激活一次
+    raw_dormant(&hub, "d1").await;
+    let calls: Vec<_> = (0..3).map(|_| spawn_echo(&hub)).collect();
+    eventually("唤醒发出", || wake_tokens(&waker).len() == 1).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let tokens = wake_tokens(&waker);
+    assert_eq!(tokens.len(), 1, "并发调用应合并为一次唤醒");
+    let mut raw = Raw::connect(&hub, "d1", json!({"launchToken": tokens[0], "wakeReason": "os-activation"}), raw_tools()).await;
+    for _ in 0..3 {
+        answer_invoke(&mut raw).await;
+    }
+    for c in calls {
+        let out = c.await.unwrap().unwrap();
+        assert!(out.result.is_ok());
+        assert_eq!(out.instance_id.as_deref(), Some("d1"));
+    }
+    assert_eq!(wake_tokens(&waker).len(), 1);
+    raw.close();
+}
+
+/// 唤醒发出后实例因可见回连先连上：唤醒被认领、令牌作废；之后携带旧令牌的握手不认领新的唤醒。
+#[tokio::test(flavor = "multi_thread")]
+async fn wake_claimed_by_visible_reconnect_voids_token() {
+    let mut cfg = config(0);
+    cfg.dormant_replaced_by_new_instance = false;
+    let hub = Arc::new(Hub::start(cfg).await.unwrap());
+    let waker = Arc::new(FakeWaker::default());
+    hub.set_waker(waker.clone());
+    raw_dormant(&hub, "v1").await;
+
+    let call = spawn_echo(&hub);
+    eventually("唤醒发出", || wake_tokens(&waker).len() == 1).await;
+    let old = wake_tokens(&waker)[0].clone();
+    // 可见回连（不带令牌）
+    let mut raw = Raw::connect(&hub, "v1", json!({"wakeReason": "visible"}), raw_tools()).await;
+    answer_invoke(&mut raw).await;
+    assert_eq!(call.await.unwrap().unwrap().instance_id.as_deref(), Some("v1"));
+    assert!(hub.status().apps.iter().all(|a| a.state != app_mcp_hub::AppState::Waking), "唤醒应已结束");
+
+    // 再休眠、再唤醒：新令牌
+    let tools = raw_tools();
+    raw.send(json!({"jsonrpc": "2.0", "id": 7, "method": "app/sleep",
+        "params": {"reason": "idle", "toolsHash": raw_hash(&tools), "wake": {"kind": "uri", "target": "raw-app"}}}));
+    assert_eq!(raw.expect(|v| v["id"] == 7).await["result"]["accepted"], true);
+    raw.close();
+    eventually("工具可唤醒", || availability(&hub, "raw.echo") == Some(Availability::Dormant)).await;
+    let call = spawn_echo(&hub);
+    eventually("第二次唤醒", || wake_tokens(&waker).len() == 2).await;
+    let new = wake_tokens(&waker)[1].clone();
+    assert_ne!(old, new);
+
+    // 旧令牌（已作废）：另一个实例带着它连上，不认领
+    let mut stale = Raw::connect(&hub, "v2", json!({"launchToken": old, "wakeReason": "os-activation"}), raw_tools()).await;
+    assert!(no_invoke_within(&mut stale, 300).await);
+    assert!(!call.is_finished());
+    // 新令牌：认领并派发
+    let mut fresh = Raw::connect(&hub, "v3", json!({"launchToken": new, "wakeReason": "os-activation"}), raw_tools()).await;
+    answer_invoke(&mut fresh).await;
+    assert_eq!(call.await.unwrap().unwrap().instance_id.as_deref(), Some("v3"));
+    stale.close();
+    fresh.close();
+}
+
+/// 令牌过期（`wake_token_ttl`）：携带它的其他实例不认领；同一实例回连仍认领。
+#[tokio::test(flavor = "multi_thread")]
+async fn expired_wake_token_is_not_accepted() {
+    let mut cfg = config(0);
+    cfg.dormant_replaced_by_new_instance = false;
+    cfg.wake_token_ttl = Duration::from_millis(100);
+    let hub = Arc::new(Hub::start(cfg).await.unwrap());
+    let waker = Arc::new(FakeWaker::default());
+    hub.set_waker(waker.clone());
+    raw_dormant(&hub, "e1").await;
+
+    let call = spawn_echo(&hub);
+    eventually("唤醒发出", || wake_tokens(&waker).len() == 1).await;
+    let token = wake_tokens(&waker)[0].clone();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let mut late = Raw::connect(&hub, "e2", json!({"launchToken": token, "wakeReason": "os-activation"}), raw_tools()).await;
+    assert!(no_invoke_within(&mut late, 300).await);
+    assert!(!call.is_finished());
+    let mut raw = Raw::connect(&hub, "e1", json!({"wakeReason": "visible"}), raw_tools()).await;
+    answer_invoke(&mut raw).await;
+    assert_eq!(call.await.unwrap().unwrap().instance_id.as_deref(), Some("e1"));
+    assert_eq!(wake_tokens(&waker).len(), 1);
+    late.close();
+    raw.close();
+}
+
+/// 被唤醒的休眠实例被新实例 ID 替换（App 被用户重新打开）：新实例就绪即认领唤醒。
+#[tokio::test(flavor = "multi_thread")]
+async fn wake_claimed_by_replacing_instance() {
+    let hub = Arc::new(Hub::start(config(0)).await.unwrap());
+    let waker = Arc::new(FakeWaker::default());
+    hub.set_waker(waker.clone());
+    raw_dormant(&hub, "p1").await;
+
+    let call = spawn_echo(&hub);
+    eventually("唤醒发出", || wake_tokens(&waker).len() == 1).await;
+    let mut raw = Raw::connect(&hub, "p2", json!({"wakeReason": "cold-start"}), raw_tools()).await;
+    answer_invoke(&mut raw).await;
+    assert_eq!(call.await.unwrap().unwrap().instance_id.as_deref(), Some("p2"));
+    assert_eq!(wake_tokens(&waker).len(), 1);
+    raw.close();
+}
+
+/// 放行审批的开关：`open()` 之前审批一直挂起。
+#[derive(Default)]
+struct Gate {
+    asked: std::sync::atomic::AtomicUsize,
+    open: tokio::sync::Notify,
+}
+
+#[async_trait]
+impl app_mcp_hub::ApprovalHandler for Gate {
+    async fn approve(&self, _req: app_mcp_hub::ApprovalRequest) -> bool {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.open.notified().await;
+        true
+    }
+}
+
+fn approval_cfg() -> HubConfig {
+    let mut cfg = config(0);
+    cfg.approval = app_mcp_hub::ApprovalPolicy {
+        require_at_or_above: Some(app_mcp_hub::Risk::Read),
+        timeout: Some(Duration::from_secs(10)),
+    };
+    cfg
+}
+
+/// 路由决定唤醒后（审批期间）实例已回连并就绪：不再激活，直接派发。
+#[tokio::test(flavor = "multi_thread")]
+async fn no_activation_when_instance_reconnected_before_wake() {
+    let hub = Arc::new(Hub::start(approval_cfg()).await.unwrap());
+    let waker = Arc::new(FakeWaker::default());
+    hub.set_waker(waker.clone());
+    let gate = Arc::new(Gate::default());
+    hub.set_approval_handler(gate.clone());
+    raw_dormant(&hub, "a1").await;
+
+    let call = spawn_echo(&hub);
+    eventually("审批中", || gate.asked.load(std::sync::atomic::Ordering::SeqCst) == 1).await;
+    let mut raw = Raw::connect(&hub, "a1", json!({"wakeReason": "visible"}), raw_tools()).await;
+    eventually("工具可用", || availability(&hub, "raw.echo") == Some(Availability::Available)).await;
+    gate.open.notify_one();
+    answer_invoke(&mut raw).await;
+    assert_eq!(call.await.unwrap().unwrap().instance_id.as_deref(), Some("a1"));
+    assert!(wake_tokens(&waker).is_empty(), "已连接的实例不应被唤醒");
+    raw.close();
+}
+
+/// 同上，但实例握手尚未完成：不激活，等它的 `app/ready` 后派发。
+#[tokio::test(flavor = "multi_thread")]
+async fn no_activation_while_instance_handshaking() {
+    let hub = Arc::new(Hub::start(approval_cfg()).await.unwrap());
+    let waker = Arc::new(FakeWaker::default());
+    hub.set_waker(waker.clone());
+    let gate = Arc::new(Gate::default());
+    hub.set_approval_handler(gate.clone());
+    raw_dormant(&hub, "h1").await;
+
+    let call = spawn_echo(&hub);
+    eventually("审批中", || gate.asked.load(std::sync::atomic::Ordering::SeqCst) == 1).await;
+    let mut raw = Raw::connect_opts(&hub, "h1", json!({"wakeReason": "visible"}), raw_tools(), false).await;
+    gate.open.notify_one();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!call.is_finished());
+    assert!(wake_tokens(&waker).is_empty(), "握手中的实例不应被唤醒");
+    raw.ready();
+    answer_invoke(&mut raw).await;
+    assert_eq!(call.await.unwrap().unwrap().instance_id.as_deref(), Some("h1"));
+    assert!(wake_tokens(&waker).is_empty());
+    raw.close();
 }
