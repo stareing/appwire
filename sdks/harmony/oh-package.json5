@@ -1,0 +1,11 @@
+{
+  "name": "@app-mcp/harmony",
+  "version": "0.1.0",
+  "description": "app-mcp 鸿蒙 ArkTS SDK：把 App 内的业务动作以 MCP 工具暴露给模型（Node-API 原生模块 + UIAbility 生命周期集成）",
+  "main": "Index.ets",
+  "author": "",
+  "license": "MIT OR Apache-2.0",
+  "dependencies": {
+    "libapp_mcp_harmony.so": "file:./src/main/cpp/types/libapp_mcp_harmony"
+  }
+}

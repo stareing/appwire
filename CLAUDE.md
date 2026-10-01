@@ -1,6 +1,9 @@
 # app-mcp 仓库指南
 
-把 App 内的业务动作以 MCP 工具暴露给模型。理念「万物皆工具」见 `README.md`（英文为主，其他语言在 `docs/README.<lang>.md`，修改理念或概览时两份同步）；总体设计见 `app-mcp-plan.md`，当前阶段为 **M1**（第 15 节）。
+把 App 内的业务动作以 MCP 工具暴露给模型。理念「万物皆工具」见 `README.md`（英文为主，其他语言在 `docs/README.<lang>.md`：zh-CN、zh-TW、ja、ko、es、pt-BR、fr、de、ru、it；修改理念或概览时各语言版本同步）；总体设计见 `app-mcp-plan.md`，当前阶段为 **M1**（第 15 节）。
+
+对外品牌名为 **AppWire**（仓库 `github.com/stareing/appwire`）；包名、crate 名、二进制与协议标识符仍沿用工作名 `app-mcp`。
+面向用户的文档与包描述（npm / crates.io / PyPI / NuGet / pub.dev）用英文、以 AppWire 称呼项目，便于检索；`llms.txt` 与 README 首段保持一致。
 
 ## 目录结构（M1）
 
@@ -15,6 +18,7 @@ crates/
   core/                 sans-IO 客户端核心（状态机，无 I/O）
   manifest/             清单类型、解析、校验、目录加载
   hub/                  Agent 端 Hub 库（厂商嵌入）：注册表、路由、总览、App 连接、上游聚合、MCP 出口、格式导出
+                        （cargo features mcp-server / upstream / schema-validation，默认全开；移动端精简见 spec/hub-api.md 3.10）
   host/                 app-mcp-host 可执行程序（Hub 之上的命令行薄壳）
   native/               原生共用运行时：后台线程驱动核心、WebSocket 连接、回调分发（Rust App 直接用）
   tauri-plugin/         tauri-plugin-app-mcp：Tauri v2 插件（独立 workspace，Linux 需 webkit2gtk-4.1）
@@ -26,6 +30,8 @@ bindings/
   hub-c/                Hub SDK 的 C ABI（include/app_mcp_hub.h）
   hub-uniffi/           Hub SDK 的 uniffi 绑定 → Kotlin、Swift、Python
   hub-node/             Hub SDK 的 napi-rs 绑定 → @app-mcp/hub
+  harmony/              鸿蒙 Node-API 模块（napi-ohos 编译 bindings/node 同一份源码）→ libapp_mcp_harmony.so；
+                        独立 workspace（不在根 workspace），产物仍在根 target/
 packages/
   web/                  @app-mcp/web：浏览器 SDK（WASM 核心 + JS 驱动层 + WebSocket）
   react/                @app-mcp/react：useTool / useResource / ToolScope
@@ -40,6 +46,7 @@ sdks/
   python/               Python SDK
   swift/                Swift SDK
   dart/                 Dart（dart:ffi）SDK 与 Flutter 适配
+  harmony/              鸿蒙 ArkTS SDK（ohpm HAR 包 @app-mcp/harmony：UIAbility 前后台、Want 唤醒）
 examples/
   shop/                 React Demo：待办 + 购物车
   tauri/                Tauri 示例：页面工具 + Rust 工具（src-tauri 为独立 workspace）
@@ -59,6 +66,7 @@ e2e/                    端到端测试（集成阶段）
 | Swift | `bindings/uniffi` | `@MainActor` |
 | Python | `bindings/uniffi` | 可配置（Qt 信号、Tk `after`） |
 | Node / Electron | `bindings/node` | Node 事件循环（threadsafe function） |
+| ArkTS（HarmonyOS NEXT） | `bindings/harmony` | 创建客户端的 ArkTS 线程（threadsafe function；在 UIAbility / AbilityStage 创建即主线程） |
 
 ## 契约文件（修改需谨慎）
 
@@ -97,6 +105,11 @@ cargo clippy --workspace --all-targets
 
 # WASM（wasm-bindgen CLI 在 ~/.cargo/bin，版本 0.2.129，与 Cargo.toml 固定版本一致）
 pnpm --filter @app-mcp/web build:wasm
+
+# 鸿蒙（OpenHarmony SDK 6.0 / API 20 装在 ~/sdk/ohos/sdk，见 sdks/harmony/README.md）
+OHOS_NDK_HOME=~/sdk/ohos/sdk sdks/harmony/scripts/build-native.sh arm64-v8a x86_64
+node sdks/harmony/scripts/arkts-check.cjs        # ArkTS 类型检查 + ArkTSLinter
+node sdks/harmony/tests/run.cjs                  # 封装层单元测试（假原生模块，Node 上运行）
 
 # JS
 pnpm -r test

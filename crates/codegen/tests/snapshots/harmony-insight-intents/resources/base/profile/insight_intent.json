@@ -1,0 +1,25 @@
+{
+  "insightIntentsSrcEntry": [
+    {
+      "srcEntry": "./ets/insightintents/ShopCatalogSearchIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/ShopCartAddIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/ShopCartRemoveItemIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/ShopCartCheckoutIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/ShopTodosClearIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/ShopOrdersExportIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/ShopStatsSummaryIntent.ets"
+    }
+  ]
+}

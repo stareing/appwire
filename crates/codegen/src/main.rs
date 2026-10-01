@@ -1,4 +1,5 @@
-//! `app-mcp-codegen --manifest app-mcp.json --target <target> --out <dir> [--package <name>] [--module <name>]`
+//! `app-mcp-codegen --manifest app-mcp.json --target <target> --out <dir> [--package <name>] [--module <name>]
+//! [--intent-domain <垂域>] [--ability <UIAbility>]`
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -14,7 +15,7 @@ struct Args {
     /// 清单文件路径。
     #[arg(long)]
     manifest: PathBuf,
-    /// 生成目标：swift-app-intents、kotlin-appfunctions、windows-app-actions、
+    /// 生成目标：swift-app-intents、kotlin-appfunctions、windows-app-actions、harmony-insight-intents、
     /// typescript、csharp、swift、kotlin、python、dart。
     #[arg(long)]
     target: Target,
@@ -27,6 +28,12 @@ struct Args {
     /// 模块名（生成类型的前缀，如 Shop → ShopToolHandlers），缺省由 appId 推导。
     #[arg(long)]
     module: Option<String>,
+    /// 鸿蒙意图垂域（harmony-insight-intents），缺省 ToolsDomain。
+    #[arg(long)]
+    intent_domain: Option<String>,
+    /// 鸿蒙意图绑定的 UIAbility 名（harmony-insight-intents），缺省 EntryAbility。
+    #[arg(long)]
+    ability: Option<String>,
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
@@ -35,6 +42,8 @@ fn run(args: Args) -> anyhow::Result<()> {
     let options = Options {
         package: args.package,
         module: args.module,
+        intent_domain: args.intent_domain,
+        ability: args.ability,
     };
     let (output, manifest_warnings) = generate_from_str(&text, args.target, &options)
         .with_context(|| format!("清单 {} 无效", args.manifest.display()))?;

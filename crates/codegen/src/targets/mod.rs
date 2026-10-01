@@ -1,10 +1,11 @@
 //! 各生成目标。类型化接口（typescript、csharp、swift、kotlin、python、dart）与原生意图框架
-//! （swift-app-intents、kotlin-appfunctions、windows-app-actions）共用 [`crate::schema`] 的模型。
+//! （swift-app-intents、kotlin-appfunctions、windows-app-actions、harmony-insight-intents）共用 [`crate::schema`] 的模型。
 
 pub mod app_intents;
 pub mod appfunctions;
 pub mod csharp;
 pub mod dart;
+pub mod harmony;
 pub mod kotlin;
 pub mod python;
 pub mod swift;
@@ -38,6 +39,12 @@ pub fn generate(
         Target::WindowsAppActions => {
             windows::generate(model, &csharp_namespace(model, options), warnings)
         }
+        Target::HarmonyInsightIntents => harmony::generate(
+            model,
+            options.intent_domain.as_deref().unwrap_or(harmony::DEFAULT_DOMAIN),
+            options.ability.as_deref().unwrap_or(harmony::DEFAULT_ABILITY),
+            warnings,
+        ),
     }
 }
 

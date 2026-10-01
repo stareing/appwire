@@ -1,0 +1,7 @@
+{
+  "module": {
+    "name": "app_mcp_harmony",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "2in1"]
+  }
+}

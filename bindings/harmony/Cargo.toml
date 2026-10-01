@@ -1,0 +1,36 @@
+[package]
+name = "app-mcp-harmony"
+description = "AppWire Node-API module for HarmonyOS NEXT / OpenHarmony"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/stareing/appwire"
+homepage = "https://github.com/stareing/appwire"
+publish = false
+
+# 独立 workspace：napi-ohos 的构建脚本在 ohos 目标上要求 OpenHarmony NDK（OHOS_NDK_HOME），
+# 不放进根 workspace，避免 `cargo test --workspace` 依赖 NDK。编译产物仍放在仓库根 target/（见 .cargo/config.toml）。
+[workspace]
+
+[lib]
+# 模块名由 napi-derive-ohos 取 crate 名（app_mcp_harmony），ArkTS 中 `import ... from 'libapp_mcp_harmony.so'`。
+crate-type = ["cdylib"]
+# Node-API 符号由加载模块的 ArkTS 运行时（libace_napi.z.so）提供，单元测试可执行文件无法链接 / 加载。
+test = false
+doctest = false
+
+[dependencies]
+app-mcp-native = { path = "../../crates/native" }
+app-mcp-protocol = { path = "../../crates/protocol" }
+serde_json = "1"
+napi-ohos = { version = "1.2", default-features = false, features = ["napi8", "serde-json"] }
+napi-derive-ohos = "1.2"
+
+[build-dependencies]
+napi-build-ohos = "1.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

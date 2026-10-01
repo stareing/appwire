@@ -1,0 +1,23 @@
+# 与仓库其他 crate 共用根目录 target/（根分区空间紧张，不放 ~/.cache）。
+[build]
+target-dir = "../../target"
+
+# OpenHarmony NDK 自带按目标命名的 clang 包装脚本（<NDK>/native/llvm/bin），需在 PATH 中；
+# 另需环境变量 OHOS_NDK_HOME=<NDK 根目录>（napi-build-ohos 据此链接 libace_napi.z.so）。见 README。
+[target.aarch64-unknown-linux-ohos]
+linker = "aarch64-unknown-linux-ohos-clang"
+
+[target.armv7-unknown-linux-ohos]
+linker = "armv7-unknown-linux-ohos-clang"
+
+[target.x86_64-unknown-linux-ohos]
+linker = "x86_64-unknown-linux-ohos-clang"
+
+# 依赖中的 C 代码（ring）用同一套 NDK 编译器。
+[env]
+CC_aarch64_unknown_linux_ohos = "aarch64-unknown-linux-ohos-clang"
+CC_armv7_unknown_linux_ohos = "armv7-unknown-linux-ohos-clang"
+CC_x86_64_unknown_linux_ohos = "x86_64-unknown-linux-ohos-clang"
+AR_aarch64_unknown_linux_ohos = "llvm-ar"
+AR_armv7_unknown_linux_ohos = "llvm-ar"
+AR_x86_64_unknown_linux_ohos = "llvm-ar"

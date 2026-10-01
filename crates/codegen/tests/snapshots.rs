@@ -136,9 +136,14 @@ fn snapshot_windows_app_actions() {
 }
 
 #[test]
+fn snapshot_harmony_insight_intents() {
+    check_target(Target::HarmonyInsightIntents);
+}
+
+#[test]
 fn every_target_has_a_snapshot_test() {
     // 新增 target 时提醒补快照测试
-    assert_eq!(Target::ALL.len(), 9);
+    assert_eq!(Target::ALL.len(), 10);
 }
 
 #[test]

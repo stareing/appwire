@@ -1,7 +1,8 @@
 //! app-mcp-codegen：从静态清单 `app-mcp.json` 生成
 //!
 //! - 各平台原生"App 能力声明"框架的代码：Apple App Intents（Swift）、Android AppFunctions（Kotlin）、
-//!   Windows App Actions（Action 定义 JSON + C# 处理骨架）；
+//!   Windows App Actions（Action 定义 JSON + C# 处理骨架）、鸿蒙意图框架（InsightIntent 装饰器执行器 +
+//!   insight_intent.json + ArkTS 类型）；
 //! - 各语言的类型化接口（参数类型 + handler 接口）：TypeScript、C#、Swift、Kotlin、Python、Dart。
 //!
 //! JSON Schema → 类型的映射在 [`schema`] 中一处实现，各 target 共用。
@@ -26,6 +27,7 @@ pub enum Target {
     SwiftAppIntents,
     KotlinAppFunctions,
     WindowsAppActions,
+    HarmonyInsightIntents,
     TypeScript,
     CSharp,
     Swift,
@@ -35,10 +37,11 @@ pub enum Target {
 }
 
 impl Target {
-    pub const ALL: [Target; 9] = [
+    pub const ALL: [Target; 10] = [
         Target::SwiftAppIntents,
         Target::KotlinAppFunctions,
         Target::WindowsAppActions,
+        Target::HarmonyInsightIntents,
         Target::TypeScript,
         Target::CSharp,
         Target::Swift,
@@ -52,6 +55,7 @@ impl Target {
             Target::SwiftAppIntents => "swift-app-intents",
             Target::KotlinAppFunctions => "kotlin-appfunctions",
             Target::WindowsAppActions => "windows-app-actions",
+            Target::HarmonyInsightIntents => "harmony-insight-intents",
             Target::TypeScript => "typescript",
             Target::CSharp => "csharp",
             Target::Swift => "swift",
@@ -89,6 +93,10 @@ pub struct Options {
     pub package: Option<String>,
     /// 模块名（PascalCase 前缀，如 `Shop` → `ShopToolHandlers`）。缺省时由 appId 推导。
     pub module: Option<String>,
+    /// 鸿蒙意图垂域（`harmony-insight-intents`），缺省 `ToolsDomain`。
+    pub intent_domain: Option<String>,
+    /// 鸿蒙意图绑定的 UIAbility 名（`harmony-insight-intents`），缺省 `EntryAbility`。
+    pub ability: Option<String>,
 }
 
 /// 一个生成的文件。

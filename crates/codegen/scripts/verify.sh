@@ -484,6 +484,24 @@ EOF
   record NOTE windows-app-actions "未在 Windows 上注册运行（需要 MSIX 包标识）"
 fi
 
+# ---------------------------------------------------------------- 鸿蒙意图框架
+# 用 OpenHarmony SDK 的 ohos-typescript + ArkTSLinter 检查生成的 ArkTS（含 @app-mcp/harmony 与 Kit 声明），
+# 再用 ets-loader 的意图装饰器校验规则（含 ajv 编译 parameters）检查每个执行器。
+if want harmony-insight-intents; then
+  D="$WORK/harmony"
+  OHOS_SDK_ETS="${OHOS_SDK_ETS:-$HOME/sdk/ohos/sdk/ets}"
+  if command -v node >/dev/null && [[ -d "$OHOS_SDK_ETS/build-tools/ets-loader" ]]; then
+    export OHOS_SDK_ETS
+    gen harmony-insight-intents "$D/src/main"
+    cp "$STUBS/HarmonyUsage.ets" "$D/src/main/ets/Usage.ets"
+    run_step harmony-arkts node "$REPO_DIR/sdks/harmony/scripts/arkts-check.cjs" "$D/src/main/ets"
+    run_step harmony-intents node "$CRATE_DIR/scripts/harmony-intents-check.cjs" "$D/src/main"
+  else
+    record SKIP harmony-insight-intents "未找到 node 或 OpenHarmony SDK（OHOS_SDK_ETS）"
+  fi
+  record NOTE harmony-insight-intents "未用 hvigor 打包、未在鸿蒙设备上执行（无 DevEco 工具链与真机）"
+fi
+
 # ---------------------------------------------------------------- 结果
 echo
 echo "================ 验证结果 ================"

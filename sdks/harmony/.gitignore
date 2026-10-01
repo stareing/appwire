@@ -1,0 +1,4 @@
+# scripts/build-native.sh 的产物（预编译 .so，随 HAR 打包）
+/libs/
+/oh_modules/
+/build/

@@ -1,0 +1,3 @@
+工具 orders.export 的 /properties/filter：不支持一般形式的 `oneOf`，降级为原始 JSON
+工具 orders.export 的 /properties/template：不支持 `$ref`，降级为原始 JSON
+工具 todos.add：harmony-insight-intents：参数名 `is-urgent` 不是标识符，无法作为意图执行器属性，未生成意图，仍可作为 MCP 工具调用
