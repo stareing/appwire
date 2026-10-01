@@ -31,6 +31,33 @@ handler 与事件在 `AppMcpClientOptions.Dispatcher` 上执行。不设置时�
     **不会**注销。
 - `Dispose()` 会阻塞到原生后台线程结束，不要在 handler 内部同步调用。
 
+## 工具声明与结构化结果（可选，spec/protocol.md 3.2）
+
+```csharp
+client.RegisterTool("order.submit", "提交订单",
+    (args, ctx) => Task.FromResult<object?>(new ToolResult
+    {
+        Status = ToolResultStatus.Pending,           // Done（缺省）/ Pending / Partial / Noop
+        StateResource = "order.status",              // Pending 时可读取后续状态的资源名
+        Summary = "已提交，等待用户在 App 内确认",
+        Annotations = new ContentAnnotations { Audience = [ContentAudience.User] },
+    }),
+    new ToolOptions
+    {
+        Annotations = new ToolAnnotations { DestructiveHint = true, IdempotentHint = false, OpenWorldHint = true },
+        OutputSchemaJson = ToolSchema.For<OrderReceipt>(),
+    });
+```
+
+- `ToolOptions.Annotations`（`ToolAnnotations`：`Title` / `ReadOnlyHint` / `DestructiveHint` / `IdempotentHint` / `OpenWorldHint`）
+  是标准 MCP 工具注解，原样转发给 Agent；与旧写法 `ToolOptions.Risk` 同时给出时声明的字段逐个优先，缺少的按 `Risk` 推导。
+  AppWire 不据此拦截或放行调用。
+- `ToolOptions.OutputSchemaJson`：结果的 JSON Schema 文本；根类型不是 `object` 时 Hub 包装为 `{result: …}`。
+- handler 返回普通对象即 `Done` 结果；返回 `ToolResult`（`Data`、`Status`、`StateResource`、`Summary`、`Annotations`、`StateHints`）
+  时另带业务状态、摘要与内容标注。无返回值（`null` 且无 `Summary`、状态 `Done`）时 Hub 对模型输出固定文本"已完成"。
+- `ToolRegistration.Update(description, options)` 整体替换：`options` 中为 `null` 的 `Annotations` / `OutputSchemaJson` 表示清除该声明。
+- `ToolErrorKind.RateLimited` / `PayloadTooLarge` 由 Hub 产生（限流 / 超过大小上限），handler 不会收到，也不必抛出。
+
 ## Hub SDK（Agent 端）：`AppMcp.Hub`
 
 `src/AppMcp.Hub` 是 `bindings/hub-c`（`app_mcp_hub.h`）的 P/Invoke 封装，供助手厂商在自己的进程里嵌入 Hub：
@@ -68,6 +95,21 @@ var outcome = await hub.CallAsync("notes.add", new { text = "买牛奶" });  // 
 - `Status()` 返回运行状态 `HubStatusInfo`（监听、令牌策略、各 App 状态与最近错误、SDK 诊断上报，与 `GET /status` 相同；
   `GetStatus()` 返回原始 JSON）；`InstanceInfo.ConnectionId` 为 Hub 分配的连接 ID（与日志 `cid` 相同）。
   事件类型常量见 `HubEventTypes`，可用性常量见 `HubAvailability`。
+
+### 资源保护与结果约定（spec/hub-api.md 3.11）
+
+| `HubOptions` | 默认 | 说明 |
+|---|---|---|
+| `Limits.ToolRatePerMinute` / `ToolRateBurst` | 120 / 30 | 每（App, 工具）令牌桶；超出 → `RATE_LIMITED`；`0` 次/分钟不限 |
+| `Limits.AppRatePerMinute` / `AppRateBurst` | 600 / 60 | 每 App（所有工具合计）令牌桶 |
+| `Limits.MaxArgumentsBytes` / `MaxResultBytes` / `MaxResourceBytes` | 1 MiB / 4 MiB / 4 MiB | 超出 → `PAYLOAD_TOO_LARGE`（不截断）；`0` 不限 |
+| `OutputValidation` | `Log` | 结果与 outputSchema 不符时：`Off` 不校验 / `Log` 只记日志 / `Reject` 以 `HANDLER_ERROR` 结束 |
+
+- `HubLimits` 中为 `null` 的字段取默认值；限流时 `*Burst = 0` 启动失败。生效值见 `HubStatusInfo.Limits` / `OutputValidation`，
+  各 App 被拒绝次数见 `AppStatusInfo.RateLimited` / `TooLarge`，工具声明见 `AppStatusInfo.Tools`（`ToolDeclarationInfo`）。
+- 被拒绝的调用照常返回 `CallOutcome`，`Error.Kind` 为 `HubError.RateLimited` / `HubError.PayloadTooLarge`（`Details` 字段见 spec/protocol.md 第 4 节）。
+- App 的声明：`HubToolInfo.Annotations`（Agent 实际看到的注解：声明优先、缺少的按 risk 推导）、`HubToolInfo.OutputSchema`、
+  `ApprovalRequest.Annotations`；结构化结果：`CallOutcome.Status`（`HubResultStatus`）、`StateResource`、`Summary`、`Annotations`。
 
 ### 休眠与唤醒（spec/hub-api.md 3.5）
 

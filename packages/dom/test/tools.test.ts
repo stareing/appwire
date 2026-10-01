@@ -170,6 +170,63 @@ describe('启用状态', () => {
     expect('risk' in u[0]! && u[0]!.risk === undefined).toBe(true)
   })
 
+  it('标准注解属性与 data-mcp-output-schema 传给 SDK；缺省时不声明', () => {
+    document.body.innerHTML = `
+      <button data-mcp-tool="a" data-mcp-desc="a" data-mcp-readonly data-mcp-open-world="false">a</button>
+      <button data-mcp-tool="b" data-mcp-desc="b" data-mcp-risk="write" data-mcp-destructive="TRUE" data-mcp-idempotent="true"
+        data-mcp-output-schema='{"type":"object","properties":{"id":{"type":"string"}}}'>b</button>
+      <button data-mcp-tool="c" data-mcp-desc="c">c</button>`
+    detach = attachDom(app)
+    expect(app.tools.get('a')!.def.annotations).toEqual({ readOnlyHint: true, openWorldHint: false })
+    expect(app.tools.get('a')!.def.outputSchema).toBeUndefined()
+    const b = app.tools.get('b')!.def
+    expect(b.risk).toBe('write')
+    expect(b.annotations).toEqual({ destructiveHint: true, idempotentHint: true })
+    expect(b.outputSchema).toEqual({ type: 'object', properties: { id: { type: 'string' } } })
+    const c = app.tools.get('c')!.def
+    expect('annotations' in c).toBe(false)
+    expect('outputSchema' in c).toBe(false)
+  })
+
+  it('非法注解取值与非 JSON 对象的 output schema 只警告并忽略', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    document.body.innerHTML = `
+      <button data-mcp-tool="a" data-mcp-desc="a" data-mcp-readonly="yes" data-mcp-idempotent data-mcp-output-schema="{oops">a</button>
+      <button data-mcp-tool="b" data-mcp-desc="b" data-mcp-output-schema="[1]">b</button>`
+    detach = attachDom(app)
+    expect(app.tools.get('a')!.def.annotations).toEqual({ idempotentHint: true })
+    expect(app.tools.get('a')!.def.outputSchema).toBeUndefined()
+    expect(app.tools.get('b')!.def.outputSchema).toBeUndefined()
+    const messages = warn.mock.calls.map((c) => String(c[0])).join('\n')
+    expect(messages).toContain('data-mcp-readonly="yes"')
+    expect(messages).toMatch(/工具 a：data-mcp-output-schema 不是 JSON 对象/)
+    expect(messages).toMatch(/工具 b：data-mcp-output-schema 不是 JSON 对象/)
+  })
+
+  it('注解与 output schema 变化时只提交变化，移除时显式传 undefined', async () => {
+    document.body.innerHTML = `<button data-mcp-tool="a" data-mcp-desc="a" data-mcp-readonly data-mcp-output-schema='{"type":"string"}'>a</button>`
+    detach = attachDom(app)
+    const t = app.tools.get('a')!
+    const btn = document.querySelector('button')!
+    document.body.appendChild(document.createElement('p')).textContent = '无关变化'
+    btn.setAttribute('data-mcp-readonly', '')
+    await settle()
+    expect(t.updates).toHaveLength(0)
+
+    btn.setAttribute('data-mcp-readonly', 'false')
+    await settle()
+    expect(t.updates).toEqual([{ annotations: { readOnlyHint: false } }])
+
+    btn.removeAttribute('data-mcp-readonly')
+    btn.removeAttribute('data-mcp-output-schema')
+    await settle()
+    expect(t.updates).toHaveLength(2)
+    const last = t.updates[1]!
+    expect('annotations' in last && last.annotations === undefined).toBe(true)
+    expect('outputSchema' in last && last.outputSchema === undefined).toBe(true)
+    expect(t.current.annotations).toBeUndefined()
+  })
+
   it('同名无 key 的多个元素：使用第一个可用的', async () => {
     document.body.innerHTML = `
       <button data-mcp-tool="save" data-mcp-desc="保存" hidden id="m">移动端</button>

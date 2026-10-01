@@ -67,6 +67,34 @@ appMcp.tool('cart.clear', { description: '清空购物车', handler: () => cart.
 
 完整示例见 `examples/tauri`（页面工具 `counter.*` + Rust 工具 `window.title`）。
 
+### 工具声明与结果（可选）
+
+以下均为可选，缺省时与之前完全相同；规则见 `spec/protocol.md` 3.2。
+
+- **Rust 工具**：`register_tool_with(spec, ToolOptions { annotations, output_schema_json }, handler)` 声明标准 MCP
+  工具注解（`ToolAnnotations`：`title` / `read_only_hint` / `destructive_hint` / `idempotent_hint` / `open_world_hint`）与结果的
+  JSON Schema 文本（根类型不是 `object` 时由 Hub 包装为 `{ result: <schema> }`）；`ToolHandle::update_with(spec, options)`
+  整体替换，选项中的 `None` 表示清除声明。注解与 `risk` 同时给出时声明的字段逐个优先，缺少的按 `risk` 推导；注解原样交给
+  Agent，本库不据此放行或拦截调用（由 Agent 决定，高风险操作的确认在 App 内）。
+- **调用结果**：`call.complete_with(CallResult { data_json, state_hints, status, state_resource, summary, annotations })`，
+  `status` 为 `ResultStatus::{Done, Pending, Partial, Noop}`（缺省 `Done`），`annotations` 为 `ContentAnnotations`。
+  `data_json` 为 `None`（无返回值）且没有 `summary`、状态为 `Done` 时，Hub 对模型输出固定文本"已完成"。
+- **页面工具**：与 `@app-mcp/web` 相同（`annotations`、`outputSchema`，handler 返回 `{ data, status?, stateResource?, summary?, annotations? }`），
+  插件原样转给 Rust 侧；结果中的 `status` / `annotations` 取值不合法时该次调用以 `HANDLER_ERROR` 结束。
+
+```rust
+use tauri_plugin_app_mcp::{CallResult, ResultStatus, ToolAnnotations, ToolOptions};
+
+let options = ToolOptions {
+    annotations: Some(ToolAnnotations { read_only_hint: Some(false), idempotent_hint: Some(true), ..Default::default() }),
+    output_schema_json: Some(r#"{"type":"object","properties":{"title":{"type":"string"}}}"#.into()),
+};
+app_mcp.client().register_tool_with(ToolSpec::new("window.title", "设置窗口标题"), options, Arc::new(SetTitle))?;
+
+// handler 内：
+let _ = call.complete_with(CallResult { status: ResultStatus::Noop, summary: Some("标题未变化".into()), ..Default::default() });
+```
+
 ### Builder 选项
 
 | 方法 | 默认 | 说明 |

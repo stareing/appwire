@@ -146,6 +146,8 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 | 防火墙 | 说明：只监听回环，回环连接不经入站防火墙规则 |
 | 令牌与鉴权 | 令牌策略（browser / all / off）、令牌文件是否存在及权限 |
 | App 实例 | 经 IPC（IPC 关闭时 TCP + 令牌）读 `/status`：各 App 在线 / 休眠 / 唤醒中、实例连接 ID 与 pid、最近错误 |
+| 工具声明 | 逐个列出每个工具的 `risk` 与 Agent 实际看到的 MCP 注解（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` / `title`），注明是 App 声明的还是按 `risk` 推导的、是否有 `outputSchema`；可据此配置 Agent 的放行规则（按工具全名）。`--json` 的 `details` 按 App 给出 |
+| 资源保护 | 限流与大小上限的当前策略、`outputSchema` 核对方式，以及各 App 启动以来被 `RATE_LIMITED` / `PAYLOAD_TOO_LARGE` 拒绝的次数（有拒绝时为注意）；运行中的 Host 版本较旧时跳过 |
 | SDK 上报 | SDK 在连接恢复后上报的此前问题（如浏览器拦截 `BLOCKED_*`）。被拦截期间页面无法连接 Host，Host 无从得知（spec/protocol.md 10.2） |
 | Android adb reverse | `adb` 在 PATH 中时运行 `adb reverse --list`（5 秒超时），检查设备端 7717 是否转发到本机实际端口 |
 
@@ -184,7 +186,11 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
     "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"], "env": {} }
   },
   "lifecycle": { "leaseMs": 60000, "wakeTimeoutMs": 15000, "wakeFromLaunch": false, "waker": "system" },
-  "tools": { "exposure": "auto", "threshold": 40 },
+  "tools": { "exposure": "auto", "threshold": 40, "outputValidation": "log" },
+  "limits": {
+    "toolRatePerMinute": 120, "toolRateBurst": 30, "appRatePerMinute": 600, "appRateBurst": 60,
+    "maxArgumentsBytes": 1048576, "maxResultBytes": 4194304, "maxResourceBytes": 4194304
+  },
   "log": { "level": "info", "file": true, "maxBytes": 5242880, "keep": 3 }
 }
 ```
@@ -199,6 +205,27 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 Host 随即只向该 MCP 会话发 `notifications/tools/list_changed`。未列出的工具按全名仍可直接调用。`auto` 在 App 与上游工具总数
 超过 `tools.threshold`（默认 40）时渐进，否则全部列出（与旧行为相同）。
 
+`limits`（资源保护，spec/hub-api.md 3.11）：保护 App 与设备，超出时返回明确错误，不静默丢弃、不截断（错误码见 spec/protocol.md 第 4 节）。
+上表中的值即默认值，缺省字段取默认，`0` 表示不限；未知字段报错，`*PerMinute > 0` 而对应 `*Burst = 0` 时配置无效、启动失败。
+
+| 字段 | 命令行 | 含义 |
+|---|---|---|
+| `toolRatePerMinute` / `toolRateBurst` | `--tool-rate-limit` / `--tool-rate-burst` | 每个（App, 工具）的令牌桶：每分钟补充次数 / 最多可攒的突发次数 |
+| `appRatePerMinute` / `appRateBurst` | `--app-rate-limit` / `--app-rate-burst` | 每个 App（所有工具合计）的令牌桶 |
+| `maxArgumentsBytes` | `--max-arguments-bytes` | 调用参数（JSON）的字节上限 |
+| `maxResultBytes` | `--max-result-bytes` | 调用结果（含 `summary`）的字节上限；上游 MCP 服务器的结果同样适用 |
+| `maxResourceBytes` | `--max-resource-bytes` | 资源内容的字节上限 |
+
+- 被限流时调用返回 `RATE_LIMITED`（`data.retryAfterMs` 为建议等待毫秒数），不转发、不唤醒 App；参数超限返回 `PAYLOAD_TOO_LARGE`，同样不转发。
+- 结果超限返回 `PAYLOAD_TOO_LARGE`（`data.part = "result"`），此时调用**可能已在 App 内执行**，错误信息如实说明。
+- 唤醒另有每 App 每分钟上限 `--wake-rate-limit`（默认 6，spec/lifecycle.md 第 12 节）。
+
+`tools.outputValidation` / `--output-validation`：App 结果与其声明的 `outputSchema` 不符时，`"log"`（默认，只记 warn 日志、照常返回）/
+`"reject"`（调用以 `HANDLER_ERROR` 结束）/ `"off"`（不校验）。无返回值不校验。
+
+App 声明的工具注解与结果契约（`annotations`、`outputSchema`、结果的 `status` / `summary`，以及无返回值时对模型输出"已完成"）
+由 Host 如实传递，不据此拦截或确认调用，见 spec/protocol.md 3.2。
+
 `listen` 缺省为 `127.0.0.1:7717`（被占用时依次尝试 7737、7757）；显式设置时只绑定该地址。`http.addr`（旧的独立 MCP
 端口）已弃用：只在兼容期内需要时设置，Host 另开一个同样的监听器。`wsAddr` 是 `listen` 的旧名。
 
@@ -207,7 +234,9 @@ Host 随即只向该 MCP 会话发 `notifications/tools/list_changed`。未列�
 命令行（`serve` 与 `service install` 相同）：`--listen <ADDR>`、`--ipc-endpoint <ENDPOINT|none>`、`--http <ADDR>`（已弃用，兼容期的旧 MCP 端口）、`--http-allow-remote`、`--auth browser|all|off`、
 `--manifest <file>`（可重复）、`--manifest-dir <dir>`（可重复）、`--allow-origin <pattern>`（可重复）、
 `--upstream <name>=<命令行>`（可重复）、`--lease-ms`、`--wake-timeout-ms`、`--wake-from-launch`、
-`--waker system|none|'{"exec":[...]}'`、`--tool-exposure auto|progressive|all`、`--tool-exposure-threshold <N>`、`--log-level`、
+`--waker system|none|'{"exec":[...]}'`、`--tool-exposure auto|progressive|all`、`--tool-exposure-threshold <N>`、
+`--tool-rate-limit` / `--tool-rate-burst` / `--app-rate-limit` / `--app-rate-burst` / `--max-arguments-bytes` / `--max-result-bytes` /
+`--max-resource-bytes <N>`、`--output-validation off|log|reject`、`--log-level`、
 `--no-log-file`、`--config <file>`、`--home <dir>`。`app-mcp-host token` 打印令牌（`--regenerate` 重新生成）。
 
 ## 安全

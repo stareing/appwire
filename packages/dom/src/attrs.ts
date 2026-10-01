@@ -7,7 +7,7 @@
  *   `toolparamdescription`），同时出现时以标准属性为准。
  */
 
-import type { Activation, ErrorKind, Risk } from '@app-mcp/web'
+import type { Activation, ErrorKind, OutputSchema, Risk, ToolAnnotations } from '@app-mcp/web'
 
 export const ATTR = {
   tool: 'data-mcp-tool',
@@ -25,6 +25,11 @@ export const ATTR = {
   scope: 'data-mcp-scope',
   resource: 'data-mcp-resource',
   json: 'data-mcp-json',
+  readonly: 'data-mcp-readonly',
+  destructive: 'data-mcp-destructive',
+  idempotent: 'data-mcp-idempotent',
+  openWorld: 'data-mcp-open-world',
+  outputSchema: 'data-mcp-output-schema',
   /** 调用进行中时加在表单上（对应标准的 `:tool-form-active`），不在观察列表中。 */
   active: 'data-mcp-active',
 } as const
@@ -54,6 +59,11 @@ export const OBSERVED_ATTRIBUTES: string[] = [
   ATTR.scope,
   ATTR.resource,
   ATTR.json,
+  ATTR.readonly,
+  ATTR.destructive,
+  ATTR.idempotent,
+  ATTR.openWorld,
+  ATTR.outputSchema,
   WEBMCP.toolname,
   WEBMCP.tooldescription,
   WEBMCP.toolparamdescription,
@@ -140,4 +150,41 @@ export function parseList(v: string | undefined): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
+}
+
+/** 布尔注解属性 → 标准 MCP 工具注解字段（spec/protocol.md 第 3 节）。 */
+export const ANNOTATION_ATTRS: ReadonlyArray<readonly [attr: string, hint: Exclude<keyof ToolAnnotations, 'title'>]> = [
+  [ATTR.readonly, 'readOnlyHint'],
+  [ATTR.destructive, 'destructiveHint'],
+  [ATTR.idempotent, 'idempotentHint'],
+  [ATTR.openWorld, 'openWorldHint'],
+]
+
+/** 属性解析结果：缺省、取值或非法（附原始值，供告警）。 */
+export type AttrParse<T> = { kind: 'absent' } | { kind: 'value'; value: T } | { kind: 'invalid'; raw: string }
+
+const BOOLEAN_VALUES: Readonly<Record<string, boolean>> = { '': true, true: true, false: false }
+
+/**
+ * 布尔注解属性：按 HTML 布尔属性习惯，出现（空值或 `true`）为 true；`false` 显式声明为 false
+ * （覆盖由 `data-mcp-risk` 推导的值）；其他取值非法。
+ */
+export function parseBooleanAttr(el: Element, name: string): AttrParse<boolean> {
+  const raw = el.getAttribute(name)
+  if (raw === null) return { kind: 'absent' }
+  const value = BOOLEAN_VALUES[raw.trim().toLowerCase()]
+  return value === undefined ? { kind: 'invalid', raw } : { kind: 'value', value }
+}
+
+/** `data-mcp-output-schema`：JSON 对象形式的 JSON Schema；空值视为缺省，非 JSON 或非对象为非法。 */
+export function parseOutputSchemaAttr(el: Element): AttrParse<OutputSchema> {
+  const raw = attr(el, ATTR.outputSchema)
+  if (raw === undefined) return { kind: 'absent' }
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    const isObject = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+    return isObject ? { kind: 'value', value: parsed as OutputSchema } : { kind: 'invalid', raw }
+  } catch {
+    return { kind: 'invalid', raw }
+  }
 }

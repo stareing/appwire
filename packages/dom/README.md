@@ -37,10 +37,28 @@ detach() // 断开观察并注销全部由 DOM 声明的工具、资源与 scope
 | `data-mcp-title` | 标题。 |
 | `data-mcp-risk` | `read` / `write` / `destructive` / `payment` / `os-sensitive`，缺省 `write`。 |
 | `data-mcp-activation` | `headless` / `background` / `foreground`。 |
+| `data-mcp-readonly` / `data-mcp-destructive` / `data-mcp-idempotent` / `data-mcp-open-world` | 标准 MCP 工具注解 `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`，见下文。 |
+| `data-mcp-output-schema='{"type":"object",…}'` | 结果的 JSON Schema（MCP `outputSchema`），值为 JSON 对象。 |
 | `data-mcp-result="事件名"` | 等待元素上派发的 `CustomEvent(事件名)`，以 `event.detail` 作为结果。 |
 | `data-mcp-timeout="毫秒"` | 等待结果的超时，默认 10000，超时返回 `TIMEOUT`。 |
 | `data-mcp-hints="a,b"` | 调用成功后作为 `stateHints` 返回（提示模型哪些资源可能已变化）。 |
 | `data-mcp-key` / `data-mcp-label` | 集合条目，见下文。 |
+
+### 工具注解与结果 schema
+
+```html
+<button data-mcp-tool="todos.archive" data-mcp-desc="归档已完成的待办" data-mcp-idempotent data-mcp-open-world="false">归档</button>
+<form data-mcp-tool="order.lookup" data-mcp-desc="查询订单" data-mcp-readonly
+      data-mcp-output-schema='{"type":"object","properties":{"status":{"type":"string"}},"required":["status"]}'>…</form>
+```
+
+- 四个注解属性按 HTML 布尔属性书写：出现（空值或 `true`）为 `true`，`="false"` 显式声明为 `false`；其他取值 `console.warn` 并忽略。
+  都不写时不声明注解（与之前相同）。
+- 与 `data-mcp-risk` 同时出现时，声明的注解字段逐个优先，未声明的按 `risk` 推导（spec/protocol.md 3.2）。
+  注解只是如实传给 Agent 的声明，是否确认 / 放行由 Agent 决定，本库不据此拦截调用。
+- `data-mcp-output-schema` 不是合法 JSON 对象时 `console.warn` 并忽略。根类型不是 `object` 的 schema 由 Host 包装为
+  `{ result: … }` 给出。
+- 属性被修改或移除时同步更新工具声明（移除即清除声明）。
 
 ### 按钮、链接与任意元素
 

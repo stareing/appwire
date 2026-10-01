@@ -55,6 +55,31 @@ export function deliveryEstimate(city: string, express?: boolean) {
 }
 ```
 
+Optional declarations (all default to "not declared", see `spec/protocol.md` §3.2):
+
+- **Tool annotations** — `@readOnly` (or `@readonly`), `@destructive`, `@idempotent`, `@openWorld` map to the
+  standard MCP hints `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`. A bare tag means
+  `true`; `true` / `false` may be written explicitly. Declared hints win field by field over `@risk`; missing ones
+  are derived from it. They are passed through to the agent unchanged — AppWire does not gate calls on them.
+- **Output schema** — the return type (with `Promise` unwrapped, and the `data` type taken when the function returns a
+  structured result `{ data, status?, summary?, … }`) becomes the tool's `outputSchema`. No return value, `any` /
+  `unknown`, or a type that cannot be converted (with a warning) declares none; turn it off with
+  `annotations: { outputSchema: false }`.
+
+```ts
+/**
+ * Cancel an order
+ * @mcp order.cancel
+ * @destructive
+ * @idempotent
+ * @openWorld false
+ */
+export async function cancelOrder(orderId: string): Promise<{ refunded: boolean }> { /* ... */ }
+```
+
+Static tools accept the same declarations as `annotations` and `outputSchema` (JSON Schema, zod v4 converted in its
+output shape, or an object with `toJSONSchema()`); both are validated and written to the manifest.
+
 Register the annotated tools at runtime through the generated virtual module (add
 `/// <reference types="@app-mcp/build/client" />` to `src/vite-env.d.ts` for its types):
 
@@ -72,9 +97,10 @@ browser) and reused at runtime to register the matching handler, keeping manifes
 
 - `appMcp(options)` (also the default export) - the Vite plugin. Options: `appId`, `name`, `version`,
   `description`, `overview`, `launch`, `wake`, `resources`, `staticTools`, `annotations`, `outFile`, `writeTo`.
+  `annotations` is `true` or `{ include, exclude, tsconfig, outputSchema }`.
 - `@app-mcp/build/define` - `defineStaticTool`, `defineStaticTools`, `defineOverview`, `validateOverview`
   (no Node or Vite dependencies).
-- `generateManifest`, `validateManifest`, `toInputSchema`, `normalizeWake`, `ManifestError` - manifest helpers.
+- `generateManifest`, `validateManifest`, `toInputSchema`, `toOutputSchema`, `normalizeWake`, `ManifestError` - manifest helpers.
 - `@app-mcp/build/annotations` - `scanAnnotations`, `createAnnotationScanner`, `generateAnnotatedModule`.
 - `@app-mcp/build/client` - types for `virtual:app-mcp/annotated` (`registerAnnotated`, `annotatedTools`).
 

@@ -53,7 +53,7 @@ function CartPage({ items }: { items: CartItem[] }) {
   useTool('cart.checkout', {
     description: 'Check out the current cart',
     input: z.object({ addressId: z.string() }),
-    risk: 'payment',                // the Hub asks the user for approval
+    annotations: { destructiveHint: true, openWorldHint: true }, // standard MCP hints for the agent
     activation: 'foreground',
     enabled: items.length > 0,      // hidden from the agent when the cart is empty
     handler: async ({ addressId }) => ({ data: await checkout(addressId), stateHints: ['cart.state'] }),
@@ -72,9 +72,24 @@ function CartTab({ items }: { items: CartItem[] }) {
 }
 ```
 
-Handlers always see the latest closure; changes to `description`, `input`, `risk`, `activation` or
-`enabled` are sent to the Hub as updates without re-registering. Without a provider the hooks are no-ops.
-A tool can also be loaded lazily: pass `load: () => import('./checkout')` instead of `handler`.
+Handlers always see the latest closure; changes to `description`, `title`, `input`, `outputSchema`, `risk`,
+`annotations`, `activation` or `enabled` are sent to the Hub as updates without re-registering (`input`,
+`outputSchema` and `annotations` written inline are compared by content, not by reference). Without a provider
+the hooks are no-ops. A tool can also be loaded lazily: pass `load: () => import('./checkout')` instead of `handler`.
+
+`useTool` takes the same optional declarations as `@app-mcp/web`'s `appMcp.tool` (rules in
+[`spec/protocol.md` §3.2](https://github.com/stareing/appwire/blob/main/spec/protocol.md)):
+
+- `annotations` - standard MCP tool annotations (`title`, `readOnlyHint`, `destructiveHint`, `idempotentHint`,
+  `openWorldHint`), passed to the agent unchanged. With the legacy `risk` also given, declared fields win one by
+  one and the missing ones are derived from `risk`. AppWire does not allow or block calls based on them: the agent
+  decides, and confirmation of high-risk actions belongs in your app.
+- `outputSchema` - schema of the result `data` (JSON Schema, zod v4 schema or an object with `toJSONSchema()`);
+  a non-`object` root is wrapped by the Hub as `{ result: <schema> }`.
+- Handlers may return `{ data, stateHints?, status?, stateResource?, summary?, annotations? }` with `status` one of
+  `'done' | 'pending' | 'partial' | 'noop'`. It is unpacked only if it has a `data` key and every other key is one
+  of these with a valid value; any other value is returned as `data` as a whole. Returning nothing (`undefined` /
+  `null`, no `summary`) makes the Hub give the model the fixed text "已完成" ("done").
 
 ## API
 

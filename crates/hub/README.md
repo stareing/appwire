@@ -26,7 +26,7 @@ flowchart TD
 | B. 自有 LLM + 格式导出 | 已有 OpenAI / Anthropic / Gemini 调用循环 | `export_tools` + `dispatch` |
 | C. 对外开 MCP | Agent 本身是 MCP 客户端（Claude Desktop、IDE 等） | `serve_stdio` / `serve_http` / `mcp_session` |
 
-三种接法可以同时使用；它们共用**同一份调用逻辑**（schema 校验 → 审批 → 路由 → 转发 → 首次附带总览），行为一致。
+三种接法可以同时使用；它们共用**同一份调用逻辑**（资源保护 → schema 校验 → 审批 → 路由 → 转发 → 结果检查 → 首次附带总览），行为一致。
 
 依赖：
 
@@ -60,7 +60,7 @@ println!("网页 App 端点：ws://{}/app", hub.listen_addr().unwrap()); // 端�
 同一台机器上只能有一个 Hub 使用默认端点：测试或第二个 Hub 请设 `listen: Some("127.0.0.1:0")`、`ipc_endpoint: None`（或临时路径）。
 
 `HubConfig` 还包括静态清单（`manifests`，未连接的 App 也能列出工具）、额外允许的 Origin、各类超时、
-上游 MCP 服务器（`upstreams`）、审批策略（`approval`）。所有 `async` 方法需要 tokio 多线程运行时。
+上游 MCP 服务器（`upstreams`）、审批策略（`approval`）、资源保护（`limits`、`output_validation`，见下文「资源保护与结果校验」）。所有 `async` 方法需要 tokio 多线程运行时。
 
 ### A. 嵌入 Rust API
 
@@ -126,7 +126,8 @@ loop {
 - **名称编码**：OpenAI / Anthropic 只允许 `[a-zA-Z0-9_-]{1,64}`。导出名 = 全名把 `.` 换成 `__`
   （`shop.cart.add` → `shop__cart__add`）；冲突、超长或含其他字符时截断到 59 字符并加 `_<4 位十六进制哈希>`。
   映射只取决于当前工具集合；`dispatch` 同时接受导出名和全名。所有格式使用同一导出名。
-- **结果内容**：成功为 JSON 文本（含 `stateHints` 提示；该会话首次接触 App 时最前面附带总览）；
+- **结果内容**：成功时依次为状态说明（`status` 不是 `done` 时）→ App 的 `summary` → 返回值 JSON（无返回值、无摘要且 `done`
+  时为"已完成"）→ `stateHints` 提示，该会话首次接触 App 时最前面附带总览（与 MCP 出口同一份内容，spec/protocol.md 3.2）；
   失败为 `<KIND>: <message>` 文本，Anthropic 带 `is_error: true`，Gemini 放在 `response.error`。
 - **描述**：风险不是 read / write 时追加 `（风险：payment）` 等标记；Gemini 格式剔除不支持的 schema 关键字
   （`additionalProperties`、`$ref` 等）。
@@ -194,6 +195,48 @@ hub.set_approval_handler(Arc::new(MyUi));
 `set_pairing_handler` 设置后，**无静态清单**或 **Origin 不在白名单**的 App 首次连接时，Hub 先回复 `pending`，
 询问处理器后再以 `app/pairingResult` 通知结果（同意后同一 appId + Origin 或携带已发 token 的重连不再询问）。
 未设置时行为与原 Host 一致：白名单内直接配对，白名单外拒绝。
+
+## 资源保护与结果校验
+
+保护 App 与设备（调用频率、数据大小）由 Hub 负责；超出时返回明确错误，不静默丢弃、不截断。完整定义见
+`spec/hub-api.md` 3.11，错误码与 `data` 字段的唯一定义见 `spec/protocol.md` 第 4 节。
+
+```rust
+use app_mcp_hub::{HubConfig, LimitPolicy, OutputValidation, RateLimit};
+
+let hub = Hub::start(HubConfig {
+    limits: LimitPolicy {
+        tool_rate: RateLimit { per_minute: 60, burst: 10 },  // 每（App, 工具）
+        ..LimitPolicy::default()                              // LimitPolicy::unlimited() = 全部不限
+    },
+    output_validation: OutputValidation::Reject,
+    ..Default::default()
+}).await?;
+```
+
+| `HubConfig` 字段 | 默认 | 超出 / 不符时 |
+|---|---|---|
+| `limits.tool_rate: RateLimit { per_minute, burst }` | 每分钟 120、突发 30 | `RATE_LIMITED`（-32016），`data`：`retryAfterMs`、`scope`（`tool` / `app`）、`perMinute`、`burst`、`appId`、`tool` |
+| `limits.app_rate: RateLimit`（该 App 所有工具合计） | 每分钟 600、突发 60 | 同上 |
+| `limits.max_arguments_bytes: u64` | 1 MiB | `PAYLOAD_TOO_LARGE`（-32017），`data`：`part`（`arguments` / `result` / `resource`）、`sizeBytes`、`limitBytes` |
+| `limits.max_result_bytes: u64`（含 `summary`；上游结果同样适用） | 4 MiB | 同上；调用可能已在 App 内执行 |
+| `limits.max_resource_bytes: u64`（文本 / base64） | 4 MiB | 同上（`read_resource` 返回该错误） |
+| `output_validation: OutputValidation` | `Log` | `Off` 不校验 / `Log` 只记 warn 日志、照常返回 / `Reject` 以 `HANDLER_ERROR` 结束（`details.outputSchemaError`） |
+
+- `per_minute = 0` 表示该级不限，大小上限为 0 表示不限；`per_minute > 0` 而 `burst = 0` 时 `Hub::start` 返回 `InvalidInput`。
+- 检查顺序：参数大小 → 两级限流（两级都有令牌才各扣一个；`retryAfterMs` 取较长的等待）→ schema 校验 / 审批 / 路由 / 唤醒
+  （被限流的调用不会唤醒 App、不会触发审批）→ 转发 → 结果大小 → `outputSchema` 核对。内置工具 `apps.*` 不受限。
+- 结果校验只针对声明了 `outputSchema` 的 App 工具，无返回值不校验；需要 cargo feature `schema-validation`（默认开启），
+  未启用时不校验。
+- 计数：`AppStatus.rate_limited` / `too_large`（启动以来被拒绝的次数）、`AppStatus.tools`（`ToolDeclaration`：`risk`、声明的注解、
+  实际生效的注解、是否有 `outputSchema`）；`HubStatus.limits`（`LimitOverrides`，全部字段给出）与 `HubStatus.output_validation`。
+  `app-mcp-host doctor` 的「资源保护」「工具声明」检查展示这些信息。
+
+**注解与结果标注如实传递**：App 声明的标准 MCP 工具注解（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` /
+`title`）原样出现在 `HubTool.annotations`、`ApprovalRequest.annotations`、MCP `tools/list` 与 `export_tools(Mcp)` 中（缺少的字段按
+`risk` 推导）；结果的内容标注在 `CallOutcome.annotations`，并加在 MCP 结果的摘要与返回值块上。Hub 不据注解放行或拦截：
+`ApprovalPolicy` 仍按 `risk` 决定是否询问，按注解决定是否确认由你的 `ApprovalHandler` 自行判断。
+`CallOutcome` 另有 `status`（`done` / `pending` / `partial` / `noop`）、`state_resource`（`pending` 时可读后续状态的资源 URI）与 `summary`。
 
 ## 休眠、唤醒与租约（App 端生命周期配合）
 

@@ -50,6 +50,8 @@ if (out.overview) addToContext(out.overview.text)   // 该会话首次接触此 
 ```
 
 只有名称无法解析时 `callTool` 才 reject（`HubError`，`kind`/`code` 为错误类别）；工具层面的失败都在 `result.error`。
+`CallOutcome` 另有 `status`（`'done'` / `'pending'` / `'partial'` / `'noop'`）、`stateResource`（`pending` 时可读后续状态的资源 URI）、
+`summary` 与 `annotations`（App 对结果内容的 MCP 内容注解，原样）；`result.ok` 为原始返回值（无返回值为 `null`）。
 
 ### B. 自有 LLM：导出 + dispatch
 
@@ -110,6 +112,36 @@ const { text } = await generateText({
 const addr = await hub.serveHttp('127.0.0.1:0')      // 额外监听器（/app、/mcp、/healthz）：http://<addr>/mcp
 // 或在 Hub.start 时设 mcpHttp: true，在 listen 上直接提供 /mcp
 ```
+
+## 资源保护与结果校验（spec/hub-api.md 3.11）
+
+Hub 对 App 与上游工具的调用限流、限制数据大小，超出时调用以明确错误结束（不静默丢弃、不截断）：
+
+```ts
+const hub = await Hub.start({
+  limits: { toolRatePerMinute: 60, toolRateBurst: 10 },   // 缺省字段取默认值；未知字段 → 启动失败
+  outputValidation: 'reject',
+})
+```
+
+| 配置 | 默认 | 超出 / 不符时 |
+|---|---|---|
+| `limits.toolRatePerMinute` / `toolRateBurst` | 120 / 30 | 每（App, 工具）令牌桶；`result.error.kind === 'RATE_LIMITED'`（-32016），`details`：`retryAfterMs`、`scope`（`'tool'` / `'app'`）、`perMinute`、`burst`、`appId`、`tool` |
+| `limits.appRatePerMinute` / `appRateBurst` | 600 / 60 | 每 App（所有工具合计）令牌桶；同上 |
+| `limits.maxArgumentsBytes` | 1 MiB | `'PAYLOAD_TOO_LARGE'`（-32017），`details`：`part`（`'arguments'` / `'result'` / `'resource'`）、`sizeBytes`、`limitBytes` |
+| `limits.maxResultBytes` | 4 MiB | 同上；调用可能已在 App 内执行 |
+| `limits.maxResourceBytes` | 4 MiB | 同上（`readResource` reject） |
+| `outputValidation` | `'log'` | 结果与工具声明的 `outputSchema` 不符时：`'off'` 不校验 / `'log'` 只记日志、照常返回 / `'reject'` 以 `HANDLER_ERROR` 结束（`details.outputSchemaError`） |
+
+- `*PerMinute` 为 0 表示该级不限，大小上限为 0 表示不限；`*PerMinute > 0` 而 `*Burst` 为 0 时 `Hub.start` 失败。
+- 检查顺序：参数大小 → 两级限流 → schema 校验 / 审批 / 路由 / 唤醒（被限流的调用不会唤醒 App、不会触发审批）→ 转发 →
+  结果大小 → `outputSchema` 核对。内置工具 `apps.*` 不受限；结果校验只针对 App 工具，无返回值不校验。
+- 计数：`status()` 中 `AppStatus.rateLimited` / `tooLarge`（启动以来被拒绝的次数）、`AppStatus.tools`（`ToolDeclaration`：`risk`、
+  声明的 `annotations`、实际生效的 `effective`、是否有 `outputSchema`），以及 `HubStatus.limits`（全部字段给出）与 `HubStatus.outputValidation`。
+
+**注解如实传递，不用于放行**：App 声明的标准 MCP 工具注解（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` / `title`）
+原样出现在 `HubTool.annotations`、`ApprovalRequest.annotations` 与 `exportTools('mcp')` 中（缺少的字段按 `risk` 推导）。
+`approval.requireAtOrAbove` 仍按 `risk` 决定是否询问；要按注解决定是否确认，在 `setApprovalHandler` 的回调里自行判断。
 
 ## 休眠与唤醒（spec/hub-api.md 3.5）
 
@@ -180,7 +212,7 @@ async function chat(session: string, userText: string): Promise<string> {
     if (results.length === 0) {
       return resp.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
     }
-    messages.push({ role: 'user', content: results })    // 成功为 JSON 文本；失败带 is_error（如 USER_REJECTED: …）
+    messages.push({ role: 'user', content: results })    // 成功为状态说明 / 摘要 / 返回值 JSON（无返回值为"已完成"）；失败带 is_error（如 USER_REJECTED: …）
   }
   return '（步数用尽）'
 }
@@ -197,7 +229,7 @@ await hub.shutdown()
 | `Hub.start(config)` | 启动；`listenAddr` 为实际监听地址，`wsUrl`（`ws://<listenAddr>/app`）为 App 端点 |
 | `shutdown()` | 关闭 App 连接与后台任务；之后调用抛 `HubError('SHUTDOWN')` |
 | `apps()` / `tools(filter?)` / `resources()` / `overview(appId)` | 查询快照 |
-| `status()` | 运行状态（`HubStatus`：监听、令牌策略、各 App 状态与最近错误、SDK 诊断上报；与 `GET /status` 相同） |
+| `status()` | 运行状态（`HubStatus`：监听、令牌策略、各 App 状态与最近错误、限流 / 超限计数与工具声明、SDK 诊断上报；与 `GET /status` 相同） |
 | `callTool(req)` / `cancelCall(callId)` | 调用与取消（`req.timeout` 毫秒） |
 | `readResource(uri)` / `subscribe(uri)` / `unsubscribe(uri)` | 资源（`app-mcp://<appId>/<name>`） |
 | `selectInstance(appId, instanceId?)` / `resetSession(session?)` | 路由与会话 |

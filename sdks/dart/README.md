@@ -20,6 +20,27 @@ runApp(AppMcpScope(client: client, disposeClient: true, child: const ShopApp()))
 原生库查找顺序：`libraryPath` 参数 → 环境变量 `APP_MCP_NATIVE_PATH` → 平台默认名
 （`libapp_mcp.so` / `libapp_mcp.dylib` / `app_mcp.dll`；iOS 为静态链接进程内符号）。
 
+## 工具声明与结构化结果（可选，spec/protocol.md 3.2）
+
+```dart
+client.tool('order.submit',
+    description: '提交订单',
+    annotations: const ToolAnnotations(destructiveHint: true, idempotentHint: false, openWorldHint: true),
+    outputSchema: {'type': 'object', 'properties': {'orderId': {'type': 'string'}}},
+    handler: (args, ctx) => ToolResult(null,
+        status: ToolResultStatus.pending,          // done（缺省）/ pending / partial / noop
+        stateResource: 'order.status',             // pending 时可读取后续状态的资源名
+        summary: '已提交，等待用户在 App 内确认',
+        annotations: const ContentAnnotations(audience: [ContentAudience.user])));
+```
+
+- `annotations`（`ToolAnnotations`：`title` / `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`）是标准 MCP
+  工具注解，原样转发给 Agent；与旧写法 `risk` 同时给出时声明的字段逐个优先，缺少的按 `risk` 推导。AppWire 不据此拦截或放行调用。
+- `outputSchema`：结果的 JSON Schema；根类型不是 `object` 时 Hub 包装为 `{result: …}`。
+- 返回普通值即 `done` 结果；需要业务状态、摘要或内容标注（`ContentAnnotations`：`audience` / `priority` / `lastModified`）时返回
+  `ToolResult`。无返回值（`null` 且无 `summary`、状态 `done`）时 Hub 对模型输出固定文本"已完成"。
+- `McpTool`、`useMcpTool`、`McpScope.tool`、`ToolHandle.update` 接受同样的 `annotations` / `outputSchema` 参数。
+
 ## 生命周期（休眠与唤醒，spec/lifecycle.md）
 
 ```dart

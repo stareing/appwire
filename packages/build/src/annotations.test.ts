@@ -1,6 +1,5 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { build, createServer, type ViteDevServer } from 'vite'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
@@ -12,24 +11,12 @@ import {
   type AnnotationScanResult,
 } from './annotations'
 import { appMcp } from './index'
+import { createTempProjects } from './testing/temp-projects'
 
-// 与 build.test.ts 使用不同的临时目录，避免并行运行时互相清理。
-const pkgDir = fileURLToPath(new URL('..', import.meta.url))
-const tmpRoot = join(pkgDir, 'node_modules', '.tmp-annotations')
+const projects = createTempProjects()
+const makeProject = projects.make
 
-async function makeProject(files: Record<string, string>): Promise<string> {
-  await mkdir(tmpRoot, { recursive: true })
-  const dir = await mkdtemp(join(tmpRoot, 'app-mcp-'))
-  for (const [name, content] of Object.entries(files)) {
-    await mkdir(join(dir, name, '..'), { recursive: true })
-    await writeFile(join(dir, name), content)
-  }
-  return dir
-}
-
-afterAll(async () => {
-  await rm(tmpRoot, { recursive: true, force: true })
-})
+afterAll(() => projects.cleanup())
 
 const CART = `
 export interface Order { id: string; total: number }

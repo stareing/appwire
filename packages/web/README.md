@@ -30,6 +30,35 @@ appMcp.tool('cart.clear', { description: '清空购物车', risk: 'destructive',
 appMcp.tool('cart.checkout', { description: '结算', risk: 'payment', load: () => import('./checkout') })
 ```
 
+## 工具注解、输出 schema 与结构化结果
+
+以下声明都可选，不写时与之前完全相同（语义见 spec/protocol.md 3.2）。
+
+```ts
+appMcp.tool('order.cancel', {
+  description: '取消订单',
+  input: z.object({ orderId: z.string() }),
+  // 标准 MCP 工具注解：与 risk 同时给出时声明的字段逐个优先，缺少的按 risk 推导
+  annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  // 结果的 schema（MCP outputSchema）：JSON Schema、zod（只按输出形态转换，不校验）或带 toJSONSchema() 的对象
+  outputSchema: z.object({ refunded: z.boolean() }),
+  handler: async ({ orderId }) => {
+    await requestCancel(orderId) // 页面弹出确认，用户确认后才真正取消
+    return { data: { refunded: false }, status: 'pending', stateResource: 'order.status', summary: '已提交取消申请，等待用户在页面确认' }
+  },
+})
+```
+
+- **注解**原样转给 Agent（MCP `tools/list`），是否确认 / 放行由 Agent 决定；本库不据此拦截调用，高风险操作请在页面内自行确认。
+- **outputSchema** 根类型不是 `object` 时由 Host 包装为 `{ result: … }`。Host 可按配置核对结果是否符合（默认只记日志）。
+- **结构化结果**：handler 返回的对象含 `data` 键、且其余键都属于 `stateHints` / `status` / `stateResource` / `summary` / `annotations`
+  并取值合法时，按结构化结果拆开；否则整个返回值作为 `data`。`status`：`done`（缺省）/ `pending`（已受理、尚未完成，附
+  `stateResource`）/ `partial`（只完成一部分，用 `summary` 说明）/ `noop`（没有改动）。`annotations` 是结果内容的标注
+  （`audience` / `priority` / `lastModified`）。
+- **无返回值**（`undefined` / `null`）且没有 `summary` 时，Host 对模型输出"已完成"，而不是 `null`。
+- Host 还会对调用限流、限制参数 / 结果 / 资源大小，超出时 Agent 收到 `RATE_LIMITED` / `PAYLOAD_TOO_LARGE`
+  （参数超限与被限流的调用不会转发到页面；结果超限时 handler 已执行，结果不返回）。上限见 crates/host/README.md。
+
 ## 生命周期（休眠与唤醒）
 
 默认 `persistent`：启动即连接、一直在线。设置 `lifecycle` 后，空闲时与 Host 完成 `app/sleep` 握手并断开
@@ -172,12 +201,13 @@ const uninstall = installWebMcp(appMcp) // 返回卸载函数；uninstall.mode �
 | `annotations.readOnlyHint` | `risk: 'read'` |
 | `annotations.destructiveHint` 或 `consequentialHint` | `risk: 'destructive'` |
 | 其他 | `risk: 'write'` |
+| `annotations` 中取值为布尔的 `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` | 同时作为 `annotations` 原样转给 Agent |
 | `execute` 返回 `{ content: [{ type: 'text', text }] }` | text 是 JSON → 解析为结果数据；否则 `{ text }`（有 `structuredContent` 时优先用它） |
 | `execute` 返回 `{ ..., isError: true }` 或抛错 | `HANDLER_ERROR` |
 | `execute` 返回其他值 | 原样作为结果数据（`undefined` → `null`） |
 
 反向（`appMcp.tool()` → 原生）：`risk: 'read'` → `readOnlyHint`；`destructive` → `consequentialHint` + `destructiveHint`；
-`payment` / `os-sensitive` → `consequentialHint`。结果以 `{ content: [{ type: 'text', text }] }` 返回，错误带 `isError: true`。
+`payment` / `os-sensitive` → `consequentialHint`；`appMcp.tool()` 声明的 `annotations` 覆盖按 `risk` 推导的同名字段。结果以 `{ content: [{ type: 'text', text }] }` 返回，错误带 `isError: true`。
 
 **同名冲突**：`appMcp.tool()` 优先。已有同名的 `appMcp.tool()` 工具时，标准侧 `registerTool` 以 `InvalidStateError` 拒绝；
 标准侧先注册、`appMcp.tool()` 后注册时，标准侧的版本被移除（输出警告）。
@@ -187,9 +217,9 @@ const uninstall = installWebMcp(appMcp) // 返回卸载函数；uninstall.mode �
 
 ### 安全说明
 
-- **风险确认由 Host 执行**。Host 根据 `risk`（即上表由 annotations 推导出的值）在调用前向用户确认；
-  因此 `client.requestUserInteraction(cb)` 在 Host 调用时直接执行 `cb`，不再额外弹出确认。需要确认的工具请正确标注
-  `readOnlyHint` / `consequentialHint`（或 `destructiveHint`），否则按 `write` 处理。
+- **Host 不做确认**。Host 把 `risk` 与 MCP 注解如实交给 Agent，是否放行由 Agent 决定（spec/protocol.md 3.2）；
+  `client.requestUserInteraction(cb)` 在 Host 调用时直接执行 `cb`，不弹出确认。需要用户确认的高风险操作请在页面内自行确认，
+  并正确标注 `readOnlyHint` / `destructiveHint`（或 `consequentialHint`），未标注时按 `write` 处理。
 - 浏览器内置 AI 调用时，确认流程由浏览器负责，本 SDK 不介入（原生提供 `requestUserInteraction` 时优先使用原生实现）。
 - `exposedTo`（跨源暴露）只影响浏览器侧；Host 侧的访问控制由配对与 Host 配置决定，与页面来源无关。
 - 工具返回的内容会原样交给模型，请同样遵循 WebMCP 的

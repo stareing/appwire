@@ -150,6 +150,8 @@ exposeStore(appMcp, { getState: () => state, subscribe: (l) => emitter.on('chang
 |---|---|
 | `namespace` | 工具名与资源名前缀：`'cart'` → `cart.add`、`cart.items` |
 | `actions[name].description / title / input / risk / activation` | 原样传给 `ToolDefinition` |
+| `actions[name].annotations` | 可选，标准 MCP 工具注解（`title` / `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`），原样传给 `ToolDefinition` |
+| `actions[name].outputSchema` | 可选，结果的 schema（MCP `outputSchema`，JSON Schema / zod v4 / 带 `toJSONSchema()` 的对象），描述 `result` 选择器（或 action 返回值）的形状 |
 | `actions[name].action` | Zustand / Pinia：函数名；Redux：无 `creator` 时的 action type。缺省为工具名最后一段 |
 | `actions[name].creator` | Redux：action creator / thunk / createAsyncThunk |
 | `actions[name].args` | 参数对象 → 位置参数。缺省：声明了 `input` 时 `[input]`，否则 `[]` |
@@ -161,13 +163,15 @@ exposeStore(appMcp, { getState: () => state, subscribe: (l) => emitter.on('chang
 
 返回 `dispose()`：注销全部工具与资源、取消订阅，可重复调用。
 
+`annotations` 与旧写法 `risk` 同时给出时，声明的字段逐个优先，缺少的按 `risk` 推导；注解原样交给 Agent，本库不据此放行或拦截调用（由 Agent 决定，高风险操作的确认在 App 内）。`outputSchema` 根类型不是 `object` 时由 Hub 包装为 `{ result: <schema> }`。规则见 [`spec/protocol.md` 3.2](https://github.com/stareing/appwire/blob/main/spec/protocol.md)。
+
 ## 行为说明
 
 - `enabled` 重算与资源变化检测共用一个 store 订阅；同一微任务内的多次变化只处理一次。
 - 调用时会再次检查 `enabled(state)`，为 false 则抛出 `TOOL_DISABLED`（防止 Host 尚未收到禁用通知时的竞态）。
   `enabled` 自身抛出异常时视为不可用。
 - action 抛出的 `ToolCallError` 原样透传；其他异常由 SDK 归为 `HANDLER_ERROR`。
-- 默认结果为 action 的返回值（`undefined` 时为 `{ ok: true }`）。**结果必须可 JSON 序列化**：若 action 返回函数、
+- 默认结果为 action 的返回值（`undefined` 时为 `{ ok: true }`）。结果（含 `result` 选择器的返回值）始终整体作为 `data`、附带 `hints`，不会被当作结构化结果拆开。**结果必须可 JSON 序列化**：若 action 返回函数、
   类实例、循环引用等（例如 Zustand 的 action 返回一个 unsubscribe 函数，或 Pinia 返回响应式对象），
   请用 `result` 选项挑出需要的数据，否则 SDK 会以 `HANDLER_ERROR` 报告序列化失败或丢失字段。
 - 注册名称重复等错误会在 `expose*` 时同步抛出，已注册的部分会被回滚；action 名在 state / store 上不存在时同样立即报错。

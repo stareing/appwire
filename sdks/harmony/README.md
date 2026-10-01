@@ -69,6 +69,30 @@ onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void { HarmonyA
 - 带 stateHints 的结果返回 `new ToolResult(data, ['cart'])`；
 - 不支持惰性 handler（`load`）与 zod。
 
+### 工具声明与结构化结果（可选，spec/protocol.md 3.2）
+
+```ts
+mcp.tool<OrderParams, Object | null>('order.submit', {
+  description: '提交订单',
+  annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  outputSchema: '{"type":"object","properties":{"orderId":{"type":"string"}}}',
+  handler: (input: OrderParams): ToolResult<Object | null> => new ToolResult<Object | null>(null, [], {
+    status: 'pending',                 // 'done'（缺省）| 'pending' | 'partial' | 'noop'
+    stateResource: 'order.status',     // pending 时可读取后续状态的资源名
+    summary: '已提交，等待用户在 App 内确认',
+    annotations: { audience: ['user'] },
+  }),
+});
+```
+
+- `annotations`（`ToolAnnotations`：`title` / `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`）是标准 MCP
+  工具注解，原样转发给 Agent；与旧写法 `risk` 同时给出时声明的字段逐个优先，缺少的按 `risk` 推导。AppWire 不据此拦截或放行调用。
+- `outputSchema`：结果的 JSON Schema 文本；根类型不是 `object` 时 Hub 包装为 `{result: …}`。
+- 返回普通数据即 `done` 结果；需要业务状态、摘要或内容标注（`ContentAnnotations`：`audience` / `priority` / `lastModified`）时返回
+  `new ToolResult(data, stateHints, options)`（`ToolResultOptions`）。无返回值（`data` 为 `null` / `undefined` 且无 `summary`、
+  状态 `done`）时 Hub 对模型输出固定文本"已完成"。
+- `ToolHandle.update` 的 `annotations` / `outputSchema` 整体替换，不支持清除。
+
 ### 线程
 
 原生运行时在自己的线程上连接 Host，回调经 Node-API 线程安全函数投递到**创建 `AppMcp` 的 ArkTS 线程**的事件循环。

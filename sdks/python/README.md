@@ -30,6 +30,36 @@ Handlers may be plain functions or `async def`; input schemas are derived from t
 from Pydantic models with the `pydantic` extra). `app_mcp.dispatchers` runs handlers on the Qt or
 Tk main thread, and `app_mcp.linux` provides D-Bus wake-up (`dbus` extra).
 
+### Tool declarations and structured results (optional, `spec/protocol.md` §3.2)
+
+```python
+from app_mcp import ToolResult
+
+@app.tool(
+    "submit",
+    description="Submit the order",
+    annotations={"destructive_hint": True, "idempotent_hint": False, "open_world_hint": True},
+    output_schema={"type": "object", "properties": {"order_id": {"type": "string"}}},
+)
+def submit() -> ToolResult:
+    return ToolResult(
+        None,
+        status="pending",              # "done" (default) / "pending" / "partial" / "noop"
+        state_resource="order_status", # resource to read for the eventual outcome
+        summary="Submitted; waiting for the user to confirm in the app",
+        annotations={"audience": ["user"]},
+    )
+```
+
+- `annotations` are the standard MCP tool annotations (`ToolAnnotations`, or a dict with the keys `title`,
+  `read_only_hint`, `destructive_hint`, `idempotent_hint`, `open_world_hint`). They are passed to the agent unchanged;
+  when `risk` is also given, each declared field wins and missing ones are derived from `risk`. AppWire does not
+  allow or block calls based on them.
+- `output_schema` (dict or JSON text) is the result's JSON Schema; the Hub wraps a non-object root as `{result: …}`.
+- Returning a plain value is a `done` result. Return `ToolResult` for a status, summary or content annotations
+  (`ContentAnnotations`, or a dict with `audience` / `priority` / `last_modified`). With no return value (`None`,
+  no `summary`, status `done`) the Hub shows the model the fixed text "已完成" ("done") instead of `null`.
+
 ## Lifecycle and power
 
 By default a client stays connected (`persistent`). Desktop apps on Linux that export the D-Bus
@@ -70,6 +100,26 @@ Ordinary resources (the default) do not block sleep; their changes are delivered
 `app_mcp.hub.Hub` embeds the hub in a Python agent: export tools in MCP, OpenAI, Anthropic or
 Gemini format, dispatch the model's tool calls, and handle approvals in your own UI. See
 [`examples/hub_llm_loop.py`](examples/hub_llm_loop.py).
+
+Resource protection and result checks (`spec/hub-api.md` §3.11):
+
+```python
+from app_mcp.hub import Hub
+
+hub = Hub(limits={"toolRatePerMinute": 60, "maxResultBytes": 1 << 20}, output_validation="reject")
+```
+
+| `limits` key (`LimitsConfig` field) | Default | Meaning |
+|---|---|---|
+| `toolRatePerMinute` / `toolRateBurst` (`tool_rate_per_minute` / `tool_rate_burst`) | 120 / 30 | Token bucket per (app, tool); over it → `RATE_LIMITED`; `0` per minute = unlimited |
+| `appRatePerMinute` / `appRateBurst` (`app_rate_per_minute` / `app_rate_burst`) | 600 / 60 | Token bucket per app (all tools combined) |
+| `maxArgumentsBytes` / `maxResultBytes` / `maxResourceBytes` (`max_*_bytes`) | 1 MiB / 4 MiB / 4 MiB | Over it → `PAYLOAD_TOO_LARGE` (never truncated); `0` = unlimited |
+
+`output_validation` (`OutputValidation` or `"off"` / `"log"` / `"reject"`, default `"log"`) decides what happens
+when a result does not match the tool's `outputSchema`: skip the check, log a warning, or end the call with
+`HANDLER_ERROR`. Rejected calls still return a `CallResult` whose `error.kind` is `"RATE_LIMITED"` or
+`"PAYLOAD_TOO_LARGE"`. `CallResult` also carries the app's `status` (`ResultStatus`), `state_resource`, `summary`
+and `annotations`.
 
 ## Build
 

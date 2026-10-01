@@ -1,7 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { build, createServer, type ViteDevServer } from 'vite'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { z } from 'zod'
@@ -18,20 +17,10 @@ import {
   validateOverview,
   type AppMcpManifest,
 } from './index'
+import { createTempProjects } from './testing/temp-projects'
 
-// 临时目录放在包的 node_modules 下，这样夹具中的 `import 'zod'` 可以被解析。
-const pkgDir = fileURLToPath(new URL('..', import.meta.url))
-const tmpRoot = join(pkgDir, 'node_modules', '.tmp')
-
-async function makeProject(files: Record<string, string>): Promise<string> {
-  await mkdir(tmpRoot, { recursive: true })
-  const dir = await mkdtemp(join(tmpRoot, 'app-mcp-'))
-  for (const [name, content] of Object.entries(files)) {
-    await mkdir(join(dir, name, '..'), { recursive: true })
-    await writeFile(join(dir, name), content)
-  }
-  return dir
-}
+const projects = createTempProjects()
+const makeProject = projects.make
 
 const STATIC_TOOLS = `
 import { z } from 'zod'
@@ -50,9 +39,7 @@ const tools: unknown[] = [
 export default tools
 `
 
-afterAll(async () => {
-  await rm(tmpRoot, { recursive: true, force: true })
-})
+afterAll(() => projects.cleanup())
 
 describe('generateManifest', () => {
   it('转换 zod / JSON Schema / toJSONSchema 对象，并生成符合规范的清单', () => {

@@ -11,16 +11,19 @@
 import type {
   Activation,
   JsonSchema,
+  OutputSchema,
   Registrar,
   ResourceHandle,
   Risk,
   Scope,
   ToolContext,
   ToolDefinition,
+  ToolAnnotations,
   ToolHandle,
 } from '@app-mcp/web'
 import { ToolCallError } from '@app-mcp/web'
 import {
+  ANNOTATION_ATTRS,
   ATTR,
   OBSERVED_ATTRIBUTES,
   SELECTOR,
@@ -30,7 +33,9 @@ import {
   isForm,
   isRisk,
   isStandardForm,
+  parseBooleanAttr,
   parseList,
+  parseOutputSchemaAttr,
   toolNameOf,
 } from './attrs'
 import { assertValid, collectFields, fieldsToSchema, fillForm } from './form'
@@ -79,6 +84,8 @@ interface ToolDef {
   title: string | undefined
   risk: Risk | undefined
   activation: Activation | undefined
+  annotations: ToolAnnotations | undefined
+  outputSchema: OutputSchema | undefined
   enabled: boolean
   input: JsonSchema
 }
@@ -411,9 +418,44 @@ class DomBinding {
       entries,
       reason,
       params,
-      def: { description, title: attr(rep, ATTR.title), risk, activation, enabled, input },
+      def: {
+        description,
+        title: attr(rep, ATTR.title),
+        risk,
+        activation,
+        annotations: this.annotationsOf(rep, name),
+        outputSchema: this.outputSchemaOf(rep, name),
+        enabled,
+        input,
+      },
       inputJson: JSON.stringify(input),
     }
+  }
+
+  /** 标准 MCP 工具注解：data-mcp-readonly / destructive / idempotent / open-world；都缺省时为 undefined。 */
+  private annotationsOf(el: Element, name: string): ToolAnnotations | undefined {
+    const annotations: ToolAnnotations = {}
+    for (const [attrName, hint] of ANNOTATION_ATTRS) {
+      const parsed = parseBooleanAttr(el, attrName)
+      if (parsed.kind === 'value') annotations[hint] = parsed.value
+      if (parsed.kind === 'invalid')
+        this.warnOnce(
+          `${attrName}:${name}`,
+          `[app-mcp/dom] 工具 ${name}：无效的 ${attrName}=${JSON.stringify(parsed.raw)}（应为空值、true 或 false），已忽略`,
+        )
+    }
+    return Object.keys(annotations).length > 0 ? annotations : undefined
+  }
+
+  /** 结果 schema：data-mcp-output-schema（JSON 对象）。 */
+  private outputSchemaOf(el: Element, name: string): OutputSchema | undefined {
+    const parsed = parseOutputSchemaAttr(el)
+    if (parsed.kind === 'invalid')
+      this.warnOnce(
+        `${ATTR.outputSchema}:${name}`,
+        `[app-mcp/dom] 工具 ${name}：${ATTR.outputSchema} 不是 JSON 对象，已忽略`,
+      )
+    return parsed.kind === 'value' ? parsed.value : undefined
   }
 
   /** 描述：tooldescription（标准表单）> data-mcp-desc > 可见文本 / aria-label / title。 */
@@ -460,6 +502,8 @@ class DomBinding {
     if (d.title !== undefined) definition.title = d.title
     if (d.risk !== undefined) definition.risk = d.risk
     if (d.activation !== undefined) definition.activation = d.activation
+    if (d.annotations !== undefined) definition.annotations = d.annotations
+    if (d.outputSchema !== undefined) definition.outputSchema = d.outputSchema
     let handle: ToolHandle
     try {
       handle = registrar.tool(spec.name, definition)
@@ -487,6 +531,8 @@ class DomBinding {
     if (d.title !== a.title) changes.title = d.title
     if (d.risk !== a.risk) changes.risk = d.risk
     if (d.activation !== a.activation) changes.activation = d.activation
+    if (!sameJson(d.annotations, a.annotations)) changes.annotations = d.annotations
+    if (!sameJson(d.outputSchema, a.outputSchema)) changes.outputSchema = d.outputSchema
     if (d.enabled !== a.enabled) changes.enabled = d.enabled
     if (spec.inputJson !== rec.appliedInput) changes.input = d.input
     if (Object.keys(changes).length === 0) return
@@ -669,6 +715,11 @@ class DomBinding {
     this.snapshot = undefined
     this.toolOrder = []
   }
+}
+
+/** @why 注解与 schema 每批从属性重新解析成新对象，按序列化结果判断是否变化（键序由解析顺序固定）。 */
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
 }
 
 function errorMessage(e: unknown): string {
