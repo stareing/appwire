@@ -8,7 +8,8 @@ Key facts:
 - One local Hub per user (`app-mcp-host`) on `127.0.0.1:7717`: MCP clients connect over Streamable HTTP at `/mcp` (or stdio); web apps connect over WebSocket at `/app`; native apps over a per-user Unix socket / Windows named pipe.
 - The Hub can be embedded in an agent (Rust, Node, C/C#, Kotlin, Swift, Python) and exports tools in MCP, OpenAI Chat, OpenAI Responses, Anthropic and Gemini formats, then dispatches the model's tool calls.
 - Tools live and die with the UI; idle apps sleep and are woken on call through platform activation; a static manifest (`app-mcp.json`) lists tools of apps that are not running.
-- Every tool has a risk level (read, write, destructive, payment, os-sensitive); risky calls require human approval.
+- Description is not authorization: apps declare what each tool does (standard MCP tool annotations: read-only, destructive, idempotent, open-world) and AppWire passes those declarations through unchanged. The agent decides whether a call runs (its own permission settings); high-risk actions such as payment are confirmed in the app itself; the Hub protects apps and the device with rate, wake and size limits.
+- Design principle: every AI action is visible to the user, and actions an app declares undoable can be undone.
 - Interoperates with WebMCP (polyfill and bridge), Apple App Intents, Android AppFunctions and Windows App Actions (consume and generate), and aggregates existing MCP servers.
 
 ## Docs

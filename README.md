@@ -25,7 +25,10 @@ and any MCP client can call it. No screen scraping, no computer use, no browser 
   Anthropic and Gemini tool-calling / function-calling formats, or embeds into your own agent.
 - **Standards in, standards out:** consumes and generates WebMCP, Apple App Intents, Android
   AppFunctions and Windows App Actions; aggregates existing MCP servers.
-- **Safe by default:** per-tool risk levels and human approval for payments and destructive actions.
+- **Description is not authorization:** apps declare what each tool does (standard MCP tool annotations:
+  read-only, destructive, idempotent, open-world); your agent decides whether a call runs, and the app
+  confirms high-risk steps such as payment in its own UI. AppWire passes declarations through faithfully
+  and protects apps and the device (rate, wake and size limits).
 
 > **Everything is a Tool.**
 > Apps are capabilities. Interfaces are declarations. A call is a wake-up.
@@ -150,7 +153,7 @@ the access token and other MCP clients.
 ```mermaid
 flowchart TD
   clients["MCP clients · your LLM loop · vendor agent"]
-  hub["AppWire Hub<br/>routing · overview · approval<br/>lifecycle: sleep / wake / lease"]
+  hub["AppWire Hub<br/>routing · overview · resource limits<br/>lifecycle: sleep / wake / lease"]
   clients -- "MCP (stdio · Streamable HTTP)<br/>tool-format export + dispatch · embedded API" --> hub
   hub -- "WebSocket (local)" --> web["Web SDK<br/>(WASM core)"]
   hub -- "WebSocket (local)" --> desktop["Desktop SDKs<br/>Rust · C/C++ · C# · Python"]
@@ -168,21 +171,23 @@ flowchart TD
 - **App SDKs** register tools and resources; a single Rust core (`crates/core`) implements the
   protocol, so behavior is identical in every language.
 - **The Hub** (`crates/hub`) aggregates apps and upstream MCP servers, routes calls to the right
-  instance, attaches a short app overview on first contact, enforces approvals, and wakes sleeping
-  apps. `app-mcp-host` is its command-line front end.
+  instance, attaches a short app overview on first contact, passes each tool's declarations through
+  unchanged, and wakes sleeping apps. It does not decide whether a call may run: that is the agent's
+  job (a vendor embedding the Hub can plug its own confirmation UI into the optional `ApprovalHandler`
+  callback). `app-mcp-host` is its command-line front end.
 - **Static manifests** (`app-mcp.json`) let the Hub list an app's tools and wake it even when the app
   is not running.
 
 ## How AppWire compares
 
-| Approach | What the model sees | Works when the app is closed | Platforms | Approval |
-|---|---|---|---|---|
-| Computer use / screen agents | screenshots, pixels | no | desktop | none built in |
-| Browser automation (e.g. Playwright MCP) | DOM / accessibility tree | no | web | none built in |
-| A hand-written MCP server per app | tools, maintained separately from the app | depends | one per server | per server |
-| WebMCP | tools declared by the page | no | browser only | browser prompt |
-| App Intents / AppFunctions / App Actions | system intents | yes | one OS each | OS-level |
-| **AppWire** | **tools declared in the app's own code** | **yes (manifest + wake)** | **web, desktop, mobile** | **per-tool risk levels** |
+| Approach | What the model sees | Works when the app is closed | Platforms |
+|---|---|---|---|
+| Computer use / screen agents | screenshots, pixels | no | desktop |
+| Browser automation (e.g. Playwright MCP) | DOM / accessibility tree | no | web |
+| A hand-written MCP server per app | tools, maintained separately from the app | depends | one per server |
+| WebMCP | tools declared by the page | no | browser only |
+| App Intents / AppFunctions / App Actions | system intents | yes | one OS each |
+| **AppWire** | **tools declared in the app's own code** | **yes (manifest + wake)** | **web, desktop, mobile** |
 
 AppWire does not replace these standards: it reads and generates WebMCP, App Intents, AppFunctions
 and Windows App Actions, and it can aggregate existing MCP servers behind the same Hub.
@@ -199,7 +204,7 @@ level and a handler. A model needs only three verbs: **list, call, read**.
 A plugin moves code *into* the host. A tool is the opposite: the code stays in the app, the app
 declares what it can do, and the model orchestrates.
 
-### Eight principles
+### Nine principles
 
 1. **Declare where the action lives.** Capabilities are declared where they already are — a React
    hook, an HTML attribute, a doc comment, a state store, a native `ToolSpec`. No second description
@@ -217,10 +222,16 @@ declares what it can do, and the model orchestrates.
    use everywhere.
 6. **Compatible, therefore a superset.** WebMCP, App Intents, AppFunctions and Windows App Actions
    can all be consumed and generated. We don't compete with standards; we connect them.
-7. **Description is not authorization.** An overview tells the model what an app is for; it grants
-   nothing. Risk levels and approvals decide what runs — the human stays in control.
+7. **Description is not authorization.** An overview tells the model what an app is for, and a
+   tool's annotations say what it does; neither grants anything. Whether a call runs is decided by
+   the agent and its user; the final confirmation of a high-risk action, such as a payment, belongs
+   to the app, in its own UI with its own verification. AppWire passes declarations through
+   faithfully and protects apps and the device.
 8. **Fix it at the source.** Solve a problem in the layer where it originates. No forwarding
    processes, wrapper scripts, monkeypatches or fallback conversions to paper over it.
+9. **Every AI action is visible; what is declared undoable can be undone.** The person whose apps an
+   agent operates can always see what it did, and an action the app declares reversible can be
+   taken back. Being able to act is not enough; the user must be able to see and correct.
 
 ## FAQ
 
@@ -249,8 +260,13 @@ declare its actions with typed input schemas, so calls are precise, fast and wor
 hidden — or when the app is not running at all (it is woken on demand).
 
 **Is it safe to let a model call app actions?**
-Every tool carries a risk level (`read`, `write`, `destructive`, `payment`, `os-sensitive`); risky calls require
-human approval in the Hub, and an app overview never grants permissions by itself.
+AppWire leaves that decision where it belongs. Each tool declares what it does (as standard MCP tool
+annotations: read-only, destructive, idempotent, open-world) and AppWire passes those declarations
+to the agent unchanged; the agent (Claude Code, Cursor or your own loop) decides with its own
+permission settings whether a call runs or needs your confirmation. High-risk steps such as payment
+are confirmed inside the app, with its own UI and verification (password, 3-D Secure, biometrics).
+An app overview never grants permissions. The Hub's own job is to protect apps and the device with
+rate, wake and size limits.
 
 **Does it work with WebMCP?**
 Yes. `@app-mcp/web/webmcp` implements the WebMCP `modelContext` API as a polyfill and bridges it,

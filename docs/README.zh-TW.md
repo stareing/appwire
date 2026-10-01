@@ -24,7 +24,9 @@ Claude Code 或你自己的大型語言模型迴圈都能用。工具就宣告�
   Gemini 的工具呼叫（function calling）格式，或直接嵌入你自己的 Agent。
 - **標準進，標準出**：讀入並產生 WebMCP、Apple App Intents、Android AppFunctions、Windows App Actions；
   彙整既有的 MCP 伺服器。
-- **預設安全**：每個工具有風險等級，付款與破壞性操作需要人工確認。
+- **描述不等於授權**：App 宣告每個工具做什麼（標準 MCP 工具註解：唯讀、破壞性、冪等、開放世界）；
+  是否執行由你的 Agent 決定，付款等高風險步驟由 App 在自己的介面中確認。AppWire 如實傳遞宣告，
+  並保護 App 與裝置（限流、喚醒上限、大小上限）。
 
 > **萬物皆工具。**
 > App 即能力，介面即宣告，呼叫即喚醒。
@@ -135,7 +137,7 @@ Host 只用一個連接埠 `127.0.0.1:7717`：網頁 App 連線 `/app`（WebSock
 ```mermaid
 flowchart TD
   clients["MCP 用戶端 · 自有大型語言模型迴圈 · 廠商 Agent"]
-  hub["AppWire Hub<br/>路由 · 總覽 · 核准<br/>生命週期：休眠 / 喚醒 / 租約"]
+  hub["AppWire Hub<br/>路由 · 總覽 · 資源保護<br/>生命週期：休眠 / 喚醒 / 租約"]
   clients -- "MCP（stdio · Streamable HTTP）<br/>工具格式匯出 + dispatch · 嵌入式 API" --> hub
   hub -- "WebSocket（本機）" --> web["Web SDK<br/>（WASM 核心）"]
   hub -- "WebSocket（本機）" --> desktop["桌面 SDK<br/>Rust · C/C++ · C# · Python"]
@@ -152,19 +154,20 @@ flowchart TD
 
 - **App 端 SDK** 註冊工具與資源；協定由同一個 Rust 核心（`crates/core`）實作，各語言行為一致。
 - **Hub**（`crates/hub`）彙整 App 與上游 MCP 伺服器，把呼叫路由到正確的執行個體，首次接觸時附上簡短的 App 總覽，
-  執行核准，並喚醒休眠中的 App。`app-mcp-host` 是它的命令列進入點。
+  原樣傳遞各工具的宣告，並喚醒休眠中的 App。它不決定呼叫能否執行，這是 Agent 的職責（嵌入 Hub 的廠商可以透過
+  選用的 `ApprovalHandler` 回呼接入自己的確認介面）。`app-mcp-host` 是它的命令列進入點。
 - **靜態清單**（`app-mcp.json`）讓 Hub 在 App 未執行時也能列出其工具並喚醒它。
 
 ## 與其他方案的比較
 
-| 方案 | 模型看到的 | App 未執行時可用 | 平台 | 核准 |
-|---|---|---|---|---|
-| Computer use / 截圖類 Agent | 螢幕截圖、像素 | 否 | 桌面 | 無內建 |
-| 瀏覽器自動化（如 Playwright MCP） | DOM / 無障礙樹 | 否 | 網頁 | 無內建 |
-| 每個 App 手寫一個 MCP 伺服器 | 工具，但與 App 程式碼分開維護 | 視實作而定 | 每個伺服器一個 | 各自實作 |
-| WebMCP | 頁面宣告的工具 | 否 | 僅瀏覽器 | 瀏覽器提示 |
-| App Intents / AppFunctions / App Actions | 系統意圖 | 是 | 各自一個作業系統 | 系統層級 |
-| **AppWire** | **App 自己程式碼裡宣告的工具** | **是（清單 + 喚醒）** | **網頁、桌面、手機** | **依工具的風險等級** |
+| 方案 | 模型看到的 | App 未執行時可用 | 平台 |
+|---|---|---|---|
+| Computer use / 截圖類 Agent | 螢幕截圖、像素 | 否 | 桌面 |
+| 瀏覽器自動化（如 Playwright MCP） | DOM / 無障礙樹 | 否 | 網頁 |
+| 每個 App 手寫一個 MCP 伺服器 | 工具，但與 App 程式碼分開維護 | 視實作而定 | 每個伺服器一個 |
+| WebMCP | 頁面宣告的工具 | 否 | 僅瀏覽器 |
+| App Intents / AppFunctions / App Actions | 系統意圖 | 是 | 各自一個作業系統 |
+| **AppWire** | **App 自己程式碼裡宣告的工具** | **是（清單 + 喚醒）** | **網頁、桌面、手機** |
 
 AppWire 不取代這些標準：它能讀入並產生 WebMCP、App Intents、AppFunctions、Windows App Actions，
 也能把既有的 MCP 伺服器彙整到同一個 Hub 之後。
@@ -179,7 +182,7 @@ AppWire 說「**萬物皆工具**」：按鈕、表單、選單命令、狀態�
 
 外掛是把程式碼裝進宿主；工具則相反——程式碼留在 App 裡，App 宣告自己能做什麼，由模型來編排。
 
-### 八項原則
+### 九項原則
 
 1. **在動作所在處宣告**：能力就寫在它本來所在的地方——React hook、HTML 屬性、函式註解、狀態庫、
    原生 `ToolSpec`。不另外維護一份描述；程式碼變了，工具跟著變。
@@ -193,9 +196,12 @@ AppWire 說「**萬物皆工具**」：按鈕、表單、選單命令、狀態�
    Gemini 的工具格式，也能直接嵌入廠商自己的 Agent。一次接入，處處可用。
 6. **相容即超集**：WebMCP、App Intents、AppFunctions、Windows App Actions 都能讀入，也都能產生。
    不與標準競爭，只負責把它們串起來。
-7. **描述不等於授權**：總覽告訴模型這個 App 是做什麼的，但不賦予任何權限。能否執行由風險等級與核准決定，
-   人始終握有確認權。
+7. **描述不等於授權**：總覽告訴模型這個 App 是做什麼的，工具註解說明它做什麼，兩者都不賦予任何權限。
+   呼叫能否執行由 Agent 與它的使用者決定；付款等高風險操作的最終確認歸 App，在 App 自己的介面中以它自己的驗證完成。
+   AppWire 如實傳遞宣告，並保護 App 與裝置。
 8. **從根源解決**：問題出在哪一層，就改哪一層；不用轉送行程、包裝指令碼、修補替換或備援轉換去掩蓋它。
+9. **AI 的每次操作使用者都看得見；宣告了可復原的就能撤回**：Agent 在使用者的 App 裡做了什麼，使用者始終看得到；
+   App 宣告為可復原的操作可以撤回。只是「能做」還不夠，還要看得見、改得回。
 
 ## 常見問題
 
@@ -219,8 +225,10 @@ AppWire 說「**萬物皆工具**」：按鈕、表單、選單命令、狀態�
 視窗被遮住時也能用——App 沒在執行時也能依需求喚醒。
 
 **讓模型呼叫 App 的動作安全嗎？**
-每個工具都有風險等級（`read`、`write`、`destructive`、`payment`、`os-sensitive`）；有風險的呼叫需要在 Hub
-中由人確認，App 總覽本身不授予任何權限。
+這件事不由 AppWire 替你決定。每個工具宣告自己做什麼（以標準 MCP 工具註解表達：唯讀、破壞性、冪等、開放世界），
+AppWire 把這些宣告原樣交給 Agent；由 Agent（Claude Code、Cursor 或你自己的迴圈）依它自己的權限設定決定呼叫
+直接執行還是先請你確認。付款等高風險步驟在 App 內、以 App 自己的介面與驗證（付款密碼、3-D Secure、生物辨識）確認。
+App 總覽本身不授予任何權限。Hub 自己的職責是保護 App 與裝置：限流、喚醒上限、大小上限。
 
 **支援 WebMCP 嗎？**
 支援。`@app-mcp/web/webmcp` 以 polyfill 形式實作 WebMCP 的 `modelContext` API 並進行橋接，

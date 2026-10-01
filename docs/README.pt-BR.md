@@ -27,7 +27,10 @@ cada app. Nada de screen scraping, computer use ou automação de navegador.
   próprio agente.
 - **Padrões na entrada, padrões na saída:** consome e gera WebMCP, Apple App Intents, Android
   AppFunctions e Windows App Actions; agrega servidores MCP existentes.
-- **Seguro por padrão:** níveis de risco por ferramenta e aprovação humana para pagamentos e ações destrutivas.
+- **Descrição não é autorização:** os apps declaram o que cada ferramenta faz (anotações padrão de ferramentas MCP:
+  somente leitura, destrutiva, idempotente, mundo aberto); o seu agente decide se uma chamada é executada, e o app
+  confirma etapas de alto risco, como um pagamento, na própria interface. O AppWire repassa as declarações fielmente
+  e protege os apps e o dispositivo (limites de taxa, de despertares e de tamanho).
 
 > **Tudo é uma ferramenta.**
 > Apps são capacidades. Interfaces são declarações. Uma chamada é um despertar.
@@ -151,7 +154,7 @@ configuração, token de acesso e outros clientes MCP.
 ```mermaid
 flowchart TD
   clients["clientes MCP · seu loop de LLM · agente do fornecedor"]
-  hub["AppWire Hub<br/>roteamento · visão geral · aprovação<br/>ciclo de vida: dormir / despertar / lease"]
+  hub["AppWire Hub<br/>roteamento · visão geral · proteção de recursos<br/>ciclo de vida: dormir / despertar / lease"]
   clients -- "MCP (stdio · Streamable HTTP)<br/>exportação de formatos de ferramentas + despacho · API embutida" --> hub
   hub -- "WebSocket (local)" --> web["SDK Web<br/>(núcleo em WASM)"]
   hub -- "WebSocket (local)" --> desktop["SDKs desktop<br/>Rust · C/C++ · C# · Python"]
@@ -169,21 +172,23 @@ flowchart TD
 - **Os SDKs de app** registram ferramentas e recursos; um único núcleo em Rust (`crates/core`) implementa o
   protocolo, então o comportamento é idêntico em todas as linguagens.
 - **O Hub** (`crates/hub`) agrega apps e servidores MCP upstream, roteia as chamadas para a instância certa,
-  anexa uma breve visão geral do app no primeiro contato, aplica as aprovações e desperta apps que estão
-  dormindo. O `app-mcp-host` é a sua interface de linha de comando.
+  anexa uma breve visão geral do app no primeiro contato, repassa sem alterações o que cada ferramenta declara
+  e desperta apps que estão dormindo. Ele não decide se uma chamada pode ser executada: isso cabe ao agente (um
+  fornecedor que embute o Hub pode conectar sua própria interface de confirmação pelo callback opcional
+  `ApprovalHandler`). O `app-mcp-host` é a sua interface de linha de comando.
 - **Manifestos estáticos** (`app-mcp.json`) permitem que o Hub liste as ferramentas de um app e o desperte
   mesmo quando o app não está em execução.
 
 ## Comparação com outras abordagens
 
-| Abordagem | O que o modelo vê | Funciona com o app fechado | Plataformas | Aprovação |
-|---|---|---|---|---|
-| Computer use / agentes de tela | capturas de tela, pixels | não | desktop | nada embutido |
-| Automação de navegador (ex.: Playwright MCP) | DOM / árvore de acessibilidade | não | web | nada embutido |
-| Um servidor MCP escrito à mão para cada app | ferramentas, mantidas separadamente do app | depende | uma por servidor | por servidor |
-| WebMCP | ferramentas declaradas pela página | não | só navegador | prompt do navegador |
-| App Intents / AppFunctions / App Actions | intents do sistema | sim | um SO cada | no nível do SO |
-| **AppWire** | **ferramentas declaradas no próprio código do app** | **sim (manifesto + despertar)** | **web, desktop, mobile** | **níveis de risco por ferramenta** |
+| Abordagem | O que o modelo vê | Funciona com o app fechado | Plataformas |
+|---|---|---|---|
+| Computer use / agentes de tela | capturas de tela, pixels | não | desktop |
+| Automação de navegador (ex.: Playwright MCP) | DOM / árvore de acessibilidade | não | web |
+| Um servidor MCP escrito à mão para cada app | ferramentas, mantidas separadamente do app | depende | uma por servidor |
+| WebMCP | ferramentas declaradas pela página | não | só navegador |
+| App Intents / AppFunctions / App Actions | intents do sistema | sim | um SO cada |
+| **AppWire** | **ferramentas declaradas no próprio código do app** | **sim (manifesto + despertar)** | **web, desktop, mobile** |
 
 O AppWire não substitui esses padrões: ele lê e gera WebMCP, App Intents, AppFunctions e Windows App
 Actions, e pode agregar servidores MCP existentes por trás do mesmo Hub.
@@ -202,7 +207,7 @@ schema de entrada, um nível de risco e um handler. Um modelo precisa de apenas 
 Um plugin leva o código *para dentro* do host. Uma ferramenta é o oposto: o código fica no app, o app
 declara o que sabe fazer e o modelo orquestra.
 
-### Oito princípios
+### Nove princípios
 
 1. **Declare onde a ação vive.** As capacidades são declaradas onde já estão — um hook do React, um
    atributo HTML, um comentário de documentação, uma store de estado, um `ToolSpec` nativo. Nenhuma
@@ -220,10 +225,16 @@ declara o que sabe fazer e o modelo orquestra.
    fornecedor. Integre uma vez, use em qualquer lugar.
 6. **Compatível e, portanto, um superconjunto.** WebMCP, App Intents, AppFunctions e Windows App Actions
    podem ser consumidos e gerados. Não competimos com os padrões; nós os conectamos.
-7. **Descrição não é autorização.** Uma visão geral diz ao modelo para que serve um app; ela não concede
-   nada. Os níveis de risco e as aprovações decidem o que é executado — o ser humano continua no controle.
+7. **Descrição não é autorização.** Uma visão geral diz ao modelo para que serve um app, e as anotações de uma
+   ferramenta dizem o que ela faz; nenhuma das duas concede nada. Quem decide se uma chamada é executada são o
+   agente e o seu usuário; a confirmação final de uma ação de alto risco, como um pagamento, cabe ao app, na
+   própria interface e com a própria verificação. O AppWire repassa as declarações fielmente e protege os apps e
+   o dispositivo.
 8. **Corrija na origem.** Resolva o problema na camada onde ele surge. Nada de processos de
    encaminhamento, scripts wrapper, monkeypatches ou conversões de fallback para disfarçá-lo.
+9. **Toda ação da IA é visível; o que é declarado reversível pode ser desfeito.** Quem tem os apps operados por
+   um agente sempre consegue ver o que ele fez, e uma ação que o app declara reversível pode ser desfeita. Não
+   basta poder agir: o usuário precisa poder ver e corrigir.
 
 ## Perguntas frequentes
 
@@ -252,8 +263,13 @@ ações com schemas de entrada tipados, então as chamadas são precisas, rápid
 oculta — ou mesmo quando o app nem está em execução (ele é despertado sob demanda).
 
 **É seguro deixar um modelo chamar ações de um app?**
-Toda ferramenta tem um nível de risco (`read`, `write`, `destructive`, `payment`, `os-sensitive`); chamadas
-arriscadas exigem aprovação humana no Hub, e a visão geral de um app nunca concede permissões por si só.
+O AppWire deixa essa decisão onde ela pertence. Cada ferramenta declara o que faz (como anotações padrão de
+ferramentas MCP: somente leitura, destrutiva, idempotente, mundo aberto) e o AppWire entrega essas declarações ao
+agente sem alterações; o agente (Claude Code, Cursor ou o seu próprio loop) decide, com as próprias configurações
+de permissão, se uma chamada é executada ou precisa da sua confirmação. Etapas de alto risco, como um pagamento,
+são confirmadas dentro do app, com a interface e a verificação dele (senha, 3-D Secure, biometria). A visão geral
+de um app nunca concede permissões. O papel do próprio Hub é proteger os apps e o dispositivo com limites de
+taxa, de despertares e de tamanho.
 
 **Funciona com WebMCP?**
 Sim. `@app-mcp/web/webmcp` implementa a API `modelContext` do WebMCP como polyfill e faz a ponte com
