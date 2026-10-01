@@ -5,7 +5,11 @@
 //! | `/app` | WebSocket 升级 → App 连接（[`crate::app_server`]） | `Origin` 在 `app/hello` 时按允许列表 / 配对处理 |
 //! | `/mcp` | MCP Streamable HTTP（rmcp [`StreamableHttpService`]，开启时） | `Origin` 允许列表（403）→ 令牌（401） |
 //! | `/healthz` | `GET`：Host 身份与监听信息（[`Health`]），不需要令牌 | `Origin` 允许列表（403） |
+//! | `/status` | `GET`：运行状态（[`crate::HubStatus`]：实例、最近错误、SDK 诊断上报） | `Origin` 允许列表（403）→ IPC 直接允许；TCP 必须携带有效令牌（未配置令牌时 403） |
 //!
+//! - 本地 IPC 端点上的 `/mcp`（[`crate::HubConfig::mcp_http`] 开启时）与 TCP 上相同，但**不校验令牌**：
+//!   IPC 的对端用户已由操作系统核对为同一用户（[`crate::ipc`]），同一用户本来就能读取令牌文件，令牌没有额外防护。
+//!   供厂商 Agent / 支持本地套接字的 MCP 客户端使用（客户端应同样核对监听方是同一用户，spec/protocol.md 1.4）。
 //! - 根路径 `/` 的 WebSocket 升级按 `/app` 处理（合并端口之前的 SDK 连接根路径；兼容期内保留，首次出现时记录提示）。
 //! - 同一个 [`Router`] 既服务回环 TCP 监听器，也服务本地 IPC 端点（[`Transport`]），两者只在连接级鉴权与
 //!   对端信息上不同。
@@ -38,7 +42,7 @@ use crate::app_server::Peer;
 use crate::hub::HubShared;
 use crate::mcp::McpSession;
 
-pub use app_mcp_protocol::{APP_PATH, HEALTH_PATH, MCP_PATH};
+pub use app_mcp_protocol::{APP_PATH, HEALTH_PATH, MCP_PATH, STATUS_PATH};
 
 /// `/healthz` 响应中的服务标识（[`app_mcp_protocol::identity::SERVICE_NAME`]）。
 pub const HEALTH_SERVICE: &str = app_mcp_protocol::identity::SERVICE_NAME;
@@ -238,6 +242,15 @@ impl Router {
                     plain(http::StatusCode::METHOD_NOT_ALLOWED, "只支持 GET")
                 }
             }
+            STATUS_PATH => {
+                if req.method() != http::Method::GET {
+                    return plain(http::StatusCode::METHOD_NOT_ALLOWED, "只支持 GET");
+                }
+                if let Some(resp) = self.authorize_status(req.headers(), peer) {
+                    return resp;
+                }
+                json(http::StatusCode::OK, &self.shared.status())
+            }
             MCP_PATH => {
                 let Some(service) = &self.mcp else {
                     return plain(http::StatusCode::NOT_FOUND, "本端点未开启 MCP HTTP 服务。");
@@ -254,8 +267,28 @@ impl Router {
             ),
             _ => plain(
                 http::StatusCode::NOT_FOUND,
-                "app-mcp：App 连接 /app（WebSocket），MCP /mcp，健康检查 /healthz。",
+                "app-mcp：App 连接 /app（WebSocket），MCP /mcp，健康检查 /healthz，运行状态 /status。",
             ),
+        }
+    }
+
+    /// `/status` 的授权：IPC 对端直接允许；TCP 必须携带有效令牌（未配置令牌时一律拒绝）。`None` = 通过。
+    fn authorize_status(&self, headers: &http::HeaderMap, peer: Peer) -> Option<http::Response<Body>> {
+        if self.transport == Transport::Ipc {
+            return None;
+        }
+        let Some(expected) = self.options.token.as_deref() else {
+            return Some(plain(
+                http::StatusCode::FORBIDDEN,
+                "请经本地 IPC 访问 /status，或配置令牌（--auth browser|all）后携带 Authorization: Bearer <令牌>。",
+            ));
+        };
+        match bearer(headers) {
+            Some(got) if token_eq(got, expected) => None,
+            _ => {
+                tracing::warn!(%peer, "拒绝未携带有效令牌的 /status 请求");
+                Some(unauthorized("/status 需要本地访问令牌：请求头 Authorization: Bearer <令牌>（令牌见 ~/.app-mcp/token）。"))
+            }
         }
     }
 

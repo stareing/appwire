@@ -76,13 +76,13 @@ describe('createAppMcp', () => {
     native.emit({ type: 'state', state: { status: 'pending-pairing' } })
     const before = Date.now()
     native.emit({ type: 'state', state: { status: 'backoff', retryInMs: 500 } })
-    native.emit({ type: 'state', state: { status: 'rejected', reason: 'nope' } })
+    native.emit({ type: 'state', state: { status: 'rejected', reason: 'nope', code: 'PAIRING_REJECTED' } })
     off()
     native.emit({ type: 'state', state: { status: 'connected' } })
     expect(seen.map((s) => s.status)).toEqual(['connecting', 'pending-pairing', 'backoff', 'rejected'])
     const backoff = seen[2] as { retryAt: number }
     expect(backoff.retryAt).toBeGreaterThanOrEqual(before + 500)
-    expect(seen[3]).toEqual({ status: 'rejected', reason: 'nope' })
+    expect(seen[3]).toEqual({ status: 'rejected', reason: 'nope', code: 'PAIRING_REJECTED' })
     expect(app.state).toEqual({ status: 'connected' })
   })
 

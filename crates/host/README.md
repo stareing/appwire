@@ -15,7 +15,9 @@ Windows 无窗口版 `src/bin/app-mcp-hostw.rs` 只是入口）与集成测试�
   - `/app`：App 连接（WebSocket 升级）——网页 SDK（`ws://127.0.0.1:7717/app`），以及显式配置 `ws://` 的原生 App；
   - `/mcp`：MCP Streamable HTTP——每个 MCP 客户端（Claude Code、Claude Desktop、IDE……）各自建立一个 HTTP 会话，
     **共享同一组 App 连接**；每个会话有独立的 `apps.select` 选择与“首次接触附带总览”状态；
-  - `/healthz`：Host 身份（`service`、`version`、`user`、`pid`）与监听信息。
+  - `/healthz`：Host 身份（`service`、`version`、`user`、`pid`）与监听信息；
+  - `/status`：运行状态（各 App 实例在线 / 休眠 / 唤醒中、连接 ID、最近错误、SDK 诊断上报），`doctor` / `status` 读取；
+    本地 IPC 直接允许，TCP 必须带令牌（未配置令牌时 403）。
 - **本地 IPC**（原生 App 默认）：Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock`（未设置时 `~/.app-mcp/run/hub.sock`）、
   macOS `~/.app-mcp/run/hub.sock`、Windows 命名管道 `\\.\pipe\app-mcp-<用户 SID>`；只接受同一用户的进程（见下方「本地 IPC」）。
 
@@ -28,6 +30,8 @@ Windows 无窗口版 `src/bin/app-mcp-hostw.rs` 只是入口）与集成测试�
 # 安装为当前用户的登录自启服务（无需管理员）并立即启动；给出的参数写入 ~/.app-mcp/config.json
 app-mcp-host service install --manifest ./examples/shop/app-mcp.json
 app-mcp-host service status        # 安装与运行状态；未运行时退出码 3
+app-mcp-host status                # 一行摘要（pid、版本、地址、App 在线 / 休眠数）；未运行时退出码 3
+app-mcp-host doctor [--json]       # 诊断：逐项给出结论与修复建议；有错误时退出码 1
 app-mcp-host service stop | start
 app-mcp-host service uninstall     # 停止并删除服务文件
 
@@ -69,6 +73,10 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 - 鉴权：Unix 上套接字目录属于当前用户且为 0700、套接字 0600，并逐连接核对对端用户 ID（`SO_PEERCRED` / `getpeereid`）；
   Windows 上管道的 DACL 只允许当前用户、所有者为当前用户，拒绝远程客户端；SDK 也核对监听方是同一用户（防抢占）。
 - Hub API 的 `InstanceInfo.pid` 为 IPC 连接的对端进程号。
+- **MCP over IPC**：`serve` 在 IPC 端点上同样提供 `/mcp`（及 `/healthz`、`/status`），供支持本地套接字的 MCP 客户端 /
+  厂商 Agent 使用（请求 URL `http://localhost/mcp`；Rust 示例见 `crates/hub/tests/mcp_ipc.rs`，用 rmcp 的
+  `UnixSocketHttpClient`）。IPC 上**不校验令牌**：连接已确认是同一用户，而同一用户本来就能读取令牌文件；客户端应核对
+  监听方是同一用户。不提供 stdio→HTTP 转发程序。
 
 ### 单实例与登记文件
 
@@ -80,6 +88,34 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 - **端口被占用**（锁已取得，说明不是同一配置目录的 Host）：显式配置的 `listen` 被占用时报错并说明占用者
   （`/healthz` 是另一个 app-mcp → 给出其 pid 与用户，提示“不同的配置目录或其他用户”；否则“其他程序”），退出码 1；
   缺省地址被占用时依次改用 7737、7757。IPC 端点被占用（另一个配置目录的 Host）同样报错。
+
+## 诊断：`doctor` / `status`
+
+`app-mcp-host doctor`（`--home` 指定配置目录，`--json` 机器可读）只读地逐项检查，每项给出状态（正常 / 信息 / 注意 / 错误 / 跳过）、
+结论、修复建议与错误码（spec/protocol.md 第 10 节），有错误时退出码 1：
+
+| 检查 | 内容 |
+|---|---|
+| Host 运行状态 | 登记文件 + `/healthz` 进程号一致；版本、身份、监听地址 |
+| 单实例锁 | `run/hub.lock` 的持有者（Linux 读 `/proc/locks` 按 inode 匹配；其他平台读锁文件中的 pid 并核对进程存活）；**不尝试加锁** |
+| 运行时目录 | `run/` 的权限与所有者（Unix 须 0700、属于当前用户） |
+| 本地 IPC 端点 | 套接字及其目录的权限 / 所有者；Windows 经管道读 `/status` 时核对管道所有者 SID |
+| 监听端口 | 实际地址与 7717 / 7737 / 7757：空闲 / 本 Host / 其他 app-mcp（pid、用户）/ 其他程序（pid 与进程名：Linux `/proc/net/tcp` → `/proc/*/fd`，Windows `GetExtendedTcpTable`，macOS 尽力用 `lsof`） |
+| Windows 排除端口段 | 解析 `netsh int ipv4 show excludedportrange protocol=tcp`，候选端口落在其中时提示（显式地址或全部候选落入时为错误；Hyper-V / WSL 常保留端口段） |
+| 防火墙 | 说明：只监听回环，回环连接不经入站防火墙规则 |
+| 令牌与鉴权 | 令牌策略（browser / all / off）、令牌文件是否存在及权限 |
+| App 实例 | 经 IPC（IPC 关闭时 TCP + 令牌）读 `/status`：各 App 在线 / 休眠 / 唤醒中、实例连接 ID 与 pid、最近错误 |
+| SDK 上报 | SDK 在连接恢复后上报的此前问题（如浏览器拦截 `BLOCKED_*`）。被拦截期间页面无法连接 Host，Host 无从得知（spec/protocol.md 10.2） |
+| Android adb reverse | `adb` 在 PATH 中时运行 `adb reverse --list`（5 秒超时），检查设备端 7717 是否转发到本机实际端口 |
+
+`app-mcp-host status`：一行摘要，未运行时说明原因（如 `[PORT_BUSY]` 与占用进程），退出码 3。
+
+`service install` 安装前先检查端口：本配置目录的 Host 已在运行时跳过；否则依次探测候选端口并打印每个占用者（pid 与进程名）——
+显式 `listen` 或全部候选被占用时报 `PORT_BUSY` 且不安装，仅默认端口被占用时提示将改用备选端口后继续。`serve` 启动失败的
+信息同样带错误码（`LOCK_HELD` / `PORT_BUSY` / `IPC_ENDPOINT_BUSY`）、占用进程与修复建议。
+
+**连接 ID**：Host 为每条 App 连接（多路复用时每个通道）分配 `<启动标记>-<序号>`，日志字段 `cid`；SDK 握手成功后在自己的日志中
+记录同一 ID（spec/protocol.md 10.3），`/status` 的实例信息也带 `connectionId`。MCP 会话为 `mcp-<序号>`。
 
 ## 配置
 
@@ -163,6 +199,7 @@ HTTP 端口（`/app`、`/mcp`、`/healthz`）的防护分三层；App 连接（`
   `"headers": {"Authorization": "Bearer ${APP_MCP_TOKEN:-}"}`，令牌放环境变量，不入库）。
 - 携带了错误的令牌一律拒绝（即使该请求本可不带），避免配置错误被静默忽略；空令牌（`Bearer ` 后为空，环境变量未设置时）视为未携带。
 - `/healthz` 不需要令牌（只返回服务名、版本、用户、pid、监听地址与 IPC 端点），供 `service status` 与端口占用诊断使用；仍受 Origin 校验。
+- `/status`（实例、最近错误、SDK 上报）经 IPC 直接可读；经 TCP 必须带有效令牌，未配置令牌（`--auth off`）时 TCP 上一律 403。
 - 令牌比较为常量时间；`app-mcp-host token --regenerate` 轮换令牌（运行中的实例需重启）。
 
 ## stdio 模式（兼容 / 测试）

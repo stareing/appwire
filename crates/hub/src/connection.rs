@@ -38,6 +38,9 @@ type Pending = HashMap<RequestId, oneshot::Sender<Result<Value, RpcError>>>;
 #[derive(Debug)]
 pub struct Connection {
     pub id: u64,
+    /// 连接 ID（spec/protocol.md 10.3）：`<Hub 启动标记>-<id>`，在 `HelloResult.connectionId` 中返回给 SDK，
+    /// Hub 日志以 `cid` 字段记录。
+    pub cid: String,
     tx: mpsc::UnboundedSender<Outgoing>,
     pending: Mutex<Pending>,
     next_id: AtomicI64,
@@ -58,10 +61,11 @@ impl Drop for WorkGuard {
 }
 
 impl Connection {
-    pub fn new(id: u64) -> (std::sync::Arc<Self>, mpsc::UnboundedReceiver<Outgoing>) {
+    pub fn new(id: u64, cid: impl Into<String>) -> (std::sync::Arc<Self>, mpsc::UnboundedReceiver<Outgoing>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let conn = Connection {
             id,
+            cid: cid.into(),
             tx,
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicI64::new(1),
@@ -176,7 +180,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_roundtrip_and_errors() {
-        let (conn, mut rx) = Connection::new(1);
+        let (conn, mut rx) = Connection::new(1, "t-1");
         let c2 = conn.clone();
         let task = tokio::spawn(async move {
             c2.request("ping", Value::Null, Duration::from_secs(5))
@@ -209,7 +213,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_timeout_forgets() {
-        let (conn, _rx) = Connection::new(1);
+        let (conn, _rx) = Connection::new(1, "t-1");
         let r = conn
             .request("x", Value::Null, Duration::from_millis(10))
             .await;
@@ -219,7 +223,7 @@ mod tests {
 
     #[test]
     fn work_guard_counts() {
-        let (conn, _rx) = Connection::new(1);
+        let (conn, _rx) = Connection::new(1, "t-1");
         let a = conn.begin_work();
         let b = conn.begin_work();
         assert_eq!(conn.inflight(), 2);
@@ -231,7 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn closed_channel_is_disconnected() {
-        let (conn, rx) = Connection::new(1);
+        let (conn, rx) = Connection::new(1, "t-1");
         drop(rx);
         assert!(conn.is_closed());
         assert_eq!(

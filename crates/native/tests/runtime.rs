@@ -126,6 +126,13 @@ fn handshake_sync_and_listener() {
             .all(|t| t == "app-mcp-dispatch")
     );
 
+    // 连接 ID（spec/protocol.md 10.3）：可查询，连接后的日志带 [cid] 前缀
+    let cid = client.connection_id().expect("连接 ID");
+    assert!(cid.starts_with("mock-"), "{cid}");
+    eventually("连接日志", || {
+        rec.logs.lock().unwrap().iter().any(|(_, m)| m.starts_with(&format!("[{cid}] 已连接 Host")))
+    });
+
     // start 重复调用无效果
     client.start();
 
@@ -495,7 +502,12 @@ fn connect_failure_backs_off() {
     let client = NativeClient::new(c, Some(rec.clone())).unwrap();
     client.start();
     eventually("Backoff", || client.state().status == StateStatus::Backoff);
-    assert!(client.state().retry_in_ms.is_some());
+    let state = client.state();
+    assert!(state.retry_in_ms.is_some());
+    // 连接失败按系统错误归类（spec/protocol.md 10.1）：端点不存在 → HOST_NOT_RUNNING
+    assert_eq!(state.code.as_deref(), Some("HOST_NOT_RUNNING"), "{state:?}");
+    assert!(state.reason.as_deref().is_some_and(|r| r.contains("失败")), "{state:?}");
+    assert_eq!(client.connection_id(), None);
     eventually("再次尝试", || {
         rec.statuses()
             .iter()

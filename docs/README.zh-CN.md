@@ -118,13 +118,16 @@ const results = await handleAnthropicToolUses(hub, response.content)
 # 构建 Host 并以常驻服务运行（一个进程服务所有 MCP 客户端）
 cargo build -p app-mcp-host
 target/debug/app-mcp-host serve            # 或：app-mcp-host service install（登录自启）
+target/debug/app-mcp-host status           # 一行摘要
+target/debug/app-mcp-host doctor           # 连不上时：逐项检查，给出结论与修复建议
 
 # 启动示例商城，然后在浏览器中打开
 pnpm --filter @app-mcp/example-shop dev
 ```
 
-Host 只用一个端口 `127.0.0.1:7717`：网页 App 连接 `/app`（WebSocket），MCP 客户端以 Streamable HTTP 连接 `http://127.0.0.1:7717/mcp`，`/healthz` 给出 Host 身份；原生 App 经当前用户专属的本地套接字（Unix 域套接字 / Windows 命名管道）连接。单实例锁保证每个用户只有一个 Host，实际监听位置记录在 `~/.app-mcp/run/endpoints.json`。
+Host 只用一个端口 `127.0.0.1:7717`：网页 App 连接 `/app`（WebSocket），MCP 客户端以 Streamable HTTP 连接 `http://127.0.0.1:7717/mcp`，`/healthz` 给出 Host 身份；原生 App 经当前用户专属的本地套接字（Unix 域套接字 / Windows 命名管道）连接，该套接字同样提供 MCP，供支持本地套接字的 Agent 使用。单实例锁保证每个用户只有一个 Host，实际监听位置记录在 `~/.app-mcp/run/endpoints.json`。
 仓库的 `.mcp.json` 已让 Claude Code 连接该端点：重启会话、打开示例页面，就可以让 Claude 操作商城。
+连不上时运行 `app-mcp-host doctor`：检查 Host、单实例锁、本地套接字权限、端口被哪个进程占用、Windows 排除端口段、令牌模式、`adb reverse`，以及各 App 的状态与最近错误；SDK 的连接状态带机器可读的错误码（`spec/protocol.md` 第 10 节）。
 配置文件、访问令牌与其他 MCP 客户端见 [`crates/host/README.md`](../crates/host/README.md)。
 
 ## 文档

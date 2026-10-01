@@ -1,7 +1,7 @@
 //! JS 对象 ↔ 核心类型的转换。与 wasm-bindgen 无关，可在原生目标上测试。
 
 use app_mcp_core::{
-    Activation, AppOverview, CallOutput, CancelReason, ClientConfig, ClientKind, ConnectionState, Event, HeartbeatPolicy,
+    Activation, AppOverview, CallOutput, CancelReason, ClientConfig, ClientKind, ConnectionErrorCode, ConnectionState, Event, HeartbeatPolicy,
     LifecycleMode, LifecyclePolicy, ReconnectPolicy, Residency, ResourceDef, Risk, ScopeId, SleepReason, ToolDef,
     ToolError, ToolUpdate, Visibility, WakeDescriptor, WakeReason,
 };
@@ -356,9 +356,15 @@ pub enum JsState {
     Backoff {
         #[serde(rename = "retryAt")]
         retry_at: u64,
+        /// 本次连接失败 / 断开的原因与错误码（spec/protocol.md 10.1）；普通断线时省略。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        code: Option<ConnectionErrorCode>,
     },
     Rejected {
         reason: String,
+        code: ConnectionErrorCode,
     },
     Stopped,
     Dormant,
@@ -366,6 +372,7 @@ pub enum JsState {
     /// 对端不是 app-mcp Host（spec/protocol.md 1.6）。
     HostMismatch {
         reason: String,
+        code: ConnectionErrorCode,
     },
 }
 
@@ -377,12 +384,16 @@ impl JsState {
             ConnectionState::Handshaking => JsState::Handshaking,
             ConnectionState::PendingPairing => JsState::PendingPairing,
             ConnectionState::Connected => JsState::Connected,
-            ConnectionState::Backoff { retry_at } => JsState::Backoff { retry_at: *retry_at },
-            ConnectionState::Rejected { reason } => JsState::Rejected { reason: reason.clone() },
+            ConnectionState::Backoff { retry_at, reason, code } => {
+                JsState::Backoff { retry_at: *retry_at, reason: reason.clone(), code: *code }
+            }
+            ConnectionState::Rejected { reason, code } => JsState::Rejected { reason: reason.clone(), code: *code },
             ConnectionState::Stopped => JsState::Stopped,
             ConnectionState::Dormant => JsState::Dormant,
             ConnectionState::Waking => JsState::Waking,
-            ConnectionState::HostMismatch { reason } => JsState::HostMismatch { reason: reason.clone() },
+            ConnectionState::HostMismatch { reason, code } => {
+                JsState::HostMismatch { reason: reason.clone(), code: *code }
+            }
         }
     }
 }
@@ -525,14 +536,30 @@ mod tests {
 
     #[test]
     fn state_shape() {
-        let s = serde_json::to_value(JsState::from_core(&ConnectionState::Backoff { retry_at: 42 })).unwrap();
+        let s = serde_json::to_value(JsState::from_core(&ConnectionState::Backoff { retry_at: 42, reason: None, code: None }))
+            .unwrap();
         assert_eq!(s, json!({ "status": "backoff", "retryAt": 42 }));
+        let s = serde_json::to_value(JsState::from_core(&ConnectionState::Backoff {
+            retry_at: 42,
+            reason: Some("无法连接".into()),
+            code: Some(ConnectionErrorCode::ConnectFailed),
+        }))
+        .unwrap();
+        assert_eq!(s, json!({ "status": "backoff", "retryAt": 42, "reason": "无法连接", "code": "CONNECT_FAILED" }));
         let s = serde_json::to_value(JsState::from_core(&ConnectionState::PendingPairing)).unwrap();
         assert_eq!(s, json!({ "status": "pending-pairing" }));
-        let s = serde_json::to_value(JsState::from_core(&ConnectionState::Rejected { reason: "r".into() })).unwrap();
-        assert_eq!(s, json!({ "status": "rejected", "reason": "r" }));
-        let s = serde_json::to_value(JsState::from_core(&ConnectionState::HostMismatch { reason: "m".into() })).unwrap();
-        assert_eq!(s, json!({ "status": "host-mismatch", "reason": "m" }));
+        let s = serde_json::to_value(JsState::from_core(&ConnectionState::Rejected {
+            reason: "r".into(),
+            code: ConnectionErrorCode::OriginNotAllowed,
+        }))
+        .unwrap();
+        assert_eq!(s, json!({ "status": "rejected", "reason": "r", "code": "ORIGIN_NOT_ALLOWED" }));
+        let s = serde_json::to_value(JsState::from_core(&ConnectionState::HostMismatch {
+            reason: "m".into(),
+            code: ConnectionErrorCode::HostNotAppMcp,
+        }))
+        .unwrap();
+        assert_eq!(s, json!({ "status": "host-mismatch", "reason": "m", "code": "HOST_NOT_APP_MCP" }));
     }
 
     #[test]

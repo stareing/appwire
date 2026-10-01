@@ -58,7 +58,7 @@ describe('创建与加载', () => {
     const states: ConnectionState[] = []
     app.onStateChange((s) => states.push(s))
     await settle()
-    expect(app.state).toEqual({ status: 'rejected', reason: 'WASM 核心加载失败：404' })
+    expect(app.state).toEqual({ status: 'rejected', reason: 'WASM 核心加载失败：404', code: 'SDK_INIT_FAILED' })
     expect(states).toHaveLength(1)
     expect(logger.error).toHaveBeenCalled()
   })
@@ -239,6 +239,24 @@ describe('连接', () => {
     expect(h.core.callsOf('handleMessage')).toHaveLength(1)
   })
 
+  it('连接 ID 与错误码（spec/protocol.md 第 10 节）：日志带 [cid]，backoff 带 reason / code', async () => {
+    const h = setup()
+    await settle()
+    h.core.cid = '3f9a1c-12'
+    h.socket().open()
+    expect(h.app.connectionId).toBe('3f9a1c-12')
+    expect(h.logger.debug).toHaveBeenCalledWith('[app-mcp] [3f9a1c-12] 已连接 Host（连接 ID 3f9a1c-12）')
+    h.socket().script({ type: 'warning', message: 'w' })
+    expect(h.logger.warn).toHaveBeenCalledWith('[app-mcp] [3f9a1c-12] w')
+    h.core.cid = undefined
+    h.core.setState({ status: 'backoff', retryAt: 2000, reason: '心跳超时', code: 'CONNECT_FAILED' })
+    h.app.tool('t', { description: '', handler: () => {} }) // 触发一次 pump
+    expect(h.app.state).toMatchObject({ status: 'backoff', reason: '心跳超时', code: 'CONNECT_FAILED' })
+    h.core.setState({ status: 'backoff', retryAt: 3000 })
+    h.app.tool('u', { description: '', handler: () => {} })
+    expect(h.app.state).not.toHaveProperty('code')
+  })
+
   it('Send → ws.send', async () => {
     const h = await connected()
     h.socket().script({ type: 'send', text: '{"a":1}' })
@@ -307,18 +325,18 @@ describe('连接', () => {
     const h = await connected()
     const states: ConnectionState[] = []
     h.app.onStateChange((s) => states.push(s))
-    h.core.setState({ status: 'host-mismatch', reason: '不是 app-mcp' })
+    h.core.setState({ status: 'host-mismatch', reason: '不是 app-mcp', code: 'HOST_NOT_APP_MCP' })
     h.app.tool('a', { description: '', handler: () => {} }) // 触发一次 pump
     expect(h.core.callsOf('connectNow')).toHaveLength(1)
     expect(h.socket().url).toBe('ws://127.0.0.1:7737/app')
     // （假核心的 handleConnected 直接进入 connected，会清零计数；真实核心此时在 handshaking，这里不打开连接）
-    h.core.setState({ status: 'host-mismatch', reason: '不是 app-mcp' })
+    h.core.setState({ status: 'host-mismatch', reason: '不是 app-mcp', code: 'HOST_NOT_APP_MCP' })
     h.app.tool('b', { description: '', handler: () => {} })
     expect(h.socket().url).toBe('ws://127.0.0.1:7757/app')
     expect(states.some((s) => s.status === 'host-mismatch')).toBe(false)
-    h.core.setState({ status: 'host-mismatch', reason: '不是 app-mcp' })
+    h.core.setState({ status: 'host-mismatch', reason: '不是 app-mcp', code: 'HOST_NOT_APP_MCP' })
     h.app.tool('c', { description: '', handler: () => {} })
-    expect(h.app.state).toEqual({ status: 'host-mismatch', reason: '不是 app-mcp' })
+    expect(h.app.state).toEqual({ status: 'host-mismatch', reason: '不是 app-mcp', code: 'HOST_NOT_APP_MCP' })
     expect(h.logger.warn).toHaveBeenCalledWith('[app-mcp] 不是 app-mcp')
     // connectNow：再试一轮
     h.app.connectNow()
@@ -327,9 +345,9 @@ describe('连接', () => {
 
   it('显式 hostUrl：不尝试其他端口，不是 app-mcp 时直接 host-mismatch', async () => {
     const h = await connected({ hostUrl: 'ws://127.0.0.1:9999/app' })
-    h.core.setState({ status: 'host-mismatch', reason: 'x' })
+    h.core.setState({ status: 'host-mismatch', reason: 'x', code: 'HOST_NOT_APP_MCP' })
     h.app.tool('a', { description: '', handler: () => {} })
-    expect(h.app.state).toEqual({ status: 'host-mismatch', reason: 'x' })
+    expect(h.app.state).toEqual({ status: 'host-mismatch', reason: 'x', code: 'HOST_NOT_APP_MCP' })
     expect(h.sockets.map((s) => s.url)).toEqual(['ws://127.0.0.1:9999/app'])
     h.socket().fail()
     h.core.emit({ type: 'connect' })
@@ -351,7 +369,7 @@ describe('连接', () => {
       },
     )
     await settle()
-    expect(h.core.methods()).toContain('handleDisconnected')
+    expect(h.core.callsOf('handleConnectFailed')[0]?.[0]).toBe('CONNECT_FAILED')
     app.dispose()
   })
 
@@ -397,7 +415,7 @@ describe('连接', () => {
     h.socket().script({ type: 'stateChanged', state: { status: 'pending-pairing' } })
     expect(fn).toHaveBeenCalledWith({ status: 'pending-pairing' })
     off()
-    h.socket().script({ type: 'stateChanged', state: { status: 'rejected', reason: 'no' } })
+    h.socket().script({ type: 'stateChanged', state: { status: 'rejected', reason: 'no', code: 'PAIRING_REJECTED' } })
     expect(fn).toHaveBeenCalledTimes(1)
   })
 

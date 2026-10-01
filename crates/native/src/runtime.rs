@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use app_mcp_protocol::Endpoint;
+use app_mcp_protocol::{ConnectionErrorCode, ConnectionIssue, Endpoint};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -271,13 +271,9 @@ async fn drive(
             }
             Wakeup::Connected(Err(e)) => {
                 connecting = None;
-                log(
-                    &shared,
-                    &jobs,
-                    LogLevel::Debug,
-                    format!("连接 {host_url} 失败：{e}"),
-                );
-                shared.lock().client.handle_disconnected(now_ms());
+                let issue = connect_issue(&host_url, &e);
+                log(&shared, &jobs, LogLevel::Info, issue.to_string());
+                shared.lock().client.handle_connect_failed(issue, now_ms());
             }
             Wakeup::Incoming(Some(Ok(WsMessage::Text(text)))) => {
                 shared.lock().client.handle_message(text.as_str(), now_ms());
@@ -416,8 +412,19 @@ async fn pipe_connect(name: &str) -> Result<TcpStream, WsError> {
     )))
 }
 
+/// 建立连接失败的原因：按系统错误归类错误码（spec/protocol.md 10.1）。
+fn connect_issue(host_url: &str, e: &WsError) -> ConnectionIssue {
+    let code = match e {
+        WsError::Io(io) => app_mcp_protocol::diagnostic::connect_error_code(io.kind()),
+        _ => ConnectionErrorCode::ConnectFailed,
+    };
+    ConnectionIssue::new(code, format!("连接 {host_url} 失败：{e}"))
+}
+
+/// 记录日志；连接期间以 `[连接 ID] ` 开头。调用时不得持有 `shared` 的锁。
 fn log(shared: &Shared, jobs: &Sender<Job>, level: LogLevel, message: String) {
     if let Some(listener) = shared.listener.clone() {
+        let message = format!("{}{message}", crate::cid_prefix(&shared.lock().client));
         let _ = jobs.send(Box::new(move || listener.on_log(level, message)));
     }
 }

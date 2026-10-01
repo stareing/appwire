@@ -59,8 +59,10 @@ export type ConnectionState =
   | { status: 'handshaking' }
   | { status: 'pending-pairing' }
   | { status: 'connected' }
-  | { status: 'backoff'; retryAt: number }
-  | { status: 'rejected'; reason: string }
+  /** `reason` / `code`：本次连接失败的原因与错误码（spec/protocol.md 10.1，如 `HOST_NOT_RUNNING`）；普通断线时省略。 */
+  | { status: 'backoff'; retryAt: number; reason?: string; code?: string }
+  /** `code`：错误码（spec/protocol.md 10.1，如 `ORIGIN_NOT_ALLOWED`、`PAIRING_REJECTED`）。 */
+  | { status: 'rejected'; reason: string; code: string }
   | { status: 'stopped' }
   /** 已与 Host 完成 `app/sleep` 握手后断开（或 `on-demand` 启动后尚未连接）；注册表保留，等待唤醒。 */
   | { status: 'dormant' }
@@ -70,7 +72,7 @@ export type ConnectionState =
    * 对端不是期望的 Host（spec/protocol.md 1.6）：不是 app-mcp，或属于本机其他用户。不再自动重连，
    * `wake()` / `connectNow()` 时再试一次。`reason` 为中文说明。
    */
-  | { status: 'host-mismatch'; reason: string }
+  | { status: 'host-mismatch'; reason: string; code: string }
 
 // ---------------------------------------------------------------------------
 // 生命周期（spec/lifecycle.md）
@@ -315,6 +317,8 @@ export interface AppMcp extends Registrar {
   readonly options: Readonly<NodeAppMcpOptions>
   readonly instanceId: string
   readonly state: ConnectionState
+  /** Host 为当前连接分配的连接 ID（spec/protocol.md 10.3），与 Host 日志中的 `cid` 对应；未连接时为 `undefined`。 */
+  readonly connectionId?: string
   /** 订阅连接状态变化，返回取消订阅函数。 */
   onStateChange(listener: (state: ConnectionState) => void): () => void
   /** 断开连接并注销全部工具与资源。 */

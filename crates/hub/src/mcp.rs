@@ -31,6 +31,8 @@ pub struct McpSession {
     shared: Arc<HubShared>,
     id: u64,
     key: String,
+    /// 会话 ID（日志 `cid` 字段，spec/protocol.md 10.3）：`mcp-<序号>`。
+    cid: String,
 }
 
 impl McpSession {
@@ -40,12 +42,14 @@ impl McpSession {
             shared,
             id,
             key: format!("mcp:{id}"),
+            cid: format!("mcp-{id}"),
         }
     }
 }
 
 impl Drop for McpSession {
     fn drop(&mut self) {
+        tracing::debug!(cid = %self.cid, "MCP 会话结束");
         self.shared.remove_session(self.id);
         self.shared.drop_session_state(&self.key);
     }
@@ -78,7 +82,8 @@ impl ServerHandler for McpSession {
     }
 
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
-        tracing::info!(session = self.id, "MCP 客户端已初始化");
+        let client = context.peer.peer_info().map(|i| i.client_info.name.clone());
+        tracing::info!(cid = %self.cid, ?client, "MCP 客户端已初始化");
         self.shared.register_session(self.id, context.peer);
     }
 

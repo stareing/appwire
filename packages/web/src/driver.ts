@@ -32,6 +32,8 @@ import { ToolCallError } from './types'
 import type {
   AppMcp,
   AppMcpOptions,
+  ConnectionBlockCause,
+  ConnectionBlockCode,
   ConnectionState,
   ErrorKind,
   HoldHandle,
@@ -306,9 +308,9 @@ export class AppMcpDriver implements AppMcp {
       createChannel: deps.createBroadcastChannel,
       ...(deps.instanceProbeMs !== undefined && { windowMs: deps.instanceProbeMs }),
       onRegenerated: (prev, next) =>
-        this.log.warn(`[app-mcp] 检测到其他标签页使用相同的 instanceId（复制标签页？），已由 ${prev} 改为 ${next}`),
+        this.log.warn(`${this.tag} 检测到其他标签页使用相同的 instanceId（复制标签页？），已由 ${prev} 改为 ${next}`),
       onLateConflict: (id) =>
-        this.log.warn(`[app-mcp] 连接建立后才发现其他标签页使用相同的 instanceId ${id}，刷新本页可解决`),
+        this.log.warn(`${this.tag} 连接建立后才发现其他标签页使用相同的 instanceId ${id}，刷新本页可解决`),
     })
 
     const win = deps.window ?? (typeof window === 'undefined' ? undefined : window)
@@ -410,7 +412,7 @@ export class AppMcpDriver implements AppMcp {
       try {
         core.stop(this.now())
       } catch (e) {
-        this.log.error('[app-mcp] 停止核心失败', e)
+        this.log.error(`${this.tag} 停止核心失败`, e)
       }
       this.pump()
     }
@@ -457,8 +459,8 @@ export class AppMcpDriver implements AppMcp {
       if (probe) await probe
     } catch (e) {
       if (this.disposed) return
-      this.log.error('[app-mcp] WASM 核心加载失败', e)
-      this.setState({ status: 'rejected', reason: `WASM 核心加载失败：${errorMessage(e)}` })
+      this.log.error(`${this.tag} WASM 核心加载失败`, e)
+      this.setState({ status: 'rejected', reason: `WASM 核心加载失败：${errorMessage(e)}`, code: 'SDK_INIT_FAILED' })
       return
     }
     if (this.disposed) return
@@ -479,8 +481,8 @@ export class AppMcpDriver implements AppMcp {
         lifecycle: this.coreLifecycle(),
       })
     } catch (e) {
-      this.log.error('[app-mcp] 创建核心失败', e)
-      this.setState({ status: 'rejected', reason: `创建核心失败：${errorMessage(e)}` })
+      this.log.error(`${this.tag} 创建核心失败`, e)
+      this.setState({ status: 'rejected', reason: `创建核心失败：${errorMessage(e)}`, code: 'SDK_INIT_FAILED' })
       return
     }
     this.core = core
@@ -488,7 +490,7 @@ export class AppMcpDriver implements AppMcp {
     try {
       core.setVisibility(vis.visibility, vis.focused, this.now())
     } catch (e) {
-      this.log.error('[app-mcp] 设置可见性失败', e)
+      this.log.error(`${this.tag} 设置可见性失败`, e)
     }
     // 加载前缓存的注册先执行，再启动连接，使首次全量同步包含全部工具。
     // 地址中的唤醒令牌在 start 之前交给核心（核心记录后在 start 时连接）。
@@ -499,7 +501,7 @@ export class AppMcpDriver implements AppMcp {
         try {
           op(c)
         } catch (e) {
-          this.log.error(`[app-mcp] ${errorMessage(e)}`, e)
+          this.log.error(`${this.tag} ${errorMessage(e)}`, e)
         }
       }
     })
@@ -526,12 +528,12 @@ export class AppMcpDriver implements AppMcp {
         try {
           result = op(core)
         } catch (e) {
-          this.log.error(`[app-mcp] ${errorMessage(e)}`, e)
+          this.log.error(`${this.tag} ${errorMessage(e)}`, e)
           continue
         }
         if (result && typeof (result as Promise<void>).then === 'function') {
           ;(result as Promise<void>)
-            .catch((e: unknown) => this.log.error(`[app-mcp] ${errorMessage(e)}`, e))
+            .catch((e: unknown) => this.log.error(`${this.tag} ${errorMessage(e)}`, e))
             .then(() => {
               this.pump()
               loop()
@@ -546,14 +548,29 @@ export class AppMcpDriver implements AppMcp {
   }
 
   /** 向核心输入并处理产生的事件。 */
+  /** Host 为当前连接分配的连接 ID（spec/protocol.md 10.3）。 */
+  get connectionId(): string | undefined {
+    try {
+      return this.core?.connectionId() ?? undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /** 日志前缀：连接期间带连接 ID（`[app-mcp] [3f9a1c-12]`），便于与 Host 日志对照。 */
+  private get tag(): string {
+    const cid = this.connectionId
+    return cid ? `[app-mcp] [${cid}]` : '[app-mcp]'
+  }
+
   private input(fn: (core: CoreClient) => void, quiet = false): void {
     const core = this.core
     if (!core || this.disposed) return
     try {
       fn(core)
     } catch (e) {
-      if (quiet) this.log.debug(`[app-mcp] ${errorMessage(e)}`)
-      else this.log.error(`[app-mcp] ${errorMessage(e)}`, e)
+      if (quiet) this.log.debug(`${this.tag} ${errorMessage(e)}`)
+      else this.log.error(`${this.tag} ${errorMessage(e)}`, e)
     }
     this.pump()
   }
@@ -578,7 +595,7 @@ export class AppMcpDriver implements AppMcp {
         try {
           core.handleTimeout(this.now())
         } catch (e) {
-          this.log.error(`[app-mcp] ${errorMessage(e)}`, e)
+          this.log.error(`${this.tag} ${errorMessage(e)}`, e)
           break
         }
         this.drainEvents(core)
@@ -595,14 +612,14 @@ export class AppMcpDriver implements AppMcp {
       try {
         ev = core.pollEvent()
       } catch (e) {
-        this.log.error('[app-mcp] pollEvent 失败', e)
+        this.log.error(`${this.tag} pollEvent 失败`, e)
         break
       }
       if (ev === undefined) break
       try {
         this.handleEvent(ev)
       } catch (e) {
-        this.log.error(`[app-mcp] 处理事件 ${ev.type} 失败`, e)
+        this.log.error(`${this.tag} 处理事件 ${ev.type} 失败`, e)
       }
     }
   }
@@ -615,7 +632,7 @@ export class AppMcpDriver implements AppMcp {
     try {
       at = core.pollTimeout()
     } catch (e) {
-      this.log.error('[app-mcp] pollTimeout 失败', e)
+      this.log.error(`${this.tag} pollTimeout 失败`, e)
       return
     }
     if (at === undefined || at === null) return
@@ -643,7 +660,7 @@ export class AppMcpDriver implements AppMcp {
         break
       case 'send':
         if (this.ws && this.ws.readyState === WS_OPEN) this.ws.send(ev.text)
-        else this.log.warn('[app-mcp] 连接未建立，丢弃消息')
+        else this.log.warn(`${this.tag} 连接未建立，丢弃消息`)
         break
       case 'invokeTool':
         this.invoke(ev.callId, ev.tool, ev.name, ev.arguments)
@@ -662,20 +679,24 @@ export class AppMcpDriver implements AppMcp {
         break
       case 'stateChanged':
         if (ev.state.status === 'host-mismatch' && this.skipMismatchedCandidate(ev.state.reason)) break
-        if (ev.state.status === 'connected') this.mismatched = 0
+        if (ev.state.status === 'connected') {
+          this.mismatched = 0
+          const cid = this.connectionId
+          this.log.debug(`${this.tag} 已连接 Host（${cid ? `连接 ID ${cid}` : 'Host 未提供连接 ID'}）`)
+        }
         this.setState(this.mapState(ev.state))
         break
       case 'paired':
-        if (!saveToken(this.options.appId, ev.token)) this.log.warn('[app-mcp] 无法持久化配对 token')
+        if (!saveToken(this.options.appId, ev.token)) this.log.warn(`${this.tag} 无法持久化配对 token`)
         break
       case 'warning':
-        this.log.warn(`[app-mcp] ${ev.message}`)
+        this.log.warn(`${this.tag} ${ev.message}`)
         break
       case 'idleExit':
         // Web 没有进程驻留概念，忽略
         break
       default:
-        this.log.debug('[app-mcp] 未知事件', ev)
+        this.log.debug(`${this.tag} 未知事件`, ev)
     }
   }
 
@@ -686,7 +707,12 @@ export class AppMcpDriver implements AppMcp {
       this.blocked = undefined
     }
     if (state.status === 'backoff') {
-      return { status: 'backoff', retryAt: Math.round(this.wallNow() + (state.retryAt - this.now())) }
+      return {
+        status: 'backoff',
+        retryAt: Math.round(this.wallNow() + (state.retryAt - this.now())),
+        ...(state.reason !== undefined && { reason: state.reason }),
+        ...(state.code !== undefined && { code: state.code }),
+      }
     }
     return state
   }
@@ -699,7 +725,7 @@ export class AppMcpDriver implements AppMcp {
       try {
         l(state)
       } catch (e) {
-        this.log.error('[app-mcp] onStateChange 监听器出错', e)
+        this.log.error(`${this.tag} onStateChange 监听器出错`, e)
       }
     }
   }
@@ -733,7 +759,7 @@ export class AppMcpDriver implements AppMcp {
           this.deps.createWebSocket ?? ((url: string) => new WebSocket(url) as unknown as WebSocketLike)
         ws = factory(this.hostUrl)
       } catch (e) {
-        this.log.warn(`[app-mcp] 无法连接 ${this.hostUrl}：${errorMessage(e)}`)
+        this.log.warn(`${this.tag} 无法连接 ${this.hostUrl}：${errorMessage(e)}`)
         queueMicrotask(() => {
           if (!this.ws && !this.disposed) this.connectFailed(undefined, false)
         })
@@ -757,7 +783,7 @@ export class AppMcpDriver implements AppMcp {
       if (typeof e.data === 'string') {
         const text = e.data
         this.input((c) => c.handleMessage(text, this.now()))
-      } else this.log.warn('[app-mcp] 忽略非文本消息')
+      } else this.log.warn(`${this.tag} 忽略非文本消息`)
     }
     const lost = (): void => {
       if (this.ws !== socket) return
@@ -777,7 +803,7 @@ export class AppMcpDriver implements AppMcp {
         // 主标签页模式下持有方运行在页面里，用页面的 CSP 违规记录判断拦截
         this.link = this.deps.createSharedLink?.((url) => this.net.cspBlocks(url)) ?? null
       } catch (e) {
-        this.log.debug(`[app-mcp] 共享连接不可用：${errorMessage(e)}`)
+        this.log.debug(`${this.tag} 共享连接不可用：${errorMessage(e)}`)
         this.link = null
       }
     }
@@ -793,7 +819,7 @@ export class AppMcpDriver implements AppMcp {
     if (failure?.unsupported) {
       // 能力协商结果（旧 Host 不支持多路复用 / SharedWorker 无法启动）：本页改为直接连接，核心仍在连接中
       this.sharedUnavailable = true
-      this.log.debug(`[app-mcp] 共享连接不可用（${failure.reason ?? 'Host 不支持多路复用'}），改为直接连接`)
+      this.log.debug(`${this.tag} 共享连接不可用（${failure.reason ?? 'Host 不支持多路复用'}），改为直接连接`)
       this.openTransport()
       return
     }
@@ -811,9 +837,13 @@ export class AppMcpDriver implements AppMcp {
       // 重新探测时不再满足拦截条件（如授权已变化）：回到普通的退避重连
       this.blocked = undefined
     }
-    // 连接没能建立：下次重连尝试下一个候选端口（未指定 hostUrl 时）
+    // 连接没能建立：下次重连尝试下一个候选端口（未指定 hostUrl 时）。浏览器不给出失败原因，
+    // 归为 CONNECT_FAILED（spec/protocol.md 10.1）。
+    const url = this.hostUrl
     this.nextCandidate()
-    this.input((c) => c.handleDisconnected(this.now()))
+    this.input((c) =>
+      c.handleConnectFailed('CONNECT_FAILED', `无法连接 ${url}（Host 未运行，或连接被拒绝）`, this.now()),
+    )
   }
 
   /**
@@ -823,18 +853,18 @@ export class AppMcpDriver implements AppMcp {
   private skipMismatchedCandidate(reason: string): boolean {
     this.mismatched += 1
     if (this.mismatched >= this.hostUrls.length) {
-      this.log.warn(`[app-mcp] ${reason}`)
+      this.log.warn(`${this.tag} ${reason}`)
       this.mismatched = 0
       return false
     }
-    this.log.debug(`[app-mcp] ${this.hostUrl} 不是 app-mcp Host（${reason}），尝试下一个候选端口`)
+    this.log.debug(`${this.tag} ${this.hostUrl} 不是 app-mcp Host（${reason}），尝试下一个候选端口`)
     this.nextCandidate()
     const core = this.core
     if (core) {
       try {
         core.connectNow(this.now())
       } catch (e) {
-        this.log.error(`[app-mcp] ${errorMessage(e)}`, e)
+        this.log.error(`${this.tag} ${errorMessage(e)}`, e)
       }
     }
     return true
@@ -849,7 +879,11 @@ export class AppMcpDriver implements AppMcp {
   private block(block: ConnectionBlock): void {
     const changed = this.blocked?.cause !== block.cause || this.blocked.message !== block.message
     this.blocked = block
-    if (changed) this.log.warn(`[app-mcp] 连接被浏览器拦截：${block.message}`)
+    if (changed) {
+      this.log.warn(`${this.tag} 连接被浏览器拦截：${block.message}`)
+      // 拦截期间 Host 无从得知；记下来，连接恢复后经 app/diagnostic 上报（spec/protocol.md 10.2）
+      this.input((c) => c.reportIssue(BLOCK_CODE[block.cause], block.message), true)
+    }
     this.setState(blockedState(block))
     clearTimeout(this.blockedTimer)
     this.blockedTimer = undefined
@@ -878,7 +912,7 @@ export class AppMcpDriver implements AppMcp {
       const block = this.net.diagnose()
       if (block && state !== 'granted') this.block(block)
       else {
-        this.log.debug(`[app-mcp] 本地网络访问授权变为 ${state}，重新连接`)
+        this.log.debug(`${this.tag} 本地网络访问授权变为 ${state}，重新连接`)
         this.retryBlocked()
       }
       return
@@ -951,7 +985,7 @@ export class AppMcpDriver implements AppMcp {
       try {
         this.win?.history?.replaceState(this.win.history.state, '', stripped)
       } catch (e) {
-        this.log.debug(`[app-mcp] 无法从地址栏移除唤醒令牌：${errorMessage(e)}`)
+        this.log.debug(`${this.tag} 无法从地址栏移除唤醒令牌：${errorMessage(e)}`)
       }
     }
     core.handleWake(href, this.now())
@@ -1096,7 +1130,7 @@ export class AppMcpDriver implements AppMcp {
       try {
         l(event)
       } catch (e) {
-        this.log.error('[app-mcp] 工具注册监听器出错', e)
+        this.log.error(`${this.tag} 工具注册监听器出错`, e)
       }
     }
   }
@@ -1147,7 +1181,7 @@ export class AppMcpDriver implements AppMcp {
 
   private assertUsable(kind: string, name: string): boolean {
     if (this.disposed) {
-      this.log.warn(`[app-mcp] 实例已 dispose，忽略${kind} ${name} 的注册`)
+      this.log.warn(`${this.tag} 实例已 dispose，忽略${kind} ${name} 的注册`)
       return false
     }
     return true
@@ -1435,8 +1469,15 @@ export function stripWakeFragment(href: string): string | undefined {
   return kept.length > 0 ? `${base}#${kept.join('&')}` : base
 }
 
+/** 拦截原因 → 错误码（spec/protocol.md 10.1）。 */
+const BLOCK_CODE: Record<ConnectionBlockCause, ConnectionBlockCode> = {
+  'local-network-access': 'BLOCKED_LOCAL_NETWORK_ACCESS',
+  'insecure-context': 'BLOCKED_INSECURE_CONTEXT',
+  csp: 'BLOCKED_CSP',
+}
+
 function blockedState(block: ConnectionBlock): ConnectionState {
-  return { status: 'blocked', cause: block.cause, message: block.message }
+  return { status: 'blocked', cause: block.cause, code: BLOCK_CODE[block.cause], message: block.message }
 }
 
 function tokenField(token: string | undefined): { token?: string } {

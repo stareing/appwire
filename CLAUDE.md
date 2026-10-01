@@ -113,6 +113,7 @@ target/debug/app-mcp-host serve --manifest examples/shop/app-mcp.json
 ```
 
 启动 Demo：`pnpm --filter @app-mcp/example-shop dev`，浏览器打开后工具即出现。多个 Claude Code 会话共享同一个 Host。
+排查连接问题：`target/debug/app-mcp-host status`（一行摘要）、`target/debug/app-mcp-host doctor`（`--json`；Host / 锁 / IPC 权限 / 端口占用进程 / Windows 排除端口段 / 令牌 / adb reverse / 各 App 状态与最近错误）；错误码表见 `spec/protocol.md` 第 10 节，Host 与 SDK 日志中的连接 ID（`cid`）可对照。
 令牌策略为 `--auth all` 时，把令牌放环境变量：`export APP_MCP_TOKEN=$(app-mcp-host token)`（`.mcp.json` 用 `${APP_MCP_TOKEN:-}`）。
 
 ## 并行开发注意

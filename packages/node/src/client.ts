@@ -55,11 +55,16 @@ interface Owner {
 function mapState(info: NativeStateInfo): ConnectionState {
   switch (info.status) {
     case 'backoff':
-      return { status: 'backoff', retryAt: Date.now() + (info.retryInMs ?? 0) }
+      return {
+        status: 'backoff',
+        retryAt: Date.now() + (info.retryInMs ?? 0),
+        ...(info.reason != null && { reason: info.reason }),
+        ...(info.code != null && { code: info.code }),
+      }
     case 'rejected':
-      return { status: 'rejected', reason: info.reason ?? '' }
+      return { status: 'rejected', reason: info.reason ?? '', code: info.code ?? 'REJECTED' }
     case 'host-mismatch':
-      return { status: 'host-mismatch', reason: info.reason ?? '' }
+      return { status: 'host-mismatch', reason: info.reason ?? '', code: info.code ?? 'HOST_NOT_APP_MCP' }
     default:
       return { status: info.status }
   }
@@ -516,6 +521,10 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
 
   get state(): ConnectionState {
     return this.currentState
+  }
+
+  get connectionId(): string | undefined {
+    return this.client?.connectionId ?? undefined
   }
 
   get token(): string | null {

@@ -129,6 +129,8 @@ const results = await handleAnthropicToolUses(hub, response.content)
 # build the Host and run it as a resident service (one process serves every MCP client)
 cargo build -p app-mcp-host
 target/debug/app-mcp-host serve            # or: app-mcp-host service install  (start at login)
+target/debug/app-mcp-host status           # one-line summary
+target/debug/app-mcp-host doctor           # something wrong? each check gives a verdict and a fix
 
 # run the demo shop, then open it in a browser
 pnpm --filter @app-mcp/example-shop dev
@@ -137,9 +139,12 @@ pnpm --filter @app-mcp/example-shop dev
 The Host serves everything on one port, `127.0.0.1:7717`: web apps connect to `/app` (WebSocket),
 MCP clients use Streamable HTTP at `http://127.0.0.1:7717/mcp`, and `/healthz` reports the Host's
 identity. Native apps connect over a per-user local socket (Unix domain socket / Windows named
-pipe). A lock file keeps one Host per user, and the actual endpoints are recorded in
+pipe), which also serves MCP for agents that speak HTTP over local sockets. A lock file keeps one Host per user, and the actual endpoints are recorded in
 `~/.app-mcp/run/endpoints.json`. This repository's `.mcp.json` points Claude Code at that endpoint;
-restart the session, open the demo page, and ask Claude to operate the shop. See
+restart the session, open the demo page, and ask Claude to operate the shop. When something does not
+connect, `app-mcp-host doctor` checks the Host, lock, local socket permissions, which process holds
+the port, Windows excluded port ranges, the token mode, `adb reverse`, and each app's state and last
+error; SDK states carry machine-readable error codes (`spec/protocol.md` §10). See
 [`crates/host/README.md`](crates/host/README.md) for configuration, the access token and other MCP
 clients.
 

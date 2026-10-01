@@ -93,12 +93,12 @@ export type CoreState =
   | { status: 'handshaking' }
   | { status: 'pending-pairing' }
   | { status: 'connected' }
-  | { status: 'backoff'; retryAt: number }
-  | { status: 'rejected'; reason: string }
+  | { status: 'backoff'; retryAt: number; reason?: string; code?: string }
+  | { status: 'rejected'; reason: string; code: string }
   | { status: 'stopped' }
   | { status: 'dormant' }
   | { status: 'waking' }
-  | { status: 'host-mismatch'; reason: string }
+  | { status: 'host-mismatch'; reason: string; code: string }
 
 export type CancelReason = 'requested' | 'timeout' | 'disconnected' | 'stopped'
 
@@ -131,6 +131,8 @@ export interface CoreClient {
   setVisibility(visibility: Visibility, focused: boolean, now: number): void
   handleConnected(now: number): void
   handleDisconnected(now: number): void
+  /** 建立连接失败（带错误码，spec/protocol.md 10.1），`backoff` 状态带 `reason` / `code`。不认识的码抛错。 */
+  handleConnectFailed(code: string, message: string, now: number): void
   handleMessage(text: string, now: number): void
   handleTimeout(now: number): void
   completeCall(callId: string, outcome: CoreOutcome, now: number): void
@@ -151,6 +153,11 @@ export interface CoreClient {
   releaseHold(hold: number, now: number): boolean
   toolsHash(): string
   resumeToken(): string | undefined
+  // ---- 诊断（spec/protocol.md 第 10 节）----
+  /** Host 为当前连接分配的连接 ID。 */
+  connectionId(): string | undefined
+  /** 记录一次连接问题，下次握手成功后以 `app/diagnostic` 上报给 Host。 */
+  reportIssue(code: string, message: string): void
   /** 释放 WASM 内存（可选）。 */
   free?(): void
 }

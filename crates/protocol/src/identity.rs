@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::HelloResult;
+use crate::diagnostic::{ConnectionErrorCode, ConnectionIssue};
 
 /// Host 身份中的服务名。
 pub const SERVICE_NAME: &str = "app-mcp";
@@ -70,27 +71,33 @@ pub fn expected_host_user() -> Option<String> {
     }
 }
 
-/// 核对握手结果中的 Host 身份。`Err` 为面向用户的原因（中文）。
+/// 核对握手结果中的 Host 身份。`Err` 带错误码与面向用户的原因（中文）：
 ///
-/// - `service` 存在且不是 [`SERVICE_NAME`] → 对端不是 app-mcp Host；
-/// - 给出了 `expected_user`，且结果带 `user` 而与之不同 → Host 属于其他用户。
+/// - `service` 存在且不是 [`SERVICE_NAME`] → [`ConnectionErrorCode::HostNotAppMcp`]；
+/// - 给出了 `expected_user`，且结果带 `user` 而与之不同 → [`ConnectionErrorCode::HostOtherUser`]。
 ///
 /// 旧 Host 不带这些字段：无法核对，视为通过。
-pub fn check_hello(result: &HelloResult, expected_user: Option<&str>) -> Result<(), String> {
+pub fn check_hello(result: &HelloResult, expected_user: Option<&str>) -> Result<(), ConnectionIssue> {
     if let Some(service) = result.service.as_deref()
         && service != SERVICE_NAME
     {
-        return Err(format!(
-            "对端不是 app-mcp Host（service = {service:?}）：该端口被其他程序占用。请检查端点配置，或停止占用端口的程序"
+        return Err(ConnectionIssue::new(
+            ConnectionErrorCode::HostNotAppMcp,
+            format!(
+                "对端不是 app-mcp Host（service = {service:?}）：该端口被其他程序占用。请检查端点配置，或停止占用端口的程序"
+            ),
         ));
     }
     if let (Some(expected), Some(user)) = (expected_user, result.user.as_deref())
         && expected != user
     {
         let pid = result.pid.map(|p| format!("，pid {p}")).unwrap_or_default();
-        return Err(format!(
-            "该端点上的 app-mcp Host 属于其他用户（{user}{pid}，本进程用户 {expected}）：不会连接其他用户的 Host。\
-             请启动自己的 Host（app-mcp-host serve），或用 APP_MCP_ENDPOINT 指定自己的端点"
+        return Err(ConnectionIssue::new(
+            ConnectionErrorCode::HostOtherUser,
+            format!(
+                "该端点上的 app-mcp Host 属于其他用户（{user}{pid}，本进程用户 {expected}）：不会连接其他用户的 Host。\
+                 请启动自己的 Host（app-mcp-host serve），或用 APP_MCP_ENDPOINT 指定自己的端点"
+            ),
         ));
     }
     Ok(())
@@ -122,9 +129,11 @@ mod tests {
         assert!(check_hello(&r, Some("1000")).is_ok());
         assert!(check_hello(&r, None).is_ok());
         let e = check_hello(&r, Some("1001")).unwrap_err();
-        assert!(e.contains("其他用户"), "{e}");
+        assert_eq!(e.code, ConnectionErrorCode::HostOtherUser);
+        assert!(e.message.contains("其他用户"), "{e}");
         r.service = Some("other".into());
         let e = check_hello(&r, None).unwrap_err();
-        assert!(e.contains("不是 app-mcp"), "{e}");
+        assert_eq!(e.code, ConnectionErrorCode::HostNotAppMcp);
+        assert!(e.message.contains("不是 app-mcp"), "{e}");
     }
 }

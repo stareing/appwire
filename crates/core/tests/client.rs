@@ -265,7 +265,7 @@ fn pending_then_rejected_does_not_reconnect() {
     let ev = h.recv(json!({"jsonrpc": "2.0", "method": "app/pairingResult", "params": {"status": "rejected", "reason": "用户拒绝"}}));
     assert_eq!(
         ev,
-        vec![Event::Disconnect, Event::StateChanged(ConnectionState::Rejected { reason: "用户拒绝".into() })]
+        vec![Event::Disconnect, Event::StateChanged(ConnectionState::Rejected { reason: "用户拒绝".into(), code: ConnectionErrorCode::Rejected })]
     );
     assert_eq!(h.c.poll_timeout(), None);
     h.c.handle_disconnected(h.now);
@@ -283,7 +283,10 @@ fn hello_rejected_or_error_is_final() {
         json!({"status": "rejected", "reason": "协议版本不兼容", "protocolVersion": "2", "hostVersion": "9"}),
     );
     assert!(ev.contains(&Event::Disconnect));
-    assert_eq!(h.c.state(), &ConnectionState::Rejected { reason: "协议版本不兼容".into() });
+    assert_eq!(
+        h.c.state(),
+        &ConnectionState::Rejected { reason: "协议版本不兼容".into(), code: ConnectionErrorCode::Rejected }
+    );
 
     let mut h = Harness::new();
     let hello = h.open();
@@ -311,6 +314,7 @@ fn host_identity_mismatch_stops_retrying() {
     let ev = h.hello_result(&hello, paired(json!({"service": "other"})));
     assert!(ev.contains(&Event::Disconnect));
     assert!(mismatch(&h), "{:?}", h.c.state());
+    assert_eq!(h.c.state().code(), Some(ConnectionErrorCode::HostNotAppMcp));
     assert_eq!(h.c.poll_timeout(), None, "不自动重试");
     assert!(sends(&ev).is_empty(), "不发送 tools/sync");
 
@@ -330,7 +334,8 @@ fn host_identity_mismatch_stops_retrying() {
     let mut h = Harness::with(cfg);
     let hello = h.open();
     h.hello_result(&hello, paired(json!({"service": "app-mcp", "user": "1001", "pid": 9})));
-    let ConnectionState::HostMismatch { reason } = h.c.state() else { panic!("{:?}", h.c.state()) };
+    let ConnectionState::HostMismatch { reason, code } = h.c.state() else { panic!("{:?}", h.c.state()) };
+    assert_eq!(*code, ConnectionErrorCode::HostOtherUser);
     assert!(reason.contains("1001") && reason.contains("pid 9"), "{reason}");
     assert!(h.c.wake(h.now));
     assert!(h.drain().contains(&Event::Connect));
@@ -713,7 +718,10 @@ fn disconnect_cancels_all_calls() {
     let ev = h.drain();
     assert!(sends(&ev).is_empty(), "断线时不发送任何响应");
     assert_eq!(cancelled(&ev), vec![("c1".into(), CancelReason::Disconnected)]);
-    assert_eq!(ev.last(), Some(&Event::StateChanged(ConnectionState::Backoff { retry_at: h.now + 500 })));
+    assert_eq!(
+        ev.last(),
+        Some(&Event::StateChanged(ConnectionState::Backoff { retry_at: h.now + 500, reason: None, code: None }))
+    );
     assert_eq!((h.c.running_call_count(), h.c.queued_call_count()), (0, 0));
     assert_eq!(
         h.c.complete_call("c1", Ok(CallOutput::default()), h.now),
@@ -901,7 +909,10 @@ fn heartbeat_timeout_visible() {
     let ev = h.advance(1);
     assert_eq!(warnings(&ev), 1);
     assert!(ev.contains(&Event::Disconnect));
-    assert_eq!(ev.last(), Some(&Event::StateChanged(ConnectionState::Backoff { retry_at: h.now + 500 })));
+    let Some(Event::StateChanged(ConnectionState::Backoff { retry_at, code, .. })) = ev.last() else {
+        panic!("{ev:?}")
+    };
+    assert_eq!((*retry_at, *code), (h.now + 500, Some(ConnectionErrorCode::ConnectFailed)));
 
     // 核心自行完成断开处理，随后按退避重连
     let ev = h.advance(500);
@@ -958,7 +969,7 @@ fn host_ping_and_activate() {
 
 fn retry_delay(h: &mut Harness) -> Millis {
     match h.c.state() {
-        ConnectionState::Backoff { retry_at } => retry_at - h.now,
+        ConnectionState::Backoff { retry_at, .. } => retry_at - h.now,
         other => panic!("not in backoff: {other:?}"),
     }
 }
@@ -1111,4 +1122,114 @@ fn tool_name_with_app_id_prefix_registers_but_warns() {
     let names: Vec<&str> =
         sync["params"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"shop.info"), "{names:?}");
+}
+
+// ---------------------------------------------------------------------------
+// 诊断：错误码、连接 ID、app/diagnostic（spec/protocol.md 第 10 节）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reject_codes_come_from_host() {
+    let mut h = Harness::new();
+    let hello = h.open();
+    h.hello_result(
+        &hello,
+        json!({"status": "rejected", "reason": "来源不允许", "code": "ORIGIN_NOT_ALLOWED", "protocolVersion": "1", "hostVersion": "0.1.0"}),
+    );
+    assert_eq!(
+        h.c.state(),
+        &ConnectionState::Rejected { reason: "来源不允许".into(), code: ConnectionErrorCode::OriginNotAllowed }
+    );
+
+    // 不认识的码（新版本）→ REJECTED
+    let mut h = Harness::new();
+    let hello = h.open();
+    h.hello_result(&hello, json!({"status": "pending", "protocolVersion": "1", "hostVersion": "0.1.0"}));
+    h.recv(json!({"jsonrpc": "2.0", "method": "app/pairingResult", "params": {"status": "rejected", "code": "SOMETHING_NEW"}}));
+    assert_eq!(h.c.state().code(), Some(ConnectionErrorCode::Rejected));
+
+    let mut h = Harness::new();
+    let hello = h.open();
+    h.hello_result(&hello, json!({"status": "pending", "protocolVersion": "1", "hostVersion": "0.1.0"}));
+    h.recv(json!({"jsonrpc": "2.0", "method": "app/pairingResult", "params": {"status": "rejected", "reason": "拒绝", "code": "PAIRING_REJECTED"}}));
+    assert_eq!(h.c.state().code(), Some(ConnectionErrorCode::PairingRejected));
+    assert_eq!(h.c.state().reason(), Some("拒绝"));
+}
+
+#[test]
+fn connect_failure_and_handshake_timeout_carry_codes() {
+    let mut h = Harness::new();
+    h.c.start(h.now);
+    h.drain();
+    h.c.handle_connect_failed(
+        ConnectionIssue::new(ConnectionErrorCode::HostNotRunning, "连接 unix:/x 失败：No such file"),
+        h.now,
+    );
+    let ev = h.drain();
+    assert_eq!(
+        ev.last(),
+        Some(&Event::StateChanged(ConnectionState::Backoff {
+            retry_at: h.now + 500,
+            reason: Some("连接 unix:/x 失败：No such file".into()),
+            code: Some(ConnectionErrorCode::HostNotRunning),
+        }))
+    );
+
+    // 握手超时
+    let mut h = Harness::new();
+    h.open();
+    let ev = h.advance(10_000);
+    assert!(ev.contains(&Event::Disconnect));
+    assert_eq!(h.c.state().code(), Some(ConnectionErrorCode::HandshakeTimeout));
+}
+
+#[test]
+fn connection_id_from_hello() {
+    let mut h = Harness::new();
+    let hello = h.open();
+    assert_eq!(h.c.connection_id(), None);
+    h.hello_result(
+        &hello,
+        json!({"status": "paired", "token": "tk", "protocolVersion": "1", "hostVersion": "0.1.0", "connectionId": "3f9a1c-12"}),
+    );
+    assert_eq!(h.c.connection_id(), Some("3f9a1c-12"));
+    h.c.handle_disconnected(h.now);
+    assert_eq!(h.c.connection_id(), None, "断开后清除");
+    // 旧 Host 不带
+    let mut h = Harness::new();
+    h.connect();
+    assert_eq!(h.c.connection_id(), None);
+}
+
+#[test]
+fn reported_issues_are_sent_after_handshake() {
+    let mut h = Harness::new();
+    h.c.report_issue("BLOCKED_CSP", "CSP 不允许");
+    h.c.report_issue("BLOCKED_LOCAL_NETWORK_ACCESS", "LNA 1");
+    h.c.report_issue("BLOCKED_LOCAL_NETWORK_ACCESS", "LNA 2");
+    let ev = h.connect();
+    let msgs = sends(&ev);
+    assert_eq!(
+        methods(&msgs),
+        vec!["tools/sync", "resources/sync", "app/visibility", "app/ready", "app/diagnostic", "app/diagnostic"]
+    );
+    assert_eq!(msgs[4]["params"], json!({"code": "BLOCKED_CSP", "message": "CSP 不允许", "count": 1}));
+    assert_eq!(msgs[5]["params"], json!({"code": "BLOCKED_LOCAL_NETWORK_ACCESS", "message": "LNA 2", "count": 2}));
+
+    // 已上报的不再发送；已连接时直接发出
+    h.c.handle_disconnected(h.now);
+    h.drain();
+    let mut h2 = Harness::new();
+    h2.connect();
+    h2.c.report_issue("BLOCKED_CSP", "x");
+    assert_eq!(methods(&sends(&h2.drain())), vec!["app/diagnostic"]);
+
+    // 不同的码最多积累 MAX_PENDING_DIAGNOSTICS 个
+    let mut h3 = Harness::new();
+    for i in 0..(MAX_PENDING_DIAGNOSTICS + 5) {
+        h3.c.report_issue(&format!("CODE_{i}"), "m");
+    }
+    let ev = h3.connect();
+    let n = methods(&sends(&ev)).iter().filter(|m| **m == "app/diagnostic").count();
+    assert_eq!(n, MAX_PENDING_DIAGNOSTICS);
 }

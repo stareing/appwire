@@ -923,6 +923,7 @@ impl Registry {
                         last_active_ms: unix_ms(i.last_active_at.unwrap_or(i.connected_at)),
                         title: i.title.clone(),
                         pid: i.pid,
+                        connection_id: Some(i.conn.cid.clone()),
                     })
                     .collect(),
                 selected_instance: selected
@@ -940,6 +941,7 @@ impl Registry {
                         last_active_ms: unix_ms(d.last_active_at.unwrap_or(d.connected_at)),
                         title: d.title.clone(),
                         pid: None,
+                        connection_id: None,
                     })
                     .collect(),
             })
@@ -1094,7 +1096,7 @@ mod tests {
         id: &str,
         conn_id: u64,
     ) -> (Arc<Connection>, Option<Arc<Connection>>) {
-        let (conn, rx) = Connection::new(conn_id);
+        let (conn, rx) = Connection::new(conn_id, format!("t-{conn_id}"));
         std::mem::forget(rx); // 保持通道打开
         let old = reg.add_instance(
             app,
@@ -1130,7 +1132,7 @@ mod tests {
         );
         assert_eq!(reg.summaries()[0].summary.as_deref(), Some("静态简介"));
 
-        let (conn, rx) = Connection::new(9);
+        let (conn, rx) = Connection::new(9, "t-9");
         std::mem::forget(rx);
         reg.add_instance(
             "shop",

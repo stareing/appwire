@@ -316,6 +316,8 @@ pub struct JsStateInfo {
     pub status: String,
     pub retry_in_ms: Option<f64>,
     pub reason: Option<String>,
+    /// 与 `reason` 对应的错误码（spec/protocol.md 10.1）。
+    pub code: Option<String>,
 }
 
 impl From<StateInfo> for JsStateInfo {
@@ -324,6 +326,7 @@ impl From<StateInfo> for JsStateInfo {
             status: status_str(s.status).to_string(),
             retry_in_ms: s.retry_in_ms.map(|v| v as f64),
             reason: s.reason,
+            code: s.code,
         }
     }
 }
@@ -725,6 +728,12 @@ impl JsNativeClient {
     #[napi(getter)]
     pub fn state(&self) -> JsStateInfo {
         self.inner.state().into()
+    }
+
+    /// Host 为当前连接分配的连接 ID（spec/protocol.md 10.3）；未连接时为 `undefined`。
+    #[napi(getter)]
+    pub fn connection_id(&self) -> Option<String> {
+        self.inner.connection_id()
     }
 
     /// 当前 token（配置带入的或配对后获得的）。

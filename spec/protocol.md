@@ -43,6 +43,7 @@ Host 默认监听：
   | `/app` | WebSocket 升级 → App 连接（本规范的消息） | `Origin` 在 `app/hello` 时按允许列表 / 配对处理（第 6 节） |
   | `/mcp` | MCP Streamable HTTP（`app-mcp-host serve` 开启；嵌入式 Hub 可选） | `Origin` 允许列表（403）→ 本地访问令牌（401） |
   | `/healthz` | `GET`：Host 身份与监听信息（1.6），不需要令牌 | `Origin` 允许列表（403） |
+  | `/status` | `GET`：运行状态（各 App 实例的连接 / 休眠 / 唤醒、最近错误、SDK 上报，10.2），供 `app-mcp-host doctor` / `status` | 本地 IPC 直接允许；TCP 必须带有效令牌（未配置令牌时 403，请经 IPC 访问） |
 
   未显式配置监听地址且默认端口被占用时，Host 依次尝试**固定的备选端口** `7737`、`7757`，实际地址写入登记文件（1.7）。
   合并之前的独立 MCP 端口 `7718` 不再默认监听；兼容期内可显式配置（`app-mcp-host` 的 `http.addr` / `--http`，
@@ -53,7 +54,11 @@ Host 默认监听：
   - Windows：`\\.\pipe\app-mcp-<当前用户 SID>`（如 `\\.\pipe\app-mcp-S-1-5-21-…-1001`）；
   - Android / iOS：无（App 沙箱之间不能共享套接字，这些平台用 WebSocket，如 Android 经 `adb reverse tcp:7717 tcp:7717`）。
 
-  IPC 上目前只有 `/app` 与 `/healthz`（MCP over IPC 在 4b-B 中加入）。
+  IPC 上是同一个 HTTP 路由：`/app`、`/healthz`、`/status`，以及开启 MCP 时（`app-mcp-host serve`；嵌入式 Hub 的
+  `HubConfig.mcp_http`）的 `/mcp`——供厂商 Agent、支持本地套接字的 MCP 客户端使用（如 rmcp 的 `UnixSocketHttpClient`，
+  请求 URL 用 `http://localhost/mcp`）。IPC 上的 `/mcp` **不校验令牌**：连接级鉴权（1.4）已确认对端是同一用户，
+  而同一用户本来就能读取令牌文件；客户端应像 SDK 一样核对监听方是同一用户。不提供 stdio→HTTP 的转发程序
+  （`app-mcp-host stdio` 是独立的单客户端 Host，与常驻 Host 互斥，见 crates/host/README.md）。
 
 原生 SDK 未配置端点时按以下顺序**确定**端点（创建配置时解析一次）：
 
@@ -153,6 +158,7 @@ SDK 核心在处理握手结果之前核对（`app_mcp_protocol::identity::check
 | SDK → Host | `resources/changed` | 通知 | `ResourcesChangedParams` |
 | SDK → Host | `resources/updated` | 通知 | `ResourceUpdatedParams` |
 | SDK → Host | `app/sleep` | 请求 | `SleepParams` → `SleepResult`（第 8 节） |
+| SDK → Host | `app/diagnostic` | 通知 | `DiagnosticParams`（第 10 节） |
 | Host → SDK | `tools/invoke` | 请求 | `ToolsInvokeParams` → `ToolsInvokeResult` |
 | Host → SDK | `tools/cancel` | 通知 | `ToolsCancelParams` |
 | Host → SDK | `resources/read` | 请求 | `ResourcesReadParams` → `ResourcesReadResult` |
@@ -365,7 +371,10 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 |---|---|
 | `Dormant` | 已与 Host 完成 `app/sleep` 握手后断开（或 `on-demand` 模式启动后尚未连接）。不重连、无定时器，注册表保留 |
 | `Waking` | 收到唤醒后正在建立连接（等同于 `Connecting`），之后进入 `Handshaking` |
-| `HostMismatch { reason }` | 对端不是期望的 Host（1.6）。已断开，不重连、无定时器；`wake()` / `connectNow()` 时再连一次。绑定中的名称：Rust `StateStatus::HostMismatch`、C `AM_STATE_HOST_MISMATCH`（10）、JS `'host-mismatch'` |
+| `HostMismatch { reason, code }` | 对端不是期望的 Host（1.6）。已断开，不重连、无定时器；`wake()` / `connectNow()` 时再连一次。绑定中的名称：Rust `StateStatus::HostMismatch`、C `AM_STATE_HOST_MISMATCH`（10）、JS `'host-mismatch'` |
+
+`Rejected`、`HostMismatch` 带错误码 `code`（第 10 节）；`Backoff` 在建立连接失败时带 `reason` / `code`
+（驱动层按系统错误归类，如 `HOST_NOT_RUNNING`、`IPC_PERMISSION_DENIED`），断线、握手超时时也带相应的码。
 
 `app/sleep` 发出到收到结果之间为内部过渡态 `sleeping`，对外仍为 `Connected`。
 
@@ -540,3 +549,64 @@ type MuxFrame =
   （向缓存中的页面投递消息会使其被逐出）；`pageshow` 恢复时取回。页面卸载时关闭其全部通道。
 - 本地网络访问授权（Chrome LNA）只能由页面发起：授权为 `prompt` 时经共享连接失败，该次连接改由页面直接建立。
 
+
+## 10. 诊断：错误码、上报与连接 ID
+
+### 10.1 连接级错误码
+
+SDK 的连接状态（`Backoff` / `Rejected` / `HostMismatch`，网页另有 `blocked`）与 Host 的启动失败都带一个机器可读的错误码
+`code`，同时保留中文说明 `reason` / `message`。错误码是字符串，新版本可能增加；接收方遇到不认识的码时只展示说明，不报错。
+实现：`app_mcp_protocol::diagnostic::ConnectionErrorCode`（`reason()` / `hint()` 与下表一致，测试核对本表列出了每个码）。
+
+| code | 类别 | 出现在 | 原因 | 修复建议 |
+|---|---|---|---|---|
+| `HOST_NOT_RUNNING` | connect | SDK `backoff` | Host 未运行：端点上没有监听者（连接被拒绝、套接字 / 管道不存在） | 启动 Host（`app-mcp-host serve` 或 `service install`）；`app-mcp-host doctor` 查看端点 |
+| `CONNECT_TIMEOUT` | connect | SDK `backoff` | 规定时间内没能建立连接 | 检查 Host 是否卡住（`doctor`）、防火墙 / 代理是否拦截回环连接 |
+| `CONNECT_FAILED` | connect | SDK `backoff`；断线 | 建立连接失败 / 连接中断（其他系统错误） | 查看 SDK 日志中的系统错误并运行 `doctor` |
+| `IPC_PERMISSION_DENIED` | connect | 原生 SDK `backoff` | 本地 IPC 端点属于其他用户，或当前用户无权访问（1.4） | 以同一用户运行 Host 与 App；套接字目录 0700 且属于当前用户（`doctor` 检查） |
+| `HOST_NOT_APP_MCP` | identity | SDK `host-mismatch` | 对端不是 app-mcp Host（端口被其他程序占用，1.6） | 停止占用端口的程序（`doctor` 给出进程），或指定正确端点 |
+| `HOST_OTHER_USER` | identity | 原生 SDK `host-mismatch` | 对端是其他操作系统用户的 Host | 启动自己的 Host，或用 `APP_MCP_ENDPOINT` 指定自己的端点 |
+| `HANDSHAKE_TIMEOUT` | handshake | SDK `backoff` | Host 没有及时回复 `app/hello` | 查看 Host 日志，必要时重启 Host |
+| `PROTOCOL_INCOMPATIBLE` | handshake | SDK `rejected` | 协议版本不兼容 | 升级 SDK 或 Host |
+| `ORIGIN_NOT_ALLOWED` | handshake | 网页 SDK `rejected` | 网页来源不在允许列表中（第 6 节） | `--allow-origin <来源>` |
+| `INVALID_HELLO` | handshake | SDK `rejected` | 握手参数不合法（appId 格式、保留名、与上游重名、instanceId 为空） | 检查 appId 与 instanceId |
+| `PAIRING_REJECTED` | handshake | SDK `rejected` | 用户拒绝了配对请求 | 在配对提示中允许后重试（`wake()` / `connectNow()`） |
+| `REJECTED` | handshake | SDK `rejected` | 其他拒绝（Host 未给出错误码，如旧 Host；`app/hello` 返回其他错误） | 查看原因说明与 Host 日志 |
+| `BLOCKED_LOCAL_NETWORK_ACCESS` | browser | 网页 SDK `blocked` | 浏览器本地网络访问（LNA）权限未授予 | 站点设置中允许「本机上的应用」，授权后自动重连 |
+| `BLOCKED_INSECURE_CONTEXT` | browser | 网页 SDK `blocked` | 非 HTTPS 的公网页面不能连接本机 | 改用 HTTPS，或在 localhost 打开 |
+| `BLOCKED_CSP` | browser | 网页 SDK `blocked` | 内容安全策略 `connect-src` 不允许连接 Host | CSP 加入 `ws://127.0.0.1:7717`（及 7737、7757）后刷新 |
+| `LOCK_HELD` | host | `app-mcp-host serve` / `doctor` | 同一配置目录已有 Host 在运行（1.5） | 无需处理；重启前先 `service stop` |
+| `PORT_BUSY` | host | `serve` / `service install` / `doctor` | 监听端口被占用 | `doctor` 查看占用进程并停止它，或 `--listen` 换端口 |
+| `IPC_ENDPOINT_BUSY` | host | `serve` / `doctor` | 本地 IPC 端点被占用（另一个配置目录的 Host） | 停止它，或 `--ipc-endpoint` 换端点 |
+| `SDK_INIT_FAILED` | sdk | 网页 SDK `rejected` | SDK 本地初始化失败（WASM 核心加载失败、创建核心失败），没有连接 Host | 检查 `wasmUrl` 能否加载、CSP 是否允许 WebAssembly（`'wasm-unsafe-eval'`）与控制台错误 |
+
+- Host 拒绝握手时在 `HelloResult.code` / `PairingResultParams.code` 中给出码（`PROTOCOL_INCOMPATIBLE`、`ORIGIN_NOT_ALLOWED`、
+  `INVALID_HELLO`、`PAIRING_REJECTED`）；旧 Host 不带时 SDK 用 `REJECTED`。
+- 原生 SDK 的驱动层把建立连接时的系统错误归类（`app_mcp_protocol::diagnostic::connect_error_code`）：连接被拒绝 / 不存在 →
+  `HOST_NOT_RUNNING`，超时 → `CONNECT_TIMEOUT`，权限 → `IPC_PERMISSION_DENIED`，其他 → `CONNECT_FAILED`。
+- 各语言的状态对象都带 `code`：Rust 核心 `ConnectionState::{Backoff, Rejected, HostMismatch}` 的 `code` 字段、
+  原生 `StateInfo.code`、JS `state.code`。
+
+### 10.2 `app/diagnostic`（SDK → Host，通知）
+
+```ts
+interface DiagnosticParams {
+  code: string      // 10.1 的错误码
+  message: string   // 最近一次的中文说明
+  count: number     // 自上次上报以来发生的次数，缺省 1
+}
+```
+
+SDK 记录连接失败期间遇到的问题（同一 `code` 合并计数），在下一次握手成功（`app/ready` 之后）时逐条上报并清空。
+Host 记录每个 App 最近的上报（`/status` 的 `reports`，`app-mcp-host doctor` 展示）。
+
+**局限**：问题发生时 SDK 与 Host 之间没有可用的通道——浏览器拦截（`blocked`）期间页面无法连接 Host，Host 无从得知；
+只有连接恢复后（如用户授予了本地网络访问权限、CSP 修正后刷新）才能上报"此前被拦截过"。从未连上的页面不会出现在 Host 的诊断中，
+需在页面自己的日志 / 状态（`state.code`）中查看。
+
+### 10.3 连接 ID
+
+Host 为每条 App 连接（多路复用时为每个通道）分配连接 ID（`<Host 启动标记>-<序号>`，如 `3f9a1c-12`），在 `HelloResult.connectionId`
+中返回；每个 MCP 会话同样有会话 ID（`mcp-<序号>`）。Host 日志中与该连接 / 会话有关的记录都带 `cid` 字段；SDK 握手成功后把连接 ID
+写入日志（原生日志回调、网页 `logger`），连接期间的日志带 `[cid]` 前缀（原生为 `[cid] …`，网页为 `[app-mcp] [cid] …`），便于在两边日志中对照同一条连接。`/status` 的实例信息也带
+`connectionId`。

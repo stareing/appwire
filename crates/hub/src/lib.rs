@@ -38,9 +38,10 @@ pub use hub::{
 };
 pub use mcp::McpSession;
 pub use types::{
-    AppInfo, AppKind, AppOverviewInfo, ApprovalHandler, ApprovalPolicy, ApprovalRequest,
-    Availability, CallOutcome, CallRequest, HubError, HubEvent, HubResource, HubTool,
-    InstanceInfo, PairingHandler, PairingRequest, ResourceContent, ToolExposure, ToolFilter, risk_rank,
+    AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy,
+    ApprovalRequest, AuthStatus, Availability, CallOutcome, CallRequest, DiagnosticReport, HubError,
+    HubEvent, HubResource, HubStatus, HubTool, InstanceInfo, InstanceState, InstanceStatus, LastError,
+    PairingHandler, PairingRequest, ResourceContent, ToolExposure, ToolFilter, risk_rank,
 };
 pub use upstream::UpstreamConfig;
 pub use wake::{

@@ -28,6 +28,18 @@ pub(crate) struct PendingWake {
     waiters: Vec<oneshot::Sender<WakeResult>>,
 }
 
+impl PendingWake {
+    /// 是否仍在等待回连。
+    pub(crate) fn is_active(&self, now: Instant) -> bool {
+        self.deadline > now
+    }
+
+    /// `(appId, 被唤醒的休眠实例)`。
+    pub(crate) fn target(&self) -> (String, Option<String>) {
+        (self.app_id.clone(), self.instance_id.clone())
+    }
+}
+
 /// `app/sleep` 被拒绝时建议的重试间隔。
 pub(crate) const SLEEP_RETRY_AFTER_MS: u64 = 1000;
 
@@ -120,6 +132,7 @@ impl HubShared {
                     let mut err = e.0;
                     err.message = format!("唤醒 App「{app_id}」失败：{}", err.message);
                     err.details = Some(json!({ "appId": app_id }));
+                    shared.record_app_error(&app_id, Some(err.kind.as_str()), &err.message);
                     shared.finish_wake(|w| w.token == token, Err(err));
                 }
             });
@@ -127,11 +140,12 @@ impl HubShared {
         tokio::select! {
             r = tokio::time::timeout_at(deadline, rx) => match r {
                 Ok(Ok(res)) => res,
-                Ok(Err(_)) => Err(not_responding(&plan.app_id, self.config.wake_timeout)),
-                Err(_) => {
+                Ok(Err(_)) | Err(_) => {
                     let now = Instant::now();
                     lock(&self.wakes).retain(|w| w.deadline > now);
-                    Err(not_responding(&plan.app_id, self.config.wake_timeout))
+                    let err = not_responding(&plan.app_id, self.config.wake_timeout);
+                    self.record_app_error(&plan.app_id, Some(err.kind.as_str()), &err.message);
+                    Err(err)
                 }
             },
             _ = cancel => Err(ToolError::new(ErrorKind::Cancelled, "调用已被取消。")),

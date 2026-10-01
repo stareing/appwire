@@ -16,7 +16,8 @@ use serde_json::{Value, json};
 
 use crate::calls::Call;
 use crate::{
-    CallOutput, CancelReason, Client, ConnectionState, Event, Millis, ReadId, ResourceId, SleepReason, Visibility,
+    CallOutput, CancelReason, Client, ConnectionErrorCode, ConnectionIssue, ConnectionState, Event, Millis, ReadId,
+    ResourceId, SleepReason, Visibility,
 };
 
 /// Client 发出、等待响应的请求。
@@ -76,6 +77,8 @@ pub(crate) struct Session {
     pub sleep_unsupported: bool,
     /// 休眠握手期间收到唤醒 / 持有：休眠完成后立即回连。
     pub rewake: bool,
+    /// Host 为本连接分配的连接 ID（`HelloResult.connectionId`，spec/protocol.md 10.3）。
+    pub connection_id: Option<String>,
 }
 
 fn to_value<T: Serialize>(v: &T) -> Value {
@@ -191,31 +194,49 @@ impl Client {
         }
     }
 
-    pub(crate) fn enter_backoff(&mut self, now: Millis) {
+    /// 进入重连等待；`issue` 为本次断开 / 连接失败的原因（spec/protocol.md 10.1）。
+    pub(crate) fn enter_backoff(&mut self, now: Millis, issue: Option<ConnectionIssue>) {
         let delay = self.backoff_delay();
         self.retry_count = self.retry_count.saturating_add(1);
-        self.set_state(ConnectionState::Backoff { retry_at: now.saturating_add(delay) });
+        let (reason, code) = match issue {
+            Some(i) => (Some(i.message), Some(i.code)),
+            None => (None, None),
+        };
+        self.set_state(ConnectionState::Backoff { retry_at: now.saturating_add(delay), reason, code });
     }
 
     /// 由核心主动断开（心跳 / 握手超时）：请求驱动层关闭连接并进入重连。
-    fn drop_connection(&mut self, now: Millis) {
+    fn drop_connection(&mut self, issue: ConnectionIssue, now: Millis) {
         self.teardown(CancelReason::Disconnected, false);
         self.events.push_back(Event::Disconnect);
-        self.enter_backoff(now);
+        self.enter_backoff(now, Some(issue));
     }
 
-    fn reject(&mut self, reason: String) {
+    fn reject(&mut self, reason: String, code: ConnectionErrorCode) {
         self.teardown(CancelReason::Disconnected, true);
         self.events.push_back(Event::Disconnect);
-        self.set_state(ConnectionState::Rejected { reason });
+        self.set_state(ConnectionState::Rejected { reason, code });
+    }
+
+    /// Host 给出的拒绝错误码（字符串）；缺省或不认识时为 [`ConnectionErrorCode::Rejected`]。
+    fn reject_with(&mut self, reason: Option<String>, code: Option<&str>) {
+        let code = code.and_then(ConnectionErrorCode::parse).unwrap_or(ConnectionErrorCode::Rejected);
+        self.reject(reason.unwrap_or_else(|| "配对被拒绝".to_owned()), code);
     }
 
     /// 对端不是期望的 Host：断开，不再自动重连（spec/protocol.md 1.6）。
-    fn host_mismatch(&mut self, reason: String) {
-        self.warn(reason.clone());
+    fn host_mismatch(&mut self, issue: ConnectionIssue) {
+        self.warn(issue.message.clone());
         self.teardown(CancelReason::Disconnected, true);
         self.events.push_back(Event::Disconnect);
-        self.set_state(ConnectionState::HostMismatch { reason });
+        self.set_state(ConnectionState::HostMismatch { reason: issue.message, code: issue.code });
+    }
+
+    /// 发出此前积累的连接问题（`app/diagnostic`，spec/protocol.md 10.2）并清空。
+    pub(crate) fn flush_diagnostics(&mut self) {
+        for d in std::mem::take(&mut self.diagnostics) {
+            self.notify(method::DIAGNOSTIC, &d);
+        }
     }
 
     fn on_paired(&mut self, token: Option<String>, tools_current: bool, now: Millis) {
@@ -238,6 +259,7 @@ impl Client {
         let vis = VisibilityParams { visibility: self.visibility, focused: self.focused };
         self.notify(method::VISIBILITY, &vis);
         self.notify(method::READY, &proto::ReadyParams {});
+        self.flush_diagnostics();
         self.retry_count = 0;
         // 一次性 token 只在首次成功握手时使用。
         self.launch_token = None;
@@ -267,7 +289,7 @@ impl Client {
 
     pub(crate) fn next_timeout(&self) -> Option<Millis> {
         match self.state {
-            ConnectionState::Backoff { retry_at } => Some(retry_at),
+            ConnectionState::Backoff { retry_at, .. } => Some(retry_at),
             ConnectionState::Handshaking => self.session.handshake_deadline,
             ConnectionState::Connected => {
                 let hb = &self.session.heartbeat;
@@ -286,13 +308,14 @@ impl Client {
 
     pub(crate) fn on_timeout(&mut self, now: Millis) {
         match self.state {
-            ConnectionState::Backoff { retry_at } if now >= retry_at => {
+            ConnectionState::Backoff { retry_at, .. } if now >= retry_at => {
                 self.events.push_back(Event::Connect);
                 self.set_state(ConnectionState::Connecting);
             }
             ConnectionState::Handshaking if self.session.handshake_deadline.is_some_and(|d| now >= d) => {
-                self.warn(format!("握手超时：{}ms 内未收到 app/hello 的结果，断开并重连", self.config.handshake_timeout_ms));
-                self.drop_connection(now);
+                let message = format!("握手超时：{}ms 内未收到 app/hello 的结果，断开并重连", self.config.handshake_timeout_ms);
+                self.warn(message.clone());
+                self.drop_connection(ConnectionIssue::new(ConnectionErrorCode::HandshakeTimeout, message), now);
             }
             ConnectionState::Connected => {
                 self.on_connected_timeout(now);
@@ -309,8 +332,9 @@ impl Client {
         if let Some((_, sent)) = self.session.heartbeat.outstanding {
             let timeout = self.heartbeat_timeout_ms();
             if now >= sent.saturating_add(timeout) {
-                self.warn(format!("心跳超时：{timeout}ms 内未收到 ping 响应，断开并重连"));
-                self.drop_connection(now);
+                let message = format!("心跳超时：{timeout}ms 内未收到 ping 响应，断开并重连");
+                self.warn(message.clone());
+                self.drop_connection(ConnectionIssue::new(ConnectionErrorCode::ConnectFailed, message), now);
                 return;
             }
         }
@@ -615,9 +639,7 @@ impl Client {
                 match serde_json::from_value::<PairingResultParams>(n.params) {
                     Ok(p) => match p.status {
                         PairingStatus::Paired => self.on_paired(p.token, false, now),
-                        PairingStatus::Rejected => {
-                            self.reject(p.reason.unwrap_or_else(|| "配对被拒绝".to_owned()));
-                        }
+                        PairingStatus::Rejected => self.reject_with(p.reason, p.code.as_deref()),
                         PairingStatus::Pending => self.warn("app/pairingResult 的 status 为 pending，已忽略"),
                     },
                     Err(e) => self.warn(format!("app/pairingResult 参数无效：{e}")),
@@ -673,32 +695,39 @@ impl Client {
             Ok(v) => match serde_json::from_value::<HelloResult>(v) {
                 Ok(r) => r,
                 Err(e) => {
-                    self.host_mismatch(format!("对端不是 app-mcp Host：app/hello 结果无法解析（{e}）"));
+                    self.host_mismatch(ConnectionIssue::new(
+                        ConnectionErrorCode::HostNotAppMcp,
+                        format!("对端不是 app-mcp Host：app/hello 结果无法解析（{e}）"),
+                    ));
                     return;
                 }
             },
             Err(e) if e.code == app_mcp_protocol::RpcError::METHOD_NOT_FOUND => {
-                self.host_mismatch(format!("对端不是 app-mcp Host：不支持 app/hello（{}）", e.message));
+                self.host_mismatch(ConnectionIssue::new(
+                    ConnectionErrorCode::HostNotAppMcp,
+                    format!("对端不是 app-mcp Host：不支持 app/hello（{}）", e.message),
+                ));
                 return;
             }
             Err(e) => {
-                self.reject(format!("握手失败：{}", e.message));
+                self.reject(format!("握手失败：{}", e.message), ConnectionErrorCode::Rejected);
                 return;
             }
         };
-        if let Err(reason) =
+        if let Err(issue) =
             app_mcp_protocol::identity::check_hello(&result, self.config.expected_host_user.as_deref())
         {
-            self.host_mismatch(reason);
+            self.host_mismatch(issue);
             return;
         }
+        self.session.connection_id = result.connection_id.clone().filter(|c| !c.is_empty());
         match result.status {
             PairingStatus::Paired => self.on_paired(result.token, result.tools_current, now),
             PairingStatus::Pending => {
                 self.session.handshake_deadline = None;
                 self.set_state(ConnectionState::PendingPairing);
             }
-            PairingStatus::Rejected => self.reject(result.reason.unwrap_or_else(|| "配对被拒绝".to_owned())),
+            PairingStatus::Rejected => self.reject_with(result.reason, result.code.as_deref()),
         }
     }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use app_mcp_manifest::is_reserved_app_id;
 use app_mcp_protocol::{
-    ErrorKind, HelloParams, HelloResult, MUX_MAX_CHANNELS, MUX_VERSION, Message, MuxFrame, MuxParams,
+    ConnectionErrorCode, DiagnosticParams, ErrorKind, HelloParams, HelloResult, MUX_MAX_CHANNELS, MUX_VERSION, Message, MuxFrame, MuxParams,
     MuxResult, Notification, PROTOCOL_VERSION,
     PairingResultParams, PairingStatus, Request, ResourceUpdatedParams, ResourcesChangedParams,
     ResourcesSyncParams, RpcError, SleepParams, SleepResult, ToolError, ToolsChangedParams,
@@ -30,7 +30,7 @@ use crate::connection::{Connection, Outgoing};
 use crate::hub::HubShared;
 use crate::lifecycle::SLEEP_RETRY_AFTER_MS;
 use crate::registry::{DormantInstance, NewInstance, client_kind_str};
-use crate::types::{HubEvent, PairingRequest};
+use crate::types::{DiagnosticReport, HubEvent, PairingRequest};
 
 /// 连接的对端。
 #[derive(Clone, Copy, Debug)]
@@ -111,8 +111,8 @@ pub(crate) async fn handle_websocket<S>(
         return;
     }
 
-    let (conn, mut rx) = Connection::new(shared.next_id());
-    tracing::debug!(%peer, conn = conn.id, ?origin, "新连接");
+    let (conn, mut rx) = shared.new_connection();
+    tracing::debug!(%peer, cid = %conn.cid, ?origin, "新连接");
     let writer = tokio::spawn(async move {
         let mut sink = sink;
         while let Some(out) = rx.recv().await {
@@ -238,8 +238,8 @@ async fn run_mux<Sk>(
                             continue;
                         }
                         let (in_tx, in_rx) = mpsc::unbounded_channel::<String>();
-                        let (conn, out_rx) = Connection::new(shared.next_id());
-                        tracing::debug!(%peer, ch, conn = conn.id, ?origin, "新通道");
+                        let (conn, out_rx) = shared.new_connection();
+                        tracing::debug!(%peer, ch, cid = %conn.cid, ?origin, "新通道");
                         channels.insert(ch, (conn.id, in_tx));
                         let ctx = ChannelCtx {
                             shared: shared.clone(),
@@ -379,8 +379,11 @@ where
                 pairing_rx = None;
                 let Some((hello, token)) = pairing.take() else { break };
                 if !approved {
-                    tracing::info!(conn = conn.id, app_id = %hello.app_id, "配对被拒绝");
-                    send_pairing_result(&conn, PairingStatus::Rejected, None, Some("用户拒绝了配对请求".to_owned()));
+                    let reason = "用户拒绝了配对请求";
+                    let code = ConnectionErrorCode::PairingRejected;
+                    tracing::info!(cid = %conn.cid, app_id = %hello.app_id, code = code.as_str(), "配对被拒绝");
+                    shared.record_app_error(&hello.app_id, Some(code.as_str()), reason);
+                    send_pairing_result(&conn, PairingStatus::Rejected, None, Some((code, reason.to_owned())));
                     break;
                 }
                 shared.remember_pairing(&hello.app_id, origin.as_deref(), &token, true);
@@ -390,7 +393,7 @@ where
             }
             // 等待配对确认期间 SDK 不发心跳，暂停空闲超时（配对本身有 pairing_timeout）。
             _ = sleep_until(last_rx + idle), if pairing_rx.is_none() => {
-                tracing::info!(conn = conn.id, background, "{} 秒内没有收到消息，断开连接", idle.as_secs());
+                tracing::info!(cid = %conn.cid, background, "{} 秒内没有收到消息，断开连接", idle.as_secs());
                 break;
             }
             _ = ping.tick(), if registered.is_some() => {
@@ -406,7 +409,7 @@ where
                 }
             }
             _ = conn.shutdown_requested() => {
-                tracing::debug!(conn = conn.id, "连接被关闭（被新连接替换）");
+                tracing::debug!(cid = %conn.cid, "连接被关闭（被新连接替换）");
                 break;
             }
         }
@@ -416,7 +419,7 @@ where
     if let Some(reg) = registered {
         let removed = shared.registry().remove_instance(&reg.app_id, conn.id);
         if removed.is_some() {
-            tracing::info!(app_id = %reg.app_id, instance_id = %reg.instance_id, "实例断开");
+            tracing::info!(cid = %conn.cid, app_id = %reg.app_id, instance_id = %reg.instance_id, "实例断开");
             shared.emit(HubEvent::AppDisconnected {
                 app_id: reg.app_id.clone(),
                 instance_id: reg.instance_id.clone(),
@@ -450,7 +453,7 @@ fn handle_text(
     let msg = match Message::parse(text) {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!(conn = conn.id, "无法解析的消息：{e}");
+            tracing::warn!(cid = %conn.cid, "无法解析的消息：{e}");
             return Flow::Continue;
         }
     };
@@ -474,23 +477,34 @@ fn handle_text(
         },
         Message::Notification(n) => {
             match registered {
-                None => tracing::warn!(conn = conn.id, method = %n.method, "握手前的通知，忽略"),
+                None => tracing::warn!(cid = %conn.cid, method = %n.method, "握手前的通知，忽略"),
                 Some(reg) => handle_notification(shared, conn, reg, n),
             }
             Flow::Continue
         }
         Message::Response(resp) => {
             if !conn.resolve(resp) {
-                tracing::warn!(conn = conn.id, "未知 ID 的响应，忽略");
+                tracing::warn!(cid = %conn.cid, "未知 ID 的响应，忽略");
             }
             Flow::Continue
         }
     }
 }
 
-/// `app/hello` 的结果，带 Host 身份（spec/protocol.md 1.6）。
-fn hello_result(shared: &HubShared, status: PairingStatus, token: Option<String>, reason: Option<String>, tools_current: bool) -> Value {
+/// `app/hello` 的结果，带 Host 身份（spec/protocol.md 1.6）与连接 ID（10.3）；`rejected` 时带原因与错误码（10.1）。
+fn hello_result(
+    shared: &HubShared,
+    conn: &Connection,
+    status: PairingStatus,
+    token: Option<String>,
+    rejection: Option<(ConnectionErrorCode, String)>,
+    tools_current: bool,
+) -> Value {
     let id = &shared.identity;
+    let (code, reason) = match rejection {
+        Some((code, reason)) => (Some(code.as_str().to_owned()), Some(reason)),
+        None => (None, None),
+    };
     let result = HelloResult {
         status,
         token,
@@ -501,15 +515,28 @@ fn hello_result(shared: &HubShared, status: PairingStatus, token: Option<String>
         service: Some(id.service.clone()),
         user: id.user.clone(),
         pid: Some(id.pid),
+        connection_id: Some(conn.cid.clone()),
+        code,
     };
     serde_json::to_value(result).unwrap_or(Value::Null)
 }
 
-fn reject(shared: &HubShared, conn: &Connection, req: &Request, reason: String) -> Flow {
-    tracing::warn!(conn = conn.id, "拒绝连接：{reason}");
+/// 拒绝握手：回复 `rejected`（带错误码），记为该 App 的最近错误（appId 合法时），然后关闭连接。
+fn reject(
+    shared: &HubShared,
+    conn: &Connection,
+    req: &Request,
+    app_id: &str,
+    code: ConnectionErrorCode,
+    reason: String,
+) -> Flow {
+    tracing::warn!(cid = %conn.cid, app_id, code = code.as_str(), "拒绝连接：{reason}");
+    if is_valid_app_id(app_id) {
+        shared.record_app_error(app_id, Some(code.as_str()), &reason);
+    }
     conn.send(&Message::result(
         req.id.clone(),
-        hello_result(shared, PairingStatus::Rejected, None, Some(reason), false),
+        hello_result(shared, conn, PairingStatus::Rejected, None, Some((code, reason)), false),
     ));
     Flow::Close
 }
@@ -559,6 +586,8 @@ fn handle_handshake_request(
             shared,
             conn,
             &req,
+            &hello.app_id,
+            ConnectionErrorCode::ProtocolIncompatible,
             format!(
                 "协议版本不兼容：SDK 使用 {}，Host 只支持 {PROTOCOL_VERSION}。请升级 SDK 或 Host。",
                 hello.protocol_version
@@ -572,6 +601,8 @@ fn handle_handshake_request(
             shared,
             conn,
             &req,
+            &hello.app_id,
+            ConnectionErrorCode::Rejected,
             format!("只接受来自本机回环地址的连接（来自 {}）", addr.ip()),
         );
     }
@@ -582,6 +613,8 @@ fn handle_handshake_request(
             shared,
             conn,
             &req,
+            &hello.app_id,
+            ConnectionErrorCode::OriginNotAllowed,
             format!(
                 "来源 {} 不在允许列表中；可用 --allow-origin 添加。",
                 origin.unwrap_or_default()
@@ -593,6 +626,8 @@ fn handle_handshake_request(
             shared,
             conn,
             &req,
+            &hello.app_id,
+            ConnectionErrorCode::InvalidHello,
             format!(
                 "appId「{}」格式不合法，应满足 [a-z][a-z0-9-]{{0,62}}",
                 hello.app_id
@@ -602,20 +637,32 @@ fn handle_handshake_request(
     if is_reserved_app_id(&hello.app_id) {
         return reject(
             shared,
-            conn, &req, format!("appId「{}」是保留名", hello.app_id));
+            conn,
+            &req,
+            &hello.app_id,
+            ConnectionErrorCode::InvalidHello,
+            format!("appId「{}」是保留名", hello.app_id),
+        );
     }
     if shared.is_upstream(&hello.app_id) {
         return reject(
             shared,
             conn,
             &req,
+            &hello.app_id,
+            ConnectionErrorCode::InvalidHello,
             format!("appId「{}」已被上游 MCP 服务器占用", hello.app_id),
         );
     }
     if hello.instance_id.is_empty() {
         return reject(
             shared,
-            conn, &req, "instanceId 不能为空".to_owned());
+            conn,
+            &req,
+            &hello.app_id,
+            ConnectionErrorCode::InvalidHello,
+            "instanceId 不能为空".to_owned(),
+        );
     }
 
     let token = hello
@@ -632,7 +679,7 @@ fn handle_handshake_request(
             take_resume(shared, &hello);
             conn.send(&Message::result(
                 req.id,
-                hello_result(shared, PairingStatus::Pending, None, None, false),
+                hello_result(shared, conn, PairingStatus::Pending, None, None, false),
             ));
             let pair_req = PairingRequest {
                 app_id: hello.app_id.clone(),
@@ -643,7 +690,7 @@ fn handle_handshake_request(
             };
             let (tx, rx) = oneshot::channel();
             let timeout = shared.config.pairing_timeout;
-            tracing::info!(conn = conn.id, app_id = %hello.app_id, ?origin, "等待用户确认配对");
+            tracing::info!(cid = %conn.cid, app_id = %hello.app_id, ?origin, "等待用户确认配对");
             tokio::spawn(async move {
                 let ok = tokio::time::timeout(timeout, handler.pair(pair_req))
                     .await
@@ -659,7 +706,7 @@ fn handle_handshake_request(
     let (snapshot, tools_current) = take_resume(shared, &hello);
     conn.send(&Message::result(
         req.id,
-        hello_result(shared, PairingStatus::Paired, Some(token), None, tools_current),
+        hello_result(shared, conn, PairingStatus::Paired, Some(token), None, tools_current),
     ));
     let snapshot = snapshot.filter(|_| tools_current);
     Flow::Paired(register_instance_with(shared, conn, hello, origin, peer, snapshot))
@@ -695,12 +742,17 @@ fn send_pairing_result(
     conn: &Connection,
     status: PairingStatus,
     token: Option<String>,
-    reason: Option<String>,
+    rejection: Option<(ConnectionErrorCode, String)>,
 ) {
+    let (code, reason) = match rejection {
+        Some((code, reason)) => (Some(code.as_str().to_owned()), Some(reason)),
+        None => (None, None),
+    };
     let p = PairingResultParams {
         status,
         token,
         reason,
+        code,
     };
     conn.notify(
         method::PAIRING_RESULT,
@@ -732,14 +784,14 @@ fn register_instance_with(
         },
     );
     if let Some(old) = replaced {
-        tracing::info!(app_id = %hello.app_id, instance_id = %hello.instance_id, "同一实例重新连接，替换旧连接");
+        tracing::info!(cid = %conn.cid, old_cid = %old.cid, app_id = %hello.app_id, instance_id = %hello.instance_id, "同一实例重新连接，替换旧连接");
         old.close();
     }
     if let Some(snap) = &snapshot {
         shared.registry().restore_snapshot(&hello.app_id, conn.id, snap);
         shared.ensure_subscriptions(&hello.app_id);
     }
-    tracing::info!(app_id = %hello.app_id, instance_id = %hello.instance_id, ?origin, %peer, "实例已配对");
+    tracing::info!(cid = %conn.cid, app_id = %hello.app_id, instance_id = %hello.instance_id, ?origin, %peer, "实例已配对");
     shared.emit(HubEvent::AppConnected {
         app_id: hello.app_id.clone(),
         instance_id: hello.instance_id.clone(),
@@ -798,7 +850,7 @@ fn handle_sleep(
 ) -> SleepResult {
     let busy = conn.inflight() > 0 || shared.has_pending_wake(&reg.app_id, &reg.instance_id);
     if busy {
-        tracing::debug!(app_id = %reg.app_id, instance_id = %reg.instance_id, "有待派发的调用，拒绝休眠");
+        tracing::debug!(cid = %conn.cid, app_id = %reg.app_id, instance_id = %reg.instance_id, "有待派发的调用，拒绝休眠");
         return SleepResult {
             accepted: false,
             resume_token: None,
@@ -820,7 +872,7 @@ fn handle_sleep(
             retry_after_ms: None,
         };
     }
-    tracing::info!(app_id = %reg.app_id, instance_id = %reg.instance_id, reason = ?p.reason, "实例进入休眠");
+    tracing::info!(cid = %conn.cid, app_id = %reg.app_id, instance_id = %reg.instance_id, reason = ?p.reason, "实例进入休眠");
     shared.emit(HubEvent::AppDormant {
         app_id: reg.app_id.clone(),
         instance_id: reg.instance_id.clone(),
@@ -844,7 +896,7 @@ fn handle_notification(
             match parse_params::<$t>(&n.params) {
                 Ok(p) => p,
                 Err(e) => {
-                    tracing::warn!(conn = conn.id, method = %n.method, "通知参数无效：{e}");
+                    tracing::warn!(cid = %conn.cid, method = %n.method, "通知参数无效：{e}");
                     return;
                 }
             }
@@ -903,17 +955,38 @@ fn handle_notification(
                 visibility: p.visibility,
             });
         }
+        method::DIAGNOSTIC => {
+            let p = params!(DiagnosticParams);
+            tracing::warn!(
+                cid = %conn.cid,
+                app_id,
+                instance_id = %reg.instance_id,
+                code = %p.code,
+                count = p.count,
+                "SDK 上报连接问题：{}",
+                p.message
+            );
+            shared.record_report(DiagnosticReport {
+                app_id: app_id.to_owned(),
+                instance_id: reg.instance_id.clone(),
+                connection_id: conn.cid.clone(),
+                code: p.code,
+                message: p.message,
+                count: p.count.max(1),
+                received_at_ms: crate::hub::unix_millis(),
+            });
+        }
         method::READY => {
             shared.registry().set_ready(app_id, conn.id);
             shared.wake_arrived(app_id, &reg.instance_id, reg.launch_token.as_deref());
         }
-        other => tracing::warn!(conn = conn.id, method = other, "未知通知，忽略"),
+        other => tracing::warn!(cid = %conn.cid, method = other, "未知通知，忽略"),
     }
 }
 
 /// 局部名以 `<appId>.` 开头时记录警告（spec/protocol.md 3.1）：名称照常登记，不改写。
 fn warn_prefixed_names(conn: &Connection, app_id: &str, tools: &[app_mcp_protocol::ToolInfo]) {
     for t in tools.iter().filter(|t| app_mcp_protocol::has_app_id_prefix(&t.name, app_id)) {
-        tracing::warn!(conn = conn.id, "{}", app_mcp_protocol::app_id_prefix_warning(&t.name, app_id));
+        tracing::warn!(cid = %conn.cid, "{}", app_mcp_protocol::app_id_prefix_warning(&t.name, app_id));
     }
 }

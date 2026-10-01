@@ -180,6 +180,7 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     const state = core.state()
     expect(state.status).toBe('host-mismatch')
     expect((state as { reason: string }).reason).toMatch(/不是 app-mcp/)
+    expect((state as { code: string }).code).toBe('HOST_NOT_APP_MCP')
     expect(drain()).toContainEqual({ type: 'disconnect' })
     expect(core.pollTimeout()).toBeUndefined()
     // 网页不核对用户（浏览器不知道操作系统用户）：带 user 的 app-mcp 结果照常连接
@@ -195,6 +196,43 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
       3,
     )
     expect(core.state()).toEqual({ status: 'connected' })
+    core.free?.()
+  })
+
+  it('诊断（spec/protocol.md 第 10 节）：连接失败带错误码，记下的问题在握手成功后以 app/diagnostic 上报，连接 ID', async () => {
+    const factory = await loadRealCore()
+    const core = factory({ appId: 'shop', appName: 's', instanceId: 'i' })
+    const drain = (): any[] => {
+      const out: any[] = []
+      for (let e = core.pollEvent(); e; e = core.pollEvent()) out.push(e)
+      return out
+    }
+    core.start(0)
+    drain()
+    core.handleConnectFailed('CONNECT_FAILED', '无法连接', 0)
+    expect(core.state()).toEqual({ status: 'backoff', retryAt: 500, reason: '无法连接', code: 'CONNECT_FAILED' })
+    expect(() => core.handleConnectFailed('NOPE', 'x', 0)).toThrow(/未知错误码/)
+    core.reportIssue('BLOCKED_CSP', 'CSP 不允许')
+    core.connectNow(1)
+    core.handleConnected(1)
+    const hello = drain().find((e) => e.type === 'send')
+    core.handleMessage(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: JSON.parse(hello.text).id,
+        result: { status: 'paired', protocolVersion: '1', hostVersion: 'x', service: 'app-mcp', connectionId: 'ab12cd-3' },
+      }),
+      2,
+    )
+    expect(core.connectionId()).toBe('ab12cd-3')
+    const sent = drain()
+      .filter((e) => e.type === 'send')
+      .map((e) => JSON.parse(e.text))
+    expect(sent.at(-1)).toEqual({
+      jsonrpc: '2.0',
+      method: 'app/diagnostic',
+      params: { code: 'BLOCKED_CSP', message: 'CSP 不允许', count: 1 },
+    })
     core.free?.()
   })
 })

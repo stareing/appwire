@@ -237,7 +237,7 @@ class AppMcp private constructor(
 
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
     private val scope = CoroutineScope(SupervisorJob() + dispatcher + CoroutineName("app-mcp"))
-    private val _state = MutableStateFlow(StateInfo(StateStatus.IDLE, null, null))
+    private val _state = MutableStateFlow(StateInfo(StateStatus.IDLE, null, null, null))
     private val inner: AppMcpClient
 
     init {
@@ -305,6 +305,9 @@ class AppMcp private constructor(
     /** 当前 token（配置带入的或配对后获得的）。 */
     val token: String? get() = inner.token()
 
+    /** Host 为当前连接分配的连接 ID（spec/protocol.md 10.3），与 Host 日志中的 `cid` 对应；未连接时为 null。 */
+    val connectionId: String? get() = inner.connectionId()
+
     /** 开始连接 Host（重复调用无效果）。 */
     fun start(): AppMcp = apply { inner.start() }
 
@@ -325,7 +328,7 @@ class AppMcp private constructor(
 
     /** 当前状态（直接读取原生层；[state] 由分发线程异步更新，可能稍有滞后）。已关闭时为 `STOPPED`。 */
     fun currentState(): StateInfo =
-        if (closed.get()) StateInfo(StateStatus.STOPPED, null, null) else inner.state()
+        if (closed.get()) StateInfo(StateStatus.STOPPED, null, null, null) else inner.state()
 
     // -- 生命周期（spec/lifecycle.md 第 8 节） ------------------------------------
 

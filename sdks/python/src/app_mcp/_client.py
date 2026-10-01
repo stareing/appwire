@@ -807,6 +807,11 @@ class AppMcp(_Registrar):
         return self._inner.token()
 
     @property
+    def connection_id(self) -> str | None:
+        """Host 为当前连接分配的连接 ID（spec/protocol.md 10.3），与 Host 日志中的 cid 对应；未连接时为 None。"""
+        return self._inner.connection_id()
+
+    @property
     def state(self) -> ffi.StateInfo:
         return self._inner.state()
 

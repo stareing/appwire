@@ -81,7 +81,8 @@ impl MockHost {
                                     let reply = match req.method.as_str() {
                                         method::HELLO => Some(json!({
                                             "status": "paired", "token": format!("tok-{n}"),
-                                            "protocolVersion": "1", "hostVersion": "mock"
+                                            "protocolVersion": "1", "hostVersion": "mock",
+                                            "connectionId": format!("mock-{n}")
                                         })),
                                         method::PING => Some(json!({})),
                                         _ => None,

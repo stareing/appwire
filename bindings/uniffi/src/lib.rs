@@ -617,8 +617,10 @@ pub struct StateInfo {
     pub status: StateStatus,
     /// `Backoff` 时距下一次重连的毫秒数。
     pub retry_in_ms: Option<u64>,
-    /// `Rejected` / `HostMismatch` 时的原因。
+    /// `Rejected` / `HostMismatch` 时的原因；`Backoff` 时为连接失败 / 断开的原因（有的话）。
     pub reason: Option<String>,
+    /// 与 `reason` 对应的错误码（spec/protocol.md 10.1，如 `HOST_NOT_RUNNING`）。
+    pub code: Option<String>,
 }
 
 impl From<native::StateInfo> for StateInfo {
@@ -627,6 +629,7 @@ impl From<native::StateInfo> for StateInfo {
             status: s.status.into(),
             retry_in_ms: s.retry_in_ms,
             reason: s.reason,
+            code: s.code,
         }
     }
 }
@@ -930,6 +933,10 @@ impl AppMcpClient {
     pub fn token(&self) -> Option<String> {
         self.inner.token()
     }
+    /// Host 为当前连接分配的连接 ID（spec/protocol.md 10.3）；未连接时为 `None`。
+    pub fn connection_id(&self) -> Option<String> {
+        self.inner.connection_id()
+    }
     /// 开始连接。重复调用无效果。
     pub fn start(&self) {
         self.inner.start()
@@ -1107,9 +1114,11 @@ mod tests {
         let s = StateInfo::from(native::StateInfo {
             status: native::StateStatus::Backoff,
             retry_in_ms: Some(500),
-            reason: None,
+            reason: Some("r".into()),
+            code: Some("HOST_NOT_RUNNING".into()),
         });
         assert_eq!(s.status, StateStatus::Backoff);
+        assert_eq!(s.code.as_deref(), Some("HOST_NOT_RUNNING"));
         assert_eq!(s.retry_in_ms, Some(500));
     }
 

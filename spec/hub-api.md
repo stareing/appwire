@@ -42,7 +42,7 @@ pub struct HubConfig {
     pub listen: Option<String>,             // HTTP 服务（/app、/healthz、可选 /mcp），默认 127.0.0.1:7717；None = 不开（3.6）
     pub listen_alternates: Vec<String>,     // listen 被占用时依次尝试，默认 127.0.0.1:7737、127.0.0.1:7757
     pub http: HttpOptions,                  // 令牌（只作用于 /mcp）、allow_remote
-    pub mcp_http: bool,                     // listen 上是否提供 /mcp，默认 false
+    pub mcp_http: bool,                     // listen 与 IPC 端点上是否提供 /mcp，默认 false（3.6、3.8）
     pub run_dir: Option<PathBuf>,           // 单实例锁 + 登记文件目录，默认 None（3.6）
     pub ipc_endpoint: Option<String>,       // 本地 IPC 端点，默认平台默认端点；None = 不开（3.8）
     pub approval: ApprovalPolicy,           // 见 3.3
@@ -61,6 +61,7 @@ impl Hub {
     pub fn tools(&self, filter: &ToolFilter) -> Vec<HubTool>;
     pub fn resources(&self) -> Vec<HubResource>;
     pub fn overview(&self, app_id: &str) -> Option<AppOverviewInfo>;
+    pub fn status(&self) -> HubStatus;                        // 运行状态、最近错误、SDK 上报（3.9）
 
     // ---- 操作 ----
     pub async fn call_tool(&self, req: CallRequest) -> Result<CallOutcome, HubError>;
@@ -101,7 +102,8 @@ pub struct AppInfo {
 }
 pub struct InstanceInfo { pub instance_id: String, pub client_kind: String,
     pub visibility: Visibility, pub focused: bool, pub last_active_ms: u64,
-    pub pid: Option<u32> }   // pid：经本地 IPC 连接的实例进程号（3.8）
+    pub pid: Option<u32>,    // pid：经本地 IPC 连接的实例进程号（3.8）
+    pub connection_id: Option<String> }   // Hub 分配的连接 ID（3.9）；休眠实例为 None
 
 pub struct HubTool {
     pub name: String,            // 全名 "<appId>.<tool>"，与 MCP 出口一致
@@ -144,6 +146,7 @@ pub enum HubEvent {
     UpstreamState { name: String, connected: bool, error: Option<String> },
     AppDormant { app_id: String, instance_id: String },          // 3.5
     AppWaking { app_id: String, instance_id: Option<String> },   // 3.5；None = 冷启动
+    AppDiagnostic { app_id: String, instance_id: String, code: String, message: String, count: u32 }, // SDK 上报（3.9）
 }
 ```
 
@@ -218,13 +221,14 @@ pub struct PairingRequest { pub app_id: String, pub app_name: String,
 ### 3.6 HTTP 服务：合并端口、单实例、多会话、令牌、健康检查
 
 一个 HTTP/1.1 服务按路径分流（spec/protocol.md 1.3），同一个路由（`crates/hub/src/http_server.rs` 的 `Router`）
-既服务 `listen` 的回环 TCP，也服务本地 IPC 端点（IPC 上目前没有 `/mcp`，4b-B 加入）：
+既服务 `listen` 的回环 TCP，也服务本地 IPC 端点（`mcp_http` 同时作用于两者，IPC 上的 `/mcp` 不校验令牌，见 3.8）：
 
 | 路径 | 内容 | 校验 |
 |---|---|---|
 | `/app`（及兼容期的 `/`） | WebSocket 升级 → App 连接 | `Origin` 在 `app/hello` 时按允许列表 / `PairingHandler` 处理（不在 HTTP 层 403） |
 | `/mcp` | MCP Streamable HTTP（`mcp_http` 或额外监听器） | `Origin` 允许列表（403）→ 令牌（401） |
 | `/healthz` | `GET` → `Health` JSON | `Origin` 允许列表（403），不需要令牌 |
+| `/status` | `GET` → `HubStatus` JSON（3.9） | `Origin` 允许列表（403）→ IPC 直接允许；TCP 必须带有效令牌，未配置令牌时 403 |
 
 ```rust
 pub struct HttpOptions {
@@ -407,6 +411,43 @@ Node 配置 `ipcEndpoint`（同上）+ `Hub.ipcEndpoint`；uniffi `HubConfig.ipc
 `AppMcpHub.ipc_endpoint()` + `InstanceInfo.pid: u32?`；C# `HubOptions.IpcEndpoint` / `DisableIpc` + `AppMcpHub.IpcEndpoint`；
 Kotlin `Hub.ipcEndpoint`、Swift `Hub.ipcEndpoint`、Python `Hub.ipc_endpoint`。
 `app-mcp-host`：配置文件 `ipcEndpoint`（`"none"` 关闭）、命令行 `--ipc-endpoint <ENDPOINT|none>`。`/healthz` 带 `ipcEndpoint`。
+
+**MCP over IPC**：`mcp_http` 为 `true` 时 IPC 端点上同样提供 `/mcp`（同一个 `Router`，spec/protocol.md 1.3），供厂商 Agent /
+支持本地套接字的 MCP 客户端使用。IPC 上不校验令牌（连接级鉴权已确认对端是同一用户，同一用户本可读取令牌文件）；
+客户端应核对监听方是同一用户（Unix `SO_PEERCRED` / Windows 管道所有者 SID）。示例：`crates/hub/tests/mcp_ipc.rs`——
+Unix 用 rmcp 的 `UnixSocketHttpClient` + `StreamableHttpClientTransport::with_client`（URL `http://localhost/mcp`）完成
+initialize → tools/list → tools/call；Windows 用 hyper 客户端经命名管道发 `initialize`。不提供 stdio→HTTP 转发程序。
+
+### 3.9 诊断：运行状态、连接 ID、错误码
+
+```rust
+impl Hub { pub fn status(&self) -> HubStatus; }        // GET /status 返回同样的 JSON（camelCase）
+pub struct HubStatus {
+    #[serde(flatten)] identity: HostIdentity,          // service / version / user / pid
+    listen: Option<String>, ipc_endpoint: Option<String>, started_at_ms: u64,
+    mcp_http: bool, auth: AuthStatus,                  // { token_configured, token_required_without_origin }
+    mcp_sessions: usize,
+    apps: Vec<AppStatus>,                              // 按 appId 排序，含上游
+    reports: Vec<DiagnosticReport>,                    // 最近 32 条 SDK 上报（MAX_REPORTS），旧的在前
+}
+pub struct AppStatus { app_id, name, kind: AppKind, state: AppState,   // connected | waking | dormant | disconnected
+    instances: Vec<InstanceStatus>,                    // InstanceInfo（flatten）+ state: connected | dormant | waking
+    last_error: Option<LastError> }                    // { code: Option<String>, message, at_ms }
+pub struct DiagnosticReport { app_id, instance_id, connection_id, code, message, count: u32, received_at_ms: u64 }
+```
+
+- **最近错误**（`last_error`）：握手被拒（带 spec/protocol.md 10.1 的错误码）、配对被拒、唤醒失败 / 超时（工具错误类别，如
+  `APP_NOT_RESPONDING`）；上游为进程错误。只因握手被拒出现过的 appId 也列出（`disconnected`）。appId 不合法的握手不记录。
+- **SDK 上报**：SDK 的 `app/diagnostic` 通知（spec/protocol.md 10.2）记入 `reports`，同时发 `HubEvent::AppDiagnostic` 并记 warn 日志。
+- **连接 ID**：Hub 启动时生成 6 位十六进制标记，每条 App 连接（多路复用时每个通道）的 ID 为 `<标记>-<序号>`，经
+  `HelloResult.connectionId` 返回 SDK，`InstanceInfo.connection_id` 与日志字段 `cid` 中相同；MCP 会话为 `mcp-<序号>`。
+- **拒绝错误码**：握手被拒时 `HelloResult.code`（`PROTOCOL_INCOMPATIBLE` / `ORIGIN_NOT_ALLOWED` / `INVALID_HELLO` / `REJECTED`），
+  配对被拒时 `PairingResultParams.code = PAIRING_REJECTED`。
+- `app-mcp-host doctor` / `status` 经本地 IPC（核对监听方用户后）读 `/status`；IPC 关闭时改用 TCP + 令牌。
+
+绑定：hub-c / hub-node 的事件按 JSON 透传 `AppDiagnostic`（`type: "appDiagnostic"` 形式与其他事件相同）；hub-uniffi 落到既有的
+`HubEvent::Other`；`InstanceInfo.connection_id` 目前只在 Rust / JSON（hub-c、hub-node）中可见，uniffi 记录未加该字段；
+`Hub::status()` 尚未在各绑定中导出（可经 IPC `GET /status` 获取同样内容）。
 
 ## 4. 进程内 App（可选，M2）
 

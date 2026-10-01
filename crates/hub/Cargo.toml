@@ -58,3 +58,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 app-mcp-native.workspace = true
 tokio-tungstenite.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-io"] }
+# tests/mcp_ipc.rs：经本地 IPC 发 HTTP 请求（/status、Windows 上的 /mcp）。
+hyper = { version = "1", features = ["client", "http1"] }
+
+# tests/mcp_ipc.rs：Unix 上用 rmcp 自带的 Unix 域套接字 HTTP 客户端连接 IPC 上的 /mcp。
+[target.'cfg(unix)'.dev-dependencies]
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-unix-socket"] }

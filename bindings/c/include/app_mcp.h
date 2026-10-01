@@ -33,7 +33,10 @@
  * - v5（Host 身份与登记文件，spec/protocol.md 1.6、1.7）：布局与签名不变。新增状态 AM_STATE_HOST_MISMATCH = 10
  *   （对端不是 app-mcp，或属于其他用户；reason 非 NULL）；host_url 缺省值的解析顺序加入登记文件，
  *   WebSocket 缺省地址改为 "ws://127.0.0.1:7717/app"。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4、v5 仍为 3。）
+ * - v6（诊断，spec/protocol.md 第 10 节）：布局与签名不变，只新增函数 am_client_state_code（当前状态的错误码，
+ *   如 "HOST_NOT_RUNNING"、"HOST_NOT_APP_MCP"）与 am_client_connection_id（Host 分配的连接 ID）；
+ *   连接期间 on_log 收到的日志以 "[连接 ID] " 开头。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4、v5、v6 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -180,7 +183,8 @@ typedef void (*AmFreeFn)(void *user_data);
 
 /* 以下三个回调中的字符串归回调方所有（API 版本 2 起）：由库分配，回调方必须用 am_string_free 释放
  * （可以在回调返回后、任意线程释放，便于异步投递，如 dart:ffi NativeCallable.listener）。 */
-/* 状态变化。retry_in_ms 仅 BACKOFF 时有意义（否则为 0）；reason 仅 REJECTED / HOST_MISMATCH 时非 NULL，
+/* 状态变化。retry_in_ms 仅 BACKOFF 时有意义（否则为 0）；reason 在 REJECTED / HOST_MISMATCH 时非 NULL，
+ * v6 起 BACKOFF 在连接失败等情况下也带原因（错误码见 am_client_state_code）；
  * reason 为 NULL 或需由回调方用 am_string_free 释放。 */
 typedef void (*AmStateFn)(void *user_data, AmStateStatus status, uint64_t retry_in_ms, char *reason);
 /* 配对成功，App 应持久化 token。token 非 NULL，需由回调方用 am_string_free 释放。 */
@@ -283,12 +287,18 @@ void am_client_free(AmClient *client);
 AmStatus am_client_start(AmClient *client);
 AmStatus am_client_stop(AmClient *client);
 AmStatus am_client_set_visibility(AmClient *client, AmVisibility visibility, bool focused);
-/* 当前状态；retry_in_ms、reason 可为 NULL。*reason 需用 am_string_free 释放（非 REJECTED / HOST_MISMATCH 时为 NULL）。 */
+/* 当前状态；retry_in_ms、reason 可为 NULL。*reason 需用 am_string_free 释放（REJECTED / HOST_MISMATCH 时非 NULL；
+ * v6 起 BACKOFF 有原因时也非 NULL；其他状态为 NULL）。 */
 AmStatus am_client_state(const AmClient *client, AmStateStatus *status, uint64_t *retry_in_ms, char **reason);
 /* 返回的字符串需 am_string_free。 */
 char *am_client_instance_id(const AmClient *client);
 /* 当前 token，没有时返回 NULL。需 am_string_free。 */
 char *am_client_token(const AmClient *client);
+/* v6：当前状态的错误码（spec/protocol.md 10.1）：REJECTED / HOST_MISMATCH 时总有，BACKOFF 时在连接失败等情况下有
+ * （如 "HOST_NOT_RUNNING"、"IPC_PERMISSION_DENIED"），其他状态为 NULL。*code 需用 am_string_free 释放。 */
+AmStatus am_client_state_code(const AmClient *client, char **code);
+/* v6：Host 为当前连接分配的连接 ID（spec/protocol.md 10.3），未连接或 Host 未提供时为 NULL。*id 需用 am_string_free 释放。 */
+AmStatus am_client_connection_id(const AmClient *client, char **id);
 
 /* ---------------------------------------------------------------------------
  * 客户端：生命周期（v3，spec/lifecycle.md 第 8 节）

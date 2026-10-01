@@ -15,7 +15,7 @@ pub use convert::{
     JsCallOutcome, JsConfig, JsEvent, JsLifecycle, JsResourceDef, JsState, JsToolDef, JsToolUpdate,
 };
 
-use app_mcp_core::{Client, HoldId, Millis, ReadId, ResourceId, ScopeId, ToolId, Visibility};
+use app_mcp_core::{Client, ConnectionErrorCode, ConnectionIssue, HoldId, Millis, ReadId, ResourceId, ScopeId, ToolId, Visibility};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use wasm_bindgen::prelude::*;
@@ -271,6 +271,27 @@ impl WasmClient {
     #[wasm_bindgen(js_name = resumeToken)]
     pub fn resume_token(&self) -> Option<String> {
         self.inner.resume_token().map(str::to_owned)
+    }
+
+    /// 建立连接失败（带错误码，spec/protocol.md 10.1）：同 `handleDisconnected`，`backoff` 状态带 `reason` / `code`。
+    /// 不认识的错误码抛错。
+    #[wasm_bindgen(js_name = handleConnectFailed)]
+    pub fn handle_connect_failed(&mut self, code: &str, message: &str, now: f64) -> Result<(), JsError> {
+        let code = ConnectionErrorCode::parse(code).ok_or_else(|| JsError::new(&format!("未知错误码：{code}")))?;
+        self.inner.handle_connect_failed(ConnectionIssue::new(code, message), millis(now));
+        Ok(())
+    }
+
+    /// Host 为当前连接分配的连接 ID（spec/protocol.md 10.3）。
+    #[wasm_bindgen(js_name = connectionId)]
+    pub fn connection_id(&self) -> Option<String> {
+        self.inner.connection_id().map(str::to_owned)
+    }
+
+    /// 记录一次连接问题，下次握手成功后以 `app/diagnostic` 上报（spec/protocol.md 10.2）。
+    #[wasm_bindgen(js_name = reportIssue)]
+    pub fn report_issue(&mut self, code: &str, message: &str) {
+        self.inner.report_issue(code, message);
     }
 }
 

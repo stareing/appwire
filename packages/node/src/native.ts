@@ -27,6 +27,8 @@ export interface NativeStateInfo {
   status: NativeStatus
   retryInMs?: number | null
   reason?: string | null
+  /** 错误码（spec/protocol.md 10.1）。 */
+  code?: string | null
 }
 
 export type NativeClientEvent =
@@ -130,6 +132,8 @@ export interface NativeScope extends NativeRegistrar {
 
 export interface NativeClient extends NativeRegistrar {
   readonly instanceId: string
+  /** Host 为当前连接分配的连接 ID（spec/protocol.md 10.3）。 */
+  readonly connectionId?: string | null
   readonly state: NativeStateInfo
   readonly token: string | null
   start(): void

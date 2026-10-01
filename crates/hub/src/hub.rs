@@ -3,11 +3,11 @@
 //! 工具调用的唯一实现见 [`crate::call`]；MCP 出口（[`McpSession`]）、[`Hub::call_tool`]、
 //! [`Hub::dispatch`] 都经由它。
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use app_mcp_manifest::Manifest;
@@ -33,9 +33,9 @@ use crate::origin::OriginPolicy;
 use crate::overview::{AppSummary, Overview, OverviewSource};
 use crate::registry::Registry;
 use crate::types::{
-    AppInfo, AppKind, AppOverviewInfo, ApprovalHandler, ApprovalPolicy, CallOutcome, CallRequest,
-    HubError, HubEvent, HubResource, HubTool, PairingHandler, ResourceContent, ToolExposure,
-    ToolFilter,
+    AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy, AuthStatus,
+    CallOutcome, CallRequest, DiagnosticReport, HubError, HubEvent, HubResource, HubStatus, HubTool,
+    InstanceState, InstanceStatus, LastError, PairingHandler, ResourceContent, ToolExposure, ToolFilter,
 };
 use crate::upstream::{UpstreamConfig, UpstreamState, encode_uri_component};
 use crate::wake::{Waker, WakerConfig};
@@ -51,6 +51,16 @@ const API_SUBSCRIBER: u64 = 0;
 
 /// 事件通道容量；接收方落后超过此数时会收到 `Lagged`。
 const EVENT_CAPACITY: usize = 256;
+
+/// [`HubStatus::reports`] 保留的 SDK 诊断上报条数。
+pub const MAX_REPORTS: usize = 32;
+
+/// 诊断记录（`/status`）：每个 App 最近的错误与最近的 SDK 上报。
+#[derive(Debug, Default)]
+struct Diagnostics {
+    last_errors: HashMap<String, LastError>,
+    reports: VecDeque<DiagnosticReport>,
+}
 
 pub fn resource_uri(app_id: &str, name: &str) -> String {
     format!("{RESOURCE_URI_SCHEME}{app_id}/{name}")
@@ -77,8 +87,9 @@ pub struct HubConfig {
     pub listen_alternates: Vec<String>,
     /// HTTP 服务选项（令牌、是否允许远程）。令牌只作用于 `/mcp`。
     pub http: HttpOptions,
-    /// 是否在 `listen` 上提供 MCP Streamable HTTP（`/mcp`）。默认 `false`（嵌入式 Hub 通常只需要 App 连接）；
-    /// `app-mcp-host serve` 开启。
+    /// 是否提供 MCP Streamable HTTP（`/mcp`）：同时作用于 `listen`（TCP，受 [`HubConfig::http`] 的令牌策略约束）
+    /// 与 [`HubConfig::ipc_endpoint`]（本地 IPC，对端已确认是同一用户，不需要令牌）。默认 `false`
+    /// （嵌入式 Hub 通常只需要 App 连接）；`app-mcp-host serve` 开启。
     pub mcp_http: bool,
     /// 单实例锁与登记文件所在目录（spec/protocol.md 1.5、1.7）：取得 `<run_dir>/hub.lock` 之后才开始监听，
     /// 绑定完成后写 `<run_dir>/endpoints.json`，停止时删除。已被锁定时 [`Hub::start`] 返回
@@ -198,6 +209,11 @@ pub struct HubShared {
     pub(crate) config: HubConfig,
     /// 本进程的 Host 身份（握手结果、`/healthz`、登记文件）。
     pub(crate) identity: HostIdentity,
+    /// 本次启动的随机标记（6 位十六进制），连接 ID 的前缀（spec/protocol.md 10.3）。
+    run_tag: String,
+    /// 实际监听位置与启动时刻（[`Hub::start`] 绑定完成后设置），供 `/status` 使用。
+    endpoints: OnceLock<EndpointRegistry>,
+    diagnostics: Mutex<Diagnostics>,
     pub(crate) origins: OriginPolicy,
     registry: Mutex<Registry>,
     /// 已完成初始化的 MCP 会话：会话 ID → peer。
@@ -258,6 +274,9 @@ impl HubShared {
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         Self {
             identity: HostIdentity::current(env!("CARGO_PKG_VERSION")),
+            run_tag: format!("{:06x}", rand::random::<u32>() & 0x00ff_ffff),
+            endpoints: OnceLock::new(),
+            diagnostics: Mutex::new(Diagnostics::default()),
             upstreams: Mutex::new(upstreams),
             origins: OriginPolicy::new(config.allow_origins.iter().cloned()),
             config,
@@ -288,6 +307,136 @@ impl HubShared {
 
     pub(crate) fn next_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// 新的 App 连接（或多路复用通道），连接 ID 为 `<启动标记>-<序号>`。
+    pub(crate) fn new_connection(
+        &self,
+    ) -> (Arc<crate::connection::Connection>, tokio::sync::mpsc::UnboundedReceiver<crate::connection::Outgoing>) {
+        let id = self.next_id();
+        crate::connection::Connection::new(id, format!("{}-{id}", self.run_tag))
+    }
+
+    // ------------------------------------------------------------------
+    // 诊断（`/status`）
+    // ------------------------------------------------------------------
+
+    /// 记录某 App 最近一次错误（握手被拒、唤醒失败 / 超时）。
+    pub(crate) fn record_app_error(&self, app_id: &str, code: Option<&str>, message: &str) {
+        lock(&self.diagnostics).last_errors.insert(
+            app_id.to_owned(),
+            LastError { code: code.map(str::to_owned), message: message.to_owned(), at_ms: unix_millis() },
+        );
+    }
+
+    /// 记录 SDK 的 `app/diagnostic` 上报，并发 [`HubEvent::AppDiagnostic`]。
+    pub(crate) fn record_report(&self, report: DiagnosticReport) {
+        self.emit(HubEvent::AppDiagnostic {
+            app_id: report.app_id.clone(),
+            instance_id: report.instance_id.clone(),
+            code: report.code.clone(),
+            message: report.message.clone(),
+            count: report.count,
+        });
+        let mut d = lock(&self.diagnostics);
+        if d.reports.len() >= MAX_REPORTS {
+            d.reports.pop_front();
+        }
+        d.reports.push_back(report);
+    }
+
+    /// 当前运行状态（[`Hub::status`]、`GET /status`）。
+    pub(crate) fn status(&self) -> HubStatus {
+        let endpoints = self.endpoints.get();
+        let waking: Vec<(String, Option<String>)> = {
+            let now = tokio::time::Instant::now();
+            lock(&self.wakes)
+                .iter()
+                .filter(|w| w.is_active(now))
+                .map(|w| w.target())
+                .collect()
+        };
+        let (last_errors, reports) = {
+            let d = lock(&self.diagnostics);
+            (d.last_errors.clone(), d.reports.iter().cloned().collect())
+        };
+        let mut apps: Vec<AppStatus> = self
+            .registry()
+            .app_infos(&HashMap::new())
+            .into_iter()
+            .map(|a| {
+                let is_waking = |inst: Option<&str>| {
+                    waking.iter().any(|(app, i)| *app == a.app_id && (i.is_none() || i.as_deref() == inst))
+                };
+                let mut instances: Vec<InstanceStatus> = a
+                    .instances
+                    .into_iter()
+                    .map(|info| InstanceStatus { info, state: InstanceState::Connected })
+                    .collect();
+                instances.extend(a.dormant_instances.into_iter().map(|info| {
+                    let state = if is_waking(Some(&info.instance_id)) {
+                        InstanceState::Waking
+                    } else {
+                        InstanceState::Dormant
+                    };
+                    InstanceStatus { info, state }
+                }));
+                let state = if a.connected {
+                    AppState::Connected
+                } else if waking.iter().any(|(app, _)| *app == a.app_id) {
+                    AppState::Waking
+                } else if instances.is_empty() {
+                    AppState::Disconnected
+                } else {
+                    AppState::Dormant
+                };
+                AppStatus {
+                    last_error: last_errors.get(&a.app_id).cloned(),
+                    app_id: a.app_id,
+                    name: a.name,
+                    kind: AppKind::App,
+                    state,
+                    instances,
+                }
+            })
+            .collect();
+        apps.extend(lock(&self.upstreams).iter().map(|(name, st)| AppStatus {
+            app_id: name.clone(),
+            name: st.server_name.clone().unwrap_or_else(|| name.clone()),
+            kind: AppKind::Upstream,
+            state: if st.connected() { AppState::Connected } else { AppState::Disconnected },
+            instances: Vec::new(),
+            last_error: st.last_error.as_ref().map(|m| LastError { code: None, message: m.clone(), at_ms: 0 }),
+        }));
+        // 只出现过错误（如握手被拒）、从未登记的 App 也列出，便于诊断。
+        for (app_id, err) in &last_errors {
+            if !apps.iter().any(|a| &a.app_id == app_id) {
+                apps.push(AppStatus {
+                    app_id: app_id.clone(),
+                    name: app_id.clone(),
+                    kind: AppKind::App,
+                    state: AppState::Disconnected,
+                    instances: Vec::new(),
+                    last_error: Some(err.clone()),
+                });
+            }
+        }
+        apps.sort_by(|a, b| a.app_id.cmp(&b.app_id));
+        HubStatus {
+            identity: self.identity.clone(),
+            listen: endpoints.and_then(|e| e.listen.clone()),
+            ipc_endpoint: endpoints.and_then(|e| e.ipc_endpoint.clone()),
+            started_at_ms: endpoints.map(|e| e.started_at_ms).unwrap_or(0),
+            mcp_http: self.config.mcp_http,
+            auth: AuthStatus {
+                token_configured: self.config.http.token.is_some(),
+                token_required_without_origin: self.config.http.token.is_some()
+                    && self.config.http.require_token_without_origin,
+            },
+            mcp_sessions: lock(&self.sessions).len(),
+            apps,
+            reports,
+        }
     }
 
     pub(crate) fn emit(&self, ev: HubEvent) {
@@ -1008,7 +1157,7 @@ async fn bind_listen(listen: &str, alternates: &[String]) -> std::io::Result<Tcp
     ))
 }
 
-fn unix_millis() -> u64 {
+pub(crate) fn unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
@@ -1071,6 +1220,8 @@ impl Hub {
             instance: Mutex::new(instance),
         };
         let health = hub.health_base();
+        // 先于任何监听器开始服务：/status 从这里读监听位置与启动时刻。
+        let _ = shared.endpoints.set(hub.endpoint_registry());
         let mut tasks = Vec::new();
         if let Some(listener) = listener {
             let router = Router::new(
@@ -1083,8 +1234,14 @@ impl Hub {
             tasks.push(tokio::spawn(router.serve_tcp(listener)));
         }
         if let Some((endpoint, listener)) = ipc {
-            // MCP over IPC 尚未开启（/mcp 返回 404）；IPC 上只有 App 连接与 /healthz。
-            let router = Router::new(shared.clone(), Transport::Ipc, HttpOptions::default(), false, health);
+            // IPC 上与 TCP 同样的路由；对端用户已由操作系统核对，不需要令牌（spec/protocol.md 1.4）。
+            let router = Router::new(
+                shared.clone(),
+                Transport::Ipc,
+                HttpOptions::default(),
+                shared.config.mcp_http,
+                health,
+            );
             tasks.push(tokio::spawn(router.serve_ipc(listener)));
             tracing::info!(%endpoint, "本地 IPC 连接服务已启动");
         }
@@ -1231,6 +1388,12 @@ impl Hub {
 
     pub fn overview(&self, app_id: &str) -> Option<AppOverviewInfo> {
         self.shared.overview(app_id).as_ref().map(overview_info)
+    }
+
+    /// 运行状态：身份、监听位置、令牌策略、各 App 与实例的状态（在线 / 休眠 / 唤醒中）、最近错误与 SDK 诊断上报
+    /// （spec/hub-api.md 3.9）。`GET /status` 返回同样的内容。
+    pub fn status(&self) -> HubStatus {
+        self.shared.status()
     }
 
     // ---- 操作 ----

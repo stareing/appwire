@@ -210,6 +210,10 @@ fn null_pointers_are_invalid_argument() {
     );
     assert!(unsafe { am_client_instance_id(ptr::null()) }.is_null());
     assert!(unsafe { am_client_token(ptr::null()) }.is_null());
+    let mut text: *mut c_char = ptr::null_mut();
+    assert_eq!(unsafe { am_client_state_code(ptr::null(), &mut text) }, AmStatus::InvalidArgument);
+    assert_eq!(unsafe { am_client_connection_id(ptr::null(), &mut text) }, AmStatus::InvalidArgument);
+    assert!(text.is_null());
     let mut scope: *mut AmScope = ptr::null_mut();
     assert_eq!(
         unsafe { am_client_root_scope(ptr::null_mut(), &mut scope) },
@@ -342,6 +346,8 @@ fn header_consistency() {
         "am_client_state",
         "am_client_instance_id",
         "am_client_token",
+        "am_client_state_code",
+        "am_client_connection_id",
         "am_client_root_scope",
         "am_scope_create",
         "am_scope_dispose",
@@ -502,6 +508,12 @@ fn runtime_through_c_abi() {
     assert!(!iid.is_null());
     unsafe { am_string_free(iid) };
     assert!(unsafe { am_client_token(client) }.is_null());
+    let mut text: *mut c_char = ptr::null_mut();
+    assert_eq!(unsafe { am_client_state_code(client, &mut text) }, AmStatus::Ok);
+    assert!(text.is_null(), "Idle 没有错误码");
+    assert_eq!(unsafe { am_client_connection_id(client, &mut text) }, AmStatus::Ok);
+    assert!(text.is_null(), "未连接没有连接 ID");
+    assert_eq!(unsafe { am_client_state_code(client, ptr::null_mut()) }, AmStatus::InvalidArgument);
     assert_eq!(
         unsafe { am_client_set_visibility(client, 9, true) },
         AmStatus::InvalidArgument
@@ -638,11 +650,13 @@ fn listener_strings_are_owned_by_callee() {
         status: StateStatus::Rejected,
         retry_in_ms: None,
         reason: Some("拒绝".to_owned()),
+        code: Some("PAIRING_REJECTED".to_owned()),
     });
     l.on_state_changed(StateInfo {
         status: StateStatus::Backoff,
         retry_in_ms: Some(500),
         reason: None,
+        code: None,
     });
     let got = RECEIVED.with(|r| r.borrow().clone());
     assert_eq!(

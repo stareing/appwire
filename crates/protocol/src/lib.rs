@@ -11,7 +11,9 @@
 //! - [`mux`]：一条连接承载多个实例的多路复用帧（第 9 节）。
 //! - [`identity`]：Host 身份（`service` / `version` / `user` / `pid`）与 SDK 侧核对（1.6）。
 //! - [`registry`]：单实例锁与登记文件 `~/.app-mcp/run/endpoints.json`（1.7）。
+//! - [`diagnostic`]：连接级错误码与 `app/diagnostic` 上报（第 10 节）。
 
+pub mod diagnostic;
 pub mod endpoint;
 pub mod error;
 pub mod hash;
@@ -21,6 +23,7 @@ pub mod messages;
 pub mod mux;
 pub mod registry;
 
+pub use diagnostic::{ConnectionErrorCode, ConnectionIssue, DiagnosticParams, IssueKind};
 pub use endpoint::Endpoint;
 pub use error::{ErrorKind, ToolError};
 pub use hash::{canonical_json, tools_hash};
@@ -47,6 +50,8 @@ pub const APP_PATH: &str = "/app";
 pub const MCP_PATH: &str = "/mcp";
 /// 健康检查路径（返回 Host 身份与监听信息）。
 pub const HEALTH_PATH: &str = "/healthz";
+/// 运行状态路径（实例、最近错误、SDK 上报；需要本地 IPC 或令牌，spec/protocol.md 1.3）。
+pub const STATUS_PATH: &str = "/status";
 
 /// 默认 WebSocket 端点：`ws://127.0.0.1:7717/app`（网页 SDK；没有本地 IPC 的原生平台）。
 pub const DEFAULT_WS_URL: &str = "ws://127.0.0.1:7717/app";

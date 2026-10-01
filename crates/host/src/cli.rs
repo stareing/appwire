@@ -40,6 +40,17 @@ pub enum Command {
         #[command(subcommand)]
         action: ServiceAction,
     },
+    /// 诊断：逐项检查 Host 运行、单实例锁、本地 IPC、端口占用（含占用进程）、Windows 排除端口段、令牌、
+    /// 各 App 实例状态与最近错误、网页拦截上报、adb reverse，每项给出结论与修复建议。有错误时退出码 1。
+    Doctor {
+        #[command(flatten)]
+        home: HomeArg,
+        /// 输出 JSON（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
+    /// 一行状态摘要（运行中的 Host、App 在线 / 休眠数）；未运行时退出码 3。
+    Status(HomeArg),
     /// 打印本地访问令牌（不存在时生成），供 MCP 客户端配置 `Authorization: Bearer <令牌>`。
     Token {
         #[command(flatten)]
@@ -352,5 +363,10 @@ mod tests {
             panic!()
         };
         assert_eq!(h.home, Some(PathBuf::from("/x")));
+
+        let cli = Cli::try_parse_from(["app-mcp-host", "doctor", "--json", "--home", "/x"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Doctor { json: true, .. })));
+        let cli = Cli::try_parse_from(["app-mcp-host", "status"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Status(_))));
     }
 }

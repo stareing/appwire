@@ -34,7 +34,8 @@ use app_mcp_protocol as proto;
 use serde_json::Value;
 
 pub use proto::{
-    Activation, AppOverview, ClientKind, Risk, SleepReason, ToolError, Visibility, WakeDescriptor, WakeKind, WakeReason,
+    Activation, AppOverview, ClientKind, ConnectionErrorCode, ConnectionIssue, DiagnosticParams, Risk, SleepReason,
+    ToolError, Visibility, WakeDescriptor, WakeKind, WakeReason,
 };
 pub use lifecycle::parse_wake_token;
 
@@ -278,10 +279,13 @@ pub enum ConnectionState {
     PendingPairing,
     /// 已配对并完成同步，可以接收调用。
     Connected,
-    /// 连接断开，将在 `retry_at` 时重连。
-    Backoff { retry_at: Millis },
-    /// 被 Host 拒绝（配对拒绝或协议不兼容），不再自动重连。
-    Rejected { reason: String },
+    /// 连接断开，将在 `retry_at` 时重连。`reason` / `code`：本次断开或连接失败的原因与错误码
+    /// （spec/protocol.md 10.1；驱动层经 [`Client::handle_connect_failed`] 报告、握手 / 心跳超时）；
+    /// 普通断线时为 `None`。
+    Backoff { retry_at: Millis, reason: Option<String>, code: Option<ConnectionErrorCode> },
+    /// 被 Host 拒绝（配对拒绝或协议不兼容），不再自动重连。`code` 来自 Host 的 `HelloResult.code` /
+    /// `PairingResultParams.code`，缺省或不认识时为 [`ConnectionErrorCode::Rejected`]。
+    Rejected { reason: String, code: ConnectionErrorCode },
     /// 已调用 [`Client::stop`]。
     Stopped,
     /// 休眠：已与 Host 完成 `app/sleep` 握手后断开（或 `on-demand` 模式启动后尚未连接）。
@@ -292,8 +296,31 @@ pub enum ConnectionState {
     /// 对端不是期望的 Host（spec/protocol.md 1.6）：不是 app-mcp（`service` 不符、不认识 `app/hello`、
     /// 握手结果无法解析），或 Host 属于其他用户。已断开且不再自动重连；[`Client::wake`] /
     /// [`Client::connect_now`] 时再试一次。
-    HostMismatch { reason: String },
+    HostMismatch { reason: String, code: ConnectionErrorCode },
 }
+
+impl ConnectionState {
+    /// 状态携带的错误码（`Backoff` 可能没有）。
+    pub fn code(&self) -> Option<ConnectionErrorCode> {
+        match self {
+            ConnectionState::Backoff { code, .. } => *code,
+            ConnectionState::Rejected { code, .. } | ConnectionState::HostMismatch { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
+
+    /// 状态携带的原因说明（`Backoff` 可能没有）。
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            ConnectionState::Backoff { reason, .. } => reason.as_deref(),
+            ConnectionState::Rejected { reason, .. } | ConnectionState::HostMismatch { reason, .. } => Some(reason),
+            _ => None,
+        }
+    }
+}
+
+/// [`Client::report_issue`] 最多积累的不同错误码数。
+pub const MAX_PENDING_DIAGNOSTICS: usize = 16;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -390,6 +417,8 @@ pub struct Client {
     retry_count: u32,
     /// 生命周期的跨连接状态（持有、恢复令牌、唤醒原因等）。
     life: lifecycle::Life,
+    /// 待上报的连接问题（[`Client::report_issue`]），下次握手成功后以 `app/diagnostic` 发出。
+    diagnostics: Vec<DiagnosticParams>,
 }
 
 impl Client {
@@ -410,6 +439,7 @@ impl Client {
             next_request_id: 0,
             next_read_id: 0,
             retry_count: 0,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -419,6 +449,27 @@ impl Client {
 
     pub fn state(&self) -> &ConnectionState {
         &self.state
+    }
+
+    /// Host 为当前连接分配的连接 ID（`HelloResult.connectionId`，spec/protocol.md 10.3）；
+    /// 未连接、或旧 Host 不提供时为 `None`。驱动层在日志中带上它，便于与 Host 日志对照。
+    pub fn connection_id(&self) -> Option<&str> {
+        self.session.connection_id.as_deref()
+    }
+
+    /// 记录一次连接问题（如网页被浏览器拦截），下次握手成功后以 `app/diagnostic` 上报给 Host
+    /// （spec/protocol.md 10.2）。同一 `code` 合并计数并保留最新说明；最多保留
+    /// [`MAX_PENDING_DIAGNOSTICS`] 个不同的码（更多的丢弃）。已连接时在下一轮事件中直接发出。
+    pub fn report_issue(&mut self, code: &str, message: &str) {
+        if let Some(d) = self.diagnostics.iter_mut().find(|d| d.code == code) {
+            d.count = d.count.saturating_add(1);
+            d.message = message.to_owned();
+        } else if self.diagnostics.len() < MAX_PENDING_DIAGNOSTICS {
+            self.diagnostics.push(DiagnosticParams { code: code.to_owned(), message: message.to_owned(), count: 1 });
+        }
+        if self.connected() {
+            self.flush_diagnostics();
+        }
     }
 
     /// 当前已配对的 token（配置中带入的或配对后获得的）。
@@ -579,10 +630,20 @@ impl Client {
     /// 连接断开（或建立失败）：取消所有进行中与排队的调用（[`CancelReason::Disconnected`]），
     /// 放弃进行中的资源读取，进入 `Backoff`。`Stopped` / `Rejected` 状态下不重连。
     pub fn handle_disconnected(&mut self, now: Millis) {
+        self.disconnected(None, now);
+    }
+
+    /// 建立连接失败，带驱动层归类的原因（如 `HOST_NOT_RUNNING`、`IPC_PERMISSION_DENIED`，spec/protocol.md 10.1）：
+    /// 与 [`Client::handle_disconnected`] 相同，进入的 `Backoff` 状态带 `reason` / `code`。
+    pub fn handle_connect_failed(&mut self, issue: ConnectionIssue, now: Millis) {
+        self.disconnected(Some(issue), now);
+    }
+
+    fn disconnected(&mut self, issue: Option<ConnectionIssue>, now: Millis) {
         self.life.last_now = now;
         if self.link_up() {
             self.teardown(CancelReason::Disconnected, false);
-            self.enter_backoff(now);
+            self.enter_backoff(now, issue);
         }
     }
 

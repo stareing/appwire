@@ -269,6 +269,27 @@ describe('浏览器拦截诊断', () => {
     expect(a.app.state.status).toBe('connected')
   })
 
+  it('拦截带错误码，并记下以便连接恢复后经 app/diagnostic 上报（每次拦截一次）', async () => {
+    const perm = new FakePermission('denied')
+    const a = await tab(
+      { permissions: permissions({ 'loopback-network': perm }), isSecureContext: true, blockedRetryMs: 20 },
+      'https://shop.example/',
+    )
+    a.direct[0]!.fail()
+    expect(a.app.state).toMatchObject({
+      status: 'blocked',
+      cause: 'local-network-access',
+      code: 'BLOCKED_LOCAL_NETWORK_ACCESS',
+    })
+    const reports = a.core.callsOf('reportIssue')
+    expect(reports).toHaveLength(1)
+    expect(reports[0]![0]).toBe('BLOCKED_LOCAL_NETWORK_ACCESS')
+    // 低频重新探测仍被拦截：同一拦截不重复记录
+    await new Promise((r) => setTimeout(r, 40))
+    a.direct[1]!.fail()
+    expect(a.core.callsOf('reportIssue')).toHaveLength(1)
+  })
+
   it('授权为 prompt：共享通道失败后由页面直接连接（可弹出授权提示）；再失败按普通断开退避', async () => {
     const perm = new FakePermission('prompt')
     const shared = sharedOwner()
@@ -281,7 +302,7 @@ describe('浏览器拦截诊断', () => {
     expect(a.direct).toHaveLength(1)
     a.direct[0]!.fail()
     expect(a.app.state.status).not.toBe('blocked')
-    expect(a.core.methods()).toContain('handleDisconnected')
+    expect(a.core.methods()).toContain('handleConnectFailed')
   })
 
   it('wake() 在拦截状态下立即重试', async () => {
@@ -312,10 +333,10 @@ describe('浏览器拦截诊断', () => {
       'https://shop.example/',
     )
     a.direct[0]!.fail()
-    expect(a.core.methods()).toContain('handleDisconnected')
+    expect(a.core.methods()).toContain('handleConnectFailed')
     const b = await tab()
     b.direct[0]!.fail()
-    expect(b.core.methods()).toContain('handleDisconnected')
+    expect(b.core.methods()).toContain('handleConnectFailed')
   })
 
   it('CSP connect-src 拦截：blocked csp，后续连接请求不再尝试', async () => {
@@ -327,7 +348,7 @@ describe('浏览器拦截诊断', () => {
       }),
     )
     a.direct[0]!.fail()
-    expect(a.app.state).toMatchObject({ status: 'blocked', cause: 'csp' })
+    expect(a.app.state).toMatchObject({ status: 'blocked', cause: 'csp', code: 'BLOCKED_CSP' })
     expect((a.app.state as { message: string }).message).toContain('connect-src')
     // 无关的违规不影响判断；dispose 后状态为 stopped
     a.app.dispose()

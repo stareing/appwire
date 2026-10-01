@@ -1,11 +1,15 @@
 //! 探测：对监听地址发 `GET /healthz`，判断端口上是否是一个健康的 app-mcp Host（`service status`、
 //! 端口被占用时说明占用者）。本配置目录的实例以登记文件为准，见 `lib.rs` 的 `running_instance`。
+//!
+//! [`fetch_status`]：读取运行中 Host 的 `GET /status`（`doctor`、`status`）——优先经本地 IPC（连接后核对监听方
+//! 是同一用户，与原生 SDK 相同），IPC 关闭时经 TCP 携带令牌。
 
 use std::time::Duration;
 
-use app_mcp_hub::Health;
-use app_mcp_hub::http_server::HEALTH_PATH;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use app_mcp_hub::http_server::{HEALTH_PATH, STATUS_PATH};
+use app_mcp_hub::{Health, HubStatus};
+use app_mcp_protocol::Endpoint;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 /// 探测结果。
@@ -30,6 +34,7 @@ pub async fn probe(addr: &str) -> Probe {
         Ok(Ok(s)) => s,
         Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => return Probe::Free,
         Ok(Err(e)) => return Probe::Other(format!("连接失败：{e}")),
+        Err(_) if bindable(addr) => return Probe::Free,
         Err(_) => return Probe::Other("连接超时".into()),
     };
     let request = format!(
@@ -61,6 +66,125 @@ pub async fn probe(addr: &str) -> Probe {
     parse_response(&buf)
 }
 
+/// 连接超时时判断端口是否其实空闲：能绑定即没有监听者（随即释放）。
+///
+/// @why 部分环境（WSL 镜像网络、丢弃 SYN 的防火墙）连接无人监听的回环端口时不返回“拒绝”而是超时，
+/// 仅凭超时会误判为“被其他程序占用”。只在超时这一含糊情形下做绑定检查。
+fn bindable(addr: &str) -> bool {
+    std::net::TcpListener::bind(addr).is_ok()
+}
+
+/// 在一条连接上发 `GET <path>`（`Connection: close`），读到连接关闭，返回 (状态码, 响应体)。
+async fn http_get<S>(mut stream: S, host: &str, path: &str, bearer: Option<&str>) -> Result<(u16, String), String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let auth = bearer.map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\n{auth}Connection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.map_err(|e| format!("发送请求失败：{e}"))?;
+    let mut buf = Vec::new();
+    tokio::time::timeout(READ_TIMEOUT, async {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.len() > 8 * MAX_RESPONSE {
+                        break;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| "读取响应超时".to_owned())?;
+    let text = String::from_utf8_lossy(&buf);
+    let (head, body) = text.split_once("\r\n\r\n").ok_or("不是 HTTP 响应")?;
+    let code = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse().ok())
+        .ok_or("不是 HTTP 响应")?;
+    Ok((code, body.trim().to_owned()))
+}
+
+fn parse_status(code: u16, body: &str) -> Result<HubStatus, String> {
+    if code != 200 {
+        return Err(format!("HTTP {code}：{body}"));
+    }
+    serde_json::from_str(body).map_err(|e| format!("/status 响应无法解析：{e}"))
+}
+
+/// 经本地 IPC 端点读取 `/status`。连接后核对监听方是当前用户（防止他人抢占端点冒充 Host）。
+pub async fn fetch_status_ipc(endpoint: &str) -> Result<HubStatus, String> {
+    let ep = Endpoint::parse(endpoint)?;
+    let fut = async {
+        match ep {
+            #[cfg(unix)]
+            Endpoint::Unix(path) => {
+                let stream = tokio::net::UnixStream::connect(&path)
+                    .await
+                    .map_err(|e| format!("连接 {} 失败：{e}", path.display()))?;
+                let cred = stream.peer_cred().map_err(|e| format!("读取对端凭据失败：{e}"))?;
+                let me = app_mcp_protocol::endpoint::current_uid();
+                if cred.uid() != me {
+                    return Err(format!("{} 的监听方属于其他用户（uid {}），拒绝连接", path.display(), cred.uid()));
+                }
+                http_get(stream, "localhost", STATUS_PATH, None).await
+            }
+            #[cfg(windows)]
+            Endpoint::Pipe(name) => {
+                use app_mcp_protocol::endpoint::win;
+                use std::os::windows::io::AsRawHandle;
+                const ERROR_PIPE_BUSY: i32 = 231;
+                let client = loop {
+                    match tokio::net::windows::named_pipe::ClientOptions::new().open(&name) {
+                        Ok(c) => break c,
+                        Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                        Err(e) => return Err(format!("打开命名管道 {name} 失败：{e}")),
+                    }
+                };
+                let owner = win::handle_owner_sid(client.as_raw_handle()).map_err(|e| format!("读取管道所有者失败：{e}"))?;
+                let me = win::current_user_sid().map_err(|e| format!("读取当前用户失败：{e}"))?;
+                if owner != me {
+                    return Err(format!("命名管道 {name} 的所有者（{owner}）不是当前用户，拒绝连接"));
+                }
+                http_get(client, "localhost", STATUS_PATH, None).await
+            }
+            other => Err(format!("不是本平台的本地 IPC 端点：{other}")),
+        }
+    };
+    let (code, body) = tokio::time::timeout(CONNECT_TIMEOUT + READ_TIMEOUT, fut)
+        .await
+        .map_err(|_| "超时".to_owned())??;
+    parse_status(code, &body)
+}
+
+/// 经 TCP 读取 `/status`（需要令牌）。
+pub async fn fetch_status_tcp(addr: &str, token: Option<&str>) -> Result<HubStatus, String> {
+    let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
+        .await
+        .map_err(|_| "连接超时".to_owned())?
+        .map_err(|e| format!("连接 {addr} 失败：{e}"))?;
+    let (code, body) = http_get(stream, addr, STATUS_PATH, token).await?;
+    parse_status(code, &body)
+}
+
+/// 读取运行中 Host 的 `/status`：有 IPC 端点时经 IPC，否则经 TCP 携带令牌。
+pub async fn fetch_status(ipc_endpoint: Option<&str>, listen: Option<&str>, token: Option<&str>) -> Result<HubStatus, String> {
+    match (ipc_endpoint, listen) {
+        (Some(ep), _) => fetch_status_ipc(ep).await,
+        (None, Some(addr)) => fetch_status_tcp(addr, token).await,
+        (None, None) => Err("Host 既没有本地 IPC 端点也没有 TCP 监听".to_owned()),
+    }
+}
+
 /// 解析 `/healthz` 的 HTTP 响应（只支持 Content-Length / 读到 EOF 的响应体）。
 pub fn parse_response(raw: &[u8]) -> Probe {
     let text = String::from_utf8_lossy(raw);
@@ -83,6 +207,15 @@ pub fn parse_response(raw: &[u8]) -> Probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 超时时的绑定检查：有监听者时不可绑定（不会误判为空闲）。
+    #[test]
+    fn bindable_detects_listener() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        assert!(!bindable(&addr));
+        assert!(bindable("127.0.0.1:0"));
+    }
 
     #[test]
     fn parses_health() {

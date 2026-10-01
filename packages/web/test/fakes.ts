@@ -100,6 +100,9 @@ export class FakeCore implements CoreClient {
   handleDisconnected(now: number): void {
     this.rec('handleDisconnected', now)
   }
+  handleConnectFailed(code: string, message: string, now: number): void {
+    this.rec('handleConnectFailed', code, message, now)
+  }
   handleMessage(text: string, now: number): void {
     this.rec('handleMessage', text, now)
     try {
@@ -184,6 +187,16 @@ export class FakeCore implements CoreClient {
   }
   resumeToken(): string | undefined {
     return undefined
+  }
+
+  // ---- 诊断 ----
+  /** 测试设置的连接 ID。 */
+  cid: string | undefined
+  connectionId(): string | undefined {
+    return this.cid
+  }
+  reportIssue(code: string, message: string): void {
+    this.rec('reportIssue', code, message)
   }
 }
 

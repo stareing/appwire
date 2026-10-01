@@ -60,6 +60,9 @@ export interface ZodLike<I> {
  */
 export type ConnectionBlockCause = 'local-network-access' | 'insecure-context' | 'csp'
 
+/** `blocked` 状态的错误码（spec/protocol.md 10.1），与 {@link ConnectionBlockCause} 一一对应。 */
+export type ConnectionBlockCode = 'BLOCKED_LOCAL_NETWORK_ACCESS' | 'BLOCKED_INSECURE_CONTEXT' | 'BLOCKED_CSP'
+
 export type ConnectionState =
   | { status: 'disabled' }
   | { status: 'idle' }
@@ -67,8 +70,13 @@ export type ConnectionState =
   | { status: 'handshaking' }
   | { status: 'pending-pairing' }
   | { status: 'connected' }
-  | { status: 'backoff'; retryAt: number }
-  | { status: 'rejected'; reason: string }
+  /**
+   * 连接断开，`retryAt`（`Date.now()` 毫秒）时重连。`reason` / `code`：本次连接失败的原因与错误码
+   * （spec/protocol.md 10.1，如 `CONNECT_FAILED`、`HANDSHAKE_TIMEOUT`）；普通断线时省略。
+   */
+  | { status: 'backoff'; retryAt: number; reason?: string; code?: string }
+  /** 被 Host 拒绝。`code`：错误码（spec/protocol.md 10.1，如 `ORIGIN_NOT_ALLOWED`、`PAIRING_REJECTED`）。 */
+  | { status: 'rejected'; reason: string; code: string }
   | { status: 'stopped' }
   /** 已与 Host 完成 `app/sleep` 握手后断开（或 `on-demand` 启动后尚未连接）；注册表保留，等待唤醒（spec/lifecycle.md 第 2 节）。 */
   | { status: 'dormant' }
@@ -78,13 +86,13 @@ export type ConnectionState =
    * 连接被浏览器拦截（不是 Host 未运行）：不再定时重试。`message` 是给用户 / 开发者的中文说明（可直接展示）。
    * 本地网络访问授权变为允许时自动重连；`wake()` / `connectNow()` 立即重试一次（可重新弹出授权提示）。
    */
-  | { status: 'blocked'; cause: ConnectionBlockCause; message: string }
+  | { status: 'blocked'; cause: ConnectionBlockCause; code: ConnectionBlockCode; message: string }
   /**
    * 对端不是 app-mcp Host（spec/protocol.md 1.6）：握手结果的 `service` 不是 `app-mcp`、不认识 `app/hello`
    * 或结果无法解析。使用默认地址时 SDK 先依次尝试候选端口（7717 → 7737 → 7757），都不是 app-mcp 时停在此状态；
    * 不再定时重试，`wake()` / `connectNow()` 时再试一次。`reason` 为中文说明。
    */
-  | { status: 'host-mismatch'; reason: string }
+  | { status: 'host-mismatch'; reason: string; code: string }
 
 /**
  * 生命周期策略（spec/lifecycle.md 第 3 节）。Web 没有进程驻留（`residency`）概念；
@@ -298,6 +306,11 @@ export interface AppMcp extends Registrar {
   readonly options: Readonly<AppMcpOptions>
   readonly instanceId: string
   readonly state: ConnectionState
+  /**
+   * Host 为当前连接分配的连接 ID（spec/protocol.md 10.3），与 Host 日志中的 `cid` 对应；未连接时为 `undefined`。
+   * 连接期间 SDK 的日志以 `[app-mcp] [连接 ID]` 开头。
+   */
+  readonly connectionId?: string
   /** 订阅连接状态变化，返回取消订阅函数。 */
   onStateChange(listener: (state: ConnectionState) => void): () => void
   /** 断开连接并注销全部工具与资源。 */

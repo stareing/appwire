@@ -124,23 +124,35 @@ fn maps_core_errors() {
 
 #[test]
 fn converts_state() {
-    let s = state_info(&ConnectionState::Backoff { retry_at: 1500 }, 1000);
+    let s = state_info(&ConnectionState::Backoff { retry_at: 1500, reason: None, code: None }, 1000);
     assert_eq!(
         s,
         StateInfo {
             status: StateStatus::Backoff,
             retry_in_ms: Some(500),
-            reason: None
+            reason: None,
+            code: None,
         }
     );
     let s = state_info(
+        &ConnectionState::Backoff {
+            retry_at: 1500,
+            reason: Some("连接失败".into()),
+            code: Some(ConnectionErrorCode::HostNotRunning),
+        },
+        1000,
+    );
+    assert_eq!((s.reason.as_deref(), s.code.as_deref()), (Some("连接失败"), Some("HOST_NOT_RUNNING")));
+    let s = state_info(
         &ConnectionState::Rejected {
             reason: "no".into(),
+            code: ConnectionErrorCode::OriginNotAllowed,
         },
         0,
     );
     assert_eq!(s.status, StateStatus::Rejected);
     assert_eq!(s.reason.as_deref(), Some("no"));
+    assert_eq!(s.code.as_deref(), Some("ORIGIN_NOT_ALLOWED"));
     assert_eq!(
         state_info(&ConnectionState::Idle, 0).status,
         StateStatus::Idle
@@ -272,8 +284,12 @@ fn types_are_send_sync() {
 
 #[test]
 fn host_mismatch_state_and_expected_user() {
-    let info = state_info(&ConnectionState::HostMismatch { reason: "不是 app-mcp".into() }, 0);
+    let info = state_info(
+        &ConnectionState::HostMismatch { reason: "不是 app-mcp".into(), code: ConnectionErrorCode::HostNotAppMcp },
+        0,
+    );
     assert_eq!(info.status, StateStatus::HostMismatch);
+    assert_eq!(info.code.as_deref(), Some("HOST_NOT_APP_MCP"));
     assert_eq!(info.reason.as_deref(), Some("不是 app-mcp"));
     // 桌面平台核对 Host 用户（spec/protocol.md 1.6）
     let (core, _) = build_core_config(config()).unwrap();

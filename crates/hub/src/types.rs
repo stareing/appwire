@@ -58,6 +58,10 @@ pub struct InstanceInfo {
     /// 回环 TCP 连接与休眠实例为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// 连接 ID（spec/protocol.md 10.3），与 Hub 日志的 `cid` 字段、SDK 日志中的连接 ID 相同；休眠实例为 `None`。
+    /// spec 之外的补充字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +333,128 @@ pub enum HubEvent {
         app_id: String,
         instance_id: Option<String>,
     },
+    /// SDK 上报了此前遇到的连接问题（`app/diagnostic`，spec/protocol.md 10.2），如浏览器拦截。
+    AppDiagnostic {
+        app_id: String,
+        instance_id: String,
+        /// 错误码（spec/protocol.md 10.1；可能是本 Hub 不认识的新码）。
+        code: String,
+        message: String,
+        count: u32,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// 运行状态（`/status`、`app-mcp-host doctor`）
+// ---------------------------------------------------------------------------
+
+/// [`crate::Hub::status`] 的结果，也是 `GET /status` 的响应体（spec/hub-api.md 3.8）。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubStatus {
+    /// Host 身份（`service` / `version` / `user` / `pid`）。
+    #[serde(flatten)]
+    pub identity: app_mcp_protocol::identity::HostIdentity,
+    /// HTTP 服务实际监听的地址；未开启时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen: Option<String>,
+    /// 本地 IPC 端点；未开启时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipc_endpoint: Option<String>,
+    /// 启动时刻（Unix 毫秒）。
+    pub started_at_ms: u64,
+    /// 是否提供 MCP Streamable HTTP（`/mcp`，TCP 与 IPC）。
+    pub mcp_http: bool,
+    pub auth: AuthStatus,
+    /// 已初始化的 MCP 会话数。
+    pub mcp_sessions: usize,
+    /// App（含上游），按 appId 排序。
+    pub apps: Vec<AppStatus>,
+    /// 最近的 SDK 诊断上报（`app/diagnostic`），旧的在前，最多 [`crate::hub::MAX_REPORTS`] 条。
+    pub reports: Vec<DiagnosticReport>,
+}
+
+/// 主 HTTP 服务的令牌策略。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthStatus {
+    /// 是否配置了访问令牌（`/mcp` 浏览器来源必须携带；TCP 上的 `/status` 必须携带）。
+    pub token_configured: bool,
+    /// 不带 `Origin` 的本地客户端是否也必须携带令牌（`--auth all`）。
+    pub token_required_without_origin: bool,
+}
+
+/// App 的整体状态。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppState {
+    /// 至少一个实例在线（上游：子进程已连接）。
+    Connected,
+    /// 正在唤醒（有进行中的唤醒）。
+    Waking,
+    /// 没有在线实例，但有休眠实例。
+    Dormant,
+    /// 未连接（只有静态清单，或上游未连接）。
+    Disconnected,
+}
+
+/// 实例状态。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstanceState {
+    Connected,
+    Dormant,
+    /// 休眠实例正在被唤醒。
+    Waking,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceStatus {
+    #[serde(flatten)]
+    pub info: InstanceInfo,
+    pub state: InstanceState,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppStatus {
+    pub app_id: String,
+    pub name: String,
+    pub kind: AppKind,
+    pub state: AppState,
+    /// 在线实例在前，其后为休眠实例。上游为空。
+    pub instances: Vec<InstanceStatus>,
+    /// 最近一次错误（握手被拒、唤醒失败 / 超时；上游为进程错误）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<LastError>,
+}
+
+/// 最近一次错误。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastError {
+    /// 连接级错误码（spec/protocol.md 10.1）或工具错误类别（第 4 节，如 `APP_NOT_RESPONDING`）；未知时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    pub message: String,
+    /// 发生时刻（Unix 毫秒）；上游错误为 0（未记录时刻）。
+    pub at_ms: u64,
+}
+
+/// 一条 SDK 诊断上报（`app/diagnostic`）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticReport {
+    pub app_id: String,
+    pub instance_id: String,
+    /// 上报所在连接的连接 ID。
+    pub connection_id: String,
+    pub code: String,
+    pub message: String,
+    pub count: u32,
+    /// Hub 收到的时刻（Unix 毫秒）。
+    pub received_at_ms: u64,
 }
 
 // ---------------------------------------------------------------------------

@@ -420,6 +420,8 @@ public final class AppMcpClient: ToolRegistrar, @unchecked Sendable {
     public var state: StateInfo { inner.state() }
     /// 当前 token（配置带入的或配对后获得的）。
     public var token: String? { inner.token() }
+    /// Host 为当前连接分配的连接 ID（spec/protocol.md 10.3），与 Host 日志中的 `cid` 对应；未连接时为 nil。
+    public var connectionId: String? { inner.connectionId() }
 
     /// 开始连接 Host（重复调用无效果）。
     public func start() { inner.start() }

@@ -560,14 +560,17 @@ pub unsafe extern "C" fn am_client_state(
                 0
             };
         }
-        if !reason.is_null()
-            && matches!(
-                st.status,
-                app_mcp_native::StateStatus::Rejected | app_mcp_native::StateStatus::HostMismatch
-            )
-        {
-            let text = st.reason.unwrap_or_default();
-            unsafe { *reason = into_raw_cstring(&text) };
+        if !reason.is_null() {
+            let text = match st.status {
+                app_mcp_native::StateStatus::Rejected | app_mcp_native::StateStatus::HostMismatch => {
+                    Some(st.reason.unwrap_or_default())
+                }
+                app_mcp_native::StateStatus::Backoff => st.reason,
+                _ => None,
+            };
+            if let Some(text) = text {
+                unsafe { *reason = into_raw_cstring(&text) };
+            }
         }
         Ok(())
     })
@@ -589,6 +592,41 @@ pub unsafe extern "C" fn am_client_token(client: *const AmClient) -> *mut c_char
     guard_value(std::ptr::null_mut(), || {
         let token = unsafe { client_ref(client) }?.shared.client()?.token();
         Ok(token.map_or(std::ptr::null_mut(), |t| into_raw_cstring(&t)))
+    })
+}
+
+/// v6：当前状态的错误码（spec/protocol.md 10.1）。
+///
+/// # Safety
+/// `client` 为 NULL 或有效客户端；`code` 为 NULL 或可写。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_client_state_code(client: *const AmClient, code: *mut *mut c_char) -> AmStatus {
+    guard(|| {
+        // SAFETY: 输出指针为 NULL 或可写。
+        let out = unsafe { code.as_mut() }.ok_or_else(|| FfiError::null("code"))?;
+        *out = std::ptr::null_mut();
+        let st = unsafe { client_ref(client) }?.shared.client()?.state();
+        if let Some(c) = st.code {
+            *out = into_raw_cstring(&c);
+        }
+        Ok(())
+    })
+}
+
+/// v6：Host 为当前连接分配的连接 ID（spec/protocol.md 10.3）。
+///
+/// # Safety
+/// `client` 为 NULL 或有效客户端；`id` 为 NULL 或可写。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_client_connection_id(client: *const AmClient, id: *mut *mut c_char) -> AmStatus {
+    guard(|| {
+        // SAFETY: 输出指针为 NULL 或可写。
+        let out = unsafe { id.as_mut() }.ok_or_else(|| FfiError::null("id"))?;
+        *out = std::ptr::null_mut();
+        if let Some(cid) = unsafe { client_ref(client) }?.shared.client()?.connection_id() {
+            *out = into_raw_cstring(&cid);
+        }
+        Ok(())
     })
 }
 

@@ -31,7 +31,7 @@ pub use app_mcp_core::{
     Activation, AppOverview, ClientKind, LifecycleMode, LifecyclePolicy, Residency, Risk, SleepReason, Visibility,
     WakeDescriptor, WakeKind, WakeReason, parse_wake_token,
 };
-pub use app_mcp_protocol::ErrorKind;
+pub use app_mcp_protocol::{ConnectionErrorCode, ErrorKind};
 
 // ---------------------------------------------------------------------------
 // 配置
@@ -199,8 +199,10 @@ pub struct StateInfo {
     pub status: StateStatus,
     /// `Backoff` 时距下一次重连的毫秒数。
     pub retry_in_ms: Option<u64>,
-    /// `Rejected` / `HostMismatch` 时的原因。
+    /// `Rejected` / `HostMismatch` 时的原因；`Backoff` 时为本次连接失败 / 断开的原因（有的话）。
     pub reason: Option<String>,
+    /// 与 `reason` 对应的错误码（spec/protocol.md 10.1，如 `HOST_NOT_RUNNING`、`HOST_NOT_APP_MCP`）。
+    pub code: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -594,6 +596,11 @@ impl NativeClient {
         let st = self.owner.shared.lock();
         state_info(st.client.state(), now_ms())
     }
+    /// Host 为当前连接分配的连接 ID（spec/protocol.md 10.3）；未连接或旧 Host 时为 `None`。
+    /// 连接期间库产生的日志（[`ClientListener::on_log`]）都以 `[连接 ID] ` 开头。
+    pub fn connection_id(&self) -> Option<String> {
+        self.owner.shared.lock().client.connection_id().map(str::to_owned)
+    }
     /// 当前 token（配置带入的或配对后获得的）。
     pub fn token(&self) -> Option<String> {
         self.owner.shared.lock().client.token().map(str::to_owned)
@@ -845,28 +852,30 @@ fn parse_schema(text: Option<&str>) -> Result<Value, NativeError> {
 }
 
 fn state_info(state: &ConnectionState, now: Millis) -> StateInfo {
-    let (status, retry_in_ms, reason) = match state {
-        ConnectionState::Idle => (StateStatus::Idle, None, None),
-        ConnectionState::Connecting => (StateStatus::Connecting, None, None),
-        ConnectionState::Handshaking => (StateStatus::Handshaking, None, None),
-        ConnectionState::PendingPairing => (StateStatus::PendingPairing, None, None),
-        ConnectionState::Connected => (StateStatus::Connected, None, None),
-        ConnectionState::Backoff { retry_at } => (
-            StateStatus::Backoff,
-            Some(retry_at.saturating_sub(now)),
-            None,
-        ),
-        ConnectionState::Rejected { reason } => (StateStatus::Rejected, None, Some(reason.clone())),
-        ConnectionState::Stopped => (StateStatus::Stopped, None, None),
-        ConnectionState::Dormant => (StateStatus::Dormant, None, None),
-        ConnectionState::Waking => (StateStatus::Waking, None, None),
-        ConnectionState::HostMismatch { reason } => (StateStatus::HostMismatch, None, Some(reason.clone())),
+    let (status, retry_in_ms) = match state {
+        ConnectionState::Idle => (StateStatus::Idle, None),
+        ConnectionState::Connecting => (StateStatus::Connecting, None),
+        ConnectionState::Handshaking => (StateStatus::Handshaking, None),
+        ConnectionState::PendingPairing => (StateStatus::PendingPairing, None),
+        ConnectionState::Connected => (StateStatus::Connected, None),
+        ConnectionState::Backoff { retry_at, .. } => (StateStatus::Backoff, Some(retry_at.saturating_sub(now))),
+        ConnectionState::Rejected { .. } => (StateStatus::Rejected, None),
+        ConnectionState::Stopped => (StateStatus::Stopped, None),
+        ConnectionState::Dormant => (StateStatus::Dormant, None),
+        ConnectionState::Waking => (StateStatus::Waking, None),
+        ConnectionState::HostMismatch { .. } => (StateStatus::HostMismatch, None),
     };
     StateInfo {
         status,
         retry_in_ms,
-        reason,
+        reason: state.reason().map(str::to_owned),
+        code: state.code().map(|c| c.as_str().to_owned()),
     }
+}
+
+/// 连接期间的日志前缀 `[连接 ID] `（spec/protocol.md 10.3）。
+fn cid_prefix(client: &app_mcp_core::Client) -> String {
+    client.connection_id().map(|c| format!("[{c}] ")).unwrap_or_default()
 }
 
 fn cancel_reason(r: app_mcp_core::CancelReason) -> CancelReason {
@@ -1190,6 +1199,13 @@ impl Shared {
                     })));
                 }
                 Event::StateChanged(state) => {
+                    if state == ConnectionState::Connected {
+                        let message = match st.client.connection_id() {
+                            Some(cid) => format!("[{cid}] 已连接 Host（连接 ID {cid}）"),
+                            None => "已连接 Host（Host 未提供连接 ID）".to_owned(),
+                        };
+                        actions.extend(self.listener_job(move |l| l.on_log(LogLevel::Info, message)));
+                    }
                     let info = state_info(&state, now_ms());
                     actions.extend(self.listener_job(move |l| l.on_state_changed(info)));
                 }
@@ -1197,6 +1213,7 @@ impl Shared {
                     actions.extend(self.listener_job(move |l| l.on_paired(token)))
                 }
                 Event::Warning(message) => {
+                    let message = format!("{}{message}", cid_prefix(&st.client));
                     actions.extend(self.listener_job(move |l| l.on_log(LogLevel::Warn, message)));
                 }
                 Event::IdleExit => actions.extend(self.listener_job(|l| l.on_idle_exit())),

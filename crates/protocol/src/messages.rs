@@ -16,6 +16,8 @@ pub mod method {
     pub const READY: &str = "app/ready";
     /// 实例可见性与焦点变化。参数 [`super::VisibilityParams`]。
     pub const VISIBILITY: &str = "app/visibility";
+    /// 上报此前遇到的连接问题（握手成功后发送）。参数 [`crate::DiagnosticParams`]（spec/protocol.md 10.2）。
+    pub const DIAGNOSTIC: &str = "app/diagnostic";
     /// 全量同步工具列表（握手成功后、重连后）。参数 [`super::ToolsSyncParams`]。
     pub const TOOLS_SYNC: &str = "tools/sync";
     /// 增量变更。参数 [`super::ToolsChangedParams`]。
@@ -232,6 +234,12 @@ pub struct HelloResult {
     /// Host 进程号。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Host 为本连接分配的连接 ID（spec/protocol.md 10.3）：Host 日志与 SDK 日志都带它，用于对照排查。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    /// `rejected` 时的错误码（[`crate::ConnectionErrorCode`] 的字符串形式，spec/protocol.md 10.1）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 /// `Default` 仅为方便构造（配合 `..Default::default()`）：`status` 缺省为 `rejected`，
@@ -248,6 +256,8 @@ impl Default for HelloResult {
             service: None,
             user: None,
             pid: None,
+            connection_id: None,
+            code: None,
         }
     }
 }
@@ -265,6 +275,9 @@ pub struct PairingResultParams {
     pub token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// `rejected` 时的错误码（spec/protocol.md 10.1）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -633,6 +646,17 @@ mod tests {
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!((v["service"].as_str(), v["user"].as_str(), v["pid"].as_u64()), (Some("app-mcp"), Some("1000"), Some(42)));
+        assert_eq!(serde_json::from_value::<HelloResult>(v).unwrap(), r);
+
+        // 连接 ID 与拒绝错误码（第 10 节）：缺省不序列化
+        assert!(serde_json::to_value(&r).unwrap().get("connectionId").is_none());
+        let r = HelloResult {
+            connection_id: Some("a1b2c3-7".into()),
+            code: Some("ORIGIN_NOT_ALLOWED".into()),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!((v["connectionId"].as_str(), v["code"].as_str()), (Some("a1b2c3-7"), Some("ORIGIN_NOT_ALLOWED")));
         assert_eq!(serde_json::from_value::<HelloResult>(v).unwrap(), r);
     }
 
