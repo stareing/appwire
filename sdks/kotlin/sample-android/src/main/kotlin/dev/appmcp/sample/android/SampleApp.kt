@@ -9,7 +9,9 @@ import dev.appmcp.ErrorKind
 import dev.appmcp.LogLevel
 import dev.appmcp.Risk
 import dev.appmcp.ToolCallException
+import dev.appmcp.ToolAnnotations
 import dev.appmcp.ToolResult
+import dev.appmcp.UserActionReason
 import dev.appmcp.android.AppMcpAndroid
 import dev.appmcp.android.AppMcpProvider
 import kotlinx.coroutines.CoroutineScope
@@ -95,7 +97,49 @@ class SampleApp : Application(), AppMcpProvider {
             }
             counter.value += by
             Log.i(TAG, "demo.counter.increment by=$by -> ${counter.value}")
-            ToolResult(JsonPrimitive(counter.value), stateHints = listOf("demo.counter"))
+            ToolResult(
+                JsonPrimitive(counter.value),
+                stateHints = listOf("demo.counter"),
+                summary = "计数器已加 $by，当前为 ${counter.value}",
+            )
+        }
+
+        // 无返回值：Hub 对模型输出"已完成"；破坏性注解原样转给 Agent。
+        c.tool(
+            "demo.counter.reset", "计数器清零（无返回值）",
+            annotations = ToolAnnotations(destructiveHint = true, idempotentHint = true),
+        ) { _, ctx ->
+            Log.i(TAG, "demo.counter.reset")
+            counter.value = 0
+            ctx.addStateHint("demo.counter")
+        }
+
+        val stepsSchema = buildJsonObject {
+            put("type", "object")
+            putJsonObject("properties") { putJsonObject("steps") { put("type", "integer") } }
+        }
+        // 每秒报告一次进度；取消时 handler 协程被取消，日志记录取消原因。
+        c.tool(
+            "demo.long_task", "模拟耗时任务：每秒一步（steps 默认 5），报告进度，可取消", stepsSchema,
+            annotations = ToolAnnotations(readOnlyHint = true),
+        ) { args, ctx ->
+            val steps = args["steps"]?.jsonPrimitive?.intOrNull?.coerceIn(1, 60) ?: 5
+            try {
+                for (i in 1..steps) {
+                    delay(1_000)
+                    ctx.progress(i.toDouble(), steps.toDouble(), "第 $i/$steps 步")
+                }
+            } finally {
+                if (ctx.isCancelled) Log.i(TAG, "demo.long_task cancelled reason=${ctx.cancelReason}")
+            }
+            Log.i(TAG, "demo.long_task done steps=$steps")
+            ToolResult(JsonPrimitive(steps), summary = "完成 $steps 步")
+        }
+
+        c.tool("demo.account.profile", "读取账户资料（示例：总是要求先登录）", risk = Risk.READ) { _, _ ->
+            throw ToolCallException.userActionRequired(
+                "登录已过期，请在 App 内重新登录后重试", UserActionReason.LOGIN, "appmcp-sample://login",
+            )
         }
 
         c.tool("demo.sync", "模拟后台同步：立即返回，后台继续 3 秒（期间持有、不休眠）") { _, ctx ->

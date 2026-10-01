@@ -1,5 +1,6 @@
 // 最小 Android 示例 App：连接 Host（ws://127.0.0.1:7717，配合 `adb reverse tcp:7717 tcp:7717`），
-// 注册 demo.echo、demo.counter.increment、demo.sync 三个工具与 demo.counter 资源；生命周期为 idle 模式
+// 注册 demo.echo、demo.counter.increment、demo.counter.reset（无返回值）、demo.long_task（进度 / 取消）、
+// demo.account.profile（USER_ACTION_REQUIRED）、demo.sync 工具与 demo.counter 资源；生命周期为 idle 模式
 // （空闲 10 s / 后台 5 s 休眠），可被 `am broadcast -a dev.appmcp.action.WAKE -n <pkg>/dev.appmcp.android.WakeReceiver
 // --es token <t>` 唤醒。另带进程内 Hub 自检（HubSelfTest，`--ez hubSelfTest true` 启动）。
 //
