@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.KSerializer
@@ -243,12 +244,26 @@ class AppMcp private constructor(
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
     private val scope = CoroutineScope(SupervisorJob() + dispatcher + CoroutineName("app-mcp"))
     private val _state = MutableStateFlow(StateInfo(StateStatus.IDLE, null, null, null))
+
+    /** 原生状态回调次数（每次回调 +1，计数不会被合并）：[handleWakeAndAwaitSleep] 据此等待变化而不是轮询。 */
+    private val stateChanges = MutableStateFlow(0L)
+
+    /** 进入非 `DORMANT` / `STOPPED` 状态的回调次数：等待期间即使整段往返发生在两次检查之间也能看出曾经醒来。 */
+    private val activeEntries = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** [handleWakeAndAwaitSleep] 检查原生状态的累计次数（测试用：断言等待不轮询）。 */
+    internal val awaitSleepChecks = java.util.concurrent.atomic.AtomicLong(0)
+
     private val inner: AppMcpClient
 
     init {
         val listener = object : ClientListener {
             override fun onStateChanged(state: StateInfo) {
                 _state.value = state
+                if (state.status != StateStatus.DORMANT && state.status != StateStatus.STOPPED) {
+                    activeEntries.incrementAndGet()
+                }
+                stateChanges.update { it + 1 }
             }
 
             override fun onPaired(token: String) {
@@ -350,26 +365,33 @@ class AppMcp private constructor(
      * @return [WakeOutcome.NOT_A_WAKE]：不是唤醒参数；[WakeOutcome.SLEPT]：已回连并再次休眠；
      *   [WakeOutcome.TIMED_OUT]：[timeoutMillis] 内没有再次休眠；[WakeOutcome.PERSISTENT]：`PERSISTENT` 模式
      *   不会休眠，回连成功后立即返回。
+     * @param pollMillis 兜底检查间隔：等待由原生状态回调驱动（每次状态变化立即检查），此间隔只防回调丢失。
+     * @why 不按固定间隔轮询：唤醒后在线期间（后台可达数十秒）每 100 ms 一次 JNA 读状态，在魅族 18 Pro 后台小核上
+     *   约 2 ms / 次，一次后台唤醒耗约 1.3 s 进程 CPU（TASKS.md 4e 真机复测），远超回连本身（约 5.6 ms）。
      */
     suspend fun handleWakeAndAwaitSleep(
         args: String,
         timeoutMillis: Long = 120_000,
-        pollMillis: Long = 100,
+        pollMillis: Long = 5_000,
     ): WakeOutcome {
+        val activeBefore = activeEntries.get()
         if (!handleWake(args)) return WakeOutcome.NOT_A_WAKE
-        // 直接轮询原生状态：状态流会合并快速的 DORMANT → … → DORMANT 往返。
+        // 原生状态为准（状态流由分发线程异步更新）；activeEntries 记下两次检查之间完成的 DORMANT → … → DORMANT 往返。
         var active = false
         val outcome = withTimeoutOrNull(timeoutMillis) {
             var result: WakeOutcome? = null
             while (result == null) {
+                val seen = stateChanges.value
                 val status = currentState().status
+                awaitSleepChecks.incrementAndGet()
+                if (activeEntries.get() != activeBefore) active = true
                 result = when {
                     status == StateStatus.STOPPED -> WakeOutcome.SLEPT
                     status == StateStatus.DORMANT && active -> WakeOutcome.SLEPT
                     status == StateStatus.CONNECTED && lifecycle.mode == LifecycleMode.PERSISTENT -> WakeOutcome.PERSISTENT
                     else -> {
                         if (status != StateStatus.DORMANT) active = true
-                        delay(pollMillis)
+                        withTimeoutOrNull(pollMillis) { stateChanges.first { it != seen } }
                         null
                     }
                 }
@@ -385,6 +407,7 @@ class AppMcp private constructor(
         inner.stop()
         scope.cancel()
         inner.close()
+        stateChanges.update { it + 1 } // 让 handleWakeAndAwaitSleep 立即看到 STOPPED
     }
 
     // -- 执行 ------------------------------------------------------------------

@@ -140,7 +140,7 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
      - 断开感知（不靠心跳）：Linux 本地 IPC 1.4–2.2 ms、本机 TCP 回环 1.7–3.2 ms（各 5 次，SIGKILL 一方）；`adb reverse`：App 被强杀 → Hub ≤ 80 ms（含 adb 命令下发），Hub 被杀 → App 约 0.14–0.16 s（设备与 PC 时钟在会话中漂移达 ±1 s，用相邻连接事件校准，精度有限）。Hub 不在时经 `adb reverse` 的每次连接尝试约 2 s 才失败（adbd 先接受再关闭，`Handshake not finished`）
      - 冻结：Flyme 在切到后台约 62 s 后冻结缓存进程（不是 AOSP 的 5 s 去抖），冻结 ≥ 173 s 期间连接经 `adb reverse` 保持，Hub ping 无响应但 240 s 观察窗内未断开（Hub 只按"距最近收到消息 180 s（隐藏）"断开，冻结超过约 3 分钟才会被切断，本次未直接观察到）；解冻后同一连接 70 ms 内上报可见性，SDK 未误判心跳超时
    - 结论：一次回连（SDK 线程约 5.6 ms）与在线约 40 s 的双向心跳开销相当（进程总量口径约 65 s）；Hub ping 在 SDK 已有心跳时使在线开销翻倍；本地 / 回环传输断开在毫秒级即可由 EOF / RST 感知。按协调要求本轮**不修改**心跳间隔与空闲时长默认值（4e 将替换"定时心跳 + 定时休眠"机制），数据作为 4e 基线
-4e. [ ] 生命周期功耗：空闲、心跳、重连与唤醒（2026-10-01 加入；唤醒去重完成后做，先于 4c）——分析与方案见 `docs/plans/4e-lifecycle-power.md`（四象限）
+4e. [x] 生命周期功耗：空闲、心跳、重连与唤醒（2026-10-01 加入；唤醒去重完成后做，先于 4c）——分析与方案见 `docs/plans/4e-lifecycle-power.md`（四象限）
    - [x] 第一部分（P0 + 观测）：A1 租约与空闲计时并行；A2 Host 不在时连续 N 次 `HOST_NOT_RUNNING` 转休眠；A3 本地传输（IPC / 本机回环）去掉双向心跳，远程只由 SDK 单向心跳；O1 `/status` / `doctor` 每 App 回连、唤醒、在线秒数、心跳次数与未休眠原因；O2 核心功耗回归测试（定时器 / 连接次数上限）；O3 新策略配置开关与回退；O4 每 App 唤醒速率上限
    - 结果（第一部分，2026-10-02）：规则见 spec/lifecycle.md 第 11、12 节（新增），协议见 spec/protocol.md 5.5 / 5.6 / 6 / 8.2 / 8.5 / 10.1，Hub API 见 spec/hub-api.md
      - A1：休眠时刻 = max(空闲起点 + 空闲时长, 租约到期)（`crates/core/src/lifecycle.rs` `sleep_deadline`）；前台调用后在线 120 s → 60 s
@@ -173,7 +173,28 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
      - 兼容性：C# `LifecycleOptions` 由 `sealed class` 改为 `sealed record`（便于 `with` 覆盖）、`RegisterResource` 新增可选参数 `realtime`，Kotlin `resource(...)` 新增 `realtime` 参数——源码兼容，二进制调用方需重编；鸿蒙 / Android / iOS 默认由 `idle` 改为 `on-demand`：启动不连接，首次进入前台（或 Host 唤醒 / `connectNow()`）才连上
      - 验证：C++ ctest 6/6；C#（Linux dotnet net9.0）AppMcp.Tests 46/46（含 `AmClientOptions` / `AmResourceOptions` 布局）；Dart `dart test` 63、`flutter test` 9（需 `NO_PROXY=127.0.0.1,localhost`）；Kotlin `:app-mcp:test` 14、`:app-mcp-android:testDebugUnitTest`（Robolectric）18；Swift（~/.local/swift 6.4，Linux）AppMcpTests 23；Python pytest 48；鸿蒙 arkts-check 0 错误 0 警告、tests/run.cjs 19/19（本机重编 libapp_mcp_harmony.so）；electron test 27 + typecheck；tauri-plugin cargo test 11（用户目录 webkit2gtk-4.1）+ clippy 0 警告
      - 未做：Android jniLibs 未重编（真机批次）；iOS 分支、WPF 示例、32 位结构布局未编译 / 测试；真机未验证 `on-demand` 首次前台连接时序（Android 观察者投递、鸿蒙 `applicationStateChange`）；Flutter 鸿蒙未识别为移动端（仍 `persistent`）；C++ / Kotlin / Swift 无 SDK README，说明写在头文件 / KDoc / 文档注释
+   - 结果（真机复测，2026-10-02）：魅族 18 Pro（Android 13），示例 App minified release arm64-v8a，jniLibs（app + hub）用 HEAD 核心 `generate.sh --android --abi arm64-v8a` 重编；临时 Host（临时 `--home`、127.0.0.1:7791、IPC 关闭，`--waker` exec 脚本经 Windows adb 发显式广播）+ `adb reverse tcp:7717 tcp:7791`；示例用 Android 默认（`on-demand` + `sleepOnBackground`，grace 10 s，合并窗口 2 s）。测量法同 4e0（设备端 `/proc/<pid>/task/*/schedstat` 每 ~1.3 s 采样；SDK 线程 = `app-mcp-runtime` + 原生分发线程 `Thread-N`，进程 = 全部线程；USB 供电只用 CPU 时间 / 调度次数作代理；设备时钟偏移 −0.75 / −0.69 s 已校正）。"旧"列 = 4e0 基线 + 同机同会话 A/B（示例按 4e0 配置 `idle` 10 s / 后台 5 s + `legacyTimers: true`，Host `--legacy-heartbeat --fixed-lease`）
+
+     | 项目 | 旧（4e 之前） | 新（默认） |
+     |---|---|---|
+     | 一组 6 次调用（间隔 2 s，前台）后在线 | 70.4 s（租约 60 s 到期后再空闲 10 s）；核心默认配置约 120 s | 会话保持：32.0 s（30 s 空闲收回默认租约 + 2 s 合并窗口；修复 1 之前 54 s）；调用后立即关会话：2.0 s；同会话第二组（已有间隔统计，租约 7 s）：6.8 s；`--fixed-lease`：60.1 s |
+     | 每组调用的连接 / 唤醒 | 1 / 1 | 1 / 1（同一连接完成 6 次；首次含唤醒 96–181 ms，其余 11–23 ms） |
+     | 一组调用 SDK / 进程 CPU | 36 / 94 ms（在线 80 s） | 第二组 19 / 42 ms（在线 13 s）；立即关会话 27 / 53 ms；在线 32 s 33 / 69 ms（进程量含界面重绘） |
+     | 已连接空闲心跳（adb reverse） | 双向：10 次 / 80 s；SDK 1.5 ms、调度 5.0 次每 15 s（4e0：2.04 ms / 4.75） | 只 SDK 单向（`heartbeatMs: 15000`，沙箱回环按远程）：11 次 / 168 s；SDK 1.49 ms、调度 3.9 次每 15 s（4e0 单向 1.03 ms / 3.9）；CPU 噪声大，调度次数差异稳定 |
+     | 进入后台 → 休眠 | 后台空闲 5 s 且租约到期后 | HOME 后 1.1 s（`reason=Background`，含 `ProcessLifecycleOwner` 700 ms 去抖与 adb 延迟；租约 60 s 内同样立即）；1 次调用 + HOME：SDK 6.5 ms / 进程 45 ms |
+     | Host 不在（前台连接中被杀） | 一直重连：150 s 内 9 次，之后每约 32 s 一次（30 s 退避 + adb reverse 约 2 s 失败）≈ 115 次 / 小时；每次 SDK ≈ 6 ms、进程 ≈ 23 ms → 每小时约 0.7 s / 2.6 s | 3 次（约 2 s / 次）后 9.6 s 进入 `DORMANT`，之后 290 s 内 SDK 线程 0 调度：每小时 3 次连接、SDK ≈ 20 ms / 进程 ≈ 75 ms |
+     | `on-demand` 首次前台连接（冷启动） | — | `am start` 后 254 ms 连上并配对，无调用 9.9 s 后 `Grace` 休眠；后台 → 前台（热启动）同样连上（收尾未验证项，已验证） |
+     | 后台唤醒调用（未冻结；广播 → WorkManager → 回连 → 调用） | 165 ms；之后在后台在线到被冻结（租约 60 s + 5 s 长于 Flyme 冻结的 60 s：后台 60 s 时带着连接被冻结，Hub 不断开，`am start` 解冻后才休眠） | 176 ms；之后后台在线 32.5 s（默认租约到 30 s 空闲收回 + 2 s；B4 只在"可见 → 隐藏"时触发）；进程 CPU 1290 ms → 修复 2 后 166 ms |
+     | 冻结 | 见上 | 先休眠后被冻结（HOME 后约 60 s `freeze as UID IDLE CHANGED`），冻结期间 SDK 线程 0 调度 |
+     | 冻结后 Host 唤醒 | — | 失败：Flyme `BroadcastQueue: app is freeze,skip schedule Receiver`，显式广播（加 `--receiver-foreground` 也一样）不送达、不解冻，调用 15 s 后 `APP_NOT_RESPONDING`（U3 OEM 差异） |
+     | Doze（`deviceidle force-idle`，后台已休眠） | — | 广播送达、进程被唤醒（`WAKING`），但连 `127.0.0.1:7717`（adb reverse）每次 5 s `CONNECT_TIMEOUT`，调用 15 s 后 `APP_NOT_RESPONDING`；`unforce` 后约 6 s 连上、10 s 后休眠（U4：Doze 中经 adb reverse 不可达；`CONNECT_TIMEOUT` 不计入 A2，退避持续到 Doze 结束） |
+
+     - 修复 1（Hub，B2 空闲收回失效）：`grant_lease` 按（会话, 连接）只记最后一次租约，样本凑满后的自适应租约（7 s）覆盖了先前的默认租约记录，空闲收回找不到默认租约；而 SDK 取较大截止时刻（spec/lifecycle.md 4.2），仍按第 3 次调用的 60 s 在线（实测一组调用后 54 s）。`crates/hub/src/lifecycle.rs` `LeaseEntry` 改为分别记默认值与自适应租约的最晚截止，空闲收回只收默认值部分（`ttlMs: 0` 后补发自适应剩余与其他会话的租约，默认值部分不决定截止时不发消息）；spec/hub-api.md 补充说明。回归测试 `crates/hub/tests/lifecycle.rs` `default_lease_revoked_after_later_adaptive_grant`（旧实现收不到 `ttlMs: 0`）
+     - 修复 2（Kotlin 封装）：`AppMcp.handleWakeAndAwaitSleep`（`WakeWorker` 用）每 100 ms 经 JNA 读原生状态直到再次休眠，后台小核上约 2 ms / 次，一次后台唤醒（在线 33 s）进程 CPU 1290 ms（`DefaultDispatch` 803 ms + `DefaultExecutor` 285 ms），远超回连本身。改为由状态回调驱动（回调计数 + "曾进入非休眠状态"计数，防合并的往返），`pollMillis` 改为兜底间隔（默认 5000），`close()` 立即唤醒等待；真机 1290 → 166 ms（`DefaultDispatch` 36 ms、`DefaultExecutor` 8 ms）。回归测试 `LifecycleIntegrationTest.awaitSleepAfterWakeDoesNotPoll`（持有 3 s：旧实现检查 36 次失败，现 ≤ 15）。其他语言封装无此等待函数
+     - 验证：`cargo test -p app-mcp-hub` 全过（lifecycle 20）、clippy 0 警告；Kotlin `:app-mcp:test` 15、`:app-mcp-android:testDebugUnitTest` 18（HEAD + 修复的独立工作树中运行，主工作树有并行改动，只编译验证）；A/B 与修复后 APK 均由该工作树构建
+     - 待跟进：Flyme 冻结后广播不可达 → 4d（`bindService` 等可解冻路径）；后台被 Host 唤醒的连接按租约在线（默认最长约 32 s，短于冻结的 60 s）——是否对"隐藏时建立的连接"也立即休眠待定；Doze 中 adb reverse 不可达只影响开发链路，真实部署（设备上 Hub / 远程）未测；本轮只重编 arm64-v8a
    - 验收：spec/lifecycle.md 写明新规则与回退开关；cargo / pnpm 全量测试与 clippy 0；魅族 18 Pro 前后对比（一组调用后在线秒数、唤醒次数、CPU 时间、Host 不在时 1 小时唤醒次数、冻结 / Doze）；浏览器隐藏标签页限流、Windows 效率模式实测
+     - 状态（2026-10-02）：除浏览器隐藏标签页限流（U5）与 Windows 效率模式（U6）实测外均已完成；U5 / U6 仍待做
    - P2（按调用临时建立连接、系统对端死亡通知）并入 4d
 4c. [ ] 界面级精准暴露 + 页面渐进披露（2026-10-01 加入；4e 完成后做）
    - 原则：不依赖界面的能力是 `app` 工具（后台可调、可唤醒、进清单）；依赖界面的是 `view` 工具，只在"真正可见且处于最上层"时启用；非当前页面的能力经页面目录渐进披露，调用时以与唤醒同构的方式先导航再派发

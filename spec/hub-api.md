@@ -370,7 +370,9 @@ pub struct LeaseOverrides {     // JSON 形式（camelCase，未知字段报错�
 - **收回**：会话结束（MCP 会话关闭、`reset_session`）收回其全部租约并删除其统计；**请求流空闲**——会话没有进行中的请求（MCP 的
   `tools/list`、`tools/call`、`resources/list`、`resources/read`、`resources/subscribe`，Hub API 的调用 / 读取）且距最近一次请求活动
   （开始或结束）已达 `idle_revoke`——收回该会话以**默认值**发出、仍未到期的租约（`ttlMs: 0`，其他会话的未到期租约随后补发）。
-  自适应租约本身就是对下一次调用的预测，按时到期，不提前收回。没有待收回的会话时 Hub 不设定时器。
+  自适应租约本身就是对下一次调用的预测，按时到期，不提前收回（收回默认值部分后随 `ttlMs: 0` 补发其剩余时长）。
+  SDK 取较大截止时刻（spec/lifecycle.md 4.2），样本凑满后发出的较短自适应租约不会缩短先前的默认值租约，因此 Hub 按（会话, 实例）
+  分别记默认值与自适应租约的最晚截止，空闲收回看前者。没有待收回的会话时 Hub 不设定时器。
 - **内存上界**：（会话, App）统计与会话活动表各最多 1024 项，超出时淘汰最久未活动（会话：且无进行中请求）的一项。
 - **观测**：`HubStatus.lease: Option<LeaseStatus>`（3.9）。
 

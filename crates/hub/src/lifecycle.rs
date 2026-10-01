@@ -40,13 +40,48 @@ impl PendingWake {
     }
 }
 
-/// 会话发给某实例的一次租约。
+/// 会话发给某实例（连接）的租约。
+///
+/// @invariant 与 SDK 一致：SDK 对每次 `app/lease` 取当前与新值的较大截止时刻（spec/lifecycle.md 4.2），后发的较短租约
+/// 不缩短先发的；因此按默认值与自适应分别记最晚截止，不能只记最后一次。
 #[derive(Debug)]
 pub(crate) struct LeaseEntry {
     pub conn: std::sync::Weak<Connection>,
-    pub expires: Instant,
-    /// 按调用间隔统计得出（`false` = 默认值，可被请求流空闲收回）。
-    pub adaptive: bool,
+    /// 以默认值发出的租约的最晚截止（请求流空闲可收回的部分）。
+    pub default_until: Option<Instant>,
+    /// 按调用间隔统计发出的租约的最晚截止（按时到期，不提前收回）。
+    pub adaptive_until: Option<Instant>,
+}
+
+impl LeaseEntry {
+    fn new(conn: &Arc<Connection>) -> Self {
+        Self { conn: Arc::downgrade(conn), default_until: None, adaptive_until: None }
+    }
+
+    /// 记一次租约。
+    fn add(&mut self, until: Instant, adaptive: bool) {
+        let slot = if adaptive { &mut self.adaptive_until } else { &mut self.default_until };
+        *slot = Some(slot.map_or(until, |u| u.max(until)));
+    }
+
+    /// 本会话租约在 SDK 侧的有效截止。
+    pub fn expires(&self) -> Option<Instant> {
+        self.default_until.max(self.adaptive_until)
+    }
+
+    /// 默认值部分是否仍决定着有效截止（未到期且晚于自适应部分）——只有这时收回才会让实例提前休眠。
+    fn default_dominates(&self, now: Instant) -> bool {
+        self.default_until.is_some_and(|d| d > now && self.adaptive_until.is_none_or(|a| d > a))
+    }
+}
+
+/// 收回会话租约的范围。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Revoke {
+    /// 会话结束：全部。
+    All,
+    /// 请求流空闲：只收回默认值部分，自适应部分保留并补发剩余。
+    DefaultOnly,
 }
 
 /// 会话请求的活动守卫（[`HubShared::session_request`]）。
@@ -264,7 +299,7 @@ impl HubShared {
         self.session_state()
             .values()
             .flat_map(|s| s.leases.iter())
-            .filter(|(_, l)| l.expires > now)
+            .filter(|(_, l)| l.expires().is_some_and(|e| e > now))
             .map(|(id, _)| *id)
             .collect()
     }
@@ -321,10 +356,13 @@ impl HubShared {
         let g = lock(&self.leases).grant(session_key, app_id, &self.config.lease, self.config.lease_ttl, now);
         tracing::debug!(cid = %conn.cid, app_id, session = session_key, ttl_ms = g.ttl.as_millis() as u64, adaptive = g.adaptive, "发出租约");
         send_lease(conn, g.ttl);
-        self.session_state().entry(session_key.to_owned()).or_default().leases.insert(
-            conn.id,
-            LeaseEntry { conn: Arc::downgrade(conn), expires: now + g.ttl, adaptive: g.adaptive },
-        );
+        self.session_state()
+            .entry(session_key.to_owned())
+            .or_default()
+            .leases
+            .entry(conn.id)
+            .or_insert_with(|| LeaseEntry::new(conn))
+            .add(now + g.ttl, g.adaptive);
         if !g.adaptive {
             self.lease_changed.notify_one();
         }
@@ -332,34 +370,51 @@ impl HubShared {
 
     /// 会话结束：收回其全部租约并移除其调用间隔统计。
     pub(crate) fn release_leases(&self, session_key: &str) {
-        let n = self.revoke_leases(session_key, |_, _| true);
+        let n = self.revoke_leases(session_key, Revoke::All);
         let mut book = lock(&self.leases);
         book.count_revoked(false, n);
         book.forget_session(session_key);
     }
 
-    /// 收回会话中满足条件的租约：向实例发送 `ttlMs: 0`；若其他会话对同一实例仍有未到期租约，随后补发剩余时长。
-    /// 返回实际发出收回（实例仍在连接）的个数。
-    fn revoke_leases(&self, session_key: &str, pred: impl Fn(&LeaseEntry, Instant) -> bool) -> u64 {
+    /// 收回会话的租约：向实例发送 `ttlMs: 0`（SDK 只能整体取消），随后补发仍应保留的剩余时长——其他会话对同一实例的
+    /// 未到期租约，以及 [`Revoke::DefaultOnly`] 时本会话的自适应部分。返回实际发出收回（实例仍在连接）的个数。
+    /// `DefaultOnly` 时默认值部分不决定有效截止的连接只清除记录、不发消息。
+    fn revoke_leases(&self, session_key: &str, scope: Revoke) -> u64 {
         let mut states = self.session_state();
         let now = Instant::now();
         let Some(mine) = states.get_mut(session_key).map(|s| {
-            let ids: Vec<u64> = s.leases.iter().filter(|(_, l)| pred(l, now)).map(|(id, _)| *id).collect();
-            ids.into_iter().filter_map(|id| s.leases.remove(&id).map(|l| (id, l))).collect::<Vec<_>>()
+            let ids: Vec<u64> = s.leases.keys().copied().collect();
+            let mut out = Vec::new();
+            for id in ids {
+                let Some(mut entry) = s.leases.remove(&id) else { continue };
+                if scope == Revoke::All {
+                    out.push((id, entry.conn.clone(), None));
+                    continue;
+                }
+                let send = entry.default_dominates(now);
+                entry.default_until = None;
+                let keep = entry.adaptive_until.filter(|a| *a > now);
+                if send {
+                    out.push((id, entry.conn.clone(), keep));
+                }
+                if keep.is_some() {
+                    s.leases.insert(id, entry);
+                }
+            }
+            out
         }) else {
             return 0;
         };
         let mut n = 0;
-        for (conn_id, entry) in mine {
-            let Some(conn) = entry.conn.upgrade() else { continue };
+        for (conn_id, conn, keep) in mine {
+            let Some(conn) = conn.upgrade() else { continue };
             let others = states
                 .iter()
                 .filter(|(k, _)| k.as_str() != session_key)
-                .filter_map(|(_, s)| s.leases.get(&conn_id).map(|l| l.expires))
-                .filter(|exp| *exp > now)
+                .filter_map(|(_, s)| s.leases.get(&conn_id).and_then(LeaseEntry::expires))
                 .max();
             send_lease(&conn, Duration::ZERO);
-            if let Some(exp) = others {
+            if let Some(exp) = others.max(keep).filter(|e| *e > now) {
                 send_lease(&conn, exp - now);
             }
             n += 1;
@@ -386,7 +441,7 @@ impl HubShared {
             }
             let idle = lock(&self.leases).take_idle_sessions(&self.config.lease, Instant::now());
             for key in idle {
-                let n = self.revoke_leases(&key, |l, now| !l.adaptive && l.expires > now);
+                let n = self.revoke_leases(&key, Revoke::DefaultOnly);
                 if n > 0 {
                     tracing::debug!(session = %key, revoked = n, "会话请求流空闲，收回默认租约");
                 }

@@ -52,6 +52,61 @@ class LifecycleIntegrationTest {
 
     private val JsonObject.type get() = this["type"]!!.jsonPrimitive.content
 
+    /**
+     * 回归（魅族 18 Pro 复测，TASKS.md 4e）：唤醒后等待再次休眠由状态回调驱动，不按 100 ms 轮询原生状态。
+     * 唤醒后调用持有 3 s 才结束：旧实现在线期间检查约 30 次以上，现在只在状态变化时检查。
+     */
+    @Test
+    fun awaitSleepAfterWakeDoesNotPoll() = runBlocking {
+        val host = ProcessBuilder(
+            fakeHost().path,
+            "--await-sleep", "--wake", "--invoke", "job.run", "--await-sleep", "--timeout-ms", "20000",
+        ).redirectError(ProcessBuilder.Redirect.INHERIT).start()
+        val out = host.inputStream.bufferedReader()
+        val first = out.readLine() ?: fail("fake_host 没有输出")
+        assertTrue(first.startsWith("LISTENING "), first)
+        val client = AppMcp.create(
+            AppMcpConfig(
+                "kotlin-poll", "Kotlin 唤醒等待测试",
+                hostUrl = "ws://${first.removePrefix("LISTENING ").trim()}",
+                lifecycle = LifecyclePolicy(
+                    mode = LifecycleMode.IDLE,
+                    idleTimeoutMillis = 300,
+                    wake = WakeDescriptor(WakeKind.URI, "kotlin-poll", true),
+                ),
+                connectTimeoutMillis = 2_000,
+            ),
+        )
+        client.tool("job.run", "后台任务") { _, ctx ->
+            val hold = ctx.hold()
+            CoroutineScope(Dispatchers.Default).launch {
+                delay(3_000)
+                hold.close()
+            }
+            "started"
+        }
+        try {
+            client.start()
+            var wake: JsonObject
+            do {
+                wake = out.nextJson()
+            } while (wake.type != "wake")
+            assertTrue(client.awaitState(StateStatus.DORMANT, 5_000), "未进入 DORMANT")
+            val before = client.awaitSleepChecks.get()
+            val started = System.nanoTime()
+            val outcome = client.handleWakeAndAwaitSleep(wake["arg"]!!.jsonPrimitive.content, timeoutMillis = 15_000)
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            assertEquals(WakeOutcome.SLEPT, outcome)
+            assertTrue(elapsedMs >= 3_000, "应等到持有结束后的休眠：$elapsedMs ms")
+            val checks = client.awaitSleepChecks.get() - before
+            assertTrue(checks <= 15, "等待期间检查了 $checks 次原生状态（应只在状态变化时检查）")
+            assertTrue(host.waitFor(10, TimeUnit.SECONDS), "fake_host 未退出")
+        } finally {
+            client.close()
+            host.destroy()
+        }
+    }
+
     @Test
     fun idleSleepWakeInvokeSleep() = runBlocking {
         val host = ProcessBuilder(

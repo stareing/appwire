@@ -945,6 +945,46 @@ async fn default_lease_revoked_when_session_goes_idle() {
     assert_eq!(hub.status().lease.unwrap().revoked_idle, 1);
 }
 
+/// 回归（魅族 18 Pro 复测发现）：样本凑满后发的较短自适应租约不会缩短 SDK 已持有的默认租约（SDK 取较大截止时刻，
+/// spec/lifecycle.md 4.2），请求流空闲时这份默认租约仍须收回；收回后补发自适应租约的剩余时长。
+/// 旧实现按（会话, 连接）只记最后一次租约，最后一次是自适应的就不收回，App 一直在线到默认租约到期（实测一组调用后 54 s）。
+#[tokio::test(flavor = "multi_thread")]
+async fn default_lease_revoked_after_later_adaptive_grant() {
+    let mut cfg = config(60_000);
+    cfg.lease = app_mcp_hub::LeasePolicy {
+        margin: Duration::ZERO,
+        min: Duration::from_secs(2),
+        max: Duration::from_secs(30),
+        idle_revoke: Duration::from_millis(300),
+        ..Default::default()
+    };
+    let hub = Arc::new(Hub::start(cfg).await.unwrap());
+    let mut raw = Raw::connect(&hub, "r-mixed", json!({}), raw_tools()).await;
+    eventually("工具可用", || availability(&hub, "raw.echo") == Some(Availability::Available)).await;
+    let mut last = tokio::time::Instant::now();
+    for i in 0..4 {
+        let h = hub.clone();
+        let c = tokio::spawn(async move {
+            let mut req = CallRequest::new("raw.echo", json!({}));
+            req.session = Some("s".into());
+            h.call_tool(req).await
+        });
+        let inv = raw.expect(|v| v["method"] == "tools/invoke").await;
+        raw.send(json!({"jsonrpc": "2.0", "id": inv["id"], "result": {"data": 1}}));
+        c.await.unwrap().unwrap();
+        last = tokio::time::Instant::now();
+        let ttl = raw.expect(|v| v["method"] == "app/lease").await["params"]["ttlMs"].as_u64().unwrap();
+        assert_eq!(ttl, if i < 3 { 60_000 } else { 2_000 }, "第 {i} 次调用的租约");
+    }
+    // 空闲 300 ms → 收回默认租约（0），随后补发自适应租约剩余（< 2 s）
+    assert_eq!(raw.expect(|v| v["method"] == "app/lease").await["params"]["ttlMs"], 0, "默认租约应被收回");
+    let rest = raw.expect(|v| v["method"] == "app/lease").await["params"]["ttlMs"].as_u64().unwrap();
+    let elapsed = last.elapsed().as_millis() as u64;
+    assert!(rest > 0 && rest <= 2_000 - 250, "补发剩余 {rest} ms（距最后一次调用 {elapsed} ms）");
+    let st = hub.status().lease.unwrap();
+    assert_eq!((st.revoked_idle, st.adaptive_grants, st.default_grants), (1, 1, 3));
+}
+
 /// 回退开关：`lease.adaptive = false` → 每次固定 `lease_ttl`，不因空闲收回。
 #[tokio::test(flavor = "multi_thread")]
 async fn fixed_lease_fallback() {
