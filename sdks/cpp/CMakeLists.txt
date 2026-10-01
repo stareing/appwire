@@ -132,3 +132,22 @@ if(BASH_PROGRAM)
     COMMAND ${BASH_PROGRAM} "${CMAKE_CURRENT_SOURCE_DIR}/tests/with_fake_host.sh" "$<TARGET_FILE:result_cpp_test>")
   set_tests_properties(result_cpp PROPERTIES LABELS "integration;result" TIMEOUT 120)
 endif()
+
+# 一致性用例 runner（conformance/README.md）：同一程序以 cpp（C++ 封装）与 c（直接调 C ABI）两种方式跑全部用例，
+# 报告写到 <repo>/target/conformance/<cpp|c>/。
+add_executable(conformance_runner tests/conformance_runner.cpp)
+target_link_libraries(conformance_runner PRIVATE app_mcp_cpp)
+target_compile_options(conformance_runner PRIVATE ${_warn})
+target_compile_definitions(conformance_runner PRIVATE "APP_MCP_REPO_ROOT=\"${APP_MCP_REPO_ROOT}\"")
+if(NOT WIN32)
+  target_compile_definitions(conformance_runner PRIVATE _POSIX_C_SOURCE=200809L)
+  find_package(Threads REQUIRED)
+  target_link_libraries(conformance_runner PRIVATE Threads::Threads)
+endif()
+if(BASH_PROGRAM)
+  add_test(NAME conformance_cpp
+    COMMAND ${BASH_PROGRAM} "${CMAKE_CURRENT_SOURCE_DIR}/tests/with_fake_host.sh" "$<TARGET_FILE:conformance_runner>" cpp)
+  add_test(NAME conformance_c
+    COMMAND ${BASH_PROGRAM} "${CMAKE_CURRENT_SOURCE_DIR}/tests/with_fake_host.sh" "$<TARGET_FILE:conformance_runner>" c)
+  set_tests_properties(conformance_cpp conformance_c PROPERTIES LABELS "integration;conformance" TIMEOUT 300)
+endif()

@@ -28,16 +28,35 @@
 //!   `{"type":"sleep","accepted":false,"reason","toolsHash"}`。
 //! - 全部完成后关闭连接（最后一步是 `--await-sleep` 时由 SDK 关闭），退出码 0；超时退出码 2；
 //!   其他错误退出码 1（信息写 stderr）。
+//!
+//! 一致性测试（conformance/README.md）用到的附加参数（都是可选的新增，不影响上面的行为）：
+//!
+//! - `--invoke` 之后的修饰：`--call-id <id>`（指定 `callId`，缺省 `c<序号>`）、`--invoke-timeout-ms <ms>`（缺省 5000）、
+//!   `--cancel-after-ms <ms>`（发出调用后该时间仍未收到结果则发送 `tools/cancel`）。
+//! - `--catalog <settleMs>`：继续处理消息 settleMs 后打印
+//!   `{"type":"catalog","tools":{<名称>:ToolInfo},"resources":{<名称>:ResourceInfo},"toolsHash"}`（`toolsHash` 由 Host 按 8.4 计算）。
+//! - `--delay <ms>`：继续处理消息 ms 后再执行下一步。
+//! - `--trace`：SDK 发来的每个请求与通知（`ping` 除外）打印为 `{"type":"recv","method","params"}`；
+//!   发出 `tools/cancel` 时打印 `{"type":"cancel","callId"}`。
+//! - `--case <用例.json>`：从用例的 `host` 部分取参数（命令行上的其他参数追加在后），结束时按用例的期望核对，
+//!   打印 `{"type":"verdict",...}`；`--sdk <名称>` 标明被测 SDK（查 `conformance/divergences/<sdk>.json` 中的已知偏差），
+//!   `--report-dir <目录>` 写 `<目录>/<sdk>/<用例>.json`；`--skip <原因>` 不监听，只记录跳过。
+//!   核对不通过时退出码 3（已登记的偏差为 0）。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Mutex;
 use std::time::Duration;
+
+#[path = "support/conformance.rs"]
+mod conformance;
 
 use app_mcp_protocol::{
     self as proto, Endpoint, HelloParams, HelloResult, LeaseParams, Message, PairingStatus, RequestId,
     ResourcesChangedParams, ResourcesReadParams, ResourcesSyncParams, RpcError, SleepParams,
-    SleepResult, ToolsChangedParams, ToolsInvokeParams, ToolsSyncParams, method,
+    SleepResult, ToolsCancelParams, ToolsChangedParams, ToolsInvokeParams, ToolsSyncParams, method,
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -48,10 +67,28 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Op {
-    Invoke { name: String, args: Value },
+    Invoke { name: String, args: Value, opts: InvokeOpts },
     Read { name: String },
     AwaitSleep,
     Wake,
+    /// 继续处理消息 `settle_ms` 后打印当前目录（`--catalog`）。
+    Catalog { settle_ms: u64 },
+    /// 继续处理消息 `ms` 后再执行下一步（`--delay`）。
+    Delay { ms: u64 },
+}
+
+/// `--invoke` 的修饰参数。
+#[derive(Debug, Clone, Default, PartialEq)]
+struct InvokeOpts {
+    call_id: Option<String>,
+    timeout_ms: Option<u64>,
+    cancel_after_ms: Option<u64>,
+}
+
+impl Op {
+    fn invoke(name: impl Into<String>, args: Value) -> Self {
+        Self::Invoke { name: name.into(), args, opts: InvokeOpts::default() }
+    }
 }
 
 #[derive(Debug)]
@@ -65,6 +102,12 @@ struct Options {
     lease_ms: Option<u64>,
     reject_sleep_ms: Option<u64>,
     tool_info: bool,
+    trace: bool,
+    /// 一致性用例（`--case`）及其附带参数。
+    case: Option<PathBuf>,
+    sdk: Option<String>,
+    report_dir: Option<PathBuf>,
+    skip: Option<String>,
 }
 
 const DEFAULT_ADDR: &str = "127.0.0.1:0";
@@ -83,6 +126,11 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
         lease_ms: None,
         reject_sleep_ms: None,
         tool_info: false,
+        trace: false,
+        case: None,
+        sdk: None,
+        report_dir: None,
+        skip: None,
     };
     let mut it = args.into_iter();
     while let Some(flag) = it.next() {
@@ -97,10 +145,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
                 }
                 opts.ipc = Some(endpoint);
             }
-            "--invoke" => opts.ops.push(Op::Invoke {
-                name: value("--invoke")?,
-                args: json!({}),
-            }),
+            "--invoke" => opts.ops.push(Op::invoke(value("--invoke")?, json!({}))),
             "--args" => {
                 let text = value("--args")?;
                 let parsed: Value = serde_json::from_str(&text)
@@ -110,6 +155,26 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
                     _ => return Err("--args 必须紧跟在 --invoke <tool> 之后".to_owned()),
                 }
             }
+            "--call-id" | "--invoke-timeout-ms" | "--cancel-after-ms" => {
+                let text = value(&flag)?;
+                let Some(Op::Invoke { opts: inv, .. }) = opts.ops.last_mut() else {
+                    return Err(format!("{flag} 必须跟在 --invoke <tool> 之后"));
+                };
+                match flag.as_str() {
+                    "--call-id" => inv.call_id = Some(text),
+                    "--invoke-timeout-ms" => inv.timeout_ms = Some(parse_u64(&flag, &text)?),
+                    _ => inv.cancel_after_ms = Some(parse_u64(&flag, &text)?),
+                }
+            }
+            "--catalog" => opts.ops.push(Op::Catalog {
+                settle_ms: parse_u64("--catalog", &value("--catalog")?)?,
+            }),
+            "--delay" => opts.ops.push(Op::Delay { ms: parse_u64("--delay", &value("--delay")?)? }),
+            "--trace" => opts.trace = true,
+            "--case" => opts.case = Some(PathBuf::from(value("--case")?)),
+            "--sdk" => opts.sdk = Some(value("--sdk")?),
+            "--report-dir" => opts.report_dir = Some(PathBuf::from(value("--report-dir")?)),
+            "--skip" => opts.skip = Some(value("--skip")?),
             "--read" => opts.ops.push(Op::Read {
                 name: value("--read")?,
             }),
@@ -135,43 +200,103 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
     Ok(opts)
 }
 
+/// 一致性用例模式下记录的输出行（`LISTENING` 之后打印的每一行）；`None` = 不记录。
+static RECORD: Mutex<Option<Vec<Value>>> = Mutex::new(None);
+
 /// 输出一行到 stdout 并 flush。
 fn emit(line: &str) {
+    if let Ok(mut rec) = RECORD.lock()
+        && let Some(lines) = rec.as_mut()
+    {
+        lines.push(serde_json::from_str(line).unwrap_or_else(|_| Value::String(line.to_owned())));
+    }
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{line}");
     let _ = out.flush();
 }
 
+/// 命令行参数；带 `--case` 时用例的 `host` 部分排在前面（命令行上的同名参数后出现，覆盖之）。
+fn load_args() -> Result<(Options, Option<conformance::Case>), String> {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let case_path = raw.iter().position(|a| a == "--case").and_then(|i| raw.get(i + 1));
+    let Some(path) = case_path else {
+        return Ok((parse_args(raw)?, None));
+    };
+    let case = conformance::Case::load(std::path::Path::new(path))?;
+    let mut args = case.host_args()?;
+    args.extend(raw);
+    Ok((parse_args(args)?, Some(case)))
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    let opts = match parse_args(std::env::args().skip(1)) {
+    let (opts, case) = match load_args() {
         Ok(o) => o,
         Err(e) => {
             eprintln!("fake_host: {e}");
             return ExitCode::from(1);
         }
     };
-    let (listener, local) = match Listener::bind(&opts).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("fake_host: {e}");
-            return ExitCode::from(1);
-        }
+    let Some(case) = case else {
+        return match serve_once(opts).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err((code, e)) => {
+                eprintln!("fake_host: {e}");
+                ExitCode::from(code)
+            }
+        };
     };
-    emit(&format!("LISTENING {local}"));
+    run_case(opts, case).await
+}
 
+/// 监听并按参数执行全部操作。
+///
+/// @error `(退出码, 说明)`：1 = 绑定 / 协议错误，2 = 超时。
+async fn serve_once(opts: Options) -> Result<(), (u8, String)> {
+    let (listener, local) = Listener::bind(&opts).await.map_err(|e| (1, e))?;
+    emit(&format!("LISTENING {local}"));
+    if let Ok(mut rec) = RECORD.lock()
+        && let Some(lines) = rec.as_mut()
+    {
+        lines.clear();
+    }
     let timeout = Duration::from_millis(opts.timeout_ms);
     match tokio::time::timeout(timeout, run(listener, opts)).await {
-        Ok(Ok(())) => ExitCode::SUCCESS,
-        Ok(Err(e)) => {
-            eprintln!("fake_host: {e}");
-            ExitCode::from(1)
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err((1, e)),
+        Err(_) => Err((2, format!("超过 {} ms 仍未完成", timeout.as_millis()))),
+    }
+}
+
+/// 一致性用例：运行后核对、打印结论、写报告。
+async fn run_case(mut opts: Options, case: conformance::Case) -> ExitCode {
+    let sdk = opts.sdk.take();
+    let report_dir = opts.report_dir.take();
+    let (verdict, lines) = match opts.skip.take() {
+        Some(reason) => (conformance::skip_verdict(&case, sdk.as_deref(), &reason), Vec::new()),
+        None => {
+            if let Ok(mut rec) = RECORD.lock() {
+                *rec = Some(Vec::new());
+            }
+            let run_error = serve_once(opts).await.err().map(|(_, e)| e);
+            let lines = RECORD.lock().ok().and_then(|mut r| r.take()).unwrap_or_default();
+            (conformance::verdict(&case, sdk.as_deref(), run_error, &lines), lines)
         }
-        Err(_) => {
-            eprintln!("fake_host: 超过 {} ms 仍未完成", timeout.as_millis());
-            ExitCode::from(2)
+    };
+    emit(&verdict.to_string());
+    if let Some(dir) = report_dir {
+        let sdk_name = sdk.as_deref().unwrap_or("unknown");
+        if let Err(e) = conformance::write_report(&dir, sdk_name, &case, &verdict, &lines) {
+            eprintln!("fake_host: {e}");
         }
     }
+    if verdict["status"] == "fail" {
+        for f in verdict["failures"].as_array().into_iter().flatten() {
+            eprintln!("fake_host: [{}] {}", case.id, f.as_str().unwrap_or_default());
+        }
+        return ExitCode::from(3);
+    }
+    ExitCode::SUCCESS
 }
 
 /// 一个已接受连接的字节流（TCP / Unix 域套接字 / 命名管道）。
@@ -297,7 +422,7 @@ impl PipeListener {
 #[derive(Default)]
 struct Catalog {
     tools: BTreeMap<String, proto::ToolInfo>,
-    resources: BTreeSet<String>,
+    resources: BTreeMap<String, proto::ResourceInfo>,
 }
 
 impl Catalog {
@@ -317,7 +442,7 @@ impl Catalog {
             }
             method::RESOURCES_SYNC => {
                 let p: ResourcesSyncParams = serde_json::from_value(params).map_err(bad)?;
-                self.resources = p.resources.into_iter().map(|r| r.name).collect();
+                self.resources = p.resources.into_iter().map(|r| (r.name.clone(), r)).collect();
             }
             method::RESOURCES_CHANGED => {
                 let p: ResourcesChangedParams = serde_json::from_value(params).map_err(bad)?;
@@ -325,12 +450,32 @@ impl Catalog {
                     self.resources.remove(&name);
                 }
                 self.resources
-                    .extend(p.upserted.into_iter().map(|r| r.name));
+                    .extend(p.upserted.into_iter().map(|r| (r.name.clone(), r)));
             }
             _ => {}
         }
         Ok(())
     }
+
+    /// `--catalog` 打印的一行：完整声明与 Host 按 8.4 计算的 `toolsHash`。
+    fn line(&self) -> Value {
+        let tools = ToolsSyncParams { tools: self.tools.values().cloned().collect() };
+        let resources = ResourcesSyncParams { resources: self.resources.values().cloned().collect() };
+        let hash = proto::hash::tools_hash(&tools, &resources);
+        json!({
+            "type": "catalog",
+            "tools": self.tools.iter().map(|(k, v)| (k.clone(), to_value(v))).collect::<serde_json::Map<_, _>>(),
+            "resources": self.resources.iter().map(|(k, v)| (k.clone(), to_value(v))).collect::<serde_json::Map<_, _>>(),
+            "toolsHash": hash,
+        })
+    }
+}
+
+/// 等待中的定时动作（`--cancel-after-ms`、`--catalog`、`--delay`）。
+enum Timer {
+    Cancel(String),
+    Catalog,
+    Delay,
 }
 
 /// 跨连接的 Host 状态。
@@ -340,6 +485,7 @@ struct HostState {
     /// 还需要拒绝的休眠次数（`--reject-sleep`）。
     reject_sleep_ms: Option<u64>,
     tool_info: bool,
+    trace: bool,
     catalog: Catalog,
     /// 休眠被接受时发放的恢复令牌与当时的 toolsHash。
     resume: Option<(String, String)>,
@@ -364,6 +510,7 @@ async fn run(mut listener: Listener, opts: Options) -> Result<(), String> {
         lease_ms: opts.lease_ms,
         reject_sleep_ms: opts.reject_sleep_ms,
         tool_info: opts.tool_info,
+        trace: opts.trace,
         catalog: Catalog::default(),
         resume: None,
         wake_token: None,
@@ -403,10 +550,11 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
     let mut slept = false;
     // 当前等待响应的请求：(请求 ID, 类型, 名称)。
     let mut pending: Option<(RequestId, &'static str, String)> = None;
+    let mut timer: Option<(tokio::time::Instant, Timer)> = None;
 
     loop {
         // 需要发送下一个操作。
-        if started && pending.is_none() && !awaiting_sleep && !slept {
+        if started && pending.is_none() && timer.is_none() && !awaiting_sleep && !slept {
             match host.ops.next() {
                 None => {
                     let _ = ws.close(None).await;
@@ -419,19 +567,25 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                 }
                 Some(Op::AwaitSleep) => awaiting_sleep = true,
                 Some(Op::Wake) => return Err("--wake 必须在 --await-sleep 之后".to_owned()),
-                Some(Op::Invoke { name, args }) => {
+                Some(Op::Invoke { name, args, opts }) => {
                     let id = next_id(host);
                     host.next_call += 1;
+                    let call_id = opts.call_id.unwrap_or_else(|| format!("c{}", host.next_call));
+                    if let Some(ms) = opts.cancel_after_ms {
+                        timer = Some((after(ms), Timer::Cancel(call_id.clone())));
+                    }
                     let params = ToolsInvokeParams {
-                        call_id: format!("c{}", host.next_call),
+                        call_id,
                         name: name.clone(),
                         arguments: args,
-                        timeout_ms: Some(5000),
+                        timeout_ms: Some(opts.timeout_ms.unwrap_or(5000)),
                     };
                     let msg = Message::request(id.clone(), method::TOOLS_INVOKE, to_value(&params));
                     send(&mut ws, &msg).await?;
                     pending = Some((id, "invoke", name));
                 }
+                Some(Op::Catalog { settle_ms }) => timer = Some((after(settle_ms), Timer::Catalog)),
+                Some(Op::Delay { ms }) => timer = Some((after(ms), Timer::Delay)),
                 Some(Op::Read { name }) => {
                     let id = next_id(host);
                     let params = ResourcesReadParams { name: name.clone() };
@@ -442,7 +596,22 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
             }
         }
 
-        let frame = match ws.next().await {
+        let next = match &timer {
+            None => ws.next().await,
+            Some((at, _)) => {
+                let at = *at;
+                tokio::select! {
+                    f = ws.next() => f,
+                    () = tokio::time::sleep_until(at) => {
+                        if let Some((_, t)) = timer.take() {
+                            fire(&mut ws, host, t).await?;
+                        }
+                        continue;
+                    }
+                }
+            }
+        };
+        let frame = match next {
             Some(Ok(f)) => f,
             Some(Err(_)) | None if slept => return Ok(ConnEnd::Slept),
             Some(Err(e)) => return Err(format!("连接出错：{e}")),
@@ -461,6 +630,9 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                 continue;
             }
         };
+        if host.trace {
+            trace_recv(&msg);
+        }
         match msg {
             Message::Request(req) => {
                 let reply = match req.method.as_str() {
@@ -511,7 +683,7 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                     let mut line = json!({
                         "type": "tools",
                         "tools": host.catalog.tools.keys().collect::<Vec<_>>(),
-                        "resources": host.catalog.resources.iter().collect::<Vec<_>>(),
+                        "resources": host.catalog.resources.keys().collect::<Vec<_>>(),
                     });
                     if !first {
                         line["synced"] = json!(synced);
@@ -561,6 +733,9 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                     pending = Some((id, kind, name));
                     continue;
                 }
+                if matches!(timer, Some((_, Timer::Cancel(_)))) {
+                    timer = None;
+                }
                 let mut line = BTreeMap::new();
                 line.insert("type", json!(kind));
                 line.insert("name", json!(name));
@@ -606,6 +781,46 @@ fn on_hello(host: &mut HostState, first: bool, params: Value) -> bool {
         );
     }
     tools_current
+}
+
+/// 到期时刻：现在之后 `ms` 毫秒。
+fn after(ms: u64) -> tokio::time::Instant {
+    tokio::time::Instant::now() + Duration::from_millis(ms)
+}
+
+/// 执行到期的定时动作。
+async fn fire<S>(ws: &mut S, host: &HostState, timer: Timer) -> Result<(), String>
+where
+    S: futures::Sink<WsMessage> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    match timer {
+        Timer::Cancel(call_id) => {
+            if host.trace {
+                emit(&json!({ "type": "cancel", "callId": call_id }).to_string());
+            }
+            let params = ToolsCancelParams { call_id, reason: None };
+            send(ws, &Message::notification(method::TOOLS_CANCEL, to_value(&params))).await
+        }
+        Timer::Catalog => {
+            emit(&host.catalog.line().to_string());
+            Ok(())
+        }
+        Timer::Delay => Ok(()),
+    }
+}
+
+/// `--trace`：打印 SDK 发来的请求与通知（`ping` 除外，是否发心跳取决于传输）。
+fn trace_recv(msg: &Message) {
+    let (method_name, params) = match msg {
+        Message::Request(r) => (&r.method, &r.params),
+        Message::Notification(n) => (&n.method, &n.params),
+        Message::Response(_) => return,
+    };
+    if method_name == method::PING {
+        return;
+    }
+    emit(&json!({ "type": "recv", "method": method_name, "params": params }).to_string());
 }
 
 fn emit_sleep(accepted: bool, p: &SleepParams) {
@@ -679,15 +894,9 @@ mod tests {
         assert_eq!(
             o.ops,
             vec![
-                Op::Invoke {
-                    name: "a".into(),
-                    args: json!({"x": 1})
-                },
+                Op::invoke("a", json!({"x": 1})),
                 Op::Read { name: "r".into() },
-                Op::Invoke {
-                    name: "b".into(),
-                    args: json!({})
-                },
+                Op::invoke("b", json!({})),
             ]
         );
     }
@@ -704,7 +913,7 @@ mod tests {
         assert_eq!(
             o.ops,
             vec![
-                Op::Invoke { name: "a".into(), args: json!({}) },
+                Op::invoke("a", json!({})),
                 Op::AwaitSleep,
                 Op::Wake,
                 Op::Read { name: "r".into() },
@@ -714,6 +923,31 @@ mod tests {
         assert!(parse_args(args(&["--wake"])).is_err());
         assert!(parse_args(args(&["--invoke", "a", "--wake"])).is_err());
         assert!(parse_args(args(&["--lease-ms", "x"])).is_err());
+    }
+
+    #[test]
+    fn parses_conformance_ops() {
+        let o = parse_args(args(&[
+            "--trace", "--invoke", "a", "--call-id", "x", "--invoke-timeout-ms", "100", "--cancel-after-ms", "50",
+            "--catalog", "200", "--delay", "10", "--sdk", "rust", "--report-dir", "out",
+        ]))
+        .unwrap();
+        assert!(o.trace);
+        assert_eq!(o.sdk.as_deref(), Some("rust"));
+        assert_eq!(
+            o.ops,
+            vec![
+                Op::Invoke {
+                    name: "a".into(),
+                    args: json!({}),
+                    opts: InvokeOpts { call_id: Some("x".into()), timeout_ms: Some(100), cancel_after_ms: Some(50) },
+                },
+                Op::Catalog { settle_ms: 200 },
+                Op::Delay { ms: 10 },
+            ]
+        );
+        assert!(parse_args(args(&["--call-id", "x"])).is_err());
+        assert!(parse_args(args(&["--read", "r", "--cancel-after-ms", "5"])).is_err());
     }
 
     #[test]

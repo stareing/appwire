@@ -1,0 +1,22 @@
+{
+  "id": "progress",
+  "title": "ctx.progress → tools/progress（callId、progress、total、message），先于结果到达",
+  "spec": ["protocol.md 3.3"],
+  "requires": ["progress"],
+  "app": {
+    "tools": [{ "name": "p.steps", "description": "分步", "handler": {
+      "progress": [
+        { "progress": 1, "total": 3, "message": "第一步" },
+        { "progress": 2, "total": 3, "message": "第二步" },
+        { "progress": 3 }
+      ],
+      "return": { "steps": 3 } } }]
+  },
+  "host": { "ops": [{ "invoke": "p.steps", "callId": "p-1" }] },
+  "expect": [
+    { "type": "progress", "callId": "p-1", "progress": 1, "total": 3, "message": "第一步" },
+    { "type": "progress", "callId": "p-1", "progress": 2, "total": 3, "message": "第二步" },
+    { "type": "progress", "callId": "p-1", "progress": 3, "total": { "$absent": true }, "message": { "$absent": true } },
+    { "type": "invoke", "name": "p.steps", "result": { "data": { "steps": 3 } } }
+  ]
+}

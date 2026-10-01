@@ -1,0 +1,15 @@
+{
+  "id": "lifecycle-sleep-retry",
+  "title": "app/sleep 被拒（retryAfterMs）后保持连接，到期重试并被接受",
+  "spec": ["protocol.md 8.1"],
+  "requires": ["lifecycle"],
+  "app": {
+    "config": { "lifecycle": { "mode": "idle", "idleTimeoutMs": 200 } },
+    "tools": [{ "name": "t.echo", "description": "回显", "handler": { "echo": true } }]
+  },
+  "host": { "rejectSleepMs": 300, "ops": [{ "awaitSleep": true }] },
+  "expect": [
+    { "type": "sleep", "accepted": false, "reason": "idle" },
+    { "type": "sleep", "accepted": true, "reason": "idle" }
+  ]
+}

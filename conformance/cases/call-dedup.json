@@ -1,0 +1,28 @@
+{
+  "id": "call-dedup",
+  "title": "同一 callId 再次到达时不再执行，回复首次结果（成功与 handler 错误都如此）",
+  "spec": ["protocol.md 3.3"],
+  "requires": [],
+  "app": {
+    "tools": [
+      { "name": "k.count", "description": "计数", "handler": { "counter": true } },
+      { "name": "k.fail", "description": "计数后失败", "handler": { "counter": true, "throw": "失败" } }
+    ]
+  },
+  "host": { "ops": [
+    { "invoke": "k.count", "callId": "dup-1" },
+    { "invoke": "k.count", "callId": "dup-1" },
+    { "invoke": "k.count", "callId": "dup-2" },
+    { "invoke": "k.fail", "callId": "dup-3" },
+    { "invoke": "k.fail", "callId": "dup-3" },
+    { "invoke": "k.count", "callId": "dup-4" }
+  ] },
+  "expect": [
+    { "type": "invoke", "name": "k.count", "result": { "data": { "count": 1 } } },
+    { "type": "invoke", "name": "k.count", "result": { "data": { "count": 1 } } },
+    { "type": "invoke", "name": "k.count", "result": { "data": { "count": 2 } } },
+    { "type": "invoke", "name": "k.fail", "error": { "code": -32006, "message": { "$bind": "failMessage" } } },
+    { "type": "invoke", "name": "k.fail", "error": { "code": -32006, "message": { "$bind": "failMessage" } } },
+    { "type": "invoke", "name": "k.count", "result": { "data": { "count": 3 } } }
+  ]
+}

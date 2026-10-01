@@ -1,0 +1,25 @@
+{
+  "id": "result-non-object",
+  "title": "非对象返回值（数组、字符串、数字、布尔、显式 null）原样作为 data",
+  "spec": ["protocol.md 3.2"],
+  "requires": [],
+  "app": {
+    "tools": [
+      { "name": "n.array", "description": "数组", "handler": { "return": [1, "two", { "three": 3 }] } },
+      { "name": "n.string", "description": "字符串", "handler": { "return": "文本" } },
+      { "name": "n.number", "description": "数字", "handler": { "return": 42.5 } },
+      { "name": "n.bool", "description": "布尔", "handler": { "return": false } },
+      { "name": "n.null", "description": "显式 null", "handler": { "return": null } }
+    ]
+  },
+  "host": { "ops": [
+    { "invoke": "n.array" }, { "invoke": "n.string" }, { "invoke": "n.number" }, { "invoke": "n.bool" }, { "invoke": "n.null" }
+  ] },
+  "expect": [
+    { "type": "invoke", "name": "n.array", "result": { "data": [1, "two", { "three": 3 }] } },
+    { "type": "invoke", "name": "n.string", "result": { "data": "文本" } },
+    { "type": "invoke", "name": "n.number", "result": { "data": 42.5 } },
+    { "type": "invoke", "name": "n.bool", "result": { "data": false } },
+    { "type": "invoke", "name": "n.null", "result": { "data": null } }
+  ]
+}

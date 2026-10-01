@@ -1,0 +1,37 @@
+{
+  "id": "resources",
+  "title": "资源：声明（mimeType、annotations）、读取、读取失败（details / reason / uri）、不存在",
+  "spec": ["protocol.md 5.4", "protocol.md 3.2", "protocol.md 4"],
+  "requires": ["resourceOptions", "readFailure"],
+  "app": {
+    "resources": [
+      { "name": "s.json", "description": "JSON 资源", "read": { "return": { "count": 3 } } },
+      { "name": "s.text", "description": "文本资源", "mimeType": "text/plain", "read": { "return": "你好" } },
+      { "name": "s.ann", "description": "带标注", "annotations": { "audience": ["assistant"], "priority": 0.2 },
+        "read": { "return": [1, 2] } },
+      { "name": "s.fail", "description": "读取失败", "read": { "fail": {
+          "message": "数据库不可用", "details": { "retryable": true, "backend": "db" } } } },
+      { "name": "s.login", "description": "需要登录", "read": { "userAction": {
+          "message": "请先登录", "reason": "login", "uri": "conf://login" } } }
+    ]
+  },
+  "host": { "ops": [
+    { "read": "s.json" }, { "read": "s.text" }, { "read": "s.ann" }, { "read": "s.fail" }, { "read": "s.login" }, { "read": "s.missing" }
+  ] },
+  "expect": [
+    { "type": "recv", "method": "resources/sync", "params": { "resources": { "$has": [
+        { "name": "s.ann", "description": "带标注", "annotations": { "audience": ["assistant"], "priority": 0.2 } },
+        { "name": "s.fail" },
+        { "name": "s.json", "annotations": { "$absent": true } },
+        { "name": "s.login" },
+        { "name": "s.text", "mimeType": "text/plain" } ] } } },
+    { "type": "read", "name": "s.json", "result": { "contents": { "count": 3 } } },
+    { "type": "read", "name": "s.text", "result": { "contents": "你好" } },
+    { "type": "read", "name": "s.ann", "result": { "contents": [1, 2] } },
+    { "type": "read", "name": "s.fail", "error": { "code": -32006, "message": { "$contains": "数据库不可用" },
+        "data": { "kind": "HANDLER_ERROR", "retryable": true, "backend": "db" } } },
+    { "type": "read", "name": "s.login", "error": { "code": -32019, "message": "请先登录",
+        "data": { "kind": "USER_ACTION_REQUIRED", "reason": "login", "uri": "conf://login" } } },
+    { "type": "read", "name": "s.missing", "error": { "code": -32013, "data": { "kind": "RESOURCE_NOT_FOUND" } } }
+  ]
+}

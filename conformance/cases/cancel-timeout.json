@@ -1,0 +1,24 @@
+{
+  "id": "cancel-timeout",
+  "title": "tools/cancel → CANCELLED；timeoutMs 到期 → TIMEOUT；之后的调用照常执行",
+  "spec": ["protocol.md 5.3"],
+  "requires": [],
+  "app": {
+    "tools": [
+      { "name": "c.slow", "description": "慢调用", "handler": { "delayMs": 3000, "return": { "late": true } } },
+      { "name": "c.fast", "description": "快调用", "handler": { "return": { "fast": true } } }
+    ]
+  },
+  "host": { "timeoutMs": 15000, "ops": [
+    { "invoke": "c.slow", "callId": "cancel-1", "cancelAfterMs": 200 },
+    { "invoke": "c.slow", "callId": "timeout-1", "timeoutMs": 300 },
+    { "invoke": "c.fast" }
+  ] },
+  "expect": [
+    { "type": "cancel", "callId": "cancel-1" },
+    { "type": "invoke", "name": "c.slow", "error": { "code": -32007, "data": { "kind": "CANCELLED" } } },
+    { "type": "invoke", "name": "c.slow", "error": { "code": -32005, "data": { "kind": "TIMEOUT" } } },
+    { "type": "invoke", "name": "c.fast", "result": { "data": { "fast": true } } }
+  ],
+  "absent": [{ "type": "invoke", "result": { "data": { "late": true } } }]
+}

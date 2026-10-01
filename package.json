@@ -6,7 +6,8 @@
   "scripts": {
     "build": "pnpm -r --filter ./packages/** build",
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "conformance:matrix": "node conformance/matrix.mjs"
   },
   "devDependencies": {
     "typescript": "~5.9.3",

@@ -1,0 +1,187 @@
+{
+  "id": "tool-mutations",
+  "title": "连接后注册 / 更新（null 清除声明）/ 注销 / 禁用，经 tools/changed 到达 Host",
+  "spec": [
+    "protocol.md 5.2",
+    "protocol.md 3.2"
+  ],
+  "requires": [
+    "mutate",
+    "toolOptions"
+  ],
+  "app": {
+    "tools": [
+      {
+        "name": "ctl.mutate",
+        "description": "执行注册表变更",
+        "handler": {
+          "mutate": [
+            {
+              "op": "register",
+              "tool": {
+                "name": "m.new",
+                "description": "新工具",
+                "risk": "read",
+                "handler": {
+                  "return": {
+                    "new": true
+                  }
+                }
+              }
+            },
+            {
+              "op": "update",
+              "name": "m.keep",
+              "set": {
+                "description": "新描述",
+                "annotations": null,
+                "outputSchema": null
+              }
+            },
+            {
+              "op": "remove",
+              "name": "m.gone"
+            },
+            {
+              "op": "disable",
+              "name": "m.off"
+            }
+          ],
+          "return": {
+            "ok": true
+          }
+        }
+      },
+      {
+        "name": "m.keep",
+        "description": "旧描述",
+        "annotations": {
+          "readOnlyHint": true
+        },
+        "outputSchema": {
+          "type": "object"
+        },
+        "handler": {
+          "return": {
+            "keep": true
+          }
+        }
+      },
+      {
+        "name": "m.gone",
+        "description": "将被注销",
+        "handler": {
+          "return": {}
+        }
+      },
+      {
+        "name": "m.off",
+        "description": "将被禁用",
+        "handler": {
+          "return": {}
+        }
+      }
+    ]
+  },
+  "host": {
+    "ops": [
+      {
+        "invoke": "ctl.mutate"
+      },
+      {
+        "catalog": 300
+      },
+      {
+        "invoke": "m.new"
+      },
+      {
+        "invoke": "m.off"
+      },
+      {
+        "invoke": "m.gone"
+      }
+    ]
+  },
+  "expect": [
+    {
+      "type": "tools",
+      "tools": [
+        "ctl.mutate",
+        "m.gone",
+        "m.keep",
+        "m.off"
+      ]
+    },
+    {
+      "type": "invoke",
+      "name": "ctl.mutate",
+      "result": {
+        "data": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "type": "catalog",
+      "tools": {
+        "ctl.mutate": {
+          "$any": true
+        },
+        "m.new": {
+          "description": "新工具",
+          "risk": "read"
+        },
+        "m.keep": {
+          "description": "新描述",
+          "annotations": {
+            "$absent": true
+          },
+          "outputSchema": {
+            "$absent": true
+          }
+        },
+        "m.gone": {
+          "$absent": true
+        },
+        "m.off": {
+          "$absent": true
+        }
+      }
+    },
+    {
+      "type": "invoke",
+      "name": "m.new",
+      "result": {
+        "data": {
+          "new": true
+        }
+      }
+    },
+    {
+      "type": "invoke",
+      "name": "m.off",
+      "error": {
+        "code": -32002,
+        "data": {
+          "kind": "TOOL_DISABLED"
+        }
+      }
+    },
+    {
+      "type": "invoke",
+      "name": "m.gone",
+      "error": {
+        "code": -32001,
+        "data": {
+          "kind": "TOOL_NOT_FOUND"
+        }
+      }
+    }
+  ],
+  "contains": [
+    {
+      "type": "recv",
+      "method": "tools/changed"
+    }
+  ]
+}

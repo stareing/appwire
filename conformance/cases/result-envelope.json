@@ -1,0 +1,35 @@
+{
+  "id": "result-envelope",
+  "title": "结果信封：status / stateResource / summary / stateHints / annotations；done 不序列化",
+  "spec": ["protocol.md 3.2"],
+  "requires": ["richResult"],
+  "app": {
+    "tools": [
+      { "name": "r.pending", "description": "待确认", "handler": { "result": {
+          "data": { "orderId": "o1" }, "status": "pending", "stateResource": "order.state",
+          "summary": "已提交，等待用户在 App 内付款",
+          "annotations": { "audience": ["user"], "priority": 0.5 } } } },
+      { "name": "r.partial", "description": "部分完成", "handler": { "result": {
+          "data": { "done": 1 }, "status": "partial", "summary": "完成一半" } } },
+      { "name": "r.noop", "description": "无改动", "handler": { "result": { "data": { "same": true }, "status": "noop" } } },
+      { "name": "r.done", "description": "显式 done 与 stateHints", "handler": { "result": {
+          "data": { "x": 1 }, "status": "done", "stateHints": ["a.state", "b.state"] } } },
+      { "name": "r.summary", "description": "只有摘要、无返回值", "handler": { "result": { "summary": "已归档 3 封邮件" } } }
+    ]
+  },
+  "host": { "ops": [
+    { "invoke": "r.pending" }, { "invoke": "r.partial" }, { "invoke": "r.noop" }, { "invoke": "r.done" }, { "invoke": "r.summary" }
+  ] },
+  "expect": [
+    { "type": "invoke", "name": "r.pending", "result": {
+        "data": { "orderId": "o1" }, "status": "pending", "stateResource": "order.state",
+        "summary": "已提交，等待用户在 App 内付款", "annotations": { "audience": ["user"], "priority": 0.5 } } },
+    { "type": "invoke", "name": "r.partial", "result": {
+        "data": { "done": 1 }, "status": "partial", "summary": "完成一半",
+        "stateResource": { "$absent": true }, "annotations": { "$absent": true } } },
+    { "type": "invoke", "name": "r.noop", "result": { "data": { "same": true }, "status": "noop" } },
+    { "type": "invoke", "name": "r.done", "result": {
+        "data": { "x": 1 }, "status": { "$absent": true }, "stateHints": ["a.state", "b.state"], "summary": { "$absent": true } } },
+    { "type": "invoke", "name": "r.summary", "result": { "data": null, "summary": "已归档 3 封邮件", "status": { "$absent": true } } }
+  ]
+}

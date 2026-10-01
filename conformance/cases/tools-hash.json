@@ -1,0 +1,24 @@
+{
+  "id": "tools-hash",
+  "title": "toolsHash 与固定向量一致（spec 8.4），app/sleep 携带同一摘要",
+  "spec": ["protocol.md 8.4", "protocol.md 8.1"],
+  "requires": ["lifecycle"],
+  "app": {
+    "config": { "lifecycle": { "mode": "idle", "idleTimeoutMs": 300 } },
+    "tools": [
+      { "name": "todo.add", "description": "添加待办", "risk": "write",
+        "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] },
+        "handler": { "echo": true } },
+      { "name": "cart.checkout", "description": "结算", "risk": "payment", "activation": "foreground", "title": "Checkout",
+        "inputSchema": { "type": "object" },
+        "handler": { "return": {} } }
+    ],
+    "resources": [{ "name": "cart.state", "description": "购物车", "read": { "return": {} } }]
+  },
+  "host": { "ops": [{ "catalog": 0 }, { "awaitSleep": true }] },
+  "expect": [
+    { "type": "catalog", "toolsHash": "ba703035ddca2f91" },
+    { "type": "recv", "method": "app/sleep", "params": { "reason": "idle", "toolsHash": "ba703035ddca2f91" } },
+    { "type": "sleep", "accepted": true, "reason": "idle", "toolsHash": "ba703035ddca2f91" }
+  ]
+}

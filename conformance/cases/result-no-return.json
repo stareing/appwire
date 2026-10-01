@@ -1,0 +1,15 @@
+{
+  "id": "result-no-return",
+  "title": "handler 无返回值（void / None / undefined / Unit）→ Host 收到 data: null 且无其他字段（第 19 项 U2）",
+  "spec": ["protocol.md 3.2", "plans/19 U2"],
+  "requires": [],
+  "app": {
+    "tools": [{ "name": "v.void", "description": "无返回值", "handler": { "returnNothing": true } }]
+  },
+  "host": { "ops": [{ "invoke": "v.void" }] },
+  "expect": [
+    { "type": "invoke", "name": "v.void", "result": {
+        "data": null, "status": { "$absent": true }, "summary": { "$absent": true },
+        "stateHints": { "$absent": true }, "annotations": { "$absent": true } } }
+  ]
+}

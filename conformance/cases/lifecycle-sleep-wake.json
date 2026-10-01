@@ -1,0 +1,29 @@
+{
+  "id": "lifecycle-sleep-wake",
+  "title": "idle 模式空闲休眠 → handleWake(app-mcp-wake:<token>) 回连：launchToken、resumeToken、toolsCurrent 快速恢复",
+  "spec": ["protocol.md 8.1", "protocol.md 8.3", "lifecycle.md"],
+  "requires": ["lifecycle", "wake"],
+  "app": {
+    "config": { "lifecycle": { "mode": "idle", "idleTimeoutMs": 300 } },
+    "tools": [{ "name": "t.echo", "description": "回显", "handler": { "echo": true } }]
+  },
+  "host": { "timeoutMs": 15000, "ops": [
+    { "invoke": "t.echo", "args": { "n": 1 } },
+    { "awaitSleep": true },
+    { "wake": true },
+    { "invoke": "t.echo", "args": { "n": 2 } }
+  ] },
+  "expect": [
+    { "type": "recv", "method": "app/hello", "params": { "lifecycleMode": "idle", "resumeToken": { "$absent": true } } },
+    { "type": "invoke", "name": "t.echo", "result": { "data": { "n": 1 } } },
+    { "type": "recv", "method": "app/sleep", "params": { "reason": "idle", "toolsHash": { "$bind": "hash" } } },
+    { "type": "sleep", "accepted": true, "reason": "idle", "toolsHash": { "$bind": "hash" } },
+    { "type": "wake", "token": { "$bind": "wake" } },
+    { "type": "recv", "method": "app/hello", "params": {
+        "launchToken": { "$bind": "wake" }, "resumeToken": { "$type": "string" }, "toolsHash": { "$bind": "hash" },
+        "wakeReason": "os-activation" } },
+    { "type": "hello", "launchToken": { "$bind": "wake" }, "toolsCurrent": true },
+    { "type": "tools", "tools": ["t.echo"], "synced": false },
+    { "type": "invoke", "name": "t.echo", "result": { "data": { "n": 2 } } }
+  ]
+}

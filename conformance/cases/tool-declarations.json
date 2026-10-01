@@ -1,0 +1,33 @@
+{
+  "id": "tool-declarations",
+  "title": "工具声明（risk、title、activation、annotations、outputSchema、inputSchema）原样到达 Host",
+  "spec": ["protocol.md 3.2"],
+  "requires": ["toolOptions"],
+  "app": {
+    "tools": [
+      { "name": "d.plain", "description": "只有必填字段", "handler": { "return": {} } },
+      { "name": "d.full", "description": "全部字段", "title": "完整",
+        "risk": "destructive", "activation": "foreground",
+        "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] },
+        "annotations": { "title": "完整工具", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false },
+        "outputSchema": { "type": "object", "properties": { "ok": { "type": "boolean" } } },
+        "handler": { "return": { "ok": true } } },
+      { "name": "d.list", "description": "非对象 outputSchema", "risk": "read",
+        "outputSchema": { "type": "array", "items": { "type": "string" } },
+        "handler": { "return": ["a"] } }
+    ]
+  },
+  "host": { "ops": [{ "catalog": 0 }] },
+  "expect": [
+    { "type": "catalog", "tools": {
+        "d.plain": { "name": "d.plain", "description": "只有必填字段", "risk": "write",
+          "title": { "$absent": true }, "activation": { "$absent": true },
+          "annotations": { "$absent": true }, "outputSchema": { "$absent": true } },
+        "d.full": { "description": "全部字段", "title": "完整", "risk": "destructive", "activation": "foreground",
+          "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] },
+          "annotations": { "title": "完整工具", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false },
+          "outputSchema": { "type": "object", "properties": { "ok": { "type": "boolean" } } } },
+        "d.list": { "risk": "read", "annotations": { "$absent": true },
+          "outputSchema": { "type": "array", "items": { "type": "string" } } } } }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "id": "errors",
+  "title": "错误：handler 异常、USER_ACTION_REQUIRED（含 reason / uri）、工具不存在、已禁用",
+  "spec": ["protocol.md 4", "protocol.md 5.3"],
+  "requires": ["userAction"],
+  "app": {
+    "tools": [
+      { "name": "e.throw", "description": "抛出异常", "handler": { "throw": "boom: 出错了" } },
+      { "name": "e.login", "description": "需要登录", "handler": { "userAction": {
+          "message": "登录已过期，请在 App 内重新登录", "reason": "login", "uri": "conf://login" } } },
+      { "name": "e.confirm", "description": "需要确认（无 reason / uri）", "handler": { "userAction": { "message": "请在 App 内确认" } } },
+      { "name": "e.off", "description": "已禁用", "enabled": false, "handler": { "return": {} } }
+    ]
+  },
+  "host": { "ops": [
+    { "invoke": "e.throw" }, { "invoke": "e.login" }, { "invoke": "e.confirm" }, { "invoke": "e.off" }, { "invoke": "e.missing" }
+  ] },
+  "expect": [
+    { "type": "tools", "tools": ["e.confirm", "e.login", "e.throw"] },
+    { "type": "invoke", "name": "e.throw", "error": { "code": -32006, "message": { "$contains": "boom: 出错了" }, "data": { "kind": "HANDLER_ERROR" } } },
+    { "type": "invoke", "name": "e.login", "error": { "code": -32019, "message": "登录已过期，请在 App 内重新登录",
+        "data": { "kind": "USER_ACTION_REQUIRED", "reason": "login", "uri": "conf://login" } } },
+    { "type": "invoke", "name": "e.confirm", "error": { "code": -32019, "message": "请在 App 内确认",
+        "data": { "kind": "USER_ACTION_REQUIRED", "reason": { "$absent": true }, "uri": { "$absent": true } } } },
+    { "type": "invoke", "name": "e.off", "error": { "code": -32002, "data": { "kind": "TOOL_DISABLED" } } },
+    { "type": "invoke", "name": "e.missing", "error": { "code": -32001, "data": { "kind": "TOOL_NOT_FOUND" } } }
+  ]
+}

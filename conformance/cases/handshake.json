@@ -1,0 +1,28 @@
+{
+  "id": "handshake",
+  "title": "握手、全量同步与 app/ready 的顺序",
+  "spec": ["protocol.md 5.1", "protocol.md 3"],
+  "requires": [],
+  "app": {
+    "tools": [{ "name": "t.echo", "description": "回显", "handler": { "echo": true } }],
+    "resources": [{ "name": "r.state", "description": "状态", "read": { "return": { "n": 1 } } }]
+  },
+  "host": { "ops": [] },
+  "expect": [
+    { "type": "recv", "method": "app/hello", "params": {
+        "appId": "conf", "appName": "Conformance", "protocolVersion": "1",
+        "sdkVersion": { "$type": "string" }, "instanceId": { "$type": "string" },
+        "clientKind": { "$oneOf": ["native", "web", "hybrid"] } } },
+    { "type": "recv", "method": "tools/sync", "params": { "tools": [
+        { "name": "t.echo", "description": "回显", "inputSchema": { "type": "object" } } ] } },
+    { "type": "recv", "method": "resources/sync", "params": { "resources": [
+        { "name": "r.state", "description": "状态" } ] } },
+    { "type": "recv", "method": "app/visibility", "params": { "visibility": { "$type": "string" }, "focused": { "$type": "boolean" } } },
+    { "type": "recv", "method": "app/ready" },
+    { "type": "tools", "tools": ["t.echo"], "resources": ["r.state"] }
+  ],
+  "absent": [
+    { "type": "recv", "method": "tools/changed" },
+    { "type": "recv", "method": "app/sleep" }
+  ]
+}
