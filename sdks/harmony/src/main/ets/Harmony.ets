@@ -53,7 +53,7 @@ export const nativeClientFactory: NativeClientFactory =
 
 /** 不经 `HarmonyAppMcp.create`、直接创建客户端（不跟随前后台、不设默认生命周期）。 */
 export function createAppMcp(options: AppMcpOptions): AppMcp {
-  return new AppMcp(options, nativeClientFactory, native.defaultHostUrl());
+  return new AppMcp(options, nativeClientFactory);
 }
 
 /** 从 Want 中提取唤醒参数：`want.uri`（唤醒 URI）与 `want.parameters['app-mcp-wake']`（令牌）。 */

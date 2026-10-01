@@ -92,7 +92,7 @@ pub enum ConnectionErrorCode {
     PortBusy,
     /// Host：本地 IPC 端点被占用。
     IpcEndpointBusy,
-    /// 本地 IPC 套接字路径超过系统上限（Unix `sockaddr_un.sun_path`）。
+    /// 本地 IPC 端点超过系统上限（Unix `sockaddr_un.sun_path`、Windows 命名管道名 256 字符）。
     IpcPathTooLong,
     /// SDK 本地初始化失败（如网页 SDK 的 WASM 核心加载失败），没有连接 Host。
     SdkInitFailed,
@@ -203,7 +203,9 @@ impl ConnectionErrorCode {
             Self::LockHeld => "同一配置目录已有 Host 在运行（单实例锁被持有）",
             Self::PortBusy => "Host 的监听端口被占用",
             Self::IpcEndpointBusy => "Host 的本地 IPC 端点被占用",
-            Self::IpcPathTooLong => "本地 IPC 套接字路径超过系统上限（Linux 107 字节、macOS 103 字节）",
+            Self::IpcPathTooLong => {
+                "本地 IPC 端点超过系统上限（Unix 套接字路径：Linux 107 字节、macOS 103 字节；Windows 命名管道名：256 字符）"
+            }
             Self::SdkInitFailed => "SDK 本地初始化失败（未连接 Host）",
         }
     }
@@ -247,7 +249,7 @@ impl ConnectionErrorCode {
             }
             Self::IpcEndpointBusy => "另一个配置目录的 Host 正在使用该端点：停止它，或用 --ipc-endpoint 指定其他端点",
             Self::IpcPathTooLong => {
-                "用 --ipc-endpoint unix:<较短的绝对路径>（嵌入式 Hub 为 HubConfig.ipc_endpoint，SDK 为 APP_MCP_ENDPOINT / host_url）指定较短路径，或缩短 XDG_RUNTIME_DIR / --home 所在路径"
+                r"用 --ipc-endpoint unix:<较短的绝对路径> / pipe:\\.\pipe\<较短名称>（嵌入式 Hub 为 HubConfig.ipc_endpoint，SDK 为 APP_MCP_ENDPOINT / host_url）指定较短端点，或缩短 XDG_RUNTIME_DIR / --home 所在路径"
             }
             Self::SdkInitFailed => "检查 WASM 文件地址（wasmUrl）能否加载、页面 CSP 是否允许 WebAssembly（'wasm-unsafe-eval'），以及浏览器控制台中的错误",
         }

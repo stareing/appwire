@@ -6,6 +6,7 @@
  * bfcache 暂存。每个通道上的握手、心跳、休眠全部由该标签页自己的核心完成。
  */
 
+import { socketDisconnectIssue } from '../disconnect'
 import {
   type ChannelFailure,
   MUX_REQUEST,
@@ -246,13 +247,16 @@ export class MuxOwner {
     ws.onmessage = (ev) => {
       if (typeof ev.data === 'string') this.onHostText(host, ev.data)
     }
-    const lost = (): void => {
+    const lost = (ev: unknown): void => {
       if (host.state === 'closed') return
       const beforeOpen = host.state === 'connecting'
       host.state = 'closed'
       // CSP 违规事件与 WebSocket 失败事件的先后不确定：下一轮任务再判断原因。
       if (beforeOpen) setTimeout(() => this.failHost(host, this.failure(url)), 0)
-      else this.failHost(host, {})
+      else {
+        const issue = socketDisconnectIssue(ev)
+        this.failHost(host, { code: issue.code, reason: issue.message })
+      }
     }
     ws.onclose = lost
     ws.onerror = lost
@@ -287,7 +291,8 @@ export class MuxOwner {
       this.deliver(chan.tab, { t: 'message', ch: chan.local, text: frame.text })
     } else if (frame.type === 'close') {
       this.removeChan(chan, false)
-      this.deliver(chan.tab, frame.reason ? { t: 'closed', ch: chan.local, reason: frame.reason } : { t: 'closed', ch: chan.local })
+      const reason = frame.reason ? `Host 关闭了通道：${frame.reason}` : 'Host 关闭了通道'
+      this.deliver(chan.tab, { t: 'closed', ch: chan.local, code: 'CONNECTION_CLOSED', reason })
     }
   }
 

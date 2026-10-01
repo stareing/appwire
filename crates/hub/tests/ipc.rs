@@ -151,6 +151,31 @@ async fn rejects_too_long_unix_socket_path() {
     client.stop();
 }
 
+/// 命名管道名恰为上限 256 字符时能创建；超过上限时启动失败，错误带 `IPC_PATH_TOO_LONG` 与建议
+/// （先于创建管道检查，不出现系统的 ERROR_INVALID_NAME）。
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn pipe_name_length_limit() {
+    use app_mcp_protocol::endpoint::MAX_PIPE_NAME_CHARS;
+    use app_mcp_protocol::{ConnectionErrorCode, ConnectionIssue};
+
+    let base = format!(r"\\.\pipe\app-mcp-test-{}-long-", std::process::id());
+    let name_of = |n: usize| format!("{base}{}", "n".repeat(n - base.len()));
+
+    let at_limit = format!("pipe:{}", name_of(MAX_PIPE_NAME_CHARS));
+    let hub = Hub::start(config(&at_limit)).await.expect("上限长度的管道名应能创建");
+    assert_eq!(hub.ipc_endpoint(), Some(at_limit.as_str()));
+    hub.shutdown().await;
+
+    let too_long = format!("pipe:{}", name_of(MAX_PIPE_NAME_CHARS + 1));
+    let err = Hub::start(config(&too_long)).await.err().expect("超长管道名应启动失败");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    let issue = err.get_ref().and_then(|e| e.downcast_ref::<ConnectionIssue>()).expect("错误内含 ConnectionIssue");
+    assert_eq!(issue.code, ConnectionErrorCode::IpcPathTooLong);
+    let text = err.to_string();
+    assert!(text.starts_with("[IPC_PATH_TOO_LONG]") && text.contains("--ipc-endpoint"), "{text}");
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn unix_socket_file_lifecycle() {

@@ -170,7 +170,7 @@ export interface AppMcpOptions {
   appVersion?: string;
   /** 为 false 时不加载原生模块、不连接，注册调用为空操作。默认 true。 */
   enabled?: boolean;
-  /** Host 端点；缺省 `ws://127.0.0.1:7717/app`（开发机用 `hdc rport tcp:7717 tcp:7717`）。 */
+  /** Host 端点；缺省由原生层按 spec/protocol.md 1.3 解析，鸿蒙上为 `ws://127.0.0.1:7717/app`（开发机用 `hdc rport tcp:7717 tcp:7717`）。 */
   hostUrl?: string;
   maxConcurrentCalls?: number;
   overview?: AppOverview;

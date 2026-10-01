@@ -195,6 +195,9 @@ mod windows {
                     r"本平台的本地 IPC 端点必须是 pipe:\\.\pipe\<名称>：{endpoint}"
                 )));
             };
+            // @why 先于创建管道检查：超长名称给出 IPC_PATH_TOO_LONG 与建议，而不是系统的 ERROR_INVALID_NAME。
+            app_mcp_protocol::endpoint::check_pipe_name(name)
+                .map_err(|issue| io::Error::new(io::ErrorKind::InvalidInput, issue))?;
             let security = PipeSecurity::current_user()?;
             let first = create(name, &security, true).map_err(|e| {
                 if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) {

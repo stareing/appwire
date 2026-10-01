@@ -92,8 +92,15 @@ async function tab(deps: Partial<DriverDeps> = {}, href = 'http://localhost:5173
 }
 
 /** 一个持有方 + 可以接入多个标签页的共享连接工厂。 */
-function sharedOwner(): { owner: MuxOwner; hostSockets: FakeSocket[]; createSharedLink: () => MuxLink; posted: unknown[] } {
+function sharedOwner(): {
+  owner: MuxOwner
+  hostSockets: FakeSocket[]
+  createSharedLink: () => MuxLink
+  posted: unknown[]
+  endpoints: OwnerEndpoint[]
+} {
   const hostSockets: FakeSocket[] = []
+  const endpoints: OwnerEndpoint[] = []
   const posted: unknown[] = []
   const owner = new MuxOwner({
     createWebSocket: (url) => {
@@ -113,9 +120,10 @@ function sharedOwner(): { owner: MuxOwner; hostSockets: FakeSocket[]; createShar
       close: () => {},
     }
     const handle = owner.attach((m) => ep.onmessage?.(structuredClone(m)))
+    endpoints.push(ep)
     return new MuxLink(ep)
   }
-  return { owner, hostSockets, createSharedLink, posted }
+  return { owner, hostSockets, createSharedLink, posted, endpoints }
 }
 
 function negotiate(sock: FakeSocket, ok = true): void {
@@ -153,9 +161,11 @@ describe('共享连接', () => {
     expect(a.core.callsOf('handleMessage')).toEqual([])
 
     // Host 关闭通道 1：a 断开（核心按断开处理），b 不受影响
-    sock.receive('{"type":"close","ch":1}')
-    expect(a.core.methods()).toContain('handleDisconnected')
-    expect(b.core.methods()).not.toContain('handleDisconnected')
+    sock.receive('{"type":"close","ch":1,"reason":"实例被替换"}')
+    expect(a.core.callsOf('handleDisconnectedWith')).toEqual([
+      ['CONNECTION_CLOSED', 'Host 关闭了通道：实例被替换', expect.any(Number)],
+    ])
+    expect(b.core.methods()).not.toContain('handleDisconnectedWith')
 
     // b dispose：关闭通道 2，连接随最后一个通道关闭
     b.app.dispose()
@@ -167,7 +177,7 @@ describe('共享连接', () => {
     const a = await tab({ createSharedLink: shared.createSharedLink })
     negotiate(shared.hostSockets[0]!, false)
     expect(a.direct).toHaveLength(1)
-    expect(a.core.methods()).not.toContain('handleDisconnected')
+    expect(a.core.methods()).not.toContain('handleDisconnectedWith')
     a.direct[0]!.open()
     expect(a.app.state.status).toBe('connected')
     // 之后断线重连也直接连接
@@ -198,6 +208,36 @@ describe('共享连接', () => {
     a.win.pageTransition('pagehide', false)
     expect(shared.posted.at(-1)).toEqual({ t: 'bye' })
     expect(shared.hostSockets[0]!.closed).toBe(true)
+  })
+
+  it('持有方到 Host 的连接断开：其上每个已打开的通道带错误码（close → CLOSED，error → LOST）', async () => {
+    const shared = sharedOwner()
+    const a = await tab({ createSharedLink: shared.createSharedLink })
+    const b = await tab({ createSharedLink: shared.createSharedLink })
+    negotiate(shared.hostSockets[0]!)
+    shared.hostSockets[0]!.closeByPeer(1001, 'Host 停止')
+    for (const t of [a, b]) {
+      expect(t.core.callsOf('handleDisconnectedWith')).toEqual([
+        ['CONNECTION_CLOSED', 'Host 关闭了连接（关闭码 1001，原因：Host 停止）', expect.any(Number)],
+      ])
+    }
+
+    // 重连后连接被重置（error 先到）
+    a.core.emit({ type: 'connect' })
+    a.app.wake()
+    expect(shared.hostSockets).toHaveLength(2)
+    negotiate(shared.hostSockets[1]!)
+    shared.hostSockets[1]!.fail()
+    expect(a.core.callsOf('handleDisconnectedWith').at(-1)?.[0]).toBe('CONNECTION_LOST')
+  })
+
+  it('持有方不可用（让位 / 无响应，未给出错误码）：已打开的通道按 CONNECTION_LOST 断开', async () => {
+    const shared = sharedOwner()
+    const a = await tab({ createSharedLink: shared.createSharedLink })
+    negotiate(shared.hostSockets[0]!)
+    expect(a.app.state.status).toBe('connected')
+    shared.endpoints[0]!.onreset?.({})
+    expect(a.core.callsOf('handleDisconnectedWith')).toEqual([['CONNECTION_LOST', '共享连接中断', expect.any(Number)]])
   })
 })
 
@@ -244,7 +284,7 @@ describe('浏览器拦截诊断', () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(a.app.state).toMatchObject({ status: 'blocked', cause: 'local-network-access' })
     expect((a.app.state as { message: string }).message).toContain('网站设置')
-    expect(a.core.methods()).not.toContain('handleDisconnected')
+    expect(a.core.methods()).not.toContain('handleDisconnectedWith')
     expect(a.core.pollTimeout()).toBeUndefined()
 
     perm.set('granted')

@@ -90,8 +90,13 @@ export interface ChannelFailure {
   unsupported?: boolean
   /** 持有方所在环境的 CSP `connect-src` 拦截了连接。 */
   csp?: boolean
-  /** 诊断说明（Host 关闭通道的原因等）。 */
+  /** 诊断说明（Host 关闭通道的原因等）；带 `code` 时为该断线的完整中文说明。 */
   reason?: string
+  /**
+   * 已打开的通道断开时的错误码（`CONNECTION_CLOSED` / `CONNECTION_LOST`，spec/protocol.md 10.1）。
+   * @compat 可选新增：旧持有方不带时标签页按 `CONNECTION_LOST` 处理。
+   */
+  code?: 'CONNECTION_CLOSED' | 'CONNECTION_LOST'
 }
 
 export type TabToOwner =

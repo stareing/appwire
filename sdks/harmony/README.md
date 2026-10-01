@@ -5,7 +5,7 @@
 
 | 组成 | 位置 | 说明 |
 |---|---|---|
-| Node-API 原生模块 | `bindings/harmony` → `libs/<ABI>/libapp_mcp_harmony.so` | 用 [napi-ohos](https://crates.io/crates/napi-ohos)（napi-rs 的 OpenHarmony 分支）编译 `bindings/node/src/lib.rs` **同一份源码**，JS 形状与 `@app-mcp/node` 的原生模块逐字相同；另导出 `defaultHostUrl()` |
+| Node-API 原生模块 | `bindings/harmony` → `libs/<ABI>/libapp_mcp_harmony.so` | 用 [napi-ohos](https://crates.io/crates/napi-ohos)（napi-rs 的 OpenHarmony 分支）编译 `bindings/node/src/lib.rs` **同一份源码**，JS 形状与 `@app-mcp/node` 的原生模块逐字相同 |
 | 类型声明 | `src/main/cpp/types/libapp_mcp_harmony/index.d.ts` | `.so` 的 ArkTS 类型（ohpm 依赖 `libapp_mcp_harmony.so`） |
 | ArkTS 封装 | `Index.ets`、`src/main/ets/` | `AppMcp`（工具 / 资源 / scope / 生命周期）、`HarmonyAppMcp`（前后台、`Want` 唤醒）、`ToolCallError`、`ToolResult` |
 | 意图代码生成 | `crates/codegen --target harmony-insight-intents` | `@InsightIntentEntry` 执行器 + `insight_intent.json` + ArkTS 参数类型与注册函数 |
@@ -94,7 +94,9 @@ onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void { HarmonyA
 ```
 
 开发调试时 Host 运行在电脑上：`hdc rport tcp:7717 tcp:7717` 把设备的 7717 端口反向转发到电脑（与 Android 的
-`adb reverse` 相同），SDK 默认端点即 `ws://127.0.0.1:7717/app`。Host 目前没有内置鸿蒙唤醒器；可用 Host 的
+`adb reverse` 相同），SDK 默认端点即 `ws://127.0.0.1:7717/app`：未指定 `hostUrl` 时由原生层按
+spec/protocol.md 1.3 解析——鸿蒙目标（`target_env = "ohos"`）与 Android 一样是应用沙箱，没有默认本地 IPC 端点、
+不读登记文件，因此落到回环 WebSocket；也可用 `hostUrl` 显式指定。Host 目前没有内置鸿蒙唤醒器；可用 Host 的
 `--waker '{"exec":[...]}'` 自定义唤醒命令，在其中执行 `hdc shell aa start -b <bundle> -a EntryAbility -U <唤醒 URI>`。
 
 ## 意图框架（InsightIntent）
@@ -136,6 +138,16 @@ bash crates/codegen/scripts/verify.sh harmony-insight-intents   # 生成代码�
 ```
 
 `OHOS_SDK_ETS` 指定 SDK 的 `ets` 目录（缺省 `~/sdk/ohos/sdk/ets`）。
+
+默认端点在 ohos 目标上的解析（`app-mcp-protocol` 的 cfg 单元测试）可在 x86_64 Linux 上直接运行：静态链接 NDK 的 musl
+后测试程序不依赖设备（动态链接版需要设备上的加载器）：
+
+```bash
+PATH="$OHOS_NDK_HOME/native/llvm/bin:$PATH" \
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_OHOS_LINKER=x86_64-unknown-linux-ohos-clang \
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_OHOS_RUSTFLAGS="-C target-feature=+crt-static" \
+cargo test -p app-mcp-protocol --lib --target x86_64-unknown-linux-ohos --target-dir target/ohos-static
+```
 
 未验证（无 DevEco / hvigor 与鸿蒙设备）：hvigor 打包 HAR、`.so` 在 ArkVM 中加载与 Node-API 行为（线程安全函数、
 weak 引用）、`applicationStateChange` 前后台、`Want` 唤醒、意图在系统入口中的注册与执行。

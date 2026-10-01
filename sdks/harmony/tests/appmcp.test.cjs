@@ -11,12 +11,10 @@ const { AppMcp, mapState } = require(path.join(build, 'AppMcp.js'));
 const { ToolCallError } = require(path.join(build, 'Errors.js'));
 const { ToolResult } = require(path.join(build, 'Types.js'));
 
-const DEFAULT_URL = 'ws://127.0.0.1:7717/app';
-
 function create(options = {}) {
   const { factory, clients } = fakeFactory();
   const logger = new MemoryLogger();
-  const mcp = new AppMcp({ appId: 'shop', appName: '商城', logger, ...options }, factory, DEFAULT_URL);
+  const mcp = new AppMcp({ appId: 'shop', appName: '商城', logger, ...options }, factory);
   return { mcp, client: clients[0], logger, clients };
 }
 
@@ -25,7 +23,8 @@ test('配置映射：默认端点、生命周期、自动 start', () => {
     lifecycle: { mode: 'idle', residency: 'keep', wake: { kind: 'uri', target: 'shopapp://app-mcp/wake', background: false } },
     overview: { summary: '演示' },
   });
-  assert.equal(client.config.hostUrl, DEFAULT_URL);
+  // 未指定 hostUrl 时不传，由原生层解析默认端点（spec/protocol.md 1.3）。
+  assert.equal(client.config.hostUrl, undefined);
   assert.equal(client.config.clientKind, 'native');
   assert.equal(client.config.lifecycle.mode, 'idle');
   assert.deepEqual(client.config.lifecycle.wake, { kind: 'uri', target: 'shopapp://app-mcp/wake', background: false });

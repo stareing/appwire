@@ -11,11 +11,13 @@
 //!
 //! 默认端点（[`default_endpoint`]）：环境变量 [`ENDPOINT_ENV`] → 登记文件
 //! （[`crate::registry`]，运行中的 Host 写下的实际端点）→ 平台默认 IPC 端点（[`default_ipc_endpoint`]）→
-//! `ws://127.0.0.1:7717/app`（平台没有默认 IPC 端点时，如 Android / iOS）。
+//! `ws://127.0.0.1:7717/app`（平台没有默认 IPC 端点时，如 Android / iOS / 鸿蒙，见 [`crate::platform`]）。
 //! 这四步是**配置的解析顺序**，不是连接失败后的回退：选定的端点连不上时 SDK 按退避重连同一个端点。
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+use crate::platform::{IpcKind, Target};
 
 /// 覆盖默认端点的环境变量（SDK 侧）。值为任一端点字符串。
 pub const ENDPOINT_ENV: &str = "APP_MCP_ENDPOINT";
@@ -106,15 +108,18 @@ impl std::str::FromStr for Endpoint {
 /// - Linux：`$XDG_RUNTIME_DIR/app-mcp/hub.sock`；未设置 `XDG_RUNTIME_DIR` 时 `~/.app-mcp/run/hub.sock`。
 /// - macOS 等其他 Unix：`~/.app-mcp/run/hub.sock`（设置了 `XDG_RUNTIME_DIR` 时同 Linux）。
 /// - Windows：`\\.\pipe\app-mcp-<当前用户 SID>`。
-/// - Android / iOS / WASM：无（App 沙箱之间不能共享套接字；这些平台用 WebSocket）。
+/// - Android / iOS / 鸿蒙（`target_env = "ohos"`）/ WASM：无（App 沙箱之间不能共享套接字；这些平台用 WebSocket）。
+///   平台分类见 [`crate::platform::Target::default_ipc_kind`]。
 ///
 /// 无法确定位置（没有主目录、取不到 SID）时返回 `None`。
 pub fn default_ipc_endpoint() -> Option<Endpoint> {
-    platform_default()
+    match Target::CURRENT.default_ipc_kind()? {
+        IpcKind::Unix => unix_default_from_env(),
+        IpcKind::Pipe => windows_default_pipe(),
+    }
 }
 
-#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
-fn platform_default() -> Option<Endpoint> {
+fn unix_default_from_env() -> Option<Endpoint> {
     unix_default_path(
         std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).as_deref(),
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
@@ -123,14 +128,14 @@ fn platform_default() -> Option<Endpoint> {
 }
 
 #[cfg(windows)]
-fn platform_default() -> Option<Endpoint> {
+fn windows_default_pipe() -> Option<Endpoint> {
     win::current_user_sid()
         .ok()
         .map(|sid| Endpoint::Pipe(format!("{PIPE_NAME_PREFIX}{sid}")))
 }
 
-#[cfg(not(any(windows, all(unix, not(any(target_os = "android", target_os = "ios"))))))]
-fn platform_default() -> Option<Endpoint> {
+#[cfg(not(windows))]
+fn windows_default_pipe() -> Option<Endpoint> {
     None
 }
 
@@ -183,6 +188,31 @@ pub fn check_unix_socket_path(path: &Path) -> Result<(), crate::diagnostic::Conn
         format!(
             "本地 IPC 套接字路径过长（{len} 字节，本平台上限 {MAX_UNIX_SOCKET_PATH_BYTES} 字节）：{}。建议：{}",
             path.display(),
+            code.hint()
+        ),
+    ))
+}
+
+/// Windows 命名管道完整名（`\\.\pipe\<名称>`，含前缀）的最大字符数（UTF-16 码元）：
+/// `CreateNamedPipeW` 文档规定整个管道名最长 256 字符。
+pub const MAX_PIPE_NAME_CHARS: usize = 256;
+
+/// 检查 Windows 命名管道完整名的长度（Hub 创建管道前调用；纯函数，各平台可用）。
+///
+/// @input `name` 为完整名（`\\.\pipe\…`，即 [`Endpoint::Pipe`] 的内容，不含 `pipe:`）
+/// @error 超过 [`MAX_PIPE_NAME_CHARS`] 时返回 `IPC_PATH_TOO_LONG`，说明中带实际长度、上限与修复建议
+/// （spec/protocol.md 10.1）。
+pub fn check_pipe_name(name: &str) -> Result<(), crate::diagnostic::ConnectionIssue> {
+    use crate::diagnostic::{ConnectionErrorCode, ConnectionIssue};
+    let len = name.encode_utf16().count();
+    if len <= MAX_PIPE_NAME_CHARS {
+        return Ok(());
+    }
+    let code = ConnectionErrorCode::IpcPathTooLong;
+    Err(ConnectionIssue::new(
+        code,
+        format!(
+            "命名管道名过长（{len} 字符，上限 {MAX_PIPE_NAME_CHARS} 字符）：{name}。建议：{}",
             code.hint()
         ),
     ))
@@ -386,6 +416,24 @@ mod tests {
 
     use super::*;
 
+    /// 命名管道完整名按 UTF-16 码元计数，上限 256；超出给出 `IPC_PATH_TOO_LONG`。
+    #[test]
+    fn pipe_name_limit() {
+        use crate::diagnostic::ConnectionErrorCode;
+        let name_of = |n: usize| format!("{PIPE_ROOT}{}", "a".repeat(n - PIPE_ROOT.len()));
+        let max = MAX_PIPE_NAME_CHARS;
+        assert_eq!(check_pipe_name(&name_of(max)), Ok(()));
+        assert_eq!(check_pipe_name(&format!("{PIPE_NAME_PREFIX}S-1-5-21-1-2-3-1001")), Ok(()));
+        let issue = check_pipe_name(&name_of(max + 1)).unwrap_err();
+        assert_eq!(issue.code, ConnectionErrorCode::IpcPathTooLong);
+        assert!(issue.message.contains(&format!("{} 字符", max + 1)), "{issue}");
+        assert!(issue.message.contains("--ipc-endpoint"), "{issue}");
+        // 非 ASCII：按 UTF-16 码元计（BMP 外字符占 2 个）。
+        let wide = format!("{PIPE_ROOT}{}", "😀".repeat((max - PIPE_ROOT.len()) / 2));
+        assert_eq!(check_pipe_name(&wide), Ok(()));
+        assert!(check_pipe_name(&format!("{wide}😀")).is_err());
+    }
+
     #[test]
     fn parses_all_forms() {
         assert_eq!(
@@ -460,14 +508,23 @@ mod tests {
     fn default_endpoint_is_parseable() {
         let s = default_endpoint_without_env();
         let e = Endpoint::parse(&s).unwrap();
-        #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
-        assert!(matches!(e, Endpoint::Unix(_)), "{s}");
-        #[cfg(windows)]
-        assert!(
-            matches!(&e, Endpoint::Pipe(n) if n.starts_with(PIPE_NAME_PREFIX)),
-            "{s}"
-        );
-        let _ = e;
+        match Target::CURRENT.default_ipc_kind() {
+            Some(IpcKind::Unix) => assert!(matches!(e, Endpoint::Unix(_)), "{s}"),
+            Some(IpcKind::Pipe) => assert!(
+                matches!(&e, Endpoint::Pipe(n) if n.starts_with(PIPE_NAME_PREFIX)),
+                "{s}"
+            ),
+            None => assert_eq!(s, crate::DEFAULT_WS_URL),
+        }
+    }
+
+    /// 沙箱平台（Android / iOS / 鸿蒙）没有默认 IPC 端点，默认端点为回环 WebSocket。
+    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    #[test]
+    fn sandboxed_default_is_loopback_websocket() {
+        assert_eq!(default_ipc_endpoint(), None);
+        assert_eq!(default_endpoint_without_env(), crate::DEFAULT_WS_URL);
+        assert_eq!(crate::registry::registered_app_endpoint(), None);
     }
 
     #[cfg(windows)]

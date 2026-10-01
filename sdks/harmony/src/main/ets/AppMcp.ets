@@ -525,10 +525,9 @@ export class AppMcp extends RegistrarBase {
 
   /**
    * @param factory 原生客户端工厂；`options.enabled === false` 时不调用。
-   * @param defaultHostUrl 未指定 `options.hostUrl` 时的端点（原生模块的 `defaultHostUrl()`）。
    * @error 配置非法（`INVALID_ARG` / `INVALID_CONFIG`）时抛出原生错误。
    */
-  constructor(options: AppMcpOptions, factory: NativeClientFactory, defaultHostUrl: string) {
+  constructor(options: AppMcpOptions, factory: NativeClientFactory) {
     super(options.logger ?? new ConsoleLogger());
     this.options = options;
     if (options.enabled === false) {
@@ -540,8 +539,9 @@ export class AppMcp extends RegistrarBase {
       appId: options.appId,
       appName: options.appName,
       clientKind: 'native',
-      hostUrl: options.hostUrl ?? defaultHostUrl,
     };
+    // @why 未指定时不传：原生层按 spec/protocol.md 1.3 解析默认端点（鸿蒙沙箱为 ws://127.0.0.1:7717/app）。
+    config.hostUrl = options.hostUrl;
     config.instanceId = options.instanceId;
     config.appVersion = options.appVersion;
     config.instanceTitle = options.instanceTitle;

@@ -144,7 +144,8 @@ describe('MuxOwner + MuxLink', () => {
     b.onclose = closed
     sockets[0]!.fail()
     expect(closed).toHaveBeenCalledTimes(2)
-    expect(a.failure).toEqual({})
+    // 已建立的连接断开：带错误码（error 先到 → CONNECTION_LOST）
+    expect(a.failure).toEqual({ code: 'CONNECTION_LOST', reason: '与 Host 的连接中断（WebSocket 错误）' })
 
     csp.add(URL_A)
     const c = link.open(URL_A)

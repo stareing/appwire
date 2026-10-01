@@ -133,6 +133,8 @@ export interface CoreClient {
   handleDisconnected(now: number): void
   /** 建立连接失败（带错误码，spec/protocol.md 10.1），`backoff` 状态带 `reason` / `code`。不认识的码抛错。 */
   handleConnectFailed(code: string, message: string, now: number): void
+  /** 已建立的连接断开（带错误码 `CONNECTION_CLOSED` / `CONNECTION_LOST`，spec/protocol.md 10.1），`backoff` 状态带 `reason` / `code`。 */
+  handleDisconnectedWith(code: string, message: string, now: number): void
   handleMessage(text: string, now: number): void
   handleTimeout(now: number): void
   completeCall(callId: string, outcome: CoreOutcome, now: number): void

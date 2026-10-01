@@ -71,8 +71,9 @@ export type ConnectionState =
   | { status: 'pending-pairing' }
   | { status: 'connected' }
   /**
-   * 连接断开，`retryAt`（`Date.now()` 毫秒）时重连。`reason` / `code`：本次连接失败的原因与错误码
-   * （spec/protocol.md 10.1，如 `CONNECT_FAILED`、`HANDSHAKE_TIMEOUT`）；普通断线时省略。
+   * 连接断开，`retryAt`（`Date.now()` 毫秒）时重连。`reason` / `code`：进入退避的原因与错误码（spec/protocol.md 10.1）：
+   * 连接建立失败 `CONNECT_FAILED`、已建立的连接断开 `CONNECTION_CLOSED` / `CONNECTION_LOST`、心跳 / 握手超时
+   * `HEARTBEAT_TIMEOUT` / `HANDSHAKE_TIMEOUT`。驱动层的每次退避都带这两项；类型保留可选以兼容。
    */
   | { status: 'backoff'; retryAt: number; reason?: string; code?: string }
   /** 被 Host 拒绝。`code`：错误码（spec/protocol.md 10.1，如 `ORIGIN_NOT_ALLOWED`、`PAIRING_REJECTED`）。 */

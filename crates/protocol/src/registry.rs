@@ -68,9 +68,10 @@ impl EndpointRegistry {
 }
 
 /// 默认配置目录：`APP_MCP_HOME`（非空时；相对路径按当前目录）> `<主目录>/.app-mcp`。
-/// Android / iOS / WASM 上为 `None`（这些平台不与 Host 共享文件系统）。
+/// Android / iOS / 鸿蒙 / WASM 上为 `None`（这些平台不与 Host 共享文件系统，
+/// [`crate::platform::Target::shares_host_filesystem`]）。
 pub fn default_home() -> Option<PathBuf> {
-    if cfg!(any(target_os = "android", target_os = "ios", not(any(unix, windows)))) {
+    if !crate::platform::Target::CURRENT.shares_host_filesystem() {
         return None;
     }
     if let Some(dir) = std::env::var_os(HOME_ENV).filter(|v| !v.is_empty()) {

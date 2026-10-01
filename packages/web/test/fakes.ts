@@ -103,6 +103,9 @@ export class FakeCore implements CoreClient {
   handleConnectFailed(code: string, message: string, now: number): void {
     this.rec('handleConnectFailed', code, message, now)
   }
+  handleDisconnectedWith(code: string, message: string, now: number): void {
+    this.rec('handleDisconnectedWith', code, message, now)
+  }
   handleMessage(text: string, now: number): void {
     this.rec('handleMessage', text, now)
     try {
@@ -230,7 +233,12 @@ export class FakeSocket implements WebSocketLike {
   fail(): void {
     this.readyState = 3
     this.onerror?.({})
-    this.onclose?.({})
+    this.onclose?.({ code: 1006, reason: '', wasClean: false })
+  }
+  /** 对端关闭连接：只有 `close` 事件（CloseEvent 形状）。 */
+  closeByPeer(code: number, reason = '', wasClean = true): void {
+    this.readyState = 3
+    this.onclose?.({ code, reason, wasClean })
   }
 }
 

@@ -17,7 +17,6 @@ name = "app-mcp-harmony"
 version = "0.1.0"
 dependencies = [
  "app-mcp-native",
- "app-mcp-protocol",
  "napi-build-ohos",
  "napi-derive-ohos",
  "napi-ohos",

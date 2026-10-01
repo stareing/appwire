@@ -61,10 +61,11 @@ pub fn current_user() -> Option<String> {
     }
 }
 
-/// SDK 期望的 Host 用户：桌面平台为 [`current_user`]；Android / iOS 为 `None`（App 各有独立 uid，
-/// Host 运行在另一台机器上并经 `adb reverse` 等转发，用户不可比较）。
+/// SDK 期望的 Host 用户：桌面平台为 [`current_user`]；Android / iOS / 鸿蒙为 `None`（App 各有独立 uid，
+/// Host 运行在另一台机器上并经 `adb reverse` / `hdc rport` 等转发，用户不可比较；
+/// [`crate::platform::Target::is_app_sandboxed`]）。
 pub fn expected_host_user() -> Option<String> {
-    if cfg!(any(target_os = "android", target_os = "ios")) {
+    if crate::platform::Target::CURRENT.is_app_sandboxed() {
         None
     } else {
         current_user()

@@ -21,6 +21,7 @@ pub mod identity;
 pub mod jsonrpc;
 pub mod messages;
 pub mod mux;
+pub mod platform;
 pub mod registry;
 
 pub use diagnostic::{ConnectionErrorCode, ConnectionIssue, DiagnosticParams, IssueKind};

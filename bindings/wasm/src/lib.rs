@@ -277,8 +277,15 @@ impl WasmClient {
     /// 不认识的错误码抛错。
     #[wasm_bindgen(js_name = handleConnectFailed)]
     pub fn handle_connect_failed(&mut self, code: &str, message: &str, now: f64) -> Result<(), JsError> {
-        let code = ConnectionErrorCode::parse(code).ok_or_else(|| JsError::new(&format!("未知错误码：{code}")))?;
-        self.inner.handle_connect_failed(ConnectionIssue::new(code, message), millis(now));
+        self.inner.handle_connect_failed(connection_issue(code, message)?, millis(now));
+        Ok(())
+    }
+
+    /// 已建立的连接断开（带错误码 `CONNECTION_CLOSED` / `CONNECTION_LOST`，spec/protocol.md 10.1）：
+    /// 同 `handleDisconnected`，`backoff` 状态带 `reason` / `code`。不认识的错误码抛错。
+    #[wasm_bindgen(js_name = handleDisconnectedWith)]
+    pub fn handle_disconnected_with(&mut self, code: &str, message: &str, now: f64) -> Result<(), JsError> {
+        self.inner.handle_disconnected_with(connection_issue(code, message)?, millis(now));
         Ok(())
     }
 
@@ -293,6 +300,14 @@ impl WasmClient {
     pub fn report_issue(&mut self, code: &str, message: &str) {
         self.inner.report_issue(code, message);
     }
+}
+
+/// JS 传入的错误码 + 说明 → [`ConnectionIssue`]。
+///
+/// @error 不认识的错误码返回 `未知错误码：<code>`。
+fn connection_issue(code: &str, message: &str) -> Result<ConnectionIssue, JsError> {
+    let code = ConnectionErrorCode::parse(code).ok_or_else(|| JsError::new(&format!("未知错误码：{code}")))?;
+    Ok(ConnectionIssue::new(code, message))
 }
 
 /// 从 URL / 激活参数中提取唤醒令牌（不改变任何客户端状态），供 JS 侧在读取后从地址栏移除片段。

@@ -453,6 +453,15 @@ fn ipc_check(endpoint: Option<&str>, running: bool, status: Option<&Result<HubSt
         return Check::new("ipc", T, Level::Info, "已关闭（ipcEndpoint = none）：原生 App 从登记文件读到 ws://<listen>/app，经 TCP 连接");
     };
     let details = json!({ "endpoint": ep });
+    if let Some(name) = ep.strip_prefix("pipe:")
+        && let Err(issue) = app_mcp_protocol::endpoint::check_pipe_name(name)
+    {
+        let max = app_mcp_protocol::endpoint::MAX_PIPE_NAME_CHARS;
+        let len = name.encode_utf16().count();
+        return Check::new("ipc", T, Level::Error, format!("{name}：{len} 字符，超过命名管道名上限 {max} 字符"))
+            .code(issue.code)
+            .details(details);
+    }
     // 套接字文件与目录的权限检查只在 Unix 上；Windows 的管道所有者在读取 /status 时核对。
     #[cfg(unix)]
     let mut details = details;
@@ -730,6 +739,15 @@ mod tests {
     #[test]
     fn ipc_check_reports_too_long_path() {
         let long = format!("unix:/{}", "p".repeat(app_mcp_protocol::endpoint::MAX_UNIX_SOCKET_PATH_BYTES));
+        let c = ipc_check(Some(&long), false, None);
+        assert!(matches!(c.status, Level::Error), "{c:?}");
+        assert_eq!(c.code, Some("IPC_PATH_TOO_LONG"));
+        assert!(c.hint.as_deref().is_some_and(|h| h.contains("--ipc-endpoint")), "{:?}", c.hint);
+    }
+
+    #[test]
+    fn ipc_check_reports_too_long_pipe_name() {
+        let long = format!(r"pipe:\\.\pipe\{}", "p".repeat(app_mcp_protocol::endpoint::MAX_PIPE_NAME_CHARS));
         let c = ipc_check(Some(&long), false, None);
         assert!(matches!(c.status, Level::Error), "{c:?}");
         assert_eq!(c.code, Some("IPC_PATH_TOO_LONG"));

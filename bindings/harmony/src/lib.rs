@@ -7,9 +7,9 @@
 //! （`napi` ↔ `napi_ohos`、`napi_derive` ↔ `napi_derive_ohos`），这里在 crate 根以
 //! `extern crate … as …` 统一名字；宏展开出的路径本身指向 `napi_ohos`。
 //!
-//! 鸿蒙专有的部分只在本文件：
-//! - [`default_host_url`]：ArkTS 应用沙箱内没有可用的本地 IPC 端点（与 Android 相同），
-//!   封装层未指定 `hostUrl` 时用它（开发机上的 Host 经 `hdc rport tcp:7717 tcp:7717` 反向转发）。
+//! 默认端点不需要鸿蒙专有代码：`ClientConfig.hostUrl` 缺省时 `app-mcp-native` 按 spec/protocol.md 1.3 解析，
+//! `app_mcp_protocol::platform` 把 `target_env = "ohos"` 归为应用沙箱（无默认本地 IPC、不读登记文件），
+//! 结果为 `ws://127.0.0.1:7717/app`（开发机上的 Host 经 `hdc rport tcp:7717 tcp:7717` 反向转发）。
 //!
 //! @compat 共享源码中的 napi-rs API 必须在 napi-ohos 中存在；bindings/node 改用 napi-ohos 尚未提供的
 //! API 时本 crate 编译失败（`cargo check` 即可发现）。
@@ -22,14 +22,3 @@ extern crate napi_ohos as napi;
 mod shared;
 
 pub use shared::*;
-
-use napi_derive_ohos::napi;
-
-/// ArkTS 封装层的默认 Host 端点：`ws://127.0.0.1:7717/app`（spec/protocol.md 第 1 节）。
-///
-/// @why `NativeConfig::new` 的默认端点按 `target_os` 选择本地 IPC；ohos 目标的 `target_os` 是 `linux`，
-/// 会得到桌面 Linux 的套接字路径，而应用沙箱内不存在该路径，故由封装层显式传入。
-#[napi]
-pub fn default_host_url() -> String {
-    app_mcp_protocol::DEFAULT_WS_URL.to_owned()
-}

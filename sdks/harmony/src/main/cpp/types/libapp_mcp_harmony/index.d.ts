@@ -1,8 +1,8 @@
 /**
  * libapp_mcp_harmony.so（bindings/harmony）的导出。
  *
- * 与 bindings/node 编译自同一份 Rust 源码（napi-rs / napi-ohos），JS 形状逐字相同；
- * 只多一个鸿蒙专用的 `defaultHostUrl()`。回调在创建 `NativeClient` 的 ArkTS 线程的事件循环上执行。
+ * 与 bindings/node 编译自同一份 Rust 源码（napi-rs / napi-ohos），JS 形状逐字相同。
+ * `ClientConfig.hostUrl` 缺省时按 spec/protocol.md 1.3 解析（鸿蒙沙箱为 `ws://127.0.0.1:7717/app`）。回调在创建 `NativeClient` 的 ArkTS 线程的事件循环上执行。
  * 所有方法抛出的 Error 带 `code`（`INVALID_ARG`、`DUPLICATE_NAME`、`ALREADY_COMPLETED`、`STOPPED` 等）。
  */
 
@@ -141,6 +141,3 @@ export class NativeClient {
   registerResource(spec: ResourceSpecInit, reader: (read: Read) => void): Resource;
   createScope(name: string): Scope;
 }
-
-/** 鸿蒙默认 Host 端点 `ws://127.0.0.1:7717/app`（开发机 Host 经 `hdc rport tcp:7717 tcp:7717` 反向转发）。 */
-export const defaultHostUrl: () => string;

@@ -194,7 +194,7 @@ class FakeNativeClient extends FakeRegistrar {
   }
 }
 
-/** 返回 `{ factory, clients }`：factory 传给 `new AppMcp(options, factory, url)`。 */
+/** 返回 `{ factory, clients }`：factory 传给 `new AppMcp(options, factory)`。 */
 function fakeFactory() {
   const clients = [];
   const factory = (config, listener) => {

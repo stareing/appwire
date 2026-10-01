@@ -272,7 +272,7 @@ describe('连接', () => {
     expect(h.logger.warn).toHaveBeenCalled()
   })
 
-  it('Disconnect → 主动关闭，解除回调，不调用 handleDisconnected', async () => {
+  it('Disconnect → 主动关闭，解除回调，不通知核心断开', async () => {
     const h = await connected()
     const s = h.socket()
     s.script({ type: 'disconnect' })
@@ -280,13 +280,18 @@ describe('连接', () => {
     expect(s.onclose).toBeNull()
     s.fail()
     expect(h.core.methods()).not.toContain('handleDisconnected')
+    expect(h.core.methods()).not.toContain('handleDisconnectedWith')
   })
 
-  it('error + close 只调用一次 handleDisconnected，重连创建新连接', async () => {
+  it('error + close 只通知一次断开（先到的 error 归为 CONNECTION_LOST），重连创建新连接', async () => {
     const h = await connected()
     const first = h.socket()
     first.fail()
-    expect(h.core.callsOf('handleDisconnected')).toHaveLength(1)
+    const calls = h.core.callsOf('handleDisconnectedWith')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.[0]).toBe('CONNECTION_LOST')
+    expect(calls[0]?.[1]).toContain('连接中断')
+    expect(h.core.methods()).not.toContain('handleDisconnected')
     h.core.emit({ type: 'connect' })
     h.app.tool('t', { description: '', handler: () => {} }) // 触发一次 pump
     expect(h.sockets).toHaveLength(2)
@@ -438,6 +443,32 @@ describe('连接', () => {
     await h.load()
     expect(h.core.calls).toHaveLength(0)
     expect(h.app.state).toEqual({ status: 'stopped' })
+  })
+
+  it('Host 关闭已建立的连接（close 事件）→ CONNECTION_CLOSED，说明带关闭码与原因', async () => {
+    const h = await connected()
+    h.socket().closeByPeer(1001, 'Host 停止')
+    const calls = h.core.callsOf('handleDisconnectedWith')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.[0]).toBe('CONNECTION_CLOSED')
+    expect(calls[0]?.[1]).toBe('Host 关闭了连接（关闭码 1001，原因：Host 停止）')
+  })
+
+  it('未经关闭握手的 close（1006，无 error 事件）→ CONNECTION_CLOSED，说明注明未经关闭握手', async () => {
+    const h = await connected()
+    h.socket().closeByPeer(1006, '', false)
+    const calls = h.core.callsOf('handleDisconnectedWith')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.[0]).toBe('CONNECTION_CLOSED')
+    expect(calls[0]?.[1]).toBe('Host 关闭了连接（关闭码 1006，未经关闭握手）')
+  })
+
+  it('连接建立前失败仍为 CONNECT_FAILED，不按断线处理', async () => {
+    const h = setup({ hostUrl: 'ws://127.0.0.1:9999/app' })
+    await settle()
+    h.socket().closeByPeer(1006, '', false)
+    expect(h.core.callsOf('handleConnectFailed')[0]?.[0]).toBe('CONNECT_FAILED')
+    expect(h.core.methods()).not.toContain('handleDisconnectedWith')
   })
 })
 

@@ -59,7 +59,11 @@ export type ConnectionState =
   | { status: 'handshaking' }
   | { status: 'pending-pairing' }
   | { status: 'connected' }
-  /** `reason` / `code`：本次连接失败的原因与错误码（spec/protocol.md 10.1，如 `HOST_NOT_RUNNING`）；普通断线时省略。 */
+  /**
+   * `reason` / `code`：进入退避的原因与错误码（spec/protocol.md 10.1）：连接建立失败（`HOST_NOT_RUNNING`、
+   * `CONNECT_TIMEOUT` 等）、已建立的连接断开（`CONNECTION_CLOSED` / `CONNECTION_LOST`）、心跳 / 握手超时
+   * （`HEARTBEAT_TIMEOUT` / `HANDSHAKE_TIMEOUT`）。原生驱动层的每次退避都带这两项；类型保留可选以兼容旧原生模块。
+   */
   | { status: 'backoff'; retryAt: number; reason?: string; code?: string }
   /** `code`：错误码（spec/protocol.md 10.1，如 `ORIGIN_NOT_ALLOWED`、`PAIRING_REJECTED`）。 */
   | { status: 'rejected'; reason: string; code: string }

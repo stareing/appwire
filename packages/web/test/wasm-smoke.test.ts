@@ -212,6 +212,13 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     core.handleConnectFailed('CONNECT_FAILED', '无法连接', 0)
     expect(core.state()).toEqual({ status: 'backoff', retryAt: 500, reason: '无法连接', code: 'CONNECT_FAILED' })
     expect(() => core.handleConnectFailed('NOPE', 'x', 0)).toThrow(/未知错误码/)
+    // 已建立连接的断开：handleDisconnectedWith 同样带码进入 backoff
+    core.connectNow(0)
+    core.handleConnected(0)
+    core.handleDisconnectedWith('CONNECTION_CLOSED', 'Host 关闭了连接（关闭码 1001）', 0)
+    expect(core.state()).toMatchObject({ status: 'backoff', reason: 'Host 关闭了连接（关闭码 1001）', code: 'CONNECTION_CLOSED' })
+    expect(() => core.handleDisconnectedWith('NOPE', 'x', 0)).toThrow(/未知错误码/)
+    drain()
     core.reportIssue('BLOCKED_CSP', 'CSP 不允许')
     core.connectNow(1)
     core.handleConnected(1)

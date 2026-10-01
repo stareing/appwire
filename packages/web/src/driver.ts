@@ -23,6 +23,7 @@ import type {
 import { describeParseError, isZodLike, toJsonSchema } from './schema'
 import { type BroadcastChannelFactory, InstanceGuard } from './instance-guard'
 import { checkHandlerOrLoad, loadHandler } from './lazy'
+import { channelDisconnectIssue, socketDisconnectIssue } from './disconnect'
 import { MuxChannel, type MuxLink } from './mux/link'
 import type { ChannelFailure } from './mux/protocol'
 import { type ConnectionBlock, NetworkGuard, type PermissionState, type PermissionsLike } from './network-guard'
@@ -785,12 +786,16 @@ export class AppMcpDriver implements AppMcp {
         this.input((c) => c.handleMessage(text, this.now()))
       } else this.log.warn(`${this.tag} 忽略非文本消息`)
     }
-    const lost = (): void => {
+    const lost = (ev: unknown): void => {
       if (this.ws !== socket) return
       this.ws = null
       detach(socket)
-      if (this.wsOpened) this.input((c) => c.handleDisconnected(this.now()))
-      else if (socket instanceof MuxChannel) this.connectFailed(socket.failure, true)
+      if (this.wsOpened) {
+        // 已建立的连接断开：带错误码进入 backoff（spec/protocol.md 10.1，与原生驱动层一致）
+        const issue = socket instanceof MuxChannel ? channelDisconnectIssue(socket.failure) : socketDisconnectIssue(ev)
+        this.log.debug(`${this.tag} [${issue.code}] ${issue.message}`)
+        this.input((c) => c.handleDisconnectedWith(issue.code, issue.message, this.now()))
+      } else if (socket instanceof MuxChannel) this.connectFailed(socket.failure, true)
       else this.connectFailed(undefined, false)
     }
     socket.onclose = lost

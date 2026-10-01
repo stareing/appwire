@@ -52,7 +52,10 @@ Host 默认监听：
   - Linux：`$XDG_RUNTIME_DIR/app-mcp/hub.sock`；未设置 `XDG_RUNTIME_DIR` 时 `~/.app-mcp/run/hub.sock`；
   - macOS：`~/.app-mcp/run/hub.sock`（设置了 `XDG_RUNTIME_DIR` 时同 Linux）；
   - Windows：`\\.\pipe\app-mcp-<当前用户 SID>`（如 `\\.\pipe\app-mcp-S-1-5-21-…-1001`）；
-  - Android / iOS：无（App 沙箱之间不能共享套接字，这些平台用 WebSocket，如 Android 经 `adb reverse tcp:7717 tcp:7717`）。
+  - Android / iOS / 鸿蒙（HarmonyOS NEXT / OpenHarmony）：无（App 沙箱之间不能共享套接字，这些平台用 WebSocket，如 Android 经
+    `adb reverse tcp:7717 tcp:7717`、鸿蒙经 `hdc rport tcp:7717 tcp:7717`）。鸿蒙目标（`aarch64-` / `x86_64-unknown-linux-ohos`）的
+    `target_os` 是 `linux`，按 `target_env = "ohos"` 识别；平台分类的唯一实现是 `app_mcp_protocol::platform::Target`
+    （`is_app_sandboxed` / `shares_host_filesystem` / `default_ipc_kind`）。
 
   IPC 上是同一个 HTTP 路由：`/app`、`/healthz`、`/status`，以及开启 MCP 时（`app-mcp-host serve`；嵌入式 Hub 的
   `HubConfig.mcp_http`）的 `/mcp`——供厂商 Agent、支持本地套接字的 MCP 客户端使用（如 rmcp 的 `UnixSocketHttpClient`，
@@ -63,7 +66,8 @@ Host 默认监听：
 原生 SDK 未配置端点时按以下顺序**确定**端点（创建配置时解析一次）：
 
 1. 环境变量 `APP_MCP_ENDPOINT`（非空时原样使用，不合法则报配置错误）；
-2. 登记文件（1.7）中运行中的 Host 写下的端点：有本地 IPC 端点时用它，否则 `ws://<listen>/app`；
+2. 登记文件（1.7）中运行中的 Host 写下的端点：有本地 IPC 端点时用它，否则 `ws://<listen>/app`（沙箱平台——Android / iOS /
+   鸿蒙——不与 Host 共享文件系统，跳过此步）；
 3. 平台默认 IPC 端点（同上）；
 4. `ws://127.0.0.1:7717/app`（平台没有默认 IPC 端点时）。
 
@@ -564,8 +568,8 @@ SDK 的连接状态（`Backoff` / `Rejected` / `HostMismatch`，网页另有 `bl
 | `CONNECT_TIMEOUT` | connect | SDK `backoff` | 规定时间内没能建立连接 | 检查 Host 是否卡住（`doctor`）、防火墙 / 代理是否拦截回环连接 |
 | `CONNECT_FAILED` | connect | SDK `backoff` | 建立连接失败（其他系统错误） | 查看 SDK 日志中的系统错误并运行 `doctor` |
 | `IPC_PERMISSION_DENIED` | connect | 原生 SDK `backoff` | 本地 IPC 端点属于其他用户，或当前用户无权访问（1.4） | 以同一用户运行 Host 与 App；套接字目录 0700 且属于当前用户（`doctor` 检查） |
-| `CONNECTION_CLOSED` | disconnect | 原生 SDK `backoff`（断线） | 已建立的连接被 Host 正常关闭（Close 帧或连接结束：Host 停止、重启、主动断开） | 自动重连；Host 已停止时启动它；频繁出现时查看 Host 日志 |
-| `CONNECTION_LOST` | disconnect | 原生 SDK `backoff`（断线） | 已建立的连接因 I/O 错误中断（连接被重置、管道断开，未经关闭握手） | 自动重连；频繁出现时检查 Host 是否崩溃（`doctor`、Host 日志）、代理 / 安全软件是否切断连接 |
+| `CONNECTION_CLOSED` | disconnect | SDK `backoff`（断线） | 已建立的连接被 Host 正常关闭（Close 帧或连接结束：Host 停止、重启、主动断开） | 自动重连；Host 已停止时启动它；频繁出现时查看 Host 日志 |
+| `CONNECTION_LOST` | disconnect | SDK `backoff`（断线） | 已建立的连接因 I/O 错误中断（连接被重置、管道断开，未经关闭握手） | 自动重连；频繁出现时检查 Host 是否崩溃（`doctor`、Host 日志）、代理 / 安全软件是否切断连接 |
 | `HEARTBEAT_TIMEOUT` | disconnect | SDK `backoff`（断线） | 心跳超时：Host 没有及时响应 `ping`（5.5），SDK 主动断开 | 自动重连；Host 可能卡住或过载：查看 Host 日志，必要时重启 |
 | `HOST_NOT_APP_MCP` | identity | SDK `host-mismatch` | 对端不是 app-mcp Host（端口被其他程序占用，1.6） | 停止占用端口的程序（`doctor` 给出进程），或指定正确端点 |
 | `HOST_OTHER_USER` | identity | 原生 SDK `host-mismatch` | 对端是其他操作系统用户的 Host | 启动自己的 Host，或用 `APP_MCP_ENDPOINT` 指定自己的端点 |
@@ -581,7 +585,7 @@ SDK 的连接状态（`Backoff` / `Rejected` / `HostMismatch`，网页另有 `bl
 | `LOCK_HELD` | host | `app-mcp-host serve` / `doctor` | 同一配置目录已有 Host 在运行（1.5） | 无需处理；重启前先 `service stop` |
 | `PORT_BUSY` | host | `serve` / `service install` / `doctor` | 监听端口被占用 | `doctor` 查看占用进程并停止它，或 `--listen` 换端口 |
 | `IPC_ENDPOINT_BUSY` | host | `serve` / `doctor` | 本地 IPC 端点被占用（另一个配置目录的 Host） | 停止它，或 `--ipc-endpoint` 换端点 |
-| `IPC_PATH_TOO_LONG` | host | `serve` / Hub 启动 / `doctor`；原生 SDK `backoff` | 本地 IPC 套接字路径超过系统上限（`sockaddr_un.sun_path`：Linux 107 字节、macOS 103 字节） | `--ipc-endpoint unix:<较短的绝对路径>`（嵌入式 Hub 为 `HubConfig.ipc_endpoint`，SDK 为 `APP_MCP_ENDPOINT` / `host_url`），或缩短 `XDG_RUNTIME_DIR` / `--home` 所在路径 |
+| `IPC_PATH_TOO_LONG` | host | `serve` / Hub 启动 / `doctor`；原生 SDK `backoff` | 本地 IPC 端点超过系统上限（Unix 套接字路径 `sockaddr_un.sun_path`：Linux 107 字节、macOS 103 字节；Windows 命名管道完整名：256 字符） | `--ipc-endpoint unix:<较短的绝对路径>` / `pipe:\\.\pipe\<较短名称>`（嵌入式 Hub 为 `HubConfig.ipc_endpoint`，SDK 为 `APP_MCP_ENDPOINT` / `host_url`），或缩短 `XDG_RUNTIME_DIR` / `--home` 所在路径 |
 | `SDK_INIT_FAILED` | sdk | 网页 SDK `rejected` | SDK 本地初始化失败（WASM 核心加载失败、创建核心失败），没有连接 Host | 检查 `wasmUrl` 能否加载、CSP 是否允许 WebAssembly（`'wasm-unsafe-eval'`）与控制台错误 |
 
 - Host 拒绝握手时在 `HelloResult.code` / `PairingResultParams.code` 中给出码（`PROTOCOL_INCOMPATIBLE`、`ORIGIN_NOT_ALLOWED`、
@@ -591,10 +595,17 @@ SDK 的连接状态（`Backoff` / `Rejected` / `HostMismatch`，网页另有 `bl
 - Unix 域套接字路径在绑定 / 连接前按 `app_mcp_protocol::endpoint::check_unix_socket_path` 检查长度（上限
   `MAX_UNIX_SOCKET_PATH_BYTES`）：Hub 启动返回 `InvalidInput`，错误内含 `ConnectionIssue`（`IPC_PATH_TOO_LONG`，说明带实际长度、
   上限与建议，可经 `io::Error::get_ref` 取出）；原生 SDK 进入带该码的 `backoff`。
+- Windows 命名管道完整名（`\\.\pipe\<名称>`，含前缀）按 `app_mcp_protocol::endpoint::check_pipe_name` 检查长度（上限
+  `MAX_PIPE_NAME_CHARS` = 256 个 UTF-16 码元，`CreateNamedPipeW` 的限制）：Hub 创建管道前检查，返回同样的 `InvalidInput` +
+  `IPC_PATH_TOO_LONG`；`app-mcp-host doctor` 的 IPC 检查同样报出。原生 SDK 连接管道前尚未检查（超长名由系统报错，归为 `CONNECT_FAILED`）。
 - 已建立的连接断开（类别 `disconnect`）：原生驱动层收到 Close 帧或读到连接结束 → `CONNECTION_CLOSED`（说明中带关闭码与原因），
   读取出错 → `CONNECTION_LOST`，经核心 `Client::handle_disconnected_with` 进入带码的 `Backoff`；核心自身的心跳超时 →
   `HEARTBEAT_TIMEOUT`（此前为 `CONNECT_FAILED`）、握手超时 → `HANDSHAKE_TIMEOUT`。驱动层未给出原因的断线（`handle_disconnected`）
-  仍不带码。网页 SDK 的驱动层目前对已建立连接的断开不带码。
+  仍不带码（原生与网页驱动层都已不再使用）。
+- 网页 SDK 的驱动层（`packages/web`，WASM 核心 `handleDisconnectedWith`）：浏览器只给出 `close` / `error` 事件——先到的是
+  `close`（CloseEvent）→ `CONNECTION_CLOSED`（说明带关闭码、原因，`wasClean` 为假时注明"未经关闭握手"，如 1006）；先到的是
+  `error`（连接失败、被重置）→ `CONNECTION_LOST`。经共享连接（第 9 节）时由持有方归类：Host 关闭通道（`close` 帧）→
+  `CONNECTION_CLOSED`，持有方到 Host 的连接断开按上面的规则，持有方本身不可用（让位、无响应）→ `CONNECTION_LOST`。
 - 各语言的状态对象都带 `code`：Rust 核心 `ConnectionState::{Backoff, Rejected, HostMismatch}` 的 `code` 字段、
   原生 `StateInfo.code`、JS `state.code`。
 
