@@ -177,6 +177,8 @@ describe('Hub 封装', () => {
       dormantTtlMs: 4000,
       dormantReplacedByNewInstance: false,
       wakeFromLaunch: true,
+      wakeRateLimit: 2,
+      legacyHeartbeat: true,
     })
     expect(state.config).toEqual({
       leaseTtlMs: 0,
@@ -185,6 +187,8 @@ describe('Hub 封装', () => {
       dormantTtlMs: 4000,
       dormantReplacedByNewInstance: false,
       wakeFromLaunch: true,
+      wakeRateLimit: 2,
+      legacyHeartbeat: true,
     })
   })
 

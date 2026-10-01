@@ -119,6 +119,15 @@ pub struct LifecycleSection {
     pub wake_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wake_from_launch: Option<bool>,
+    /// 唤醒令牌有效期（毫秒），默认 60000。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wake_token_ttl_ms: Option<u64>,
+    /// 每 App 每分钟最多唤醒次数，默认 6；0 不限。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wake_rate_limit: Option<u32>,
+    /// 回退到旧心跳（Hub 对所有连接发 ping 并按无消息断开），默认 `false`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legacy_heartbeat: Option<bool>,
     /// `"system"`（默认）/ `"none"` / `{"exec": [program, ...args]}`（spec/hub-api.md 3.5）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waker: Option<WakerConfig>,
@@ -231,6 +240,9 @@ pub struct Overrides {
     pub lease_ms: Option<u64>,
     pub wake_timeout_ms: Option<u64>,
     pub wake_from_launch: Option<bool>,
+    pub wake_token_ttl_ms: Option<u64>,
+    pub wake_rate_limit: Option<u32>,
+    pub legacy_heartbeat: Option<bool>,
     pub waker: Option<WakerConfig>,
     pub tool_exposure: Option<ToolExposure>,
     pub tool_exposure_threshold: Option<usize>,
@@ -260,6 +272,9 @@ impl FileConfig {
         set(&mut self.lifecycle.lease_ms, &o.lease_ms);
         set(&mut self.lifecycle.wake_timeout_ms, &o.wake_timeout_ms);
         set(&mut self.lifecycle.wake_from_launch, &o.wake_from_launch);
+        set(&mut self.lifecycle.wake_token_ttl_ms, &o.wake_token_ttl_ms);
+        set(&mut self.lifecycle.wake_rate_limit, &o.wake_rate_limit);
+        set(&mut self.lifecycle.legacy_heartbeat, &o.legacy_heartbeat);
         set(&mut self.lifecycle.waker, &o.waker);
         set(&mut self.tools.exposure, &o.tool_exposure);
         set(&mut self.tools.threshold, &o.tool_exposure_threshold);
@@ -314,6 +329,9 @@ pub struct Settings {
     pub lease_ms: u64,
     pub wake_timeout_ms: u64,
     pub wake_from_launch: bool,
+    pub wake_token_ttl_ms: u64,
+    pub wake_rate_limit: u32,
+    pub legacy_heartbeat: bool,
     pub waker: WakerConfig,
     pub tool_exposure: ToolExposure,
     pub tool_exposure_threshold: usize,
@@ -389,6 +407,9 @@ impl Settings {
             lease_ms: c.lifecycle.lease_ms.unwrap_or(60_000),
             wake_timeout_ms: c.lifecycle.wake_timeout_ms.unwrap_or(15_000),
             wake_from_launch: c.lifecycle.wake_from_launch.unwrap_or(false),
+            wake_token_ttl_ms: c.lifecycle.wake_token_ttl_ms.unwrap_or(60_000),
+            wake_rate_limit: c.lifecycle.wake_rate_limit.unwrap_or(app_mcp_hub::DEFAULT_WAKE_RATE_LIMIT),
+            legacy_heartbeat: c.lifecycle.legacy_heartbeat.unwrap_or(false),
             waker: c.lifecycle.waker.unwrap_or_default(),
             tool_exposure: c.tools.exposure.unwrap_or_default(),
             tool_exposure_threshold: c
@@ -431,6 +452,10 @@ mod tests {
         );
         assert!(s.log_file);
         assert_eq!(s.lease_ms, 60_000);
+        assert_eq!(
+            (s.wake_token_ttl_ms, s.wake_rate_limit, s.legacy_heartbeat),
+            (60_000, app_mcp_hub::DEFAULT_WAKE_RATE_LIMIT, false)
+        );
         assert_eq!(s.waker, WakerConfig::System);
         assert_eq!(s.tool_exposure, ToolExposure::Auto);
         assert_eq!(s.tool_exposure_threshold, 40);
@@ -536,6 +561,33 @@ mod tests {
         assert_eq!(s.manifests, vec![abs("/m/a.json"), abs("/m/b.json")]);
         assert_eq!(s.lease_ms, 500);
         assert_eq!(s.auth, AuthMode::Off);
+    }
+
+    #[test]
+    fn power_settings_from_file_and_cli() {
+        let file: FileConfig = serde_json::from_str(
+            r#"{"lifecycle":{"wakeTokenTtlMs":30000,"wakeRateLimit":2,"legacyHeartbeat":true}}"#,
+        )
+        .unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home()).unwrap();
+        assert_eq!((s.wake_token_ttl_ms, s.wake_rate_limit, s.legacy_heartbeat), (30_000, 2, true));
+        let o = Overrides { wake_token_ttl_ms: Some(5_000), wake_rate_limit: Some(0), ..Default::default() };
+        let s = Settings::resolve(&file, &o, &home()).unwrap();
+        assert_eq!((s.wake_token_ttl_ms, s.wake_rate_limit, s.legacy_heartbeat), (5_000, 0, true));
+        // service install 写入配置：命令行覆盖项持久化为 lifecycle 下的键
+        let mut f = FileConfig::default();
+        f.apply(&Overrides {
+            wake_token_ttl_ms: Some(1_000),
+            wake_rate_limit: Some(3),
+            legacy_heartbeat: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(
+            v["lifecycle"],
+            serde_json::json!({"wakeTokenTtlMs": 1000, "wakeRateLimit": 3, "legacyHeartbeat": true})
+        );
     }
 
     #[test]

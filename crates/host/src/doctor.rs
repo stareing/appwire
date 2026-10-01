@@ -9,7 +9,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use app_mcp_hub::{AppState, HubStatus};
+use app_mcp_hub::{AppState, AwakeReason, HubStatus, InstancePower};
 use app_mcp_protocol::registry::{EndpointRegistry, LOCK_FILE};
 use app_mcp_protocol::{ConnectionErrorCode, LISTEN_CANDIDATE_PORTS};
 use serde::Serialize;
@@ -624,7 +624,13 @@ fn apps_check(status: Option<&Result<HubStatus, String>>) -> Check {
         };
         let cids: Vec<&str> = a.instances.iter().filter_map(|i| i.info.connection_id.as_deref()).collect();
         let cid = if cids.is_empty() { String::new() } else { format!("，连接 {}", cids.join("/")) };
-        lines.push(format!("{}：{state}（实例 {}{cid}）", a.app_id, a.instances.len()));
+        let wakes = if a.wakes > 0 { format!("，唤醒 {} 次", a.wakes) } else { String::new() };
+        lines.push(format!("{}：{state}（实例 {}{cid}{wakes}）", a.app_id, a.instances.len()));
+        for i in &a.instances {
+            if let Some(p) = &i.power {
+                lines.push(format!("{}/{} {}", a.app_id, i.info.instance_id, power_text(p)));
+            }
+        }
         if let Some(e) = &a.last_error {
             errors.push(format!("{}：[{}] {}", a.app_id, e.code.as_deref().unwrap_or("-"), e.message));
         }
@@ -637,6 +643,39 @@ fn apps_check(status: Option<&Result<HubStatus, String>>) -> Check {
             .hint("按错误码处理（spec/protocol.md 10.1）；唤醒失败时检查清单的 wake 配置与 App 是否已安装")
             .details(details)
     }
+}
+
+/// 每实例功耗观测的一行摘要（spec/lifecycle.md 第 12 节）。
+fn power_text(p: &InstancePower) -> String {
+    let heartbeat = match p.heartbeat_ms {
+        None => "双向（旧 SDK）".to_owned(),
+        Some(0) => "无（靠连接断开）".to_owned(),
+        Some(ms) => format!("SDK 每 {ms} ms"),
+    };
+    let mode = p.lifecycle_mode.map_or("未声明", |m| match m {
+        app_mcp_protocol::LifecycleMode::Persistent => "persistent",
+        app_mcp_protocol::LifecycleMode::Idle => "idle",
+        app_mcp_protocol::LifecycleMode::OnDemand => "on-demand",
+    });
+    let mut text = format!(
+        "回连 {} 次，唤醒 {} 次，在线 {} 秒，心跳 {} 次（{heartbeat}），模式 {mode}",
+        p.reconnects, p.wakes, p.online_secs, p.heartbeats
+    );
+    if !p.awake_reasons.is_empty() {
+        let reasons: Vec<&str> = p
+            .awake_reasons
+            .iter()
+            .map(|r| match r {
+                AwakeReason::Persistent => "persistent 模式",
+                AwakeReason::Call => "调用进行中",
+                AwakeReason::Lease => "租约",
+                AwakeReason::Subscription => "资源订阅",
+                AwakeReason::WakePending => "待派发的唤醒",
+            })
+            .collect();
+        text.push_str(&format!("，未休眠原因：{}", reasons.join("、")));
+    }
+    text
 }
 
 fn reports_check(status: Option<&Result<HubStatus, String>>) -> Check {
@@ -752,6 +791,23 @@ mod tests {
         assert!(matches!(c.status, Level::Error), "{c:?}");
         assert_eq!(c.code, Some("IPC_PATH_TOO_LONG"));
         assert!(c.hint.as_deref().is_some_and(|h| h.contains("--ipc-endpoint")), "{:?}", c.hint);
+    }
+
+    #[test]
+    fn power_line() {
+        let p = InstancePower {
+            reconnects: 2,
+            wakes: 1,
+            online_secs: 30,
+            heartbeats: 0,
+            heartbeat_ms: Some(0),
+            lifecycle_mode: Some(app_mcp_protocol::LifecycleMode::Idle),
+            awake_reasons: vec![AwakeReason::Lease, AwakeReason::Subscription],
+        };
+        let t = power_text(&p);
+        assert!(t.contains("回连 2 次") && t.contains("无（靠连接断开）") && t.contains("模式 idle"), "{t}");
+        assert!(t.contains("未休眠原因：租约、资源订阅"), "{t}");
+        assert!(power_text(&InstancePower::default()).contains("双向（旧 SDK）"));
     }
 
     #[test]

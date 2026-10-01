@@ -374,7 +374,7 @@ describe('连接', () => {
       },
     )
     await settle()
-    expect(h.core.callsOf('handleConnectFailed')[0]?.[0]).toBe('CONNECT_FAILED')
+    expect(h.core.callsOf('handleConnectFailed')[0]?.[0]).toBe('HOST_NOT_RUNNING')
     app.dispose()
   })
 
@@ -463,11 +463,11 @@ describe('连接', () => {
     expect(calls[0]?.[1]).toBe('Host 关闭了连接（关闭码 1006，未经关闭握手）')
   })
 
-  it('连接建立前失败仍为 CONNECT_FAILED，不按断线处理', async () => {
+  it('连接建立前失败归为 HOST_NOT_RUNNING，不按断线处理', async () => {
     const h = setup({ hostUrl: 'ws://127.0.0.1:9999/app' })
     await settle()
     h.socket().closeByPeer(1006, '', false)
-    expect(h.core.callsOf('handleConnectFailed')[0]?.[0]).toBe('CONNECT_FAILED')
+    expect(h.core.callsOf('handleConnectFailed')[0]?.[0]).toBe('HOST_NOT_RUNNING')
     expect(h.core.methods()).not.toContain('handleDisconnectedWith')
   })
 })

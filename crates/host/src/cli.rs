@@ -124,6 +124,20 @@ pub struct HubArgs {
     #[arg(long, value_name = "MS")]
     pub wake_timeout_ms: Option<u64>,
 
+    /// 唤醒令牌的有效期（毫秒，spec/lifecycle.md 4.4），默认 60000。
+    #[arg(long, value_name = "MS")]
+    pub wake_token_ttl_ms: Option<u64>,
+
+    /// 每个 App 每分钟最多实际发出的唤醒次数（spec/lifecycle.md 第 12 节），默认 6；0 不限。
+    /// 超出时调用返回 LAUNCH_FAILED（data.code = WAKE_RATE_LIMITED）。
+    #[arg(long, value_name = "N")]
+    pub wake_rate_limit: Option<u32>,
+
+    /// 回退到 4e 之前的心跳：对所有 App 连接发 ping 并按无消息断开（忽略 SDK 的 heartbeatMs 声明，
+    /// spec/lifecycle.md 第 11 节）。
+    #[arg(long)]
+    pub legacy_heartbeat: bool,
+
     /// App 未运行且清单没有显式 wake 时，由清单 launch 推导唤醒方式（会打开 launch.web 地址等）。
     #[arg(long)]
     pub wake_from_launch: bool,
@@ -171,6 +185,9 @@ impl HubArgs {
             upstreams,
             lease_ms: self.lease_ms,
             wake_timeout_ms: self.wake_timeout_ms,
+            wake_token_ttl_ms: self.wake_token_ttl_ms,
+            wake_rate_limit: self.wake_rate_limit,
+            legacy_heartbeat: self.legacy_heartbeat.then_some(true),
             wake_from_launch: self.wake_from_launch.then_some(true),
             waker: self.waker.clone(),
             tool_exposure: self.tool_exposure,

@@ -84,6 +84,58 @@ impl Endpoint {
     pub fn unix(path: impl Into<PathBuf>) -> Self {
         Self::Unix(path.into())
     }
+
+    /// 连接本端点时的传输类别（spec/lifecycle.md 第 11 节），决定 SDK 是否需要心跳。
+    ///
+    /// - `unix:` / `pipe:` → [`TransportKind::Ipc`]；
+    /// - 回环主机（[`is_loopback_host`]）的 `ws://` / `wss://`：桌面平台 → [`TransportKind::Loopback`]；
+    ///   沙箱平台（Android / iOS / 鸿蒙，[`Target::is_app_sandboxed`]）→ [`TransportKind::Remote`]；
+    /// - 其他主机 → [`TransportKind::Remote`]。
+    ///
+    /// @why 沙箱平台上的回环地址通常是 `adb reverse` / `hdc rport` 之类的转发（Host 在另一台机器上）：设备侧只看到
+    /// 本机回环，实际跨 USB / 网络，USB 断开、电脑休眠等远端变化未经验证能否及时以 EOF 送达，按远程保守处理。
+    pub fn transport_kind(&self, target: &Target<'_>) -> TransportKind {
+        match self {
+            Self::Unix(_) | Self::Pipe(_) => TransportKind::Ipc,
+            Self::WebSocket(url) if url_host(url).is_some_and(is_loopback_host) && !target.is_app_sandboxed() => {
+                TransportKind::Loopback
+            }
+            Self::WebSocket(_) => TransportKind::Remote,
+        }
+    }
+}
+
+/// SDK 与 Host 之间的传输类别（spec/lifecycle.md 第 11 节）。由驱动层（原生运行时 / 网页驱动层）按端点判定后
+/// 告知核心（`ClientConfig::transport`），核心据此决定是否发心跳。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TransportKind {
+    /// 驱动层未告知：按 [`TransportKind::Remote`] 处理（保守，发心跳）。
+    #[default]
+    Unknown,
+    /// 本地 IPC（Unix 域套接字 / 命名管道）：对端退出时立即读到 EOF。
+    Ipc,
+    /// 本机回环 TCP（含网页经 SharedWorker 的共享连接）：对端退出时立即收到 RST / FIN。
+    Loopback,
+    /// 跨机器或经转发（含沙箱平台上的回环地址，如 `adb reverse`）：断开可能无法及时感知。
+    Remote,
+}
+
+/// `ws://` / `wss://` URL 的主机部分（去掉用户信息、端口与 IPv6 方括号）；格式不对时为 `None`。
+fn url_host(url: &str) -> Option<&str> {
+    let (_, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    if let Some(v6) = host_port.strip_prefix('[') {
+        return v6.split_once(']').map(|(h, _)| h);
+    }
+    Some(host_port.split_once(':').map_or(host_port, |(h, _)| h))
+}
+
+/// 主机名是否为本机回环：`localhost`（不区分大小写）、`127.0.0.0/8`、`::1`。
+pub fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 impl fmt::Display for Endpoint {
@@ -395,6 +447,34 @@ pub mod win {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transport_kinds() {
+        use super::{Endpoint, TransportKind as K, is_loopback_host};
+        use crate::platform::Target;
+        let desktop = Target { family: "unix", os: "linux", env: "gnu" };
+        let android = Target { family: "unix", os: "android", env: "" };
+        let ohos = Target { family: "unix", os: "linux", env: "ohos" };
+        let cases = [
+            ("unix:/run/app-mcp/hub.sock", K::Ipc, K::Ipc),
+            (r"pipe:\\.\pipe\app-mcp-x", K::Ipc, K::Ipc),
+            ("ws://127.0.0.1:7717/app", K::Loopback, K::Remote),
+            ("ws://localhost:7717/app", K::Loopback, K::Remote),
+            ("ws://[::1]:7717/app", K::Loopback, K::Remote),
+            ("wss://user@127.0.0.2/app?x=1", K::Loopback, K::Remote),
+            ("ws://192.168.1.5:7717/app", K::Remote, K::Remote),
+            ("wss://example.com/app", K::Remote, K::Remote),
+            ("ws://127.0.0.1.example.com/app", K::Remote, K::Remote),
+        ];
+        for (text, on_desktop, on_mobile) in cases {
+            let e = Endpoint::parse(text).unwrap();
+            assert_eq!(e.transport_kind(&desktop), on_desktop, "{text}");
+            assert_eq!(e.transport_kind(&android), on_mobile, "{text}");
+            assert_eq!(e.transport_kind(&ohos), on_mobile, "{text}");
+        }
+        assert!(is_loopback_host("LocalHost") && is_loopback_host("127.9.9.9") && is_loopback_host("[::1]"));
+        assert!(!is_loopback_host("10.0.0.1") && !is_loopback_host("localhost.example"));
+    }
+
 
     /// 上限与标准库构造 `sockaddr_un` 的判定一致；超长路径给出 `IPC_PATH_TOO_LONG`。
     #[cfg(unix)]

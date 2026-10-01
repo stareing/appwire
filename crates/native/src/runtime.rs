@@ -23,6 +23,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -432,7 +433,15 @@ fn connect_issue(host_url: &str, e: &WsError) -> ConnectionIssue {
     {
         return ConnectionIssue::new(issue.code, format!("连接 {host_url} 失败：{}", issue.message));
     }
+    // @why 端口转发（adb reverse / hdc rport）在远端没有监听者时先接受连接、随即关闭：WebSocket 握手未完成
+    // （实测 Hub 不在时每次约 2 s），或升级请求已发出时被重置。真正的 Host 总会回复升级请求（拒绝也带 HTTP 状态），
+    // 因此按"Host 不在"归类，以便 idle / on-demand 下停止无限重试（spec/lifecycle.md 第 11 节 A2）。
+    use std::io::ErrorKind as K;
     let code = match e {
+        WsError::Protocol(ProtocolError::HandshakeIncomplete) => ConnectionErrorCode::HostNotRunning,
+        WsError::Io(io) if matches!(io.kind(), K::ConnectionReset | K::ConnectionAborted | K::UnexpectedEof) => {
+            ConnectionErrorCode::HostNotRunning
+        }
         WsError::Io(io) => app_mcp_protocol::diagnostic::connect_error_code(io.kind()),
         _ => ConnectionErrorCode::ConnectFailed,
     };

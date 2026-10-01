@@ -25,7 +25,7 @@ pub mod platform;
 pub mod registry;
 
 pub use diagnostic::{ConnectionErrorCode, ConnectionIssue, DiagnosticParams, IssueKind};
-pub use endpoint::Endpoint;
+pub use endpoint::{Endpoint, TransportKind};
 pub use error::{ErrorKind, ToolError};
 pub use hash::{canonical_json, tools_hash};
 pub use jsonrpc::{Message, Notification, ParseError, Request, RequestId, Response, RpcError};

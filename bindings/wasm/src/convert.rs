@@ -5,9 +5,9 @@
 //! `WakeDescriptor`、各枚举）仍用其 serde 定义，保持单一来源。输出（状态、事件）用 serde 序列化。
 
 use app_mcp_core::{
-    CallOutput, CancelReason, ClientConfig, ClientKind, ConnectionErrorCode, ConnectionState, Event, HeartbeatPolicy,
-    LifecycleMode, LifecyclePolicy, ReconnectPolicy, Residency, ResourceDef, ScopeId, SleepReason, ToolDef, ToolError,
-    ToolUpdate, Visibility, WakeReason,
+    CallOutput, CancelReason, ClientConfig, ClientKind, ConnectionState, Event, HeartbeatMode,
+    HeartbeatPolicy, LifecycleMode, LifecyclePolicy, ReconnectPolicy, Residency, ResourceDef, ScopeId, SleepReason, ToolDef, ToolError,
+    ToolUpdate, TransportKind, Visibility, WakeReason,
 };
 use app_mcp_core::{Activation, AppOverview, Risk, WakeDescriptor};
 use app_mcp_protocol::ErrorKind;
@@ -237,6 +237,8 @@ impl FromJson for JsReconnect {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct JsHeartbeat {
+    /// `'auto' | 'always' | 'off'`（spec/lifecycle.md 第 11 节）。
+    pub mode: Option<HeartbeatMode>,
     pub interval_ms: Option<u64>,
     pub timeout_ms: Option<u64>,
     pub hidden_timeout_ms: Option<u64>,
@@ -246,11 +248,31 @@ impl FromJson for JsHeartbeat {
     fn from_json(value: Value) -> Result<Self, String> {
         let mut f = Fields::new(value)?;
         let h = JsHeartbeat {
+            mode: f.keyword("mode", "无效的心跳策略", parse_heartbeat_mode),
             interval_ms: f.u64("intervalMs"),
             timeout_ms: f.u64("timeoutMs"),
             hidden_timeout_ms: f.u64("hiddenTimeoutMs"),
         };
         f.finish(h)
+    }
+}
+
+fn parse_heartbeat_mode(s: &str) -> Option<HeartbeatMode> {
+    match s {
+        "auto" => Some(HeartbeatMode::Auto),
+        "always" => Some(HeartbeatMode::Always),
+        "off" => Some(HeartbeatMode::Off),
+        _ => None,
+    }
+}
+
+/// `'ipc' | 'loopback' | 'remote'`：驱动层按 Host 地址判定的传输类别（spec/lifecycle.md 第 11 节）。
+fn parse_transport(s: &str) -> Option<TransportKind> {
+    match s {
+        "ipc" => Some(TransportKind::Ipc),
+        "loopback" => Some(TransportKind::Loopback),
+        "remote" => Some(TransportKind::Remote),
+        _ => None,
     }
 }
 
@@ -302,6 +324,8 @@ pub struct JsLifecycle {
     pub residency: Option<JsResidency>,
     /// 形如 `{ kind: 'web-url', target: location.href, background: false }`。
     pub wake: Option<WakeDescriptor>,
+    pub host_absent_retries: Option<u64>,
+    pub legacy_timers: Option<bool>,
 }
 
 impl FromJson for JsLifecycle {
@@ -314,6 +338,8 @@ impl FromJson for JsLifecycle {
             hidden_idle_timeout_ms: f.u64("hiddenIdleTimeoutMs"),
             grace_ms: f.u64("graceMs"),
             wake: f.protocol("wake"),
+            host_absent_retries: f.u64("hostAbsentRetries"),
+            legacy_timers: f.bool("legacyTimers"),
         };
         f.finish(l)
     }
@@ -339,6 +365,10 @@ impl JsLifecycle {
                 Some(JsResidency::ExitAlways) => Residency::ExitAlways,
             },
             wake: self.wake,
+            host_absent_retries: self
+                .host_absent_retries
+                .map_or(d.host_absent_retries, |n| u32::try_from(n).unwrap_or(u32::MAX)),
+            legacy_timers: self.legacy_timers.unwrap_or(d.legacy_timers),
         }
     }
 }
@@ -368,6 +398,8 @@ pub struct JsConfig {
     pub handshake_timeout_ms: Option<u64>,
     /// 生命周期策略，缺省 `persistent`。
     pub lifecycle: Option<JsLifecycle>,
+    /// 传输类别，缺省未知（按远程处理，发心跳）。
+    pub transport: Option<TransportKind>,
 }
 
 impl FromJson for JsConfig {
@@ -399,6 +431,7 @@ impl FromJson for JsConfig {
             overview: f.protocol("overview"),
             handshake_timeout_ms: f.u64("handshakeTimeoutMs"),
             lifecycle: f.object("lifecycle"),
+            transport: f.keyword("transport", "无效的传输类别", parse_transport),
         };
         f.finish(c)
     }
@@ -432,6 +465,7 @@ impl JsConfig {
         if let Some(h) = self.heartbeat {
             let d = HeartbeatPolicy::default();
             c.heartbeat = HeartbeatPolicy {
+                mode: h.mode.unwrap_or(d.mode),
                 interval_ms: h.interval_ms.unwrap_or(d.interval_ms),
                 timeout_ms: h.timeout_ms.unwrap_or(d.timeout_ms),
                 hidden_timeout_ms: h.hidden_timeout_ms.unwrap_or(d.hidden_timeout_ms),
@@ -449,6 +483,9 @@ impl JsConfig {
         }
         if let Some(l) = self.lifecycle {
             c.lifecycle = l.into_core();
+        }
+        if let Some(t) = self.transport {
+            c.transport = t;
         }
         c
     }
@@ -673,21 +710,7 @@ impl JsCallOutcome {
 
 /// 连接状态，形状与 `@app-mcp/web` 的 `ConnectionState` 一致（`retryAt` 为核心时钟），见 [`JsState::to_value`]。
 #[derive(Clone, Debug, PartialEq)]
-pub enum JsState {
-    Idle,
-    Connecting,
-    Handshaking,
-    PendingPairing,
-    Connected,
-    /// 本次连接失败 / 断开的原因与错误码（spec/protocol.md 10.1）；普通断线时为 `None`，输出时省略。
-    Backoff { retry_at: u64, reason: Option<String>, code: Option<ConnectionErrorCode> },
-    Rejected { reason: String, code: ConnectionErrorCode },
-    Stopped,
-    Dormant,
-    Waking,
-    /// 对端不是 app-mcp Host（spec/protocol.md 1.6）。
-    HostMismatch { reason: String, code: ConnectionErrorCode },
-}
+pub struct JsState(ConnectionState);
 
 /// 由 `(键, 值)` 构造 JSON 对象。
 ///
@@ -701,58 +724,26 @@ fn object(fields: Vec<(&str, Value)>) -> Value {
     Value::Object(map)
 }
 
-fn reason_code(status: &str, reason: &str, code: ConnectionErrorCode) -> Value {
-    object(vec![("status", status.into()), ("reason", reason.into()), ("code", code.as_str().into())])
-}
 
 impl JsState {
     pub fn from_core(state: &ConnectionState) -> Self {
-        match state {
-            ConnectionState::Idle => JsState::Idle,
-            ConnectionState::Connecting => JsState::Connecting,
-            ConnectionState::Handshaking => JsState::Handshaking,
-            ConnectionState::PendingPairing => JsState::PendingPairing,
-            ConnectionState::Connected => JsState::Connected,
-            ConnectionState::Backoff { retry_at, reason, code } => {
-                JsState::Backoff { retry_at: *retry_at, reason: reason.clone(), code: *code }
-            }
-            ConnectionState::Rejected { reason, code } => JsState::Rejected { reason: reason.clone(), code: *code },
-            ConnectionState::Stopped => JsState::Stopped,
-            ConnectionState::Dormant => JsState::Dormant,
-            ConnectionState::Waking => JsState::Waking,
-            ConnectionState::HostMismatch { reason, code } => {
-                JsState::HostMismatch { reason: reason.clone(), code: *code }
-            }
-        }
+        Self(state.clone())
     }
 
-    /// `{ status: <kebab-case>, ... }`。
+    /// `{ status: <kebab-case>, retryAt?, reason?, code? }`（状态名取自 [`ConnectionState::name`]）。
     pub fn to_value(&self) -> Value {
-        let status = |s: &str| object(vec![("status", s.into())]);
-        match self {
-            JsState::Idle => status("idle"),
-            JsState::Connecting => status("connecting"),
-            JsState::Handshaking => status("handshaking"),
-            JsState::PendingPairing => status("pending-pairing"),
-            JsState::Connected => status("connected"),
-            JsState::Backoff { retry_at, reason, code } => {
-                let mut v = object(vec![("status", "backoff".into()), ("retryAt", (*retry_at).into())]);
-                if let Value::Object(map) = &mut v {
-                    if let Some(reason) = reason {
-                        map.insert("reason".to_owned(), reason.as_str().into());
-                    }
-                    if let Some(code) = code {
-                        map.insert("code".to_owned(), code.as_str().into());
-                    }
-                }
-                v
-            }
-            JsState::Rejected { reason, code } => reason_code("rejected", reason, *code),
-            JsState::Stopped => status("stopped"),
-            JsState::Dormant => status("dormant"),
-            JsState::Waking => status("waking"),
-            JsState::HostMismatch { reason, code } => reason_code("host-mismatch", reason, *code),
+        let mut map = Map::new();
+        map.insert("status".to_owned(), self.0.name().into());
+        if let ConnectionState::Backoff { retry_at, .. } = &self.0 {
+            map.insert("retryAt".to_owned(), (*retry_at).into());
         }
+        if let Some(reason) = self.0.reason() {
+            map.insert("reason".to_owned(), reason.into());
+        }
+        if let Some(code) = self.0.code() {
+            map.insert("code".to_owned(), code.as_str().into());
+        }
+        Value::Object(map)
     }
 }
 
@@ -833,7 +824,7 @@ impl JsEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use app_mcp_core::{ReadId, ResourceId, ToolId};
+    use app_mcp_core::{ConnectionErrorCode, ReadId, ResourceId, ToolId};
     use serde_json::json;
 
     #[test]
@@ -854,6 +845,25 @@ mod tests {
         assert_eq!(c.reconnect, ReconnectPolicy::default());
         assert_eq!(c.resource_update_throttle_ms, 100);
         assert_eq!(c.overview, None);
+    }
+
+    #[test]
+    fn config_power_fields() {
+        let c = JsConfig::from_json(json!({
+            "appId": "shop", "appName": "商城", "instanceId": "i1", "transport": "loopback",
+            "heartbeat": { "mode": "always" },
+            "lifecycle": { "mode": "idle", "hostAbsentRetries": 5, "legacyTimers": true }
+        }))
+        .unwrap()
+        .into_core();
+        assert_eq!(c.transport, TransportKind::Loopback);
+        assert_eq!(c.heartbeat.mode, HeartbeatMode::Always);
+        assert_eq!((c.lifecycle.host_absent_retries, c.lifecycle.legacy_timers), (5, true));
+        let d = JsConfig::from_json(json!({ "appId": "shop", "appName": "商城", "instanceId": "i1" })).unwrap().into_core();
+        assert_eq!(d.transport, TransportKind::Unknown);
+        assert_eq!((d.lifecycle.host_absent_retries, d.lifecycle.legacy_timers), (3, false));
+        let bad = JsConfig::from_json(json!({ "appId": "shop", "appName": "商城", "instanceId": "i1", "transport": "x" }));
+        assert!(bad.is_err_and(|e| e.contains("无效的传输类别")));
     }
 
     #[test]

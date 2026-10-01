@@ -141,7 +141,19 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
      - 冻结：Flyme 在切到后台约 62 s 后冻结缓存进程（不是 AOSP 的 5 s 去抖），冻结 ≥ 173 s 期间连接经 `adb reverse` 保持，Hub ping 无响应但 240 s 观察窗内未断开（Hub 只按"距最近收到消息 180 s（隐藏）"断开，冻结超过约 3 分钟才会被切断，本次未直接观察到）；解冻后同一连接 70 ms 内上报可见性，SDK 未误判心跳超时
    - 结论：一次回连（SDK 线程约 5.6 ms）与在线约 40 s 的双向心跳开销相当（进程总量口径约 65 s）；Hub ping 在 SDK 已有心跳时使在线开销翻倍；本地 / 回环传输断开在毫秒级即可由 EOF / RST 感知。按协调要求本轮**不修改**心跳间隔与空闲时长默认值（4e 将替换"定时心跳 + 定时休眠"机制），数据作为 4e 基线
 4e. [ ] 生命周期功耗：空闲、心跳、重连与唤醒（2026-10-01 加入；唤醒去重完成后做，先于 4c）——分析与方案见 `docs/plans/4e-lifecycle-power.md`（四象限）
-   - 第一部分（P0 + 观测）：A1 租约与空闲计时并行；A2 Host 不在时连续 N 次 `HOST_NOT_RUNNING` 转休眠；A3 本地传输（IPC / 本机回环）去掉双向心跳，远程只由 SDK 单向心跳；O1 `/status` / `doctor` 每 App 回连、唤醒、在线秒数、心跳次数与未休眠原因；O2 核心功耗回归测试（定时器 / 连接次数上限）；O3 新策略配置开关与回退；O4 每 App 唤醒速率上限
+   - [x] 第一部分（P0 + 观测）：A1 租约与空闲计时并行；A2 Host 不在时连续 N 次 `HOST_NOT_RUNNING` 转休眠；A3 本地传输（IPC / 本机回环）去掉双向心跳，远程只由 SDK 单向心跳；O1 `/status` / `doctor` 每 App 回连、唤醒、在线秒数、心跳次数与未休眠原因；O2 核心功耗回归测试（定时器 / 连接次数上限）；O3 新策略配置开关与回退；O4 每 App 唤醒速率上限
+   - 结果（第一部分，2026-10-02）：规则见 spec/lifecycle.md 第 11、12 节（新增），协议见 spec/protocol.md 5.5 / 5.6 / 6 / 8.2 / 8.5 / 10.1，Hub API 见 spec/hub-api.md
+     - A1：休眠时刻 = max(空闲起点 + 空闲时长, 租约到期)（`crates/core/src/lifecycle.rs` `sleep_deadline`）；前台调用后在线 120 s → 60 s
+     - A2：`LifecyclePolicy.host_absent_retries`（默认 3，0 = 一直重连）；`idle` / `on-demand` 下连续 N 次"Host 不在"→ `Dormant`（无定时器，可见 / `wake()` / Host 唤醒回连）；码集合唯一定义 `ConnectionErrorCode::means_host_absent`（只有 `HOST_NOT_RUNNING`）；原生驱动层把"TCP 已接受但 WebSocket 握手未完成 / 被重置"（adb reverse 远端无 Hub）归为 `HOST_NOT_RUNNING`；网页连接打开前失败（非浏览器拦截）由 `CONNECT_FAILED` 改为 `HOST_NOT_RUNNING`
+     - A3：`app_mcp_protocol::TransportKind`（`Ipc` / `Loopback` / `Remote` / `Unknown`）+ `Endpoint::transport_kind`（沙箱平台回环 = 远程，即 adb reverse 按远程）、网页 `host-transport.ts`；核心 `ClientConfig.transport`、`HeartbeatPolicy.mode`（`Auto` / `Always` / `Off`）、`Client::heartbeat_interval()`；`app/hello` 新增 `heartbeatMs`（0 = 不发心跳）与 `lifecycleMode`；Hub 按声明：0 → 不 ping、握手后不做无消息断开，>0 → 不 ping、无消息断开 max(45 / 180 s, 3 × 间隔)，缺省（旧 SDK）→ 旧规则；SDK 心跳加冻结保护（截止后又过一整个超时才被调度不判断开）
+     - O1：`InstanceStatus.power`（reconnects / wakes / onlineSecs / heartbeats / heartbeatMs / lifecycleMode / awakeReasons：persistent、call、lease、subscription、wake-pending）、`AppStatus.wakes`；`/status`、`doctor`（文本与 `--json`）展示；hold 只有 SDK 知道，未上报
+     - O2：`crates/core/tests/power.rs` 8 项（本地空闲 1 h 0 定时器 0 心跳；远程 ≤ 240 次心跳；Host 不在 3 次连接后休眠；调用后在线 60 s / 1 次定时器；回退开关）
+     - O3：`lifecycle.legacy_timers`（一次性恢复 A1–A3 旧行为）、`heartbeat` 策略、`host_absent_retries`；C ABI `AmClientOptions` 末尾追加 `heartbeat` / `host_absent_retries` / `legacy_timers` + `AmHeartbeatMode`（头文件 v7，API 版本仍 3）；uniffi `ClientConfig.heartbeat`、`LifecyclePolicy.hostAbsentRetries` / `legacyTimers`（Kotlin / Swift / Python 已重新生成）；napi / `@app-mcp/node` `heartbeat`、`lifecycle.hostAbsentRetries` / `legacyTimers`；WASM / `@app-mcp/web` 同名 + `transport`；Hub `HubConfig.legacy_heartbeat`
+     - O4：`HubConfig.wake_rate_limit`（默认 6 次 / 60 s 滑动窗口，0 = 不限；只计实际激活）；超出 → 工具错误 `LAUNCH_FAILED`，`data.code = "WAKE_RATE_LIMITED"`、`retryAfterMs`；新连接级码 `WAKE_RATE_LIMITED`（类别 `wake`）记为最近错误
+     - 遗留：`app-mcp-host` 命令行 / 配置文件新增 `wake_token_ttl_ms`、`wake_rate_limit`、`legacy_heartbeat`
+     - 顺带：核心警告不再用 `{:?}` 输出 `ConnectionState`（新增 `ConnectionState::name()`），WASM `JsState` 改为基于 `name()` 的包装；WASM gzip 102 110 B（< 102 400）
+     - 验证：cargo test --workspace 501 全过、clippy 0 警告；pnpm -r test（web 212、node 34、hub 26、e2e 12/12 等）与 typecheck 全过；Python 42、Kotlin JVM 全过（uniffi 重新生成）；Windows（cargo.exe MSVC）protocol / core / native / hub / host 362 全过、clippy 0 警告
+     - 未做：Android jniLibs（app-mcp / hub）未用新核心重编（真机复测前需 `generate.sh --android`）；C++ / C# / Dart / Swift / Kotlin 封装层未暴露新开关（C ABI 已有，按 struct_size 兼容）；网页无法判断手机浏览器是否经 adb reverse，需手动 `heartbeat: 'always'`
    - 第二部分（P1）：B1 App 端只留 1–2 s 合并窗口，移动端 / 托盘默认 `on-demand`；B2 Hub 按（会话, App）调用间隔自适应租约，会话结束即收回；B3 资源订阅不再强制在线（声明需实时推送的才保持）；B4 移动端进后台立即休眠
    - 验收：spec/lifecycle.md 写明新规则与回退开关；cargo / pnpm 全量测试与 clippy 0；魅族 18 Pro 前后对比（一组调用后在线秒数、唤醒次数、CPU 时间、Host 不在时 1 小时唤醒次数、冻结 / Doze）；浏览器隐藏标签页限流、Windows 效率模式实测
    - P2（按调用临时建立连接、系统对端死亡通知）并入 4d

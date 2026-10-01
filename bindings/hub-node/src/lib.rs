@@ -140,6 +140,8 @@ struct ConfigJson {
     dormant_ttl_ms: Option<u64>,
     dormant_replaced_by_new_instance: Option<bool>,
     wake_from_launch: Option<bool>,
+    wake_rate_limit: Option<u32>,
+    legacy_heartbeat: Option<bool>,
     /// `"system"` / `"none"` / `{"exec": [...]}`（spec/hub-api.md 3.5）。
     waker: Option<WakerConfig>,
     /// 渐进暴露（spec/hub-api.md 3.7）。
@@ -214,6 +216,12 @@ impl ConfigJson {
         }
         if let Some(v) = self.wake_from_launch {
             c.wake_from_launch = v;
+        }
+        if let Some(v) = self.wake_rate_limit {
+            c.wake_rate_limit = v;
+        }
+        if let Some(v) = self.legacy_heartbeat {
+            c.legacy_heartbeat = v;
         }
         if let Some(w) = self.waker {
             c.waker = w;

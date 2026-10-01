@@ -47,6 +47,10 @@
  *   · 函数 am_hub_status_json（HubStatus，与 GET /status 相同）。
  *   · JSON 中新增：InstanceInfo.connectionId（Hub 分配的连接 ID，与日志 cid 相同；休眠实例缺省）；
  *     事件 {"type":"appDiagnostic","appId","instanceId","code","message","count"}（SDK 上报的连接问题）。
+ * - v7（功耗，spec/lifecycle.md 第 11–12 节）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 wakeRateLimit、legacyHeartbeat。
+ *   · HubStatus JSON 中新增：AppStatus.wakes；InstanceStatus.power（reconnects、wakes、onlineSecs、heartbeats、
+ *     heartbeatMs、lifecycleMode、awakeReasons）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -174,6 +178,8 @@ void am_hub_string_free(char *s);
  *   wakeFromLaunch       App 未运行且清单无显式 wake 时由 launch 推导唤醒方式，默认 false
  *   waker                "system"（默认）/ "none"（不唤醒）/ {"exec": ["程序", "参数", …]}（spec/hub-api.md 3.5）；
  *                        am_hub_set_waker_cb 设置的回调优先
+ *   wakeRateLimit        每 App 每分钟最多唤醒次数，默认 6；0 不限（超出 → LAUNCH_FAILED，data.code = WAKE_RATE_LIMITED）
+ *   legacyHeartbeat      回退到旧心跳（对所有连接发 ping 并按无消息断开），默认 false
  *   —— v3 渐进暴露（spec/hub-api.md 3.7）——
  *   toolExposure         "auto"（默认，App 工具总数超过阈值时渐进）/ "progressive" / "all"
  *   toolExposureThreshold  auto 的阈值，默认 40

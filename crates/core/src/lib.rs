@@ -35,8 +35,8 @@ use app_mcp_protocol as proto;
 use serde_json::Value;
 
 pub use proto::{
-    Activation, AppOverview, ClientKind, ConnectionErrorCode, ConnectionIssue, DiagnosticParams, Risk, SleepReason,
-    ToolError, Visibility, WakeDescriptor, WakeKind, WakeReason,
+    Activation, AppOverview, ClientKind, ConnectionErrorCode, ConnectionIssue, DiagnosticParams, LifecycleMode, Risk,
+    SleepReason, ToolError, TransportKind, Visibility, WakeDescriptor, WakeKind, WakeReason,
 };
 pub use lifecycle::parse_wake_token;
 
@@ -79,6 +79,10 @@ pub struct ClientConfig {
     /// [`ConnectionState::HostMismatch`]。`None`（默认）不核对用户（网页、Android / iOS）；
     /// 原生运行时填入 [`app_mcp_protocol::identity::expected_host_user`]。
     pub expected_host_user: Option<String>,
+    /// 到 Host 的传输类别（spec/lifecycle.md 第 11 节），由驱动层按端点判定
+    /// （[`app_mcp_protocol::Endpoint::transport_kind`]）。[`HeartbeatMode::Auto`] 下本地传输（IPC / 本机回环）不发心跳。
+    /// 默认 [`TransportKind::Unknown`]（按远程处理）。
+    pub transport: TransportKind,
 }
 
 impl ClientConfig {
@@ -109,20 +113,9 @@ impl ClientConfig {
             handshake_timeout_ms: 10_000,
             lifecycle: LifecyclePolicy::default(),
             expected_host_user: None,
+            transport: TransportKind::Unknown,
         }
     }
-}
-
-/// 生命周期模式（spec/lifecycle.md 第 3 节）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum LifecycleMode {
-    /// 不休眠（兼容现有行为）。
-    #[default]
-    Persistent,
-    /// 启动即连接；空闲 `idle_timeout_ms` 后休眠；唤醒后回连。
-    Idle,
-    /// 启动时不连接（进入 `Dormant`）；被唤醒或 `connect_now()` 时连接，任务完成后经过 `grace_ms` 休眠。
-    OnDemand,
 }
 
 /// 休眠后的进程驻留策略。
@@ -150,6 +143,12 @@ pub struct LifecyclePolicy {
     pub residency: Residency,
     /// 本实例的唤醒描述，随 `app/sleep` 上报；`None` 时 Host 回退到清单 `launch`。
     pub wake: Option<WakeDescriptor>,
+    /// `idle` / `on-demand` 下连续多少次以"Host 不在"（[`ConnectionErrorCode::means_host_absent`]）建立连接失败后
+    /// 停止重连、进入 `Dormant`（spec/lifecycle.md 第 11 节 A2）。默认 3；0 = 一直重连（旧行为）。`persistent` 不受影响。
+    pub host_absent_retries: u32,
+    /// 回退到 4e 之前的定时器行为（spec/lifecycle.md 第 11 节）：租约到期后才开始计空闲时长、Host 不在时一直重连、
+    /// 不论传输一律双向心跳（`app/hello` 不声明 `heartbeatMs`，Host 照旧发 `ping`）。默认 `false`。
+    pub legacy_timers: bool,
 }
 
 impl Default for LifecyclePolicy {
@@ -161,6 +160,8 @@ impl Default for LifecyclePolicy {
             grace_ms: 10_000,
             residency: Residency::Keep,
             wake: None,
+            host_absent_retries: 3,
+            legacy_timers: false,
         }
     }
 }
@@ -180,9 +181,11 @@ impl Default for ReconnectPolicy {
 }
 
 /// 心跳：连接期间每隔 `interval_ms` 发送一次 `ping`，
-/// 超过超时时间未收到响应即视为断开。
+/// 超过超时时间未收到响应即视为断开。是否发送由 `mode` 与传输类别决定（[`Client::heartbeat_interval`]）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct HeartbeatPolicy {
+    /// 默认 [`HeartbeatMode::Auto`]。
+    pub mode: HeartbeatMode,
     pub interval_ms: Millis,
     /// 实例可见时的超时。
     pub timeout_ms: Millis,
@@ -192,8 +195,20 @@ pub struct HeartbeatPolicy {
 
 impl Default for HeartbeatPolicy {
     fn default() -> Self {
-        Self { interval_ms: 15_000, timeout_ms: 10_000, hidden_timeout_ms: 120_000 }
+        Self { mode: HeartbeatMode::Auto, interval_ms: 15_000, timeout_ms: 10_000, hidden_timeout_ms: 120_000 }
     }
+}
+
+/// 心跳策略（spec/lifecycle.md 第 11 节 A3）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum HeartbeatMode {
+    /// 按传输：本地 IPC / 本机回环不发心跳（靠连接断开感知），远程 / 未知发心跳。
+    #[default]
+    Auto,
+    /// 总是发心跳。
+    Always,
+    /// 从不发心跳（只靠连接断开与调用超时感知）。
+    Off,
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +316,23 @@ pub enum ConnectionState {
 }
 
 impl ConnectionState {
+    /// 状态名（与 JS 的 `status` 一致），用于日志与警告。
+    pub fn name(&self) -> &'static str {
+        match self {
+            ConnectionState::Idle => "idle",
+            ConnectionState::Connecting => "connecting",
+            ConnectionState::Handshaking => "handshaking",
+            ConnectionState::PendingPairing => "pending-pairing",
+            ConnectionState::Connected => "connected",
+            ConnectionState::Backoff { .. } => "backoff",
+            ConnectionState::Rejected { .. } => "rejected",
+            ConnectionState::Stopped => "stopped",
+            ConnectionState::Dormant => "dormant",
+            ConnectionState::Waking => "waking",
+            ConnectionState::HostMismatch { .. } => "host-mismatch",
+        }
+    }
+
     /// 状态携带的错误码（`Backoff` 可能没有）。
     pub fn code(&self) -> Option<ConnectionErrorCode> {
         match self {
@@ -619,7 +651,7 @@ impl Client {
     pub fn handle_connected(&mut self, now: Millis) {
         self.life.last_now = now;
         if !matches!(self.state, ConnectionState::Connecting | ConnectionState::Waking) {
-            self.warn(format!("当前状态 {:?} 下收到连接建立通知，已忽略", self.state));
+            self.warn(format!("当前状态 {} 下收到连接建立通知，已忽略", self.state.name()));
             return;
         }
         self.send_hello();
@@ -810,6 +842,21 @@ impl Client {
     /// 上次休眠时 Host 返回、尚未用于握手的恢复令牌。
     pub fn resume_token(&self) -> Option<&str> {
         self.life.resume_token.as_deref()
+    }
+
+    /// 本连接 SDK 发送心跳的间隔；`None` = 不发心跳（spec/lifecycle.md 第 11 节 A3）。
+    ///
+    /// `legacy_timers` 或 [`HeartbeatMode::Always`] → 发；[`HeartbeatMode::Off`] → 不发；[`HeartbeatMode::Auto`] →
+    /// 传输为 [`TransportKind::Ipc`] / [`TransportKind::Loopback`] 时不发，其余发。`interval_ms` 为 0 时不发。
+    pub fn heartbeat_interval(&self) -> Option<Millis> {
+        let hb = &self.config.heartbeat;
+        let on = self.config.lifecycle.legacy_timers
+            || match hb.mode {
+                HeartbeatMode::Always => true,
+                HeartbeatMode::Off => false,
+                HeartbeatMode::Auto => !matches!(self.config.transport, TransportKind::Ipc | TransportKind::Loopback),
+            };
+        Some(hb.interval_ms).filter(|ms| on && *ms > 0)
     }
 
     /// 调试用：是否已发送 `app/sleep`、正在等待结果（对外状态仍为 `Connected`）。

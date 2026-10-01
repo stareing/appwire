@@ -20,7 +20,7 @@ export interface CoreConfig {
   token?: string
   launchToken?: string
   reconnect?: { initialDelayMs?: number; maxDelayMs?: number; multiplier?: number }
-  heartbeat?: { intervalMs?: number; timeoutMs?: number; hiddenTimeoutMs?: number }
+  heartbeat?: { mode?: 'auto' | 'always' | 'off'; intervalMs?: number; timeoutMs?: number; hiddenTimeoutMs?: number }
   maxConcurrentCalls?: number
   resourceUpdateThrottleMs?: number
   /** App 总览，随 `app/hello` 发送。 */
@@ -29,6 +29,8 @@ export interface CoreConfig {
   handshakeTimeoutMs?: number
   /** 生命周期策略，缺省 `persistent`（spec/lifecycle.md 第 3 节）。 */
   lifecycle?: CoreLifecycle
+  /** 到 Host 的传输类别（spec/lifecycle.md 第 11 节），缺省未知（按远程处理）。 */
+  transport?: 'ipc' | 'loopback' | 'remote'
 }
 
 export interface CoreWakeDescriptor {
@@ -44,6 +46,8 @@ export interface CoreLifecycle {
   graceMs?: number
   residency?: 'keep' | 'exit-when-idle' | 'exit-always'
   wake?: CoreWakeDescriptor
+  hostAbsentRetries?: number
+  legacyTimers?: boolean
 }
 
 export type WakeReason = 'os-activation' | 'app' | 'visible' | 'cold-start'

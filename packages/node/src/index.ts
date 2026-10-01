@@ -26,6 +26,7 @@ export type {
   HoldHandle,
   InputDefinition,
   LifecycleMode,
+  HeartbeatMode,
   LifecycleOptions,
   JsonSchema,
   Logger,

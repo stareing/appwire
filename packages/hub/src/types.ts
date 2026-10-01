@@ -111,6 +111,10 @@ export interface HubConfig {
   dormantReplacedByNewInstance?: boolean
   /** App 未运行且清单无显式 wake 时，是否由清单 launch 推导唤醒方式并冷启动，缺省 false。 */
   wakeFromLaunch?: boolean
+  /** 每 App 每分钟最多唤醒次数（spec/lifecycle.md 第 12 节），缺省 6；0 不限。超出时调用以 `LAUNCH_FAILED`（`data.code = 'WAKE_RATE_LIMITED'`）结束。 */
+  wakeRateLimit?: number
+  /** 回退到旧心跳：对所有 App 连接发 ping 并按无消息断开（spec/lifecycle.md 第 11 节），缺省 false。 */
+  legacyHeartbeat?: boolean
   /** 唤醒器，缺省 `system`。 */
   waker?: WakerConfig
   // ---- 渐进暴露（spec/hub-api.md 3.7）----
@@ -311,6 +315,29 @@ export type InstanceState = 'connected' | 'dormant' | 'waking'
 
 export interface InstanceStatus extends InstanceInfo {
   state: InstanceState
+  /** 功耗观测（spec/lifecycle.md 第 12 节）；Hub 尚无该实例的计数时缺省。 */
+  power?: InstancePower
+}
+
+/** 已连接实例当前不能休眠的原因（Hub 可见部分；App 的 hold() 只有 SDK 知道）。 */
+export type AwakeReason = 'persistent' | 'call' | 'lease' | 'subscription' | 'wake-pending'
+
+/** 每实例功耗观测（跨重连与休眠保留，Hub 重启清零）。 */
+export interface InstancePower {
+  /** 回连次数：Hub 启动以来完成握手的次数减 1。 */
+  reconnects: number
+  /** 以该休眠实例为目标实际发出的唤醒激活次数。 */
+  wakes: number
+  /** 累计在线秒数（含当前连接）。 */
+  onlineSecs: number
+  /** Hub 发出的 ping 与收到 SDK 的 ping 之和。 */
+  heartbeats: number
+  /** SDK 声明的心跳间隔：0 = 不发心跳（本地传输）；缺省 = 旧 SDK。 */
+  heartbeatMs?: number
+  /** SDK 声明的生命周期模式；缺省 = 未声明。 */
+  lifecycleMode?: 'persistent' | 'idle' | 'on-demand'
+  /** 当前不能休眠的原因；休眠实例与可以休眠时缺省。 */
+  awakeReasons?: AwakeReason[]
 }
 
 /** 最近一次错误（握手被拒、配对被拒、唤醒失败 / 超时；上游为进程错误）。 */
@@ -330,6 +357,8 @@ export interface AppStatus {
   /** 在线实例在前，其后为休眠实例；上游为空。 */
   instances: InstanceStatus[]
   lastError?: LastError
+  /** Hub 启动以来为该 App 实际发出的唤醒激活次数（含冷启动；上游为 0）。旧 Hub 缺省。 */
+  wakes?: number
 }
 
 /** 一条 SDK 诊断上报（`app/diagnostic`）。 */

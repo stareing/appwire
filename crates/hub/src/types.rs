@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use app_mcp_protocol::{Activation, ErrorKind, Risk, ToolError, Visibility};
+use app_mcp_protocol::{Activation, ErrorKind, LifecycleMode, Risk, ToolError, Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -414,6 +414,48 @@ pub struct InstanceStatus {
     #[serde(flatten)]
     pub info: InstanceInfo,
     pub state: InstanceState,
+    /// 功耗观测（spec/lifecycle.md 第 12 节）；Hub 尚无该实例的计数时为 `None`。spec 之外的补充字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power: Option<InstancePower>,
+}
+
+/// 已连接实例当前不能休眠的原因中 Hub 可见的部分（App 的 `hold()` 只有 SDK 知道，不在其中）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AwakeReason {
+    /// SDK 声明为 `persistent` 模式（不休眠）。
+    Persistent,
+    /// 有已路由到该实例、尚未完成的调用 / 资源读取。
+    Call,
+    /// 有未到期的租约（`app/lease`）。
+    Lease,
+    /// Host 订阅了该实例的资源。
+    Subscription,
+    /// 有待派发给该实例的唤醒。
+    WakePending,
+}
+
+/// 每实例功耗观测（按 `(appId, instanceId)` 计数，跨重连与休眠保留；Hub 重启清零）。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct InstancePower {
+    /// 回连次数：Hub 启动以来该实例完成握手的次数减 1。
+    pub reconnects: u64,
+    /// 以该休眠实例为目标实际发出的唤醒激活次数（冷启动唤醒只计入 [`AppStatus::wakes`]）。
+    pub wakes: u64,
+    /// 累计在线秒数（含当前连接）。
+    pub online_secs: u64,
+    /// 心跳次数：Hub 发出的 `ping` 与收到 SDK 的 `ping` 之和。
+    pub heartbeats: u64,
+    /// SDK 在 `app/hello` 中声明的心跳间隔：`0` = 不发心跳（本地传输）；`None` = 旧 SDK（双向心跳）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heartbeat_ms: Option<u64>,
+    /// SDK 声明的生命周期模式；`None` = 未声明（旧 SDK）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_mode: Option<LifecycleMode>,
+    /// 已连接实例当前不能休眠的原因（Hub 可见部分）；休眠实例与可以休眠时为空。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub awake_reasons: Vec<AwakeReason>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -428,6 +470,9 @@ pub struct AppStatus {
     /// 最近一次错误（握手被拒、唤醒失败 / 超时；上游为进程错误）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<LastError>,
+    /// Hub 启动以来为该 App 实际发出的唤醒激活次数（含冷启动；上游为 0）。spec 之外的补充字段。
+    #[serde(default)]
+    pub wakes: u64,
 }
 
 /// 最近一次错误。

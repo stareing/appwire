@@ -364,12 +364,28 @@ describe('资源与 scope', () => {
 describe('生命周期', () => {
   it('lifecycle 与 connectTimeoutMs 传给原生客户端', () => {
     const { native } = setup({
-      lifecycle: { mode: 'idle', idleTimeoutMs: 1000, residency: 'exit-when-idle', wake: { kind: 'uri', target: 'demo://' } },
+      lifecycle: {
+        mode: 'idle',
+        idleTimeoutMs: 1000,
+        residency: 'exit-when-idle',
+        wake: { kind: 'uri', target: 'demo://' },
+        hostAbsentRetries: 5,
+        legacyTimers: true,
+      },
       connectTimeoutMs: 2000,
+      heartbeat: 'off',
     })
     expect(native.config).toMatchObject({
-      lifecycle: { mode: 'idle', idleTimeoutMs: 1000, residency: 'exit-when-idle', wake: { kind: 'uri', target: 'demo://' } },
+      lifecycle: {
+        mode: 'idle',
+        idleTimeoutMs: 1000,
+        residency: 'exit-when-idle',
+        wake: { kind: 'uri', target: 'demo://' },
+        hostAbsentRetries: 5,
+        legacyTimers: true,
+      },
       connectTimeoutMs: 2000,
+      heartbeat: 'off',
     })
   })
 

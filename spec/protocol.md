@@ -201,9 +201,12 @@ interface HelloParams {
   resumeToken?: string     // 上次 app/sleep 被接受时 Host 返回的恢复令牌（第 8 节）
   toolsHash?: string       // 当前工具与资源定义的摘要，与 resumeToken 一起发送（第 8.4 节）
   wakeReason?: WakeReason  // 本次连接的原因
+  heartbeatMs?: number     // SDK 心跳声明（5.5）：0 = 不发心跳、靠连接断开感知；> 0 = 每隔该毫秒数发 ping；省略 = 旧行为
+  lifecycleMode?: LifecycleMode // SDK 的生命周期模式（8.5），供 Host 观测；省略 = 未知
 }
 
 type WakeReason = "os-activation" | "app" | "visible" | "cold-start"
+type LifecycleMode = "persistent" | "idle" | "on-demand"
 
 interface AppOverview {
   summary: string          // 一句话简介，≤ 100 字符
@@ -347,10 +350,16 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 
 ### 5.5 心跳
 
-- `Connected` 状态下，每隔 `heartbeat.intervalMs`（默认 15s）发送 `ping`。
+- 是否发心跳由 `heartbeat.mode`（`auto` 默认 / `always` / `off`）与驱动层告知的传输类别决定（spec/lifecycle.md 第 11 节 A3）：
+  `auto` 下本地 IPC 与桌面本机回环（含网页到本机回环 / 共享连接）**不发**，靠连接断开（EOF / RST）感知；远程、沙箱平台上的回环
+  （`adb reverse` 等转发）与未知传输发。`lifecycle.legacyTimers` 恢复旧行为（一律发）。
+- SDK 在 `app/hello.heartbeatMs` 中声明本连接的心跳：不发为 `0`，发则为间隔；`legacyTimers` 时不带该字段。
+- 发心跳时：`Connected` 状态下，每隔 `heartbeat.intervalMs`（默认 15s）发送 `ping`。
 - 超过超时时间（可见时 `timeoutMs` 默认 10s；隐藏或冻结时 `hiddenTimeoutMs` 默认 120s）
   未收到响应，视为断开：关闭连接并进入重连。
 - 收到 Host 的 `ping` 请求，立即返回 `{}`。收到任何消息都不重置心跳计时，只有 `ping` 的响应才算。
+- 挂起保护：`ping` 的响应截止时刻之后又过了一整个超时才被调度（进程被冻结 / 挂起、页面计时器被限流），不判断开，
+  重新发 `ping` 计时。
 
 ### 5.6 重连
 
@@ -358,6 +367,10 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
   延迟为 `min(initialDelayMs * multiplier^n, maxDelayMs)`（默认 500ms 起，×2，最大 30s），
   n 为自上次成功握手以来的重试次数。
 - 到期后请求驱动层重新连接。
+- Host 不在：`idle` / `on-demand` 模式下连续 `lifecycle.hostAbsentRetries`（默认 3，0 = 不限）次以"Host 不在"类错误码
+  （目前只有 `HOST_NOT_RUNNING`，`ConnectionErrorCode::means_host_absent`）建立连接失败，进入 `Dormant` 而不是 `Backoff`，
+  不再重试；之后与休眠相同，由页面 / 界面重新可见、`wake()` / `connectNow()` 或 Host 唤醒回连。其他错误码打断"连续"。
+  `persistent` 与 `legacyTimers` 不受影响（spec/lifecycle.md 第 11 节 A2）。
 
 ### 5.7 其他
 
@@ -391,8 +404,12 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 - 同一 `appId` 可有多个实例（`instanceId` 区分）；同一 `instanceId` 重复连接时，新连接替换旧连接。
 - 连接上的第一条消息为 `app/mux` 时进入多路复用模式（第 9 节），此后本节规则对每个通道分别适用。
 - 向 SDK 发送 `tools/invoke` 前，已按 inputSchema 校验参数；默认 `timeoutMs` 为 30000。
-- 每隔 15s 向 SDK 发送 `ping`；45s 内没有收到 SDK 的任何消息则关闭连接。
-  实例处于 `hidden` / `frozen` 时（浏览器会限流后台页面的定时器），该超时放宽为 180s。
+- 存活判断按 SDK 在 `app/hello.heartbeatMs` 中的声明（spec/lifecycle.md 第 11 节 A3）：
+  - 省略（旧 SDK 或 `legacyTimers`）或 Host 配置 `legacy_heartbeat`：每隔 15s 向 SDK 发送 `ping`；45s 内没有收到 SDK 的任何消息则关闭连接。
+    实例处于 `hidden` / `frozen` 时（浏览器会限流后台页面的定时器），该超时放宽为 180s。
+  - `0`（本地传输，SDK 不发心跳）：Host 不发 `ping`，握手完成后**不做**无消息断开，只按连接断开处理；半开连接由下次派发调用的超时发现。
+  - 大于 0（远程，SDK 单向心跳）：Host 不发 `ping`；无消息断开的超时取 `max(上面按可见性的值, 3 × heartbeatMs)`。
+  - 握手完成前（含等待配对）沿用原规则。
 - 返回 `rejected` 的握手结果发送后，Host 关闭连接。
 - TCP 只接受来自回环地址的连接（且 `Origin` 满足上述规则）；本地 IPC 只接受同一用户的进程（1.4）。
 - `resources/read` 的 `contents` 转换为 MCP 资源内容时：字符串且 `mimeType` 不是 JSON 类型时按原文作为文本；
@@ -462,7 +479,7 @@ Host 对总览做长度截断（`summary` 100 字符、`body` 2000 字符，超�
 ### 8.2 `app/lease`（Host → SDK，通知）
 
 `{ ttlMs }`：Host 预计还会调用本实例（如 MCP 会话仍活跃、模型刚调用过），在 ttl 内不要休眠；`ttlMs: 0` 取消。
-SDK 取当前租约与新值中较晚的截止时刻。租约结束后重新开始空闲计时。Host 可在每次调用完成后发送。
+SDK 取当前租约与新值中较晚的截止时刻；收到租约时重新开始空闲计时，休眠时刻 = max(空闲起点 + 空闲时长, 租约到期)（8.5）。Host 可在每次调用完成后发送。
 
 ### 8.3 握手扩展与快速恢复
 
@@ -491,6 +508,7 @@ SDK 取当前租约与新值中较晚的截止时刻。租约结束后重新开�
 
 ### 8.5 SDK 行为
 
+- 休眠时刻 = max(空闲起点 + 空闲时长, 租约到期)：租约与空闲计时并行（`legacyTimers` 时为旧规则：租约到期后才开始计空闲时长）。
 - 模式：`persistent`（默认，不休眠）/ `idle`（启动即连接，空闲 `idleTimeoutMs` 后休眠）/
   `on-demand`（启动时不连接，进入 `Dormant`；被唤醒或 `connectNow()` 时连接，空闲 `graceMs` 后休眠）。
   隐藏 / 冻结时使用 `min(模式超时, hiddenIdleTimeoutMs)`。
@@ -587,11 +605,15 @@ SDK 的连接状态（`Backoff` / `Rejected` / `HostMismatch`，网页另有 `bl
 | `IPC_ENDPOINT_BUSY` | host | `serve` / `doctor` | 本地 IPC 端点被占用（另一个配置目录的 Host） | 停止它，或 `--ipc-endpoint` 换端点 |
 | `IPC_PATH_TOO_LONG` | host | `serve` / Hub 启动 / `doctor`；原生 SDK `backoff` | 本地 IPC 端点超过系统上限（Unix 套接字路径 `sockaddr_un.sun_path`：Linux 107 字节、macOS 103 字节；Windows 命名管道完整名：256 字符） | `--ipc-endpoint unix:<较短的绝对路径>` / `pipe:\\.\pipe\<较短名称>`（嵌入式 Hub 为 `HubConfig.ipc_endpoint`，SDK 为 `APP_MCP_ENDPOINT` / `host_url`），或缩短 `XDG_RUNTIME_DIR` / `--home` 所在路径 |
 | `SDK_INIT_FAILED` | sdk | 网页 SDK `rejected` | SDK 本地初始化失败（WASM 核心加载失败、创建核心失败），没有连接 Host | 检查 `wasmUrl` 能否加载、CSP 是否允许 WebAssembly（`'wasm-unsafe-eval'`）与控制台错误 |
+| `WAKE_RATE_LIMITED` | wake | Hub 调用结果（工具错误 `LAUNCH_FAILED` 的 `data.code`）、`/status` 最近错误 | 该 App 最近一分钟内被唤醒的次数已达上限（`HubConfig.wake_rate_limit`，spec/lifecycle.md 第 12 节），本次调用不再唤醒 | 稍后重试（`data.retryAfterMs`），或让用户打开该 App；频繁出现说明 App 刚唤醒就休眠，检查其空闲时长 / 租约，必要时调大 `--wake-rate-limit` |
 
 - Host 拒绝握手时在 `HelloResult.code` / `PairingResultParams.code` 中给出码（`PROTOCOL_INCOMPATIBLE`、`ORIGIN_NOT_ALLOWED`、
   `INVALID_HELLO`、`PAIRING_REJECTED`）；旧 Host 不带时 SDK 用 `REJECTED`。
 - 原生 SDK 的驱动层把建立连接时的系统错误归类（`app_mcp_protocol::diagnostic::connect_error_code`）：连接被拒绝 / 不存在 →
-  `HOST_NOT_RUNNING`，超时 → `CONNECT_TIMEOUT`，权限 → `IPC_PERMISSION_DENIED`，其他 → `CONNECT_FAILED`。
+  `HOST_NOT_RUNNING`，超时 → `CONNECT_TIMEOUT`，权限 → `IPC_PERMISSION_DENIED`，其他 → `CONNECT_FAILED`。另外，TCP 已接受但
+  WebSocket 握手未完成即被关闭 / 重置（`adb reverse` / `hdc rport` 等转发在远端没有监听者时的表现）也归为 `HOST_NOT_RUNNING`
+  （`crates/native` `connect_issue`）。网页驱动层的连接在打开前失败、且不属于浏览器拦截（`BLOCKED_*`）时归为 `HOST_NOT_RUNNING`
+  （浏览器不给出原因；此前为 `CONNECT_FAILED`）。
 - Unix 域套接字路径在绑定 / 连接前按 `app_mcp_protocol::endpoint::check_unix_socket_path` 检查长度（上限
   `MAX_UNIX_SOCKET_PATH_BYTES`）：Hub 启动返回 `InvalidInput`，错误内含 `ConnectionIssue`（`IPC_PATH_TOO_LONG`，说明带实际长度、
   上限与建议，可经 `io::Error::get_ref` 取出）；原生 SDK 进入带该码的 `backoff`。

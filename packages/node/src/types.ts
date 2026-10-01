@@ -100,6 +100,9 @@ export interface WakeDescriptor {
   background?: boolean
 }
 
+/** 心跳策略（spec/lifecycle.md 第 11 节）。 */
+export type HeartbeatMode = 'auto' | 'always' | 'off'
+
 export interface LifecycleOptions {
   /** 缺省 `'persistent'`。 */
   mode?: LifecycleMode
@@ -116,6 +119,13 @@ export interface LifecycleOptions {
   residency?: Residency
   /** 本实例的唤醒描述；缺省时 Host 回退到清单 `launch`。 */
   wake?: WakeDescriptor
+  /**
+   * `idle` / `on-demand` 下连续多少次以"Host 不在"（`HOST_NOT_RUNNING`）连接失败后停止重连、进入 `dormant`，
+   * 等可见、`wake()` 或 Host 唤醒再连接（spec/lifecycle.md 第 11 节）。默认 3；0 = 一直重连。
+   */
+  hostAbsentRetries?: number
+  /** 回退到 4e 之前的定时器行为（租约到期后才计空闲、Host 不在时一直重连、双向心跳）。默认 false。 */
+  legacyTimers?: boolean
 }
 
 /** 阻止自动休眠的持有（{@link AppMcp.hold}、{@link ToolContext.hold}）。 */
@@ -192,6 +202,11 @@ export interface NodeAppMcpOptions {
   lifecycle?: LifecycleOptions
   /** 建立 WebSocket 连接的超时（毫秒），默认 5000。 */
   connectTimeoutMs?: number
+  /**
+   * 心跳策略（spec/lifecycle.md 第 11 节）。默认 `'auto'`：本地 IPC 与本机回环不发心跳（靠连接断开感知），
+   * 远程端点发；`'always'` / `'off'` 强制。
+   */
+  heartbeat?: HeartbeatMode
   /**
    * 已休眠且 `lifecycle.residency` 允许退出进程时调用。SDK **不会**自行退出进程：
    * App 在这里自行 `process.exit()`（Electron 为 `app.quit()`），或什么都不做。

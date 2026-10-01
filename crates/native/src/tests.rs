@@ -301,3 +301,22 @@ fn host_mismatch_state_and_expected_user() {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     assert!(core.expected_host_user.is_some());
 }
+
+#[test]
+fn transport_follows_endpoint() {
+    use app_mcp_protocol::platform::Target;
+    let kind = |url: &str| {
+        let mut c = config();
+        c.host_url = url.to_owned();
+        build_core_config(c).map(|(cfg, _)| cfg.transport)
+    };
+    let loopback = if Target::CURRENT.is_app_sandboxed() { TransportKind::Remote } else { TransportKind::Loopback };
+    assert_eq!(kind("ws://127.0.0.1:7717/app").ok(), Some(loopback));
+    assert_eq!(kind("ws://192.168.0.2:7717/app").ok(), Some(TransportKind::Remote));
+    let ipc = if cfg!(windows) { r"pipe:\\.\pipe\app-mcp-x" } else { "unix:/tmp/hub.sock" };
+    assert_eq!(kind(ipc).ok(), Some(TransportKind::Ipc));
+    // 心跳策略原样传给核心
+    let mut c = config();
+    c.heartbeat = HeartbeatMode::Always;
+    assert_eq!(build_core_config(c).map(|(cfg, _)| cfg.heartbeat.mode).ok(), Some(HeartbeatMode::Always));
+}

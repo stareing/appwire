@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use app_mcp_manifest::is_reserved_app_id;
 use app_mcp_protocol::{
@@ -27,7 +28,7 @@ use tokio::time::{Instant, interval_at, sleep_until};
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 use crate::connection::{Connection, Outgoing};
-use crate::hub::HubShared;
+use crate::hub::{HubShared, lock};
 use crate::lifecycle::SLEEP_RETRY_AFTER_MS;
 use crate::registry::{DormantInstance, NewInstance, client_kind_str};
 use crate::types::{DiagnosticReport, HubEvent, PairingRequest};
@@ -66,6 +67,46 @@ struct Registered {
     instance_id: String,
     /// `app/hello.launchToken`：唤醒令牌（用于匹配等待中的唤醒）。
     launch_token: Option<String>,
+    /// `app/hello.heartbeatMs`：SDK 的心跳声明（spec/lifecycle.md 第 11 节）；`None` = 旧 SDK。
+    heartbeat_ms: Option<u64>,
+}
+
+/// 声明了 `heartbeatMs > 0` 的 SDK：无消息断开至少等待的心跳间隔数。
+const SDK_HEARTBEAT_MISSES: u32 = 3;
+
+/// 握手后的心跳方式（spec/lifecycle.md 第 11 节 A3）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeartbeatMode {
+    /// 旧 SDK（未声明 `heartbeatMs`）或 `HubConfig::legacy_heartbeat`：Hub 发 `ping`，按无消息断开。
+    Legacy,
+    /// SDK 不发心跳（本地传输）：Hub 也不发，不做无消息断开，靠连接断开（EOF）感知。
+    Off,
+    /// SDK 单向心跳：Hub 不发 `ping`，无消息断开取 `max(配置值, 3 × 间隔)`。
+    Sdk(Duration),
+}
+
+impl HeartbeatMode {
+    fn of(declared: Option<u64>, legacy: bool) -> Self {
+        match declared {
+            _ if legacy => Self::Legacy,
+            None => Self::Legacy,
+            Some(0) => Self::Off,
+            Some(ms) => Self::Sdk(Duration::from_millis(ms)),
+        }
+    }
+
+    /// 握手后的无消息断开时长；`None` = 不做无消息断开。
+    fn idle_timeout(self, configured: Duration) -> Option<Duration> {
+        match self {
+            Self::Legacy => Some(configured),
+            Self::Off => None,
+            Self::Sdk(interval) => Some(configured.max(interval.saturating_mul(SDK_HEARTBEAT_MISSES))),
+        }
+    }
+
+    fn hub_pings(self) -> bool {
+        self == Self::Legacy
+    }
 }
 
 /// 等待 [`crate::PairingHandler`] 答复的握手。
@@ -350,11 +391,18 @@ where
                 Some(Visibility::Hidden | Visibility::Frozen)
             )
         });
-        let idle = if background {
+        let configured = if background {
             cfg.hidden_idle_timeout
         } else {
             cfg.idle_timeout
         };
+        // 握手前一律按配置值；握手后按 SDK 的心跳声明（spec/lifecycle.md 第 11 节）。
+        let mode = registered.as_ref().map(|r| HeartbeatMode::of(r.heartbeat_ms, cfg.legacy_heartbeat));
+        let idle = match mode {
+            None => Some(configured),
+            Some(m) => m.idle_timeout(configured),
+        };
+        let hub_pings = mode.is_some_and(HeartbeatMode::hub_pings);
         tokio::select! {
             text = inbound.next() => {
                 let Some(text) = text else { break };
@@ -392,11 +440,15 @@ where
                 last_rx = Instant::now();
             }
             // 等待配对确认期间 SDK 不发心跳，暂停空闲超时（配对本身有 pairing_timeout）。
-            _ = sleep_until(last_rx + idle), if pairing_rx.is_none() => {
-                tracing::info!(cid = %conn.cid, background, "{} 秒内没有收到消息，断开连接", idle.as_secs());
+            _ = sleep_until(last_rx + idle.unwrap_or_default()), if pairing_rx.is_none() && idle.is_some() => {
+                let secs = idle.unwrap_or_default().as_secs();
+                tracing::info!(cid = %conn.cid, background, "{secs} 秒内没有收到消息，断开连接");
                 break;
             }
-            _ = ping.tick(), if registered.is_some() => {
+            _ = ping.tick(), if hub_pings => {
+                if let Some(r) = &registered {
+                    lock(&shared.power).heartbeat(&r.app_id, &r.instance_id, Instant::now());
+                }
                 // 心跳：响应由 Connection 丢弃；存活判断只看是否收到消息。
                 if let Ok((id, rx)) = conn.start_request(method::PING, Value::Null) {
                     drop(rx);
@@ -416,6 +468,9 @@ where
     }
 
     // 清理
+    if let Some(reg) = &registered {
+        lock(&shared.power).disconnected(&reg.app_id, &reg.instance_id, conn.id, Instant::now());
+    }
     if let Some(reg) = registered {
         let removed = shared.registry().remove_instance(&reg.app_id, conn.id);
         if removed.is_some() {
@@ -798,16 +853,26 @@ fn register_instance_with(
     });
     shared.mark_tools_changed();
     shared.mark_resources_changed();
+    lock(&shared.power).connected(
+        &hello.app_id,
+        &hello.instance_id,
+        conn.id,
+        hello.heartbeat_ms,
+        hello.lifecycle_mode,
+        Instant::now(),
+    );
     Registered {
         app_id: hello.app_id,
         instance_id: hello.instance_id,
         launch_token: hello.launch_token.filter(|t| !t.is_empty()),
+        heartbeat_ms: hello.heartbeat_ms,
     }
 }
 
 fn handle_request(shared: &Arc<HubShared>, conn: &Arc<Connection>, reg: &Registered, req: Request) {
     match req.method.as_str() {
         method::PING => {
+            lock(&shared.power).heartbeat(&reg.app_id, &reg.instance_id, Instant::now());
             conn.send(&Message::result(req.id, json!({})));
         }
         method::SLEEP => {

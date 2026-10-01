@@ -46,6 +46,8 @@ export interface NativeLifecycleConfig {
   graceMs?: number
   residency?: 'keep' | 'exit-when-idle' | 'exit-always'
   wake?: { kind: string; target?: string; background?: boolean }
+  hostAbsentRetries?: number
+  legacyTimers?: boolean
 }
 
 /** 阻止自动休眠的持有；`release()` 幂等。 */
@@ -67,6 +69,7 @@ export interface NativeClientConfig {
   overview?: { summary: string; body?: string; locale?: string }
   lifecycle?: NativeLifecycleConfig
   connectTimeoutMs?: number
+  heartbeat?: 'auto' | 'always' | 'off'
 }
 
 export interface NativeToolSpec {

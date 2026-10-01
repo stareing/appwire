@@ -20,7 +20,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use app_mcp_native::{
-    Activation, AppOverview, ClientKind, ClientListener, ErrorKind, LifecycleMode, LifecyclePolicy,
+    Activation, AppOverview, ClientKind, ClientListener, ErrorKind, HeartbeatMode, LifecycleMode, LifecyclePolicy,
     NativeClient, NativeConfig, Residency, ResourceSpec, Risk, SleepReason, ToolSpec, Visibility,
     WakeDescriptor, WakeKind, WakeReason,
 };
@@ -90,6 +90,12 @@ pub struct AmClientOptions {
     pub lifecycle: *const AmLifecycle,
     pub connect_timeout_ms: u32,
     pub on_idle_exit: Option<AmIdleExitFn>,
+    /// v7（4e，spec/lifecycle.md 第 11 节）：`AmHeartbeatMode`，0 = AUTO。
+    pub heartbeat: c_int,
+    /// v7：连续多少次"Host 不在"后转休眠；0 = 默认（3），负数 = 一直重连。
+    pub host_absent_retries: i32,
+    /// v7：回退到 4e 之前的定时器行为。
+    pub legacy_timers: bool,
 }
 
 #[repr(C)]
@@ -217,6 +223,15 @@ fn sleep_reason_from(v: c_int) -> FfiResult<SleepReason> {
     }
 }
 
+fn heartbeat_mode_from(v: c_int) -> FfiResult<HeartbeatMode> {
+    match v {
+        0 => Ok(HeartbeatMode::Auto),
+        1 => Ok(HeartbeatMode::Always),
+        2 => Ok(HeartbeatMode::Off),
+        _ => Err(FfiError::invalid_argument(format!("非法的 heartbeat：{v}"))),
+    }
+}
+
 unsafe fn convert_lifecycle(l: &AmLifecycle) -> FfiResult<LifecyclePolicy> {
     let wake = match wake_kind_from(l.wake_kind)? {
         None => None,
@@ -234,6 +249,7 @@ unsafe fn convert_lifecycle(l: &AmLifecycle) -> FfiResult<LifecyclePolicy> {
         grace_ms: l.grace_ms,
         residency: residency_from(l.residency)?,
         wake,
+        ..LifecyclePolicy::default()
     })
 }
 
@@ -243,6 +259,9 @@ struct OptionsView {
     lifecycle: *const AmLifecycle,
     connect_timeout_ms: u32,
     on_idle_exit: Option<AmIdleExitFn>,
+    heartbeat: c_int,
+    host_absent_retries: i32,
+    legacy_timers: bool,
 }
 
 /// 按 `struct_size` 读取扩展选项：只读取完整包含在调用方结构体中的字段。
@@ -280,6 +299,15 @@ unsafe fn read_options(p: *const AmClientOptions) -> FfiResult<OptionsView> {
         size_of::<Option<AmIdleExitFn>>(),
     ) {
         view.on_idle_exit = unsafe { std::ptr::addr_of!((*p).on_idle_exit).read() };
+    }
+    if has(offset_of!(AmClientOptions, heartbeat), size_of::<c_int>()) {
+        view.heartbeat = unsafe { std::ptr::addr_of!((*p).heartbeat).read() };
+    }
+    if has(offset_of!(AmClientOptions, host_absent_retries), size_of::<i32>()) {
+        view.host_absent_retries = unsafe { std::ptr::addr_of!((*p).host_absent_retries).read() };
+    }
+    if has(offset_of!(AmClientOptions, legacy_timers), size_of::<bool>()) {
+        view.legacy_timers = unsafe { std::ptr::addr_of!((*p).legacy_timers).read() };
     }
     Ok(view)
 }
@@ -479,6 +507,13 @@ pub unsafe extern "C" fn am_client_new_ex(
         if opts.connect_timeout_ms != 0 {
             cfg.connect_timeout_ms = opts.connect_timeout_ms;
         }
+        cfg.heartbeat = heartbeat_mode_from(opts.heartbeat)?;
+        match opts.host_absent_retries {
+            0 => {}
+            n if n < 0 => cfg.lifecycle.host_absent_retries = 0,
+            n => cfg.lifecycle.host_absent_retries = n.unsigned_abs(),
+        }
+        cfg.lifecycle.legacy_timers = opts.legacy_timers;
         let listener: Option<Arc<dyn ClientListener>> = match listener {
             Some(l) if l.has_any() => Some(Arc::new(l)),
             _ => None,

@@ -123,6 +123,27 @@ pub enum LifecycleMode {
     OnDemand,
 }
 
+/// 心跳策略（spec/lifecycle.md 第 11 节）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum HeartbeatMode {
+    /// 按传输：本地 IPC / 桌面本机回环不发心跳，远程（含 Android / iOS 上经 adb reverse 的回环）发。
+    Auto,
+    /// 总是发心跳。
+    Always,
+    /// 从不发心跳。
+    Off,
+}
+
+impl From<HeartbeatMode> for native::HeartbeatMode {
+    fn from(v: HeartbeatMode) -> Self {
+        match v {
+            HeartbeatMode::Auto => native::HeartbeatMode::Auto,
+            HeartbeatMode::Always => native::HeartbeatMode::Always,
+            HeartbeatMode::Off => native::HeartbeatMode::Off,
+        }
+    }
+}
+
 /// 休眠后的进程驻留策略。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum Residency {
@@ -441,6 +462,9 @@ pub struct ClientConfig {
     /// 建立连接的超时（毫秒）。为空时为 5000。
     #[uniffi(default = None)]
     pub connect_timeout_ms: Option<u32>,
+    /// 心跳策略（spec/lifecycle.md 第 11 节）。为空时为 `Auto`。
+    #[uniffi(default = None)]
+    pub heartbeat: Option<HeartbeatMode>,
 }
 
 /// 本实例的唤醒描述，随 `app/sleep` 上报。
@@ -486,6 +510,12 @@ pub struct LifecyclePolicy {
     /// 为空时不上报（Host 回退到清单 `launch`）。
     #[uniffi(default = None)]
     pub wake: Option<WakeDescriptor>,
+    /// `Idle` / `OnDemand` 下连续多少次"Host 不在"后停止重连、进入 `Dormant`；0 = 一直重连（spec/lifecycle.md 第 11 节）。
+    #[uniffi(default = 3)]
+    pub host_absent_retries: u32,
+    /// 回退到 4e 之前的定时器行为（串行租约、无限重连、双向心跳）。
+    #[uniffi(default = false)]
+    pub legacy_timers: bool,
 }
 
 impl From<LifecyclePolicy> for native::LifecyclePolicy {
@@ -498,6 +528,8 @@ impl From<LifecyclePolicy> for native::LifecyclePolicy {
             grace_ms: p.grace_ms,
             residency: p.residency.map_or(d.residency, Into::into),
             wake: p.wake.map(Into::into),
+            host_absent_retries: p.host_absent_retries,
+            legacy_timers: p.legacy_timers,
         }
     }
 }
@@ -553,6 +585,9 @@ impl From<ClientConfig> for native::NativeConfig {
         }
         if let Some(ms) = c.connect_timeout_ms {
             n.connect_timeout_ms = ms;
+        }
+        if let Some(h) = c.heartbeat {
+            n.heartbeat = h.into();
         }
         n
     }
@@ -1049,6 +1084,7 @@ mod tests {
             overview: None,
             lifecycle: None,
             connect_timeout_ms: None,
+            heartbeat: None,
         };
         let n: native::NativeConfig = cfg.clone().into();
         assert_eq!(n, native::NativeConfig::new("shop", "Shop"));
@@ -1131,8 +1167,12 @@ mod tests {
             grace_ms: 10_000,
             residency: None,
             wake: None,
+            host_absent_retries: 3,
+            legacy_timers: false,
         };
         assert_eq!(native::LifecyclePolicy::from(p.clone()), native::LifecyclePolicy::default());
+        let n: native::LifecyclePolicy = LifecyclePolicy { host_absent_retries: 0, legacy_timers: true, ..p.clone() }.into();
+        assert_eq!((n.host_absent_retries, n.legacy_timers), (0, true));
         let n: native::LifecyclePolicy = LifecyclePolicy {
             mode: Some(LifecycleMode::Idle),
             hidden_idle_timeout_ms: 0,
@@ -1184,8 +1224,11 @@ mod tests {
                 grace_ms: 10_000,
                 residency: None,
                 wake: None,
+                host_absent_retries: 3,
+                legacy_timers: false,
             }),
             connect_timeout_ms: Some(1000),
+            heartbeat: Some(HeartbeatMode::Off),
         };
         let client = AppMcpClient::new(cfg, None).expect("client");
         assert!(!client.handle_wake("not-a-wake".into()));

@@ -43,6 +43,10 @@ pub(crate) struct ConfigJson {
     pub dormant_ttl_ms: Option<u64>,
     pub dormant_replaced_by_new_instance: Option<bool>,
     pub wake_from_launch: Option<bool>,
+    /// 每 App 每分钟最多唤醒次数（spec/lifecycle.md 第 12 节），缺省 6；0 不限。
+    pub wake_rate_limit: Option<u32>,
+    /// 回退到旧心跳（spec/lifecycle.md 第 11 节），缺省 `false`。
+    pub legacy_heartbeat: Option<bool>,
     /// `"system"` / `"none"` / `{"exec": [...]}`（spec/hub-api.md 3.5）。
     pub waker: Option<WakerConfig>,
     /// 渐进暴露（spec/hub-api.md 3.7）。
@@ -77,6 +81,8 @@ impl Default for ConfigJson {
             dormant_ttl_ms: None,
             dormant_replaced_by_new_instance: None,
             wake_from_launch: None,
+            wake_rate_limit: None,
+            legacy_heartbeat: None,
             waker: None,
             tool_exposure: None,
             tool_exposure_threshold: None,
@@ -147,6 +153,12 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     }
     if let Some(v) = c.wake_from_launch {
         hub.wake_from_launch = v;
+    }
+    if let Some(v) = c.wake_rate_limit {
+        hub.wake_rate_limit = v;
+    }
+    if let Some(v) = c.legacy_heartbeat {
+        hub.legacy_heartbeat = v;
     }
     if let Some(w) = c.waker {
         hub.waker = w;
@@ -226,6 +238,14 @@ mod tests {
         assert_eq!(p.hub.dormant_ttl, Duration::from_millis(4000));
         assert!(!p.hub.dormant_replaced_by_new_instance);
         assert!(p.hub.wake_from_launch);
+    }
+
+    #[test]
+    fn power_fields() {
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert_eq!((p.hub.wake_rate_limit, p.hub.legacy_heartbeat), (hub::DEFAULT_WAKE_RATE_LIMIT, false));
+        let p = parse(Some(r#"{"wakeRateLimit": 0, "legacyHeartbeat": true}"#)).map_err(|e| e.message).expect("解析");
+        assert_eq!((p.hub.wake_rate_limit, p.hub.legacy_heartbeat), (0, true));
     }
 
     #[test]

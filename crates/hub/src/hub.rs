@@ -109,9 +109,11 @@ pub struct HubConfig {
     pub manifests: Vec<Manifest>,
     /// 额外允许的 Origin 模式（默认已允许 localhost / 127.0.0.1 任意端口）。
     pub allow_origins: Vec<String>,
-    /// 向 SDK 发送 `ping` 的间隔。
+    /// 向 SDK 发送 `ping` 的间隔。只对未声明 `heartbeatMs` 的旧 SDK（或 [`HubConfig::legacy_heartbeat`]）发送
+    /// （spec/lifecycle.md 第 11 节）。
     pub ping_interval: Duration,
-    /// 多久没收到 SDK 的任何消息就断开。
+    /// 多久没收到 SDK 的任何消息就断开。握手前一律适用；握手后：旧 SDK 照旧，声明 `heartbeatMs > 0` 的取
+    /// `max(本值, 3 × heartbeatMs)`，声明 `heartbeatMs: 0`（本地传输，靠连接断开感知）的不做无消息断开。
     pub idle_timeout: Duration,
     /// 实例最近上报的可见性为 `hidden` / `frozen` 时使用的放宽超时（后台标签页定时器会被限流）。
     pub hidden_idle_timeout: Duration,
@@ -133,6 +135,11 @@ pub struct HubConfig {
     pub wake_timeout: Duration,
     /// 唤醒令牌的有效期。
     pub wake_token_ttl: Duration,
+    /// 每个 App 每分钟最多实际发出的唤醒激活次数（spec/lifecycle.md 第 12 节）；`0` = 不限。默认
+    /// [`DEFAULT_WAKE_RATE_LIMIT`]。超出时调用返回 `LAUNCH_FAILED`（`data.code = "WAKE_RATE_LIMITED"`）。
+    pub wake_rate_limit: u32,
+    /// 回退到 4e 之前的心跳：忽略 SDK 的 `heartbeatMs` 声明，对所有连接发 `ping` 并按无消息断开。默认 `false`。
+    pub legacy_heartbeat: bool,
     /// 休眠实例记录的保留时长，过期后移除（工具不再列出）。
     pub dormant_ttl: Duration,
     /// 同一 appId 以新的实例 ID 连接时，移除该 App 的全部休眠记录。默认 `true`。
@@ -151,6 +158,13 @@ pub struct HubConfig {
 
 /// [`HubConfig::tool_exposure_threshold`] 的默认值。
 pub const DEFAULT_TOOL_EXPOSURE_THRESHOLD: usize = 40;
+
+/// [`HubConfig::wake_rate_limit`] 的默认值（每 App 每分钟）。
+///
+/// @why 一次唤醒约 5.6 ms SDK 线程 / 约 19 ms 进程 CPU（TASKS.md 4e0 真机测量）。正常调用经唤醒去重与 60 秒租约
+/// 合并为每分钟至多约 1 次；6 次给 `on-demand`（10 秒 grace）下的断续调用留余量，同时把唤醒 / 休眠循环
+/// 限制在约 0.1 秒 CPU / 分钟。
+pub const DEFAULT_WAKE_RATE_LIMIT: u32 = 6;
 
 impl Default for HubConfig {
     fn default() -> Self {
@@ -178,6 +192,8 @@ impl Default for HubConfig {
             lease_ttl: Duration::from_secs(60),
             wake_timeout: Duration::from_secs(15),
             wake_token_ttl: Duration::from_secs(60),
+            wake_rate_limit: DEFAULT_WAKE_RATE_LIMIT,
+            legacy_heartbeat: false,
             dormant_ttl: Duration::from_secs(24 * 60 * 60),
             dormant_replaced_by_new_instance: true,
             wake_from_launch: false,
@@ -250,6 +266,8 @@ pub struct HubShared {
     pub(crate) waker: Mutex<Option<Arc<dyn Waker>>>,
     /// 进行中的唤醒。
     pub(crate) wakes: Mutex<Vec<crate::lifecycle::PendingWake>>,
+    /// 功耗观测与唤醒速率（spec/lifecycle.md 第 12 节）。
+    pub(crate) power: Mutex<crate::power::PowerBook>,
 }
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -303,6 +321,7 @@ impl HubShared {
             export_names: Mutex::new(HashMap::new()),
             waker: Mutex::new(waker),
             wakes: Mutex::new(Vec::new()),
+            power: Mutex::new(crate::power::PowerBook::default()),
         }
     }
 
@@ -365,18 +384,30 @@ impl HubShared {
             let d = lock(&self.diagnostics);
             (d.last_errors.clone(), d.reports.iter().cloned().collect())
         };
-        let mut apps: Vec<AppStatus> = self
-            .registry()
-            .app_infos(&HashMap::new())
+        let infos = self.registry().app_infos(&HashMap::new());
+        let now = tokio::time::Instant::now();
+        let leased = self.leased_connections(now);
+        let mut apps: Vec<AppStatus> = infos
             .into_iter()
             .map(|a| {
+                let power = |inst: &str, connected: bool| {
+                    let mut p = lock(&self.power).instance(&a.app_id, inst, now)?;
+                    if connected {
+                        p.awake_reasons = self.awake_reasons(&a.app_id, inst, p.lifecycle_mode, &leased);
+                    }
+                    Some(p)
+                };
                 let is_waking = |inst: Option<&str>| {
                     waking.iter().any(|(app, i)| *app == a.app_id && (i.is_none() || i.as_deref() == inst))
                 };
                 let mut instances: Vec<InstanceStatus> = a
                     .instances
                     .into_iter()
-                    .map(|info| InstanceStatus { info, state: InstanceState::Connected })
+                    .map(|info| InstanceStatus {
+                        power: power(&info.instance_id, true),
+                        info,
+                        state: InstanceState::Connected,
+                    })
                     .collect();
                 instances.extend(a.dormant_instances.into_iter().map(|info| {
                     let state = if is_waking(Some(&info.instance_id)) {
@@ -384,7 +415,7 @@ impl HubShared {
                     } else {
                         InstanceState::Dormant
                     };
-                    InstanceStatus { info, state }
+                    InstanceStatus { power: power(&info.instance_id, false), info, state }
                 }));
                 let state = if a.connected {
                     AppState::Connected
@@ -397,6 +428,7 @@ impl HubShared {
                 };
                 AppStatus {
                     last_error: last_errors.get(&a.app_id).cloned(),
+                    wakes: lock(&self.power).app_wakes(&a.app_id),
                     app_id: a.app_id,
                     name: a.name,
                     kind: AppKind::App,
@@ -412,6 +444,7 @@ impl HubShared {
             state: if st.connected() { AppState::Connected } else { AppState::Disconnected },
             instances: Vec::new(),
             last_error: st.last_error.as_ref().map(|m| LastError { code: None, message: m.clone(), at_ms: 0 }),
+            wakes: 0,
         }));
         // 只出现过错误（如握手被拒）、从未登记的 App 也列出，便于诊断。
         for (app_id, err) in &last_errors {
@@ -423,6 +456,7 @@ impl HubShared {
                     state: AppState::Disconnected,
                     instances: Vec::new(),
                     last_error: Some(err.clone()),
+                    wakes: lock(&self.power).app_wakes(app_id),
                 });
             }
         }

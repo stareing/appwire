@@ -46,6 +46,8 @@ stateDiagram-v2
 | `graceMs` | 10000 | `on-demand` 模式下任务完成后保留连接的时间（便于模型连续调用）|
 | `residency` | `keep` | 进程驻留：`keep`（只断连接）/ `exit-when-idle`（仅当本进程由唤醒冷启动时，休眠后回调 `onIdleExit`，由 App 决定是否退出）/ `exit-always`（无界面的辅助进程）|
 | `wake` | 由封装按平台填充 | 本实例的唤醒描述（第 5 节），随 `app/sleep` 上报 |
+| `hostAbsentRetries` | 3 | `idle` / `on-demand` 下连续多少次"Host 不在"后转 `dormant`（第 11 节 A2）；0 = 一直重连 |
+| `legacyTimers` | `false` | 回退到 4e 之前的定时器行为（第 11 节） |
 
 模式：
 - **`persistent`**：现有行为，不休眠。
@@ -54,7 +56,7 @@ stateDiagram-v2
 
 **空闲条件**（全部满足才开始计时，任一变化重置计时）：
 - 没有进行中或排队的调用、资源读取；
-- Host 没有有效租约（`app/lease`，第 4 节）；
+- 租约不是空闲条件，而是休眠时刻的下限：休眠时刻 = max(空闲起点 + 空闲时长, 租约到期)（第 11 节 A1；收到租约重新开始计时）；
 - Host 没有订阅本实例的任何资源（有订阅说明模型在关注变化）；
 - 本实例未被 App 标记为 `hold()`（App 可临时阻止休眠，返回释放句柄）。
 
@@ -173,6 +175,7 @@ ConnectionState += dormant, waking
   不带令牌也算）；冷启动唤醒中该 App 的任何实例；被唤醒的休眠实例已没有记录（被新实例 ID 替换 / 过期）时该 App 的任何实例。
   认领后令牌作废（4.4）。
 - 租约：MCP 会话每次调用某 App 后发送 `app/lease { ttlMs: 60000 }`；会话关闭时 `ttlMs: 0`。
+- 存活判断按 SDK 的心跳声明（第 11 节 A3）；唤醒速率上限与观测见第 12 节。
 - 休眠实例的空闲超时不适用；实例记录保留 24 小时或直到 App 下次以新实例 ID 连接。
 
 ## 10. 两个落点：注册侧与连接侧
@@ -191,3 +194,75 @@ ConnectionState += dormant, waking
 3. **惰性 handler**（`on-demand` 冷启动提速）：允许只声明元数据、handler 在首次调用时加载——Web：`tool(name, { ...meta, load: () => import('./checkout') })`；原生：`ToolSpec` + 工厂闭包。冷启动唤醒只初始化被调用的那个模块。
 4. **调用自动持有**：调用进行中视为非空闲（无需手动 `hold()`）；handler 内部发起的长任务可通过 `context.hold()` 延长。
 5. **注册侧不感知连接状态**：框架适配（React / Vue / 状态库 / DOM 属性）无需任何改动即可在休眠 / 唤醒之间保持工具有效。
+
+## 11. 功耗规则（4e 第一部分）
+
+分析与决策记录见 `docs/plans/4e-lifecycle-power.md`；本节是行为契约。新规则默认开启，`lifecycle.legacyTimers = true`
+一次性恢复下面 A1–A3 的旧行为（各绑定同名字段：Rust `LifecyclePolicy::legacy_timers`、C `AmClientOptions.legacy_timers`、
+uniffi `LifecyclePolicy.legacyTimers`、JS `lifecycle.legacyTimers`）。
+
+### A1 租约与空闲计时并行
+
+休眠时刻 = max(空闲起点 + 空闲时长, 租约到期)。收到 `app/lease` 重新开始空闲计时（起点 = 收到时刻）。前台 `idle`（空闲 60 s）
+一次调用后（Host 发 60 s 租约）在线约 60 s，旧行为（租约到期后才开始计空闲）约 120 s。休眠被拒后的重试时刻仍不早于租约到期。
+
+### A2 Host 不在时停止无限重试
+
+- `idle` / `on-demand` 下连续 `hostAbsentRetries`（默认 3）次以"Host 不在"建立连接失败 → 进入 `dormant`（不发 `app/sleep`，
+  无定时器、无连接），并给出警告日志。"Host 不在"的码由 `ConnectionErrorCode::means_host_absent` 唯一定义，目前只有
+  `HOST_NOT_RUNNING`（连接被拒绝、套接字 / 管道不存在；转发远端无监听者时的"接受后即关闭"；网页连接打开前失败且非浏览器拦截）。
+  `CONNECT_TIMEOUT`、`IPC_PERMISSION_DENIED` 等可能是 Host 卡住或配置问题，不计入；其他码打断"连续"，成功握手清零。
+- 之后与休眠相同，只在以下事件回连：可见性从隐藏变为可见、App `wake()` / `connectNow()`、OS 激活（Host 唤醒）。
+- `persistent` 不受影响（照旧退避重连，最长 30 s 一次）；`hostAbsentRetries = 0` 或 `legacyTimers` 时一直重连。
+- 默认 3 的理由：网页依次尝试 7717 / 7737 / 7757 三个候选端口，3 次正好各试一遍；原生 0.5 s + 1 s 退避，约 1.5 s 内放弃。
+  经 `adb reverse` 时每次尝试约 2 s 才失败，约 5 s 放弃。
+
+### A3 心跳按传输
+
+传输类别由驱动层按端点判定后告知核心（`ClientConfig::transport`；核心保持 sans-IO）：
+
+| 传输 | 判定 | `heartbeat: auto` 时 SDK | Host |
+|---|---|---|---|
+| `ipc` | `unix:` / `pipe:` 端点 | 不发心跳 | 不发 `ping`，握手后不做无消息断开 |
+| `loopback` | 桌面平台上回环主机（`localhost`、`127.0.0.0/8`、`::1`）的 `ws://` / `wss://`；网页到回环地址（含 SharedWorker 共享连接） | 不发心跳 | 同上 |
+| `remote` | 其他主机；**沙箱平台（Android / iOS / 鸿蒙）上的回环地址** | 每 `intervalMs`（15 s）单向 `ping` | 不发 `ping`；无消息断开超时 = max(45 s / 隐藏 180 s, 3 × 心跳间隔) |
+| 未知 | 驱动层未告知 | 同 `remote` | 同 `remote` |
+
+- 判定规则的唯一实现：原生 `app_mcp_protocol::Endpoint::transport_kind`；网页 `packages/web/src/host-transport.ts`（网页无 IPC、
+  不知道是否经转发，手机浏览器经 `adb reverse` 访问回环时用 `heartbeat: 'always'`）。
+- `adb reverse` 归为远程的理由：设备上看是本机回环，实际跨 USB 到另一台机器。实测 Hub 被杀时 App 约 0.15 s 收到断开（EOF 能传过来），
+  但 USB 拔出、电脑休眠、adb 服务重启等远端变化能否及时送达未验证（已知的未知），按远程保守处理；代价是 SDK 单向心跳约每 15 s 1 ms
+  （魅族实测，原双向约 2 ms）。在设备上嵌入 Hub 的场景可设 `heartbeat: off`。
+- SDK 在 `app/hello.heartbeatMs` 声明：不发为 `0`，发为间隔；`legacyTimers` 时不带（Host 按旧规则：发 `ping` + 45 s / 180 s 无消息断开）。
+  旧 Host 不认识该字段，照旧发 `ping`，SDK 照常回复，连接不受影响。Host 配置 `legacy_heartbeat = true` 时对所有连接用旧规则。
+- `heartbeat` 策略：`auto`（默认）/ `always` / `off`（Rust `HeartbeatPolicy::mode` / `NativeConfig::heartbeat`、C `AmClientOptions.heartbeat`、
+  uniffi `ClientConfig.heartbeat`、JS `heartbeat`）。
+- 本地传输无心跳时，Host 不能因"无消息"断开活着的空闲连接：握手完成后只按连接断开（EOF / RST / 关闭帧）处理；对端进程被冻结时连接保持
+  （Flyme 冻结后台进程期间实测连接保持），发给它的调用按调用超时（`response_timeout`）失败，不影响连接；对端进程退出时操作系统关闭
+  套接字，毫秒级感知（Linux IPC 1.4–2.2 ms、回环 TCP 1.7–3.2 ms）。半开连接（系统未关闭套接字的极端情况）由下次派发调用的超时发现。
+- 冻结保护（远程心跳）：心跳响应截止时刻之后又过了一整个超时才被调度，视为本进程被冻结 / 挂起，不判心跳超时，重新发 `ping` 计时。
+
+### 功耗回归测试（O2）
+
+`crates/core/tests/power.rs` 用确定性时钟模拟驱动层，断言：本地传输空闲 1 小时 0 次定时器、0 次心跳、1 次连接；远程 1 小时心跳 ≤ 240 次；
+Host 不在时 `idle` / `on-demand` 1 小时内连接发起 = 3 次后无定时器；前台调用后在线 60 s（期间 1 次定时器）；回退开关恢复旧数值。
+
+## 12. Host 侧观测与唤醒速率上限
+
+### O1 观测
+
+`Hub::status()` / `GET /status` / `app-mcp-host doctor` 为每个实例给出（兼容新增，字段名见 spec/hub-api.md）：回连次数（Hub 启动以来同一
+实例 ID 的连接次数 − 1）、唤醒次数（以该休眠实例为目标的实际激活次数）、累计在线秒数（含当前连接）、心跳次数（Hub 发出的 `ping` +
+收到 SDK 的 `ping`）、SDK 声明的 `heartbeatMs` 与 `lifecycleMode`，以及已连接实例当前不能休眠的原因中 Host 可见的部分：
+`persistent`（SDK 声明的模式）、`call`（有进行中的调用 / 读取）、`lease`（有未到期租约）、`subscription`（Host 订阅了其资源）、
+`wake-pending`（有等待它回连的唤醒）。App 的 `hold()` 只有 SDK 知道，不在其中（未上报）。每个 App 另给出全部实际激活次数。
+
+### O4 唤醒速率上限
+
+- 每个 App 在任意 60 s 窗口内最多实际激活 `HubConfig.wake_rate_limit` 次（默认 6；0 = 不限；`app-mcp-host --wake-rate-limit`）。
+  只计真正发出的激活：加入已有等待、目标已就绪 / 握手中时不计。
+- 超出时不激活、不登记等待，调用以工具错误 `LAUNCH_FAILED` 结束，`data` 带 `code: "WAKE_RATE_LIMITED"`（spec/protocol.md 10.1）、
+  `appId`、`retryAfterMs`（窗口中最早一次激活滑出的剩余时间），并记为该 App 的最近错误。
+- 默认 6 的理由：一次唤醒约 5.6 ms SDK 线程 / 约 19 ms 进程 CPU（魅族实测）；正常调用经唤醒去重与 60 s 租约合并后每分钟至多约 1 次唤醒，
+  6 次给 `on-demand` 10 s 宽限下的间歇调用留余量，同时把唤醒 / 休眠循环限制在约 0.1 s CPU / 分钟。
+

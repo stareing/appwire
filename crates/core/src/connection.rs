@@ -16,8 +16,8 @@ use serde_json::{Value, json};
 
 use crate::calls::Call;
 use crate::{
-    CallOutput, CancelReason, Client, ConnectionErrorCode, ConnectionIssue, ConnectionState, Event, Millis, ReadId,
-    ResourceId, SleepReason, Visibility,
+    CallOutput, CancelReason, Client, ConnectionErrorCode, ConnectionIssue, ConnectionState, Event, LifecycleMode,
+    Millis, ReadId, ResourceId, SleepReason, Visibility,
 };
 
 /// Client 发出、等待响应的请求。
@@ -157,6 +157,9 @@ impl Client {
             resume_token: None,
             tools_hash: None,
             wake_reason: self.life.wake_reason,
+            // 旧行为（legacy_timers）不声明：Host 照旧发 ping 并按无消息断开（spec/lifecycle.md 第 11 节）。
+            heartbeat_ms: (!c.lifecycle.legacy_timers).then(|| self.heartbeat_interval().unwrap_or(0)),
+            lifecycle_mode: Some(c.lifecycle.mode),
         };
         let params = match self.life.resume_token.clone() {
             Some(resume) => HelloParams { resume_token: Some(resume), tools_hash: Some(self.tools_hash()), ..params },
@@ -195,7 +198,27 @@ impl Client {
     }
 
     /// 进入重连等待；`issue` 为本次断开 / 连接失败的原因（spec/protocol.md 10.1）。
+    ///
+    /// `idle` / `on-demand` 下连续 `host_absent_retries` 次以"Host 不在"失败时改为进入 `Dormant`
+    /// （spec/lifecycle.md 第 11 节 A2），等可见、App 主动唤醒或 Host 唤醒再连接。
     pub(crate) fn enter_backoff(&mut self, now: Millis, issue: Option<ConnectionIssue>) {
+        let absent = issue.as_ref().is_some_and(|i| i.code.means_host_absent());
+        self.life.host_absent_failures = if absent { self.life.host_absent_failures.saturating_add(1) } else { 0 };
+        let limit = self.config.lifecycle.host_absent_retries;
+        if absent
+            && limit > 0
+            && self.life.host_absent_failures >= limit
+            && self.config.lifecycle.mode != LifecycleMode::Persistent
+            && !self.config.lifecycle.legacy_timers
+        {
+            self.warn(format!(
+                "连续 {limit} 次连接失败（Host 未运行），停止重连并进入休眠；页面 / 界面重新可见、App 主动唤醒或 Host 唤醒时再连接"
+            ));
+            self.life.host_absent_failures = 0;
+            self.retry_count = 0;
+            self.set_state(ConnectionState::Dormant);
+            return;
+        }
         let delay = self.backoff_delay();
         self.retry_count = self.retry_count.saturating_add(1);
         let (reason, code) = match issue {
@@ -265,8 +288,9 @@ impl Client {
         self.launch_token = None;
         self.life.after_handshake();
         self.session.handshake_deadline = None;
+        self.life.host_absent_failures = 0;
         self.session.heartbeat =
-            Heartbeat { next_ping_at: Some(now.saturating_add(self.config.heartbeat.interval_ms)), outstanding: None };
+            Heartbeat { next_ping_at: self.heartbeat_interval().map(|ms| now.saturating_add(ms)), outstanding: None };
         self.set_state(ConnectionState::Connected);
         self.refresh_idle(now);
     }
@@ -331,7 +355,12 @@ impl Client {
         // 心跳超时
         if let Some((_, sent)) = self.session.heartbeat.outstanding {
             let timeout = self.heartbeat_timeout_ms();
-            if now >= sent.saturating_add(timeout) {
+            let deadline = sent.saturating_add(timeout);
+            if now >= deadline.saturating_add(timeout) {
+                // @why 到期后又过了一整个超时才被调度：进程被冻结 / 挂起（如 Flyme 冻结后台进程、浏览器限流），
+                // 不是 Host 无响应。不判断开，重新发 ping 计时（spec/lifecycle.md 第 11 节）。
+                self.session.heartbeat = Heartbeat { next_ping_at: Some(now), outstanding: None };
+            } else if now >= deadline {
                 let message = format!("心跳超时：{timeout}ms 内未收到 ping 响应，断开并重连");
                 self.warn(message.clone());
                 self.drop_connection(ConnectionIssue::new(ConnectionErrorCode::HeartbeatTimeout, message), now);
@@ -542,7 +571,7 @@ impl Client {
 
     pub(crate) fn on_message(&mut self, text: &str, now: Millis) {
         if !self.link_up() || self.state == ConnectionState::Connecting {
-            self.warn(format!("当前状态 {:?} 下收到消息，已忽略", self.state));
+            self.warn(format!("当前状态 {} 下收到消息，已忽略", self.state.name()));
             return;
         }
         match Message::parse(text) {
@@ -633,7 +662,7 @@ impl Client {
             }
             method::PAIRING_RESULT => {
                 if self.state != ConnectionState::PendingPairing {
-                    self.warn(format!("当前状态 {:?} 下收到 app/pairingResult，已忽略", self.state));
+                    self.warn(format!("当前状态 {} 下收到 app/pairingResult，已忽略", self.state.name()));
                     return;
                 }
                 match serde_json::from_value::<PairingResultParams>(n.params) {
@@ -678,8 +707,8 @@ impl Client {
                 let hb = self.session.heartbeat;
                 if let Some((pid, sent)) = hb.outstanding {
                     if pid == id {
-                        let next = sent.saturating_add(self.config.heartbeat.interval_ms).max(now);
-                        self.session.heartbeat = Heartbeat { next_ping_at: Some(next), outstanding: None };
+                        let next = self.heartbeat_interval().map(|ms| sent.saturating_add(ms).max(now));
+                        self.session.heartbeat = Heartbeat { next_ping_at: next, outstanding: None };
                     }
                 }
             }
@@ -688,7 +717,7 @@ impl Client {
 
     fn on_hello_response(&mut self, outcome: Result<Value, RpcError>, now: Millis) {
         if self.state != ConnectionState::Handshaking {
-            self.warn(format!("当前状态 {:?} 下收到 app/hello 响应，已忽略", self.state));
+            self.warn(format!("当前状态 {} 下收到 app/hello 响应，已忽略", self.state.name()));
             return;
         }
         let result = match outcome {

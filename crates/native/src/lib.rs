@@ -28,8 +28,8 @@
 use std::sync::Arc;
 
 pub use app_mcp_core::{
-    Activation, AppOverview, ClientKind, LifecycleMode, LifecyclePolicy, Residency, Risk, SleepReason, Visibility,
-    WakeDescriptor, WakeKind, WakeReason, parse_wake_token,
+    Activation, AppOverview, ClientKind, HeartbeatMode, LifecycleMode, LifecyclePolicy, Residency, Risk, SleepReason,
+    TransportKind, Visibility, WakeDescriptor, WakeKind, WakeReason, parse_wake_token,
 };
 pub use app_mcp_protocol::{ConnectionErrorCode, ErrorKind};
 
@@ -67,6 +67,9 @@ pub struct NativeConfig {
     pub lifecycle: LifecyclePolicy,
     /// 建立 WebSocket 连接（含 TLS 握手）的超时，默认 5000ms；超时按连接失败处理（进入重连退避）。
     pub connect_timeout_ms: u32,
+    /// 心跳策略（spec/lifecycle.md 第 11 节）。默认 `Auto`：按端点的传输类别
+    /// （[`app_mcp_protocol::Endpoint::transport_kind`]）决定，本地 IPC 与桌面本机回环不发心跳。
+    pub heartbeat: HeartbeatMode,
 }
 
 impl NativeConfig {
@@ -85,6 +88,7 @@ impl NativeConfig {
             overview: None,
             lifecycle: LifecyclePolicy::default(),
             connect_timeout_ms: 5_000,
+            heartbeat: HeartbeatMode::Auto,
         }
     }
 }
@@ -822,6 +826,8 @@ fn build_core_config(
     inner.launch_token = launch_token;
     inner.overview = config.overview;
     inner.lifecycle = config.lifecycle;
+    inner.heartbeat.mode = config.heartbeat;
+    inner.transport = endpoint.transport_kind(&app_mcp_protocol::platform::Target::CURRENT);
     inner.expected_host_user = app_mcp_protocol::identity::expected_host_user();
     inner.max_concurrent_calls = usize::try_from(config.max_concurrent_calls).unwrap_or(usize::MAX);
     Ok((inner, endpoint))

@@ -11,7 +11,7 @@ use tokio::time::Instant;
 use crate::connection::Connection;
 use crate::hub::{HubShared, lock};
 use crate::registry::{WakePlan, WakeTargetPresence};
-use crate::types::HubEvent;
+use crate::types::{AwakeReason, HubEvent};
 use crate::wake::{self, Platform, WakeDescriptor, WakeRequest};
 
 type WakeResult = Result<String, ToolError>;
@@ -105,7 +105,20 @@ impl HubShared {
                     }
                     WakeTargetPresence::Handshaking => None,
                     WakeTargetPresence::Absent => match descriptor {
-                        Some(d) => Some(d),
+                        Some(d) => {
+                            // 唤醒速率上限（spec/lifecycle.md 第 12 节）：只对真正要发出的激活计数。
+                            let limit = self.config.wake_rate_limit;
+                            match lock(&self.power).reserve_wake(&app_id, limit, now) {
+                                Ok(at) => Some((d, at)),
+                                Err(limited) => {
+                                    drop(wakes);
+                                    let err = rate_limited(&app_id, limit, limited.retry_after);
+                                    tracing::warn!(app_id, limit, "唤醒次数达到上限，不再唤醒");
+                                    self.record_app_error(&app_id, Some(WAKE_RATE_LIMITED), &err.message);
+                                    return Err(err);
+                                }
+                            }
+                        }
                         None => return Err(not_wakeable(&app_id, plan.instance_id.is_some())),
                     },
                 };
@@ -122,7 +135,7 @@ impl HubShared {
                 (activation.map(|d| (token, d)), deadline)
             }
         };
-        if let Some((token, descriptor)) = trigger {
+        if let Some((token, (descriptor, reserved))) = trigger {
             tracing::info!(app_id, instance_id = ?plan.instance_id, kind = wake::kind_str(descriptor.kind), "唤醒 App");
             self.emit(HubEvent::AppWaking {
                 app_id: app_id.clone(),
@@ -141,8 +154,10 @@ impl HubShared {
                 // 激活前实例已被其他原因的回连认领（令牌已作废）：不再激活。
                 if !shared.wake_token_pending(&token) {
                     tracing::debug!(app_id = %app_id, "唤醒已被回连认领，跳过激活");
+                    lock(&shared.power).cancel_wake(&app_id, reserved);
                     return;
                 }
+                lock(&shared.power).wake_activated(&app_id, req.instance_id.as_deref(), Instant::now());
                 if let Err(e) = waker.wake(req).await {
                     tracing::warn!(app_id = %app_id, error = %e, "唤醒失败");
                     let mut err = e.0;
@@ -219,6 +234,47 @@ impl HubShared {
     }
 
     // ------------------------------------------------------------------
+    // 功耗观测（spec/lifecycle.md 第 12 节）
+    // ------------------------------------------------------------------
+
+    /// 持有未到期租约（任一会话）的连接 ID。
+    pub(crate) fn leased_connections(&self, now: Instant) -> std::collections::HashSet<u64> {
+        self.session_state()
+            .values()
+            .flat_map(|s| s.leases.iter())
+            .filter(|(_, (_, exp))| *exp > now)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// 已连接实例当前不能休眠的原因（Hub 可见部分）。
+    pub(crate) fn awake_reasons(
+        &self,
+        app_id: &str,
+        instance_id: &str,
+        mode: Option<app_mcp_protocol::LifecycleMode>,
+        leased: &std::collections::HashSet<u64>,
+    ) -> Vec<AwakeReason> {
+        let (call, lease, subscription) = {
+            let reg = self.registry();
+            let Some(inst) = reg.instance(app_id, instance_id) else {
+                return Vec::new();
+            };
+            (inst.conn.inflight() > 0, leased.contains(&inst.conn.id), !inst.subscriptions.is_empty())
+        };
+        [
+            (mode == Some(app_mcp_protocol::LifecycleMode::Persistent), AwakeReason::Persistent),
+            (call, AwakeReason::Call),
+            (lease, AwakeReason::Lease),
+            (subscription, AwakeReason::Subscription),
+            (self.has_pending_wake(app_id, instance_id), AwakeReason::WakePending),
+        ]
+        .into_iter()
+        .filter_map(|(on, r)| on.then_some(r))
+        .collect()
+    }
+
+    // ------------------------------------------------------------------
     // 租约
     // ------------------------------------------------------------------
 
@@ -283,6 +339,7 @@ impl HubShared {
         }
         for (app_id, instance_id) in removed {
             tracing::info!(app_id, instance_id, "移除休眠实例记录");
+            lock(&self.power).forget(&app_id, &instance_id);
             self.emit(HubEvent::AppDisconnected { app_id, instance_id });
         }
         self.mark_tools_changed();
@@ -309,6 +366,24 @@ fn not_responding(app_id: &str, timeout: Duration) -> ToolError {
         ),
     )
     .with_details(json!({ "appId": app_id }))
+}
+
+/// 唤醒速率超限的错误码（spec/protocol.md 10.1）。
+const WAKE_RATE_LIMITED: &str = "WAKE_RATE_LIMITED";
+
+fn rate_limited(app_id: &str, limit: u32, retry_after: Duration) -> ToolError {
+    let secs = retry_after.as_secs_f32().ceil() as u64;
+    ToolError::new(
+        ErrorKind::LaunchFailed,
+        format!(
+            "App「{app_id}」最近一分钟内已被唤醒 {limit} 次，达到上限，本次不再唤醒。请约 {secs} 秒后重试，或让用户打开该 App 后重试。"
+        ),
+    )
+    .with_details(json!({
+        "appId": app_id,
+        "code": WAKE_RATE_LIMITED,
+        "retryAfterMs": retry_after.as_millis() as u64,
+    }))
 }
 
 fn not_wakeable(app_id: &str, dormant: bool) -> ToolError {

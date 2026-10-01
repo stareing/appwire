@@ -353,6 +353,23 @@ impl Hub { pub fn set_waker(&self, w: Arc<dyn Waker>); }
 `dormant_replaced_by_new_instance`、`wake_from_launch`、`waker`。`app-mcp-host` 对应命令行：`--lease-ms`、`--wake-timeout-ms`、
 `--wake-from-launch`、`--waker system|none|<JSON>`。
 
+**功耗相关配置（4e，spec/lifecycle.md 第 11–12 节）**：
+
+| `HubConfig` 字段 | 默认 | 含义 | `app-mcp-host` 命令行 / 配置文件（`lifecycle` 下） | hub-c / hub-node JSON |
+|---|---|---|---|---|
+| `wake_token_ttl` | 60 s | 唤醒令牌有效期（4.4） | `--wake-token-ttl-ms` / `wakeTokenTtlMs` | `wakeTokenTtlMs` |
+| `wake_rate_limit: u32` | `DEFAULT_WAKE_RATE_LIMIT` = 6 | 每 App 每 60 秒滑动窗口内最多实际发出的唤醒激活次数；`0` 不限 | `--wake-rate-limit` / `wakeRateLimit` | `wakeRateLimit` |
+| `legacy_heartbeat: bool` | `false` | 回退到旧心跳：忽略 SDK 的 `heartbeatMs` 声明，对所有连接发 `ping` 并按无消息断开 | `--legacy-heartbeat` / `legacyHeartbeat` | `legacyHeartbeat` |
+
+- **心跳（A3）**：握手后按 `app/hello.heartbeatMs` 决定——缺省（旧 SDK）或 `legacy_heartbeat`：每 `ping_interval` 发 `ping`，
+  `idle_timeout` / `hidden_idle_timeout` 内无消息断开（原行为）；`0`（本地传输）：不发 `ping`、不做无消息断开，靠连接断开
+  （EOF）感知，半开连接由调用的 `response_timeout` 发现；`> 0`：不发 `ping`，无消息断开取 `max(按可见性的配置值, 3 × heartbeatMs)`。
+  握手前、等待配对确认期间与多路复用连接级空闲规则不变。
+- **唤醒速率上限（O4）**：只对真正要发出激活的唤醒计数（加入已有等待、目标已就绪 / 握手中不计；激活任务开始前已被认领的撤销计数）。
+  超出时不激活、不登记等待，调用以工具错误 `LAUNCH_FAILED` 结束，`data` 为 `{ appId, code: "WAKE_RATE_LIMITED", retryAfterMs }`，
+  并记为该 App 的最近错误（`code = WAKE_RATE_LIMITED`，spec/protocol.md 10.1）。
+- hub-uniffi 的 `HubConfig` 记录暂未加入 `wake_rate_limit` / `legacy_heartbeat`（新增记录字段需重新生成各语言绑定），取默认值。
+
 `Hub::reset_waker()`（补充方法）撤销 `set_waker`，恢复按 `HubConfig.waker` 构造的实现；各绑定清除自定义唤醒回调
 （C `cb = NULL`、Node / uniffi `setWaker(null)`）时调用它，因此配置为 `none` / `exec` 时清除回调后仍按配置执行。
 
@@ -435,7 +452,17 @@ pub struct HubStatus {
 }
 pub struct AppStatus { app_id, name, kind: AppKind, state: AppState,   // connected | waking | dormant | disconnected
     instances: Vec<InstanceStatus>,                    // InstanceInfo（flatten）+ state: connected | dormant | waking
-    last_error: Option<LastError> }                    // { code: Option<String>, message, at_ms }
+                                                       //   + power: Option<InstancePower>（4e，见下）
+    last_error: Option<LastError>,                     // { code: Option<String>, message, at_ms }
+    wakes: u64 }                                       // 4e：Hub 启动以来为该 App 实际发出的唤醒激活次数（含冷启动）
+pub struct InstancePower {                             // 4e 功耗观测（spec/lifecycle.md 第 12 节），JSON 字段可选新增
+    reconnects: u64,                                   // 同一 instanceId 完成握手的次数 - 1（Hub 启动以来）
+    wakes: u64,                                        // 以该休眠实例为目标实际发出的唤醒激活次数
+    online_secs: u64,                                  // 累计在线秒数（含当前连接）
+    heartbeats: u64,                                   // Hub 发出的 ping + 收到 SDK 的 ping
+    heartbeat_ms: Option<u64>,                         // SDK 声明（app/hello.heartbeatMs）；None = 旧 SDK
+    lifecycle_mode: Option<LifecycleMode>,             // SDK 声明（app/hello.lifecycleMode）
+    awake_reasons: Vec<AwakeReason> }                  // 已连接实例当前不能休眠的原因：persistent | call | lease | subscription | wake-pending
 pub struct DiagnosticReport { app_id, instance_id, connection_id, code, message, count: u32, received_at_ms: u64 }
 ```
 
@@ -446,6 +473,10 @@ pub struct DiagnosticReport { app_id, instance_id, connection_id, code, message,
   `HelloResult.connectionId` 返回 SDK，`InstanceInfo.connection_id` 与日志字段 `cid` 中相同；MCP 会话为 `mcp-<序号>`。
 - **拒绝错误码**：握手被拒时 `HelloResult.code`（`PROTOCOL_INCOMPATIBLE` / `ORIGIN_NOT_ALLOWED` / `INVALID_HELLO` / `REJECTED`），
   配对被拒时 `PairingResultParams.code = PAIRING_REJECTED`。
+- **功耗观测**：按 `(appId, instanceId)` 计数，跨重连与休眠保留，Hub 重启清零；最多 1024 个实例（超出时淘汰最久未活动的离线实例），
+  休眠记录过期 / 被新实例替换时移除。`awake_reasons` 只含 Hub 可见的原因——App 的 `hold()` 只有 SDK 知道，不在其中。
+  `app-mcp-host doctor` 的「App 实例」检查逐实例显示（文本一行摘要，`--json` 在 `details` 中原样给出）。hub-c（JSON）与
+  hub-node / `@app-mcp/hub`（`InstanceStatus.power?`、`AppStatus.wakes?`）带上这些字段；hub-uniffi 与 C# 的类型化记录暂未暴露。
 - `app-mcp-host doctor` / `status` 经本地 IPC（核对监听方用户后）读 `/status`；IPC 关闭时改用 TCP + 令牌。
 
 绑定：

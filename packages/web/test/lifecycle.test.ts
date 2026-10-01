@@ -158,6 +158,8 @@ describe.skipIf(!available)('真实核心：休眠与唤醒', () => {
     await flush()
     const hello1 = p.handshake()
     expect(hello1.params.resumeToken).toBeUndefined()
+    // 默认地址为本机回环：声明不发心跳（spec/lifecycle.md 第 11 节）
+    expect(hello1.params).toMatchObject({ heartbeatMs: 0, lifecycleMode: 'idle' })
     expect(p.sent().map((m) => m.method)).toContain('tools/sync')
     expect(p.app.state.status).toBe('connected')
 
@@ -406,10 +408,24 @@ describe('驱动接线', () => {
     })
   })
 
-  it('未配置时为 persistent', async () => {
+  it('未配置时为 persistent，默认地址按本机回环（不发心跳）', async () => {
     const h = setup()
     await settle()
     expect(h.core.config?.lifecycle?.mode).toBe('persistent')
+    expect(h.core.config?.transport).toBe('loopback')
+    expect(h.core.config?.heartbeat).toBeUndefined()
+  })
+
+  it('功耗开关与传输类别交给核心（spec/lifecycle.md 第 11 节）', async () => {
+    const h = setup({
+      hostUrl: 'wss://hub.example.com/app',
+      heartbeat: 'off',
+      lifecycle: { mode: 'idle', hostAbsentRetries: 5, legacyTimers: true },
+    })
+    await settle()
+    expect(h.core.config?.transport).toBe('remote')
+    expect(h.core.config?.heartbeat).toEqual({ mode: 'off' })
+    expect(h.core.config?.lifecycle).toMatchObject({ hostAbsentRetries: 5, legacyTimers: true })
   })
 
   it('没有唤醒令牌时不调用 handleWake、不改地址', async () => {

@@ -150,6 +150,13 @@ pub struct HelloParams {
     /// 本次连接的原因。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake_reason: Option<WakeReason>,
+    /// SDK 的心跳声明（spec/lifecycle.md 第 11 节）：`0` = 本连接 SDK 不发心跳、靠连接断开感知（本地传输）；
+    /// 大于 0 = SDK 每隔该毫秒数发送 `ping`。省略 = 旧 SDK 或旧行为（Host 发 `ping` 并按无消息断开）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat_ms: Option<u64>,
+    /// SDK 的生命周期模式（spec/lifecycle.md 第 3 节），供 Host 观测"未能休眠的原因"；省略 = 未知（旧 SDK）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_mode: Option<LifecycleMode>,
 }
 
 impl Default for HelloParams {
@@ -171,6 +178,8 @@ impl Default for HelloParams {
             resume_token: None,
             tools_hash: None,
             wake_reason: None,
+            heartbeat_ms: None,
+            lifecycle_mode: None,
         }
     }
 }
@@ -300,6 +309,19 @@ pub struct ActivateParams {
 // ---------------------------------------------------------------------------
 // 生命周期（spec/lifecycle.md）
 // ---------------------------------------------------------------------------
+
+/// 生命周期模式（spec/lifecycle.md 第 3 节）。SDK 配置项，并随 `app/hello.lifecycleMode` 上报。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LifecycleMode {
+    /// 不休眠（兼容现有行为）。
+    #[default]
+    Persistent,
+    /// 启动即连接；空闲 `idle_timeout_ms` 后休眠；唤醒后回连。
+    Idle,
+    /// 启动时不连接（进入 `Dormant`）；被唤醒或 `connect_now()` 时连接，任务完成后经过 `grace_ms` 休眠。
+    OnDemand,
+}
 
 /// 连接（回连）原因，随 `app/hello` 发送。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -597,6 +619,8 @@ mod tests {
             resume_token: None,
             tools_hash: None,
             wake_reason: None,
+            heartbeat_ms: None,
+            lifecycle_mode: None,
         };
         let v = serde_json::to_value(&p).unwrap();
         assert_eq!(
@@ -730,5 +754,21 @@ mod tests {
         assert!(!is_valid_app_id("Shop"));
         assert!(!is_valid_app_id("2shop"));
         assert!(!is_valid_app_id(""));
+    }
+
+    #[test]
+    fn hello_power_fields() {
+        let p = HelloParams {
+            heartbeat_ms: Some(0),
+            lifecycle_mode: Some(LifecycleMode::OnDemand),
+            ..HelloParams::default()
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["heartbeatMs"], json!(0));
+        assert_eq!(v["lifecycleMode"], json!("on-demand"));
+        assert_eq!(serde_json::from_value::<HelloParams>(v).unwrap(), p);
+        // 旧 SDK 不带这两个字段
+        let old = serde_json::to_value(HelloParams::default()).unwrap();
+        assert!(old.get("heartbeatMs").is_none() && old.get("lifecycleMode").is_none());
     }
 }

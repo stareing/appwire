@@ -29,7 +29,7 @@ use napi::bindgen_prelude::Unknown;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 use native::{
-    Activation, CancelReason, ClientKind, ErrorKind, LifecycleMode, LifecyclePolicy, LogLevel, NativeError,
+    Activation, CancelReason, ClientKind, ErrorKind, HeartbeatMode, LifecycleMode, LifecyclePolicy, LogLevel, NativeError,
     Residency, Risk, SleepReason, StateInfo, StateStatus, Visibility, WakeDescriptor, WakeKind, WakeReason,
 };
 
@@ -130,6 +130,15 @@ fn parse_lifecycle_mode(s: &str) -> Result<LifecycleMode, String> {
         "idle" => LifecycleMode::Idle,
         "on-demand" => LifecycleMode::OnDemand,
         other => return Err(invalid_arg(format!("未知的 lifecycle.mode：{other:?}"))),
+    })
+}
+
+fn parse_heartbeat(s: &str) -> Result<HeartbeatMode, String> {
+    Ok(match s {
+        "auto" => HeartbeatMode::Auto,
+        "always" => HeartbeatMode::Always,
+        "off" => HeartbeatMode::Off,
+        other => return Err(invalid_arg(format!("未知的 heartbeat：{other:?}"))),
     })
 }
 
@@ -242,6 +251,8 @@ pub struct ClientConfig {
     pub lifecycle: Option<LifecycleInit>,
     /// 建立 WebSocket 连接的超时（毫秒），默认 5000。
     pub connect_timeout_ms: Option<u32>,
+    /// 心跳策略（spec/lifecycle.md 第 11 节）：`'auto'`（默认）| `'always'` | `'off'`。
+    pub heartbeat: Option<String>,
 }
 
 /// 生命周期策略。未提供的字段取默认值（见 spec/lifecycle.md 第 3 节）。
@@ -256,6 +267,10 @@ pub struct LifecycleInit {
     pub residency: Option<String>,
     /// 本实例的唤醒描述，随 `app/sleep` 上报。
     pub wake: Option<WakeInit>,
+    /// `idle` / `on-demand` 下连续多少次"Host 不在"后转休眠；默认 3，0 = 一直重连（spec/lifecycle.md 第 11 节）。
+    pub host_absent_retries: Option<u32>,
+    /// 回退到 4e 之前的定时器行为（串行租约、无限重连、双向心跳）。默认 `false`。
+    pub legacy_timers: Option<bool>,
 }
 
 /// 唤醒描述（spec/lifecycle.md 第 5 节）。
@@ -291,6 +306,12 @@ impl LifecycleInit {
                 target: w.target,
                 background: w.background.unwrap_or(false),
             });
+        }
+        if let Some(n) = self.host_absent_retries {
+            p.host_absent_retries = n;
+        }
+        if let Some(b) = self.legacy_timers {
+            p.legacy_timers = b;
         }
         Ok(p)
     }
@@ -712,6 +733,9 @@ impl JsNativeClient {
         }
         if let Some(ms) = config.connect_timeout_ms {
             cfg.connect_timeout_ms = ms;
+        }
+        if let Some(h) = config.heartbeat.as_deref() {
+            cfg.heartbeat = parse_heartbeat(h)?;
         }
 
         let listener = listener.map(|tsfn| Arc::new(JsClientListener { tsfn: Mutex::new(Some(Arc::new(tsfn))) }));

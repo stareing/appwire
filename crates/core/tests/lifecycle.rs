@@ -391,7 +391,23 @@ fn lease_defers_sleep_and_zero_cancels() {
     h.advance(1_000);
     h.notify("app/lease", json!({"ttlMs": 5_000}));
     let (_, at) = h.wait_sleep(10 * IDLE).unwrap();
-    assert_eq!(at, lease_end + IDLE, "租约期间不休眠，租约结束后重新计时");
+    assert_eq!(at, lease_end, "A1：租约与空闲计时并行，休眠时刻 = max(空闲起点 + 空闲时长, 租约到期)");
+
+    // 租约比空闲时长短：按空闲计时
+    let mut h = Harness::new(LifecycleMode::Idle);
+    h.connect();
+    h.notify("app/lease", json!({"ttlMs": 10_000}));
+    let t = h.now;
+    assert_eq!(h.wait_sleep(10 * IDLE).unwrap().1, t + IDLE);
+
+    // 回退开关：租约到期后才开始计空闲（旧行为）
+    let mut cfg = config(LifecycleMode::Idle);
+    cfg.lifecycle.legacy_timers = true;
+    let mut h = Harness::with(cfg);
+    h.connect();
+    h.notify("app/lease", json!({"ttlMs": 100_000}));
+    let lease_end = h.now + 100_000;
+    assert_eq!(h.wait_sleep(10 * IDLE).unwrap().1, lease_end + IDLE, "legacy_timers：串行");
 
     let mut h = Harness::new(LifecycleMode::Idle);
     h.connect();

@@ -727,11 +727,24 @@ fn options_are_read_up_to_struct_size() {
         lifecycle: &lc,
         connect_timeout_ms: 1234,
         on_idle_exit: Some(count_free),
+        heartbeat: 2,
+        host_absent_retries: -1,
+        legacy_timers: true,
     };
     let v = unsafe { read_options(&o) }.ok();
     assert!(v.as_ref().is_some_and(|v| std::ptr::eq(v.lifecycle, &lc)
         && v.connect_timeout_ms == 1234
-        && v.on_idle_exit.is_some()));
+        && v.on_idle_exit.is_some()
+        && v.heartbeat == 2
+        && v.host_absent_retries == -1
+        && v.legacy_timers));
+    // v3 调用方（到 on_idle_exit 为止）：4e 字段取默认值。
+    o.struct_size = std::mem::offset_of!(AmClientOptions, heartbeat) as u32;
+    let v = unsafe { read_options(&o) }.ok();
+    assert!(v.as_ref().is_some_and(|v| v.on_idle_exit.is_some()
+        && v.heartbeat == 0
+        && v.host_absent_retries == 0
+        && !v.legacy_timers));
     // 旧调用方（只含前两个字段）：后面的字段不读取。
     o.struct_size = std::mem::offset_of!(AmClientOptions, connect_timeout_ms) as u32;
     let v = unsafe { read_options(&o) }.ok();
@@ -742,6 +755,14 @@ fn options_are_read_up_to_struct_size() {
     assert!(unsafe { read_options(&o) }.is_err());
     let v = unsafe { read_options(ptr::null()) }.ok();
     assert!(v.is_some_and(|v| v.lifecycle.is_null()));
+}
+
+#[test]
+fn heartbeat_mode_values() {
+    assert_eq!(heartbeat_mode_from(0).ok(), Some(HeartbeatMode::Auto));
+    assert_eq!(heartbeat_mode_from(1).ok(), Some(HeartbeatMode::Always));
+    assert_eq!(heartbeat_mode_from(2).ok(), Some(HeartbeatMode::Off));
+    assert!(heartbeat_mode_from(3).is_err());
 }
 
 #[test]
@@ -813,6 +834,9 @@ fn lifecycle_through_c_abi() {
         lifecycle: &lc,
         connect_timeout_ms: 200,
         on_idle_exit: None,
+        heartbeat: 0,
+        host_absent_retries: 0,
+        legacy_timers: false,
     };
     let mut client: *mut AmClient = ptr::null_mut();
     assert_eq!(

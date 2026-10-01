@@ -344,3 +344,31 @@ fn wss_uses_tls_and_fails_cleanly_against_plain_server() {
         rec.logs.lock().unwrap()
     );
 }
+
+#[test]
+fn relay_without_host_counts_as_host_absent_and_goes_dormant() {
+    // 模拟 adb reverse 远端没有 Hub：接受 TCP 连接后立即关闭（WebSocket 握手未完成）。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    {
+        let accepted = accepted.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                accepted.fetch_add(1, Ordering::SeqCst);
+                drop(stream);
+            }
+        });
+    }
+    let mut config = NativeConfig::new("test-app", "测试应用");
+    config.host_url = format!("ws://{addr}");
+    config.lifecycle.mode = LifecycleMode::Idle;
+    let rec = Arc::new(Listener::default());
+    let client = NativeClient::new(config, Some(rec.clone())).unwrap();
+    client.start();
+    eventually("连续 3 次 Host 不在后进入休眠", || client.state().status == StateStatus::Dormant);
+    assert!(rec.logs.lock().unwrap().iter().any(|m| m.contains("HOST_NOT_RUNNING")), "{:?}", rec.logs.lock().unwrap());
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(accepted.load(Ordering::SeqCst), 3, "休眠后不再发起连接");
+    assert_eq!(client.state().status, StateStatus::Dormant);
+}

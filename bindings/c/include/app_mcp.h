@@ -36,7 +36,11 @@
  * - v6（诊断，spec/protocol.md 第 10 节）：布局与签名不变，只新增函数 am_client_state_code（当前状态的错误码，
  *   如 "HOST_NOT_RUNNING"、"HOST_NOT_APP_MCP"）与 am_client_connection_id（Host 分配的连接 ID）；
  *   连接期间 on_log 收到的日志以 "[连接 ID] " 开头。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4、v5、v6 仍为 3。）
+ * - v7（4e 生命周期功耗，spec/lifecycle.md 第 11 节）：只在 AmClientOptions 末尾追加 heartbeat（AmHeartbeatMode）、
+ *   host_absent_retries、legacy_timers（按 struct_size 读取，旧调用方不受影响）；新增枚举 AmHeartbeatMode。
+ *   默认行为变化：租约与空闲计时并行；idle / on-demand 下连续 3 次 HOST_NOT_RUNNING 后进入 DORMANT；
+ *   本地 IPC / 桌面本机回环不发心跳。legacy_timers = true 恢复旧行为。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4、v5、v6、v7 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -126,6 +130,13 @@ typedef enum AmStateStatus {
 typedef enum AmLogLevel { AM_LOG_DEBUG = 0, AM_LOG_INFO = 1, AM_LOG_WARN = 2, AM_LOG_ERROR = 3 } AmLogLevel;
 
 /* v3：生命周期（spec/lifecycle.md 第 3 节） */
+/* v7：心跳策略（AmClientOptions.heartbeat）。 */
+typedef enum AmHeartbeatMode {
+    AM_HEARTBEAT_AUTO = 0,         /* 按传输：本地 IPC / 桌面本机回环不发，远程发 */
+    AM_HEARTBEAT_ALWAYS = 1,
+    AM_HEARTBEAT_OFF = 2
+} AmHeartbeatMode;
+
 typedef enum AmLifecycleMode {
     AM_LIFECYCLE_PERSISTENT = 0,   /* 不休眠（默认） */
     AM_LIFECYCLE_IDLE = 1,         /* 启动即连接，空闲后休眠 */
@@ -248,6 +259,10 @@ typedef struct AmClientOptions {
     const AmLifecycle *lifecycle;    /* 可为 NULL：persistent */
     uint32_t connect_timeout_ms;     /* 0 表示默认值 5000 */
     AmIdleExitFn on_idle_exit;       /* 可为 NULL；user_data 为 AmClientCallbacks.user_data（callbacks 为 NULL 时为 NULL） */
+    /* v7（4e 功耗，spec/lifecycle.md 第 11 节）：旧调用方的 struct_size 不含以下字段时取默认值。 */
+    AmHeartbeatMode heartbeat;       /* 默认 AM_HEARTBEAT_AUTO：本地 IPC / 桌面本机回环不发心跳 */
+    int32_t host_absent_retries;     /* idle / on-demand 下连续多少次"Host 不在"后转休眠；0 = 默认 3，负数 = 一直重连 */
+    bool legacy_timers;              /* true：回退到 4e 之前的定时器行为（串行租约、无限重连、双向心跳） */
 } AmClientOptions;
 
 typedef struct AmToolSpec {

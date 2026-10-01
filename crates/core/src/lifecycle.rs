@@ -37,6 +37,8 @@ pub(crate) struct Life {
     pub idle_recheck: bool,
     /// 最近一次输入的时间。
     pub last_now: Millis,
+    /// 连续以"Host 不在"建立连接失败的次数（A2）；成功握手或其他原因的失败清零。
+    pub host_absent_failures: u32,
 }
 
 impl Life {
@@ -173,7 +175,7 @@ impl Client {
                 self.life.wake_reason = Some(WakeReason::OsActivation);
             }
             ConnectionState::Stopped | ConnectionState::Rejected { .. } => {
-                self.warn(format!("当前状态 {:?} 下收到唤醒，已忽略", self.state));
+                self.warn(format!("当前状态 {} 下收到唤醒，已忽略", self.state.name()));
             }
             ConnectionState::Handshaking | ConnectionState::PendingPairing => {}
             _ => {
@@ -326,7 +328,10 @@ impl Client {
         let lease = self.session.lease_until.unwrap_or(0);
         match self.session.sleep_retry_at {
             Some(retry) => Some(retry.max(lease)),
-            None => Some(anchor.max(lease).saturating_add(self.idle_timeout_ms())),
+            // 旧行为：租约到期后才开始计空闲时长（串行）。
+            None if self.config.lifecycle.legacy_timers => Some(anchor.max(lease).saturating_add(self.idle_timeout_ms())),
+            // A1：空闲计时与租约并行，取较晚者（spec/lifecycle.md 第 11 节）。
+            None => Some(anchor.saturating_add(self.idle_timeout_ms()).max(lease)),
         }
     }
 

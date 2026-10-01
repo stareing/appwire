@@ -72,7 +72,7 @@ export type ConnectionState =
   | { status: 'connected' }
   /**
    * 连接断开，`retryAt`（`Date.now()` 毫秒）时重连。`reason` / `code`：进入退避的原因与错误码（spec/protocol.md 10.1）：
-   * 连接建立失败 `CONNECT_FAILED`、已建立的连接断开 `CONNECTION_CLOSED` / `CONNECTION_LOST`、心跳 / 握手超时
+   * 连接建立失败 `HOST_NOT_RUNNING`（浏览器拦截以外的失败）、已建立的连接断开 `CONNECTION_CLOSED` / `CONNECTION_LOST`、心跳 / 握手超时
    * `HEARTBEAT_TIMEOUT` / `HANDSHAKE_TIMEOUT`。驱动层的每次退避都带这两项；类型保留可选以兼容。
    */
   | { status: 'backoff'; retryAt: number; reason?: string; code?: string }
@@ -112,6 +112,13 @@ export interface LifecycleOptions {
   hiddenIdleTimeoutMs?: number
   /** `on-demand` 模式下任务完成后保留连接的时间，默认 10000。 */
   graceMs?: number
+  /**
+   * `idle` / `on-demand` 下连续多少次连不上 Host（`HOST_NOT_RUNNING`）后停止重连、进入 `dormant`，
+   * 页面重新可见、调用 `wake()` / `connectNow()` 或 Host 唤醒时再连接（spec/lifecycle.md 第 11 节）。默认 3；0 = 一直重连。
+   */
+  hostAbsentRetries?: number
+  /** 回退到 4e 之前的定时器行为（租约到期后才计空闲、Host 不在时一直重连、双向心跳）。默认 false。 */
+  legacyTimers?: boolean
 }
 
 /**
@@ -159,6 +166,11 @@ export interface AppMcpOptions {
   logger?: Logger
   /** 生命周期策略（休眠 / 唤醒），缺省 `persistent`。见 {@link LifecycleOptions}。 */
   lifecycle?: LifecycleOptions
+  /**
+   * 心跳策略（spec/lifecycle.md 第 11 节）。默认 `'auto'`：Host 地址为本机回环时不发心跳（靠连接断开感知），
+   * 否则发；`'always'`（如手机浏览器经 adb reverse 访问回环）/ `'off'` 强制。
+   */
+  heartbeat?: 'auto' | 'always' | 'off'
 }
 
 export interface AppOverview {

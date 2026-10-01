@@ -30,6 +30,8 @@ pub enum IssueKind {
     Host,
     /// SDK 本地初始化失败（与 Host 无关）。
     Sdk,
+    /// Host 侧的唤醒被限制（唤醒速率上限）。
+    Wake,
 }
 
 impl IssueKind {
@@ -42,6 +44,7 @@ impl IssueKind {
             IssueKind::Browser => "browser",
             IssueKind::Host => "host",
             IssueKind::Sdk => "sdk",
+            IssueKind::Wake => "wake",
         }
     }
 }
@@ -96,11 +99,13 @@ pub enum ConnectionErrorCode {
     IpcPathTooLong,
     /// SDK 本地初始化失败（如网页 SDK 的 WASM 核心加载失败），没有连接 Host。
     SdkInitFailed,
+    /// Host 侧：该 App 在最近一分钟内的唤醒次数已达上限（spec/lifecycle.md 第 12 节），本次调用不再唤醒。
+    WakeRateLimited,
 }
 
 impl ConnectionErrorCode {
     /// 全部错误码（文档与测试用）。
-    pub const ALL: [ConnectionErrorCode; 23] = [
+    pub const ALL: [ConnectionErrorCode; 24] = [
         Self::HostNotRunning,
         Self::ConnectTimeout,
         Self::ConnectFailed,
@@ -124,6 +129,7 @@ impl ConnectionErrorCode {
         Self::IpcEndpointBusy,
         Self::IpcPathTooLong,
         Self::SdkInitFailed,
+        Self::WakeRateLimited,
     ];
 
     /// 线上的字符串形式（如 `"HOST_NOT_RUNNING"`）。
@@ -152,6 +158,7 @@ impl ConnectionErrorCode {
             Self::IpcEndpointBusy => "IPC_ENDPOINT_BUSY",
             Self::IpcPathTooLong => "IPC_PATH_TOO_LONG",
             Self::SdkInitFailed => "SDK_INIT_FAILED",
+            Self::WakeRateLimited => "WAKE_RATE_LIMITED",
         }
     }
 
@@ -176,6 +183,7 @@ impl ConnectionErrorCode {
             Self::BlockedLocalNetworkAccess | Self::BlockedInsecureContext | Self::BlockedCsp => IssueKind::Browser,
             Self::LockHeld | Self::PortBusy | Self::IpcEndpointBusy | Self::IpcPathTooLong => IssueKind::Host,
             Self::SdkInitFailed => IssueKind::Sdk,
+            Self::WakeRateLimited => IssueKind::Wake,
         }
     }
 
@@ -207,6 +215,7 @@ impl ConnectionErrorCode {
                 "本地 IPC 端点超过系统上限（Unix 套接字路径：Linux 107 字节、macOS 103 字节；Windows 命名管道名：256 字符）"
             }
             Self::SdkInitFailed => "SDK 本地初始化失败（未连接 Host）",
+            Self::WakeRateLimited => "该 App 最近一分钟内被唤醒的次数已达上限，Host 暂不再唤醒它",
         }
     }
 
@@ -252,6 +261,9 @@ impl ConnectionErrorCode {
                 r"用 --ipc-endpoint unix:<较短的绝对路径> / pipe:\\.\pipe\<较短名称>（嵌入式 Hub 为 HubConfig.ipc_endpoint，SDK 为 APP_MCP_ENDPOINT / host_url）指定较短端点，或缩短 XDG_RUNTIME_DIR / --home 所在路径"
             }
             Self::SdkInitFailed => "检查 WASM 文件地址（wasmUrl）能否加载、页面 CSP 是否允许 WebAssembly（'wasm-unsafe-eval'），以及浏览器控制台中的错误",
+            Self::WakeRateLimited => {
+                "稍后重试，或让用户打开该 App；频繁出现说明 App 刚唤醒就休眠（检查其空闲时长 / 租约），必要时调大 Host 的 --wake-rate-limit"
+            }
         }
     }
 }
@@ -280,6 +292,17 @@ impl std::error::Error for ConnectionIssue {}
 impl std::fmt::Display for ConnectionIssue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[{}] {}", self.code, self.message)
+    }
+}
+
+impl ConnectionErrorCode {
+    /// 是否表示"Host 不在"（端点上没有监听者：连接被拒绝、套接字 / 管道不存在）。
+    ///
+    /// @invariant `idle` / `on-demand` 模式下连续以这类码建立连接失败达到上限时，SDK 转入 `Dormant`
+    /// 不再重试（spec/lifecycle.md 第 11 节 A2）。目前只有 [`ConnectionErrorCode::HostNotRunning`]：
+    /// 超时、权限等可能是 Host 卡住或配置错误，不按"不在"处理。
+    pub fn means_host_absent(self) -> bool {
+        matches!(self, Self::HostNotRunning)
     }
 }
 
@@ -327,6 +350,13 @@ mod tests {
         assert_eq!(ConnectionErrorCode::HeartbeatTimeout.kind(), IssueKind::Disconnect);
         assert_eq!(serde_json::to_value(IssueKind::Disconnect).unwrap(), serde_json::json!("disconnect"));
         assert_eq!(ConnectionErrorCode::parse("CONNECTION_CLOSED"), Some(ConnectionErrorCode::ConnectionClosed));
+        assert_eq!(ConnectionErrorCode::WakeRateLimited.kind(), IssueKind::Wake);
+    }
+
+    #[test]
+    fn host_absent_codes() {
+        let absent: Vec<_> = ConnectionErrorCode::ALL.into_iter().filter(|c| c.means_host_absent()).collect();
+        assert_eq!(absent, [ConnectionErrorCode::HostNotRunning]);
     }
 
     /// spec/protocol.md 的错误码表必须列出每个错误码。

@@ -24,6 +24,7 @@ import { describeParseError, isZodLike, toJsonSchema } from './schema'
 import { type BroadcastChannelFactory, InstanceGuard } from './instance-guard'
 import { checkHandlerOrLoad, loadHandler } from './lazy'
 import { channelDisconnectIssue, socketDisconnectIssue } from './disconnect'
+import { hostTransport } from './host-transport'
 import { MuxChannel, type MuxLink } from './mux/link'
 import type { ChannelFailure } from './mux/protocol'
 import { type ConnectionBlock, NetworkGuard, type PermissionState, type PermissionsLike } from './network-guard'
@@ -480,6 +481,8 @@ export class AppMcpDriver implements AppMcp {
         ...(this.options.overview !== undefined && { overview: this.options.overview }),
         ...tokenField(loadToken(this.options.appId)),
         lifecycle: this.coreLifecycle(),
+        transport: hostTransport(this.hostUrls),
+        ...(this.options.heartbeat !== undefined && { heartbeat: { mode: this.options.heartbeat } }),
       })
     } catch (e) {
       this.log.error(`${this.tag} 创建核心失败`, e)
@@ -842,12 +845,13 @@ export class AppMcpDriver implements AppMcp {
       // 重新探测时不再满足拦截条件（如授权已变化）：回到普通的退避重连
       this.blocked = undefined
     }
-    // 连接没能建立：下次重连尝试下一个候选端口（未指定 hostUrl 时）。浏览器不给出失败原因，
-    // 归为 CONNECT_FAILED（spec/protocol.md 10.1）。
+    // 连接没能建立：下次重连尝试下一个候选端口（未指定 hostUrl 时）。浏览器不给出失败原因；浏览器拦截
+    // （LNA / CSP / 非安全上下文）已在上面排除，余下按"Host 不在"归为 HOST_NOT_RUNNING（spec/protocol.md 10.1），
+    // idle / on-demand 下连续多次即停止重连（spec/lifecycle.md 第 11 节）。
     const url = this.hostUrl
     this.nextCandidate()
     this.input((c) =>
-      c.handleConnectFailed('CONNECT_FAILED', `无法连接 ${url}（Host 未运行，或连接被拒绝）`, this.now()),
+      c.handleConnectFailed('HOST_NOT_RUNNING', `无法连接 ${url}（Host 未运行，或连接被拒绝）`, this.now()),
     )
   }
 
@@ -960,6 +964,8 @@ export class AppMcpDriver implements AppMcp {
     if (l.idleTimeoutMs !== undefined) lifecycle.idleTimeoutMs = l.idleTimeoutMs
     if (l.hiddenIdleTimeoutMs !== undefined) lifecycle.hiddenIdleTimeoutMs = l.hiddenIdleTimeoutMs
     if (l.graceMs !== undefined) lifecycle.graceMs = l.graceMs
+    if (l.hostAbsentRetries !== undefined) lifecycle.hostAbsentRetries = l.hostAbsentRetries
+    if (l.legacyTimers !== undefined) lifecycle.legacyTimers = l.legacyTimers
     const href = this.currentHref()
     if (href !== undefined) lifecycle.wake = { kind: 'web-url', target: stripWakeFragment(href) ?? href, background: false }
     return lifecycle

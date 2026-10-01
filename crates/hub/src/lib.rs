@@ -20,6 +20,7 @@ pub mod hub;
 mod instance;
 mod ipc;
 mod lifecycle;
+mod power;
 #[cfg(feature = "mcp-server")]
 pub mod mcp;
 pub mod origin;
@@ -35,15 +36,15 @@ pub use app_mcp_protocol::{Activation, ErrorKind, Risk, ToolError, Visibility};
 pub use format::ToolFormat;
 pub use http_server::{Health, HttpOptions};
 pub use hub::{
-    DEFAULT_TOOL_EXPOSURE_THRESHOLD, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
+    DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
     load_manifests, parse_resource_uri, resource_uri,
 };
 #[cfg(feature = "mcp-server")]
 pub use mcp::McpSession;
 pub use types::{
     AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy,
-    ApprovalRequest, AuthStatus, Availability, CallOutcome, CallRequest, DiagnosticReport, HubError,
-    HubEvent, HubResource, HubStatus, HubTool, InstanceInfo, InstanceState, InstanceStatus, LastError,
+    ApprovalRequest, AuthStatus, Availability, AwakeReason, CallOutcome, CallRequest, DiagnosticReport, HubError,
+    HubEvent, HubResource, HubStatus, HubTool, InstanceInfo, InstancePower, InstanceState, InstanceStatus, LastError,
     PairingHandler, PairingRequest, ResourceContent, ToolExposure, ToolFilter, risk_rank,
 };
 pub use upstream::UpstreamConfig;
