@@ -1,7 +1,7 @@
 /*
  * 测试用的假 libapp_mcp：按 app_mcp.h 实现全部函数，但不连接 Host。
  *
- * 所有回调都在新建的 pthread 上触发（模拟库的分发线程）。按 API 版本 2，状态 / 配对 / 日志
+ * 所有回调都在新建的线程（pthread / Win32 线程）上触发（模拟库的分发线程）。按 API 版本 2，状态 / 配对 / 日志
  * 回调中的字符串归接收方所有；假库记录这些字符串，am_string_free 时注销，
  * fake_owned_outstanding 返回尚未释放的数量，用来检验 Dart 封装会释放它们。
  * 额外导出 fake_* 函数供测试驱动调用、取消与状态变化。
@@ -11,18 +11,35 @@
  * fake_idle_exit 在其他线程触发 on_idle_exit。
  *
  * 编译：cc -shared -fPIC -o libfake_app_mcp.so fake_app_mcp.c -lpthread
+ * Windows（MSVC）：cl /c /utf-8 编译后按 dumpbin /symbols 中的外部函数生成 .def 再 link /DLL
+ * （与 cc 默认导出全部非 static 函数一致，见 test/support/fake_native.dart）。
  */
 #include "../../../../../bindings/c/include/app_mcp.h"
 
-#include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+/* ------------------------------------------------------------------ 平台差异：线程、锁 */
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <process.h>
+#define FAKE_THREAD_LOCAL __declspec(thread)
+static SRWLOCK g_lock = SRWLOCK_INIT;
+static void lock_global(void) { AcquireSRWLockExclusive(&g_lock); }
+static void unlock_global(void) { ReleaseSRWLockExclusive(&g_lock); }
+#else
+#include <pthread.h>
+#define FAKE_THREAD_LOCAL __thread
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static void lock_global(void) { pthread_mutex_lock(&g_lock); }
+static void unlock_global(void) { pthread_mutex_unlock(&g_lock); }
+#endif
+
 static int g_free_count = 0;
-static __thread char g_last_error[256];
+static FAKE_THREAD_LOCAL char g_last_error[256];
 
 static char *dup_str(const char *s) {
     if (!s) return NULL;
@@ -112,10 +129,26 @@ static int scope_alive(ScopeRec *s) {
 
 typedef void (*job_fn)(void *);
 typedef struct { job_fn f; void *arg; } Job;
-static void *job_main(void *p) {
+static void job_run(void *p) {
     Job j = *(Job *)p;
     free(p);
     j.f(j.arg);
+}
+#ifdef _WIN32
+static unsigned __stdcall job_main(void *p) {
+    job_run(p);
+    return 0;
+}
+static void run_on_thread(job_fn f, void *arg) {
+    Job *j = malloc(sizeof *j);
+    j->f = f;
+    j->arg = arg;
+    uintptr_t t = _beginthreadex(NULL, 0, job_main, j, 0, NULL);
+    if (t) CloseHandle((HANDLE)t);
+}
+#else
+static void *job_main(void *p) {
+    job_run(p);
     return NULL;
 }
 static void run_on_thread(job_fn f, void *arg) {
@@ -126,14 +159,15 @@ static void run_on_thread(job_fn f, void *arg) {
     pthread_create(&t, NULL, job_main, j);
     pthread_detach(t);
 }
+#endif
 
 typedef struct { AmFreeFn f; void *ud; } FreeJob;
 static void free_job(void *p) {
     FreeJob *j = p;
     j->f(j->ud);
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     g_free_count++;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     free(j);
 }
 /* 在另一个线程上调用 free_user_data（头文件允许任意线程）。 */
@@ -155,21 +189,21 @@ static int g_owned_total = 0;
 static char *give_owned(const char *s) {
     char *p = dup_str(s);
     if (!p) return NULL;
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     for (int i = 0; i < (int)(sizeof g_owned / sizeof g_owned[0]); i++) {
         if (!g_owned[i]) { g_owned[i] = p; break; }
     }
     g_owned_total++;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return p;
 }
 void am_string_free(char *s) {
     if (!s) return;
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     for (int i = 0; i < (int)(sizeof g_owned / sizeof g_owned[0]); i++) {
         if (g_owned[i] == s) { g_owned[i] = NULL; break; }
     }
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     free(s);
 }
 
@@ -269,14 +303,14 @@ static void state_job(void *p) {
     free(j);
 }
 static void emit_state_code(AmClient *c, int status, uint64_t retry, const char *reason, const char *code) {
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     c->status = status;
     c->retry = retry;
     free(c->reason);
     c->reason = dup_str(reason);
     free(c->code);
     c->code = dup_str(code);
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     StateJob *j = malloc(sizeof *j);
     j->c = c; j->status = status; j->retry = retry; j->reason = give_owned(reason);
     run_on_thread(state_job, j);
@@ -305,7 +339,7 @@ AmStatus am_client_set_visibility(AmClient *c, AmVisibility v, bool focused) {
 }
 AmStatus am_client_state(const AmClient *c, AmStateStatus *status, uint64_t *retry, char **reason) {
     if (!c || !status) return AM_ERR_INVALID_ARGUMENT;
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     *status = (AmStateStatus)c->status;
     if (retry) *retry = c->retry;
     if (reason) {
@@ -314,31 +348,31 @@ AmStatus am_client_state(const AmClient *c, AmStateStatus *status, uint64_t *ret
         *reason = always ? dup_str(c->reason ? c->reason : "")
                          : (c->status == AM_STATE_BACKOFF ? dup_str(c->reason) : NULL);
     }
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return AM_OK;
 }
 /* v6：与真实库一致，只在 BACKOFF / REJECTED / HOST_MISMATCH 时可能非 NULL。 */
 AmStatus am_client_state_code(const AmClient *c, char **code) {
     if (!c || !code) return AM_ERR_INVALID_ARGUMENT;
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     int has = c->status == AM_STATE_BACKOFF || c->status == AM_STATE_REJECTED || c->status == AM_STATE_HOST_MISMATCH;
     *code = has ? dup_str(c->code) : NULL;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return AM_OK;
 }
 /* v6：CONNECTED 时返回固定的假连接 ID。 */
 AmStatus am_client_connection_id(const AmClient *c, char **id) {
     if (!c || !id) return AM_ERR_INVALID_ARGUMENT;
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     *id = c->status == AM_STATE_CONNECTED ? dup_str("fake-cid-1") : NULL;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return AM_OK;
 }
 char *am_client_instance_id(const AmClient *c) { return dup_str(c->instance_id); }
 char *am_client_token(const AmClient *c) {
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     char *t = dup_str(c->token);
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return t;
 }
 AmStatus am_client_root_scope(AmClient *c, AmScope **out) {
@@ -381,10 +415,10 @@ AmStatus am_client_sleep_with_reason(AmClient *c, AmSleepReason reason, bool *ch
     if (!c) return AM_ERR_INVALID_ARGUMENT;
     char buf[16];
     snprintf(buf, sizeof buf, "%d", (int)reason);
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     free(g_last_sleep);
     g_last_sleep = dup_str(buf);
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     int was = c->status != AM_STATE_DORMANT;
     emit_state(c, AM_STATE_DORMANT, 0, NULL);
     if (changed) *changed = was;
@@ -393,9 +427,9 @@ AmStatus am_client_sleep_with_reason(AmClient *c, AmSleepReason reason, bool *ch
 AmStatus am_client_sleep(AmClient *c, bool *changed) { return am_client_sleep_with_reason(c, AM_SLEEP_REASON_APP, changed); }
 static AmHold *new_hold(void) {
     AmHold *h = calloc(1, sizeof *h);
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     g_holds++;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return h;
 }
 AmStatus am_client_hold(AmClient *c, AmHold **out) {
@@ -405,9 +439,9 @@ AmStatus am_client_hold(AmClient *c, AmHold **out) {
 }
 void am_hold_release(AmHold *h) {
     if (!h) return;
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     g_holds--;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     free(h);
 }
 char *am_client_tools_hash(const AmClient *c) {
@@ -434,18 +468,18 @@ void fake_idle_exit(void) {
     run_on_thread(idle_exit_job, j);
 }
 int fake_hold_count(void) {
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     int n = g_holds;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return n;
 }
 /* 最近一次生命周期配置（需 am_string_free）；没有 options 时返回 NULL。 */
 char *fake_lifecycle(void) { return dup_str(g_lifecycle); }
 /* 最近一次 sleep 的原因（需 am_string_free）。 */
 char *fake_last_sleep(void) {
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     char *s = dup_str(g_last_sleep);
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return s;
 }
 
@@ -611,30 +645,30 @@ const char *am_call_id(const AmCall *call) { return call->id; }
 const char *am_call_tool_name(const AmCall *call) { return call->tool_name; }
 const char *am_call_arguments_json(const AmCall *call) { return call->args; }
 bool am_call_is_cancelled(const AmCall *call) {
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     int c = call->cancelled;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return c;
 }
 AmStatus am_call_set_cancel_callback(AmCall *call, AmCancelFn on_cancel, void *ud, AmFreeFn free_ud) {
     if (!call || !on_cancel) return AM_ERR_INVALID_ARGUMENT;
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     call->on_cancel = on_cancel;
     call->cancel_ud = ud;
     call->cancel_free = free_ud;
     int cancelled = call->cancelled;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     if (cancelled) on_cancel(ud, AM_CANCEL_REQUESTED);
     return AM_OK;
 }
 
 static void consume(AmCall *call, char *result) {
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     g_results[call->index] = result;
     g_calls[call->index] = NULL;
     AmFreeFn f = call->cancel_free;
     void *ud = call->cancel_ud;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     release_user_data(f, ud);
     free(call->id);
     free(call->tool_name);
@@ -700,9 +734,9 @@ AmStatus am_read_complete(AmRead *read, const char *contents_json) {
     size_t cap = 32 + strlen(contents_json);
     char *buf = malloc(cap);
     snprintf(buf, cap, "{\"ok\":true,\"contents\":%s}", contents_json);
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     g_results[read->index] = buf;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     free(read->name);
     free(read);
     return AM_OK;
@@ -712,9 +746,9 @@ AmStatus am_read_fail(AmRead *read, const char *kind, const char *message) {
     size_t cap = 64 + strlen(kind) + strlen(message);
     char *buf = malloc(cap);
     snprintf(buf, cap, "{\"ok\":false,\"kind\":\"%s\",\"message\":\"%s\"}", kind, message);
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     g_results[read->index] = buf;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     free(read->name);
     free(read);
     return AM_OK;
@@ -734,9 +768,9 @@ int fake_invoke(const char *tool, const char *args_json) {
     AmClient *c = g_client;
     ToolRec *t = find_tool(c, tool);
     if (!t || !t->enabled) return -1;
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     int idx = g_n_calls++;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     AmCall *call = calloc(1, sizeof *call);
     call->index = idx;
     char id[32];
@@ -764,9 +798,9 @@ int fake_read(const char *name) {
     for (int i = 0; i < c->n_res; i++)
         if (!c->res[i]->disposed && scope_alive(c->res[i]->scope) && strcmp(c->res[i]->name, name) == 0) r = c->res[i];
     if (!r) return -1;
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     int idx = g_n_calls++;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     AmRead *read = calloc(1, sizeof *read);
     read->index = idx;
     read->name = dup_str(name);
@@ -785,13 +819,13 @@ static void cancel_job(void *p) {
 }
 /* 取消进行中的调用；已完成时返回 0。 */
 int fake_cancel(int idx, int reason) {
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     AmCall *call = g_calls[idx];
-    if (!call || call->cancelled) { pthread_mutex_unlock(&g_lock); return 0; }
+    if (!call || call->cancelled) { unlock_global(); return 0; }
     call->cancelled = 1;
     AmCancelFn f = call->on_cancel;
     void *ud = call->cancel_ud;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     if (f) {
         CancelJob *j = malloc(sizeof *j);
         j->f = f; j->ud = ud; j->reason = reason;
@@ -802,9 +836,9 @@ int fake_cancel(int idx, int reason) {
 
 /* 结果 JSON（需 am_string_free）；未完成时返回 NULL。 */
 char *fake_result(int idx) {
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     char *r = dup_str(g_results[idx]);
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return r;
 }
 
@@ -822,10 +856,10 @@ static void pair_job(void *p) {
 }
 void fake_pair(const char *token) {
     AmClient *c = g_client;
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     free(c->token);
     c->token = dup_str(token);
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     PairJob *j = malloc(sizeof *j);
     j->c = c;
     j->token = give_owned(token);
@@ -849,25 +883,25 @@ void fake_log(int level, const char *message) {
 }
 /* 交给回调方但尚未 am_string_free 的字符串数量。 */
 int fake_owned_outstanding(void) {
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     int n = 0;
     for (int i = 0; i < (int)(sizeof g_owned / sizeof g_owned[0]); i++)
         if (g_owned[i]) n++;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return n;
 }
 /* 交给回调方的字符串总数。 */
 int fake_owned_total(void) {
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     int n = g_owned_total;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return n;
 }
 
 int fake_free_count(void) {
-    pthread_mutex_lock(&g_lock);
+    lock_global();
     int n = g_free_count;
-    pthread_mutex_unlock(&g_lock);
+    unlock_global();
     return n;
 }
 int fake_visibility(void) { return g_visibility; }

@@ -109,4 +109,15 @@ if(BASH_PROGRAM)
   add_test(NAME lifecycle_cpp
     COMMAND ${BASH_PROGRAM} "${CMAKE_CURRENT_SOURCE_DIR}/tests/with_fake_host.sh" "$<TARGET_FILE:lifecycle_cpp_test>")
   set_tests_properties(lifecycle_c lifecycle_cpp PROPERTIES LABELS "integration;lifecycle" TIMEOUT 120)
+
+  # 经本地 IPC 正向连接：Windows 每进程独立命名管道、其他平台临时目录下的 Unix 套接字（不用默认端点）。
+  add_executable(ipc_cpp_test tests/ipc_cpp.cpp)
+  target_link_libraries(ipc_cpp_test PRIVATE app_mcp_cpp)
+  target_compile_options(ipc_cpp_test PRIVATE ${_warn})
+  if(NOT WIN32)
+    target_compile_definitions(ipc_cpp_test PRIVATE _POSIX_C_SOURCE=200809L)
+  endif()
+  add_test(NAME ipc_cpp
+    COMMAND ${BASH_PROGRAM} "${CMAKE_CURRENT_SOURCE_DIR}/tests/with_fake_host.sh" "$<TARGET_FILE:ipc_cpp_test>")
+  set_tests_properties(ipc_cpp PROPERTIES LABELS "integration;ipc" TIMEOUT 120)
 endif()

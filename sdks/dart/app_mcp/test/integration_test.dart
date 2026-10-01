@@ -33,8 +33,10 @@ final class FakeHost {
   final String addr;
   final StreamQueue lines;
 
-  static Future<FakeHost> start(List<String> args) async {
-    final p = await Process.start(fakeHostPath!, ['--addr', '127.0.0.1:0', ...args]);
+  /// [listen] 为监听参数：默认 TCP 随机端口；`['--ipc', <端点>]` 时监听本地 IPC，[addr] 为端点字符串本身。
+  static Future<FakeHost> start(List<String> args,
+      {List<String> listen = const ['--addr', '127.0.0.1:0']}) async {
+    final p = await Process.start(fakeHostPath!, [...listen, ...args]);
     p.stderr.transform(utf8.decoder).listen((s) => stderr.write('[fake_host] $s'));
     final queue = StreamQueue(p.stdout.transform(utf8.decoder).transform(const LineSplitter()));
     final first = await queue.next.timeout(const Duration(seconds: 10));
@@ -178,6 +180,53 @@ void main() {
     } finally {
       host.process.kill();
       client.dispose();
+    }
+  }, skip: skip, timeout: const Timeout(Duration(seconds: 60)));
+
+  test('经本地 IPC 正向连接（Windows 每进程命名管道 / 临时目录 Unix 套接字）：连接、connectionId、调用', () async {
+    // @why 不用平台默认端点：常驻 Host 可能正在用。
+    final Directory? dir =
+        Platform.isWindows ? null : Directory.systemTemp.createTempSync('app_mcp_dart_ipc_');
+    final endpoint = Platform.isWindows
+        ? 'pipe:\\\\.\\pipe\\app-mcp-dart-test-$pid'
+        : 'unix:${dir!.path}/h.sock';
+    final host = await FakeHost.start(['--invoke', 'greet', '--timeout-ms', '15000'],
+        listen: ['--ipc', endpoint]);
+    expect(host.addr, endpoint);
+    final client = AppMcp(
+      appId: 'dart-ipc',
+      appName: 'Dart IPC',
+      hostUrl: endpoint,
+      libraryPath: nativePath,
+      connectTimeout: const Duration(seconds: 5),
+    );
+    final states = <ConnectionStatus>[];
+    client.states.listen((s) => states.add(s.status));
+    String? cidInCall;
+    client.tool('greet', description: '问候', handler: (args, ctx) {
+      cidInCall = client.connectionId;
+      return 'Hello over IPC!';
+    });
+    client.start();
+    try {
+      final tools = await host.nextJson();
+      expect(tools['type'], 'tools');
+      expect(tools['tools'], contains('greet'));
+
+      final greet = await host.nextJson();
+      expect(greet['type'], 'invoke');
+      expect(greet['name'], 'greet');
+      expect((greet['result'] as Map)['data'], 'Hello over IPC!');
+      expect(cidInCall, isNotNull);
+      expect(cidInCall, isNotEmpty);
+      expect(cidInCall, startsWith('fake-'));
+
+      expect(await host.process.exitCode.timeout(const Duration(seconds: 10)), 0);
+      expect(states, contains(ConnectionStatus.connected));
+    } finally {
+      host.process.kill();
+      client.dispose();
+      dir?.deleteSync(recursive: true);
     }
   }, skip: skip, timeout: const Timeout(Duration(seconds: 60)));
 

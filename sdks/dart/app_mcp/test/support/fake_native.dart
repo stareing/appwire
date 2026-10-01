@@ -1,25 +1,83 @@
-// 编译并加载 test/fake_native/fake_app_mcp.c（需要 cc）。
+// 编译并加载 test/fake_native/fake_app_mcp.c（Linux / macOS 用 cc；Windows 用 MSVC 生成工具）。
 import 'dart:ffi';
 import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
-/// 编译假库，返回路径；没有 C 编译器时返回 null。
+/// 编译假库，返回路径；没有可用的 C 编译器时返回 null。
 String? buildFakeLibrary() {
-  if (!Platform.isLinux && !Platform.isMacOS) return null;
   final src = File('test/fake_native/fake_app_mcp.c').absolute.path;
   final dir = Directory.systemTemp.createTempSync('app_mcp_fake_');
+  if (Platform.isWindows) return _buildWithMsvc(src, dir);
+  if (!Platform.isLinux && !Platform.isMacOS) return null;
   final out = '${dir.path}/${Platform.isMacOS ? 'libfake_app_mcp.dylib' : 'libfake_app_mcp.so'}';
+  return _run('cc', ['-shared', '-fPIC', '-o', out, src, '-lpthread']) ? out : null;
+}
+
+/// 运行命令，成功时返回 stdout；失败时把输出写到 stderr 并返回 null。
+String? _runOutput(String exe, List<String> args, {String? workingDirectory}) {
   try {
-    final r = Process.runSync('cc', ['-shared', '-fPIC', '-o', out, src, '-lpthread']);
-    if (r.exitCode != 0) {
-      stderr.writeln('编译假库失败：${r.stderr}');
-      return null;
-    }
+    final r = Process.runSync(exe, args, workingDirectory: workingDirectory);
+    if (r.exitCode == 0) return r.stdout as String;
+    stderr.writeln('编译假库失败（$exe ${args.join(' ')}）：${r.stdout}${r.stderr}');
   } on ProcessException {
+    // 工具不存在。
+  }
+  return null;
+}
+
+bool _run(String exe, List<String> args) => _runOutput(exe, args) != null;
+
+/// Windows：经 vswhere 找到 VS（含生成工具）的 vcvars64.bat，在其环境中用 cl / dumpbin / link 生成 DLL。
+///
+/// @why MSVC 不像 cc 那样默认导出全部非 static 函数，而 app_mcp.h 的声明不带 dllexport（定义处再加会
+///      报 C2375）。因此先 `cl /c` 编译，从 `dumpbin /symbols` 取出已定义的 am_* / fake_* 外部函数生成 .def，再 `link /DLL`，
+///      导出集合与 Linux 一致，源文件无需维护导出表。
+String? _buildWithMsvc(String src, Directory dir) {
+  final vcvars = _findVcvars64();
+  if (vcvars == null) return null;
+  // cl.exe / link.exe 依赖 vcvars 设置的 INCLUDE / LIB / PATH：每步写一个 .cmd，先 call 再执行。
+  // @why 脚本名加前缀：cmd 先在当前目录查找命令，名为 link.cmd 会被其中的 link 递归调用。
+  String? msvc(String name, String command) {
+    final script = File('${dir.path}\\step_$name.cmd')
+      ..writeAsStringSync('@echo off\r\ncall "$vcvars" >nul || exit /b 1\r\n$command\r\n');
+    return _runOutput('cmd.exe', ['/c', script.path], workingDirectory: dir.path);
+  }
+
+  // /utf-8：源文件含中文注释（UTF-8 无 BOM）。
+  if (msvc('compile', 'cl /nologo /c /utf-8 /W3 /Fo:fake_app_mcp.obj "$src"') == null) return null;
+  final symbols = msvc('symbols', 'dumpbin /nologo /symbols fake_app_mcp.obj');
+  if (symbols == null) return null;
+  // 形如 `01A 00000000 SECT5  notype ()    External     | am_version`：已定义（SECTn）的外部函数。
+  final exported = RegExp(r'^\S+ \S+ SECT\w+\s+notype \(\)\s+External\s+\| (\w+)\s*$', multiLine: true)
+      .allMatches(symbols)
+      .map((m) => m.group(1)!)
+      // 只导出 C ABI（am_*）与测试驱动（fake_*）；跳过 CRT 头文件中的内联函数（snprintf 等）。
+      .where((name) => name.startsWith('am_') || name.startsWith('fake_'))
+      .toList();
+  if (exported.isEmpty) {
+    stderr.writeln('编译假库失败：dumpbin 未列出任何外部函数');
     return null;
   }
-  return out;
+  File('${dir.path}\\fake_app_mcp.def').writeAsStringSync('EXPORTS\r\n${exported.join('\r\n')}\r\n');
+  final out = '${dir.path}\\fake_app_mcp.dll';
+  final linked =
+      msvc('link', 'link /nologo /DLL /DEF:fake_app_mcp.def "/OUT:$out" fake_app_mcp.obj');
+  return linked == null ? null : out;
+}
+
+/// 用 vswhere 找含 x64 C++ 工具的最新 VS 的 vcvars64.bat；找不到时返回 null。
+String? _findVcvars64() {
+  final programFiles = Platform.environment['ProgramFiles(x86)'] ?? r'C:\Program Files (x86)';
+  final vswhere = '$programFiles\\Microsoft Visual Studio\\Installer\\vswhere.exe';
+  if (!File(vswhere).existsSync()) return null;
+  final found = _runOutput(vswhere, [
+    '-latest', '-products', '*',
+    '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+    '-find', r'VC\Auxiliary\Build\vcvars64.bat',
+  ]);
+  final first = found?.trim().split(RegExp(r'\r?\n')).first.trim();
+  return first == null || first.isEmpty || !File(first).existsSync() ? null : first;
 }
 
 /// 假库额外导出的测试驱动函数。
