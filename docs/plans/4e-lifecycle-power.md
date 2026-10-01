@@ -37,8 +37,8 @@ App 端只保留很短的合并窗口；最终形态由 4d"按调用临时建立
 | U2 | Android 冻结缓存进程（freezer）后持有的连接：Hub ping 无响应是否断开、解冻后是否误判 | 同上，真机测 |
 | U3 | 加急 WorkManager 配额耗尽后的延迟；Flyme 等 OEM 后台限制（杀进程、拦截广播） | 真机构造配额耗尽；记为 OEM 差异项 |
 | U4 | Doze 期间本机回环 / `adb reverse` 是否可达 | `adb shell dumpsys deviceidle force-idle` 下测 |
-| U5 | Chrome 隐藏标签页计时器限流（≥ 1 分钟对齐）是否导致网页心跳误判；SharedWorker 是否同样受限 | 浏览器实测 |
-| U6 | Windows EcoQoS / 效率模式、macOS App Nap 对桌面运行时线程的影响 | 桌面实测；macOS 无环境，记为待验证 |
+| U5 | Chrome 隐藏标签页计时器限流（≥ 1 分钟对齐）是否导致网页心跳误判；SharedWorker 是否同样受限 | 浏览器实测 | （**已实测 2026-10-02**，Chrome 154 / Windows，后台标签页经原始 CDP 驱动：页面链式 1 s 计时器约 2 分钟后进入 60 s 密集限流；SharedWorker 不受限（249 次平均 1008 ms）；`heartbeat: 'always'` 时共享连接与直连标签页在 8 分钟以上的密集限流中心跳保持约 15–16.5 s、无断开；隐藏 idle 标签页 5.96 s 休眠（设定 5 s）；调用限流中的标签页 4.6–6.2 ms；Host 停 10 s 后两标签页在其就绪后 0.6 s 回连。问题：URL 唤醒休眠的隐藏标签页会**新开**标签页，原标签页一直休眠（见 TASKS 已有"web-url 唤醒打开的浏览器标签页"条目）。未测：真实最小化 / 遮挡窗口、标签页冻结、省电模式）
+| U6 | Windows EcoQoS / 效率模式、macOS App Nap 对桌面运行时线程的影响 | 桌面实测；macOS 无环境，记为待验证 | （**已实测 2026-10-02**，C# 示例 idle 5 s、Core Ultra 9 290HX Plus：效率模式（EcoQoS + IDLE 优先级）空闲机器上唤醒 + 调用 41–104 ms、末次调用到休眠 2009–2015 ms，与正常相当；24 线程满载下仅 EcoQoS 44–239 ms；**IDLE 优先级 + 满载时唤醒失败**（单实例管道监听线程得不到 CPU，唤醒转发 5 s 超时 → `LAUNCH_FAILED`，负载结束后恢复），满载下首次空闲休眠延迟到 8.8 s。另发现：Host 停 10 s 后 App 按 A2 转休眠，重启的 Host 不知道该实例（`TOOL_NOT_FOUND`）、无法唤醒——设计缺口，记入生命周期缺口。macOS App Nap 未测）
 | U7 | 各 Agent 的调用节奏（同一轮工具调用内的调用间隔分布） | 不预设：由 Hub 统计（B2），默认值保守 |
 
 ## 3. 未知的已知（项目已有、未充分利用的能力）

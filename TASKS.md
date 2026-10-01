@@ -194,7 +194,7 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
      - 验证：`cargo test -p app-mcp-hub` 全过（lifecycle 20）、clippy 0 警告；Kotlin `:app-mcp:test` 15、`:app-mcp-android:testDebugUnitTest` 18（HEAD + 修复的独立工作树中运行，主工作树有并行改动，只编译验证）；A/B 与修复后 APK 均由该工作树构建
      - 待跟进：Flyme 冻结后广播不可达 → 4d（`bindService` 等可解冻路径）；后台被 Host 唤醒的连接按租约在线（默认最长约 32 s，短于冻结的 60 s）——是否对"隐藏时建立的连接"也立即休眠待定；Doze 中 adb reverse 不可达只影响开发链路，真实部署（设备上 Hub / 远程）未测；本轮只重编 arm64-v8a
    - 验收：spec/lifecycle.md 写明新规则与回退开关；cargo / pnpm 全量测试与 clippy 0；魅族 18 Pro 前后对比（一组调用后在线秒数、唤醒次数、CPU 时间、Host 不在时 1 小时唤醒次数、冻结 / Doze）；浏览器隐藏标签页限流、Windows 效率模式实测
-     - 状态（2026-10-02）：除浏览器隐藏标签页限流（U5）与 Windows 效率模式（U6）实测外均已完成；U5 / U6 仍待做
+     - 状态（2026-10-02）：全部完成；U5 / U6 实测结果见 `docs/plans/4e-lifecycle-power.md` 第 2 节（IDLE 优先级满载唤醒失败、重启 Host 不认识休眠实例、URL 唤醒新开标签页三项另行跟踪）
    - P2（按调用临时建立连接、系统对端死亡通知）并入 4d
 4c. [ ] 界面级精准暴露 + 页面渐进披露（2026-10-01 加入；4e 完成后做）
    - 原则：不依赖界面的能力是 `app` 工具（后台可调、可唤醒、进清单）；依赖界面的是 `view` 工具，只在"真正可见且处于最上层"时启用；非当前页面的能力经页面目录渐进披露，调用时以与唤醒同构的方式先导航再派发
