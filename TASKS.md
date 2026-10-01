@@ -247,7 +247,8 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - 第三部分：S6 外部内容数据边界标记；S7 读取外部内容后 N 次调用内高风险工具必须确认
    - 待验证：Claude Code 是否声明 elicitation 能力；MCP 2026-07-28 下 elicitation 形态（随第 12 项）
    - 第四部分（授权模式，2026-10-02 加入）：`interactive` / `unattended` 两种情境显式声明；判定顺序 拒绝规则 → 授权命中 → 实时确认 → 异步审批（`APPROVAL_PENDING` + 票据，凭票重试幂等）→ 拒绝（`UNATTENDED_NOT_AUTHORIZED`）；S8 授权模型（Agent × 范围 × 风险上限 × 约束 × 情境，`<home>/grants.json`）；S9 `grant add/list/revoke/pause/resume`；S10 `ApprovalHandler` 决定枚举（兼容布尔）；S11 异步审批；S12 无人值守不抢前台、不弹选择框、禁像素兜底；S13 异常熔断
-   - 待机主确认：`payment` 能否事先授权（默认不可，仅异步审批；可选受限授权：金额上限 + ≤ 30 天 + 指定收款方）
+   - 已决定（2026-10-02）：`payment` 不可事先授权，无人值守下只能逐笔异步审批
+   - 第五部分（风险划分，2026-10-02 加入）：单一线性 `risk` 改为多维声明——作用（read / write / destructive）× 影响范围（self / shared / external）× 敏感类别（financial、security、legal、physical、identity、personal-data、device、egress）× 可撤销 × 参数相关风险；Hub 推导确认等级 A 自动 / B 记录 / C 确认（授权须带约束）/ D 必确认（不可授权、无人值守只能逐笔异步审批、可要求系统级身份验证）；旧 `risk` 兼容映射；声明只升不降（关键词启发式、用户覆盖、D 级不可调低）；S14 协议与清单字段、S15 推导规则表、S16 启发式与覆盖、S17 各 SDK / build / codegen
 15. [ ] 体验与生态（2026-10-02 加入；组间独立，与 4c / 4d 穿插）——计划见 `docs/plans/15-experience-ecosystem.md`
    - X 用户体验：X1 "AI 正在操作"提示与控件高亮、后台调用留痕；X2 `undo` + `history.undo`；X3 Host 托盘（已连 App、配对 / 审批弹窗、审计查看，先做选型验证）；X4 `batch` 工具（子调用逐个审批与审计）
    - Y 开发者体验：Y1 一致性测试套件（第 14 项后首先做）；Y2 DevTools 面板与调用录制回放；Y3 Vue / Svelte 适配；Y4 Agent 侧类型化客户端用法与文档
