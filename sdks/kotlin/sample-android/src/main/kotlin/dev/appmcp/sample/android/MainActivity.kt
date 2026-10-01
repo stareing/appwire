@@ -37,7 +37,7 @@ class MainActivity : Activity() {
             client.state.combine(app.counter) { s, n -> s to n }.collect { (s, n) ->
                 val status = "${s.status}${s.reason?.let { " ($it)" } ?: ""}"
                 Log.i(TAG, "state=$status")
-                label.text = "app-mcp 示例（idle 模式：空闲 10 s / 后台 5 s 休眠）\n\n" +
+                label.text = "app-mcp 示例（on-demand：前台连接 / 无调用 10 s 或进入后台休眠）\n\n" +
                     "状态：$status\n计数：$n\ntoolsHash：${client.toolsHash}"
             }
         }

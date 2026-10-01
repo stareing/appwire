@@ -109,6 +109,16 @@ app.deep_link().on_open_url(move |event| {
 唤醒描述用 `uri`（`config.lifecycle.wake = Some(WakeDescriptor { kind: WakeKind::Uri, target: Some("shop://".into()), background: false })`），
 scheme 由 `tauri-plugin-deep-link` 注册。
 
+**策略与 4e 开关**：插件原样使用传入的 `NativeConfig`，不按平台改默认值——生命周期缺省 `persistent`（核心默认）。
+`idle` / `on-demand` 需要唤醒途径（上面的单实例 + deep link + 唤醒描述），否则休眠后 Host 只能按清单 `launch` 冷启动新实例；
+确认接好后自行设置。其余开关都在 `NativeConfig` 上：`heartbeat`（`HeartbeatMode::Auto` 缺省 / `Always` / `Off`）、
+`lifecycle.host_absent_retries`（3，0 = 一直重连）、`merge_window_ms`（2000）、`sleep_on_background`（`false`；移动端建议 `true`）、
+`legacy_timers`（`false`），见 spec/lifecycle.md 第 3、11、13 节。
+
+**实时资源**：页面声明 `realtime: true` 的资源（`@app-mcp/web` 的 `resource(name, { realtime: true, ... })`）经桥接以
+`ResourceOptions { realtime: true }` 登记；Rust 侧用 `client().register_resource_with(spec, ResourceOptions { realtime: true }, reader)`。
+缺省 `false`：订阅不阻止休眠（第 13 节 B3）。
+
 ## 构建与测试
 
 本 crate 是**独立 workspace**（不在根 `Cargo.toml` 中）：Tauri 在 Linux 上依赖 webkit2gtk-4.1，放进根 workspace 会让

@@ -28,6 +28,14 @@ export interface LifecycleInit {
   /** 'keep' | 'exit-when-idle' | 'exit-always' */
   residency?: string;
   wake?: WakeInit;
+  /** `idle` / `on-demand` 下连续多少次"Host 不在"后转休眠；默认 3，0 = 一直重连。 */
+  hostAbsentRetries?: number;
+  /** 回退到 4e 之前的定时器行为。默认 false。 */
+  legacyTimers?: boolean;
+  /** 调用 / 资源读取后的合并窗口（毫秒）。默认 2000。 */
+  mergeWindowMs?: number;
+  /** `idle` / `on-demand` 下进入后台且空闲时立即休眠。默认 false。 */
+  sleepOnBackground?: boolean;
 }
 
 export interface ClientConfig {
@@ -45,6 +53,8 @@ export interface ClientConfig {
   overview?: OverviewInit;
   lifecycle?: LifecycleInit;
   connectTimeoutMs?: number;
+  /** 'auto'（默认）| 'always' | 'off' */
+  heartbeat?: string;
 }
 
 export interface JsStateInfo {
@@ -77,6 +87,8 @@ export interface ResourceSpecInit {
   name: string;
   description: string;
   mimeType?: string;
+  /** 需实时推送：被订阅时保持连接、休眠中变化时回连推送。默认 false。 */
+  realtime?: boolean;
 }
 
 export class Hold {

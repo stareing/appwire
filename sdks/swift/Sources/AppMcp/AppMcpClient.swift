@@ -308,17 +308,21 @@ public class ToolRegistrar: @unchecked Sendable {
     }
 
     /// 注册资源，读取函数在主 actor 上执行。
+    ///
+    /// `realtime`：需实时推送（spec/lifecycle.md 第 13 节 B3）——被订阅时阻止休眠、休眠中变化时回连推送；
+    /// 默认 `false`：订阅不阻止休眠，变化在下次连接时补发。
     @discardableResult
     public func resource<Output: Encodable>(
         _ name: String,
         description: String,
         mimeType: String? = nil,
+        realtime: Bool = false,
         reader: @escaping @MainActor () async throws -> Output
     ) throws -> ResourceHandle {
         let bridge = ReaderBridge(target: .mainActor, timeout: dispatchTimeout) {
             try encodeJSON(try await reader())
         }
-        let raw = try registerRaw(ResourceSpec(name: name, description: description, mimeType: mimeType), bridge)
+        let raw = try registerRaw(ResourceSpec(name: name, description: description, mimeType: mimeType, realtime: realtime), bridge)
         return ResourceHandle(inner: raw)
     }
 
@@ -380,22 +384,7 @@ public final class AppMcpClient: ToolRegistrar, @unchecked Sendable {
 
     public init(config: AppMcpConfig) throws {
         let lifecycle = config.lifecycle ?? .platformDefault
-        let ffiConfig = ClientConfig(
-            appId: config.appId,
-            appName: config.appName,
-            instanceId: config.instanceId,
-            clientKind: nil,
-            hostUrl: config.hostURL,
-            appVersion: config.appVersion,
-            instanceTitle: config.instanceTitle,
-            token: config.token,
-            launchToken: config.launchToken,
-            maxConcurrentCalls: UInt32(max(1, config.maxConcurrentCalls)),
-            overview: config.overview,
-            lifecycle: lifecycle.ffi,
-            connectTimeoutMs: config.connectTimeout.map { UInt32(max(1, min(Double(UInt32.max), $0 * 1000))) }
-        )
-        inner = try AppMcpBindings.AppMcpClient(config: ffiConfig, listener: ListenerBridge(config))
+        inner = try AppMcpBindings.AppMcpClient(config: config.ffi(lifecycle: lifecycle), listener: ListenerBridge(config))
         self.lifecycle = lifecycle
         super.init(dispatchTimeout: config.dispatchTimeout)
     }

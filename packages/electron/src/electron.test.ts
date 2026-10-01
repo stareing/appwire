@@ -218,6 +218,16 @@ describe('Electron 桥接', () => {
     expect(native.resources.has('cart')).toBe(true)
   })
 
+  it('资源 realtime 经桥转给 @app-mcp/node；未声明时不传', async () => {
+    const { ipcMain, native } = setupMain()
+    const { page } = setupPage(ipcMain, new FakeWebContents(1))
+    page.resource('order.status', { description: '订单状态', realtime: true, read: () => 'paid' })
+    page.resource('cart', { description: '购物车', read: () => [] })
+    await flush()
+    expect(native.resources.get('order.status')?.spec).toMatchObject({ name: 'order.status', realtime: true })
+    expect(native.resources.get('cart')?.spec).not.toHaveProperty('realtime')
+  })
+
   it('update / dispose 同步到主进程', async () => {
     const { ipcMain, native } = setupMain()
     const { page } = setupPage(ipcMain, new FakeWebContents(1))

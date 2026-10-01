@@ -78,13 +78,31 @@ data class AppMcpConfig(
     val onPaired: ((String) -> Unit)? = null,
     /** 原生库日志。在原生分发线程上调用；为空时丢弃。 */
     val onLog: ((LogLevel, String) -> Unit)? = null,
-    /** 生命周期策略（spec/lifecycle.md）；为空时为 `PERSISTENT`（不休眠）。Android 封装默认 `IDLE`。 */
+    /** 生命周期策略（spec/lifecycle.md）；为空时为 `PERSISTENT`（不休眠）。Android 封装默认 `ON_DEMAND` + `sleepOnBackground`。 */
     val lifecycle: LifecyclePolicy? = null,
     /** 建立连接的超时；为空时为 5000 ms。 */
     val connectTimeoutMillis: Long? = null,
+    /** 心跳策略（spec/lifecycle.md 第 11 节 A3）：`AUTO` 按传输（本地 IPC / 桌面回环不发）、`ALWAYS`、`OFF`。 */
+    val heartbeat: HeartbeatMode = HeartbeatMode.AUTO,
     /**
      * 已进入休眠，且 [LifecyclePolicy.residency] 允许退出进程。在原生分发线程上调用；由 App 决定是否退出
      * （如 `exitProcess(0)` 或关闭最后一个窗口）。
      */
     val onIdleExit: (() -> Unit)? = null,
-)
+) {
+    internal fun toFfi() = dev.appmcp.ffi.ClientConfig(
+        appId = appId,
+        appName = appName,
+        instanceId = instanceId,
+        hostUrl = hostUrl,
+        appVersion = appVersion,
+        instanceTitle = instanceTitle,
+        token = token,
+        launchToken = launchToken,
+        maxConcurrentCalls = maxConcurrentCalls.coerceAtLeast(1).toUInt(),
+        overview = overview,
+        lifecycle = lifecycle?.toFfi(),
+        connectTimeoutMs = connectTimeoutMillis?.coerceIn(1, UInt.MAX_VALUE.toLong())?.toUInt(),
+        heartbeat = heartbeat,
+    )
+}

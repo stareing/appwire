@@ -101,6 +101,10 @@ function lifecycleInit(options: LifecycleOptions): LifecycleInit {
   if (options.wake !== undefined) {
     init.wake = { kind: options.wake.kind, target: options.wake.target, background: options.wake.background };
   }
+  init.hostAbsentRetries = options.hostAbsentRetries;
+  init.legacyTimers = options.legacyTimers;
+  init.mergeWindowMs = options.mergeWindowMs;
+  init.sleepOnBackground = options.sleepOnBackground;
   return init;
 }
 
@@ -367,6 +371,7 @@ class ResourceEntry<T> implements ResourceHandle, Child {
       name: name,
       description: definition.description,
       mimeType: definition.mimeType ?? 'application/json',
+      realtime: definition.realtime,
     };
     this.native = registrar.registerResource(spec, (read: Read): void => this.onRead(read));
     if (owner !== null) {
@@ -549,6 +554,7 @@ export class AppMcp extends RegistrarBase {
     config.launchToken = options.launchToken;
     config.maxConcurrentCalls = options.maxConcurrentCalls;
     config.connectTimeoutMs = options.connectTimeoutMs;
+    config.heartbeat = options.heartbeat;
     if (options.overview !== undefined) {
       config.overview = { summary: options.overview.summary, body: options.overview.body, locale: options.overview.locale };
     }

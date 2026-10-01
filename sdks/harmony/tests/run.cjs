@@ -1,9 +1,10 @@
-// 在 Node 上运行 ArkTS 封装层（AppMcp.ets / Errors.ets / Types.ets）的单元测试：
+// 在 Node 上运行 ArkTS 封装层（AppMcp.ets / Errors.ets / Types.ets / Harmony.ets）的单元测试：
 // 用 OpenHarmony SDK 的 ohos-typescript 把 .ets 转译为 CommonJS（不依赖 Kit 与 .so，原生模块用假实现注入），
 // 再以 node:test 执行 tests/*.test.cjs。
 //
 // 用法：node tests/run.cjs；环境变量 OHOS_SDK_ETS 同 scripts/arkts-check.cjs。
-// @compat 只覆盖与平台无关的封装逻辑；Harmony.ets（Kit / hilog / 前后台）需在设备上验证。
+// @compat Harmony.ets 的 Kit / hilog / .so 由 fake-native.cjs 的假实现替换，只验证默认值与前后台转发；
+//   真实的前后台回调时序需在设备上验证。
 'use strict';
 
 const fs = require('fs');
@@ -21,7 +22,7 @@ if (!fs.existsSync(tsPath)) {
 const ts = require(tsPath);
 
 const out = fs.mkdtempSync(path.join(os.tmpdir(), 'app-mcp-harmony-test-'));
-const sources = ['AppMcp', 'Errors', 'Types'];
+const sources = ['AppMcp', 'Errors', 'Types', 'Harmony'];
 for (const name of sources) {
   const text = fs.readFileSync(path.join(PKG, 'src/main/ets', `${name}.ets`), 'utf8');
   const js = ts.transpileModule(text, {

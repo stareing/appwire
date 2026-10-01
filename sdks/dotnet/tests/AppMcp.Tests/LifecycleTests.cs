@@ -22,16 +22,115 @@ public class LifecycleUnitTests
     [Fact]
     public void NativeStructLayoutsMatchHeader()
     {
-        // 与 app_mcp.h 一致（64 位）：AmLifecycle = int, 3×u64, int, int, ptr, bool；AmClientOptions = u32, ptr, u32, ptr。
+        // 与 app_mcp.h 一致（64 位）：AmLifecycle = int, 3×u64, int, int, ptr, bool；
+        // AmClientOptions = u32, ptr, u32, ptr, (v7) int, i32, bool, (v8) i64, bool；AmResourceOptions = u32, bool。
         if (IntPtr.Size != 8) return;
         Assert.Equal(56, Marshal.SizeOf<AmLifecycle>());
         Assert.Equal(8, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.IdleTimeoutMs)));
         Assert.Equal(32, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.Residency)));
         Assert.Equal(40, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.WakeTarget)));
         Assert.Equal(48, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.WakeBackground)));
-        Assert.Equal(32, Marshal.SizeOf<AmClientOptions>());
+        Assert.Equal(64, Marshal.SizeOf<AmClientOptions>());
         Assert.Equal(8, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.Lifecycle)));
         Assert.Equal(24, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.OnIdleExit)));
+        Assert.Equal(32, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.Heartbeat)));
+        Assert.Equal(36, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.HostAbsentRetries)));
+        Assert.Equal(40, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.LegacyTimers)));
+        Assert.Equal(48, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.MergeWindowMs)));
+        Assert.Equal(56, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.SleepOnBackground)));
+        Assert.Equal(8, Marshal.SizeOf<AmResourceOptions>());
+        Assert.Equal(4, (int)Marshal.OffsetOf<AmResourceOptions>(nameof(AmResourceOptions.Realtime)));
+    }
+
+    private static AppMcpClientOptions BaseOptions(LifecycleOptions? lifecycle = null, HeartbeatMode heartbeat = HeartbeatMode.Auto) => new()
+    {
+        AppId = "dotnet-power",
+        AppName = "Power",
+        HostUrl = "ws://127.0.0.1:1",
+        Dispatcher = null,
+        Lifecycle = lifecycle,
+        Heartbeat = heartbeat,
+    };
+
+    [Fact]
+    public void PowerOptionsDefaultToCoreDefaults()
+    {
+        var l = new LifecycleOptions();
+        Assert.Equal(LifecycleMode.Persistent, l.Mode);
+        Assert.Equal(3, l.HostAbsentRetries);
+        Assert.False(l.LegacyTimers);
+        Assert.Equal(TimeSpan.FromSeconds(2), l.MergeWindow);
+        Assert.False(l.SleepOnBackground);
+        Assert.Equal(HeartbeatMode.Auto, BaseOptions().Heartbeat);
+
+        var n = AppMcpClient.ToNativeOptions(BaseOptions(), l);
+        Assert.Equal((uint)Marshal.SizeOf<AmClientOptions>(), n.StructSize);
+        Assert.Equal(0, n.Heartbeat);
+        Assert.Equal(3, n.HostAbsentRetries);
+        Assert.Equal(0, n.LegacyTimers);
+        Assert.Equal(2000L, n.MergeWindowMs);
+        Assert.Equal(0, n.SleepOnBackground);
+    }
+
+    [Fact]
+    public void PowerOptionsMapToCAbiEncoding()
+    {
+        // 0 = 一直重连 / 不留窗口 → C ABI 负数（C ABI 的 0 表示默认值）。
+        var l = new LifecycleOptions
+        {
+            Mode = LifecycleMode.Idle,
+            HostAbsentRetries = 0,
+            LegacyTimers = true,
+            MergeWindow = TimeSpan.Zero,
+            SleepOnBackground = true,
+        };
+        var n = AppMcpClient.ToNativeOptions(BaseOptions(l, HeartbeatMode.Off), l);
+        Assert.Equal(2, n.Heartbeat);
+        Assert.True(n.HostAbsentRetries < 0);
+        Assert.Equal(1, n.LegacyTimers);
+        Assert.True(n.MergeWindowMs < 0);
+        Assert.Equal(1, n.SleepOnBackground);
+
+        var m = l with { HostAbsentRetries = 7, MergeWindow = TimeSpan.FromMilliseconds(500) };
+        var nm = AppMcpClient.ToNativeOptions(BaseOptions(m, HeartbeatMode.Always), m);
+        Assert.Equal(1, nm.Heartbeat);
+        Assert.Equal(7, nm.HostAbsentRetries);
+        Assert.Equal(500L, nm.MergeWindowMs);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => AppMcpClient.ToNativeOptions(BaseOptions(), new LifecycleOptions { HostAbsentRetries = -1 }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AppMcpClient.ToNativeOptions(BaseOptions(), new LifecycleOptions { MergeWindow = TimeSpan.FromSeconds(-1) }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AppMcpClient.ToNativeOptions(BaseOptions(heartbeat: (HeartbeatMode)9), new LifecycleOptions()));
+    }
+
+    [Fact]
+    public void ClientAcceptsPowerOptionsAndRealtimeResources()
+    {
+        var l = new LifecycleOptions { Mode = LifecycleMode.Idle, HostAbsentRetries = 0, MergeWindow = TimeSpan.Zero, SleepOnBackground = true, LegacyTimers = true };
+        using var client = AppMcpClient.Create(BaseOptions(l, HeartbeatMode.Off));
+        var h0 = client.ToolsHash;
+        using var rt = client.RegisterResource("order.status", "订单状态", _ => Task.FromResult<object?>(new { s = 1 }), realtime: true);
+        Assert.NotEqual(h0, client.ToolsHash);
+        var h1 = client.ToolsHash;
+        using var plain = client.RegisterResource<int>("app.count", "计数", _ => Task.FromResult(1), "application/json", realtime: false);
+        Assert.NotEqual(h1, client.ToolsHash);
+        rt.NotifyChanged();
+        var e = Assert.Throws<AppMcpException>(() => client.RegisterResource("order.status", "重名", _ => Task.FromResult<object?>(null), realtime: true));
+        Assert.Equal(AppMcpStatus.DuplicateName, e.Status);
+        client.Stop();
+    }
+
+    [Fact]
+    public void RealtimeChangesToolsHash()
+    {
+        // realtime 是资源声明的一部分（spec/lifecycle.md 第 13 节 B3）：同名资源声明不同时摘要不同。
+        string HashWith(bool realtime)
+        {
+            using var c = AppMcpClient.Create(BaseOptions());
+            using var r = c.RegisterResource("x.state", "状态", _ => Task.FromResult<object?>(null), realtime: realtime);
+            return c.ToolsHash;
+        }
+        Assert.NotEqual(HashWith(false), HashWith(true));
+        Assert.Equal(HashWith(false), HashWith(false));
     }
 
     [Fact]
@@ -227,6 +326,44 @@ public class ActivationHelperTests
             WakeDescriptorFactory.ForWindows("myapp", background: true, identity: new FakeIdentity(null)));
         Assert.Equal(WakeKind.None, WakeDescriptorFactory.ForWindows(null, identity: new FakeIdentity(null)).Kind);
         if (!OperatingSystem.IsWindows()) Assert.Null(new WindowsPackageIdentity().GetAppUserModelId());
+    }
+
+    [Fact]
+    public void DesktopDefaultLifecycleRequiresWakePath()
+    {
+        // 没有唤醒描述：保持 persistent（休眠后不可达）。
+        var none = SingleInstance.DesktopLifecycle(new WakeDescriptor(WakeKind.None));
+        Assert.Equal(new LifecycleOptions(), none);
+
+        // 窗口程序：idle + 默认 2 秒合并窗口，不在后台立即休眠。
+        var window = new WakeDescriptor(WakeKind.Uri, "myapp");
+        var w = SingleInstance.DesktopLifecycle(window);
+        Assert.Equal(LifecycleMode.Idle, w.Mode);
+        Assert.Equal(TimeSpan.FromSeconds(2), w.MergeWindow);
+        Assert.False(w.SleepOnBackground);
+        Assert.Equal(window, w.Wake);
+
+        // 托盘 / 无窗口进程（Background）：on-demand + 后台立即休眠。
+        var tray = new WakeDescriptor(WakeKind.Aumid, "Co.App_abc!App", Background: true);
+        var t = SingleInstance.DesktopLifecycle(tray);
+        Assert.Equal(LifecycleMode.OnDemand, t.Mode);
+        Assert.True(t.SleepOnBackground);
+        Assert.Equal(tray, t.Wake);
+
+        // 显式覆盖优先。
+        var o = SingleInstance.DesktopLifecycle(window) with { Mode = LifecycleMode.Persistent, MergeWindow = TimeSpan.Zero };
+        Assert.Equal(LifecycleMode.Persistent, o.Mode);
+        Assert.Equal(TimeSpan.Zero, o.MergeWindow);
+        Assert.Equal(window, o.Wake);
+    }
+
+    [Fact]
+    public void DefaultLifecycleOnAcquiredInstance()
+    {
+        using var single = SingleInstance.Acquire("it-" + Guid.NewGuid().ToString("N"), []);
+        Assert.NotNull(single);
+        Assert.Equal(LifecycleMode.Idle, single!.DefaultLifecycle(WakeDescriptorFactory.ForWindows("myapp", identity: new FakeIdentity(null))).Mode);
+        Assert.Equal(LifecycleMode.Persistent, single.DefaultLifecycle(WakeDescriptorFactory.ForWindows(null, identity: new FakeIdentity(null))).Mode);
     }
 
     [Fact]

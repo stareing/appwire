@@ -18,12 +18,79 @@ final class LifecycleUnitTests: XCTestCase {
         XCTAssertEqual(p.graceMs, 10_000)
         XCTAssertEqual(p.residency, .keep)
         XCTAssertNil(p.wake)
-        let ios = LifecyclePolicy.iOSDefault()
-        XCTAssertEqual(ios.mode, .idle)
+        XCTAssertEqual(p.hostAbsentRetries, 3)
+        XCTAssertFalse(p.legacyTimers)
+        XCTAssertEqual(p.mergeWindowMs, 2_000)
+        XCTAssertFalse(p.sleepOnBackground)
+    }
+
+    func testPlatformDefaults() {
+        let wake = WakeDescriptor.urlScheme("shop")
+        let ios = LifecyclePolicy.iOSDefault(wake: wake)
+        XCTAssertEqual(ios.mode, .onDemand)
+        XCTAssertTrue(ios.sleepOnBackground)
         XCTAssertEqual(ios.hiddenIdleTimeoutMs, 0)
+        XCTAssertEqual(ios.residency, .keep)
+        XCTAssertEqual(ios.wake, wake)
+        XCTAssertEqual(ios.mergeWindowMs, 2_000)
         #if os(Linux) || os(macOS)
         XCTAssertEqual(LifecyclePolicy.platformDefault, .persistent)
+        XCTAssertEqual(LifecyclePolicy.platformDefault(wake: nil), .persistent)
+        let desktop = LifecyclePolicy.platformDefault(wake: wake)
+        XCTAssertEqual(desktop, LifecyclePolicy(mode: .idle, wake: wake))
+        XCTAssertFalse(desktop.sleepOnBackground)
+        #else
+        XCTAssertEqual(LifecyclePolicy.platformDefault, .iOSDefault())
+        XCTAssertEqual(LifecyclePolicy.platformDefault(wake: wake), ios)
         #endif
+    }
+
+    func testExplicitLifecycleWins() throws {
+        let own = LifecyclePolicy(mode: .idle, idleTimeoutMs: 5, sleepOnBackground: false)
+        XCTAssertEqual(try client(own).lifecycle, own)
+        XCTAssertEqual(try client(own).lifecycle.ffi.sleepOnBackground, false)
+    }
+
+    func testPowerSwitchesMapToFfiRecord() {
+        let d = LifecyclePolicy().ffi
+        XCTAssertEqual(d.hostAbsentRetries, 3)
+        XCTAssertFalse(d.legacyTimers)
+        XCTAssertEqual(d.mergeWindowMs, 2_000)
+        XCTAssertFalse(d.sleepOnBackground)
+        let p = LifecyclePolicy(hostAbsentRetries: 0, legacyTimers: true, mergeWindowMs: 0, sleepOnBackground: true).ffi
+        XCTAssertEqual(p.hostAbsentRetries, 0) // 0 = 一直重连，与 uniffi 编码相同
+        XCTAssertTrue(p.legacyTimers)
+        XCTAssertEqual(p.mergeWindowMs, 0)
+        XCTAssertTrue(p.sleepOnBackground)
+    }
+
+    func testHeartbeatMapsToFfiConfig() throws {
+        let base = AppMcpConfig(appId: "swift-unit", appName: "心跳")
+        XCTAssertEqual(base.heartbeat, .auto)
+        XCTAssertEqual(base.ffi(lifecycle: .persistent).heartbeat, .auto)
+        for mode in [HeartbeatMode.auto, .always, .off] {
+            var c = base
+            c.heartbeat = mode
+            XCTAssertEqual(c.ffi(lifecycle: .persistent).heartbeat, mode)
+        }
+        var off = base
+        off.hostURL = "ws://127.0.0.1:9"
+        off.heartbeat = .off
+        _ = try AppMcpClient(config: off)
+    }
+
+    func testRealtimeResourceChangesToolsHash() throws {
+        func hash(_ register: (AppMcpClient) throws -> Void) throws -> String {
+            let c = try client()
+            try register(c)
+            defer { c.stop() }
+            return c.toolsHash
+        }
+        let plain = try hash { try $0.resource("order", description: "订单") { 1 } }
+        let explicitFalse = try hash { try $0.resource("order", description: "订单", realtime: false) { 1 } }
+        let realtime = try hash { try $0.resource("order", description: "订单", realtime: true) { 1 } }
+        XCTAssertEqual(plain, explicitFalse)
+        XCTAssertNotEqual(plain, realtime)
     }
 
     func testPolicyMapsToFfiRecord() {

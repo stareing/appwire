@@ -54,6 +54,14 @@ appMcp.tool('cart.clear', { description: 'Empty the cart', handler: () => cart.c
 Identity and connection belong to the main process: `appId`, `appName` and `hostUrl` are ignored in the page.
 Each webContents gets its own scope, unregistered on reload, navigation, destroy or renderer crash
 (in-flight calls fail with `APP_DISCONNECTED`).
+Page resources declared with `realtime: true` are registered as realtime in the main process too (subscriptions keep the
+connection alive and changes while dormant reconnect to push; default `false`).
+
+Lifecycle: the main-process client is created by `@app-mcp/node`, so its defaults apply (mode `persistent`;
+`heartbeat`, `lifecycle.hostAbsentRetries` / `mergeWindowMs` / `sleepOnBackground` / `legacyTimers` as documented there).
+This package does not change the mode: `idle` / `on-demand` is only safe with a wake path, i.e. a single-instance lock
+(`app.requestSingleInstanceLock()`) plus `attachLifecycle` (handles `second-instance` / `open-url`) and a `lifecycle.wake`
+descriptor, as in the `attachLifecycle` example in `main.ts`.
 
 ## API
 

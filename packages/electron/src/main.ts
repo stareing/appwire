@@ -143,6 +143,7 @@ class RendererSession {
         const handle = this.registrar(op.scopeId).resource(op.name, {
           description: op.description,
           ...(op.mimeType !== undefined && { mimeType: op.mimeType }),
+          ...(op.realtime === true && { realtime: true }),
           read: () => this.forwardRead(op.id),
         })
         this.resources.set(op.id, handle)

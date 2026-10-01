@@ -11,6 +11,7 @@ typealias WakeKind = dev.appmcp.ffi.WakeKind
 typealias WakeReason = dev.appmcp.ffi.WakeReason
 typealias SleepReason = dev.appmcp.ffi.SleepReason
 typealias WakeDescriptor = dev.appmcp.ffi.WakeDescriptor
+typealias HeartbeatMode = dev.appmcp.ffi.HeartbeatMode
 
 /**
  * 生命周期策略（spec/lifecycle.md 第 3 节）。
@@ -21,6 +22,12 @@ typealias WakeDescriptor = dev.appmcp.ffi.WakeDescriptor
  * @property graceMillis `ON_DEMAND` 模式下任务完成后保留连接的时间。
  * @property residency 休眠后的进程驻留策略；允许退出时回调 [AppMcpConfig.onIdleExit]。
  * @property wake 本实例的唤醒描述，随 `app/sleep` 上报；为空时 Host 回退到清单 `launch`。
+ * @property hostAbsentRetries `IDLE` / `ON_DEMAND` 下连续多少次"Host 不在"后停止重连、进入 `DORMANT`；
+ *   0 = 一直重连（第 11 节 A2）。负数按 0 处理。
+ * @property legacyTimers 回退到 4e 之前的定时器行为（第 11、13 节）。
+ * @property mergeWindowMillis 调用 / 资源读取完成后的合并窗口：之后是否在线只由 Host 租约决定（第 13 节 B1）。
+ * @property sleepOnBackground `IDLE` / `ON_DEMAND` 下进入后台且空闲时立即休眠，不等租约（第 13 节 B4）。
+ *   Android 封装默认开启。
  */
 data class LifecyclePolicy(
     val mode: LifecycleMode = LifecycleMode.PERSISTENT,
@@ -29,6 +36,10 @@ data class LifecyclePolicy(
     val graceMillis: Long = 10_000,
     val residency: Residency = Residency.KEEP,
     val wake: WakeDescriptor? = null,
+    val hostAbsentRetries: Int = 3,
+    val legacyTimers: Boolean = false,
+    val mergeWindowMillis: Long = 2_000,
+    val sleepOnBackground: Boolean = false,
 ) {
     internal fun toFfi() = dev.appmcp.ffi.LifecyclePolicy(
         mode = mode,
@@ -37,6 +48,10 @@ data class LifecyclePolicy(
         graceMs = graceMillis.coerceAtLeast(0).toULong(),
         residency = residency,
         wake = wake,
+        hostAbsentRetries = hostAbsentRetries.coerceAtLeast(0).toUInt(),
+        legacyTimers = legacyTimers,
+        mergeWindowMs = mergeWindowMillis.coerceAtLeast(0).toULong(),
+        sleepOnBackground = sleepOnBackground,
     )
 }
 

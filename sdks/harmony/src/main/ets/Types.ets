@@ -41,6 +41,8 @@ export type Residency = 'keep' | 'exit-when-idle' | 'exit-always';
 export type WakeKind = 'uri' | 'aumid' | 'apple-event' | 'dbus' | 'android-intent' | 'web-url' | 'none';
 export type WakeReason = 'app' | 'visible';
 export type CancelReason = 'requested' | 'timeout' | 'disconnected' | 'stopped';
+/** 心跳策略（spec/lifecycle.md 第 11 节 A3）：`auto` 按传输决定（鸿蒙上回环地址按远程，发心跳）。 */
+export type HeartbeatMode = 'auto' | 'always' | 'off';
 
 /** 本实例的唤醒描述（spec/lifecycle.md 第 5 节）。鸿蒙用 `uri`：`<scheme>://app-mcp/wake`。 */
 export interface WakeDescriptor {
@@ -49,14 +51,23 @@ export interface WakeDescriptor {
   background?: boolean;
 }
 
+/** 未提供的字段取原生层默认值（spec/lifecycle.md 第 3 节）；`HarmonyAppMcp.create` 未给出时用 `HarmonyAppMcp.defaultLifecycle`。 */
 export interface LifecycleOptions {
-  /** 缺省 `persistent`；`HarmonyAppMcp.create` 缺省 `idle`。 */
+  /** 缺省 `persistent`；`HarmonyAppMcp.defaultLifecycle` 为 `on-demand`。 */
   mode?: LifecycleMode;
   idleTimeoutMs?: number;
   hiddenIdleTimeoutMs?: number;
   graceMs?: number;
   residency?: Residency;
   wake?: WakeDescriptor;
+  /** `idle` / `on-demand` 下连续多少次"Host 不在"后转 `dormant`；缺省 3，0 = 一直重连（第 11 节 A2）。 */
+  hostAbsentRetries?: number;
+  /** 回退到 4e 之前的定时器行为（第 11、13 节）；缺省 false。 */
+  legacyTimers?: boolean;
+  /** 调用 / 资源读取后的合并窗口（毫秒，第 13 节 B1）；缺省 2000。 */
+  mergeWindowMs?: number;
+  /** 进入后台且空闲时立即休眠，不等租约（第 13 节 B4）；缺省 false，`HarmonyAppMcp.defaultLifecycle` 为 true。 */
+  sleepOnBackground?: boolean;
 }
 
 export interface AppOverview {
@@ -139,6 +150,8 @@ export interface ResourceDefinition<T> {
   description: string;
   /** 缺省 `application/json`。 */
   mimeType?: string;
+  /** 模型在等待其变化：被订阅时保持连接、休眠中变化时回连推送（spec/lifecycle.md 第 13 节 B3）。缺省 false。 */
+  realtime?: boolean;
   read: () => T | Promise<T>;
 }
 
@@ -186,6 +199,8 @@ export interface AppMcpOptions {
   autoStart?: boolean;
   lifecycle?: LifecycleOptions;
   connectTimeoutMs?: number;
+  /** 缺省 `auto`。在设备上嵌入 Hub 时可设 `off`。 */
+  heartbeat?: HeartbeatMode;
   /** 已休眠且 `lifecycle.residency` 允许退出进程时调用；SDK 不会自行退出（可在此 `terminateSelf()`）。 */
   onIdleExit?: () => void;
 }

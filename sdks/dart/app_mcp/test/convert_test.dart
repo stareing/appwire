@@ -168,17 +168,54 @@ void main() {
       expect(statusFromNative(10), ConnectionStatus.hostMismatch);
       expect(durationToMs(const Duration(seconds: -1)), 0);
     });
-    test('平台默认策略：移动端 idle + keep，iOS 隐藏即休眠', () {
+    test('平台默认策略：移动端 onDemand + 后台立即休眠 + keep，iOS 隐藏即休眠，桌面 persistent', () {
       final ios = LifecyclePolicy.platformDefault(isAndroid: false, isIOS: true);
-      expect(ios.mode, LifecycleMode.idle);
+      expect(ios.mode, LifecycleMode.onDemand);
+      expect(ios.sleepOnBackground, isTrue);
       expect(ios.residency, Residency.keep);
       expect(ios.hiddenIdleTimeout, Duration.zero);
-      final android = LifecyclePolicy.platformDefault(isAndroid: true, isIOS: false);
-      expect(android.mode, LifecycleMode.idle);
+      final android = LifecyclePolicy.platformDefault(
+          isAndroid: true, isIOS: false, wake: const WakeDescriptor.androidIntent('com.x/.WakeReceiver'));
+      expect(android.mode, LifecycleMode.onDemand);
+      expect(android.sleepOnBackground, isTrue);
       expect(android.residency, Residency.keep);
       expect(android.hiddenIdleTimeout, const Duration(seconds: 15));
+      expect(android.wake, const WakeDescriptor.androidIntent('com.x/.WakeReceiver'));
+      expect(android.mergeWindow, const Duration(seconds: 2));
+      // 桌面没有单实例重定向（休眠后唤醒会冷启动新进程），即使给了 URI 唤醒描述也保持 persistent。
       expect(LifecyclePolicy.platformDefault(isAndroid: false, isIOS: false), const LifecyclePolicy());
+      expect(
+          LifecyclePolicy.platformDefault(isAndroid: false, isIOS: false, wake: const WakeDescriptor.uri('x')).mode,
+          LifecycleMode.persistent);
       expect(const LifecyclePolicy().copyWith(mode: LifecycleMode.onDemand).mode, LifecycleMode.onDemand);
+      // 覆盖优先：copyWith 只改指定字段。
+      final custom = ios.copyWith(mode: LifecycleMode.idle, sleepOnBackground: false);
+      expect(custom.mode, LifecycleMode.idle);
+      expect(custom.sleepOnBackground, isFalse);
+      expect(custom.hiddenIdleTimeout, Duration.zero);
+    });
+
+    test('功耗字段默认值、编码与相等性', () {
+      const d = LifecyclePolicy();
+      expect(d.hostAbsentRetries, 3);
+      expect(d.legacyTimers, isFalse);
+      expect(d.mergeWindow, const Duration(seconds: 2));
+      expect(d.sleepOnBackground, isFalse);
+      expect(HeartbeatMode.values.map(heartbeatToNative), [0, 1, 2]);
+      expect(hostAbsentRetriesToNative(3), 3);
+      expect(hostAbsentRetriesToNative(0), lessThan(0));
+      expect(hostAbsentRetriesToNative(-5), lessThan(0));
+      expect(hostAbsentRetriesToNative(1 << 40), 0x7FFFFFFF);
+      expect(mergeWindowToNative(const Duration(seconds: 2)), 2000);
+      expect(mergeWindowToNative(Duration.zero), lessThan(0));
+      expect(mergeWindowToNative(const Duration(seconds: -1)), lessThan(0));
+      final c = d.copyWith(hostAbsentRetries: 0, legacyTimers: true, mergeWindow: Duration.zero, sleepOnBackground: true);
+      expect(c, isNot(d));
+      expect(c, const LifecyclePolicy(
+          hostAbsentRetries: 0, legacyTimers: true, mergeWindow: Duration.zero, sleepOnBackground: true));
+      expect(c.hashCode, const LifecyclePolicy(
+          hostAbsentRetries: 0, legacyTimers: true, mergeWindow: Duration.zero, sleepOnBackground: true).hashCode);
+      expect(const ResourceSpec(name: 'a', description: 'b').realtime, isFalse);
     });
   });
 }

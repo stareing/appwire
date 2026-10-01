@@ -13,8 +13,9 @@ import 'lifecycle.dart';
 ///
 /// - [trackLifecycle] 为 true（默认）时，用 [AppLifecycleListener] 按 `AppLifecycleState` 调用
 ///   [AppMcp.setVisibility]（见 [visibilityForLifecycle]）；生命周期模式为 `idle` / `onDemand` 时，
-///   回到前台（`resumed`）还会以原因 `visible` 调用 [AppMcp.wake]（见 [wakeOnResume]）。
-///   进入后台后的休眠由原生层按 `hiddenIdleTimeout` 完成（iOS 默认 0：进入后台即休眠）。
+///   可见性从隐藏 / 冻结变为可见（含首次上报即可见）还会以原因 `visible` 调用 [AppMcp.wake]
+///   （见 [wakeOnResume]、[becameVisible]）。移动端默认 `onDemand`：启动后第一次进入前台时连接。
+///   进入后台后的休眠由原生层完成：`sleepOnBackground`（移动端默认）空闲即休眠，否则按 `hiddenIdleTimeout`。
 /// - [disposeClient] 为 true 时，本 widget 卸载时释放客户端；默认由创建者负责。
 ///
 /// 客户端的 handler 已经在主 isolate 上执行（`NativeCallable.listener` 投递到事件循环），
@@ -59,6 +60,7 @@ class AppMcpScope extends StatefulWidget {
 
 class _AppMcpScopeState extends State<AppMcpScope> {
   AppLifecycleListener? _listener;
+  AppVisibility? _lastVisibility;
 
   @override
   void initState() {
@@ -75,6 +77,7 @@ class _AppMcpScopeState extends State<AppMcpScope> {
   void _untrack() {
     _listener?.dispose();
     _listener = null;
+    _lastVisibility = null;
   }
 
   @override
@@ -96,9 +99,11 @@ class _AppMcpScopeState extends State<AppMcpScope> {
     final client = widget.client;
     if (client.isDisposed) return;
     final v = visibilityForLifecycle(state, isMobile: _isMobile);
+    final previous = _lastVisibility;
+    _lastVisibility = v.visibility;
     try {
       client.setVisibility(v.visibility, focused: v.focused);
-      if (state == AppLifecycleState.resumed && wakeOnResume(client.lifecycle)) {
+      if (becameVisible(previous, v.visibility) && wakeOnResume(client.lifecycle)) {
         client.wake(reason: WakeReason.visible);
       }
     } on AppMcpException catch (e, st) {

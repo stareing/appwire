@@ -10,11 +10,11 @@ Host 唤醒休眠实例时调用::
 
 用法::
 
-    from app_mcp import AppMcp, LifecyclePolicy
-    from app_mcp.linux import dbus_wake_descriptor, serve_dbus_wake
+    from app_mcp import AppMcp
+    from app_mcp.linux import dbus_lifecycle, serve_dbus_wake
 
     BUS = "org.example.Shop"
-    client = AppMcp("shop", "Shop", lifecycle=LifecyclePolicy(mode="idle", wake=dbus_wake_descriptor(BUS)))
+    client = AppMcp("shop", "Shop", lifecycle=dbus_lifecycle(BUS))   # idle + D-Bus 唤醒描述
     service = serve_dbus_wake(client, BUS)     # 需要可选依赖 jeepney（pip install jeepney）
     client.start()
 
@@ -38,11 +38,12 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
-from ._lifecycle import WakeDescriptor
+from ._lifecycle import LifecyclePolicy, WakeDescriptor
 
 __all__ = [
     "WAKE_ACTION",
     "DBusWakeService",
+    "dbus_lifecycle",
     "dbus_object_path",
     "dbus_service_file",
     "dbus_wake_descriptor",
@@ -86,6 +87,18 @@ def dbus_wake_descriptor(bus_name: str) -> WakeDescriptor:
     """本实例的唤醒描述：``kind="dbus"``、``target=<总线名>``；D-Bus 激活不需要把窗口带到前台。"""
     _check_bus_name(bus_name)
     return WakeDescriptor(kind="dbus", target=bus_name, background=True)
+
+
+def dbus_lifecycle(bus_name: str, **overrides: Any) -> LifecyclePolicy:
+    """Linux 桌面窗口程序的默认策略（spec/lifecycle.md 第 13 节 B1「平台默认」）：``idle`` + 默认 2 s 合并窗口，
+    唤醒描述为 :func:`dbus_wake_descriptor`。``overrides`` 为 :class:`LifecyclePolicy` 字段，显式传入的总是生效。
+
+    @why 桌面 ``idle`` 休眠后只能经唤醒描述回连，所以这个默认只在有 D-Bus 唤醒时提供；``AppMcp`` 本身默认
+    ``persistent``。须同时 :func:`serve_dbus_wake`（或在 GTK / Qt 中注册 ``app-mcp-wake`` action），否则休眠后不可达。
+    """
+    fields: dict[str, Any] = {"mode": "idle", "wake": dbus_wake_descriptor(bus_name)}
+    fields.update(overrides)
+    return LifecyclePolicy(**fields)
 
 
 def dbus_service_file(bus_name: str, exec_path: str | Sequence[str]) -> str:

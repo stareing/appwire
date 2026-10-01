@@ -47,7 +47,61 @@ void main() {
     expect(wakeOnResume(const LifecyclePolicy(mode: LifecycleMode.onDemand)), isTrue);
   });
 
+  test('becameVisible：只在隐藏 / 冻结（或首次）→ 可见时回连', () {
+    expect(becameVisible(null, AppVisibility.visible), isTrue);
+    expect(becameVisible(AppVisibility.hidden, AppVisibility.visible), isTrue);
+    expect(becameVisible(AppVisibility.frozen, AppVisibility.visible), isTrue);
+    expect(becameVisible(AppVisibility.visible, AppVisibility.visible), isFalse);
+    expect(becameVisible(null, AppVisibility.hidden), isFalse);
+    expect(becameVisible(AppVisibility.visible, AppVisibility.frozen), isFalse);
+  });
+
   final path = _buildFake();
+
+  testWidgets('AppMcpScope：onDemand 首次进入前台回连；焦点变化不回连，从后台回到可见时回连', (tester) async {
+    final client = AppMcp(
+        appId: 'shop',
+        appName: '商店',
+        libraryPath: path,
+        lifecycle: const LifecyclePolicy(mode: LifecycleMode.onDemand, sleepOnBackground: true));
+    addTearDown(client.dispose);
+    client.sleep(); // on-demand 启动后处于休眠
+    expect(client.state.status, ConnectionStatus.dormant);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpWidget(AppMcpScope(client: client, child: const SizedBox()));
+    expect(client.state.status, ConnectionStatus.waking); // 首次上报即可见
+
+    client.sleep();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    expect(client.state.status, ConnectionStatus.dormant); // 只是焦点变化
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    expect(client.state.status, ConnectionStatus.waking); // 隐藏 → 可见
+    await tester.pumpWidget(const SizedBox());
+  }, skip: path == null);
+
+  testWidgets('McpResource：realtime 传入注册，变化时重新注册', (tester) async {
+    final lib = DynamicLibrary.open(path!);
+    final realtimeOf = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>(
+        'fake_resource_realtime');
+    int realtime(String name) => using((a) => realtimeOf(name.toNativeUtf8(allocator: a)));
+    final client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path);
+    addTearDown(client.dispose);
+    Widget app({required bool live}) => AppMcpScope(
+          client: client,
+          trackLifecycle: false,
+          child: McpResource(name: 'order.status', description: '订单状态', realtime: live, read: () => 1),
+        );
+    await tester.pumpWidget(app(live: true));
+    expect(realtime('order.status'), 1);
+    await tester.pumpWidget(app(live: false));
+    expect(realtime('order.status'), 0);
+    await tester.pumpWidget(const SizedBox());
+    expect(realtime('order.status'), -1);
+  }, skip: path == null);
 
   testWidgets('AppMcpScope：AppLifecycleListener 上报可见性，idle 模式回到前台时回连', (tester) async {
     final lib = DynamicLibrary.open(path!);

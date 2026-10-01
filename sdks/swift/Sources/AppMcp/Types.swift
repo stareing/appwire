@@ -18,6 +18,7 @@ public typealias WakeKind = AppMcpBindings.WakeKind
 public typealias WakeReason = AppMcpBindings.WakeReason
 public typealias SleepReason = AppMcpBindings.SleepReason
 public typealias WakeDescriptor = AppMcpBindings.WakeDescriptor
+public typealias HeartbeatMode = AppMcpBindings.HeartbeatMode
 
 /// 协议错误类别（FFI 上的字符串形式）。
 public enum ErrorKind {
@@ -202,10 +203,13 @@ public struct AppMcpConfig {
     /// 原生库日志（在原生分发线程上调用）。
     public var onLog: (@Sendable (LogLevel, String) -> Void)?
     /// 生命周期策略（spec/lifecycle.md）。为 `nil` 时用 `LifecyclePolicy.platformDefault`
-    /// （iOS：`idle` 且进入后台立即休眠；其他平台：`persistent`）。
+    /// （iOS：`onDemand` 且进入后台立即休眠；其他平台：`persistent`）。桌面 App 有 URL scheme 唤醒时传
+    /// `.platformDefault(wake: .urlScheme("…"))` 得到 `idle`。
     public var lifecycle: LifecyclePolicy?
     /// 建立连接的超时；为 `nil` 时为 5 秒。
     public var connectTimeout: TimeInterval?
+    /// 心跳策略（spec/lifecycle.md 第 11 节 A3）：`.auto` 按传输（本地 IPC / 桌面回环不发）、`.always`、`.off`。
+    public var heartbeat: HeartbeatMode
     /// 已休眠且驻留策略允许退出进程时调用（在主 actor 上）。App 自行决定是否退出。
     public var onIdleExit: (@MainActor @Sendable () -> Void)?
 
@@ -226,6 +230,7 @@ public struct AppMcpConfig {
         onLog: (@Sendable (LogLevel, String) -> Void)? = nil,
         lifecycle: LifecyclePolicy? = nil,
         connectTimeout: TimeInterval? = nil,
+        heartbeat: HeartbeatMode = .auto,
         onIdleExit: (@MainActor @Sendable () -> Void)? = nil
     ) {
         self.appId = appId
@@ -244,6 +249,29 @@ public struct AppMcpConfig {
         self.onLog = onLog
         self.lifecycle = lifecycle
         self.connectTimeout = connectTimeout
+        self.heartbeat = heartbeat
         self.onIdleExit = onIdleExit
+    }
+}
+
+extension AppMcpConfig {
+    /// 原生配置；`lifecycle` 为生效策略（`self.lifecycle ?? .platformDefault`）。
+    func ffi(lifecycle: LifecyclePolicy) -> ClientConfig {
+        ClientConfig(
+            appId: appId,
+            appName: appName,
+            instanceId: instanceId,
+            clientKind: nil,
+            hostUrl: hostURL,
+            appVersion: appVersion,
+            instanceTitle: instanceTitle,
+            token: token,
+            launchToken: launchToken,
+            maxConcurrentCalls: UInt32(max(1, maxConcurrentCalls)),
+            overview: overview,
+            lifecycle: lifecycle.ffi,
+            connectTimeoutMs: connectTimeout.map { UInt32(max(1, min(Double(UInt32.max), $0 * 1000))) },
+            heartbeat: heartbeat
+        )
     }
 }

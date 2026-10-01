@@ -403,4 +403,27 @@ void main() {
     // 让库线程上的 free_user_data 回来。
     await Future<void>.delayed(const Duration(milliseconds: 50));
   }, skip: nativePath == null ? '找不到原生库' : false);
+
+  test('真实原生库：功耗选项与 realtime 资源（摘要随 realtime 变化）', () async {
+    String hashWith({required bool realtime}) {
+      final c = AppMcp(
+        appId: 'dart-power',
+        appName: '功耗',
+        hostUrl: 'ws://127.0.0.1:9',
+        libraryPath: nativePath,
+        heartbeat: HeartbeatMode.off,
+        lifecycle: const LifecyclePolicy(
+            mode: LifecycleMode.onDemand, hostAbsentRetries: 0, mergeWindow: Duration.zero, sleepOnBackground: true),
+      );
+      c.resource('order.status', description: '订单状态', realtime: realtime, read: () => 1);
+      final h = c.toolsHash;
+      c.dispose();
+      return h;
+    }
+
+    // realtime 只在 true 时进入资源声明（spec/lifecycle.md 第 13 节 B3），说明标志确实传到了原生库。
+    expect(hashWith(realtime: false), hashWith(realtime: false));
+    expect(hashWith(realtime: true), isNot(hashWith(realtime: false)));
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }, skip: nativePath == null ? '找不到原生库' : false);
 }

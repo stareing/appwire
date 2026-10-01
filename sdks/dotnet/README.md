@@ -117,6 +117,35 @@ var client = AppMcpClient.Create(new AppMcpClientOptions
 | `ClientStatus.Dormant` / `Waking` | 新增状态 |
 | `ToolCallException(kind, message, details)` | 带结构化详情失败：对象字段合并进错误 `data`，其他值放在 `data.details` |
 
+### 功耗选项（spec/lifecycle.md 第 11、13 节）
+
+| 选项 | 默认 | 说明 |
+|---|---|---|
+| `AppMcpClientOptions.Heartbeat` | `Auto` | `Auto`（本地 IPC / 桌面本机回环不发心跳）/ `Always` / `Off` |
+| `LifecycleOptions.HostAbsentRetries` | 3 | idle / on-demand 下连续多少次"Host 不在"后转休眠；0 = 一直重连 |
+| `LifecycleOptions.MergeWindow` | 2 秒 | 调用 / 资源读取后的合并窗口，之后是否在线由 Hub 租约决定；`TimeSpan.Zero` = 不留窗口 |
+| `LifecycleOptions.SleepOnBackground` | false | idle / on-demand 下进入后台（`SetVisibility(Hidden)`）且空闲时立即休眠，不等租约 |
+| `LifecycleOptions.LegacyTimers` | false | 回退到 4e 之前的定时器行为 |
+| `RegisterResource(..., realtime: true)` | false | 模型在等待变化的资源：被订阅时保持连接、休眠中变化时回连推送；普通资源的订阅不阻止休眠 |
+
+`LifecycleOptions` 为 record，可用 `with` 改个别字段。
+
+**桌面平台默认**：`AppMcpClientOptions.Lifecycle` 为 null 时仍是 persistent（兼容）。已用 `SingleInstance` 接收转交参数的 App
+可用 `single.DefaultLifecycle(wake)` 取平台默认值——有唤醒描述的窗口程序 `Idle`（2 秒合并窗口）；`wake.Background = true`
+（托盘 / 无窗口进程）`OnDemand` + `SleepOnBackground`；`WakeKind.None` 保持 `Persistent`（没有唤醒入口，休眠后 Host 只能按清单
+`launch` 冷启动新实例）。显式传入的 `Lifecycle` 不会被替换：
+
+```csharp
+var single = SingleInstance.Acquire("my-app", e.Args)!;
+var wake = WakeDescriptorFactory.ForWindows("my-app");        // 托盘程序：ForWindows("my-app", background: true)
+var client = AppMcpClient.Create(new AppMcpClientOptions
+{
+    AppId = "my-app",
+    AppName = "My App",
+    Lifecycle = single.DefaultLifecycle(wake) with { IdleTimeout = TimeSpan.FromMinutes(5) },
+});
+```
+
 ### Windows 唤醒入口（`AppMcp.Activation`）
 
 - **未打包应用**：`ProtocolRegistration.Register(scheme, exePath)` 写入 `HKCU\Software\Classes\<scheme>`

@@ -87,9 +87,11 @@ class AppMcpWakeTarget(val client: AppMcp) : WakeTarget {
  *
  * - handler 默认在 `Dispatchers.Main` 上执行（可在配置中覆盖）；
  * - 未设置 `instanceTitle` 时使用应用名；
- * - 生命周期默认 `IDLE` + `KEEP`（spec/lifecycle.md 第 3 节「移动端封装默认 idle」），唤醒描述自动填为
- *   `android-intent` → `<package>/dev.appmcp.android.WakeReceiver`（可后台唤醒）；
- * - 跟随进程前后台切换上报可见性（`ProcessLifecycleOwner`）；回到前台时以 `visible` 原因回连；
+ * - 生命周期默认 `ON_DEMAND` + `sleepOnBackground` + `KEEP`（spec/lifecycle.md 第 13 节 B1「平台默认」），
+ *   唤醒描述自动填为 `android-intent` → `<package>/dev.appmcp.android.WakeReceiver`（可后台唤醒）；
+ *   显式传入的 `lifecycle` 原样使用（只在 `wake` 为空时补唤醒描述）；
+ * - 跟随进程前后台切换上报可见性（`ProcessLifecycleOwner`）；进入前台（含启动后第一次 `ON_START`）时以 `visible`
+ *   原因回连，`ON_DEMAND` 由此在前台连上，进入后台空闲即休眠；
  * - 注册为进程级 [wakeTarget]，供 [WakeReceiver] / [WakeWorker] 使用。
  *
  * 不申请前台服务或 WakeLock：休眠后进程交给系统回收；Host 需要时通过显式广播唤醒（见 [WakeReceiver]）。
@@ -133,19 +135,31 @@ object AppMcpAndroid {
     fun wakeDescriptor(context: Context): WakeDescriptor =
         WakeDescriptor(WakeKind.ANDROID_INTENT, "${context.packageName}/$RECEIVER_CLASS", true)
 
-    /** Android 默认生命周期策略：`IDLE`、`KEEP`、自动唤醒描述。 */
+    /** Android 默认生命周期策略：`ON_DEMAND`、`sleepOnBackground`、`KEEP`、自动唤醒描述。 */
     @JvmStatic
-    fun defaultLifecycle(context: Context): LifecyclePolicy =
-        LifecyclePolicy(mode = LifecycleMode.IDLE, residency = Residency.KEEP, wake = wakeDescriptor(context))
+    fun defaultLifecycle(context: Context): LifecyclePolicy = LifecyclePolicy(
+        mode = LifecycleMode.ON_DEMAND,
+        residency = Residency.KEEP,
+        wake = wakeDescriptor(context),
+        sleepOnBackground = true,
+    )
 
+    /** 生效的策略：未提供时为 [defaultLifecycle]；提供时原样使用，只在 `wake` 为空时补 [wakeDescriptor]。 */
+    @JvmStatic
+    fun resolveLifecycle(context: Context, configured: LifecyclePolicy?): LifecyclePolicy =
+        configured?.let { if (it.wake == null) it.copy(wake = wakeDescriptor(context)) else it }
+            ?: defaultLifecycle(context)
+
+    /**
+     * 创建客户端并跟随进程前后台。`ON_DEMAND` 下 `start()` 不连接，由之后第一次进入前台连上：请在创建后立即
+     * `start()`（同一轮主循环内，如 `create(...).start()`）；延后启动且已在前台时改用 `connectNow()`。
+     */
     @JvmStatic
     @JvmOverloads
     fun create(context: Context, config: AppMcpConfig, trackVisibility: Boolean = true): AppMcp {
         val app = context.applicationContext
         val title = config.instanceTitle ?: app.applicationInfo.loadLabel(app.packageManager).toString()
-        val lifecycle = config.lifecycle
-            ?.let { if (it.wake == null) it.copy(wake = wakeDescriptor(app)) else it }
-            ?: defaultLifecycle(app)
+        val lifecycle = resolveLifecycle(app, config.lifecycle)
         val client = AppMcp.create(
             config.copy(
                 instanceTitle = title,
@@ -159,7 +173,7 @@ object AppMcpAndroid {
                 override fun onStart(owner: LifecycleOwner) {
                     if (client.isClosed) return
                     client.setVisibility(Visibility.VISIBLE, true)
-                    // 休眠中回到前台：回连（未休眠时无效果）。
+                    // 休眠中（含 ON_DEMAND 启动后未连接）进入前台：回连；已连接时只重新计时。
                     if (lifecycle.mode != LifecycleMode.PERSISTENT) client.wake(WakeReason.VISIBLE)
                 }
 
@@ -167,7 +181,9 @@ object AppMcpAndroid {
                     if (!client.isClosed) client.setVisibility(Visibility.HIDDEN, false)
                 }
             }
-            onMain { ProcessLifecycleOwner.get().lifecycle.addObserver(observer) }
+            // @why 总是投递到下一轮主循环：已在前台时 addObserver 会同步派发 ON_START，若在 `create(...).start()`
+            // 的 start() 之前派发，ON_DEMAND 的 wake 落在未启动状态被丢弃，前台永远连不上。
+            Handler(Looper.getMainLooper()).post { ProcessLifecycleOwner.get().lifecycle.addObserver(observer) }
         }
         return client
     }
@@ -184,9 +200,5 @@ object AppMcpAndroid {
         val c = runCatching { provider.appMcp() }.getOrNull() ?: return null
         if (c.isClosed) return null
         return (wakeTarget as? AppMcpWakeTarget)?.takeIf { it.client === c } ?: AppMcpWakeTarget(c).also { wakeTarget = it }
-    }
-
-    private fun onMain(block: () -> Unit) {
-        if (Looper.myLooper() == Looper.getMainLooper()) block() else Handler(Looper.getMainLooper()).post(block)
     }
 }

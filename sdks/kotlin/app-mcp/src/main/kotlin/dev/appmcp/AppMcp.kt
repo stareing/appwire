@@ -4,7 +4,6 @@ import dev.appmcp.ffi.AppMcpClient
 import dev.appmcp.ffi.AppMcpException
 import dev.appmcp.ffi.Call
 import dev.appmcp.ffi.CancelListener
-import dev.appmcp.ffi.ClientConfig
 import dev.appmcp.ffi.ClientListener
 import dev.appmcp.ffi.Read
 import dev.appmcp.ffi.ResourceReader
@@ -194,15 +193,21 @@ abstract class AppMcpRegistrar internal constructor() {
         AppMcpJson.encodeToJsonElement(resultSerializer, handler(decoded, ctx))
     }
 
-    /** 注册资源；[reader] 的返回值见 [anyToJson]。 */
+    /**
+     * 注册资源；[reader] 的返回值见 [anyToJson]。
+     *
+     * @param realtime 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时阻止休眠、休眠中变化时回连推送。
+     *   默认 false：订阅不阻止休眠，变化在下次连接时补发。
+     */
     fun resource(
         name: String,
         description: String,
         mimeType: String? = null,
+        realtime: Boolean = false,
         reader: ResourceFunction,
     ): ResourceHandle {
         val o = owner
-        val raw = registerRaw(ResourceSpec(name, description, mimeType), object : ResourceReader {
+        val raw = registerRaw(ResourceSpec(name, description, mimeType, realtime), object : ResourceReader {
             override fun read(read: Read) = o.runRead(read, reader)
         })
         return ResourceHandle(raw)
@@ -258,23 +263,7 @@ class AppMcp private constructor(
                 runCatching { config.onIdleExit?.invoke() }
             }
         }
-        inner = AppMcpClient(
-            ClientConfig(
-                appId = config.appId,
-                appName = config.appName,
-                instanceId = config.instanceId,
-                hostUrl = config.hostUrl,
-                appVersion = config.appVersion,
-                instanceTitle = config.instanceTitle,
-                token = config.token,
-                launchToken = config.launchToken,
-                maxConcurrentCalls = config.maxConcurrentCalls.coerceAtLeast(1).toUInt(),
-                overview = config.overview,
-                lifecycle = config.lifecycle?.toFfi(),
-                connectTimeoutMs = config.connectTimeoutMillis?.coerceIn(1, UInt.MAX_VALUE.toLong())?.toUInt(),
-            ),
-            listener,
-        )
+        inner = AppMcpClient(config.toFfi(), listener)
         _state.value = inner.state()
     }
 

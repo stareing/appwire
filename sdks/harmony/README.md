@@ -79,12 +79,38 @@ onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void { HarmonyA
 
 `HarmonyAppMcp.create` 的默认值：
 
-- 生命周期 `idle` + `keep`（移动端默认），空闲后与 Host 握手休眠，释放连接与运行时线程；
-- 跟随应用前后台（`ApplicationContext.on('applicationStateChange')`）上报可见性；回到前台时以 `visible` 原因回连；
+- 生命周期 `HarmonyAppMcp.defaultLifecycle(scheme)`：`on-demand` + `keep` + `sleepOnBackground: true`
+  （spec/lifecycle.md 第 13 节 B1「平台默认」、B4）。启动时不连接（`dormant`）；首次进入前台、Host 唤醒（`handleWant`）、
+  `wake()` / `connectNow()` 时连接；调用完成后只多留 2 s 合并窗口（在线时长由 Host 租约决定），连上后无调用经 `graceMs`
+  （10 s）休眠；进入后台且无进行中的调用 / 持有 / 实时订阅时立即休眠，不等租约；
+- 跟随应用前后台（`ApplicationContext.on('applicationStateChange')`）上报可见性；进入前台时以 `visible` 原因回连
+  （在 `AbilityStage.onCreate` / `EntryAbility.onCreate` 中 `create` 时，首次进入前台即经此连接）；
 - 给出 `wakeScheme` 时唤醒描述为 `uri` → `<scheme>://app-mcp/wake`；
 - 实例标题缺省为 `appName`；日志写 hilog（domain `0xA3C0`，tag `app-mcp`）。
 
 不申请长时任务、后台运行权限或 WakeLock：休眠后进程交给系统管理。
+
+`options.lifecycle` 给出时**整体**使用它（不与平台默认合并，未给出的字段取原生层默认：`persistent`、空闲 60 s 等）；
+只改个别字段时先取默认再修改：
+
+```ts
+const lifecycle = HarmonyAppMcp.defaultLifecycle('shopapp');
+lifecycle.mergeWindowMs = 5000;
+HarmonyAppMcp.create(this.context, { appId: 'shop', appName: '示例商城', lifecycle: lifecycle }, 'shopapp');
+```
+
+`LifecycleOptions` 的 4e 开关（缺省值即原生层默认值）：
+
+| 字段 | 缺省 | 含义 |
+|---|---|---|
+| `hostAbsentRetries` | 3 | `idle` / `on-demand` 下连续多少次"Host 不在"后转 `dormant`；0 = 一直重连 |
+| `mergeWindowMs` | 2000 | 调用 / 资源读取后的合并窗口（毫秒） |
+| `sleepOnBackground` | `false`（`defaultLifecycle` 为 `true`） | 进入后台且空闲时立即休眠 |
+| `legacyTimers` | `false` | 一次性回退到 4e 之前的定时器行为 |
+
+`AppMcpOptions.heartbeat`：`'auto'`（缺省；鸿蒙沙箱上的回环地址按远程处理，约每 15 s 单向心跳）/ `'always'` / `'off'`
+（在设备上嵌入 Hub 时可用）。资源声明 `realtime: true`（缺省 `false`）表示模型在等待其变化：被 Host 订阅时阻止休眠、
+休眠中变化时回连推送；普通状态（购物车、列表）不要声明。
 
 `HarmonyAppMcp.handleWant(want)` 识别两种唤醒：`want.uri` 为 `<scheme>://app-mcp/wake?token=<令牌>`，或
 `want.parameters['app-mcp-wake']` 为令牌。要让 URI 拉起 App，在入口 Ability 的 `skills` 中声明：

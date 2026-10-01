@@ -72,6 +72,21 @@ internal struct AmClientOptions
     public nint Lifecycle;        // const AmLifecycle*
     public uint ConnectTimeoutMs;
     public nint OnIdleExit;       // void (*)(void*)
+    // v7（4e 功耗，spec/lifecycle.md 第 11 节）
+    public int Heartbeat;         // AmHeartbeatMode
+    public int HostAbsentRetries; // 0 = 默认 3，负数 = 一直重连
+    public byte LegacyTimers;     // C bool
+    // v8（4e 第二部分，spec/lifecycle.md 第 13 节）
+    public long MergeWindowMs;    // 0 = 默认 2000，负数 = 不留窗口
+    public byte SleepOnBackground; // C bool
+}
+
+/// <summary>v8：am_resource_register_ex 的资源选项。StructSize = sizeof(AmResourceOptions)。</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct AmResourceOptions
+{
+    public uint StructSize;
+    public byte Realtime; // C bool
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -141,7 +156,7 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)] internal static partial AmStatus am_tool_dispose(ToolSafeHandle tool);
     [LibraryImport(Lib)] internal static partial void am_tool_free(nint tool);
 
-    [LibraryImport(Lib)] internal static partial AmStatus am_resource_register(ScopeSafeHandle scope, AmResourceSpec* spec, nint reader, nint userData, nint freeUserData, out nint resource);
+    [LibraryImport(Lib)] internal static partial AmStatus am_resource_register_ex(ScopeSafeHandle scope, AmResourceSpec* spec, AmResourceOptions* options, nint reader, nint userData, nint freeUserData, out nint resource);
     [LibraryImport(Lib)] internal static partial AmStatus am_resource_notify_changed(ResourceSafeHandle resource);
     [LibraryImport(Lib)] internal static partial AmStatus am_resource_dispose(ResourceSafeHandle resource);
     [LibraryImport(Lib)] internal static partial void am_resource_free(nint resource);

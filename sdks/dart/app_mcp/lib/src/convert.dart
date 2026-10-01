@@ -73,6 +73,21 @@ int sleepReasonToNative(SleepReason r) => switch (r) {
 /// Duration → 非负毫秒数。
 int durationToMs(Duration d) => d.isNegative ? 0 : d.inMilliseconds;
 
+int heartbeatToNative(HeartbeatMode h) => switch (h) {
+      HeartbeatMode.auto => AmHeartbeatMode.auto,
+      HeartbeatMode.always => AmHeartbeatMode.always,
+      HeartbeatMode.off => AmHeartbeatMode.off,
+    };
+
+const int _int32Max = 0x7FFFFFFF;
+
+/// @compat C ABI 的 host_absent_retries：0 = 默认 3、负数 = 一直重连；封装层 0（或负数）= 一直重连。
+int hostAbsentRetriesToNative(int retries) =>
+    retries <= 0 ? -1 : (retries > _int32Max ? _int32Max : retries);
+
+/// @compat C ABI 的 merge_window_ms：0 = 默认 2000、负数 = 不留窗口；封装层 [Duration.zero]（或负数）= 不留窗口。
+int mergeWindowToNative(Duration window) => window.inMilliseconds <= 0 ? -1 : window.inMilliseconds;
+
 /// 未知值按 [ConnectionStatus.idle] 处理（不应发生）。
 ConnectionStatus statusFromNative(int status) => switch (status) {
       AmStateStatus.idle => ConnectionStatus.idle,

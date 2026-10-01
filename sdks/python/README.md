@@ -30,6 +30,41 @@ Handlers may be plain functions or `async def`; input schemas are derived from t
 from Pydantic models with the `pydantic` extra). `app_mcp.dispatchers` runs handlers on the Qt or
 Tk main thread, and `app_mcp.linux` provides D-Bus wake-up (`dbus` extra).
 
+## Lifecycle and power
+
+By default a client stays connected (`persistent`). Desktop apps on Linux that export the D-Bus
+wake service can sleep when idle and be woken by the Host:
+
+```python
+from app_mcp import AppMcp
+from app_mcp.linux import dbus_lifecycle, serve_dbus_wake
+
+BUS = "org.example.Notes"
+app = AppMcp("notes", "Notes", lifecycle=dbus_lifecycle(BUS))  # idle + D-Bus wake descriptor
+service = serve_dbus_wake(app, BUS)
+app.start()
+```
+
+`dbus_lifecycle(bus, **overrides)` is the desktop default (`mode="idle"`, 2 s merge window); any field
+you pass wins. It is not applied automatically: an `idle` app without a wake path cannot be reached
+after it sleeps, so plain `AppMcp(...)` stays `persistent`.
+
+`LifecyclePolicy` fields (times in seconds; see `spec/lifecycle.md` §3, §11, §13):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `mode` | `"persistent"` | `"persistent"` / `"idle"` / `"on-demand"` |
+| `host_absent_retries` | `3` | In `idle` / `on-demand`, give up and go dormant after this many "Host not running" failures; `0` = retry forever |
+| `merge_window` | `2.0` | After a call or resource read, stay online at most this long (plus the Host lease) |
+| `sleep_on_background` | `False` | Sleep as soon as the app is hidden and idle, without waiting for the lease |
+| `legacy_timers` | `False` | Restore the pre-4e timer behaviour |
+
+Other switches: `AppMcp(..., heartbeat="auto" | "always" | "off")` (default `"auto"`: no heartbeat
+over local IPC or desktop loopback), and `@app.resource(..., realtime=True)` /
+`add_resource(..., realtime=True)` for resources the model waits on. A subscription to a `realtime`
+resource keeps the app online, and a change while the app is asleep reconnects it to push the update.
+Ordinary resources (the default) do not block sleep; their changes are delivered on the next connection.
+
 ## Embedding the Hub in your own agent
 
 `app_mcp.hub.Hub` embeds the hub in a Python agent: export tools in MCP, OpenAI, Anthropic or

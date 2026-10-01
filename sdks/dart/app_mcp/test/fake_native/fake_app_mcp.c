@@ -9,6 +9,8 @@
  * v3（生命周期）：am_client_new_ex 记录生命周期配置（fake_lifecycle），handle_wake 识别
  * "app-mcp-wake:" 前缀，wake / sleep / connect_now 发出状态变化，hold 计数（fake_hold_count），
  * fake_idle_exit 在其他线程触发 on_idle_exit。
+ * v7 / v8（4e 功耗）：fake_lifecycle 末尾追加 heartbeat、host_absent_retries、legacy_timers、merge_window_ms、
+ * sleep_on_background；am_resource_register_ex 记录 realtime（fake_resource_realtime）。
  *
  * 编译：cc -shared -fPIC -o libfake_app_mcp.so fake_app_mcp.c -lpthread
  * Windows（MSVC）：cl /c /utf-8 编译后按 dumpbin /symbols 中的外部函数生成 .def 再 link /DLL
@@ -79,6 +81,7 @@ typedef struct ResRec {
     void *user_data;
     AmFreeFn free_user_data;
     int freed;
+    int realtime;
 } ResRec;
 
 #define MAX_ITEMS 256
@@ -267,13 +270,17 @@ AmStatus am_client_new_ex(const AmClientConfig *config, const AmClientCallbacks 
         (*out)->on_idle_exit = options->on_idle_exit;
         const AmLifecycle *l = options->lifecycle;
         char buf[512];
+        char power[128];
+        snprintf(power, sizeof power, "%d|%d|%d|%lld|%d", (int)options->heartbeat, (int)options->host_absent_retries,
+                 options->legacy_timers ? 1 : 0, (long long)options->merge_window_ms,
+                 options->sleep_on_background ? 1 : 0);
         if (l) {
-            snprintf(buf, sizeof buf, "%d|%llu|%llu|%llu|%d|%d|%s|%d|%u", (int)l->mode,
+            snprintf(buf, sizeof buf, "%d|%llu|%llu|%llu|%d|%d|%s|%d|%u|%s", (int)l->mode,
                      (unsigned long long)l->idle_timeout_ms, (unsigned long long)l->hidden_idle_timeout_ms,
                      (unsigned long long)l->grace_ms, (int)l->residency, (int)l->wake_kind,
-                     l->wake_target ? l->wake_target : "-", l->wake_background ? 1 : 0, options->connect_timeout_ms);
+                     l->wake_target ? l->wake_target : "-", l->wake_background ? 1 : 0, options->connect_timeout_ms, power);
         } else {
-            snprintf(buf, sizeof buf, "-|%u", options->connect_timeout_ms);
+            snprintf(buf, sizeof buf, "-|%u|%s", options->connect_timeout_ms, power);
         }
         g_lifecycle = dup_str(buf);
     }
@@ -606,6 +613,17 @@ void am_tool_free(AmTool *tool) { free(tool); }
 
 /* ------------------------------------------------------------------ 资源 */
 
+AmStatus am_resource_register_ex(AmScope *scope, const AmResourceSpec *spec, const AmResourceOptions *options,
+                                 AmReadFn reader, void *user_data, AmFreeFn free_user_data, AmResource **out) {
+    if (options && options->struct_size != sizeof(AmResourceOptions)) {
+        set_error("struct_size 不匹配");
+        return AM_ERR_INVALID_ARGUMENT;
+    }
+    AmStatus st = am_resource_register(scope, spec, reader, user_data, free_user_data, out);
+    if (st == AM_OK && options) (*out)->rec->realtime = options->realtime ? 1 : 0;
+    return st;
+}
+
 AmStatus am_resource_register(AmScope *scope, const AmResourceSpec *spec, AmReadFn reader, void *user_data,
                               AmFreeFn free_user_data, AmResource **out) {
     if (!scope || !spec || !spec->name || !reader || !out) return AM_ERR_INVALID_ARGUMENT;
@@ -907,6 +925,14 @@ int fake_free_count(void) {
 int fake_visibility(void) { return g_visibility; }
 int fake_focused(void) { return g_focused; }
 int fake_notify_count(void) { return g_notify_count; }
+/* 资源注册时的 realtime：1 / 0；找不到（或已注销）时 -1。 */
+int fake_resource_realtime(const char *name) {
+    AmClient *c = g_client;
+    if (!c || !name) return -1;
+    for (int i = c->n_res - 1; i >= 0; i--)
+        if (!c->res[i]->disposed && strcmp(c->res[i]->name, name) == 0) return c->res[i]->realtime;
+    return -1;
+}
 /* 工具当前的 enabled / risk / 描述，供测试断言 update。 */
 int fake_tool_enabled(const char *name) { ToolRec *t = find_tool(g_client, name); return t ? t->enabled : -1; }
 char *fake_tool_description(const char *name) { ToolRec *t = find_tool(g_client, name); return t ? dup_str(t->description) : NULL; }
@@ -926,6 +952,12 @@ size_t fake_sizeof(int which) {
     case 7: return sizeof(AmClientOptions);
     case 8: return offsetof(AmLifecycle, wake_target);
     case 9: return offsetof(AmClientOptions, on_idle_exit);
+    case 10: return offsetof(AmClientOptions, heartbeat);
+    case 11: return offsetof(AmClientOptions, legacy_timers);
+    case 12: return offsetof(AmClientOptions, merge_window_ms);
+    case 13: return offsetof(AmClientOptions, sleep_on_background);
+    case 14: return sizeof(AmResourceOptions);
+    case 15: return offsetof(AmResourceOptions, realtime);
     default: return 0;
     }
 }

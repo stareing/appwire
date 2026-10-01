@@ -3,9 +3,10 @@ import Foundation
 
 /// 生命周期策略（spec/lifecycle.md 第 3 节）。
 ///
-/// - `persistent`：不休眠（非 iOS 平台的默认）。
-/// - `idle`：启动即连接；空闲后与 Host 完成 `app/sleep` 握手并断开；被唤醒后回连。
-/// - `onDemand`：启动时不连接；`handleWake` / `connectNow()` 时连接，任务完成后经过 `graceMs` 休眠。
+/// - `persistent`：不休眠（未给唤醒方式的桌面平台默认）。
+/// - `idle`：启动即连接；空闲后与 Host 完成 `app/sleep` 握手并断开；被唤醒后回连（给了唤醒方式的桌面平台默认）。
+/// - `onDemand`：启动时不连接；回到前台（`setPhase(.active)`）、`handleWake` / `connectNow()` 时连接，
+///   调用完成后经过合并窗口、连上后无调用经过 `graceMs` 休眠（iOS / tvOS / visionOS 默认）。
 public struct LifecyclePolicy: Sendable, Equatable {
     public var mode: LifecycleMode
     /// 空闲多久进入休眠（`idle`）。
@@ -18,6 +19,14 @@ public struct LifecyclePolicy: Sendable, Equatable {
     /// 本实例的唤醒描述，随 `app/sleep` 上报；为 `nil` 时 Host 回退到清单 `launch`。
     /// 见 `WakeDescriptor.urlScheme(_:background:)`。
     public var wake: WakeDescriptor?
+    /// `idle` / `onDemand` 下连续多少次"Host 不在"后停止重连、进入 `dormant`；0 = 一直重连（第 11 节 A2）。
+    public var hostAbsentRetries: UInt32
+    /// 回退到 4e 之前的定时器行为（第 11、13 节）。
+    public var legacyTimers: Bool
+    /// 调用 / 资源读取完成后的合并窗口：之后是否在线只由 Host 租约决定（第 13 节 B1）。
+    public var mergeWindowMs: UInt64
+    /// `idle` / `onDemand` 下进入后台且空闲时立即休眠，不等租约（第 13 节 B4）。iOS 默认开启。
+    public var sleepOnBackground: Bool
 
     public init(
         mode: LifecycleMode = .persistent,
@@ -25,7 +34,11 @@ public struct LifecyclePolicy: Sendable, Equatable {
         hiddenIdleTimeoutMs: UInt64 = 15_000,
         graceMs: UInt64 = 10_000,
         residency: Residency = .keep,
-        wake: WakeDescriptor? = nil
+        wake: WakeDescriptor? = nil,
+        hostAbsentRetries: UInt32 = 3,
+        legacyTimers: Bool = false,
+        mergeWindowMs: UInt64 = 2_000,
+        sleepOnBackground: Bool = false
     ) {
         self.mode = mode
         self.idleTimeoutMs = idleTimeoutMs
@@ -33,29 +46,44 @@ public struct LifecyclePolicy: Sendable, Equatable {
         self.graceMs = graceMs
         self.residency = residency
         self.wake = wake
+        self.hostAbsentRetries = hostAbsentRetries
+        self.legacyTimers = legacyTimers
+        self.mergeWindowMs = mergeWindowMs
+        self.sleepOnBackground = sleepOnBackground
     }
 
     /// 不休眠。
     public static let persistent = LifecyclePolicy()
 
-    /// iOS 推荐：`idle`，进入后台（`hidden`）立即休眠——iOS 没有后台唤醒，后台期间的调用走 App Intents。
+    /// iOS 推荐（spec/lifecycle.md 第 13 节 B1「平台默认」）：`onDemand` + `sleepOnBackground`，进入后台（`hidden`）
+    /// 立即休眠——iOS 没有后台唤醒，后台期间的调用走 App Intents。
     public static func iOSDefault(wake: WakeDescriptor? = nil) -> LifecyclePolicy {
-        LifecyclePolicy(mode: .idle, hiddenIdleTimeoutMs: 0, wake: wake)
+        LifecyclePolicy(mode: .onDemand, hiddenIdleTimeoutMs: 0, wake: wake, sleepOnBackground: true)
     }
 
-    /// 当前平台的默认策略：iOS / tvOS / visionOS 为 `iOSDefault()`，其他平台为 `persistent`。
-    public static var platformDefault: LifecyclePolicy {
+    /// 当前平台的默认策略：iOS / tvOS / visionOS 为 `iOSDefault(wake:)`；其他平台给了 `wake` 时为 `idle`
+    /// （默认 2 s 合并窗口），否则为 `persistent`。
+    ///
+    /// @why 桌面 `idle` 休眠后只能经唤醒描述回连；没有唤醒描述时 Host 只能按清单 `launch` 冷启动新实例或失败，
+    /// 所以不给 `wake` 的桌面默认保持 `persistent`。
+    public static func platformDefault(wake: WakeDescriptor?) -> LifecyclePolicy {
         #if os(iOS) || os(tvOS) || os(visionOS)
-        return iOSDefault()
+        return iOSDefault(wake: wake)
         #else
-        return .persistent
+        guard let wake else { return .persistent }
+        return LifecyclePolicy(mode: .idle, wake: wake)
         #endif
     }
+
+    /// `platformDefault(wake: nil)`。
+    public static var platformDefault: LifecyclePolicy { platformDefault(wake: nil) }
 
     var ffi: AppMcpBindings.LifecyclePolicy {
         AppMcpBindings.LifecyclePolicy(
             mode: mode, idleTimeoutMs: idleTimeoutMs, hiddenIdleTimeoutMs: hiddenIdleTimeoutMs,
-            graceMs: graceMs, residency: residency, wake: wake
+            graceMs: graceMs, residency: residency, wake: wake,
+            hostAbsentRetries: hostAbsentRetries, legacyTimers: legacyTimers,
+            mergeWindowMs: mergeWindowMs, sleepOnBackground: sleepOnBackground
         )
     }
 }
@@ -118,7 +146,8 @@ func phaseAction(_ phase: AppPhase, mode: LifecycleMode) -> PhaseAction {
 }
 
 extension AppMcpClient {
-    /// 上报前后台阶段：设置可见性；`idle` / `onDemand` 模式下回到前台时以原因 `visible` 回连。
+    /// 上报前后台阶段：设置可见性；`idle` / `onDemand` 模式下进入前台时以原因 `visible` 回连（`onDemand` 由此在前台
+    /// 连上；须在 `start()` 之后，未启动时的唤醒被忽略——已在前台时再启动请用 `connectNow()`）。
     public func setPhase(_ phase: AppPhase) {
         let action = phaseAction(phase, mode: lifecycle.mode)
         setVisibility(action.visibility, focused: action.focused)

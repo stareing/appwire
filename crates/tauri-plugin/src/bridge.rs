@@ -21,8 +21,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use app_mcp_native::{
     Activation, CallHandle, CancelListener, CancelReason, ErrorKind, HoldHandle, NativeClient,
-    NativeError, ReadHandle, ResourceHandle, ResourceReader, ResourceSpec, Risk, ScopeHandle,
-    StateInfo, StateStatus, ToolHandle, ToolHandler, ToolSpec,
+    NativeError, ReadHandle, ResourceHandle, ResourceOptions, ResourceReader, ResourceSpec, Risk,
+    ScopeHandle, StateInfo, StateStatus, ToolHandle, ToolHandler, ToolSpec,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -101,6 +101,9 @@ enum PageOp {
         description: String,
         #[serde(default, rename = "mimeType")]
         mime_type: Option<String>,
+        /// @compat 旧页面 SDK 不发送该字段，缺省 `false`（spec/lifecycle.md 第 13 节 B3）。
+        #[serde(default)]
+        realtime: bool,
     },
     #[serde(rename = "resource.notify")]
     ResourceNotify { id: u64 },
@@ -580,6 +583,7 @@ impl Session {
                 name,
                 description,
                 mime_type,
+                realtime,
             } => {
                 let mut st = self.live()?;
                 let registrar = self.registrar(&st, scope_id)?;
@@ -595,9 +599,10 @@ impl Session {
                     session: Arc::downgrade(self),
                     resource_id: id,
                 });
+                let options = ResourceOptions { realtime };
                 let handle = match registrar {
-                    Some(scope) => scope.register_resource(spec, reader)?,
-                    None => self.scope.register_resource(spec, reader)?,
+                    Some(scope) => scope.register_resource_with(spec, options, reader)?,
+                    None => self.scope.register_resource_with(spec, options, reader)?,
                 };
                 st.resources.insert(id, handle);
                 Ok(None)

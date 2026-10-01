@@ -39,12 +39,53 @@ void main() {
     expect(sizeOf<AmResourceSpec>(), fake.sizeOf(3));
     expect(sizeOf<AmLifecycle>(), fake.sizeOf(6));
     expect(sizeOf<AmClientOptions>(), fake.sizeOf(7));
+    expect(sizeOf<AmResourceOptions>(), fake.sizeOf(14));
+  });
+
+  group('功耗选项（v7 / v8）', () {
+    test('heartbeat 与生命周期新字段按 C ABI 编码传入', () {
+      client.dispose();
+      client = AppMcp(
+        appId: 'shop',
+        appName: '商店',
+        libraryPath: path,
+        heartbeat: HeartbeatMode.off,
+        lifecycle: const LifecyclePolicy(
+          mode: LifecycleMode.idle,
+          hostAbsentRetries: 0,
+          legacyTimers: true,
+          mergeWindow: Duration.zero,
+          sleepOnBackground: true,
+        ),
+      );
+      // 0 = 一直重连 / 不留窗口 → C ABI 负数。
+      expect(fake.lifecycle(), '1|60000|15000|10000|0|-1|-|0|0|2|-1|1|-1|1');
+      client.dispose();
+      client = AppMcp(
+        appId: 'shop',
+        appName: '商店',
+        libraryPath: path,
+        heartbeat: HeartbeatMode.always,
+        lifecycle: const LifecyclePolicy(hostAbsentRetries: 7, mergeWindow: Duration(milliseconds: 500)),
+      );
+      expect(fake.lifecycle(), '0|60000|15000|10000|0|-1|-|0|0|1|7|0|500|0');
+    });
+
+    test('资源 realtime 经 am_resource_register_ex 传入', () {
+      client.resource('order.status', description: '订单状态', realtime: true, read: () => {'s': 1});
+      client.resource('cart', description: '购物车', read: () => const <Object?>[]);
+      final scope = client.root.scope('page');
+      scope.resource('page.live', description: '实时', realtime: true, read: () => null);
+      expect(fake.resourceRealtime('order.status'), 1);
+      expect(fake.resourceRealtime('cart'), 0);
+      expect(fake.resourceRealtime('page.live'), 1);
+    });
   });
 
   group('生命周期（v3）', () {
     test('默认策略（桌面）与 connectTimeout 传入 am_client_new_ex', () {
       // 默认：persistent、不上报唤醒描述（-1）、connect_timeout 0（原生默认）。
-      expect(fake.lifecycle(), '0|60000|15000|10000|0|-1|-|0|0');
+      expect(fake.lifecycle(), '0|60000|15000|10000|0|-1|-|0|0|0|3|0|2000|0');
       expect(client.lifecycle.mode, LifecycleMode.persistent);
       client.dispose();
       client = AppMcp(
@@ -61,7 +102,7 @@ void main() {
           wake: WakeDescriptor.uri('shop', background: true),
         ),
       );
-      expect(fake.lifecycle(), '2|300|0|1000|1|1|shop|1|2000');
+      expect(fake.lifecycle(), '2|300|0|1000|1|1|shop|1|2000|0|3|0|2000|0');
       client.dispose();
       client = AppMcp(
           appId: 'shop',
@@ -69,7 +110,7 @@ void main() {
           libraryPath: path,
           lifecycle: const LifecyclePolicy(
               mode: LifecycleMode.idle, wake: WakeDescriptor.androidIntent('com.x/.WakeReceiver')));
-      expect(fake.lifecycle(), '1|60000|15000|10000|0|5|com.x/.WakeReceiver|1|0');
+      expect(fake.lifecycle(), '1|60000|15000|10000|0|5|com.x/.WakeReceiver|1|0|0|3|0|2000|0');
     });
 
     test('handleWake / wake / sleep / connectNow 与状态 dormant、waking', () async {

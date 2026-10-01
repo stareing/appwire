@@ -86,6 +86,55 @@ class UnitTest {
     }
 
     @Test
+    fun powerSwitchesMapToFfi() {
+        val d = LifecyclePolicy().toFfi()
+        assertEquals(3u, d.hostAbsentRetries)
+        assertEquals(false, d.legacyTimers)
+        assertEquals(2_000uL, d.mergeWindowMs)
+        assertEquals(false, d.sleepOnBackground)
+        val p = LifecyclePolicy(
+            hostAbsentRetries = 0, legacyTimers = true, mergeWindowMillis = 500, sleepOnBackground = true,
+        ).toFfi()
+        assertEquals(0u, p.hostAbsentRetries) // 0 = 一直重连，与 uniffi 编码相同
+        assertEquals(true, p.legacyTimers)
+        assertEquals(500uL, p.mergeWindowMs)
+        assertEquals(true, p.sleepOnBackground)
+        val clamped = LifecyclePolicy(hostAbsentRetries = -1, mergeWindowMillis = -1).toFfi()
+        assertEquals(0u, clamped.hostAbsentRetries)
+        assertEquals(0uL, clamped.mergeWindowMs)
+    }
+
+    @Test
+    fun heartbeatMapsToFfi() {
+        assertEquals(HeartbeatMode.AUTO, AppMcpConfig("kotlin-unit", "心跳").toFfi().heartbeat)
+        for (mode in HeartbeatMode.entries) {
+            assertEquals(mode, AppMcpConfig("kotlin-unit", "心跳", heartbeat = mode).toFfi().heartbeat)
+        }
+        assertEquals(null, AppMcpConfig("kotlin-unit", "无策略").toFfi().lifecycle)
+        val c = AppMcp.create(AppMcpConfig("kotlin-unit", "心跳关", hostUrl = "ws://127.0.0.1:9", heartbeat = HeartbeatMode.OFF))
+        c.close()
+    }
+
+    @Test
+    fun realtimeResourceChangesToolsHash() {
+        fun hashWith(register: (AppMcp) -> Unit): String {
+            val c = AppMcp.create(AppMcpConfig("kotlin-unit", "摘要", hostUrl = "ws://127.0.0.1:9"))
+            try {
+                register(c)
+                return c.toolsHash
+            } finally {
+                c.close()
+            }
+        }
+        val plain = hashWith { it.resource("order", "订单") { null } }
+        val explicitFalse = hashWith { it.resource("order", "订单", realtime = false) { null } }
+        val realtime = hashWith { it.resource("order", "订单", realtime = true) { null } }
+        assertEquals(plain, explicitFalse)
+        assertTrue(plain != realtime)
+        client.scope("s").use { it.resource("s.order", "订单", realtime = true) { null } }
+    }
+
+    @Test
     fun wakeTokenParsing() {
         assertEquals("abc", parseWakeToken("app-mcp-wake:abc"))
         assertEquals("t1", parseWakeToken("shop://app-mcp/wake?token=t1"))

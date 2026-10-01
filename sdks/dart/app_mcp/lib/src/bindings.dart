@@ -89,6 +89,13 @@ abstract final class AmLogLevel {
 
 // v3：生命周期
 
+/// v7：心跳策略（`AmClientOptions.heartbeat`）。
+abstract final class AmHeartbeatMode {
+  static const int auto = 0;
+  static const int always = 1;
+  static const int off = 2;
+}
+
 abstract final class AmLifecycleMode {
   static const int persistent = 0;
   static const int idle = 1;
@@ -218,6 +225,29 @@ final class AmClientOptions extends Struct {
   @Uint32()
   external int connect_timeout_ms;
   external Pointer<NativeFunction<AmIdleExitFnNative>> on_idle_exit;
+  // v7（spec/lifecycle.md 第 11 节）
+  @Int32()
+  external int heartbeat;
+
+  /// 0 = 默认 3，负数 = 一直重连。
+  @Int32()
+  external int host_absent_retries;
+  @Bool()
+  external bool legacy_timers;
+  // v8（spec/lifecycle.md 第 13 节）
+  /// 0 = 默认 2000，负数 = 不留窗口。
+  @Int64()
+  external int merge_window_ms;
+  @Bool()
+  external bool sleep_on_background;
+}
+
+/// v8：`am_resource_register_ex` 的资源选项。
+final class AmResourceOptions extends Struct {
+  @Uint32()
+  external int struct_size;
+  @Bool()
+  external bool realtime;
 }
 
 final class AmToolSpec extends Struct {
@@ -387,6 +417,23 @@ final class AppMcpBindings {
           Pointer<Void>,
           Pointer<NativeFunction<AmFreeFnNative>>,
           Pointer<Pointer<AmResource>>)>('am_resource_register');
+  late final am_resource_register_ex = library.lookupFunction<
+      Int32 Function(
+          Pointer<AmScope>,
+          Pointer<AmResourceSpec>,
+          Pointer<AmResourceOptions>,
+          Pointer<NativeFunction<AmReadFnNative>>,
+          Pointer<Void>,
+          Pointer<NativeFunction<AmFreeFnNative>>,
+          Pointer<Pointer<AmResource>>),
+      int Function(
+          Pointer<AmScope>,
+          Pointer<AmResourceSpec>,
+          Pointer<AmResourceOptions>,
+          Pointer<NativeFunction<AmReadFnNative>>,
+          Pointer<Void>,
+          Pointer<NativeFunction<AmFreeFnNative>>,
+          Pointer<Pointer<AmResource>>)>('am_resource_register_ex');
   late final am_resource_notify_changed = library
       .lookupFunction<Int32 Function(Pointer<AmResource>), int Function(Pointer<AmResource>)>(
           'am_resource_notify_changed');

@@ -33,8 +33,8 @@ internal const val TAG = "AppMcpSample"
  * 客户端放在 Application 里（而不是 Activity）：进程被唤醒广播冷启动时没有 Activity，
  * WakeWorker 通过 [AppMcpProvider] 取得客户端。
  *
- * 生命周期演示（idle 模式）：空闲 10 s 休眠（后台 5 s）；休眠后按 Home 把 App 切到后台，
- * Host 用显式广播唤醒：
+ * 生命周期演示（Android 默认 on-demand + sleepOnBackground）：启动不连接，进入前台时连上；没有调用 10 s
+ * （graceMs）后休眠，调用后按 Host 租约 + 2 s 合并窗口休眠；切到后台空闲即休眠。休眠后 Host 用显式广播唤醒：
  *   adb shell am broadcast -a dev.appmcp.action.WAKE \
  *     -n dev.appmcp.sample.android/dev.appmcp.android.WakeReceiver --es token <t>
  */
@@ -48,11 +48,10 @@ class SampleApp : Application(), AppMcpProvider {
 
     override fun onCreate() {
         super.onCreate()
-        mcp // 冷启动（包括被唤醒广播拉起）时立即创建并连接
+        mcp // 冷启动（包括被唤醒广播拉起）时立即创建并启动（on-demand：前台或唤醒时才连接）
     }
 
     private fun createClient(): AppMcp {
-        val base = AppMcpAndroid.defaultLifecycle(this)
         val c = AppMcpAndroid.create(
             this,
             AppMcpConfig(
@@ -61,7 +60,6 @@ class SampleApp : Application(), AppMcpProvider {
                 hostUrl = "ws://127.0.0.1:7717/app", // 配合 adb reverse tcp:7717 tcp:7717
                 appVersion = "0.1.0",
                 overview = AppOverview(summary = "Android 示例：回显文本、计数器", body = null),
-                lifecycle = base.copy(idleTimeoutMillis = 10_000, hiddenIdleTimeoutMillis = 5_000),
                 onPaired = { token -> Log.i(TAG, "配对成功 token=$token") },
                 onLog = { level, msg -> Log.println(priority(level), TAG, "[native] $msg") },
                 onIdleExit = { Log.i(TAG, "onIdleExit（residency=keep 时不会出现）") },

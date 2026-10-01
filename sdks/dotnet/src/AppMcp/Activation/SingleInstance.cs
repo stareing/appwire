@@ -69,6 +69,27 @@ public sealed class SingleInstance : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// 桌面平台默认生命周期（spec/lifecycle.md 第 13 节 B1"平台默认"）。本实例已在接收第二实例转交的激活参数，
+    /// 配上 <paramref name="wake"/>（通常来自 <see cref="WakeDescriptorFactory.ForWindows"/>）后休眠中仍可被唤醒：
+    /// <list type="bullet">
+    /// <item><c>wake.Kind == None</c>：<see cref="LifecycleMode.Persistent"/>——Host 只能按清单 <c>launch</c> 冷启动，休眠后可能不可达。</item>
+    /// <item><c>wake.Background</c>（托盘 / 无窗口进程）：<see cref="LifecycleMode.OnDemand"/> + <see cref="LifecycleOptions.SleepOnBackground"/>。</item>
+    /// <item>否则（窗口程序）：<see cref="LifecycleMode.Idle"/>，调用后 2 秒合并窗口。</item>
+    /// </list>
+    /// 个别字段用 <c>with</c> 覆盖，如 <c>single.DefaultLifecycle(wake) with { IdleTimeout = ... }</c>。
+    /// </summary>
+    public LifecycleOptions DefaultLifecycle(WakeDescriptor wake) => DesktopLifecycle(wake);
+
+    /// <summary><see cref="DefaultLifecycle"/> 的规则（不依赖单实例监听，便于测试）。</summary>
+    internal static LifecycleOptions DesktopLifecycle(WakeDescriptor wake)
+    {
+        ArgumentNullException.ThrowIfNull(wake);
+        if (wake.Kind == WakeKind.None) return new LifecycleOptions();
+        if (wake.Background) return new LifecycleOptions { Mode = LifecycleMode.OnDemand, SleepOnBackground = true, Wake = wake };
+        return new LifecycleOptions { Mode = LifecycleMode.Idle, Wake = wake };
+    }
+
     /// <summary>把之后收到的激活参数交给 <paramref name="client"/>.HandleWake（在管道线程上调用，HandleWake 线程安全）。</summary>
     public void AttachClient(AppMcpClient? client) => _client = client;
 

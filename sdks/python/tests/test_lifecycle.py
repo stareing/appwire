@@ -18,6 +18,7 @@ from app_mcp import AppMcp, Hold, LifecyclePolicy, StateStatus, ToolCallError, W
 from app_mcp import app_mcp_uniffi as ffi
 from app_mcp._client import _ClientListener, _complete_err, _lifecycle_to_ffi
 from app_mcp.linux import (
+    dbus_lifecycle,
     dbus_object_path,
     dbus_service_file,
     dbus_wake_descriptor,
@@ -58,9 +59,86 @@ def test_policy_defaults_and_conversion():
     assert f.wake.kind == ffi.WakeKind.DBUS and f.wake.target == "org.example.Shop" and f.wake.background
 
 
+def test_power_switches_conversion():
+    p = LifecyclePolicy()
+    assert (p.host_absent_retries, p.legacy_timers, p.merge_window, p.sleep_on_background) == (3, False, 2.0, False)
+    f = _lifecycle_to_ffi(p)
+    assert (f.host_absent_retries, f.legacy_timers, f.merge_window_ms, f.sleep_on_background) == (3, False, 2000, False)
+
+    # 0 = 一直重连，与 uniffi 编码相同；合并窗口 0 = 调用后不额外停留
+    f = _lifecycle_to_ffi(
+        LifecyclePolicy(host_absent_retries=0, legacy_timers=True, merge_window=0.5, sleep_on_background=True)
+    )
+    assert (f.host_absent_retries, f.legacy_timers, f.merge_window_ms, f.sleep_on_background) == (0, True, 500, True)
+    assert _lifecycle_to_ffi(LifecyclePolicy(merge_window=0)).merge_window_ms == 0
+
+
+def test_heartbeat_config():
+    from app_mcp._client import _HEARTBEATS, _enum_arg
+
+    assert set(_HEARTBEATS.values()) == set(ffi.HeartbeatMode)
+    for name, expected in (("auto", ffi.HeartbeatMode.AUTO), ("always", ffi.HeartbeatMode.ALWAYS), ("OFF", ffi.HeartbeatMode.OFF)):
+        assert _enum_arg(name, _HEARTBEATS, "心跳策略") is expected
+        AppMcp("py-hb", "Py", host_url=UNREACHABLE, heartbeat=name).close()
+    AppMcp("py-hb", "Py", host_url=UNREACHABLE, heartbeat=ffi.HeartbeatMode.OFF).close()
+    with pytest.raises(ValueError):
+        AppMcp("py-hb", "Py", host_url=UNREACHABLE, heartbeat="sometimes")
+
+
+def test_realtime_resource_changes_tools_hash():
+    def tools_hash(**kwargs) -> str:
+        client = AppMcp("py-rt", "Py", host_url=UNREACHABLE)
+        try:
+            client.add_resource(lambda: {}, "order", "订单", **kwargs)
+            return client.tools_hash
+        finally:
+            client.close()
+
+    plain = tools_hash()
+    assert tools_hash(realtime=False) == plain
+    assert tools_hash(realtime=True) != plain
+
+    client = AppMcp("py-rt", "Py", host_url=UNREACHABLE)
+    try:
+        h0 = client.tools_hash
+
+        @client.resource("live", description="实时", realtime=True)
+        def live() -> dict:
+            return {}
+
+        assert "live" in client.resources and client.tools_hash != h0
+    finally:
+        client.close()
+
+
+def test_dbus_lifecycle_is_desktop_default():
+    p = dbus_lifecycle("org.example.Shop")
+    assert p.mode == "idle"
+    assert p.wake == dbus_wake_descriptor("org.example.Shop")
+    assert (p.merge_window, p.sleep_on_background, p.host_absent_retries) == (2.0, False, 3)
+    # 显式传入的字段总是生效
+    custom = WakeDescriptor("uri", "shop", False)
+    o = dbus_lifecycle("org.example.Shop", mode="on-demand", sleep_on_background=True, wake=custom, merge_window=0)
+    assert (o.mode, o.sleep_on_background, o.wake, o.merge_window) == ("on-demand", True, custom, 0)
+    with pytest.raises(ValueError):
+        dbus_lifecycle("not a bus name")
+    # AppMcp 本身默认不休眠
+    client = AppMcp("py-def", "Py", host_url=UNREACHABLE)
+    try:
+        assert client.lifecycle is None
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize(
     "kwargs",
-    [{"mode": "sometimes"}, {"residency": "forever"}, {"idle_timeout": -1}],
+    [
+        {"mode": "sometimes"},
+        {"residency": "forever"},
+        {"idle_timeout": -1},
+        {"merge_window": -1},
+        {"host_absent_retries": -1},
+    ],
 )
 def test_policy_validation(kwargs):
     with pytest.raises(ValueError):

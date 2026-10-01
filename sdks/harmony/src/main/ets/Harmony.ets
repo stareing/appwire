@@ -87,9 +87,13 @@ export class HarmonyAppMcp {
     return { kind: 'uri', target: `${scheme}://${WAKE_URI_PATH}`, background: false };
   }
 
-  /** 鸿蒙默认生命周期：`idle`、`keep`（spec/lifecycle.md 第 3 节「移动端封装默认 idle」）。 */
+  /**
+   * 鸿蒙默认生命周期：`on-demand`、`keep`、进入后台立即休眠（spec/lifecycle.md 第 13 节 B1「平台默认」、B4）。
+   * 其余字段（合并窗口、hostAbsentRetries 等）取原生层默认值。
+   * @compat `create` 收到 `options.lifecycle` 时整体使用它、不与本默认合并；只改个别字段时先取本默认再修改。
+   */
   static defaultLifecycle(scheme?: string): LifecycleOptions {
-    const lifecycle: LifecycleOptions = { mode: 'idle', residency: 'keep' };
+    const lifecycle: LifecycleOptions = { mode: 'on-demand', residency: 'keep', sleepOnBackground: true };
     if (scheme !== undefined) {
       lifecycle.wake = HarmonyAppMcp.wakeDescriptor(scheme);
     }
@@ -125,6 +129,7 @@ export class HarmonyAppMcp {
       autoStart: options.autoStart,
       lifecycle: lifecycle,
       connectTimeoutMs: options.connectTimeoutMs,
+      heartbeat: options.heartbeat,
       onIdleExit: options.onIdleExit,
     };
     const client = createAppMcp(full);
@@ -161,7 +166,9 @@ export class HarmonyAppMcp {
     const callback: ApplicationStateChangeCallback = {
       onApplicationForeground: (): void => {
         client.setVisibility('visible', true);
-        // 休眠中回到前台：回连（未休眠时无效果）。
+        // @why 休眠中回到前台时回连（已连接时只重新计时）；`on-demand` 启动后处于 dormant，
+        //   在 onCreate 中 create 时首次进入前台也经此连接。
+
         if (lifecycle.mode !== undefined && lifecycle.mode !== 'persistent') {
           client.wake('visible');
         }

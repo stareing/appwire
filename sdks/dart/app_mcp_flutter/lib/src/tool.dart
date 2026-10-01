@@ -129,6 +129,7 @@ class McpResource extends StatefulWidget {
     required this.name,
     required this.description,
     this.mimeType,
+    this.realtime = false,
     required this.read,
     this.changeToken,
     this.child,
@@ -137,6 +138,9 @@ class McpResource extends StatefulWidget {
   final String name;
   final String description;
   final String? mimeType;
+
+  /// 需实时推送（spec/lifecycle.md 第 13 节 B3），见 [McpScope.resource]。
+  final bool realtime;
   final ResourceReader read;
   final Object? changeToken;
   final Widget? child;
@@ -167,7 +171,8 @@ class _McpResourceState extends State<McpResource> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.name != widget.name ||
         oldWidget.description != widget.description ||
-        oldWidget.mimeType != widget.mimeType) {
+        oldWidget.mimeType != widget.mimeType ||
+        oldWidget.realtime != widget.realtime) {
       _handle?.dispose();
       _register();
       return;
@@ -188,7 +193,10 @@ class _McpResourceState extends State<McpResource> {
     if (scope == null || scope.isDisposed) return;
     try {
       _handle = scope.resource(widget.name,
-          description: widget.description, mimeType: widget.mimeType, read: _read);
+          description: widget.description,
+          mimeType: widget.mimeType,
+          realtime: widget.realtime,
+          read: _read);
     } on AppMcpException catch (e, st) {
       _report(e, st, '注册资源 ${widget.name} 时');
     }

@@ -191,6 +191,9 @@ public sealed class AppMcpClientOptions
     /// <summary>建立连接的超时；为 null 时 5 秒。</summary>
     public TimeSpan? ConnectTimeout { get; init; }
 
+    /// <summary>心跳策略（spec/lifecycle.md 第 11 节 A3）。默认 <see cref="HeartbeatMode.Auto"/>。</summary>
+    public HeartbeatMode Heartbeat { get; init; } = HeartbeatMode.Auto;
+
     /// <summary>
     /// handler 与事件执行的线程。未设置时捕获 <see cref="AppMcpClient.Create"/> 调用时的
     /// <see cref="SynchronizationContext.Current"/>（在 WPF / WinUI 的 UI 线程创建即自动回到 UI 线程）；

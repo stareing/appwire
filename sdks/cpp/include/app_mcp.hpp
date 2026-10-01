@@ -15,6 +15,9 @@
 // - Client::handle_wake(args) 处理操作系统激活参数（命令行、URL、D-Bus action 参数），识别后回连。
 // - Client::hold() / Call::hold() 返回 HoldGuard，析构时释放（RAII），期间不会自动休眠。
 // - ClientCallbacks::on_idle_exit：residency 允许时，休眠完成后回调，App 自行决定是否退出。
+// - 4e 功耗（spec/lifecycle.md 第 11、13 节）：ClientConfig::heartbeat、Lifecycle::host_absent_retries /
+//   legacy_timers / merge_window_ms / sleep_on_background、ResourceOptions::realtime。
+//   本封装不区分平台，默认 persistent（核心兼容）；平台默认（手机 on-demand、桌面 idle）由 App 自行设置。
 #ifndef APP_MCP_HPP
 #define APP_MCP_HPP
 
@@ -119,6 +122,7 @@ using StateStatus = AmStateStatus;
 using LogLevel = AmLogLevel;
 using ClientKind = AmClientKind;
 using LifecycleMode = AmLifecycleMode;
+using HeartbeatMode = AmHeartbeatMode;
 using Residency = AmResidency;
 using WakeKind = AmWakeKind;
 using WakeReason = AmWakeReason;
@@ -142,6 +146,14 @@ struct Lifecycle {
     Residency residency = AM_RESIDENCY_KEEP;
     /// 不设置时 Host 回退到清单 launch。
     std::optional<WakeDescriptor> wake;
+    /// idle / on-demand 下连续多少次"Host 不在"后转休眠（第 11 节 A2）；0 = 一直重连。
+    uint32_t host_absent_retries = 3;
+    /// true：回退到 4e 之前的定时器行为（第 11、13 节）。
+    bool legacy_timers = false;
+    /// 调用 / 资源读取后的合并窗口（第 13 节 B1）；0 = 不留窗口（调用后只看租约）。
+    uint64_t merge_window_ms = 2000;
+    /// true：idle / on-demand 下进入后台且空闲时立即休眠，不等租约（第 13 节 B4）。
+    bool sleep_on_background = false;
 };
 
 struct StateInfo {
@@ -160,6 +172,13 @@ struct ToolOptions {
     Activation activation = AM_ACTIVATION_NONE;
     std::optional<std::string> title;
     bool enabled = true;
+};
+
+struct ResourceOptions {
+    /// 为空时 application/json。
+    std::optional<std::string> mime_type;
+    /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时保持连接、休眠中变化时回连推送。
+    bool realtime = false;
 };
 
 /// App 总览（Host 在模型首次接触该 App 时附带）。
@@ -184,6 +203,8 @@ struct ClientConfig {
     Lifecycle lifecycle;
     /// 建立连接的超时；0 表示默认 5000ms。
     uint32_t connect_timeout_ms = 0;
+    /// 心跳策略（spec/lifecycle.md 第 11 节 A3）；AUTO：本地 IPC / 桌面本机回环不发。
+    HeartbeatMode heartbeat = AM_HEARTBEAT_AUTO;
 };
 
 struct ClientCallbacks {
@@ -196,6 +217,43 @@ struct ClientCallbacks {
 };
 
 namespace detail {
+
+/// @compat C ABI 的 host_absent_retries：0 = 默认 3、负数 = 一直重连；封装层 0 = 一直重连。
+inline int32_t encode_host_absent_retries(uint32_t retries) noexcept {
+    if (retries == 0) return -1;
+    return retries > static_cast<uint32_t>(INT32_MAX) ? INT32_MAX : static_cast<int32_t>(retries);
+}
+
+/// @compat C ABI 的 merge_window_ms：0 = 默认 2000、负数 = 不留窗口；封装层 0 = 不留窗口。
+inline int64_t encode_merge_window_ms(uint64_t ms) noexcept {
+    if (ms == 0) return -1;
+    return ms > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(ms);
+}
+
+/// ClientConfig → AmLifecycle + AmClientOptions（不含回调）。
+/// @invariant opts->lifecycle 指向 *lc，lc.wake_target 借用 config 的字符串；二者都不能比 config 活得久。
+inline void fill_client_options(const ClientConfig& config, AmLifecycle* lc, AmClientOptions* opts) {
+    am_lifecycle_init(lc);
+    lc->mode = config.lifecycle.mode;
+    lc->idle_timeout_ms = config.lifecycle.idle_timeout_ms;
+    lc->hidden_idle_timeout_ms = config.lifecycle.hidden_idle_timeout_ms;
+    lc->grace_ms = config.lifecycle.grace_ms;
+    lc->residency = config.lifecycle.residency;
+    if (config.lifecycle.wake) {
+        lc->wake_kind = config.lifecycle.wake->kind;
+        lc->wake_target = c_str_or_null(config.lifecycle.wake->target);
+        lc->wake_background = config.lifecycle.wake->background;
+    }
+    *opts = AmClientOptions{};
+    opts->struct_size = sizeof(AmClientOptions);
+    opts->lifecycle = lc;
+    opts->connect_timeout_ms = config.connect_timeout_ms;
+    opts->heartbeat = config.heartbeat;
+    opts->host_absent_retries = encode_host_absent_retries(config.lifecycle.host_absent_retries);
+    opts->legacy_timers = config.lifecycle.legacy_timers;
+    opts->merge_window_ms = encode_merge_window_ms(config.lifecycle.merge_window_ms);
+    opts->sleep_on_background = config.lifecycle.sleep_on_background;
+}
 
 /// 客户端回调的 user_data：用户回调 + 客户端句柄（状态回调里查询错误码用）。
 struct ClientCallbackHolder {
@@ -572,14 +630,22 @@ public:
 
     Resource register_resource(const std::string& name, const std::string& description, ResourceReader reader,
                                const std::optional<std::string>& mime_type = std::nullopt) {
+        return register_resource(name, description, std::move(reader), ResourceOptions{mime_type, false});
+    }
+
+    Resource register_resource(const std::string& name, const std::string& description, ResourceReader reader,
+                               const ResourceOptions& options) {
         AmResourceSpec spec{};
         spec.name = name.c_str();
         spec.description = description.c_str();
-        spec.mime_type = detail::c_str_or_null(mime_type);
+        spec.mime_type = detail::c_str_or_null(options.mime_type);
+        AmResourceOptions ropts{};
+        ropts.struct_size = sizeof(AmResourceOptions);
+        ropts.realtime = options.realtime;
         auto* holder = new ResourceReader(std::move(reader));
         AmResource* out = nullptr;
-        detail::check(am_resource_register(h_, &spec, &detail::read_trampoline, holder,
-                                           &detail::delete_fn<ResourceReader>, &out));
+        detail::check(am_resource_register_ex(h_, &spec, &ropts, &detail::read_trampoline, holder,
+                                              &detail::delete_fn<ResourceReader>, &out));
         return Resource(out);
     }
 
@@ -614,21 +680,8 @@ public:
         }
 
         AmLifecycle lc{};
-        am_lifecycle_init(&lc);
-        lc.mode = config.lifecycle.mode;
-        lc.idle_timeout_ms = config.lifecycle.idle_timeout_ms;
-        lc.hidden_idle_timeout_ms = config.lifecycle.hidden_idle_timeout_ms;
-        lc.grace_ms = config.lifecycle.grace_ms;
-        lc.residency = config.lifecycle.residency;
-        if (config.lifecycle.wake) {
-            lc.wake_kind = config.lifecycle.wake->kind;
-            lc.wake_target = detail::c_str_or_null(config.lifecycle.wake->target);
-            lc.wake_background = config.lifecycle.wake->background;
-        }
         AmClientOptions opts{};
-        opts.struct_size = sizeof(AmClientOptions);
-        opts.lifecycle = &lc;
-        opts.connect_timeout_ms = config.connect_timeout_ms;
+        detail::fill_client_options(config, &lc, &opts);
         if (callbacks.on_idle_exit) {
             opts.on_idle_exit = [](void* ud) {
                 auto& h = static_cast<detail::ClientCallbackHolder*>(ud)->callbacks;
@@ -781,6 +834,11 @@ public:
     Resource register_resource(const std::string& name, const std::string& description, ResourceReader reader,
                                const std::optional<std::string>& mime_type = std::nullopt) {
         return root_scope().register_resource(name, description, std::move(reader), mime_type);
+    }
+
+    Resource register_resource(const std::string& name, const std::string& description, ResourceReader reader,
+                               const ResourceOptions& options) {
+        return root_scope().register_resource(name, description, std::move(reader), options);
     }
 
 private:

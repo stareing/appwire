@@ -33,6 +33,28 @@ test('配置映射：默认端点、生命周期、自动 start', () => {
   assert.equal(mcp.instanceId, 'inst-1');
 });
 
+test('配置映射：生命周期新字段、heartbeat 透传；未给出时不传（取原生默认）', () => {
+  const { client } = create({
+    heartbeat: 'always',
+    lifecycle: { mode: 'on-demand', hostAbsentRetries: 0, legacyTimers: true, mergeWindowMs: 0, sleepOnBackground: true },
+  });
+  assert.equal(client.config.heartbeat, 'always');
+  const l = client.config.lifecycle;
+  assert.equal(l.mode, 'on-demand');
+  // 0 = 一直重连（napi 与 spec 同义，不做编码转换）。
+  assert.equal(l.hostAbsentRetries, 0);
+  assert.equal(l.legacyTimers, true);
+  assert.equal(l.mergeWindowMs, 0);
+  assert.equal(l.sleepOnBackground, true);
+
+  const plain = create({ lifecycle: { mode: 'idle' } }).client.config;
+  assert.equal(plain.heartbeat, undefined);
+  for (const key of ['hostAbsentRetries', 'legacyTimers', 'mergeWindowMs', 'sleepOnBackground']) {
+    assert.equal(plain.lifecycle[key], undefined, key);
+  }
+  assert.equal(create().client.config.lifecycle, undefined);
+});
+
 test('hostUrl 显式指定时不用默认值；autoStart false 不连接', () => {
   const { client } = create({ hostUrl: 'ws://10.0.0.2:7717/app', autoStart: false });
   assert.equal(client.config.hostUrl, 'ws://10.0.0.2:7717/app');
@@ -180,6 +202,9 @@ test('资源读取与变更通知', async () => {
   const { mcp, client } = create();
   const r = mcp.resource('cart', { description: '购物车', read: async () => ({ items: 1 }) });
   assert.equal(client.resources.get('cart').spec.mimeType, 'application/json');
+  assert.equal(client.resources.get('cart').spec.realtime, undefined);
+  mcp.resource('order.status', { description: '订单状态', realtime: true, read: () => 'paid' });
+  assert.equal(client.resources.get('order.status').spec.realtime, true);
   assert.deepEqual(await client.read('cart').done, { ok: true, contentsJson: '{"items":1}' });
   r.notifyChanged();
   assert.equal(client.resources.get('cart').changed, 1);

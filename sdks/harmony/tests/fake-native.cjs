@@ -220,4 +220,56 @@ class MemoryLogger {
   }
 }
 
-module.exports = { fakeFactory, MemoryLogger, FakeCall };
+/**
+ * 让转译后的 Harmony.js 能在 Node 上加载：把 Kit 与 .so 的 require 换成假实现。
+ * 返回 `{ clients, appContext }`：`clients` 为经 `native.NativeClient` 创建的假客户端，
+ * `appContext.fire('foreground' | 'background')` 模拟应用前后台切换。
+ */
+function installFakeHarmonyKits() {
+  const Module = require('module');
+  const clients = [];
+  const callbacks = [];
+  const appContext = {
+    on(event, callback) {
+      if (event === 'applicationStateChange') callbacks.push(callback);
+    },
+    off(event, callback) {
+      const i = callbacks.indexOf(callback);
+      if (i >= 0) callbacks.splice(i, 1);
+    },
+    fire(kind) {
+      for (const cb of [...callbacks]) {
+        if (kind === 'foreground') cb.onApplicationForeground();
+        else cb.onApplicationBackground();
+      }
+    },
+    listenerCount() {
+      return callbacks.length;
+    },
+  };
+  const noop = () => {};
+  const stubs = {
+    // 转译未开 esModuleInterop：`import native from` 读取 `.default`。
+    'libapp_mcp_harmony.so': {
+      __esModule: true,
+      default: {
+        NativeClient: class extends FakeNativeClient {
+          constructor(config, listener) {
+            super(config, listener);
+            clients.push(this);
+          }
+        },
+      },
+    },
+    '@kit.PerformanceAnalysisKit': { hilog: { debug: noop, info: noop, warn: noop, error: noop } },
+    '@kit.AbilityKit': {},
+  };
+  const load = Module._load;
+  Module._load = function (request, parent, isMain) {
+    if (Object.prototype.hasOwnProperty.call(stubs, request)) return stubs[request];
+    return load.call(this, request, parent, isMain);
+  };
+  return { clients, appContext, context: { getApplicationContext: () => appContext } };
+}
+
+module.exports = { fakeFactory, MemoryLogger, FakeCall, installFakeHarmonyKits };

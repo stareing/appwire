@@ -146,9 +146,31 @@ class WakeReceiverTest {
         val d = AppMcpAndroid.wakeDescriptor(context)
         assertEquals("${context.packageName}/dev.appmcp.android.WakeReceiver", d.target)
         assertTrue(d.background)
+    }
+
+    @Test
+    fun defaultLifecycleIsOnDemandAndSleepsOnBackground() {
         val p = AppMcpAndroid.defaultLifecycle(context)
-        assertEquals(dev.appmcp.LifecycleMode.IDLE, p.mode)
+        assertEquals(dev.appmcp.LifecycleMode.ON_DEMAND, p.mode)
+        assertTrue(p.sleepOnBackground)
         assertEquals(dev.appmcp.Residency.KEEP, p.residency)
+        assertEquals(AppMcpAndroid.wakeDescriptor(context), p.wake)
+        assertEquals(3, p.hostAbsentRetries)
+        assertEquals(2_000L, p.mergeWindowMillis)
+        assertFalse(p.legacyTimers)
+        assertEquals(p, AppMcpAndroid.resolveLifecycle(context, null))
+    }
+
+    @Test
+    fun explicitLifecycleWinsAndOnlyGetsWakeFilled() {
+        val own = dev.appmcp.LifecyclePolicy(mode = dev.appmcp.LifecycleMode.IDLE)
+        val r = AppMcpAndroid.resolveLifecycle(context, own)
+        assertEquals(dev.appmcp.LifecycleMode.IDLE, r.mode)
+        assertFalse(r.sleepOnBackground)
+        assertEquals(AppMcpAndroid.wakeDescriptor(context), r.wake)
+        val custom = dev.appmcp.WakeDescriptor(dev.appmcp.WakeKind.URI, "shop://", false)
+        val withWake = own.copy(wake = custom, sleepOnBackground = true)
+        assertEquals(withWake, AppMcpAndroid.resolveLifecycle(context, withWake))
     }
 
     // -- 拒绝无用唤醒 ---------------------------------------------------------

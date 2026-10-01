@@ -122,11 +122,14 @@ public sealed class ToolScope : IDisposable
     };
 
     /// <summary>注册资源。reader 返回的对象序列化为资源内容。</summary>
+    /// <remarks><c>realtime</c>：需实时推送（spec/lifecycle.md 第 13 节 B3），被订阅时保持连接、休眠中变化时回连推送。
+    /// 默认 false：订阅不阻止休眠，变化在下次连接时补发。只用于"模型在等待变化"的资源。</remarks>
     public ResourceRegistration RegisterResource(
         string name,
         string description,
         Func<CancellationToken, Task<object?>> reader,
-        string? mimeType = null)
+        string? mimeType = null,
+        bool realtime = false)
     {
         ArgumentNullException.ThrowIfNull(reader);
         var json = _client.SerializerOptions;
@@ -135,23 +138,25 @@ public sealed class ToolScope : IDisposable
             var result = await reader(ct).ConfigureAwait(false);
             return result is null ? "null" : JsonSerializer.Serialize(result, result.GetType(), json);
         };
-        return RegisterResourceRaw(name, description, raw, mimeType);
+        return RegisterResourceRaw(name, description, raw, mimeType, realtime);
     }
 
     /// <summary>注册类型化资源。</summary>
+    /// <remarks><c>realtime</c> 见 <see cref="RegisterResource(string, string, Func{CancellationToken, Task{object?}}, string?, bool)"/>。</remarks>
     public ResourceRegistration RegisterResource<T>(
         string name,
         string description,
         Func<CancellationToken, Task<T>> reader,
-        string? mimeType = null)
+        string? mimeType = null,
+        bool realtime = false)
     {
         ArgumentNullException.ThrowIfNull(reader);
         var json = _client.SerializerOptions;
         RawResourceReader raw = async ct => JsonSerializer.Serialize(await reader(ct).ConfigureAwait(false), json);
-        return RegisterResourceRaw(name, description, raw, mimeType);
+        return RegisterResourceRaw(name, description, raw, mimeType, realtime);
     }
 
-    private unsafe ResourceRegistration RegisterResourceRaw(string name, string description, RawResourceReader raw, string? mimeType)
+    private unsafe ResourceRegistration RegisterResourceRaw(string name, string description, RawResourceReader raw, string? mimeType, bool realtime)
     {
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(description);
@@ -163,8 +168,13 @@ public sealed class ToolScope : IDisposable
             Description = strings.Add(description),
             MimeType = strings.Add(mimeType),
         };
-        var status = NativeMethods.am_resource_register(
-            _handle, &spec, Callbacks.ReadPtr, Callbacks.Alloc(invoker), Callbacks.FreeGCHandlePtr, out var resource);
+        var resourceOptions = new AmResourceOptions
+        {
+            StructSize = (uint)sizeof(AmResourceOptions),
+            Realtime = realtime ? (byte)1 : (byte)0,
+        };
+        var status = NativeMethods.am_resource_register_ex(
+            _handle, &spec, &resourceOptions, Callbacks.ReadPtr, Callbacks.Alloc(invoker), Callbacks.FreeGCHandlePtr, out var resource);
         NativeMethods.Check(status);
         return new ResourceRegistration(new ResourceSafeHandle(resource), name);
     }

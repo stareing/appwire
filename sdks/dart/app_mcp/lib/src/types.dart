@@ -242,11 +242,19 @@ enum LifecycleMode {
   /// 不休眠（桌面端默认，兼容旧行为）。
   persistent,
 
-  /// 启动即连接；空闲后休眠；唤醒后回连（移动端默认）。
+  /// 启动即连接；空闲后休眠；唤醒后回连。
   idle,
 
-  /// 启动时不连接；被唤醒或 `connectNow()` 时连接，任务完成后经过 grace 休眠。
+  /// 启动时不连接；被唤醒或 `connectNow()` 时连接，任务完成后经过合并窗口休眠（移动端默认）。
   onDemand,
+}
+
+/// 心跳策略（spec/lifecycle.md 第 11 节 A3）。
+enum HeartbeatMode {
+  /// 按传输：本地 IPC / 桌面本机回环不发，远程发（默认）。
+  auto,
+  always,
+  off,
 }
 
 /// 休眠后的进程驻留策略。
@@ -313,19 +321,27 @@ final class LifecyclePolicy {
     this.grace = const Duration(seconds: 10),
     this.residency = Residency.keep,
     this.wake,
+    this.hostAbsentRetries = 3,
+    this.legacyTimers = false,
+    this.mergeWindow = const Duration(seconds: 2),
+    this.sleepOnBackground = false,
   });
 
-  /// 按平台选择默认值：Android / iOS 为 [LifecycleMode.idle]、[Residency.keep]（iOS 进入后台即休眠：
-  /// `hiddenIdleTimeout = 0`）；其他平台为 [LifecycleMode.persistent]。
+  /// 按平台选择默认值（spec/lifecycle.md 第 13 节 B1"平台默认"）：Android / iOS 为 [LifecycleMode.onDemand]
+  /// + [sleepOnBackground]、[Residency.keep]（iOS 另设 `hiddenIdleTimeout = 0`）；其他平台为 [LifecycleMode.persistent]。
+  ///
+  /// @why 桌面不默认 `idle`：本封装没有单实例重定向，休眠后经 URI / 清单 `launch` 唤醒会冷启动新进程而不是回连本实例。
+  /// 有可靠唤醒入口（如 macOS URL scheme、自行实现的单实例转交）的桌面 App 显式传入 `idle`。
   factory LifecyclePolicy.platformDefault({
     required bool isAndroid,
     required bool isIOS,
     WakeDescriptor? wake,
   }) {
     if (isIOS) {
-      return LifecyclePolicy(mode: LifecycleMode.idle, hiddenIdleTimeout: Duration.zero, wake: wake);
+      return LifecyclePolicy(
+          mode: LifecycleMode.onDemand, hiddenIdleTimeout: Duration.zero, sleepOnBackground: true, wake: wake);
     }
-    if (isAndroid) return LifecyclePolicy(mode: LifecycleMode.idle, wake: wake);
+    if (isAndroid) return LifecyclePolicy(mode: LifecycleMode.onDemand, sleepOnBackground: true, wake: wake);
     return LifecyclePolicy(wake: wake);
   }
 
@@ -344,6 +360,18 @@ final class LifecyclePolicy {
   /// 未设置时 Host 回退到清单 `launch`。
   final WakeDescriptor? wake;
 
+  /// `idle` / `onDemand` 下连续多少次"Host 不在"后转休眠（第 11 节 A2）；0 = 一直重连。
+  final int hostAbsentRetries;
+
+  /// true：回退到 4e 之前的定时器行为（第 11、13 节）。
+  final bool legacyTimers;
+
+  /// 调用 / 资源读取后的合并窗口（第 13 节 B1）；[Duration.zero] = 不留窗口（调用后只看租约）。
+  final Duration mergeWindow;
+
+  /// true：`idle` / `onDemand` 下进入后台（可见 → 隐藏 / 冻结）且空闲时立即休眠，不等租约（第 13 节 B4）。
+  final bool sleepOnBackground;
+
   LifecyclePolicy copyWith({
     LifecycleMode? mode,
     Duration? idleTimeout,
@@ -351,6 +379,10 @@ final class LifecyclePolicy {
     Duration? grace,
     Residency? residency,
     WakeDescriptor? wake,
+    int? hostAbsentRetries,
+    bool? legacyTimers,
+    Duration? mergeWindow,
+    bool? sleepOnBackground,
   }) =>
       LifecyclePolicy(
         mode: mode ?? this.mode,
@@ -359,6 +391,10 @@ final class LifecyclePolicy {
         grace: grace ?? this.grace,
         residency: residency ?? this.residency,
         wake: wake ?? this.wake,
+        hostAbsentRetries: hostAbsentRetries ?? this.hostAbsentRetries,
+        legacyTimers: legacyTimers ?? this.legacyTimers,
+        mergeWindow: mergeWindow ?? this.mergeWindow,
+        sleepOnBackground: sleepOnBackground ?? this.sleepOnBackground,
       );
 
   @override
@@ -369,14 +405,20 @@ final class LifecyclePolicy {
       other.hiddenIdleTimeout == hiddenIdleTimeout &&
       other.grace == grace &&
       other.residency == residency &&
-      other.wake == wake;
+      other.wake == wake &&
+      other.hostAbsentRetries == hostAbsentRetries &&
+      other.legacyTimers == legacyTimers &&
+      other.mergeWindow == mergeWindow &&
+      other.sleepOnBackground == sleepOnBackground;
 
   @override
-  int get hashCode => Object.hash(mode, idleTimeout, hiddenIdleTimeout, grace, residency, wake);
+  int get hashCode => Object.hash(mode, idleTimeout, hiddenIdleTimeout, grace, residency, wake,
+      hostAbsentRetries, legacyTimers, mergeWindow, sleepOnBackground);
 
   @override
   String toString() => 'LifecyclePolicy(${mode.name}, idle: $idleTimeout, hidden: $hiddenIdleTimeout, '
-      'grace: $grace, residency: ${residency.name}, wake: $wake)';
+      'grace: $grace, residency: ${residency.name}, wake: $wake, hostAbsentRetries: $hostAbsentRetries, '
+      'legacyTimers: $legacyTimers, mergeWindow: $mergeWindow, sleepOnBackground: $sleepOnBackground)';
 }
 
 /// 工具 handler。参数已由 Host 按 inputSchema 校验。
@@ -462,11 +504,14 @@ final class AppOverview {
 
 /// 资源定义。
 final class ResourceSpec {
-  const ResourceSpec({required this.name, required this.description, this.mimeType});
+  const ResourceSpec({required this.name, required this.description, this.mimeType, this.realtime = false});
 
   final String name;
   final String description;
 
   /// 为 null 时为 `application/json`。
   final String? mimeType;
+
+  /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时保持连接、休眠中变化时回连推送。
+  final bool realtime;
 }

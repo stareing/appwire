@@ -43,9 +43,9 @@ final class AppMcpService {
                 Task { @MainActor in model?.status = "\(state.status)" }
             },
             onPaired: { token in UserDefaults.standard.set(token, forKey: "appMcpToken") },
-            // 空闲休眠；Host 通过 shop://app-mcp/wake?token=… 唤醒（macOS 上用 `open -g`，不前置窗口）。
-            // iOS 不配置时默认即为 iOSDefault()：进入后台立即休眠。
-            lifecycle: LifecyclePolicy(mode: .idle, wake: .urlScheme("shop"))
+            // 平台默认：iOS 为 onDemand + 进入后台立即休眠；macOS 有 URL scheme 唤醒，为 idle（2 s 合并窗口）。
+            // Host 通过 shop://app-mcp/wake?token=… 唤醒（macOS 上用 `open -g`，不前置窗口）。
+            lifecycle: .platformDefault(wake: .urlScheme("shop"))
         ))
 
         let schema = #"{"type":"object","properties":{"sku":{"type":"string"},"qty":{"type":"integer","minimum":1}},"required":["sku"]}"#

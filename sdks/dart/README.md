@@ -45,9 +45,22 @@ final hold = client.hold();     // 临时阻止休眠 … hold.release();
 client.onIdleExit.listen((_) { /* residency 允许时：App 自行决定是否退出 */ });
 ```
 
-- 不传 `lifecycle` 时按平台取默认值（`LifecyclePolicy.platformDefault`）：Android / iOS 为 `idle` +
-  `residency: keep`（进程交给系统回收，SDK 不持有前台服务 / WakeLock / 后台任务）；iOS 另设
-  `hiddenIdleTimeout: 0`（进入后台即休眠）；桌面为 `persistent`（兼容旧行为）。
+- 不传 `lifecycle` 时按平台取默认值（`LifecyclePolicy.platformDefault`，spec/lifecycle.md 第 13 节 B1）：Android / iOS 为
+  `onDemand` + `sleepOnBackground: true` + `residency: keep`（启动后不连接，第一次进入前台、被唤醒或 `connectNow()` 时连接；
+  进入后台且空闲即休眠；进程交给系统回收，SDK 不持有前台服务 / WakeLock / 后台任务）；iOS 另设 `hiddenIdleTimeout: 0`。
+  桌面为 `persistent`：本封装没有单实例重定向，休眠后经 URI / 清单 `launch` 唤醒会冷启动新进程而不是回连本实例；
+  有可靠唤醒入口（macOS URL scheme、自行实现的单实例转交）的桌面 App 显式传 `LifecycleMode.idle`。
+  显式传入的 `lifecycle` 原样使用；只改个别字段用 `LifecyclePolicy.platformDefault(...).copyWith(...)`。
+- 功耗选项（spec/lifecycle.md 第 11、13 节）：
+
+  | 选项 | 默认 | 说明 |
+  |---|---|---|
+  | `AppMcp(heartbeat: ...)` | `HeartbeatMode.auto` | `auto`（本地 IPC / 桌面本机回环不发心跳）/ `always` / `off` |
+  | `LifecyclePolicy.hostAbsentRetries` | 3 | idle / onDemand 下连续多少次"Host 不在"后转休眠；0 = 一直重连 |
+  | `LifecyclePolicy.mergeWindow` | 2 秒 | 调用 / 资源读取后的合并窗口，之后是否在线由 Hub 租约决定；`Duration.zero` = 不留窗口 |
+  | `LifecyclePolicy.sleepOnBackground` | false（移动端默认 true） | idle / onDemand 下进入后台且空闲时立即休眠，不等租约 |
+  | `LifecyclePolicy.legacyTimers` | false | 回退到 4e 之前的定时器行为 |
+  | `resource(..., realtime: true)` / `McpResource(realtime: true)` | false | 模型在等待变化的资源：被订阅时保持连接、休眠中变化时回连推送；普通资源的订阅不阻止休眠 |
 - handler 内的长任务用 `ctx.hold()` 延长持有（必须在调用完成前获取）；调用进行中本身就视为非空闲。
 - `throw ToolCallError(kind, message, details: {...})`：`details` 经 `am_call_fail_with_details` 上报，
   对象字段合并进协议错误的 `data`。
@@ -57,8 +70,9 @@ client.onIdleExit.listen((_) { /* residency 允许时：App 自行决定是否�
 
 `AppMcpScope`（`trackLifecycle: true`，默认）用 `AppLifecycleListener` 上报可见性：
 `resumed` → visible + focused，`inactive` → visible，`hidden` → hidden，`paused` → 移动端 frozen / 桌面 hidden，
-`detached` → frozen。进入后台后由原生层按 `hiddenIdleTimeout` 休眠；`idle` / `onDemand` 模式下回到
-`resumed` 时以原因 `visible` 调用 `wake`（未休眠时无效果）。
+`detached` → frozen。进入后台后由原生层休眠（`sleepOnBackground` 时空闲即休眠，否则按 `hiddenIdleTimeout`）；
+`idle` / `onDemand` 模式下可见性从隐藏 / 冻结变为可见（含首次上报即可见，即启动后第一次进入前台）时以原因 `visible`
+调用 `wake`（未休眠时无效果）；`inactive ↔ resumed` 只是焦点变化，不回连。
 
 ### WakeDescriptor 怎么填
 

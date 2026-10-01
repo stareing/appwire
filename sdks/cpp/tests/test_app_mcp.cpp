@@ -214,6 +214,68 @@ void test_lifecycle() {
     EXPECT(idle_exits == 0);
 }
 
+void test_power_options() {
+    // 默认值等于核心默认（spec/lifecycle.md 第 3 节）：C ABI 编码 0 = 默认。
+    app_mcp::ClientConfig config;
+    config.app_id = "cpp-power";
+    config.app_name = "C++ Power";
+    EXPECT(config.lifecycle.mode == AM_LIFECYCLE_PERSISTENT);
+    EXPECT(config.heartbeat == AM_HEARTBEAT_AUTO);
+    EXPECT(config.lifecycle.host_absent_retries == 3 && !config.lifecycle.legacy_timers &&
+           config.lifecycle.merge_window_ms == 2000 && !config.lifecycle.sleep_on_background);
+    AmLifecycle lc{};
+    AmClientOptions opts{};
+    app_mcp::detail::fill_client_options(config, &lc, &opts);
+    EXPECT(opts.struct_size == sizeof(AmClientOptions) && opts.lifecycle == &lc);
+    EXPECT(opts.heartbeat == AM_HEARTBEAT_AUTO && opts.host_absent_retries == 3 && !opts.legacy_timers &&
+           opts.merge_window_ms == 2000 && !opts.sleep_on_background);
+
+    // 显式值逐项映射；0 = 一直重连 / 不留窗口 → C ABI 负数。
+    config.heartbeat = AM_HEARTBEAT_OFF;
+    config.lifecycle.mode = AM_LIFECYCLE_IDLE;
+    config.lifecycle.host_absent_retries = 0;
+    config.lifecycle.legacy_timers = true;
+    config.lifecycle.merge_window_ms = 0;
+    config.lifecycle.sleep_on_background = true;
+    app_mcp::detail::fill_client_options(config, &lc, &opts);
+    EXPECT(lc.mode == AM_LIFECYCLE_IDLE);
+    EXPECT(opts.heartbeat == AM_HEARTBEAT_OFF && opts.host_absent_retries < 0 && opts.legacy_timers &&
+           opts.merge_window_ms < 0 && opts.sleep_on_background);
+    config.heartbeat = AM_HEARTBEAT_ALWAYS;
+    config.lifecycle.host_absent_retries = 7;
+    config.lifecycle.merge_window_ms = 500;
+    app_mcp::detail::fill_client_options(config, &lc, &opts);
+    EXPECT(opts.heartbeat == AM_HEARTBEAT_ALWAYS && opts.host_absent_retries == 7 && opts.merge_window_ms == 500);
+
+    // 超出 C ABI 范围时截断而不是回绕成负数（负数在 C ABI 中另有含义）。
+    EXPECT(app_mcp::detail::encode_host_absent_retries(UINT32_MAX) == INT32_MAX);
+    EXPECT(app_mcp::detail::encode_merge_window_ms(UINT64_MAX) == INT64_MAX);
+
+    // 非法心跳枚举值 → AM_ERR_INVALID_ARGUMENT（说明字段确实传到了库）。
+    config.host_url = "ws://127.0.0.1:1";
+    {
+        app_mcp::ClientConfig bad = config;
+        bad.heartbeat = static_cast<AmHeartbeatMode>(9);
+        EXPECT(status_of([&] { app_mcp::Client c(bad); }) == AM_ERR_INVALID_ARGUMENT);
+    }
+
+    // 带新字段创建客户端；realtime 资源注册（含与普通资源同名冲突）。
+    app_mcp::Client client(config);
+    app_mcp::ResourceOptions rt;
+    rt.realtime = true;
+    auto r1 = client.register_resource("order.status", "订单状态", [](app_mcp::Read read) { read.complete("{}"); }, rt);
+    EXPECT(static_cast<bool>(r1));
+    EXPECT(status_of([&] { r1.notify_changed(); }) == AM_OK);
+    app_mcp::ResourceOptions text;
+    text.mime_type = std::string("text/plain");
+    auto r2 = client.register_resource("app.note", "备注", [](app_mcp::Read read) { read.complete("\"x\""); }, text);
+    EXPECT(static_cast<bool>(r2));
+    EXPECT(status_of([&] {
+               client.register_resource("order.status", "重名", [](app_mcp::Read) {}, rt);
+           }) == AM_ERR_DUPLICATE_NAME);
+    client.stop();
+}
+
 void test_diagnostics() {
     // 不存在的本地 IPC 端点 → BACKOFF，错误码 HOST_NOT_RUNNING（spec/protocol.md 10.1）。
     // @why 不用 ws://127.0.0.1:1：WSL 等环境下回环连接未监听端口可能超时（CONNECT_TIMEOUT）而非被拒绝。
@@ -276,6 +338,7 @@ int main() {
         test_basics();
         test_runtime();
         test_lifecycle();
+        test_power_options();
         test_diagnostics();
     } catch (const std::exception& e) {
         ++g_failed;

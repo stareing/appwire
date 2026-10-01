@@ -50,10 +50,10 @@ use tauri::{AppHandle, Manager, RunEvent, Runtime, Webview, WindowEvent};
 
 pub use app_mcp_native::{
     Activation, AppOverview, CallHandle, CancelListener, CancelReason, ClientKind, ClientListener,
-    ErrorKind, HoldHandle, LifecycleMode, LifecyclePolicy, LogLevel, NativeClient, NativeConfig,
-    NativeError, ReadHandle, Residency, ResourceHandle, ResourceReader, ResourceSpec, Risk,
-    ScopeHandle, SleepReason, StateInfo, StateStatus, ToolHandle, ToolHandler, ToolSpec,
-    Visibility, WakeDescriptor, WakeKind, WakeReason,
+    ErrorKind, HeartbeatMode, HoldHandle, LifecycleMode, LifecyclePolicy, LogLevel, NativeClient,
+    NativeConfig, NativeError, ReadHandle, Residency, ResourceHandle, ResourceOptions,
+    ResourceReader, ResourceSpec, Risk, ScopeHandle, SleepReason, StateInfo, StateStatus,
+    ToolHandle, ToolHandler, ToolSpec, Visibility, WakeDescriptor, WakeKind, WakeReason,
 };
 pub use bridge::BRIDGE_VERSION;
 

@@ -84,14 +84,11 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
             UserData = Callbacks.Alloc(sink), // 由库在释放客户端（或创建失败）时释放
             FreeUserData = Callbacks.FreeGCHandlePtr,
         };
-        var lifecycle = ToNative(options.Lifecycle ?? new LifecycleOptions(), strings);
-        var ext = new AmClientOptions
-        {
-            StructSize = (uint)sizeof(AmClientOptions),
-            Lifecycle = (nint)(&lifecycle),
-            ConnectTimeoutMs = ToMillis32(options.ConnectTimeout),
-            OnIdleExit = Callbacks.IdleExitPtr, // user_data 与 callbacks 共用（ClientEventSink）
-        };
+        var policy = options.Lifecycle ?? new LifecycleOptions();
+        var lifecycle = ToNative(policy, strings);
+        var ext = ToNativeOptions(options, policy);
+        ext.Lifecycle = (nint)(&lifecycle);
+        ext.OnIdleExit = Callbacks.IdleExitPtr; // user_data 与 callbacks 共用（ClientEventSink）
         NativeMethods.Check(NativeMethods.am_client_new_ex(&config, &callbacks, &ext, out var raw));
         var handle = new ClientSafeHandle(raw);
         try
@@ -119,6 +116,26 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         WakeTarget = strings.Add(l.Wake?.Target),
         WakeBackground = l.Wake?.Background == true ? (byte)1 : (byte)0,
     };
+
+    /// <summary>托管选项 → AmClientOptions（不含 Lifecycle 指针与回调）。</summary>
+    /// <remarks>@compat C ABI 的 host_absent_retries 0 = 默认 3、负数 = 一直重连；merge_window_ms 0 = 默认 2000、负数 = 不留窗口；
+    /// 托管层 0 表示"一直重连 / 不留窗口"，在此转换。</remarks>
+    internal static unsafe AmClientOptions ToNativeOptions(AppMcpClientOptions options, LifecycleOptions l)
+    {
+        if (l.HostAbsentRetries < 0) throw new ArgumentOutOfRangeException(nameof(l.HostAbsentRetries), "HostAbsentRetries 不能为负数（0 = 一直重连）");
+        if (!Enum.IsDefined(options.Heartbeat)) throw new ArgumentOutOfRangeException(nameof(options.Heartbeat), "非法的 Heartbeat");
+        var merge = ToMillis(l.MergeWindow, nameof(l.MergeWindow));
+        return new AmClientOptions
+        {
+            StructSize = (uint)sizeof(AmClientOptions),
+            ConnectTimeoutMs = ToMillis32(options.ConnectTimeout),
+            Heartbeat = (int)options.Heartbeat,
+            HostAbsentRetries = l.HostAbsentRetries == 0 ? -1 : l.HostAbsentRetries,
+            LegacyTimers = l.LegacyTimers ? (byte)1 : (byte)0,
+            MergeWindowMs = merge == 0 ? -1 : (long)Math.Min(merge, long.MaxValue),
+            SleepOnBackground = l.SleepOnBackground ? (byte)1 : (byte)0,
+        };
+    }
 
     private static ulong ToMillis(TimeSpan t, string name) =>
         t < TimeSpan.Zero ? throw new ArgumentOutOfRangeException(name, "时间不能为负数") : (ulong)t.TotalMilliseconds;
@@ -264,19 +281,21 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         Func<TInput, ToolContext, Task<TOutput>> handler,
         ToolOptions? options = null) => _root.RegisterTool(name, description, handler, options);
 
-    /// <inheritdoc cref="ToolScope.RegisterResource(string, string, Func{CancellationToken, Task{object?}}, string?)"/>
+    /// <inheritdoc cref="ToolScope.RegisterResource(string, string, Func{CancellationToken, Task{object?}}, string?, bool)"/>
     public ResourceRegistration RegisterResource(
         string name,
         string description,
         Func<CancellationToken, Task<object?>> reader,
-        string? mimeType = null) => _root.RegisterResource(name, description, reader, mimeType);
+        string? mimeType = null,
+        bool realtime = false) => _root.RegisterResource(name, description, reader, mimeType, realtime);
 
     /// <inheritdoc cref="ToolScope.RegisterResource{T}"/>
     public ResourceRegistration RegisterResource<T>(
         string name,
         string description,
         Func<CancellationToken, Task<T>> reader,
-        string? mimeType = null) => _root.RegisterResource(name, description, reader, mimeType);
+        string? mimeType = null,
+        bool realtime = false) => _root.RegisterResource(name, description, reader, mimeType, realtime);
 
     /// <summary>注销全部工具与资源（客户端继续运行）。</summary>
     public void UnregisterAll() => _root.Unregister();

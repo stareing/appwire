@@ -289,6 +289,9 @@ final class AppMcp {
   ///
   /// [overview] 为 App 总览，Host 在模型第一次接触该 App 时附带。
   ///
+  /// [lifecycle] 缺省时按平台取 [LifecyclePolicy.platformDefault]；显式传入的策略原样使用。
+  /// [heartbeat] 为心跳策略（spec/lifecycle.md 第 11 节 A3）。
+  ///
   /// [libraryPath] 指定原生库路径；缺省时读取环境变量 `APP_MCP_NATIVE_PATH`，
   /// 否则按平台默认名加载。失败时抛出 [AppMcpException]。
   factory AppMcp({
@@ -305,6 +308,7 @@ final class AppMcp {
     AppOverview? overview,
     LifecyclePolicy? lifecycle,
     Duration? connectTimeout,
+    HeartbeatMode heartbeat = HeartbeatMode.auto,
     String? libraryPath,
     AppMcpBindings? bindings,
   }) {
@@ -355,7 +359,12 @@ final class AppMcp {
           ..struct_size = sizeOf<AmClientOptions>()
           ..lifecycle = life
           ..connect_timeout_ms = timeoutMs > 0xFFFFFFFF ? 0xFFFFFFFF : timeoutMs
-          ..on_idle_exit = rt.idleExit.nativeFunction;
+          ..on_idle_exit = rt.idleExit.nativeFunction
+          ..heartbeat = heartbeatToNative(heartbeat)
+          ..host_absent_retries = hostAbsentRetriesToNative(policy.hostAbsentRetries)
+          ..legacy_timers = policy.legacyTimers
+          ..merge_window_ms = mergeWindowToNative(policy.mergeWindow)
+          ..sleep_on_background = policy.sleepOnBackground;
         final out = arena<Pointer<AmClient>>();
         rt.check(b.am_client_new_ex(config, callbacks, options, out));
         client._ptr = out.value;
@@ -557,8 +566,11 @@ final class AppMcp {
 
   /// 在根作用域注册资源。见 [McpScope.resource]。
   ResourceHandle resource(String name,
-          {required String description, String? mimeType, required ResourceReader read}) =>
-      _root.resource(name, description: description, mimeType: mimeType, read: read);
+          {required String description,
+          String? mimeType,
+          bool realtime = false,
+          required ResourceReader read}) =>
+      _root.resource(name, description: description, mimeType: mimeType, realtime: realtime, read: read);
 
   /// 在根作用域下创建子作用域。
   McpScope scope(String name) => _root.scope(name);
@@ -820,8 +832,14 @@ final class McpScope {
   }
 
   /// 注册资源。
+  ///
+  /// [realtime]：需实时推送（spec/lifecycle.md 第 13 节 B3）——被订阅时保持连接、休眠中变化时回连推送。
+  /// 默认 false：订阅不阻止休眠，变化在下次连接时补发；只用于"模型在等待变化"的资源。
   ResourceHandle resource(String name,
-      {required String description, String? mimeType, required ResourceReader read}) {
+      {required String description,
+      String? mimeType,
+      bool realtime = false,
+      required ResourceReader read}) {
     _ensureAlive();
     final rt = _client._rt;
     final entry = _ResourceEntry(_client, read);
@@ -832,9 +850,13 @@ final class McpScope {
         ..name = name.toNativeUtf8(allocator: arena)
         ..description = description.toNativeUtf8(allocator: arena)
         ..mime_type = _optStr(mimeType, arena);
+      final options = arena<AmResourceOptions>();
+      options.ref
+        ..struct_size = sizeOf<AmResourceOptions>()
+        ..realtime = realtime;
       final out = arena<Pointer<AmResource>>();
-      final status = rt.b.am_resource_register(
-          _ptr, s, rt.read.nativeFunction, Pointer<Void>.fromAddress(id), rt.free.nativeFunction, out);
+      final status = rt.b.am_resource_register_ex(
+          _ptr, s, options, rt.read.nativeFunction, Pointer<Void>.fromAddress(id), rt.free.nativeFunction, out);
       if (status != AmStatus.ok) {
         final e = rt.error(status);
         rt.targets.remove(id);

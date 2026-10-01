@@ -106,6 +106,11 @@ final class FakeNative {
   late final visibility = lib.lookupFunction<Int32 Function(), int Function()>('fake_visibility');
   late final focused = lib.lookupFunction<Int32 Function(), int Function()>('fake_focused');
   late final notifyCount = lib.lookupFunction<Int32 Function(), int Function()>('fake_notify_count');
+  late final _resourceRealtime = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>(
+      'fake_resource_realtime');
+
+  /// 资源注册时的 realtime：1 / 0；找不到时 -1。
+  int resourceRealtime(String name) => using((a) => _resourceRealtime(name.toNativeUtf8(allocator: a)));
   late final _toolEnabled = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>(
       'fake_tool_enabled');
   late final _toolDescription = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
@@ -131,7 +136,7 @@ final class FakeNative {
     return s;
   }
 
-  /// `mode|idle|hidden|grace|residency|wakeKind|target|background|connectTimeout`。
+  /// `mode|idle|hidden|grace|residency|wakeKind|target|background|connectTimeout|heartbeat|hostAbsentRetries|legacyTimers|mergeWindowMs|sleepOnBackground`。
   String? lifecycle() => _take(_lifecycle());
   String? lastSleep() => _take(_lastSleep());
 

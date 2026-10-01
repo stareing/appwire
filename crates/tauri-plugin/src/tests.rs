@@ -427,6 +427,63 @@ async fn scopes_resources_and_updates() {
     shutdown(fx.hub).await;
 }
 
+/// 页面资源的 `realtime` 传到 Hub：只有 realtime 资源的订阅算未休眠原因（spec/lifecycle.md 第 13 节 B3）。
+#[tokio::test(flavor = "multi_thread")]
+async fn page_resource_realtime_reaches_hub() {
+    let fx = Fixture::new("realtime", None).await;
+    let page = Arc::new(FakePage::default());
+    fx.connected("realtime").await;
+
+    let plain =
+        json!({ "op": "resource.register", "id": 1, "name": "cart", "description": "购物车" });
+    assert_eq!(fx.op(&page, "main", "main", plain)["ok"], true);
+    let scope = json!({ "op": "scope.create", "id": 2, "name": "orders" });
+    assert_eq!(fx.op(&page, "main", "main", scope)["ok"], true);
+    let realtime = json!({ "op": "resource.register", "id": 3, "scopeId": 2, "name": "order",
+                           "description": "订单状态", "realtime": true });
+    assert_eq!(fx.op(&page, "main", "main", realtime)["ok"], true);
+
+    let uri = |name: &str| -> Option<String> {
+        fx.hub
+            .resources()
+            .into_iter()
+            .find(|r| r.app_id == "realtime" && r.name == format!("realtime.{name}"))
+            .map(|r| r.uri)
+    };
+    eventually("资源出现", || {
+        uri("cart").is_some() && uri("order").is_some()
+    })
+    .await;
+    let subscribed_realtime = || {
+        fx.hub
+            .status()
+            .apps
+            .into_iter()
+            .filter(|a| a.app_id == "realtime")
+            .flat_map(|a| a.instances)
+            .filter_map(|i| i.power)
+            .any(|p| {
+                p.awake_reasons
+                    .contains(&app_mcp_hub::AwakeReason::Subscription)
+            })
+    };
+
+    let cart = uri("cart").unwrap_or_default();
+    let order = uri("order").unwrap_or_default();
+    fx.hub.subscribe(&cart).expect("订阅 cart");
+    fx.hub.subscribe(&order).expect("订阅 order");
+    eventually("realtime 订阅算未休眠原因", subscribed_realtime).await;
+    // 只剩普通资源的订阅：不算。
+    fx.hub.unsubscribe(&order);
+    eventually("普通订阅不算未休眠原因", || {
+        !subscribed_realtime()
+    })
+    .await;
+
+    fx.bridge.client().stop();
+    shutdown(fx.hub).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn sessions_are_per_webview_and_end_with_window() {
     let fx = Fixture::new("windows", None).await;
