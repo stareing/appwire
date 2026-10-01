@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use hub::{ApprovalPolicy, HubConfig, ToolExposure, UpstreamConfig, WakerConfig, load_manifests};
+use hub::{ApprovalPolicy, HubConfig, LeaseOverrides, ToolExposure, UpstreamConfig, WakerConfig, load_manifests};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -47,6 +47,8 @@ pub(crate) struct ConfigJson {
     pub wake_rate_limit: Option<u32>,
     /// 回退到旧心跳（spec/lifecycle.md 第 11 节），缺省 `false`。
     pub legacy_heartbeat: Option<bool>,
+    /// 自适应租约（spec/hub-api.md 3.5）：`{"adaptive","window","marginMs","minMs","maxMs","idleRevokeMs"}`。
+    pub lease: Option<LeaseOverrides>,
     /// `"system"` / `"none"` / `{"exec": [...]}`（spec/hub-api.md 3.5）。
     pub waker: Option<WakerConfig>,
     /// 渐进暴露（spec/hub-api.md 3.7）。
@@ -83,6 +85,7 @@ impl Default for ConfigJson {
             wake_from_launch: None,
             wake_rate_limit: None,
             legacy_heartbeat: None,
+            lease: None,
             waker: None,
             tool_exposure: None,
             tool_exposure_threshold: None,
@@ -159,6 +162,12 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     }
     if let Some(v) = c.legacy_heartbeat {
         hub.legacy_heartbeat = v;
+    }
+    if let Some(o) = &c.lease {
+        o.apply(&mut hub.lease);
+        hub.lease
+            .validate()
+            .map_err(|e| FfiError::new(AmHubStatus::InvalidConfig, format!("lease 无效：{e}")))?;
     }
     if let Some(w) = c.waker {
         hub.waker = w;
@@ -246,6 +255,13 @@ mod tests {
         assert_eq!((p.hub.wake_rate_limit, p.hub.legacy_heartbeat), (hub::DEFAULT_WAKE_RATE_LIMIT, false));
         let p = parse(Some(r#"{"wakeRateLimit": 0, "legacyHeartbeat": true}"#)).map_err(|e| e.message).expect("解析");
         assert_eq!((p.hub.wake_rate_limit, p.hub.legacy_heartbeat), (0, true));
+        // 自适应租约（v8）
+        assert_eq!(p.hub.lease, hub::LeasePolicy::default());
+        let p = parse(Some(r#"{"lease": {"adaptive": false, "window": 4, "maxMs": 30000}}"#)).map_err(|e| e.message).expect("解析");
+        assert_eq!((p.hub.lease.adaptive, p.hub.lease.window, p.hub.lease.max), (false, 4, Duration::from_secs(30)));
+        assert!(parse(Some(r#"{"lease": {"bogus": 1}}"#)).is_err(), "lease 内未知字段报错");
+        let e = parse(Some(r#"{"lease": {"window": 0}}"#)).err().map(|e| e.status);
+        assert_eq!(e, Some(AmHubStatus::InvalidConfig));
     }
 
     #[test]

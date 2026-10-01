@@ -149,6 +149,16 @@ public sealed class HubOptions
     /// <summary>唤醒器（默认 <see cref="WakerOptions.System"/>）。</summary>
     public WakerOptions? Waker { get; set; }
 
+    // ---- 功耗（spec/lifecycle.md 第 11–13 节）----
+
+    /// <summary>每 App 每分钟最多实际发出的唤醒激活次数（默认 6）；0 不限。超出时调用以 LAUNCH_FAILED
+    /// （Details.code = "WAKE_RATE_LIMITED"）结束。</summary>
+    public int? WakeRateLimit { get; set; }
+    /// <summary>回退到旧心跳：对所有 App 连接发 ping 并按无消息断开（默认 false）。</summary>
+    public bool? LegacyHeartbeat { get; set; }
+    /// <summary>自适应租约（默认见 <see cref="LeaseOptions"/>）。</summary>
+    public LeaseOptions? Lease { get; set; }
+
     // ---- 渐进暴露（spec/hub-api.md 3.7）----
 
     /// <summary>工具暴露方式（默认 <see cref="AppMcp.Hub.ToolExposure.Auto"/>）。</summary>
@@ -211,6 +221,13 @@ public sealed class HubOptions
         if (DormantReplacedByNewInstance is { } drn) o["dormantReplacedByNewInstance"] = drn;
         if (WakeFromLaunch is { } wfl) o["wakeFromLaunch"] = wfl;
         if (Waker is { } wk) o["waker"] = wk.ToJson();
+        if (WakeRateLimit is { } wrl)
+        {
+            if (wrl < 0) throw new ArgumentOutOfRangeException(nameof(WakeRateLimit), "唤醒次数上限不能为负数");
+            o["wakeRateLimit"] = wrl;
+        }
+        if (LegacyHeartbeat is { } lh) o["legacyHeartbeat"] = lh;
+        if (Lease is { } lease) o["lease"] = lease.ToJson();
         if (ToolExposure is { } te) o["toolExposure"] = te.ToString().ToLowerInvariant();
         if (ToolExposureThreshold is { } tt)
         {
@@ -234,13 +251,50 @@ public sealed class HubOptions
         return o.ToJsonString();
     }
 
-    private static void AddMs(JsonObject o, string key, TimeSpan? value)
+    internal static void AddMs(JsonObject o, string key, TimeSpan? value)
     {
         if (value is { } v)
         {
             if (v < TimeSpan.Zero) throw new ArgumentOutOfRangeException(key, "时长不能为负数");
             o[key] = (ulong)v.TotalMilliseconds;
         }
+    }
+}
+
+/// <summary>
+/// 自适应租约策略（spec/lifecycle.md 第 13 节 B2）：租约 = 同一（会话, App）最近 <see cref="Window"/> 个调用间隔的
+/// p90 + <see cref="Margin"/>，限制在 [<see cref="Min"/>, <see cref="Max"/>]；样本不足 3 个时用 <see cref="HubOptions.LeaseTtl"/>。
+/// 为 null 的字段取默认值。Window = 0 或 Min &gt; Max 时启动失败（InvalidConfig）。
+/// </summary>
+public sealed class LeaseOptions
+{
+    /// <summary>是否按调用间隔自适应（默认 true）；false = 固定 LeaseTtl（4e 之前的行为）。</summary>
+    public bool? Adaptive { get; set; }
+    /// <summary>统计最近多少个间隔（默认 20）。</summary>
+    public int? Window { get; set; }
+    /// <summary>p90 之上的余量（默认 5 秒）。</summary>
+    public TimeSpan? Margin { get; set; }
+    /// <summary>下限（默认 5 秒）。</summary>
+    public TimeSpan? Min { get; set; }
+    /// <summary>上限（默认 60 秒）；超过它的调用间隔不计入统计。</summary>
+    public TimeSpan? Max { get; set; }
+    /// <summary>会话无请求多久后收回其默认租约（默认 30 秒）；<see cref="TimeSpan.Zero"/> 不收回。</summary>
+    public TimeSpan? IdleRevoke { get; set; }
+
+    internal JsonObject ToJson()
+    {
+        var o = new JsonObject();
+        if (Adaptive is { } a) o["adaptive"] = a;
+        if (Window is { } w)
+        {
+            if (w < 0) throw new ArgumentOutOfRangeException(nameof(Window), "窗口不能为负数");
+            o["window"] = w;
+        }
+        HubOptions.AddMs(o, "marginMs", Margin);
+        HubOptions.AddMs(o, "minMs", Min);
+        HubOptions.AddMs(o, "maxMs", Max);
+        HubOptions.AddMs(o, "idleRevokeMs", IdleRevoke);
+        return o;
     }
 }
 
@@ -435,7 +489,54 @@ public sealed record HubStatusInfo(
     HubAuthStatus Auth,
     int McpSessions,
     IReadOnlyList<AppStatusInfo> Apps,
-    IReadOnlyList<DiagnosticReport> Reports);
+    IReadOnlyList<DiagnosticReport> Reports)
+{
+    /// <summary>租约策略与统计（spec/lifecycle.md 第 13 节 B2）；旧 Hub 为 null。</summary>
+    public LeaseStatusInfo? Lease { get; init; }
+}
+
+/// <summary>租约策略与统计（LeaseStatus）。Mode：adaptive / fixed（固定 LeaseTtl）/ off（LeaseTtl = 0）。</summary>
+public sealed record LeaseStatusInfo(
+    string Mode,
+    ulong DefaultMs,
+    ulong MinMs,
+    ulong MaxMs,
+    ulong MarginMs,
+    uint Window,
+    ulong IdleRevokeMs,
+    ulong AdaptiveGrants,
+    ulong DefaultGrants,
+    ulong RevokedSessionEnd,
+    ulong RevokedIdle,
+    IReadOnlyList<LeasePairStatusInfo> Pairs);
+
+/// <summary>一个（会话, App）的租约统计。Session：MCP "mcp:&lt;n&gt;"，API "api" / "api:&lt;session&gt;"。</summary>
+public sealed record LeasePairStatusInfo(string Session, string AppId, uint Samples, ulong NextTtlMs, bool Adaptive);
+
+/// <summary>
+/// 每实例功耗观测（InstancePower，spec/lifecycle.md 第 12 节；跨重连与休眠保留，Hub 重启清零）。
+/// HeartbeatMs：SDK 声明的心跳间隔，0 = 不发（本地传输），null = 旧 SDK；LifecycleMode：persistent / idle / on-demand，null = 未声明；
+/// AwakeReasons：见 <see cref="HubAwakeReasons"/>，休眠实例与可以休眠时为空。
+/// </summary>
+public sealed record InstancePowerInfo(
+    ulong Reconnects,
+    ulong Wakes,
+    ulong OnlineSecs,
+    ulong Heartbeats,
+    ulong? HeartbeatMs,
+    string? LifecycleMode,
+    IReadOnlyList<string>? AwakeReasons);
+
+/// <summary>已连接实例当前不能休眠的原因（Hub 可见部分；App 的 hold() 只有 SDK 知道）。</summary>
+public static class HubAwakeReasons
+{
+    public const string Persistent = "persistent";
+    public const string Call = "call";
+    public const string Lease = "lease";
+    /// <summary>Host 订阅了该实例声明 realtime 的资源（spec/lifecycle.md 第 13 节 B3）。</summary>
+    public const string Subscription = "subscription";
+    public const string WakePending = "wake-pending";
+}
 
 /// <summary>主 HTTP 服务的令牌策略（AuthStatus）。</summary>
 public sealed record HubAuthStatus(bool TokenConfigured, bool TokenRequiredWithoutOrigin);
@@ -447,7 +548,11 @@ public sealed record AppStatusInfo(
     string Kind,
     string State,
     IReadOnlyList<InstanceStatusInfo> Instances,
-    LastErrorInfo? LastError);
+    LastErrorInfo? LastError)
+{
+    /// <summary>Hub 启动以来为该 App 实际发出的唤醒激活次数（含冷启动；上游为 0）。</summary>
+    public ulong Wakes { get; init; }
+}
 
 /// <summary>实例状态（InstanceStatus = InstanceInfo + state）。State：connected / dormant / waking。</summary>
 public sealed record InstanceStatusInfo(
@@ -459,7 +564,11 @@ public sealed record InstanceStatusInfo(
     string? Title,
     uint? Pid,
     string? ConnectionId,
-    string State);
+    string State)
+{
+    /// <summary>功耗观测；Hub 尚无该实例的计数时为 null。</summary>
+    public InstancePowerInfo? Power { get; init; }
+}
 
 /// <summary>最近一次错误（LastError）。Code 为连接级错误码或工具错误类别，未知时为 null；上游错误的 AtMs 为 0。</summary>
 public sealed record LastErrorInfo(string? Code, string Message, ulong AtMs);

@@ -500,6 +500,10 @@ pub struct ResourceInfo {
     /// 缺省为 `application/json`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+    /// 需实时推送：被订阅时 SDK 保持连接（spec/lifecycle.md 第 13 节 B3）。缺省 `false`，只在 `true` 时序列化
+    /// （未声明的资源 `toolsHash` 不变）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub realtime: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

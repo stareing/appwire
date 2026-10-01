@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use app_mcp_native::{
     Activation, AppOverview, ClientKind, ClientListener, ErrorKind, HeartbeatMode, LifecycleMode, LifecyclePolicy,
-    NativeClient, NativeConfig, Residency, ResourceSpec, Risk, SleepReason, ToolSpec, Visibility,
+    NativeClient, NativeConfig, Residency, ResourceOptions, ResourceSpec, Risk, SleepReason, ToolSpec, Visibility,
     WakeDescriptor, WakeKind, WakeReason,
 };
 
@@ -96,6 +96,18 @@ pub struct AmClientOptions {
     pub host_absent_retries: i32,
     /// v7：回退到 4e 之前的定时器行为。
     pub legacy_timers: bool,
+    /// v8（4e 第二部分，spec/lifecycle.md 第 13 节 B1）：调用后的合并窗口；0 = 默认（2000），负数 = 不留窗口。
+    pub merge_window_ms: i64,
+    /// v8（B4）：进入后台且空闲时立即休眠。
+    pub sleep_on_background: bool,
+}
+
+/// v8：`am_resource_register_ex` 的资源选项（带 `struct_size`，按调用方给出的大小读取）。
+#[repr(C)]
+pub struct AmResourceOptions {
+    pub struct_size: u32,
+    /// 需实时推送（spec/lifecycle.md 第 13 节 B3）。
+    pub realtime: bool,
 }
 
 #[repr(C)]
@@ -262,6 +274,8 @@ struct OptionsView {
     heartbeat: c_int,
     host_absent_retries: i32,
     legacy_timers: bool,
+    merge_window_ms: i64,
+    sleep_on_background: bool,
 }
 
 /// 按 `struct_size` 读取扩展选项：只读取完整包含在调用方结构体中的字段。
@@ -309,7 +323,33 @@ unsafe fn read_options(p: *const AmClientOptions) -> FfiResult<OptionsView> {
     if has(offset_of!(AmClientOptions, legacy_timers), size_of::<bool>()) {
         view.legacy_timers = unsafe { std::ptr::addr_of!((*p).legacy_timers).read() };
     }
+    if has(offset_of!(AmClientOptions, merge_window_ms), size_of::<i64>()) {
+        view.merge_window_ms = unsafe { std::ptr::addr_of!((*p).merge_window_ms).read() };
+    }
+    if has(offset_of!(AmClientOptions, sleep_on_background), size_of::<bool>()) {
+        view.sleep_on_background = unsafe { std::ptr::addr_of!((*p).sleep_on_background).read() };
+    }
     Ok(view)
+}
+
+/// 按 `struct_size` 读取资源选项；`p` 为 NULL 时取默认值。
+unsafe fn read_resource_options(p: *const AmResourceOptions) -> FfiResult<ResourceOptions> {
+    use std::mem::{offset_of, size_of};
+    let mut options = ResourceOptions::default();
+    if p.is_null() {
+        return Ok(options);
+    }
+    // SAFETY: 调用方保证 p 指向至少 struct_size 字节（struct_size 字段本身总在开头）。
+    let size = unsafe { std::ptr::addr_of!((*p).struct_size).read_unaligned() } as usize;
+    if size < size_of::<u32>() {
+        return Err(FfiError::invalid_argument(
+            "options->struct_size 必须设为 sizeof(AmResourceOptions)",
+        ));
+    }
+    if offset_of!(AmResourceOptions, realtime) + size_of::<bool>() <= size {
+        options.realtime = unsafe { std::ptr::addr_of!((*p).realtime).read() };
+    }
+    Ok(options)
 }
 
 impl Default for AmLifecycle {
@@ -514,6 +554,12 @@ pub unsafe extern "C" fn am_client_new_ex(
             n => cfg.lifecycle.host_absent_retries = n.unsigned_abs(),
         }
         cfg.lifecycle.legacy_timers = opts.legacy_timers;
+        match opts.merge_window_ms {
+            0 => {}
+            n if n < 0 => cfg.lifecycle.merge_window_ms = 0,
+            n => cfg.lifecycle.merge_window_ms = n.unsigned_abs(),
+        }
+        cfg.lifecycle.sleep_on_background = opts.sleep_on_background;
         let listener: Option<Arc<dyn ClientListener>> = match listener {
             Some(l) if l.has_any() => Some(Arc::new(l)),
             _ => None,
@@ -962,6 +1008,21 @@ pub unsafe extern "C" fn am_resource_register(
     free_user_data: Option<AmFreeFn>,
     out: *mut *mut AmResource,
 ) -> AmStatus {
+    // SAFETY: 参数约定与 am_resource_register_ex 相同，options 为 NULL。
+    unsafe { am_resource_register_ex(scope, spec, std::ptr::null(), reader, user_data, free_user_data, out) }
+}
+
+/// v8：同 `am_resource_register`，另带资源选项（`options` 可为 NULL）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_resource_register_ex(
+    scope: *mut AmScope,
+    spec: *const AmResourceSpec,
+    options: *const AmResourceOptions,
+    reader: Option<AmReadFn>,
+    user_data: *mut c_void,
+    free_user_data: Option<AmFreeFn>,
+    out: *mut *mut AmResource,
+) -> AmStatus {
     guard(|| {
         let ud = UserData::new(user_data, free_user_data);
         let out = unsafe { prepare_out(out) }?;
@@ -969,16 +1030,18 @@ pub unsafe extern "C" fn am_resource_register(
         let spec = unsafe { spec.as_ref() }.ok_or_else(|| FfiError::null("spec"))?;
         let f = reader.ok_or_else(|| FfiError::null("reader"))?;
         let spec = unsafe { convert_resource_spec(spec) }?;
+        // SAFETY: options 为 NULL 或指向至少 struct_size 字节。
+        let options = unsafe { read_resource_options(options) }?;
         let reader = Arc::new(CResourceReader { f, user_data: ud });
         let handle = match &scope.kind {
             ScopeKind::Root => {
-                let h = scope.shared.client()?.register_resource(spec, reader)?;
+                let h = scope.shared.client()?.register_resource_with(spec, options, reader)?;
                 scope.shared.track_resource(&h);
                 h
             }
             ScopeKind::Child(s) => {
                 scope.shared.check_alive()?;
-                s.register_resource(spec, reader)?
+                s.register_resource_with(spec, options, reader)?
             }
         };
         *out = Box::into_raw(Box::new(AmResource {

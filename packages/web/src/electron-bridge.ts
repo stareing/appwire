@@ -68,7 +68,15 @@ export type RendererOp =
   | { op: 'tool.register'; id: number; scopeId?: number; name: string; spec: ToolSpecMessage }
   | { op: 'tool.update'; id: number; spec: ToolSpecMessage }
   | { op: 'tool.dispose'; id: number }
-  | { op: 'resource.register'; id: number; scopeId?: number; name: string; description: string; mimeType?: string }
+  | {
+      op: 'resource.register'
+      id: number
+      scopeId?: number
+      name: string
+      description: string
+      mimeType?: string
+      realtime?: boolean
+    }
   | { op: 'resource.notify'; id: number }
   | { op: 'resource.dispose'; id: number }
   | { op: 'scope.create'; id: number; scopeId?: number; name: string }
@@ -459,6 +467,7 @@ class ResourceEntry implements ResourceHandle, Detachable {
       name,
       description: definition.description,
       ...(definition.mimeType !== undefined && { mimeType: definition.mimeType }),
+      ...(definition.realtime && { realtime: true }),
     }))
   }
 

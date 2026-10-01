@@ -338,6 +338,9 @@ describe('资源与 scope', () => {
     expect(await native.read('cart')).toEqual({ ok: false, kind: 'RESOURCE_NOT_FOUND', message: '没有' })
     r.dispose()
     expect(native.resources.has('cart')).toBe(false)
+    // realtime 只在声明时传给原生侧（spec/lifecycle.md 第 13 节 B3）
+    app.resource('order', { description: '订单', realtime: true, read: () => 1 })
+    expect(native.resources.get('order')?.spec).toMatchObject({ name: 'order', realtime: true })
   })
 
   it('scope 注销时递归注销子项，子句柄变为空操作', () => {
@@ -371,6 +374,8 @@ describe('生命周期', () => {
         wake: { kind: 'uri', target: 'demo://' },
         hostAbsentRetries: 5,
         legacyTimers: true,
+        mergeWindowMs: 500,
+        sleepOnBackground: true,
       },
       connectTimeoutMs: 2000,
       heartbeat: 'off',
@@ -383,6 +388,8 @@ describe('生命周期', () => {
         wake: { kind: 'uri', target: 'demo://' },
         hostAbsentRetries: 5,
         legacyTimers: true,
+        mergeWindowMs: 500,
+        sleepOnBackground: true,
       },
       connectTimeoutMs: 2000,
       heartbeat: 'off',

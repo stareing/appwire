@@ -245,7 +245,12 @@ interface ToolsInvokeParams { callId: string; name: string; arguments: object; t
 interface ToolsInvokeResult { data: unknown; stateHints?: string[] }
 interface ToolsCancelParams { callId: string; reason?: string }
 
-interface ResourceInfo { name: string; description: string; mimeType?: string }
+interface ResourceInfo {
+  name: string
+  description: string
+  mimeType?: string
+  realtime?: boolean       // 需实时推送：被订阅时 SDK 保持连接（spec/lifecycle.md 第 13 节 B3）；缺省 false，只在 true 时序列化
+}
 interface ResourcesSyncParams { resources: ResourceInfo[] }
 interface ResourcesChangedParams { upserted: ResourceInfo[]; removed: string[] }
 interface ResourceUpdatedParams { name: string }
@@ -344,7 +349,10 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 
 - 收到 `resources/read`：资源不存在 → `RESOURCE_NOT_FOUND`；否则请求驱动层读取并返回。
 - `resources/subscribe` / `unsubscribe` 维护订阅集合，返回 `{}`；资源不存在 → `RESOURCE_NOT_FOUND`。
-  订阅集合在断线后清空，由 Host 重新订阅。
+  订阅集合在断线（含休眠）后清空，由 Host 重新订阅。
+- 跨连接补发（spec/lifecycle.md 第 13 节 B3）：断开时的订阅集合留作"待恢复订阅"；未连接期间（或回连后 Host 重新订阅之前）
+  其中的资源发生变化则标记；Host 重新订阅被标记的资源时，SDK 先回复 `{}`，再发送 `resources/updated`（受节流约束）。
+  休眠期间声明了 `realtime` 的待恢复订阅资源变化时，SDK 以原因 `app` 回连推送。
 - 资源内容变化时，仅对已订阅资源发送 `resources/updated`；同一资源两次通知之间
   至少间隔 `resourceUpdateThrottleMs`（默认 100ms），节流期内的多次变化合并为一次。
 
@@ -412,6 +420,8 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
   - 握手完成前（含等待配对）沿用原规则。
 - 返回 `rejected` 的握手结果发送后，Host 关闭连接。
 - TCP 只接受来自回环地址的连接（且 `Origin` 满足上述规则）；本地 IPC 只接受同一用户的进程（1.4）。
+- 资源订阅与休眠（spec/lifecycle.md 第 13 节 B3）：实例休眠时保留其资源订阅；实例回连 `app/ready` 后对仍被订阅的资源
+  重新发送 `resources/subscribe`；对休眠实例的 `resources/read` 与工具调用一样先唤醒再派发。
 - `resources/read` 的 `contents` 转换为 MCP 资源内容时：字符串且 `mimeType` 不是 JSON 类型时按原文作为文本；
   其他情况序列化为 JSON 文本。二进制内容暂不支持。
 
@@ -512,10 +522,17 @@ SDK 取当前租约与新值中较晚的截止时刻；收到租约时重新开�
 - 模式：`persistent`（默认，不休眠）/ `idle`（启动即连接，空闲 `idleTimeoutMs` 后休眠）/
   `on-demand`（启动时不连接，进入 `Dormant`；被唤醒或 `connectNow()` 时连接，空闲 `graceMs` 后休眠）。
   隐藏 / 冻结时使用 `min(模式超时, hiddenIdleTimeoutMs)`。
-- 空闲条件（全部满足才开始计时，任一变化重置计时）：没有进行中或排队的调用、资源读取；没有有效租约；
-  没有资源订阅；没有 App 的持有（`hold()`，含调用上的 `hold`）。可见性变化也重新计时。
+- 空闲条件（全部满足才开始计时，任一变化重置计时）：没有进行中或排队的调用、资源读取；没有对 `realtime` 资源的订阅
+  （普通资源的订阅不阻止休眠，`legacyTimers` 时任何订阅都阻止）；没有 App 的持有（`hold()`，含调用上的 `hold`）。
+  可见性变化也重新计时。租约是休眠时刻的下限（见上）。
+- 合并窗口（spec/lifecycle.md 第 13 节 B1）：本连接处理过 `tools/invoke` / `resources/read` 后，空闲时长取
+  `min(mergeWindowMs（默认 2000）, 按模式与可见性的空闲时长)`；之后是否在线只由租约决定。
+- 后台立即休眠（B4）：`sleepOnBackground` 且模式非 `persistent` 时，可见性从 `visible` 变为 `hidden` / `frozen` 后，
+  空闲条件一成立就以 `reason: "background"` 发送 `app/sleep`，不等租约与空闲时长；`backoff` 中则直接进入 `Dormant`。
+  回到可见或休眠被拒后恢复普通规则。
 - 自动休眠（空闲计时到期）的 `reason`：`on-demand` 为 `grace`，否则 `idle`——可见性只决定计时长短，不改变原因。
-  `background` 专指"进入后台立即休眠"（网页 bfcache `pagehide(persisted)`、移动端进入后台），由封装层显式发起。
+  `background` 专指"进入后台立即休眠"（网页 bfcache `pagehide(persisted)`、移动端进入后台），由封装层显式发起，
+  或由 `sleepOnBackground` 在进入后台时自动发起（B4）。
   App 显式 `sleep()` 为 `app`（不看空闲条件与持有；被拒后按 `retryAfterMs`，缺省 5s 重试）。
 - `Dormant`：无连接、无定时器（`poll_timeout()` 为空）；收到的注册变更只更新本地注册表，不唤醒。
 - 唤醒：`handleWake(args)` 识别到令牌 → `Waking` 并连接（未 `start` 时记录，`start` 时连接；`Backoff` 时立即重连）；

@@ -513,9 +513,16 @@ pub struct LifecyclePolicy {
     /// `Idle` / `OnDemand` 下连续多少次"Host 不在"后停止重连、进入 `Dormant`；0 = 一直重连（spec/lifecycle.md 第 11 节）。
     #[uniffi(default = 3)]
     pub host_absent_retries: u32,
-    /// 回退到 4e 之前的定时器行为（串行租约、无限重连、双向心跳）。
+    /// 回退到 4e 之前的定时器行为（串行租约、无限重连、双向心跳、调用后按空闲时长、任何订阅都阻止休眠）。
     #[uniffi(default = false)]
     pub legacy_timers: bool,
+    /// 调用 / 资源读取后的合并窗口：处理过调用后空闲时长取 min(本值, 空闲时长)，之后是否在线只由 Host 租约决定
+    /// （spec/lifecycle.md 第 13 节 B1）。
+    #[uniffi(default = 2000)]
+    pub merge_window_ms: u64,
+    /// `Idle` / `OnDemand` 下进入后台（可见 → 隐藏 / 冻结）且空闲时立即休眠，不等租约（B4）。移动端建议开启。
+    #[uniffi(default = false)]
+    pub sleep_on_background: bool,
 }
 
 impl From<LifecyclePolicy> for native::LifecyclePolicy {
@@ -530,6 +537,8 @@ impl From<LifecyclePolicy> for native::LifecyclePolicy {
             wake: p.wake.map(Into::into),
             host_absent_retries: p.host_absent_retries,
             legacy_timers: p.legacy_timers,
+            merge_window_ms: p.merge_window_ms,
+            sleep_on_background: p.sleep_on_background,
         }
     }
 }
@@ -634,15 +643,16 @@ pub struct ResourceSpec {
     pub description: String,
     #[uniffi(default = None)]
     pub mime_type: Option<String>,
+    /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时保持连接、休眠中变化时回连推送。
+    /// 默认 `false`：订阅不阻止休眠，变化在下次连接时补发。
+    #[uniffi(default = false)]
+    pub realtime: bool,
 }
 
-impl From<ResourceSpec> for native::ResourceSpec {
+impl From<ResourceSpec> for (native::ResourceSpec, native::ResourceOptions) {
     fn from(s: ResourceSpec) -> Self {
-        native::ResourceSpec {
-            name: s.name,
-            description: s.description,
-            mime_type: s.mime_type,
-        }
+        let spec = native::ResourceSpec { name: s.name, description: s.description, mime_type: s.mime_type };
+        (spec, native::ResourceOptions { realtime: s.realtime })
     }
 }
 
@@ -924,9 +934,10 @@ impl Scope {
         spec: ResourceSpec,
         reader: Arc<dyn ResourceReader>,
     ) -> Result<Arc<Resource>, AppMcpError> {
+        let (spec, options) = spec.into();
         let inner = self
             .inner
-            .register_resource(spec.into(), Arc::new(ResourceReaderAdapter(reader)))?;
+            .register_resource_with(spec, options, Arc::new(ResourceReaderAdapter(reader)))?;
         Ok(Arc::new(Resource { inner }))
     }
     pub fn create_scope(&self, name: String) -> Result<Arc<Scope>, AppMcpError> {
@@ -999,9 +1010,10 @@ impl AppMcpClient {
         spec: ResourceSpec,
         reader: Arc<dyn ResourceReader>,
     ) -> Result<Arc<Resource>, AppMcpError> {
+        let (spec, options) = spec.into();
         let inner = self
             .inner
-            .register_resource(spec.into(), Arc::new(ResourceReaderAdapter(reader)))?;
+            .register_resource_with(spec, options, Arc::new(ResourceReaderAdapter(reader)))?;
         Ok(Arc::new(Resource { inner }))
     }
     pub fn create_scope(&self, name: String) -> Result<Arc<Scope>, AppMcpError> {
@@ -1169,10 +1181,18 @@ mod tests {
             wake: None,
             host_absent_retries: 3,
             legacy_timers: false,
+            merge_window_ms: 2_000,
+            sleep_on_background: false,
         };
         assert_eq!(native::LifecyclePolicy::from(p.clone()), native::LifecyclePolicy::default());
         let n: native::LifecyclePolicy = LifecyclePolicy { host_absent_retries: 0, legacy_timers: true, ..p.clone() }.into();
         assert_eq!((n.host_absent_retries, n.legacy_timers), (0, true));
+        let n: native::LifecyclePolicy =
+            LifecyclePolicy { merge_window_ms: 500, sleep_on_background: true, ..p.clone() }.into();
+        assert_eq!((n.merge_window_ms, n.sleep_on_background), (500, true));
+        let (_, options): (native::ResourceSpec, native::ResourceOptions) =
+            ResourceSpec { name: "r".into(), description: "d".into(), mime_type: None, realtime: true }.into();
+        assert!(options.realtime);
         let n: native::LifecyclePolicy = LifecyclePolicy {
             mode: Some(LifecycleMode::Idle),
             hidden_idle_timeout_ms: 0,
@@ -1226,6 +1246,8 @@ mod tests {
                 wake: None,
                 host_absent_retries: 3,
                 legacy_timers: false,
+                merge_window_ms: 2_000,
+                sleep_on_background: false,
             }),
             connect_timeout_ms: Some(1000),
             heartbeat: Some(HeartbeatMode::Off),

@@ -326,6 +326,8 @@ pub struct JsLifecycle {
     pub wake: Option<WakeDescriptor>,
     pub host_absent_retries: Option<u64>,
     pub legacy_timers: Option<bool>,
+    pub merge_window_ms: Option<u64>,
+    pub sleep_on_background: Option<bool>,
 }
 
 impl FromJson for JsLifecycle {
@@ -340,6 +342,8 @@ impl FromJson for JsLifecycle {
             wake: f.protocol("wake"),
             host_absent_retries: f.u64("hostAbsentRetries"),
             legacy_timers: f.bool("legacyTimers"),
+            merge_window_ms: f.u64("mergeWindowMs"),
+            sleep_on_background: f.bool("sleepOnBackground"),
         };
         f.finish(l)
     }
@@ -369,6 +373,8 @@ impl JsLifecycle {
                 .host_absent_retries
                 .map_or(d.host_absent_retries, |n| u32::try_from(n).unwrap_or(u32::MAX)),
             legacy_timers: self.legacy_timers.unwrap_or(d.legacy_timers),
+            merge_window_ms: self.merge_window_ms.unwrap_or(d.merge_window_ms),
+            sleep_on_background: self.sleep_on_background.unwrap_or(d.sleep_on_background),
         }
     }
 }
@@ -607,6 +613,8 @@ pub struct JsResourceDef {
     pub description: String,
     pub mime_type: Option<String>,
     pub scope: Option<f64>,
+    /// 缺省 `false`（spec/lifecycle.md 第 13 节 B3）。
+    pub realtime: bool,
 }
 
 impl FromJson for JsResourceDef {
@@ -617,6 +625,7 @@ impl FromJson for JsResourceDef {
             description: f.string("description").unwrap_or_default(),
             mime_type: f.string("mimeType"),
             scope: f.f64("scope"),
+            realtime: f.bool("realtime").unwrap_or(false),
         };
         f.finish(d)
     }
@@ -629,6 +638,7 @@ impl JsResourceDef {
             description: self.description,
             mime_type: self.mime_type,
             scope: scope_handle(self.scope)?,
+            realtime: self.realtime,
         })
     }
 }
@@ -852,16 +862,23 @@ mod tests {
         let c = JsConfig::from_json(json!({
             "appId": "shop", "appName": "商城", "instanceId": "i1", "transport": "loopback",
             "heartbeat": { "mode": "always" },
-            "lifecycle": { "mode": "idle", "hostAbsentRetries": 5, "legacyTimers": true }
+            "lifecycle": { "mode": "idle", "hostAbsentRetries": 5, "legacyTimers": true,
+                           "mergeWindowMs": 500, "sleepOnBackground": true }
         }))
         .unwrap()
         .into_core();
         assert_eq!(c.transport, TransportKind::Loopback);
         assert_eq!(c.heartbeat.mode, HeartbeatMode::Always);
         assert_eq!((c.lifecycle.host_absent_retries, c.lifecycle.legacy_timers), (5, true));
+        assert_eq!((c.lifecycle.merge_window_ms, c.lifecycle.sleep_on_background), (500, true));
         let d = JsConfig::from_json(json!({ "appId": "shop", "appName": "商城", "instanceId": "i1" })).unwrap().into_core();
         assert_eq!(d.transport, TransportKind::Unknown);
         assert_eq!((d.lifecycle.host_absent_retries, d.lifecycle.legacy_timers), (3, false));
+        assert_eq!((d.lifecycle.merge_window_ms, d.lifecycle.sleep_on_background), (2_000, false));
+        let r = JsResourceDef::from_json(json!({ "name": "order", "realtime": true })).unwrap().into_core().unwrap();
+        assert!(r.realtime);
+        let r = JsResourceDef::from_json(json!({ "name": "cart" })).unwrap().into_core().unwrap();
+        assert!(!r.realtime);
         let bad = JsConfig::from_json(json!({ "appId": "shop", "appName": "商城", "instanceId": "i1", "transport": "x" }));
         assert!(bad.is_err_and(|e| e.contains("无效的传输类别")));
     }

@@ -40,7 +40,11 @@
  *   host_absent_retries、legacy_timers（按 struct_size 读取，旧调用方不受影响）；新增枚举 AmHeartbeatMode。
  *   默认行为变化：租约与空闲计时并行；idle / on-demand 下连续 3 次 HOST_NOT_RUNNING 后进入 DORMANT；
  *   本地 IPC / 桌面本机回环不发心跳。legacy_timers = true 恢复旧行为。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4、v5、v6、v7 仍为 3。）
+ * - v8（4e 第二部分，spec/lifecycle.md 第 13 节）：只在 AmClientOptions 末尾追加 merge_window_ms（B1 调用后的合并窗口，
+ *   0 = 默认 2000，负数 = 不留窗口）与 sleep_on_background（B4 进入后台且空闲时立即休眠）；新增 AmResourceOptions（带
+ *   struct_size，realtime：需实时推送，B3）与 am_resource_register_ex。默认行为变化：本连接处理过调用后空闲时长取
+ *   min(合并窗口, 空闲时长)；普通资源的订阅不再阻止休眠。legacy_timers = true 同样恢复这两项旧行为。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v8 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -262,7 +266,10 @@ typedef struct AmClientOptions {
     /* v7（4e 功耗，spec/lifecycle.md 第 11 节）：旧调用方的 struct_size 不含以下字段时取默认值。 */
     AmHeartbeatMode heartbeat;       /* 默认 AM_HEARTBEAT_AUTO：本地 IPC / 桌面本机回环不发心跳 */
     int32_t host_absent_retries;     /* idle / on-demand 下连续多少次"Host 不在"后转休眠；0 = 默认 3，负数 = 一直重连 */
-    bool legacy_timers;              /* true：回退到 4e 之前的定时器行为（串行租约、无限重连、双向心跳） */
+    bool legacy_timers;              /* true：回退到 4e 之前的定时器行为（串行租约、无限重连、双向心跳、调用后按空闲时长、任何订阅都阻止休眠） */
+    /* v8（4e 第二部分，spec/lifecycle.md 第 13 节）：旧调用方的 struct_size 不含以下字段时取默认值。 */
+    int64_t merge_window_ms;         /* 调用 / 资源读取后的合并窗口；0 = 默认 2000，负数 = 不留窗口（调用后只看租约） */
+    bool sleep_on_background;        /* true：idle / on-demand 下进入后台（可见 → 隐藏 / 冻结）且空闲时立即休眠，不等租约 */
 } AmClientOptions;
 
 typedef struct AmToolSpec {
@@ -280,6 +287,13 @@ typedef struct AmResourceSpec {
     const char *description;
     const char *mime_type;         /* 可为 NULL：application/json */
 } AmResourceSpec;
+
+/* v8：am_resource_register_ex 的资源选项。struct_size 必须设为 sizeof(AmResourceOptions)。 */
+typedef struct AmResourceOptions {
+    uint32_t struct_size;
+    bool realtime;                 /* 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时保持连接、休眠中变化时回连推送；
+                                      默认 false：订阅不阻止休眠，变化在下次连接时补发 */
+} AmResourceOptions;
 
 /* ---------------------------------------------------------------------------
  * 通用
@@ -380,6 +394,10 @@ void am_tool_free(AmTool *tool);
 AmStatus am_resource_register(AmScope *scope, const AmResourceSpec *spec,
                               AmReadFn reader, void *user_data, AmFreeFn free_user_data,
                               AmResource **out);
+/* v8：同 am_resource_register，另带资源选项（options 可为 NULL：默认值）。 */
+AmStatus am_resource_register_ex(AmScope *scope, const AmResourceSpec *spec, const AmResourceOptions *options,
+                                 AmReadFn reader, void *user_data, AmFreeFn free_user_data,
+                                 AmResource **out);
 AmStatus am_resource_notify_changed(AmResource *resource);
 AmStatus am_resource_dispose(AmResource *resource);
 void am_resource_free(AmResource *resource);

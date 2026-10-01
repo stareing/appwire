@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use app_mcp_hub::{ToolExposure, UpstreamConfig, WakerConfig};
+use app_mcp_hub::{LeaseOverrides, LeasePolicy, ToolExposure, UpstreamConfig, WakerConfig};
 use serde::{Deserialize, Serialize};
 
 /// 默认的 HTTP 监听地址：同一端口承载 `/app`（App 连接）、`/mcp`、`/healthz`。
@@ -128,6 +128,9 @@ pub struct LifecycleSection {
     /// 回退到旧心跳（Hub 对所有连接发 ping 并按无消息断开），默认 `false`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub legacy_heartbeat: Option<bool>,
+    /// 自适应租约（spec/hub-api.md 3.5）：`{"adaptive","window","marginMs","minMs","maxMs","idleRevokeMs"}`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease: Option<LeaseOverrides>,
     /// `"system"`（默认）/ `"none"` / `{"exec": [program, ...args]}`（spec/hub-api.md 3.5）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waker: Option<WakerConfig>,
@@ -243,6 +246,8 @@ pub struct Overrides {
     pub wake_token_ttl_ms: Option<u64>,
     pub wake_rate_limit: Option<u32>,
     pub legacy_heartbeat: Option<bool>,
+    /// 自适应租约的命令行覆盖项（字段级合并到配置文件的 `lifecycle.lease`）。
+    pub lease: LeaseOverrides,
     pub waker: Option<WakerConfig>,
     pub tool_exposure: Option<ToolExposure>,
     pub tool_exposure_threshold: Option<usize>,
@@ -275,6 +280,9 @@ impl FileConfig {
         set(&mut self.lifecycle.wake_token_ttl_ms, &o.wake_token_ttl_ms);
         set(&mut self.lifecycle.wake_rate_limit, &o.wake_rate_limit);
         set(&mut self.lifecycle.legacy_heartbeat, &o.legacy_heartbeat);
+        if o.lease != LeaseOverrides::default() {
+            self.lifecycle.lease.get_or_insert_with(LeaseOverrides::default).merge(&o.lease);
+        }
         set(&mut self.lifecycle.waker, &o.waker);
         set(&mut self.tools.exposure, &o.tool_exposure);
         set(&mut self.tools.threshold, &o.tool_exposure_threshold);
@@ -332,6 +340,7 @@ pub struct Settings {
     pub wake_token_ttl_ms: u64,
     pub wake_rate_limit: u32,
     pub legacy_heartbeat: bool,
+    pub lease: LeasePolicy,
     pub waker: WakerConfig,
     pub tool_exposure: ToolExposure,
     pub tool_exposure_threshold: usize,
@@ -384,6 +393,11 @@ impl Settings {
             }
             (None, None) => None,
         };
+        let mut lease = LeasePolicy::default();
+        if let Some(o) = &c.lifecycle.lease {
+            o.apply(&mut lease);
+        }
+        lease.validate().map_err(|e| anyhow::anyhow!("lifecycle.lease 无效：{e}"))?;
         let listen_explicit = listen.is_some();
         let listen = listen.unwrap_or_else(|| DEFAULT_LISTEN_ADDR.to_owned());
         let compat_http_addr = c.http.addr.filter(|a| *a != listen);
@@ -410,6 +424,7 @@ impl Settings {
             wake_token_ttl_ms: c.lifecycle.wake_token_ttl_ms.unwrap_or(60_000),
             wake_rate_limit: c.lifecycle.wake_rate_limit.unwrap_or(app_mcp_hub::DEFAULT_WAKE_RATE_LIMIT),
             legacy_heartbeat: c.lifecycle.legacy_heartbeat.unwrap_or(false),
+            lease,
             waker: c.lifecycle.waker.unwrap_or_default(),
             tool_exposure: c.tools.exposure.unwrap_or_default(),
             tool_exposure_threshold: c
@@ -588,6 +603,37 @@ mod tests {
             v["lifecycle"],
             serde_json::json!({"wakeTokenTtlMs": 1000, "wakeRateLimit": 3, "legacyHeartbeat": true})
         );
+    }
+
+    #[test]
+    fn lease_settings_from_file_and_cli() {
+        let file: FileConfig =
+            serde_json::from_str(r#"{"lifecycle":{"lease":{"window":8,"maxMs":30000}}}"#).unwrap();
+        let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home()).unwrap();
+        assert_eq!(s.lease, LeasePolicy::default());
+        let s = Settings::resolve(&file, &Overrides::default(), &home()).unwrap();
+        assert_eq!((s.lease.window, s.lease.max), (8, std::time::Duration::from_secs(30)));
+        // 命令行按字段覆盖
+        let o = Overrides {
+            lease: LeaseOverrides { adaptive: Some(false), window: Some(3), ..Default::default() },
+            ..Default::default()
+        };
+        let s = Settings::resolve(&file, &o, &home()).unwrap();
+        assert_eq!(
+            (s.lease.adaptive, s.lease.window, s.lease.max),
+            (false, 3, std::time::Duration::from_secs(30))
+        );
+        let mut f = file.clone();
+        f.apply(&o).unwrap();
+        assert_eq!(
+            serde_json::to_value(&f).unwrap()["lifecycle"]["lease"],
+            serde_json::json!({"adaptive": false, "window": 3, "maxMs": 30000})
+        );
+        // 不合法：明确报错
+        let bad: FileConfig = serde_json::from_str(r#"{"lifecycle":{"lease":{"minMs":9000,"maxMs":1000}}}"#).unwrap();
+        let e = Settings::resolve(&bad, &Overrides::default(), &home()).unwrap_err().to_string();
+        assert!(e.contains("lifecycle.lease"), "{e}");
+        assert!(serde_json::from_str::<FileConfig>(r#"{"lifecycle":{"lease":{"bogus":1}}}"#).is_err());
     }
 
     #[test]

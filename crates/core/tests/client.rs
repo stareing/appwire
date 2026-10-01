@@ -31,7 +31,7 @@ fn tool(name: &str) -> ToolDef {
 }
 
 fn resource(name: &str) -> ResourceDef {
-    ResourceDef { name: name.into(), description: format!("{name} 资源"), mime_type: None, scope: None }
+    ResourceDef { name: name.into(), description: format!("{name} 资源"), mime_type: None, scope: None, realtime: false }
 }
 
 /// 从事件中取出所有发送的消息。

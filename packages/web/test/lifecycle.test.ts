@@ -428,6 +428,17 @@ describe('驱动接线', () => {
     expect(h.core.config?.lifecycle).toMatchObject({ hostAbsentRetries: 5, legacyTimers: true })
   })
 
+  it('合并窗口、后台立即休眠与实时资源交给核心（spec/lifecycle.md 第 13 节）', async () => {
+    const h = setup({ lifecycle: { mode: 'idle', mergeWindowMs: 500, sleepOnBackground: true } })
+    h.app.resource('order', { description: '订单', realtime: true, read: () => 1 })
+    h.app.resource('cart', { description: '购物车', read: () => 1 })
+    await settle()
+    expect(h.core.config?.lifecycle).toMatchObject({ mergeWindowMs: 500, sleepOnBackground: true })
+    const defs = h.core.callsOf('registerResource').map((a) => a[0] as { name: string; realtime?: boolean })
+    expect(defs.find((d) => d.name === 'order')?.realtime).toBe(true)
+    expect(defs.find((d) => d.name === 'cart')).not.toHaveProperty('realtime')
+  })
+
   it('没有唤醒令牌时不调用 handleWake、不改地址', async () => {
     const spy = vi.spyOn(history, 'replaceState')
     const h = setup()

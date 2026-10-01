@@ -349,6 +349,17 @@ pub struct HubConfig {
     /// 唤醒器（默认 `System`）；`set_waker` 设置的实现优先，清除后恢复为此配置。
     #[uniffi(default = None)]
     pub waker: Option<WakerConfig>,
+    // ---- 功耗（spec/lifecycle.md 第 11–13 节）----
+    /// 每 App 每分钟最多实际发出的唤醒激活次数（默认 6）；`0` 不限。超出时调用以 `LAUNCH_FAILED`
+    /// （`details.code = "WAKE_RATE_LIMITED"`）结束。
+    #[uniffi(default = None)]
+    pub wake_rate_limit: Option<u32>,
+    /// 回退到旧心跳：对所有 App 连接发 `ping` 并按无消息断开（默认 `false`）。
+    #[uniffi(default = None)]
+    pub legacy_heartbeat: Option<bool>,
+    /// 自适应租约（默认见 [`LeaseConfig`]）。
+    #[uniffi(default = None)]
+    pub lease: Option<LeaseConfig>,
     // ---- 渐进暴露（spec/hub-api.md 3.7）----
     /// 工具暴露方式（默认 `Auto`）。
     #[uniffi(default = None)]
@@ -388,8 +399,48 @@ impl Default for HubConfig {
             dormant_replaced_by_new_instance: None,
             wake_from_launch: None,
             waker: None,
+            wake_rate_limit: None,
+            legacy_heartbeat: None,
+            lease: None,
             tool_exposure: None,
             tool_exposure_threshold: None,
+        }
+    }
+}
+
+/// 自适应租约策略（spec/lifecycle.md 第 13 节 B2）：租约 = 同一（会话, App）最近 `window` 个调用间隔的 p90 + `margin_ms`，
+/// 限制在 [`min_ms`, `max_ms`]；样本不足 3 个时用 `HubConfig.lease_ttl_ms`。为空的字段取默认值。
+#[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Record)]
+pub struct LeaseConfig {
+    /// 是否按调用间隔自适应（默认 `true`）；`false` = 固定 `lease_ttl_ms`（4e 之前的行为）。
+    #[uniffi(default = None)]
+    pub adaptive: Option<bool>,
+    /// 统计最近多少个间隔（默认 20，须 ≥ 1）。
+    #[uniffi(default = None)]
+    pub window: Option<u32>,
+    /// p90 之上的余量（默认 5000）。
+    #[uniffi(default = None)]
+    pub margin_ms: Option<u64>,
+    /// 下限（默认 5000）。
+    #[uniffi(default = None)]
+    pub min_ms: Option<u64>,
+    /// 上限（默认 60000，须 ≥ `min_ms`）；超过它的间隔不计入统计。
+    #[uniffi(default = None)]
+    pub max_ms: Option<u64>,
+    /// 会话无请求多久后收回其默认租约（默认 30000）；`0` 不收回。
+    #[uniffi(default = None)]
+    pub idle_revoke_ms: Option<u64>,
+}
+
+impl From<LeaseConfig> for hub::LeaseOverrides {
+    fn from(c: LeaseConfig) -> Self {
+        hub::LeaseOverrides {
+            adaptive: c.adaptive,
+            window: c.window,
+            margin_ms: c.margin_ms,
+            min_ms: c.min_ms,
+            max_ms: c.max_ms,
+            idle_revoke_ms: c.idle_revoke_ms,
         }
     }
 }
@@ -466,6 +517,16 @@ impl HubConfig {
         }
         if let Some(w) = self.waker {
             c.waker = w.into();
+        }
+        if let Some(v) = self.wake_rate_limit {
+            c.wake_rate_limit = v;
+        }
+        if let Some(v) = self.legacy_heartbeat {
+            c.legacy_heartbeat = v;
+        }
+        if let Some(l) = self.lease {
+            hub::LeaseOverrides::from(l).apply(&mut c.lease);
+            c.lease.validate().map_err(|detail| HubError::InvalidConfig { detail: format!("lease：{detail}") })?;
         }
         if let Some(v) = self.tool_exposure {
             c.tool_exposure = v.into();
@@ -611,6 +672,151 @@ pub struct LastError {
 pub struct InstanceStatus {
     pub info: InstanceInfo,
     pub state: InstanceState,
+    /// 功耗观测（spec/lifecycle.md 第 12 节）；Hub 尚无该实例的计数时为空。
+    #[uniffi(default = None)]
+    pub power: Option<InstancePower>,
+}
+
+/// SDK 声明的生命周期模式（`app/hello.lifecycleMode`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum LifecycleMode {
+    Persistent,
+    Idle,
+    OnDemand,
+}
+
+impl From<hub::LifecycleMode> for LifecycleMode {
+    fn from(v: hub::LifecycleMode) -> Self {
+        match v {
+            hub::LifecycleMode::Persistent => LifecycleMode::Persistent,
+            hub::LifecycleMode::Idle => LifecycleMode::Idle,
+            hub::LifecycleMode::OnDemand => LifecycleMode::OnDemand,
+        }
+    }
+}
+
+/// 已连接实例当前不能休眠的原因中 Hub 可见的部分（App 的 `hold()` 只有 SDK 知道）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum AwakeReason {
+    /// SDK 声明为 `persistent` 模式。
+    Persistent,
+    /// 有进行中的调用 / 资源读取。
+    Call,
+    /// 有未到期的租约。
+    Lease,
+    /// Host 订阅了该实例声明 `realtime` 的资源。
+    Subscription,
+    /// 有待派发给该实例的唤醒。
+    WakePending,
+}
+
+impl From<hub::AwakeReason> for AwakeReason {
+    fn from(v: hub::AwakeReason) -> Self {
+        match v {
+            hub::AwakeReason::Persistent => AwakeReason::Persistent,
+            hub::AwakeReason::Call => AwakeReason::Call,
+            hub::AwakeReason::Lease => AwakeReason::Lease,
+            hub::AwakeReason::Subscription => AwakeReason::Subscription,
+            hub::AwakeReason::WakePending => AwakeReason::WakePending,
+        }
+    }
+}
+
+/// 每实例功耗观测（跨重连与休眠保留，Hub 重启清零）。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct InstancePower {
+    /// 回连次数：Hub 启动以来该实例完成握手的次数减 1。
+    pub reconnects: u64,
+    /// 以该休眠实例为目标实际发出的唤醒激活次数。
+    pub wakes: u64,
+    /// 累计在线秒数（含当前连接）。
+    pub online_secs: u64,
+    /// Hub 发出的 `ping` 与收到 SDK 的 `ping` 之和。
+    pub heartbeats: u64,
+    /// SDK 声明的心跳间隔：`0` = 不发心跳（本地传输）；为空 = 旧 SDK（双向心跳）。
+    pub heartbeat_ms: Option<u64>,
+    /// SDK 声明的生命周期模式；为空 = 未声明。
+    pub lifecycle_mode: Option<LifecycleMode>,
+    /// 已连接实例当前不能休眠的原因；休眠实例与可以休眠时为空。
+    pub awake_reasons: Vec<AwakeReason>,
+}
+
+impl From<hub::InstancePower> for InstancePower {
+    fn from(p: hub::InstancePower) -> Self {
+        InstancePower {
+            reconnects: p.reconnects,
+            wakes: p.wakes,
+            online_secs: p.online_secs,
+            heartbeats: p.heartbeats,
+            heartbeat_ms: p.heartbeat_ms,
+            lifecycle_mode: p.lifecycle_mode.map(Into::into),
+            awake_reasons: p.awake_reasons.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// 租约策略与统计（spec/lifecycle.md 第 13 节 B2）。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct LeaseStatus {
+    /// `adaptive` / `fixed`（固定 `lease_ttl_ms`）/ `off`（`lease_ttl_ms = 0`）。
+    pub mode: String,
+    /// 默认（无历史 / 固定）租约毫秒数。
+    pub default_ms: u64,
+    pub min_ms: u64,
+    pub max_ms: u64,
+    pub margin_ms: u64,
+    pub window: u32,
+    /// 请求流空闲收回阈值；0 = 不因空闲收回。
+    pub idle_revoke_ms: u64,
+    pub adaptive_grants: u64,
+    pub default_grants: u64,
+    pub revoked_session_end: u64,
+    pub revoked_idle: u64,
+    /// 当前跟踪的（会话, App）。
+    pub pairs: Vec<LeasePairStatus>,
+}
+
+/// 一个（会话, App）的租约统计。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct LeasePairStatus {
+    /// 会话键（MCP `mcp:<n>`，API `api` / `api:<session>`）。
+    pub session: String,
+    pub app_id: String,
+    /// 窗口内的间隔样本数。
+    pub samples: u32,
+    /// 下一次调用完成后将发出的租约毫秒数。
+    pub next_ttl_ms: u64,
+    /// `next_ttl_ms` 是否来自统计。
+    pub adaptive: bool,
+}
+
+impl From<hub::LeaseStatus> for LeaseStatus {
+    fn from(l: hub::LeaseStatus) -> Self {
+        LeaseStatus {
+            mode: l.mode,
+            default_ms: l.default_ms,
+            min_ms: l.min_ms,
+            max_ms: l.max_ms,
+            margin_ms: l.margin_ms,
+            window: l.window,
+            idle_revoke_ms: l.idle_revoke_ms,
+            adaptive_grants: l.adaptive_grants,
+            default_grants: l.default_grants,
+            revoked_session_end: l.revoked_session_end,
+            revoked_idle: l.revoked_idle,
+            pairs: l
+                .pairs
+                .into_iter()
+                .map(|p| LeasePairStatus {
+                    session: p.session,
+                    app_id: p.app_id,
+                    samples: p.samples,
+                    next_ttl_ms: p.next_ttl_ms,
+                    adaptive: p.adaptive,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// 一个 App（或上游）的运行状态。
@@ -623,6 +829,9 @@ pub struct AppStatus {
     /// 在线实例在前，其后为休眠实例；上游为空。
     pub instances: Vec<InstanceStatus>,
     pub last_error: Option<LastError>,
+    /// Hub 启动以来为该 App 实际发出的唤醒激活次数（含冷启动；上游为 0）。
+    #[uniffi(default = 0)]
+    pub wakes: u64,
 }
 
 /// 一条 SDK 诊断上报（`app/diagnostic`，spec/protocol.md 10.2）。
@@ -663,6 +872,9 @@ pub struct HubStatus {
     pub apps: Vec<AppStatus>,
     /// 最近的 SDK 诊断上报，旧的在前（最多 32 条）。
     pub reports: Vec<DiagnosticReport>,
+    /// 租约策略与统计。
+    #[uniffi(default = None)]
+    pub lease: Option<LeaseStatus>,
 }
 
 impl From<hub::LastError> for LastError {
@@ -680,6 +892,7 @@ impl From<hub::InstanceStatus> for InstanceStatus {
         InstanceStatus {
             info: i.info.into(),
             state: i.state.into(),
+            power: i.power.map(Into::into),
         }
     }
 }
@@ -693,6 +906,7 @@ impl From<hub::AppStatus> for AppStatus {
             state: a.state.into(),
             instances: a.instances.into_iter().map(Into::into).collect(),
             last_error: a.last_error.map(Into::into),
+            wakes: a.wakes,
         }
     }
 }
@@ -729,6 +943,7 @@ impl From<hub::HubStatus> for HubStatus {
             mcp_sessions: u64::try_from(s.mcp_sessions).unwrap_or(u64::MAX),
             apps: s.apps.into_iter().map(Into::into).collect(),
             reports: s.reports.into_iter().map(Into::into).collect(),
+            lease: s.lease.map(Into::into),
         }
     }
 }
@@ -1428,6 +1643,23 @@ mod tests {
         assert_eq!(c.waker, hub::WakerConfig::None);
         assert_eq!(c.tool_exposure, hub::ToolExposure::Progressive);
         assert_eq!(c.tool_exposure_threshold, 5);
+        // 功耗（4e）
+        assert_eq!((d.wake_rate_limit, d.legacy_heartbeat), (hub::DEFAULT_WAKE_RATE_LIMIT, false));
+        assert_eq!(d.lease, hub::LeasePolicy::default());
+        let c = HubConfig {
+            wake_rate_limit: Some(0),
+            legacy_heartbeat: Some(true),
+            lease: Some(LeaseConfig { adaptive: Some(false), window: Some(4), max_ms: Some(30_000), ..Default::default() }),
+            ..Default::default()
+        }
+        .into_hub()
+        .unwrap();
+        assert_eq!((c.wake_rate_limit, c.legacy_heartbeat), (0, true));
+        assert_eq!((c.lease.adaptive, c.lease.window, c.lease.max), (false, 4, Duration::from_secs(30)));
+        let e = HubConfig { lease: Some(LeaseConfig { window: Some(0), ..Default::default() }), ..Default::default() }
+            .into_hub()
+            .unwrap_err();
+        assert!(matches!(e, HubError::InvalidConfig { .. }), "{e:?}");
         let c = HubConfig {
             waker: Some(WakerConfig::Exec { argv: vec!["node".into(), "w.mjs".into()] }),
             ..Default::default()

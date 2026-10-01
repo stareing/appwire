@@ -133,6 +133,7 @@ fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
         wake_token_ttl: Duration::from_millis(s.wake_token_ttl_ms),
         wake_rate_limit: s.wake_rate_limit,
         legacy_heartbeat: s.legacy_heartbeat,
+        lease: s.lease.clone(),
         waker: s.waker.clone(),
         tool_exposure: s.tool_exposure,
         tool_exposure_threshold: s.tool_exposure_threshold,

@@ -48,6 +48,8 @@ export interface NativeLifecycleConfig {
   wake?: { kind: string; target?: string; background?: boolean }
   hostAbsentRetries?: number
   legacyTimers?: boolean
+  mergeWindowMs?: number
+  sleepOnBackground?: boolean
 }
 
 /** 阻止自动休眠的持有；`release()` 幂等。 */
@@ -86,6 +88,7 @@ export interface NativeResourceSpec {
   name: string
   description: string
   mimeType?: string
+  realtime?: boolean
 }
 
 export type NativeCancelReason = 'requested' | 'timeout' | 'disconnected' | 'stopped'

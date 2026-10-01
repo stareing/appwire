@@ -48,6 +48,8 @@ export interface CoreLifecycle {
   wake?: CoreWakeDescriptor
   hostAbsentRetries?: number
   legacyTimers?: boolean
+  mergeWindowMs?: number
+  sleepOnBackground?: boolean
 }
 
 export type WakeReason = 'os-activation' | 'app' | 'visible' | 'cold-start'
@@ -79,6 +81,7 @@ export interface CoreResourceDef {
   description: string
   mimeType?: string
   scope?: number
+  realtime?: boolean
 }
 
 export interface CoreToolError {

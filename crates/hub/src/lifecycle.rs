@@ -40,6 +40,28 @@ impl PendingWake {
     }
 }
 
+/// 会话发给某实例的一次租约。
+#[derive(Debug)]
+pub(crate) struct LeaseEntry {
+    pub conn: std::sync::Weak<Connection>,
+    pub expires: Instant,
+    /// 按调用间隔统计得出（`false` = 默认值，可被请求流空闲收回）。
+    pub adaptive: bool,
+}
+
+/// 会话请求的活动守卫（[`HubShared::session_request`]）。
+pub(crate) struct SessionRequest {
+    shared: Arc<HubShared>,
+    key: String,
+}
+
+impl Drop for SessionRequest {
+    fn drop(&mut self) {
+        lock(&self.shared.leases).request_finished(&self.key, Instant::now());
+        self.shared.lease_changed.notify_one();
+    }
+}
+
 /// `app/sleep` 被拒绝时建议的重试间隔。
 pub(crate) const SLEEP_RETRY_AFTER_MS: u64 = 1000;
 
@@ -242,7 +264,7 @@ impl HubShared {
         self.session_state()
             .values()
             .flat_map(|s| s.leases.iter())
-            .filter(|(_, (_, exp))| *exp > now)
+            .filter(|(_, l)| l.expires > now)
             .map(|(id, _)| *id)
             .collect()
     }
@@ -260,7 +282,7 @@ impl HubShared {
             let Some(inst) = reg.instance(app_id, instance_id) else {
                 return Vec::new();
             };
-            (inst.conn.inflight() > 0, leased.contains(&inst.conn.id), !inst.subscriptions.is_empty())
+            (inst.conn.inflight() > 0, leased.contains(&inst.conn.id), inst.has_realtime_subscription())
         };
         [
             (mode == Some(app_mcp_protocol::LifecycleMode::Persistent), AwakeReason::Persistent),
@@ -275,41 +297,100 @@ impl HubShared {
     }
 
     // ------------------------------------------------------------------
-    // 租约
+    // 租约（spec/lifecycle.md 4.2；第 13 节 B2 自适应租约）
     // ------------------------------------------------------------------
 
-    /// 调用某实例完成后发送 `app/lease { ttlMs }` 并记在会话上。
-    pub(crate) fn grant_lease(&self, session_key: &str, conn: &Arc<Connection>) {
-        let ttl = self.config.lease_ttl;
-        if ttl.is_zero() {
-            return;
-        }
-        send_lease(conn, ttl);
-        self.session_state()
-            .entry(session_key.to_owned())
-            .or_default()
-            .leases
-            .insert(conn.id, (Arc::downgrade(conn), Instant::now() + ttl));
+    /// 会话对某 App 的一次工具调用开始：记录距该（会话, App）上一次租约的间隔。
+    pub(crate) fn lease_call_started(&self, session_key: &str, app_id: &str) {
+        lock(&self.leases).call_started(session_key, app_id, &self.config.lease, Instant::now());
     }
 
-    /// 会话结束：向其租约过的实例发送 `ttlMs: 0`；若其他会话仍持有未到期租约，随后补发剩余时长。
-    pub(crate) fn release_leases(&self, session_key: &str) {
-        let mut states = self.session_state();
-        let Some(mine) = states.get_mut(session_key).map(|s| std::mem::take(&mut s.leases)) else {
+    /// 会话的一个请求（MCP 请求 / API 调用、资源读取）开始；返回的守卫在请求结束时记录活动（空闲收回据此计时）。
+    pub(crate) fn session_request(self: &Arc<Self>, session_key: &str) -> SessionRequest {
+        lock(&self.leases).request_started(session_key, Instant::now());
+        self.lease_changed.notify_one();
+        SessionRequest { shared: self.clone(), key: session_key.to_owned() }
+    }
+
+    /// 调用某实例完成后按（会话, App）的调用间隔决定租约，发送 `app/lease { ttlMs }` 并记在会话上。
+    pub(crate) fn grant_lease(&self, session_key: &str, app_id: &str, conn: &Arc<Connection>) {
+        if self.config.lease_ttl.is_zero() {
             return;
-        };
+        }
         let now = Instant::now();
-        for (conn_id, (weak, _)) in mine {
-            let Some(conn) = weak.upgrade() else { continue };
+        let g = lock(&self.leases).grant(session_key, app_id, &self.config.lease, self.config.lease_ttl, now);
+        tracing::debug!(cid = %conn.cid, app_id, session = session_key, ttl_ms = g.ttl.as_millis() as u64, adaptive = g.adaptive, "发出租约");
+        send_lease(conn, g.ttl);
+        self.session_state().entry(session_key.to_owned()).or_default().leases.insert(
+            conn.id,
+            LeaseEntry { conn: Arc::downgrade(conn), expires: now + g.ttl, adaptive: g.adaptive },
+        );
+        if !g.adaptive {
+            self.lease_changed.notify_one();
+        }
+    }
+
+    /// 会话结束：收回其全部租约并移除其调用间隔统计。
+    pub(crate) fn release_leases(&self, session_key: &str) {
+        let n = self.revoke_leases(session_key, |_, _| true);
+        let mut book = lock(&self.leases);
+        book.count_revoked(false, n);
+        book.forget_session(session_key);
+    }
+
+    /// 收回会话中满足条件的租约：向实例发送 `ttlMs: 0`；若其他会话对同一实例仍有未到期租约，随后补发剩余时长。
+    /// 返回实际发出收回（实例仍在连接）的个数。
+    fn revoke_leases(&self, session_key: &str, pred: impl Fn(&LeaseEntry, Instant) -> bool) -> u64 {
+        let mut states = self.session_state();
+        let now = Instant::now();
+        let Some(mine) = states.get_mut(session_key).map(|s| {
+            let ids: Vec<u64> = s.leases.iter().filter(|(_, l)| pred(l, now)).map(|(id, _)| *id).collect();
+            ids.into_iter().filter_map(|id| s.leases.remove(&id).map(|l| (id, l))).collect::<Vec<_>>()
+        }) else {
+            return 0;
+        };
+        let mut n = 0;
+        for (conn_id, entry) in mine {
+            let Some(conn) = entry.conn.upgrade() else { continue };
             let others = states
                 .iter()
                 .filter(|(k, _)| k.as_str() != session_key)
-                .filter_map(|(_, s)| s.leases.get(&conn_id).map(|(_, exp)| *exp))
+                .filter_map(|(_, s)| s.leases.get(&conn_id).map(|l| l.expires))
                 .filter(|exp| *exp > now)
                 .max();
             send_lease(&conn, Duration::ZERO);
             if let Some(exp) = others {
                 send_lease(&conn, exp - now);
+            }
+            n += 1;
+        }
+        n
+    }
+
+    /// 请求流空闲收回（spec/lifecycle.md 第 13 节 B2）：会话没有进行中的请求、距最近活动达到 `lease.idle_revoke` 时，
+    /// 收回其以默认值发出、仍未到期的租约。没有待收回的会话时不设定时器。
+    pub(crate) async fn lease_idle_loop(self: Arc<Self>) {
+        loop {
+            let next = lock(&self.leases).next_idle_deadline(&self.config.lease);
+            match next {
+                Some(at) => {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(at) => {}
+                        _ = self.lease_changed.notified() => continue,
+                    }
+                }
+                None => {
+                    self.lease_changed.notified().await;
+                    continue;
+                }
+            }
+            let idle = lock(&self.leases).take_idle_sessions(&self.config.lease, Instant::now());
+            for key in idle {
+                let n = self.revoke_leases(&key, |l, now| !l.adaptive && l.expires > now);
+                if n > 0 {
+                    tracing::debug!(session = %key, revoked = n, "会话请求流空闲，收回默认租约");
+                }
+                lock(&self.leases).count_revoked(true, n);
             }
         }
     }

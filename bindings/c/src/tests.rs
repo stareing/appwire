@@ -386,6 +386,8 @@ fn header_consistency() {
         "am_parse_wake_token",
         "am_call_fail_with_details",
         "am_call_hold",
+        // v8
+        "am_resource_register_ex",
     ];
     // 收集头文件中形如 `am_xxx(` 的声明。
     let mut declared = Vec::new();
@@ -730,6 +732,8 @@ fn options_are_read_up_to_struct_size() {
         heartbeat: 2,
         host_absent_retries: -1,
         legacy_timers: true,
+        merge_window_ms: 500,
+        sleep_on_background: true,
     };
     let v = unsafe { read_options(&o) }.ok();
     assert!(v.as_ref().is_some_and(|v| std::ptr::eq(v.lifecycle, &lc)
@@ -737,7 +741,13 @@ fn options_are_read_up_to_struct_size() {
         && v.on_idle_exit.is_some()
         && v.heartbeat == 2
         && v.host_absent_retries == -1
-        && v.legacy_timers));
+        && v.legacy_timers
+        && v.merge_window_ms == 500
+        && v.sleep_on_background));
+    // v7 调用方（到 legacy_timers 为止）：v8 字段取默认值。
+    o.struct_size = std::mem::offset_of!(AmClientOptions, merge_window_ms) as u32;
+    let v = unsafe { read_options(&o) }.ok();
+    assert!(v.as_ref().is_some_and(|v| v.legacy_timers && v.merge_window_ms == 0 && !v.sleep_on_background));
     // v3 调用方（到 on_idle_exit 为止）：4e 字段取默认值。
     o.struct_size = std::mem::offset_of!(AmClientOptions, heartbeat) as u32;
     let v = unsafe { read_options(&o) }.ok();
@@ -837,6 +847,8 @@ fn lifecycle_through_c_abi() {
         heartbeat: 0,
         host_absent_retries: 0,
         legacy_timers: false,
+        merge_window_ms: 0,
+        sleep_on_background: false,
     };
     let mut client: *mut AmClient = ptr::null_mut();
     assert_eq!(
@@ -972,4 +984,16 @@ fn call_fail_with_details_null_call() {
         AmStatus::InvalidArgument
     );
     assert!(out.is_null());
+}
+
+#[test]
+fn resource_options_are_read_up_to_struct_size() {
+    let full = AmResourceOptions { struct_size: std::mem::size_of::<AmResourceOptions>() as u32, realtime: true };
+    assert_eq!(unsafe { read_resource_options(&full) }.ok(), Some(ResourceOptions { realtime: true }));
+    assert_eq!(unsafe { read_resource_options(ptr::null()) }.ok(), Some(ResourceOptions::default()));
+    // 只含 struct_size 的调用方：realtime 取默认值
+    let short = AmResourceOptions { struct_size: std::mem::size_of::<u32>() as u32, realtime: true };
+    assert_eq!(unsafe { read_resource_options(&short) }.ok(), Some(ResourceOptions::default()));
+    let bad = AmResourceOptions { struct_size: 0, realtime: true };
+    assert!(unsafe { read_resource_options(&bad) }.is_err());
 }

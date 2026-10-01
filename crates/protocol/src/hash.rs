@@ -112,7 +112,7 @@ mod tests {
 
     fn vector_resources() -> ResourcesSyncParams {
         ResourcesSyncParams {
-            resources: vec![ResourceInfo { name: "cart.state".into(), description: "购物车".into(), mime_type: None }],
+            resources: vec![ResourceInfo { name: "cart.state".into(), description: "购物车".into(), mime_type: None, realtime: false }],
         }
     }
 
@@ -141,6 +141,21 @@ mod tests {
         t.tools[0].description.push('!');
         assert_ne!(tools_hash(&t, &vector_resources()), h);
         assert_ne!(tools_hash(&vector_tools(), &ResourcesSyncParams::default()), h);
+    }
+
+    /// `realtime` 只在为 true 时序列化：未声明的资源摘要不变，声明后摘要变化（spec/lifecycle.md 第 13 节 B3）。
+    #[test]
+    fn realtime_flag_serialized_only_when_true() {
+        let plain = vector_resources();
+        assert!(!serde_json::to_string(&plain).unwrap().contains("realtime"));
+        let mut rt = plain.clone();
+        rt.resources[0].realtime = true;
+        assert!(serde_json::to_string(&rt).unwrap().contains(r#""realtime":true"#));
+        assert_ne!(tools_hash(&vector_tools(), &rt), tools_hash(&vector_tools(), &plain));
+        let parsed: ResourceInfo = serde_json::from_value(json!({"name": "a", "description": "d"})).unwrap();
+        assert!(!parsed.realtime);
+        let parsed: ResourceInfo = serde_json::from_value(json!({"name": "a", "description": "d", "realtime": true})).unwrap();
+        assert!(parsed.realtime);
     }
 
     #[test]

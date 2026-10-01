@@ -47,17 +47,19 @@ stateDiagram-v2
 | `residency` | `keep` | 进程驻留：`keep`（只断连接）/ `exit-when-idle`（仅当本进程由唤醒冷启动时，休眠后回调 `onIdleExit`，由 App 决定是否退出）/ `exit-always`（无界面的辅助进程）|
 | `wake` | 由封装按平台填充 | 本实例的唤醒描述（第 5 节），随 `app/sleep` 上报 |
 | `hostAbsentRetries` | 3 | `idle` / `on-demand` 下连续多少次"Host 不在"后转 `dormant`（第 11 节 A2）；0 = 一直重连 |
-| `legacyTimers` | `false` | 回退到 4e 之前的定时器行为（第 11 节） |
+| `mergeWindowMs` | 2000 | 调用 / 资源读取完成后的合并窗口：本连接处理过调用后，空闲时长取 min(它, 上面按模式与可见性的时长)（第 13 节 B1） |
+| `sleepOnBackground` | `false`（核心）；移动端封装默认 `true` | 进入后台（可见 → 隐藏 / 冻结）且无调用 / 持有时立即休眠，不等租约（第 13 节 B4） |
+| `legacyTimers` | `false` | 回退到 4e 之前的定时器行为（第 11、13 节） |
 
 模式：
 - **`persistent`**：现有行为，不休眠。
 - **`idle`**：启动时连接；满足空闲条件后休眠；唤醒后回连，处理完再按空闲规则休眠。
-- **`on-demand`**：启动时**不连接**，只保证 Host 能从清单 / 上次的休眠记录知道如何唤醒；被唤醒或 App 调用 `connectNow()` 时连接，任务完成后经过 `graceMs` 休眠。适合手机、托盘常驻工具、无界面辅助进程。
+- **`on-demand`**：启动时**不连接**，只保证 Host 能从清单 / 上次的休眠记录知道如何唤醒；被唤醒或 App 调用 `connectNow()` 时连接，任务完成后经过合并窗口（`mergeWindowMs`，第 13 节 B1）休眠；连上后一直没有调用则经过 `graceMs` 休眠。适合手机、托盘常驻工具、无界面辅助进程。
 
 **空闲条件**（全部满足才开始计时，任一变化重置计时）：
 - 没有进行中或排队的调用、资源读取；
 - 租约不是空闲条件，而是休眠时刻的下限：休眠时刻 = max(空闲起点 + 空闲时长, 租约到期)（第 11 节 A1；收到租约重新开始计时）；
-- Host 没有订阅本实例的任何资源（有订阅说明模型在关注变化）；
+- Host 没有订阅本实例声明了 `realtime` 的资源（第 13 节 B3；普通资源的订阅不阻止休眠，`legacyTimers` 时任何订阅都阻止）；
 - 本实例未被 App 标记为 `hold()`（App 可临时阻止休眠，返回释放句柄）。
 
 **可见性与休眠 / 回连**（`idle` / `on-demand`）：
@@ -86,7 +88,7 @@ stateDiagram-v2
 ```
 
 `reason`：`idle` / `grace` 为空闲计时到期（`on-demand` 为 `grace`，其余为 `idle`；隐藏 / 冻结只缩短计时，
-不改变原因）；`background` 为进入后台时立即休眠（bfcache、移动端进后台，由封装层显式请求）；`app` 为 App 主动请求。
+不改变原因）；`background` 为进入后台时立即休眠（bfcache、移动端进后台，由封装层显式请求，或 `sleepOnBackground` 自动发起，第 13 节 B4）；`app` 为 App 主动请求。
 
 `accepted` 后 SDK 关闭连接，进入 `dormant`；Host 把实例标记为休眠（保留工具快照，路由时视为可唤醒），
 **不按断开处理**：工具不从列表中消失、不发 `list_changed`。
@@ -151,7 +153,9 @@ SDK 回连时在 `app/hello.launchToken` 中携带（沿用现有字段），Hos
 ## 8. 公开 API（各语言按惯用写法映射）
 
 ```
-config.lifecycle = { mode, idleTimeoutMs, hiddenIdleTimeoutMs, graceMs, residency, wake }
+config.lifecycle = { mode, idleTimeoutMs, hiddenIdleTimeoutMs, graceMs, residency, wake,
+                     hostAbsentRetries, legacyTimers, mergeWindowMs, sleepOnBackground }
+resource.realtime: bool                      // 资源声明需实时推送（第 13 节 B3），缺省 false
 client.handleWake(args: string) -> bool      // 传入 OS 激活参数 / URL；不是本 SDK 的唤醒返回 false
 client.wake()                                // App 主动回连（如用户打开相关界面）
 client.sleep()                               // App 主动请求休眠（等同 reason = "app"）
@@ -266,3 +270,55 @@ Host 不在时 `idle` / `on-demand` 1 小时内连接发起 = 3 次后无定时�
 - 默认 6 的理由：一次唤醒约 5.6 ms SDK 线程 / 约 19 ms 进程 CPU（魅族实测）；正常调用经唤醒去重与 60 s 租约合并后每分钟至多约 1 次唤醒，
   6 次给 `on-demand` 10 s 宽限下的间歇调用留余量，同时把唤醒 / 休眠循环限制在约 0.1 s CPU / 分钟。
 
+
+## 13. 按需在线规则（4e 第二部分）
+
+本节是行为契约；`lifecycle.legacyTimers = true` 同样一次性关闭 B1、B3、B4（恢复第 11 节之前的行为）。B2（Hub 自适应租约）
+是 Hub 侧规则，见 spec/hub-api.md 与本节"Hub 侧配合"。
+
+### B1 App 端只留合并窗口
+
+- 本连接上处理过调用或资源读取（收到 `tools/invoke` / `resources/read`，含返回错误的）之后，空闲时长取
+  min(`mergeWindowMs`, 第 3 节按模式与可见性的空闲时长)；休眠时刻仍为 max(空闲起点 + 空闲时长, 租约到期)（A1）。
+  也就是说，调用之后是否继续在线**只由 Hub 的租约决定**，App 端只多留一个很短的合并窗口。
+- 连上后一直没有调用 / 读取（启动连接、页面重新可见回连、App 主动 `wake()`）：仍按 `idleTimeoutMs`（`on-demand` 为 `graceMs`）。
+  "处理过调用"随连接结束而清除（每次连接重新计）。
+- 默认 2000 ms 的理由：窗口只用来合并"调用完成后立即跟着到达"的消息——Hub 调用完成后发出的 `app/lease`、对 `stateHints`
+  资源的读取、同一轮内并行工具调用的后续派发；本机传输上这些在毫秒级到达，`adb reverse` 等转发每次约数百毫秒，2 s 留出余量。
+  模型在两次调用之间的思考间隔（秒到数十秒）不该由 App 猜测，而由 Hub 按调用历史给租约（B2）。窗口越长不带来正确性收益，
+  只延长在线：一次回连约 5.6 ms SDK CPU（魅族实测）与约 40 s 在线心跳相当，2 s 在线的代价远小于一次回连。
+- `mergeWindowMs ≥ idleTimeoutMs` 时等同于旧行为（调用后仍按空闲时长）。
+- 平台默认（由各平台封装设置，核心不区分平台）：手机（Android / iOS / 鸿蒙 / Flutter）与托盘常驻程序默认 `on-demand`
+  + `sleepOnBackground: true`；桌面窗口程序与网页默认 `idle` + 2 s 合并窗口。
+
+### B3 资源订阅不再强制在线
+
+- 协议：`ResourceInfo.realtime?: boolean`（缺省 `false`，spec/protocol.md 第 3 节；静态清单 `resources[].realtime` 同构，
+  spec/manifest.md）。声明 `realtime` 的资源被订阅时阻止休眠（空闲条件、B4 都看它）；未声明的资源的订阅**不阻止**休眠。
+  `realtime` 只在为 `true` 时序列化，未声明的资源的 `toolsHash` 不变。
+- SDK 记住"Host 已订阅"的资源跨越连接：连接断开（休眠、断线）时把当时的订阅集合留作"待恢复订阅"；未连接期间这些资源发生变化时
+  标记为"已变化"。Host 回连后重新订阅（`resources/subscribe`）时，SDK 回复 `{}` 后对"已变化"的资源立即发送 `resources/updated`
+  （仍受节流约束），然后清除标记。连上后 Host 没有重新订阅的资源不再跟踪（下次断开时按新的订阅集合重记）。
+- 休眠（`dormant`）期间声明了 `realtime` 的待恢复订阅资源发生变化：SDK 以原因 `app` 回连推送（App 在变化时回连推送）。
+  未声明的资源不回连，变化在下次连接（Host 唤醒调用 / 读取、页面重新可见等）时由上一条送达，或模型下次读取时拉取到最新内容。
+- `realtime` 用于"模型在等待变化"的场景（如等待订单状态变化）；普通状态（购物车、列表）不声明——每次变化都回连的功耗高于在线。
+
+**Hub 侧配合**（`crates/hub` 实现，本节为契约）：
+
+1. 实例休眠（`app/sleep` 被接受）时保留该实例的资源订阅（MCP 会话的订阅关系不变），不向 MCP 客户端报告任何变化。
+2. 实例回连并 `app/ready` 后，对其所有仍被订阅的资源重新发送 `resources/subscribe`（含因断线而不是休眠断开的情况——这一条
+   沿用 spec/protocol.md 5.4"订阅集合在断线后清空，由 Host 重新订阅"）。
+3. 对休眠实例的资源读取（`resources/read`）与工具调用相同：唤醒后派发（不要因为实例休眠就返回资源不存在）。
+4. 观测（第 12 节 O1）的 `subscription` 原因只计声明了 `realtime` 的资源的订阅（旧 SDK 不声明，按普通资源计）。
+
+### B4 后台立即休眠
+
+- `sleepOnBackground = true` 且模式为 `idle` / `on-demand` 时，可见性从 `visible` **变为** `hidden` / `frozen`（进入后台）：
+  - 已连接：本连接标记为"后台休眠"——只要空闲条件（第 3 节，不含租约）成立就立即以原因 `background` 发送 `app/sleep`，
+    **不等租约、不计空闲时长**；进入后台时有调用 / 读取 / 持有 / 实时订阅在进行，则在它们结束后立即休眠。
+  - `backoff`（且没有待用的唤醒令牌）：停止重连，进入 `dormant`。
+  - 其他状态（连接中、握手中）不处理，连上后按普通规则。
+- 回到可见、Host 拒绝这次休眠（`accepted: false`）或连接结束时清除"后台休眠"标记，之后按普通规则（B1 / A1）。
+- 不等租约的理由：移动端后台进程很快会被冻结（Flyme 约 62 s），被冻结但仍连着的实例收到的调用只能超时失败；休眠后 Host 改为唤醒，
+  调用可以完成。核心默认 `false`（核心不知道平台；网页标签页频繁切换、bfcache 已单独处理）；移动端封装默认 `true`。
+- App 显式 `sleep_with_reason(Background)` 不受本节影响（不看空闲条件，第 8 节）。

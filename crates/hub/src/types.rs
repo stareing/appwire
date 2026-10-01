@@ -372,6 +372,9 @@ pub struct HubStatus {
     pub apps: Vec<AppStatus>,
     /// 最近的 SDK 诊断上报（`app/diagnostic`），旧的在前，最多 [`crate::hub::MAX_REPORTS`] 条。
     pub reports: Vec<DiagnosticReport>,
+    /// 租约策略与统计（spec/lifecycle.md 第 13 节 B2）；旧 Host 的 `/status` 没有该字段时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<crate::lease::LeaseStatus>,
 }
 
 /// 主 HTTP 服务的令牌策略。
@@ -429,7 +432,7 @@ pub enum AwakeReason {
     Call,
     /// 有未到期的租约（`app/lease`）。
     Lease,
-    /// Host 订阅了该实例的资源。
+    /// Host 订阅了该实例声明 `realtime` 的资源（spec/lifecycle.md 第 13 节 B3；普通资源的订阅不阻止休眠）。
     Subscription,
     /// 有待派发给该实例的唤醒。
     WakePending,

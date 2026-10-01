@@ -1139,6 +1139,18 @@ mod tests {
         assert!(v.errors[0].message.contains("重复"));
     }
 
+    /// `resources[].realtime`（spec/manifest.md、spec/lifecycle.md 第 13 节 B3）：缺省 false，可声明 true。
+    #[test]
+    fn resource_realtime_flag() {
+        let m: Manifest = serde_json::from_value(example()).unwrap();
+        assert!(!m.resource("cart.state").unwrap().realtime);
+        let mut base = example();
+        base["resources"][0]["realtime"] = json!(true);
+        let m: Manifest = serde_json::from_value(base).unwrap();
+        assert!(m.validate().is_ok());
+        assert!(m.resource("cart.state").unwrap().realtime);
+    }
+
     #[test]
     fn bad_resource_name_and_duplicates() {
         assert!(

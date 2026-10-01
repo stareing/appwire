@@ -179,6 +179,7 @@ describe('Hub 封装', () => {
       wakeFromLaunch: true,
       wakeRateLimit: 2,
       legacyHeartbeat: true,
+      lease: { adaptive: false, window: 4, idleRevokeMs: 0 },
     })
     expect(state.config).toEqual({
       leaseTtlMs: 0,
@@ -189,6 +190,7 @@ describe('Hub 封装', () => {
       wakeFromLaunch: true,
       wakeRateLimit: 2,
       legacyHeartbeat: true,
+      lease: { adaptive: false, window: 4, idleRevokeMs: 0 },
     })
   })
 

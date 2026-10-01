@@ -79,6 +79,10 @@ pub(crate) struct Session {
     pub rewake: bool,
     /// Host 为本连接分配的连接 ID（`HelloResult.connectionId`，spec/protocol.md 10.3）。
     pub connection_id: Option<String>,
+    /// 本连接处理过调用 / 资源读取：空闲时长改用合并窗口（spec/lifecycle.md 第 13 节 B1）。
+    pub served_call: bool,
+    /// 进入后台后待立即休眠（B4）：空闲条件一成立就休眠，不等租约与空闲时长。
+    pub background_sleep: bool,
 }
 
 fn to_value<T: Serialize>(v: &T) -> Value {
@@ -179,6 +183,16 @@ impl Client {
         }
         for call in self.calls.clear() {
             self.events.push_back(Event::CancelTool { call_id: call.call_id, reason });
+        }
+        // @why 订阅随连接清空、由 Host 回连后重新订阅；记下断开时的订阅，期间的变化在重新订阅时补发（B3）。
+        // 没到 Connected 的连接（握手中断开）保留上一份记录：Host 还没来得及重新订阅。
+        if self.state == ConnectionState::Connected && !self.config.lifecycle.legacy_timers {
+            let mut carried = std::mem::take(&mut self.session.subscriptions);
+            carried.retain(|_, s| {
+                *s = Subscription::default();
+                true
+            });
+            self.life.carried_subscriptions = carried;
         }
         self.session = Session::default();
         self.registry.stop_tracking();
@@ -455,6 +469,7 @@ impl Client {
     }
 
     fn on_invoke(&mut self, id: RequestId, p: ToolsInvokeParams, now: Millis) {
+        self.session.served_call = true;
         if self.calls.contains(&p.call_id) {
             let err = RpcError::invalid_params(format!("callId {:?} 已存在", p.call_id));
             self.respond(id, Err(err));
@@ -513,6 +528,7 @@ impl Client {
     }
 
     fn on_read(&mut self, id: RequestId, p: ResourcesReadParams) {
+        self.session.served_call = true;
         let Some((resource, def)) = self.registry.resource_by_name(&p.name) else {
             self.respond(id, Err(Self::resource_not_found(&p.name)));
             return;
@@ -532,17 +548,23 @@ impl Client {
         self.respond(pending.request_id, outcome);
     }
 
-    fn on_subscribe(&mut self, id: RequestId, p: ResourceSubscribeParams, subscribe: bool) {
+    fn on_subscribe(&mut self, id: RequestId, p: ResourceSubscribeParams, subscribe: bool, now: Millis) {
         if self.registry.resource_by_name(&p.name).is_none() {
             self.respond(id, Err(Self::resource_not_found(&p.name)));
             return;
         }
-        if subscribe {
-            self.session.subscriptions.get_or_insert_default(p.name);
-        } else {
+        let changed_while_away = self.life.carried_subscriptions.remove(&p.name).is_some_and(|s| s.pending);
+        if !subscribe {
             self.session.subscriptions.remove(&p.name);
+            self.respond(id, Ok(json!({})));
+            return;
         }
+        self.session.subscriptions.get_or_insert_default(p.name.clone());
         self.respond(id, Ok(json!({})));
+        // 未连接期间的变化：Host 重新订阅后补发（spec/lifecycle.md 第 13 节 B3）。
+        if changed_while_away {
+            self.send_resource_updated(p.name, now);
+        }
     }
 
     fn send_resource_updated(&mut self, name: String, now: Millis) {
@@ -554,11 +576,12 @@ impl Client {
     }
 
     pub(crate) fn on_resource_changed(&mut self, resource: ResourceId, now: Millis) {
-        if !self.connected() {
+        let Some(def) = self.registry.resource(resource) else { return };
+        let (name, realtime) = (def.name.clone(), def.realtime);
+        if !self.connected() || !self.session.subscriptions.contains_key(&name) {
+            self.on_carried_resource_changed(&name, realtime, now);
             return;
         }
-        let Some(def) = self.registry.resource(resource) else { return };
-        let name = def.name.clone();
         let throttle = self.config.resource_update_throttle_ms;
         let Some(sub) = self.session.subscriptions.get_mut(&name) else { return };
         match sub.last_sent {
@@ -632,7 +655,7 @@ impl Client {
             }
             method::RESOURCES_SUBSCRIBE | method::RESOURCES_UNSUBSCRIBE => {
                 if let Some(p) = self.parse_params(&id, &m, params) {
-                    self.on_subscribe(id, p, m == method::RESOURCES_SUBSCRIBE);
+                    self.on_subscribe(id, p, m == method::RESOURCES_SUBSCRIBE, now);
                 }
             }
             method::ACTIVATE => {

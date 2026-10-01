@@ -156,6 +156,7 @@ impl HubShared {
         cancel: impl Future<Output = ()> + Send,
     ) -> Invocation {
         let call_id = ctx.call_id.clone().unwrap_or_else(|| self.new_call_id());
+        let _activity = self.session_request(&ctx.session_key);
         let (tx, rx) = oneshot::channel::<()>();
         let token = self.next_id();
         lock(&self.calls).insert(call_id.clone(), (token, tx));
@@ -334,6 +335,7 @@ impl HubShared {
         ctx: &CallCtx,
         mut cancel: CancelFut<'_>,
     ) -> (Result<ToolsInvokeResult, ToolError>, Option<String>) {
+        self.lease_call_started(&ctx.session_key, app_id);
         let selected = ctx
             .instance_id
             .clone()
@@ -495,7 +497,7 @@ impl HubShared {
             }
         };
         self.registry().touch(app_id, &target.instance_id);
-        self.grant_lease(&ctx.session_key, &conn);
+        self.grant_lease(&ctx.session_key, app_id, &conn);
         (result, instance)
     }
 
@@ -657,6 +659,7 @@ pub(crate) async fn read_resource(
             None,
         ));
     };
+    let _activity = shared.session_request(session_key);
     if let Some(peer) = shared.upstream_peer(app_id) {
         return read_upstream_resource(shared, app_id, name, uri, peer).await;
     }

@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use app_mcp_native::{
     CallHandle, ClientListener, ErrorKind, LifecycleMode, LogLevel, NativeClient, NativeConfig,
-    NativeError, Residency, StateInfo, StateStatus, ToolHandler, ToolSpec,
+    NativeError, ReadHandle, Residency, ResourceOptions, ResourceReader, ResourceSpec, StateInfo,
+    StateStatus, ToolHandler, ToolSpec, Visibility,
 };
 use app_mcp_protocol::method;
 use common::{HostEvent, MockHost, eventually};
@@ -371,4 +372,34 @@ fn relay_without_host_counts_as_host_absent_and_goes_dormant() {
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(accepted.load(Ordering::SeqCst), 3, "休眠后不再发起连接");
     assert_eq!(client.state().status, StateStatus::Dormant);
+}
+
+struct Order;
+impl ResourceReader for Order {
+    fn read(&self, read: ReadHandle) {
+        let _ = read.complete(&json!({ "status": "paid" }).to_string());
+    }
+}
+
+#[test]
+fn realtime_resource_and_background_sleep_reach_the_wire() {
+    // 4e 第二部分（spec/lifecycle.md 第 13 节）：realtime 随 resources/sync 上报；进入后台立即以 background 休眠
+    let host = MockHost::start();
+    let mut config = NativeConfig::new("test-app", "测试应用");
+    config.host_url = host.url();
+    config.lifecycle.mode = LifecycleMode::Idle;
+    config.lifecycle.sleep_on_background = true;
+    config.lifecycle.merge_window_ms = 500;
+    let client = NativeClient::new(config, None).unwrap();
+    let spec = ResourceSpec { name: "order".into(), description: "订单".into(), mime_type: None };
+    let _order = client
+        .register_resource_with(spec, ResourceOptions { realtime: true }, Arc::new(Order))
+        .unwrap();
+    client.start();
+    let sync = host.wait_notification(method::RESOURCES_SYNC);
+    assert_eq!(sync["resources"][0]["realtime"], true, "{sync}");
+    host.wait_ready();
+    client.set_visibility(Visibility::Hidden, false);
+    let sleep = host.wait_request(method::SLEEP);
+    assert_eq!(sleep["reason"], "background");
 }

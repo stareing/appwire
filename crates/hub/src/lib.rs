@@ -19,6 +19,7 @@ pub mod http_server;
 pub mod hub;
 mod instance;
 mod ipc;
+mod lease;
 mod lifecycle;
 mod power;
 #[cfg(feature = "mcp-server")]
@@ -32,8 +33,9 @@ pub mod types;
 pub mod upstream;
 pub mod wake;
 
-pub use app_mcp_protocol::{Activation, ErrorKind, Risk, ToolError, Visibility};
+pub use app_mcp_protocol::{Activation, ErrorKind, LifecycleMode, Risk, ToolError, Visibility};
 pub use format::ToolFormat;
+pub use lease::{LeaseOverrides, LeasePairStatus, LeasePolicy, LeaseStatus};
 pub use http_server::{Health, HttpOptions};
 pub use hub::{
     DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,

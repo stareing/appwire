@@ -146,9 +146,18 @@ pub struct LifecyclePolicy {
     /// `idle` / `on-demand` 下连续多少次以"Host 不在"（[`ConnectionErrorCode::means_host_absent`]）建立连接失败后
     /// 停止重连、进入 `Dormant`（spec/lifecycle.md 第 11 节 A2）。默认 3；0 = 一直重连（旧行为）。`persistent` 不受影响。
     pub host_absent_retries: u32,
-    /// 回退到 4e 之前的定时器行为（spec/lifecycle.md 第 11 节）：租约到期后才开始计空闲时长、Host 不在时一直重连、
-    /// 不论传输一律双向心跳（`app/hello` 不声明 `heartbeatMs`，Host 照旧发 `ping`）。默认 `false`。
+    /// 回退到 4e 之前的定时器行为（spec/lifecycle.md 第 11、13 节）：租约到期后才开始计空闲时长、Host 不在时一直重连、
+    /// 不论传输一律双向心跳（`app/hello` 不声明 `heartbeatMs`，Host 照旧发 `ping`）；不用合并窗口、任何资源订阅都阻止休眠、
+    /// 不做后台立即休眠。默认 `false`。
     pub legacy_timers: bool,
+    /// 合并窗口（spec/lifecycle.md 第 13 节 B1）：本连接处理过调用 / 资源读取后，空闲时长取
+    /// min(本值, 按模式与可见性的空闲时长)，之后是否在线只由 Host 租约决定。默认 2000 ms；
+    /// 不小于 `idle_timeout_ms` 时等同于旧行为。
+    pub merge_window_ms: Millis,
+    /// 后台立即休眠（spec/lifecycle.md 第 13 节 B4）：`idle` / `on-demand` 下可见性从 `Visible` 变为隐藏 / 冻结后，
+    /// 空闲条件一成立就以 [`SleepReason::Background`] 休眠，不等租约与空闲时长；`Backoff` 中直接进入 `Dormant`。
+    /// 默认 `false`（移动端封装默认开启）。
+    pub sleep_on_background: bool,
 }
 
 impl Default for LifecyclePolicy {
@@ -162,6 +171,8 @@ impl Default for LifecyclePolicy {
             wake: None,
             host_absent_retries: 3,
             legacy_timers: false,
+            merge_window_ms: 2_000,
+            sleep_on_background: false,
         }
     }
 }
@@ -269,6 +280,9 @@ pub struct ResourceDef {
     pub description: String,
     pub mime_type: Option<String>,
     pub scope: Option<ScopeId>,
+    /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被 Host 订阅时阻止休眠，休眠期间变化时回连推送。
+    /// `false`（常用）时订阅不阻止休眠，变化在下次连接时补发 `resources/updated`。
+    pub realtime: bool,
 }
 
 /// handler 成功返回的内容。
@@ -594,6 +608,9 @@ impl Client {
 
     /// 资源内容变化。仅当 Host 订阅了该资源时才发送 `resources/updated`，
     /// 并按 `resource_update_throttle_ms` 节流（节流期内的多次变化合并为一次）。
+    ///
+    /// 未连接时（或回连后 Host 重新订阅之前），上次连接断开时被订阅的资源记为"已变化"，Host 重新订阅时补发；
+    /// `Dormant` 中声明了 `realtime` 的这类资源变化会以 [`WakeReason::App`] 回连（spec/lifecycle.md 第 13 节 B3）。
     pub fn notify_resource_changed(&mut self, resource: ResourceId, now: Millis) -> Result<(), CoreError> {
         if self.registry.resource(resource).is_none() {
             return Err(CoreError::UnknownResource(resource));
@@ -629,12 +646,14 @@ impl Client {
     /// 实例可见性或焦点变化。连接期间发送 `app/visibility`（值未变化时不发送），
     /// 并据此选择心跳超时。
     /// 可见性变化会重新开始空闲计时（隐藏时使用 `hidden_idle_timeout_ms`）。
+    /// [`LifecyclePolicy::sleep_on_background`] 开启时，从可见变为隐藏 / 冻结后空闲即以 `background` 休眠（B4）。
     pub fn set_visibility(&mut self, visibility: Visibility, focused: bool, now: Millis) {
         self.life.last_now = now;
         if self.visibility == visibility && self.focused == focused {
             return;
         }
         let visibility_changed = self.visibility != visibility;
+        let was_visible = self.visibility == Visibility::Visible;
         self.visibility = visibility;
         self.focused = focused;
         if self.state == ConnectionState::Connected {
@@ -642,6 +661,7 @@ impl Client {
         }
         if visibility_changed {
             self.restart_idle_timer(now);
+            self.on_visibility_changed(was_visible, now);
         }
     }
 

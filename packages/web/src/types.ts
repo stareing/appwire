@@ -103,7 +103,8 @@ export interface LifecycleOptions {
   /**
    * - `persistent`（默认）：启动即连接、一直在线；
    * - `idle`：启动时连接，空闲 `idleTimeoutMs` 后休眠，页面重新可见或被唤醒时回连；
-   * - `on-demand`：启动时不连接，被唤醒或调用 `connectNow()` 时连接，任务完成后经过 `graceMs` 休眠。
+   * - `on-demand`：启动时不连接，被唤醒或调用 `connectNow()` 时连接，处理完调用后经过合并窗口（`mergeWindowMs`）休眠，
+   *   连上后一直没有调用则经过 `graceMs` 休眠。
    */
   mode?: 'persistent' | 'idle' | 'on-demand'
   /** 空闲多久进入休眠（`idle` 模式），默认 60000。 */
@@ -117,8 +118,21 @@ export interface LifecycleOptions {
    * 页面重新可见、调用 `wake()` / `connectNow()` 或 Host 唤醒时再连接（spec/lifecycle.md 第 11 节）。默认 3；0 = 一直重连。
    */
   hostAbsentRetries?: number
-  /** 回退到 4e 之前的定时器行为（租约到期后才计空闲、Host 不在时一直重连、双向心跳）。默认 false。 */
+  /**
+   * 回退到 4e 之前的定时器行为（租约到期后才计空闲、Host 不在时一直重连、双向心跳、调用后按空闲时长、
+   * 任何资源订阅都阻止休眠）。默认 false。
+   */
   legacyTimers?: boolean
+  /**
+   * 调用 / 资源读取后的合并窗口（spec/lifecycle.md 第 13 节 B1）：本连接处理过调用后，空闲时长取
+   * min(本值, 按模式与可见性的空闲时长)，之后是否在线只由 Host 租约决定。默认 2000。
+   */
+  mergeWindowMs?: number
+  /**
+   * `idle` / `on-demand` 下页面从可见变为隐藏 / 冻结且空闲时立即休眠，不等租约（B4）。默认 false
+   * （标签页切换频繁；bfcache 已单独处理）。
+   */
+  sleepOnBackground?: boolean
 }
 
 /**
@@ -286,6 +300,11 @@ export interface ResourceDefinition<T = unknown> {
   description: string
   /** 缺省 'application/json'。 */
   mimeType?: string
+  /**
+   * 需实时推送（spec/lifecycle.md 第 13 节 B3）：被 Host 订阅时保持连接、休眠中变化时回连推送。
+   * 默认 false：订阅不阻止休眠，变化在下次连接时补发 `resources/updated`。
+   */
+  realtime?: boolean
   read: () => T | Promise<T>
 }
 

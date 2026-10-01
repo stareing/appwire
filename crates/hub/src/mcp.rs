@@ -92,6 +92,7 @@ impl ServerHandler for McpSession {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        let _activity = self.shared.session_request(&self.key);
         Ok(ListToolsResult::with_all_items(self.shared.mcp_tools(&self.key)))
     }
 
@@ -123,6 +124,7 @@ impl ServerHandler for McpSession {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
+        let _activity = self.shared.session_request(&self.key);
         let resources = self
             .shared
             .registry()
@@ -166,6 +168,7 @@ impl ServerHandler for McpSession {
         request: SubscribeRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
+        let _activity = self.shared.session_request(&self.key);
         if let Some((app_id, _)) = parse_resource_uri(&request.uri)
             && self.shared.is_upstream(app_id)
         {

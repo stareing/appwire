@@ -1043,6 +1043,8 @@ fn handle_notification(
         }
         method::READY => {
             shared.registry().set_ready(app_id, conn.id);
+            // 回连后重新订阅仍被订阅的资源（spec/lifecycle.md 第 13 节 B3）；同步时已订阅的不重复发送。
+            shared.ensure_subscriptions(app_id);
             shared.wake_arrived(app_id, &reg.instance_id, reg.launch_token.as_deref());
         }
         other => tracing::warn!(cid = %conn.cid, method = other, "未知通知，忽略"),

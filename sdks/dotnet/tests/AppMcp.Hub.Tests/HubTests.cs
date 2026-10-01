@@ -90,6 +90,29 @@ public class HubBasicTests
         Assert.Equal(5, (int?)exposure["toolExposureThreshold"]);
         Assert.Equal("wake.mjs", (string?)exposure["waker"]!["exec"]![1]);
         Assert.Equal("none", (string?)JsonNode.Parse(new HubOptions { Waker = WakerOptions.None }.ToConfigJson())!["waker"]);
+
+        // 功耗（4e）：唤醒速率上限、旧心跳、自适应租约
+        var power = JsonNode.Parse(new HubOptions
+        {
+            DisableIpc = true,
+            DisableListen = true,
+            WakeRateLimit = 0,
+            LegacyHeartbeat = true,
+            Lease = new LeaseOptions { Adaptive = false, Window = 4, Max = TimeSpan.FromSeconds(30), IdleRevoke = TimeSpan.Zero },
+        }.ToConfigJson())!.AsObject();
+        Assert.Equal(0, (int?)power["wakeRateLimit"]);
+        Assert.True((bool?)power["legacyHeartbeat"]);
+        Assert.False((bool?)power["lease"]!["adaptive"]);
+        Assert.Equal(4, (int?)power["lease"]!["window"]);
+        Assert.Equal(30000, (int?)power["lease"]!["maxMs"]);
+        Assert.Equal(0, (int?)power["lease"]!["idleRevokeMs"]);
+        Assert.False(power["lease"]!.AsObject().ContainsKey("minMs"));
+        using (var h = AppMcpHub.Start(power.ToJsonString(), null))
+        {
+            Assert.Equal("fixed", h.Status().Lease!.Mode);
+        }
+        var badLease = new HubOptions { DisableIpc = true, DisableListen = true, Dispatcher = null, Lease = new LeaseOptions { Window = 0 } };
+        Assert.Equal(HubStatus.InvalidConfig, Assert.Throws<HubException>(() => AppMcpHub.Start(badLease)).Status);
         using (var h = AppMcpHub.Start(exposure.ToJsonString(), null))
         {
             // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
@@ -137,6 +160,11 @@ public class HubBasicTests
         Assert.Equal(0, status.McpSessions);
         Assert.Empty(status.Apps);
         Assert.Empty(status.Reports);
+        Assert.NotNull(status.Lease);
+        Assert.Equal("adaptive", status.Lease!.Mode);
+        Assert.Equal(60000UL, status.Lease.DefaultMs);
+        Assert.Equal(20U, status.Lease.Window);
+        Assert.Empty(status.Lease.Pairs);
         Assert.Equal("app-mcp", hub.GetStatus().GetProperty("service").GetString());
 
         // 内置工具 apps.list 等
@@ -471,6 +499,10 @@ public class HubIntegrationTests
             var inst = Assert.Single(Assert.Single(status.Apps, a => a.AppId == "notes").Instances);
             Assert.Equal(app.ConnectionId, inst.ConnectionId);
             Assert.Null(app.State.Code);
+            // 功耗观测（4e）
+            Assert.NotNull(inst.Power);
+            Assert.Equal(0UL, inst.Power!.Reconnects);
+            Assert.Equal(0UL, Assert.Single(status.Apps, a => a.AppId == "notes").Wakes);
         }
         finally
         {

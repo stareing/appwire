@@ -63,6 +63,11 @@ pub struct Instance {
 }
 
 impl Instance {
+    /// Host 是否订阅了本实例声明 `realtime` 的资源（spec/lifecycle.md 第 13 节 B3：只有这类订阅阻止休眠）。
+    pub fn has_realtime_subscription(&self) -> bool {
+        self.subscriptions.iter().any(|n| self.resources.get(n).is_some_and(|r| r.realtime))
+    }
+
     fn candidate(&self) -> Candidate<'_> {
         Candidate {
             instance_id: &self.instance_id,
@@ -1111,6 +1116,7 @@ mod tests {
             name: name.into(),
             description: "r".into(),
             mime_type: None,
+            realtime: false,
         }
     }
 

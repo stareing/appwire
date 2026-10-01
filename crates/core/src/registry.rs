@@ -47,7 +47,12 @@ fn tool_info(def: &ToolDef) -> ToolInfo {
 }
 
 fn resource_info(def: &ResourceDef) -> ResourceInfo {
-    ResourceInfo { name: def.name.clone(), description: def.description.clone(), mime_type: def.mime_type.clone() }
+    ResourceInfo {
+        name: def.name.clone(),
+        description: def.description.clone(),
+        mime_type: def.mime_type.clone(),
+        realtime: def.realtime,
+    }
 }
 
 fn validate_schema(schema: &Value) -> Result<(), CoreError> {
@@ -346,7 +351,7 @@ mod tests {
         r.register_tool(tool("a", None)).unwrap();
         assert_eq!(r.register_tool(tool("a", None)), Err(CoreError::DuplicateName("a".into())));
         // 工具与资源可以同名
-        r.register_resource(ResourceDef { name: "a".into(), description: "r".into(), mime_type: None, scope: None })
+        r.register_resource(ResourceDef { name: "a".into(), description: "r".into(), mime_type: None, scope: None, realtime: false })
             .unwrap();
     }
 

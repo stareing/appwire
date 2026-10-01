@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use app_mcp_hub::{
     ApprovalHandler, ApprovalPolicy, ApprovalRequest, CallRequest, ErrorKind, Hub, HubConfig,
-    HubError, PairingHandler, PairingRequest, ToolExposure, ToolFilter, ToolFormat,
+    HubError, LeaseOverrides, PairingHandler, PairingRequest, ToolExposure, ToolFilter, ToolFormat,
     UpstreamConfig, WakeRequest, Waker, WakerConfig, async_trait, load_manifests,
 };
 use napi::bindgen_prelude::{Promise, spawn};
@@ -142,6 +142,8 @@ struct ConfigJson {
     wake_from_launch: Option<bool>,
     wake_rate_limit: Option<u32>,
     legacy_heartbeat: Option<bool>,
+    /// 自适应租约（spec/hub-api.md 3.5）。
+    lease: Option<LeaseOverrides>,
     /// `"system"` / `"none"` / `{"exec": [...]}`（spec/hub-api.md 3.5）。
     waker: Option<WakerConfig>,
     /// 渐进暴露（spec/hub-api.md 3.7）。
@@ -222,6 +224,9 @@ impl ConfigJson {
         }
         if let Some(v) = self.legacy_heartbeat {
             c.legacy_heartbeat = v;
+        }
+        if let Some(o) = &self.lease {
+            o.apply(&mut c.lease);
         }
         if let Some(w) = self.waker {
             c.waker = w;

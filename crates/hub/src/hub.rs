@@ -30,6 +30,7 @@ use crate::connection::RequestError;
 use crate::format::{self, NameCodec, ToolFormat};
 use crate::http_server::{Health, HttpOptions, Router, Transport};
 use crate::instance::Instance;
+use crate::lease::{LeaseBook, LeasePolicy};
 #[cfg(feature = "mcp-server")]
 use crate::mcp::McpSession;
 use crate::origin::OriginPolicy;
@@ -130,7 +131,10 @@ pub struct HubConfig {
     /// 等待 [`PairingHandler`] 的上限，超时视为拒绝。
     pub pairing_timeout: Duration,
     /// 每次调用某实例完成后发送的 `app/lease` 时长（spec/lifecycle.md 4.2）；`0` 关闭租约功能。
+    /// 开启自适应租约（[`HubConfig::lease`]）时为无历史时的保守默认值。
     pub lease_ttl: Duration,
+    /// 自适应租约策略（spec/lifecycle.md 第 13 节 B2，spec/hub-api.md 3.5）。`adaptive: false` 回退到固定 `lease_ttl`。
+    pub lease: LeasePolicy,
     /// 唤醒后等待 App 回连的上限，超时返回 `APP_NOT_RESPONDING`。
     pub wake_timeout: Duration,
     /// 唤醒令牌的有效期。
@@ -190,6 +194,7 @@ impl Default for HubConfig {
             approval: ApprovalPolicy::default(),
             pairing_timeout: Duration::from_secs(120),
             lease_ttl: Duration::from_secs(60),
+            lease: LeasePolicy::default(),
             wake_timeout: Duration::from_secs(15),
             wake_token_ttl: Duration::from_secs(60),
             wake_rate_limit: DEFAULT_WAKE_RATE_LIMIT,
@@ -211,8 +216,8 @@ pub(crate) struct SessionState {
     pub selected: HashMap<String, String>,
     /// 已附带的总览：appId → 版本。
     pub delivered: HashMap<String, String>,
-    /// 本会话发出的租约：连接 ID → (连接, 到期时刻)。
-    pub leases: HashMap<u64, (std::sync::Weak<crate::connection::Connection>, tokio::time::Instant)>,
+    /// 本会话发出的租约：连接 ID → 租约。
+    pub leases: HashMap<u64, crate::lifecycle::LeaseEntry>,
     /// 渐进暴露：本会话展开过（`apps.tools`）或调用过的 App（含上游）。
     pub exposed: HashSet<String>,
 }
@@ -268,6 +273,10 @@ pub struct HubShared {
     pub(crate) wakes: Mutex<Vec<crate::lifecycle::PendingWake>>,
     /// 功耗观测与唤醒速率（spec/lifecycle.md 第 12 节）。
     pub(crate) power: Mutex<crate::power::PowerBook>,
+    /// 自适应租约统计与会话请求活动（spec/lifecycle.md 第 13 节 B2）。
+    pub(crate) leases: Mutex<LeaseBook>,
+    /// 请求活动 / 默认租约变化时唤醒空闲收回任务。
+    pub(crate) lease_changed: Notify,
 }
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -322,6 +331,8 @@ impl HubShared {
             waker: Mutex::new(waker),
             wakes: Mutex::new(Vec::new()),
             power: Mutex::new(crate::power::PowerBook::default()),
+            leases: Mutex::new(LeaseBook::default()),
+            lease_changed: Notify::new(),
         }
     }
 
@@ -475,6 +486,7 @@ impl HubShared {
             mcp_sessions: lock(&self.sessions).len(),
             apps,
             reports,
+            lease: Some(lock(&self.leases).status(&self.config.lease, self.config.lease_ttl)),
         }
     }
 
@@ -1218,6 +1230,10 @@ impl Hub {
     /// `PermissionDenied`（非回环地址未允许远程）、`InvalidInput`（配置不合法）。
     pub async fn start(config: HubConfig) -> std::io::Result<Hub> {
         crate::features::check_config(&config)?;
+        config
+            .lease
+            .validate()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         // 锁先于任何监听：并发启动的两个 Host 只有一个能走到绑定。
         let instance = config.run_dir.as_deref().map(Instance::acquire).transpose()?;
         let listener = match &config.listen {
@@ -1263,6 +1279,7 @@ impl Hub {
             tasks: Mutex::new(vec![
                 tokio::spawn(shared.clone().notify_loop()),
                 tokio::spawn(shared.clone().dormant_sweep_loop()),
+                tokio::spawn(shared.clone().lease_idle_loop()),
             ]),
             instance: Mutex::new(instance),
         };

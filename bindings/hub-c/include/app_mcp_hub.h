@@ -51,6 +51,11 @@
  *   · am_hub_start 配置新增可选字段 wakeRateLimit、legacyHeartbeat。
  *   · HubStatus JSON 中新增：AppStatus.wakes；InstanceStatus.power（reconnects、wakes、onlineSecs、heartbeats、
  *     heartbeatMs、lifecycleMode、awakeReasons）。
+ * - v8（自适应租约与按需在线，spec/lifecycle.md 第 13 节）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 lease（{"adaptive","window","marginMs","minMs","maxMs","idleRevokeMs"}）。
+ *   · HubStatus JSON 中新增：lease（mode、defaultMs、minMs、maxMs、marginMs、window、idleRevokeMs、adaptiveGrants、
+ *     defaultGrants、revokedSessionEnd、revokedIdle、pairs[{session、appId、samples、nextTtlMs、adaptive}]）。
+ *   · awakeReasons 的 "subscription" 只计声明 realtime 的资源的订阅；ResourceInfo 可带 realtime。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -180,6 +185,11 @@ void am_hub_string_free(char *s);
  *                        am_hub_set_waker_cb 设置的回调优先
  *   wakeRateLimit        每 App 每分钟最多唤醒次数，默认 6；0 不限（超出 → LAUNCH_FAILED，data.code = WAKE_RATE_LIMITED）
  *   legacyHeartbeat      回退到旧心跳（对所有连接发 ping 并按无消息断开），默认 false
+ *   lease                v8：自适应租约 {"adaptive": true, "window": 20, "marginMs": 5000, "minMs": 5000, "maxMs": 60000,
+ *                        "idleRevokeMs": 30000}（缺省字段取这些默认值）；租约 = 同一（会话, App）最近 window 个调用间隔的
+ *                        p90 + marginMs，限制在 [minMs, maxMs]，样本不足 3 个时用 leaseTtlMs；adaptive=false 回退到固定
+ *                        leaseTtlMs；idleRevokeMs：会话无请求这么久后收回其默认租约（0 不收回）。window=0 或 minMs>maxMs
+ *                        报 AM_HUB_ERR_INVALID_CONFIG
  *   —— v3 渐进暴露（spec/hub-api.md 3.7）——
  *   toolExposure         "auto"（默认，App 工具总数超过阈值时渐进）/ "progressive" / "all"
  *   toolExposureThreshold  auto 的阈值，默认 40

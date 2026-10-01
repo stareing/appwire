@@ -346,8 +346,35 @@ impl Hub { pub fn set_waker(&self, w: Arc<dyn Waker>); }
 `Hub::set_waker` 设置的实现覆盖配置（包括 `none`）。`ExecWaker` 适合厂商脚本、测试替身和平台上没有内置实现的激活方式。
 
 **租约**：MCP 会话或 API 会话每次调用某实例（请求已送达）完成后，Hub 发送 `app/lease { ttlMs }`
-（`HubConfig.lease_ttl`，默认 60 秒；`0` 关闭）。MCP 会话关闭、`Hub::reset_session` 时向该会话租约过的实例发送
+（`0` 关闭租约：`HubConfig.lease_ttl = 0`）。MCP 会话关闭、`Hub::reset_session` 时向该会话租约过的实例发送
 `ttlMs: 0`；若其他会话对同一实例仍有未到期租约，随后补发剩余时长。
+
+**自适应租约**（4e B2，spec/lifecycle.md 第 13 节；`HubConfig.lease: LeasePolicy`，默认开启）：
+
+```rust
+pub struct LeasePolicy {        // Default：adaptive true, window 20, margin 5 s, min 5 s, max 60 s, idle_revoke 30 s
+    pub adaptive: bool,         // false = 每次固定 lease_ttl，只在会话结束时收回（4e 之前的行为）
+    pub window: u32,            // 统计最近 N 个间隔（≥ 1）
+    pub margin: Duration, pub min: Duration, pub max: Duration,   // min ≤ max
+    pub idle_revoke: Duration,  // 0 = 不因请求流空闲收回
+}
+impl LeasePolicy { pub fn validate(&self) -> Result<(), String> }   // Hub::start 调用，不合法 → InvalidInput
+pub struct LeaseOverrides {     // JSON 形式（camelCase，未知字段报错）：adaptive / window / marginMs / minMs / maxMs / idleRevokeMs
+    pub fn apply(&self, p: &mut LeasePolicy); pub fn merge(&mut self, other: &LeaseOverrides);
+}
+```
+
+- **间隔样本**：按（会话键, appId）统计：上一次调用完成（发租约）到下一次调用开始的时长。大于 `max` 的间隔视为一轮对话后的停顿，
+  不计入。窗口保留最近 `window` 个。
+- **租约时长**：样本 ≥ 3 个时 = clamp(p90（最近秩法）+ `margin`, `min`, `max`)；否则用 `lease_ttl`（无历史时的保守默认值）。
+- **收回**：会话结束（MCP 会话关闭、`reset_session`）收回其全部租约并删除其统计；**请求流空闲**——会话没有进行中的请求（MCP 的
+  `tools/list`、`tools/call`、`resources/list`、`resources/read`、`resources/subscribe`，Hub API 的调用 / 读取）且距最近一次请求活动
+  （开始或结束）已达 `idle_revoke`——收回该会话以**默认值**发出、仍未到期的租约（`ttlMs: 0`，其他会话的未到期租约随后补发）。
+  自适应租约本身就是对下一次调用的预测，按时到期，不提前收回。没有待收回的会话时 Hub 不设定时器。
+- **内存上界**：（会话, App）统计与会话活动表各最多 1024 项，超出时淘汰最久未活动（会话：且无进行中请求）的一项。
+- **观测**：`HubStatus.lease: Option<LeaseStatus>`（3.9）。
+
+**新增配置**（`HubConfig`）：`lease_ttl`、`wake_timeout`、`wake_token_ttl`、`dormant_ttl`、
 
 **新增配置**（`HubConfig`）：`lease_ttl`、`wake_timeout`、`wake_token_ttl`、`dormant_ttl`、
 `dormant_replaced_by_new_instance`、`wake_from_launch`、`waker`。`app-mcp-host` 对应命令行：`--lease-ms`、`--wake-timeout-ms`、
@@ -360,6 +387,7 @@ impl Hub { pub fn set_waker(&self, w: Arc<dyn Waker>); }
 | `wake_token_ttl` | 60 s | 唤醒令牌有效期（4.4） | `--wake-token-ttl-ms` / `wakeTokenTtlMs` | `wakeTokenTtlMs` |
 | `wake_rate_limit: u32` | `DEFAULT_WAKE_RATE_LIMIT` = 6 | 每 App 每 60 秒滑动窗口内最多实际发出的唤醒激活次数；`0` 不限 | `--wake-rate-limit` / `wakeRateLimit` | `wakeRateLimit` |
 | `legacy_heartbeat: bool` | `false` | 回退到旧心跳：忽略 SDK 的 `heartbeatMs` 声明，对所有连接发 `ping` 并按无消息断开 | `--legacy-heartbeat` / `legacyHeartbeat` | `legacyHeartbeat` |
+| `lease: LeasePolicy` | 见上 | 自适应租约（B2） | `--fixed-lease`、`--lease-window`、`--lease-margin-ms`、`--lease-min-ms`、`--lease-max-ms`、`--lease-idle-revoke-ms` / `lease: {adaptive, window, marginMs, minMs, maxMs, idleRevokeMs}` | `lease`（同左对象；hub-c 不合法 → `AM_HUB_ERR_INVALID_CONFIG`） |
 
 - **心跳（A3）**：握手后按 `app/hello.heartbeatMs` 决定——缺省（旧 SDK）或 `legacy_heartbeat`：每 `ping_interval` 发 `ping`，
   `idle_timeout` / `hidden_idle_timeout` 内无消息断开（原行为）；`0`（本地传输）：不发 `ping`、不做无消息断开，靠连接断开
@@ -368,7 +396,12 @@ impl Hub { pub fn set_waker(&self, w: Arc<dyn Waker>); }
 - **唤醒速率上限（O4）**：只对真正要发出激活的唤醒计数（加入已有等待、目标已就绪 / 握手中不计；激活任务开始前已被认领的撤销计数）。
   超出时不激活、不登记等待，调用以工具错误 `LAUNCH_FAILED` 结束，`data` 为 `{ appId, code: "WAKE_RATE_LIMITED", retryAfterMs }`，
   并记为该 App 的最近错误（`code = WAKE_RATE_LIMITED`，spec/protocol.md 10.1）。
-- hub-uniffi 的 `HubConfig` 记录暂未加入 `wake_rate_limit` / `legacy_heartbeat`（新增记录字段需重新生成各语言绑定），取默认值。
+- **资源订阅（B3，spec/lifecycle.md 第 13 节）**：实例休眠时 MCP 侧订阅关系保留；实例回连 `app/ready` 后对仍被订阅的资源重新发送
+  `resources/subscribe`（同步时已发过的不重复）；读取只由休眠实例提供的资源先唤醒（受 `wake_rate_limit` 约束）。
+  App 端是否因订阅保持在线由资源的 `realtime` 声明决定（SDK 侧），Hub 不因订阅拒绝 `app/sleep`。
+- 其他绑定：hub-uniffi `HubConfig.wake_rate_limit: u32?`、`legacy_heartbeat: bool?`、`lease: LeaseConfig?`（字段同 JSON，`*_ms: u64?`，
+  不合法 → `HubError::InvalidConfig`）；C# `HubOptions.WakeRateLimit`、`LegacyHeartbeat`、`Lease`（`LeaseOptions`：`Adaptive`、`Window`、
+  `Margin` / `Min` / `Max` / `IdleRevoke` 为 `TimeSpan?`）；`@app-mcp/hub` `HubConfig.wakeRateLimit`、`legacyHeartbeat`、`lease: LeaseConfig`。
 
 `Hub::reset_waker()`（补充方法）撤销 `set_waker`，恢复按 `HubConfig.waker` 构造的实现；各绑定清除自定义唤醒回调
 （C `cb = NULL`、Node / uniffi `setWaker(null)`）时调用它，因此配置为 `none` / `exec` 时清除回调后仍按配置执行。
@@ -449,7 +482,12 @@ pub struct HubStatus {
     mcp_sessions: usize,
     apps: Vec<AppStatus>,                              // 按 appId 排序，含上游
     reports: Vec<DiagnosticReport>,                    // 最近 32 条 SDK 上报（MAX_REPORTS），旧的在前
+    lease: Option<LeaseStatus>,                        // 4e B2：租约策略与统计（旧 Host 无此字段 → None）
 }
+pub struct LeaseStatus { mode: String,                 // adaptive | fixed | off（lease_ttl = 0）
+    default_ms, min_ms, max_ms, margin_ms: u64, window: u32, idle_revoke_ms: u64,
+    adaptive_grants, default_grants, revoked_session_end, revoked_idle: u64,
+    pairs: Vec<LeasePairStatus> }                      // { session, app_id, samples: u32, next_ttl_ms: u64, adaptive: bool }
 pub struct AppStatus { app_id, name, kind: AppKind, state: AppState,   // connected | waking | dormant | disconnected
     instances: Vec<InstanceStatus>,                    // InstanceInfo（flatten）+ state: connected | dormant | waking
                                                        //   + power: Option<InstancePower>（4e，见下）
@@ -463,6 +501,7 @@ pub struct InstancePower {                             // 4e 功耗观测（spec
     heartbeat_ms: Option<u64>,                         // SDK 声明（app/hello.heartbeatMs）；None = 旧 SDK
     lifecycle_mode: Option<LifecycleMode>,             // SDK 声明（app/hello.lifecycleMode）
     awake_reasons: Vec<AwakeReason> }                  // 已连接实例当前不能休眠的原因：persistent | call | lease | subscription | wake-pending
+                                                       // subscription 只计声明 realtime 的资源的订阅（4e B3）
 pub struct DiagnosticReport { app_id, instance_id, connection_id, code, message, count: u32, received_at_ms: u64 }
 ```
 
@@ -476,7 +515,10 @@ pub struct DiagnosticReport { app_id, instance_id, connection_id, code, message,
 - **功耗观测**：按 `(appId, instanceId)` 计数，跨重连与休眠保留，Hub 重启清零；最多 1024 个实例（超出时淘汰最久未活动的离线实例），
   休眠记录过期 / 被新实例替换时移除。`awake_reasons` 只含 Hub 可见的原因——App 的 `hold()` 只有 SDK 知道，不在其中。
   `app-mcp-host doctor` 的「App 实例」检查逐实例显示（文本一行摘要，`--json` 在 `details` 中原样给出）。hub-c（JSON）与
-  hub-node / `@app-mcp/hub`（`InstanceStatus.power?`、`AppStatus.wakes?`）带上这些字段；hub-uniffi 与 C# 的类型化记录暂未暴露。
+  hub-node / `@app-mcp/hub`（`InstanceStatus.power?`、`AppStatus.wakes?`、`HubStatus.lease?`）带上这些字段；hub-uniffi
+  `InstanceStatus.power: InstancePower?`（`LifecycleMode`、`AwakeReason` 枚举）、`AppStatus.wakes`、`HubStatus.lease: LeaseStatus?`；C#
+  `InstanceStatusInfo.Power`（`InstancePowerInfo`，原因字符串见 `HubAwakeReasons`）、`AppStatusInfo.Wakes`、`HubStatusInfo.Lease`
+  （`LeaseStatusInfo`）。`app-mcp-host doctor` 另有「租约」检查（策略、发出 / 收回次数、各（会话, App）下一次租约）。
 - `app-mcp-host doctor` / `status` 经本地 IPC（核对监听方用户后）读 `/status`；IPC 关闭时改用 TCP + 令牌。
 
 绑定：

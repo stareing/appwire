@@ -7,7 +7,7 @@ use app_mcp_protocol as proto;
 use proto::{RpcError, SleepParams, SleepReason, SleepResult, WakeReason, method};
 use serde_json::Value;
 
-use crate::connection::Outgoing;
+use crate::connection::{Outgoing, Subscription};
 use crate::vec_map::VecMap;
 use crate::{CancelReason, Client, ConnectionState, Event, HoldId, LifecycleMode, Millis, Residency, Visibility};
 
@@ -39,6 +39,9 @@ pub(crate) struct Life {
     pub last_now: Millis,
     /// 连续以"Host 不在"建立连接失败的次数（A2）；成功握手或其他原因的失败清零。
     pub host_absent_failures: u32,
+    /// 待恢复订阅（B3）：上次连接断开时 Host 订阅的资源名；`pending` = 之后变化过。Host 重新订阅时移除（变化过则补发）。
+    /// @why 与 `Session::subscriptions` 同类型，复用同一份单态化代码（WASM 体积）。
+    pub carried_subscriptions: VecMap<String, Subscription>,
 }
 
 impl Life {
@@ -257,6 +260,29 @@ impl Client {
         HoldId(id)
     }
 
+    // ---- 资源订阅（B3）----------------------------------------------------
+
+    /// 当前订阅是否阻止休眠：只有声明了 `realtime` 的资源的订阅阻止（`legacy_timers` 时任何订阅都阻止）。
+    fn subscriptions_block_idle(&self) -> bool {
+        if self.config.lifecycle.legacy_timers {
+            return !self.session.subscriptions.is_empty();
+        }
+        self.session
+            .subscriptions
+            .iter()
+            .any(|(name, _)| self.registry.resource_by_name(name).is_some_and(|(_, def)| def.realtime))
+    }
+
+    /// 未被当前连接订阅的资源变化：若上次断开时被订阅，记为已变化，等 Host 重新订阅时补发；
+    /// `Dormant` 中的 `realtime` 资源则回连推送（spec/lifecycle.md 第 13 节 B3）。
+    pub(crate) fn on_carried_resource_changed(&mut self, name: &str, realtime: bool, now: Millis) {
+        let Some(carried) = self.life.carried_subscriptions.get_mut(name) else { return };
+        carried.pending = true;
+        if realtime && self.state == ConnectionState::Dormant {
+            self.on_wake(WakeReason::App, now);
+        }
+    }
+
     // ---- 空闲判定 -------------------------------------------------------
 
     /// 除租约外的空闲条件（spec/lifecycle.md 第 3 节）。
@@ -264,7 +290,7 @@ impl Client {
         self.calls.running_len() == 0
             && self.calls.queued_len() == 0
             && self.session.reads.is_empty()
-            && self.session.subscriptions.is_empty()
+            && !self.subscriptions_block_idle()
             && self.life.holds.is_empty()
             && self.session.sleeping.is_none()
     }
@@ -307,9 +333,41 @@ impl Client {
             LifecycleMode::OnDemand => p.grace_ms,
             _ => p.idle_timeout_ms,
         };
-        match self.visibility {
+        let timeout = match self.visibility {
             Visibility::Visible => base,
             Visibility::Hidden | Visibility::Frozen => base.min(p.hidden_idle_timeout_ms),
+        };
+        // B1：处理过调用后只留合并窗口，是否继续在线由租约决定（spec/lifecycle.md 第 13 节）。
+        if self.session.served_call && !p.legacy_timers { timeout.min(p.merge_window_ms) } else { timeout }
+    }
+
+    /// 是否启用后台立即休眠（B4）。
+    fn background_sleep_enabled(&self) -> bool {
+        let p = &self.config.lifecycle;
+        p.sleep_on_background && !p.legacy_timers && p.mode != LifecycleMode::Persistent
+    }
+
+    /// 可见性已变化（`was_visible` 为变化前是否可见）。进入后台且启用 B4 时：已连接 → 空闲条件一成立就以
+    /// `background` 休眠（不等租约）；`Backoff`（没有待用的唤醒令牌）→ `Dormant`。回到可见清除标记。
+    pub(crate) fn on_visibility_changed(&mut self, was_visible: bool, now: Millis) {
+        if self.visibility == Visibility::Visible {
+            self.session.background_sleep = false;
+            return;
+        }
+        if !was_visible || !self.background_sleep_enabled() {
+            return;
+        }
+        match self.state {
+            ConnectionState::Connected if self.session.sleeping.is_none() => {
+                self.session.background_sleep = true;
+                self.refresh_idle(now);
+                self.on_idle_timeout(now);
+            }
+            ConnectionState::Backoff { .. } if self.launch_token.is_none() => {
+                self.retry_count = 0;
+                self.set_state(ConnectionState::Dormant);
+            }
+            _ => {}
         }
     }
 
@@ -325,6 +383,10 @@ impl Client {
             return None;
         }
         let anchor = self.session.idle_anchor?;
+        if self.session.background_sleep {
+            // B4：进入后台后空闲条件一成立即休眠，不等租约与空闲时长。
+            return Some(anchor);
+        }
         let lease = self.session.lease_until.unwrap_or(0);
         match self.session.sleep_retry_at {
             Some(retry) => Some(retry.max(lease)),
@@ -338,8 +400,12 @@ impl Client {
     /// 计时到期触发的自动休眠原因（spec/protocol.md 8.5）：`on-demand` 为 `grace`，其余一律 `idle`。
     ///
     /// 可见性只影响计时长度（`hiddenIdleTimeoutMs`），不改变原因：`background` 专指"进入后台立即休眠"
-    /// （bfcache、移动端进后台），由封装层以 `sleep_with_reason(Background)` 显式发起。
+    /// （bfcache、移动端进后台），由封装层以 `sleep_with_reason(Background)` 显式发起，或由 `sleep_on_background`
+    /// 在进入后台时自动发起（B4，此时返回 `background`）。
     fn auto_sleep_reason(&self) -> SleepReason {
+        if self.session.background_sleep {
+            return SleepReason::Background;
+        }
         if self.mode() == LifecycleMode::OnDemand { SleepReason::Grace } else { SleepReason::Idle }
     }
 
@@ -398,6 +464,8 @@ impl Client {
         match result {
             Ok(r) if r.accepted => self.enter_dormant(r.resume_token, now),
             Ok(r) => {
+                // Host 拒绝（有待派发的调用等）：后台立即休眠作罢，回到普通规则（B4）。
+                self.session.background_sleep = false;
                 if self.session.forced_sleep.is_some() {
                     let delay = r.retry_after_ms.unwrap_or(DEFAULT_SLEEP_RETRY_MS);
                     self.session.sleep_retry_at = Some(now.saturating_add(delay));

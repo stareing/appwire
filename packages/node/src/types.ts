@@ -110,7 +110,7 @@ export interface LifecycleOptions {
   idleTimeoutMs?: number
   /** 可见性为 hidden / frozen 时使用的空闲时间（与模式超时取较小值），默认 15000。 */
   hiddenIdleTimeoutMs?: number
-  /** `on-demand` 模式下任务完成后保留连接的时间，默认 10000。 */
+  /** `on-demand` 模式下连上后一直没有调用时保留连接的时间，默认 10000（处理过调用后用 `mergeWindowMs`）。 */
   graceMs?: number
   /**
    * 进程驻留，缺省 `'keep'`。`'exit-when-idle'`：仅当本进程由唤醒冷启动时，休眠后触发 `onIdleExit`；
@@ -124,8 +124,18 @@ export interface LifecycleOptions {
    * 等可见、`wake()` 或 Host 唤醒再连接（spec/lifecycle.md 第 11 节）。默认 3；0 = 一直重连。
    */
   hostAbsentRetries?: number
-  /** 回退到 4e 之前的定时器行为（租约到期后才计空闲、Host 不在时一直重连、双向心跳）。默认 false。 */
+  /**
+   * 回退到 4e 之前的定时器行为（租约到期后才计空闲、Host 不在时一直重连、双向心跳、调用后按空闲时长、
+   * 任何资源订阅都阻止休眠）。默认 false。
+   */
   legacyTimers?: boolean
+  /**
+   * 调用 / 资源读取后的合并窗口（spec/lifecycle.md 第 13 节 B1）：本连接处理过调用后，空闲时长取
+   * min(本值, 按模式与可见性的空闲时长)，之后是否在线只由 Host 租约决定。默认 2000。
+   */
+  mergeWindowMs?: number
+  /** `idle` / `on-demand` 下从可见变为隐藏 / 冻结且空闲时立即休眠，不等租约（B4）。默认 false。 */
+  sleepOnBackground?: boolean
 }
 
 /** 阻止自动休眠的持有（{@link AppMcp.hold}、{@link ToolContext.hold}）。 */
@@ -303,6 +313,11 @@ export interface ResourceDefinition<T = unknown> {
   description: string
   /** 缺省 'application/json'。 */
   mimeType?: string
+  /**
+   * 需实时推送（spec/lifecycle.md 第 13 节 B3）：被 Host 订阅时保持连接、休眠中变化时回连推送。
+   * 默认 false：订阅不阻止休眠，变化在下次连接时补发。
+   */
+  realtime?: boolean
   read: () => T | Promise<T>
 }
 

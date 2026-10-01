@@ -966,6 +966,8 @@ export class AppMcpDriver implements AppMcp {
     if (l.graceMs !== undefined) lifecycle.graceMs = l.graceMs
     if (l.hostAbsentRetries !== undefined) lifecycle.hostAbsentRetries = l.hostAbsentRetries
     if (l.legacyTimers !== undefined) lifecycle.legacyTimers = l.legacyTimers
+    if (l.mergeWindowMs !== undefined) lifecycle.mergeWindowMs = l.mergeWindowMs
+    if (l.sleepOnBackground !== undefined) lifecycle.sleepOnBackground = l.sleepOnBackground
     const href = this.currentHref()
     if (href !== undefined) lifecycle.wake = { kind: 'web-url', target: stripWakeFragment(href) ?? href, background: false }
     return lifecycle
@@ -1377,6 +1379,7 @@ export class AppMcpDriver implements AppMcp {
           name,
           description: def.description,
           mimeType: def.mimeType ?? 'application/json',
+          ...(def.realtime && { realtime: true }),
           ...(scope && { scope: scope.coreId }),
         })
       } catch (e) {

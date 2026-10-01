@@ -132,6 +132,16 @@ pub struct ResourceSpec {
     pub mime_type: Option<String>,
 }
 
+/// 资源的附加选项（`register_resource_with`）。
+///
+/// @compat 不放进 [`ResourceSpec`]：给结构体加字段会破坏现有绑定与 App 的结构体字面量；以后的资源选项都加在这里。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ResourceOptions {
+    /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被 Host 订阅时阻止休眠，休眠期间变化时回连推送。
+    /// 默认 `false`：订阅不阻止休眠，变化在下次连接时补发。
+    pub realtime: bool,
+}
+
 // ---------------------------------------------------------------------------
 // 回调接口（由 App / 语言封装层实现）
 // ---------------------------------------------------------------------------
@@ -491,10 +501,19 @@ impl ScopeHandle {
         spec: ResourceSpec,
         reader: Arc<dyn ResourceReader>,
     ) -> Result<ResourceHandle, NativeError> {
+        self.register_resource_with(spec, ResourceOptions::default(), reader)
+    }
+    /// 同 [`ScopeHandle::register_resource`]，另带资源选项（如 `realtime`）。
+    pub fn register_resource_with(
+        &self,
+        spec: ResourceSpec,
+        options: ResourceOptions,
+        reader: Arc<dyn ResourceReader>,
+    ) -> Result<ResourceHandle, NativeError> {
         self.check()?;
         self.inner
             .shared
-            .register_resource(Some(self.inner.id), spec, reader)
+            .register_resource(Some(self.inner.id), spec, options, reader)
     }
     pub fn create_scope(&self, name: &str) -> Result<ScopeHandle, NativeError> {
         self.check()?;
@@ -642,7 +661,16 @@ impl NativeClient {
         spec: ResourceSpec,
         reader: Arc<dyn ResourceReader>,
     ) -> Result<ResourceHandle, NativeError> {
-        self.owner.shared.register_resource(None, spec, reader)
+        self.register_resource_with(spec, ResourceOptions::default(), reader)
+    }
+    /// 同 [`NativeClient::register_resource`]，另带资源选项（如 `realtime`，spec/lifecycle.md 第 13 节 B3）。
+    pub fn register_resource_with(
+        &self,
+        spec: ResourceSpec,
+        options: ResourceOptions,
+        reader: Arc<dyn ResourceReader>,
+    ) -> Result<ResourceHandle, NativeError> {
+        self.owner.shared.register_resource(None, spec, options, reader)
     }
     pub fn create_scope(&self, name: &str) -> Result<ScopeHandle, NativeError> {
         self.owner.shared.create_scope(None, name)
@@ -1068,6 +1096,7 @@ impl Shared {
         self: &Arc<Self>,
         scope: Option<ScopeId>,
         spec: ResourceSpec,
+        options: ResourceOptions,
         reader: Arc<dyn ResourceReader>,
     ) -> Result<ResourceHandle, NativeError> {
         let mut st = self.lock();
@@ -1082,6 +1111,7 @@ impl Shared {
                 description: spec.description,
                 mime_type: spec.mime_type,
                 scope,
+                realtime: options.realtime,
             })
             .map_err(core_error)?;
         st.resources.insert(id, ResourceEntry { reader, scope });

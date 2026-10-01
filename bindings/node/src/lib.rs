@@ -269,8 +269,12 @@ pub struct LifecycleInit {
     pub wake: Option<WakeInit>,
     /// `idle` / `on-demand` 下连续多少次"Host 不在"后转休眠；默认 3，0 = 一直重连（spec/lifecycle.md 第 11 节）。
     pub host_absent_retries: Option<u32>,
-    /// 回退到 4e 之前的定时器行为（串行租约、无限重连、双向心跳）。默认 `false`。
+    /// 回退到 4e 之前的定时器行为（串行租约、无限重连、双向心跳、调用后按空闲时长、任何订阅都阻止休眠）。默认 `false`。
     pub legacy_timers: Option<bool>,
+    /// 调用 / 资源读取后的合并窗口（spec/lifecycle.md 第 13 节 B1）。默认 2000。
+    pub merge_window_ms: Option<f64>,
+    /// `idle` / `on-demand` 下进入后台（可见 → 隐藏 / 冻结）且空闲时立即休眠，不等租约（B4）。默认 `false`。
+    pub sleep_on_background: Option<bool>,
 }
 
 /// 唤醒描述（spec/lifecycle.md 第 5 节）。
@@ -312,6 +316,12 @@ impl LifecycleInit {
         }
         if let Some(b) = self.legacy_timers {
             p.legacy_timers = b;
+        }
+        if let Some(v) = self.merge_window_ms {
+            p.merge_window_ms = parse_millis("lifecycle.mergeWindowMs", v)?;
+        }
+        if let Some(b) = self.sleep_on_background {
+            p.sleep_on_background = b;
         }
         Ok(p)
     }
@@ -396,11 +406,14 @@ pub struct ResourceSpecInit {
     pub name: String,
     pub description: String,
     pub mime_type: Option<String>,
+    /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时保持连接、休眠中变化时回连推送。默认 `false`。
+    pub realtime: Option<bool>,
 }
 
-impl From<ResourceSpecInit> for native::ResourceSpec {
+impl From<ResourceSpecInit> for (native::ResourceSpec, native::ResourceOptions) {
     fn from(s: ResourceSpecInit) -> Self {
-        native::ResourceSpec { name: s.name, description: s.description, mime_type: s.mime_type }
+        let spec = native::ResourceSpec { name: s.name, description: s.description, mime_type: s.mime_type };
+        (spec, native::ResourceOptions { realtime: s.realtime.unwrap_or(false) })
     }
 }
 
@@ -681,9 +694,10 @@ impl Scope {
 
     #[napi]
     pub fn register_resource(&self, spec: ResourceSpecInit, reader: WeakTsfn<Read>) -> Result<Resource, String> {
+        let (spec, options) = spec.into();
         let inner = self
             .inner
-            .register_resource(spec.into(), Arc::new(JsResourceReader { tsfn: reader }))
+            .register_resource_with(spec, options, Arc::new(JsResourceReader { tsfn: reader }))
             .map_err(to_js_error)?;
         Ok(Resource { inner })
     }
@@ -849,9 +863,10 @@ impl JsNativeClient {
 
     #[napi]
     pub fn register_resource(&self, spec: ResourceSpecInit, reader: WeakTsfn<Read>) -> Result<Resource, String> {
+        let (spec, options) = spec.into();
         let inner = self
             .inner
-            .register_resource(spec.into(), Arc::new(JsResourceReader { tsfn: reader }))
+            .register_resource_with(spec, options, Arc::new(JsResourceReader { tsfn: reader }))
             .map_err(to_js_error)?;
         Ok(Resource { inner })
     }

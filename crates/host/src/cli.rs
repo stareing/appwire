@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use app_mcp_hub::{ToolExposure, WakerConfig};
+use app_mcp_hub::{LeaseOverrides, ToolExposure, WakerConfig};
 use app_mcp_hub::upstream::parse_cli_spec;
 use clap::{Args, Parser, Subcommand};
 
@@ -138,6 +138,30 @@ pub struct HubArgs {
     #[arg(long)]
     pub legacy_heartbeat: bool,
 
+    /// 关闭自适应租约，每次调用后固定发 --lease-ms（4e 之前的行为，spec/lifecycle.md 第 13 节 B2）。
+    #[arg(long)]
+    pub fixed_lease: bool,
+
+    /// 自适应租约：统计同一（会话, App）最近多少个调用间隔，默认 20。
+    #[arg(long, value_name = "N")]
+    pub lease_window: Option<u32>,
+
+    /// 自适应租约：p90 之上的余量（毫秒），默认 5000。
+    #[arg(long, value_name = "MS")]
+    pub lease_margin_ms: Option<u64>,
+
+    /// 自适应租约下限（毫秒），默认 5000。
+    #[arg(long, value_name = "MS")]
+    pub lease_min_ms: Option<u64>,
+
+    /// 自适应租约上限（毫秒），默认 60000；超过它的调用间隔不计入统计。
+    #[arg(long, value_name = "MS")]
+    pub lease_max_ms: Option<u64>,
+
+    /// MCP 会话无请求多久后收回其默认（无历史）租约（毫秒），默认 30000；0 不收回。
+    #[arg(long, value_name = "MS")]
+    pub lease_idle_revoke_ms: Option<u64>,
+
     /// App 未运行且清单没有显式 wake 时，由清单 launch 推导唤醒方式（会打开 launch.web 地址等）。
     #[arg(long)]
     pub wake_from_launch: bool,
@@ -188,6 +212,14 @@ impl HubArgs {
             wake_token_ttl_ms: self.wake_token_ttl_ms,
             wake_rate_limit: self.wake_rate_limit,
             legacy_heartbeat: self.legacy_heartbeat.then_some(true),
+            lease: LeaseOverrides {
+                adaptive: self.fixed_lease.then_some(false),
+                window: self.lease_window,
+                margin_ms: self.lease_margin_ms,
+                min_ms: self.lease_min_ms,
+                max_ms: self.lease_max_ms,
+                idle_revoke_ms: self.lease_idle_revoke_ms,
+            },
             wake_from_launch: self.wake_from_launch.then_some(true),
             waker: self.waker.clone(),
             tool_exposure: self.tool_exposure,

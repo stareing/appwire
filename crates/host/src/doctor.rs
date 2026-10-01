@@ -9,7 +9,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use app_mcp_hub::{AppState, AwakeReason, HubStatus, InstancePower};
+use app_mcp_hub::{AppState, AwakeReason, HubStatus, InstancePower, LeaseStatus};
 use app_mcp_protocol::registry::{EndpointRegistry, LOCK_FILE};
 use app_mcp_protocol::{ConnectionErrorCode, LISTEN_CANDIDATE_PORTS};
 use serde::Serialize;
@@ -398,6 +398,7 @@ pub async fn run(home: &AppHome, s: &Settings) -> Report {
 
     // 9. App 实例
     checks.push(apps_check(status.as_ref()));
+    checks.push(lease_check(status.as_ref()));
 
     // 10. 网页拦截上报
     checks.push(reports_check(status.as_ref()));
@@ -645,6 +646,53 @@ fn apps_check(status: Option<&Result<HubStatus, String>>) -> Check {
     }
 }
 
+/// 租约策略与统计（spec/lifecycle.md 第 13 节 B2）。
+fn lease_check(status: Option<&Result<HubStatus, String>>) -> Check {
+    const T: &str = "租约";
+    let Some(Ok(st)) = status else {
+        return Check::new("lease", T, Level::Skip, "无法读取 Host 状态");
+    };
+    let Some(l) = &st.lease else {
+        return Check::new("lease", T, Level::Skip, "运行中的 Host 版本不提供租约统计");
+    };
+    let details = serde_json::to_value(l).unwrap_or(Value::Null);
+    Check::new("lease", T, Level::Info, lease_text(l)).details(details)
+}
+
+fn lease_text(l: &LeaseStatus) -> String {
+    let policy = match l.mode.as_str() {
+        "off" => return "租约已关闭（--lease-ms 0）".to_owned(),
+        "fixed" => format!("固定 {} ms（自适应已关闭）", l.default_ms),
+        _ => {
+            let idle = if l.idle_revoke_ms == 0 {
+                "不因空闲收回".to_owned()
+            } else {
+                format!("会话空闲 {} ms 收回默认租约", l.idle_revoke_ms)
+            };
+            format!(
+                "自适应：最近 {} 个间隔 p90 + {} ms，范围 [{}, {}] ms，无历史 {} ms，{idle}",
+                l.window, l.margin_ms, l.min_ms, l.max_ms, l.default_ms
+            )
+        }
+    };
+    let mut text = format!(
+        "{policy}；已发出 自适应 {} / 默认 {} 次，收回 会话结束 {} / 空闲 {} 次",
+        l.adaptive_grants, l.default_grants, l.revoked_session_end, l.revoked_idle
+    );
+    let pairs: Vec<String> = l
+        .pairs
+        .iter()
+        .map(|p| {
+            let src = if p.adaptive { "统计" } else { "默认" };
+            format!("{}→{} {} ms（{src}，{} 个样本）", p.session, p.app_id, p.next_ttl_ms, p.samples)
+        })
+        .collect();
+    if !pairs.is_empty() {
+        text.push_str(&format!("；当前：{}", pairs.join("、")));
+    }
+    text
+}
+
 /// 每实例功耗观测的一行摘要（spec/lifecycle.md 第 12 节）。
 fn power_text(p: &InstancePower) -> String {
     let heartbeat = match p.heartbeat_ms {
@@ -754,6 +802,37 @@ mod tests {
         assert_eq!(parse_proc_locks(text, 123456), Some(4242));
         assert_eq!(parse_proc_locks(text, 555), None, "POSIX 锁不算");
         assert_eq!(parse_proc_locks(text, 23456), None, "inode 需完整匹配");
+    }
+
+    #[test]
+    fn lease_summary() {
+        let mut l = LeaseStatus {
+            mode: "adaptive".into(),
+            default_ms: 60_000,
+            min_ms: 5_000,
+            max_ms: 60_000,
+            margin_ms: 5_000,
+            window: 20,
+            idle_revoke_ms: 30_000,
+            adaptive_grants: 4,
+            default_grants: 3,
+            pairs: vec![app_mcp_hub::LeasePairStatus {
+                session: "mcp:3".into(),
+                app_id: "shop".into(),
+                samples: 4,
+                next_ttl_ms: 9_000,
+                adaptive: true,
+            }],
+            ..Default::default()
+        };
+        let t = lease_text(&l);
+        assert!(t.contains("p90 + 5000 ms") && t.contains("空闲 30000 ms") && t.contains("mcp:3→shop 9000 ms（统计"), "{t}");
+        l.mode = "fixed".into();
+        assert!(lease_text(&l).starts_with("固定 60000 ms"));
+        l.mode = "off".into();
+        assert!(lease_text(&l).contains("已关闭"));
+        let c = lease_check(None);
+        assert!(matches!(c.status, Level::Skip));
     }
 
     #[test]

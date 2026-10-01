@@ -869,3 +869,196 @@ async fn no_activation_while_instance_handshaking() {
     assert!(wake_tokens(&waker).is_empty());
     raw.close();
 }
+
+/// 自适应租约（spec/lifecycle.md 第 13 节 B2）：无历史时发默认值；同一（会话, App）积累 3 个间隔后按 p90 + 余量（限制在
+/// [min, max]）；其他会话的统计互不影响。
+#[tokio::test(flavor = "multi_thread")]
+async fn adaptive_lease_from_call_intervals() {
+    let mut cfg = config(60_000);
+    cfg.lease = app_mcp_hub::LeasePolicy {
+        margin: Duration::ZERO,
+        min: Duration::from_millis(1500),
+        max: Duration::from_secs(30),
+        idle_revoke: Duration::ZERO,
+        ..Default::default()
+    };
+    let hub = Arc::new(Hub::start(cfg).await.unwrap());
+    let mut raw = Raw::connect(&hub, "r-adaptive", json!({}), raw_tools()).await;
+    eventually("工具可用", || availability(&hub, "raw.echo") == Some(Availability::Available)).await;
+    async fn call(hub: &Arc<Hub>, raw: &mut Raw, session: &str) -> u64 {
+        let h = hub.clone();
+        let session = session.to_owned();
+        let c = tokio::spawn(async move {
+            let mut req = CallRequest::new("raw.echo", json!({}));
+            req.session = Some(session);
+            h.call_tool(req).await
+        });
+        let inv = raw.expect(|v| v["method"] == "tools/invoke").await;
+        raw.send(json!({"jsonrpc": "2.0", "id": inv["id"], "result": {"data": 1}}));
+        c.await.unwrap().unwrap();
+        raw.expect(|v| v["method"] == "app/lease").await["params"]["ttlMs"].as_u64().unwrap()
+    }
+    for _ in 0..3 {
+        assert_eq!(call(&hub, &mut raw, "s").await, 60_000, "样本不足时用默认值");
+    }
+    // 3 个毫秒级间隔：p90 + 0 → 下限 1500 ms
+    assert_eq!(call(&hub, &mut raw, "s").await, 1500);
+    assert_eq!(call(&hub, &mut raw, "other").await, 60_000, "按会话分别统计");
+    let st = hub.status().lease.expect("lease 状态");
+    assert_eq!((st.mode.as_str(), st.adaptive_grants, st.default_grants), ("adaptive", 1, 4));
+    assert!(st.pairs.iter().any(|p| p.session == "api:s" && p.app_id == "raw" && p.adaptive && p.next_ttl_ms == 1500));
+    // 会话结束：收回并移除统计
+    hub.reset_session(Some("s"));
+    assert_eq!(raw.expect(|v| v["method"] == "app/lease").await["params"]["ttlMs"], 0);
+    let st = hub.status().lease.unwrap();
+    assert!(!st.pairs.iter().any(|p| p.session == "api:s"));
+    assert_eq!(st.revoked_session_end, 1);
+}
+
+/// 请求流空闲：会话在 `idle_revoke` 内没有任何请求 → 收回默认租约（`ttlMs: 0`）；期间有其他请求则推迟。
+#[tokio::test(flavor = "multi_thread")]
+async fn default_lease_revoked_when_session_goes_idle() {
+    let mut cfg = config(60_000);
+    cfg.lease.idle_revoke = Duration::from_millis(300);
+    let hub = Arc::new(Hub::start(cfg).await.unwrap());
+    let mut raw = Raw::connect(&hub, "r-idle", json!({}), raw_tools()).await;
+    eventually("工具可用", || availability(&hub, "raw.echo") == Some(Availability::Available)).await;
+    let h = hub.clone();
+    let started = tokio::time::Instant::now();
+    let c = tokio::spawn(async move {
+        let mut req = CallRequest::new("raw.echo", json!({}));
+        req.session = Some("s".into());
+        h.call_tool(req).await
+    });
+    let inv = raw.expect(|v| v["method"] == "tools/invoke").await;
+    raw.send(json!({"jsonrpc": "2.0", "id": inv["id"], "result": {"data": 1}}));
+    c.await.unwrap().unwrap();
+    assert_eq!(raw.expect(|v| v["method"] == "app/lease").await["params"]["ttlMs"], 60_000);
+    // 150 ms 后同一会话调用一个不存在的工具（请求活动，不产生租约）→ 空闲判定从此重新计时
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let mut req = CallRequest::new("raw.nope", json!({}));
+    req.session = Some("s".into());
+    let _ = hub.call_tool(req).await;
+    let lease = raw.expect(|v| v["method"] == "app/lease").await;
+    assert_eq!(lease["params"]["ttlMs"], 0);
+    assert!(started.elapsed() >= Duration::from_millis(440), "空闲从最后一次请求算起：{:?}", started.elapsed());
+    assert_eq!(hub.status().lease.unwrap().revoked_idle, 1);
+}
+
+/// 回退开关：`lease.adaptive = false` → 每次固定 `lease_ttl`，不因空闲收回。
+#[tokio::test(flavor = "multi_thread")]
+async fn fixed_lease_fallback() {
+    let mut cfg = config(5_000);
+    cfg.lease.adaptive = false;
+    cfg.lease.idle_revoke = Duration::from_millis(50);
+    let hub = Arc::new(Hub::start(cfg).await.unwrap());
+    let mut raw = Raw::connect(&hub, "r-fixed", json!({}), raw_tools()).await;
+    eventually("工具可用", || availability(&hub, "raw.echo") == Some(Availability::Available)).await;
+    for _ in 0..5 {
+        let h = hub.clone();
+        let c = tokio::spawn(async move { h.call_tool(CallRequest::new("raw.echo", json!({}))).await });
+        let inv = raw.expect(|v| v["method"] == "tools/invoke").await;
+        raw.send(json!({"jsonrpc": "2.0", "id": inv["id"], "result": {"data": 1}}));
+        c.await.unwrap().unwrap();
+        assert_eq!(raw.expect(|v| v["method"] == "app/lease").await["params"]["ttlMs"], 5_000);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let st = hub.status().lease.unwrap();
+    assert_eq!((st.mode.as_str(), st.revoked_idle, st.default_grants), ("fixed", 0, 5));
+    // 不合法的策略：启动失败
+    let mut bad = config(5_000);
+    bad.lease.window = 0;
+    assert_eq!(Hub::start(bad).await.err().unwrap().kind(), std::io::ErrorKind::InvalidInput);
+}
+
+/// 资源订阅不再强制在线（spec/lifecycle.md 第 13 节 B3，Hub 侧配合）：
+/// 只有 `realtime` 资源的订阅算"未休眠原因"；有订阅时仍接受休眠且订阅关系保留；回连并 `app/ready` 后重新订阅；
+/// App 回连推送的 `resources/updated` 送达订阅方；读取休眠实例的资源先唤醒。
+#[tokio::test(flavor = "multi_thread")]
+async fn subscriptions_survive_sleep_and_are_resent_on_reconnect() {
+    let hub = Arc::new(Hub::start(config(0)).await.unwrap());
+    let waker = Arc::new(FakeWaker::default());
+    hub.set_waker(waker.clone());
+    let tools = raw_tools();
+    let resources = json!([
+        {"name": "cart", "description": "购物车"},
+        {"name": "order", "description": "订单状态", "realtime": true}
+    ]);
+    let hash = {
+        let t: ToolsSyncParams = serde_json::from_value(json!({ "tools": tools })).unwrap();
+        let r: ResourcesSyncParams = serde_json::from_value(json!({ "resources": resources })).unwrap();
+        tools_hash(&t, &r)
+    };
+    let note = |m: &str, p: Value| json!({"jsonrpc": "2.0", "method": m, "params": p});
+    let reply = |raw: &Raw, req: &Value| raw.send(json!({"jsonrpc": "2.0", "id": req["id"], "result": {}}));
+    let reasons = |hub: &Hub| -> Vec<app_mcp_hub::AwakeReason> {
+        hub.status()
+            .apps
+            .into_iter()
+            .find(|a| a.app_id == "raw")
+            .and_then(|a| a.instances.into_iter().find(|i| i.state == app_mcp_hub::InstanceState::Connected))
+            .and_then(|i| i.power)
+            .map(|p| p.awake_reasons)
+            .unwrap_or_default()
+    };
+
+    let mut raw = Raw::connect(&hub, "r-sub", json!({}), tools.clone()).await;
+    raw.send(note("resources/sync", json!({ "resources": resources })));
+    eventually("资源已登记", || hub.resources().len() == 2).await;
+
+    // 订阅普通资源：转发给 App，但不算未休眠原因
+    hub.subscribe("app-mcp://raw/cart").unwrap();
+    let req = raw.expect(|v| v["method"] == "resources/subscribe").await;
+    assert_eq!(req["params"]["name"], "cart");
+    reply(&raw, &req);
+    assert!(!reasons(&hub).contains(&app_mcp_hub::AwakeReason::Subscription));
+    // 订阅 realtime 资源：算
+    hub.subscribe("app-mcp://raw/order").unwrap();
+    let req = raw.expect(|v| v["method"] == "resources/subscribe").await;
+    assert_eq!(req["params"]["name"], "order");
+    reply(&raw, &req);
+    assert!(reasons(&hub).contains(&app_mcp_hub::AwakeReason::Subscription));
+
+    // 有订阅也接受休眠
+    let mut events = hub.events();
+    raw.send(json!({"jsonrpc": "2.0", "id": 7, "method": "app/sleep",
+        "params": {"reason": "idle", "toolsHash": hash, "wake": {"kind": "uri", "target": "raw-app"}}}));
+    let r = raw.expect(|v| v["id"] == 7).await;
+    assert_eq!(r["result"]["accepted"], true);
+    let resume = r["result"]["resumeToken"].as_str().unwrap().to_owned();
+    raw.close();
+
+    // 休眠期间 App 回连推送（快速恢复）：app/ready 后 Hub 重新订阅两个资源；推送的变化送达订阅方
+    let mut raw = Raw::connect_opts(&hub, "r-sub", json!({"resumeToken": resume, "toolsHash": hash, "wakeReason": "app"}), tools.clone(), false).await;
+    assert_eq!(raw.hello["toolsCurrent"], true);
+    raw.ready();
+    let mut names = Vec::new();
+    for _ in 0..2 {
+        let req = raw.expect(|v| v["method"] == "resources/subscribe").await;
+        names.push(req["params"]["name"].as_str().unwrap().to_owned());
+        reply(&raw, &req);
+    }
+    names.sort();
+    assert_eq!(names, ["cart", "order"]);
+    raw.send(note("resources/updated", json!({"name": "order"})));
+    let ev = next_event(&mut events, |e| matches!(e, HubEvent::ResourceUpdated { .. })).await;
+    assert!(matches!(ev, HubEvent::ResourceUpdated { uri } if uri == "app-mcp://raw/order"));
+
+    // 再休眠：读取休眠实例的资源 → 唤醒（带令牌回连后派发读取）
+    raw.send(json!({"jsonrpc": "2.0", "id": 8, "method": "app/sleep",
+        "params": {"reason": "idle", "toolsHash": hash, "wake": {"kind": "uri", "target": "raw-app"}}}));
+    let resume = raw.expect(|v| v["id"] == 8).await["result"]["resumeToken"].as_str().unwrap().to_owned();
+    raw.close();
+    let h = hub.clone();
+    let read = tokio::spawn(async move { h.read_resource("app-mcp://raw/cart").await });
+    eventually("发出唤醒", || !waker.requests.lock().unwrap().is_empty()).await;
+    let token = waker.requests.lock().unwrap()[0].token.clone();
+    let mut raw = Raw::connect_opts(&hub, "r-sub", json!({"resumeToken": resume, "toolsHash": hash, "launchToken": token}), tools, false).await;
+    raw.ready();
+    let req = raw.expect(|v| v["method"] == "resources/read").await;
+    raw.send(json!({"jsonrpc": "2.0", "id": req["id"], "result": {"contents": {"items": 2}}}));
+    let content = read.await.unwrap().unwrap();
+    let text: Value = serde_json::from_str(content.text.as_deref().unwrap()).unwrap();
+    assert_eq!(text, json!({"items": 2}));
+    assert_eq!(waker.requests.lock().unwrap().len(), 1);
+}

@@ -529,6 +529,8 @@ fn status_reports_instances_connection_ids_and_shutdown() {
     assert!(st.apps.is_empty() && st.reports.is_empty());
     assert!(!st.mcp_http && !st.auth.token_configured);
     assert!(st.started_at_ms > 0);
+    let lease = st.lease.expect("lease");
+    assert_eq!((lease.mode.as_str(), lease.default_ms, lease.window), ("adaptive", 60_000, 20));
 
     let app = start_app(&hub);
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -541,6 +543,10 @@ fn status_reports_instances_connection_ids_and_shutdown() {
             .and_then(|a| a.instances.first().cloned());
         if let (Some(i), Some(cid)) = (inst, app.connection_id()) {
             assert_eq!(i.state, InstanceState::Connected);
+            // 功耗观测（4e）：已连接实例有计数
+            let p = i.power.expect("power");
+            assert_eq!(p.reconnects, 0);
+            assert_eq!(st.apps.iter().find(|a| a.app_id == "notes").map(|a| a.wakes), Some(0));
             break (i.info.connection_id, cid);
         }
         assert!(Instant::now() < deadline, "App 未连上");

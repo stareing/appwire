@@ -65,6 +65,25 @@ export type WakerConfig = 'system' | 'none' | { exec: string[] }
  */
 export type ToolExposure = 'auto' | 'progressive' | 'all'
 
+/**
+ * 自适应租约策略：租约 = 同一（会话, App）最近 `window` 个调用间隔的 p90 + `marginMs`，限制在 [`minMs`, `maxMs`]；
+ * 样本不足 3 个时用 `leaseTtlMs`。`window = 0` 或 `minMs > maxMs` 时 `Hub.start` 失败。
+ */
+export interface LeaseConfig {
+  /** 是否按调用间隔自适应，缺省 true；false = 固定 `leaseTtlMs`（4e 之前的行为）。 */
+  adaptive?: boolean
+  /** 统计最近多少个间隔，缺省 20。 */
+  window?: number
+  /** p90 之上的余量，缺省 5000。 */
+  marginMs?: number
+  /** 自适应租约下限，缺省 5000。 */
+  minMs?: number
+  /** 自适应租约上限，缺省 60000；超过它的间隔不计入统计。 */
+  maxMs?: number
+  /** 会话无请求这么久后收回其默认租约，缺省 30000；0 = 不因空闲收回。 */
+  idleRevokeMs?: number
+}
+
 /** `Hub.start` 的配置。时长均为毫秒。 */
 export interface HubConfig {
   /**
@@ -115,6 +134,8 @@ export interface HubConfig {
   wakeRateLimit?: number
   /** 回退到旧心跳：对所有 App 连接发 ping 并按无消息断开（spec/lifecycle.md 第 11 节），缺省 false。 */
   legacyHeartbeat?: boolean
+  /** 自适应租约（spec/lifecycle.md 第 13 节 B2、spec/hub-api.md 3.5）。缺省字段取默认值。 */
+  lease?: LeaseConfig
   /** 唤醒器，缺省 `system`。 */
   waker?: WakerConfig
   // ---- 渐进暴露（spec/hub-api.md 3.7）----
@@ -319,7 +340,10 @@ export interface InstanceStatus extends InstanceInfo {
   power?: InstancePower
 }
 
-/** 已连接实例当前不能休眠的原因（Hub 可见部分；App 的 hold() 只有 SDK 知道）。 */
+/**
+ * 已连接实例当前不能休眠的原因（Hub 可见部分；App 的 hold() 只有 SDK 知道）。
+ * `subscription` 只计声明 `realtime` 的资源的订阅（spec/lifecycle.md 第 13 节 B3）。
+ */
 export type AwakeReason = 'persistent' | 'call' | 'lease' | 'subscription' | 'wake-pending'
 
 /** 每实例功耗观测（跨重连与休眠保留，Hub 重启清零）。 */
@@ -395,6 +419,42 @@ export interface HubStatus {
   apps: AppStatus[]
   /** 最近的 SDK 诊断上报，旧的在前（最多 32 条）。 */
   reports: DiagnosticReport[]
+  /** 租约策略与统计（spec/lifecycle.md 第 13 节 B2）；旧 Hub 缺省。 */
+  lease?: LeaseStatus
+}
+
+/** 租约策略与统计。 */
+export interface LeaseStatus {
+  /** `adaptive` / `fixed`（固定 `leaseTtlMs`）/ `off`（`leaseTtlMs = 0`）。 */
+  mode: 'adaptive' | 'fixed' | 'off'
+  /** 默认（无历史 / 固定）租约。 */
+  defaultMs: number
+  minMs: number
+  maxMs: number
+  marginMs: number
+  window: number
+  /** 请求流空闲收回阈值；0 = 不因空闲收回。 */
+  idleRevokeMs: number
+  adaptiveGrants: number
+  defaultGrants: number
+  /** 因会话结束收回的次数。 */
+  revokedSessionEnd: number
+  /** 因请求流空闲收回的次数。 */
+  revokedIdle: number
+  /** 当前跟踪的（会话, App）。 */
+  pairs: LeasePairStatus[]
+}
+
+export interface LeasePairStatus {
+  /** 会话键：MCP `mcp:<n>`，API `api` / `api:<session>`。 */
+  session: string
+  appId: string
+  /** 窗口内的间隔样本数。 */
+  samples: number
+  /** 下一次调用完成后将发出的租约。 */
+  nextTtlMs: number
+  /** `nextTtlMs` 是否来自统计。 */
+  adaptive: boolean
 }
 
 // ---------------------------------------------------------------------------

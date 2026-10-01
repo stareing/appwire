@@ -337,7 +337,12 @@ class ResourceEntry implements ResourceHandle, Child {
     this.reader = definition.read
     if (!registrar) return
     this.native = registrar.registerResource(
-      { name, description: definition.description, mimeType: definition.mimeType ?? 'application/json' },
+      {
+        name,
+        description: definition.description,
+        mimeType: definition.mimeType ?? 'application/json',
+        ...(definition.realtime && { realtime: true }),
+      },
       (read) => this.onRead(read),
     )
     owner?.children.add(this)

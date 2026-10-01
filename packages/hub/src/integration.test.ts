@@ -451,6 +451,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(before.pid).toBe(process.pid)
     expect(before.startedAtMs).toBeGreaterThan(0)
     expect(before.ipcEndpoint).toBeUndefined()
+    expect(before.lease).toMatchObject({ mode: 'adaptive', defaultMs: 60000, maxMs: 60000, window: 20, pairs: [] })
 
     await startShop(hub)
     const shop = hub.status().apps.find((a) => a.appId === 'shop')
@@ -481,5 +482,11 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     await expect(Hub.start({ keepAlive: false, listen: 'not-an-addr', ipcEndpoint: null })).rejects.toMatchObject({
       kind: 'START_FAILED',
     })
+    await expect(
+      Hub.start({ keepAlive: false, listen: null, ipcEndpoint: null, lease: { minMs: 9000, maxMs: 1000 } }),
+    ).rejects.toMatchObject({ kind: 'START_FAILED' })
+    await expect(
+      Hub.start({ keepAlive: false, listen: null, ipcEndpoint: null, lease: { bogus: 1 } as never }),
+    ).rejects.toMatchObject({ kind: 'INVALID_ARG' })
   })
 })

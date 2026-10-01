@@ -64,7 +64,7 @@
 | `launch` | object | 否 | 各平台启动方式（冷启动，不带令牌），键为 `web` / `windows` / `macos` / `linux`，值为按顺序尝试的数组 |
 | `wake` | object | 否 | 各平台唤醒描述（spec/lifecycle.md 第 5 节），键为 `web` / `windows` / `macos` / `linux` / `android` / `ios`，值为按顺序尝试的 WakeDescriptor 数组；规则见 2.2 节 |
 | `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo` |
-| `resources` | array | 否 | 静态资源，结构同协议中的 `ResourceInfo` |
+| `resources` | array | 否 | 静态资源，结构同协议中的 `ResourceInfo`（含可选 `realtime`：需实时推送，被订阅时 App 保持连接，spec/lifecycle.md 第 13 节 B3） |
 
 ### 2.1 `launch` 条目
 
