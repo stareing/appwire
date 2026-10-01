@@ -209,6 +209,7 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
 10. [ ] 核心热路径：参数免完整解析、进程内共享运行时、休眠重建基准
 11. [ ] Hub：Schema 校验缓存、导出名/会话 LRU·TTL、tracing 调用链与指标
 12. [ ] MCP 2026-07-28 无状态协议迁移方案（文档 + 兼容层设计）
+   - 计划（2026-10-02）：见 `docs/plans/12-mcp-2026-07-28.md`
 
 ## 进行中（子代理）
 
