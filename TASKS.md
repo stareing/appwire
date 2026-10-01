@@ -157,7 +157,7 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - 第二部分（P1）：B1 App 端只留 1–2 s 合并窗口，移动端 / 托盘默认 `on-demand`；B2 Hub 按（会话, App）调用间隔自适应租约，会话结束即收回；B3 资源订阅不再强制在线（声明需实时推送的才保持）；B4 移动端进后台立即休眠
    - 验收：spec/lifecycle.md 写明新规则与回退开关；cargo / pnpm 全量测试与 clippy 0；魅族 18 Pro 前后对比（一组调用后在线秒数、唤醒次数、CPU 时间、Host 不在时 1 小时唤醒次数、冻结 / Doze）；浏览器隐藏标签页限流、Windows 效率模式实测
    - P2（按调用临时建立连接、系统对端死亡通知）并入 4d
-4c. [ ] 界面级精准暴露 + 页面渐进披露（2026-10-01 加入；4e 完成后做）
+4c. [ ] 界面级精准暴露 + 页面渐进披露（2026-10-01 加入；4e 与第 14 项第一部分完成后做）
    - 原则：不依赖界面的能力是 `app` 工具（后台可调、可唤醒、进清单）；依赖界面的是 `view` 工具，只在"真正可见且处于最上层"时启用；非当前页面的能力经页面目录渐进披露，调用时以与唤醒同构的方式先导航再派发
    - 现状缺口：挂载 ≠ 可见（keep-alive 路由、隐藏标签面板、屏外组件仍注册；仅 @app-mcp/dom 判可见）；无界面层级（弹窗不压制下层）；工具无 surface 区分；其他页面能力不可见、不可达
    - A 协议（只增）：`ToolInfo.surface: "app" | "view"`（缺省 `app`，兼容旧 SDK）、`ToolInfo.page?`；Host→SDK 请求 `app/navigate {page, params?}` → `{ok}`，导航后工具注册 / `app/ready` 语义复用；握手能力协商 `capabilities.navigate`；错误码 `NAVIGATION_FAILED` / `NAVIGATION_DENIED`
@@ -227,6 +227,17 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - 第二部分（4e 第二部分之后）：E1 各 SDK `start(appId)` 一行接入；E2 Gradle / SwiftPM / Cargo 清单生成；E3 首次打开登记（随 4d）
    - 第三部分（4d 之后）：F1 手机端嵌入 Hub + 按名寻址，`setup --android` 自动 adb reverse；F2 错误码附修复命令（spec/protocol.md 第 10 节单一定义）
    - 待确认：发布渠道账号与签名证书（npm、PyPI、Homebrew、winget、Windows 代码签名、macOS 公证）
+14. [ ] 安全基线：确认、审计、限流、防注入（2026-10-02 加入；**先于 4c**，第 13 项对外发布前必须完成第一部分）——计划见 `docs/plans/14-safety.md`
+   - 现状：经 Host 调用时 `payment` / `destructive` 工具不经确认直接执行（`ApprovalPolicy` 默认不审批、Host 未设处理器），与设计第 14.2 节不符
+   - 第一部分（确认）：S1 Host 默认 `destructive` 及以上需确认、`payment` 每次必确认；S2 MCP elicitation 审批处理器（Agent 不支持时 `payment` 拒绝）；S3 Hub SDK 未设审批处理器时警告
+   - 第二部分：S4 审计日志 `<home>/logs/audit.jsonl` + `app-mcp-host history`（参数只存摘要、敏感字段打码）；S5 按（App, 工具）令牌桶限流，新错误码 `RATE_LIMITED`
+   - 第三部分：S6 外部内容数据边界标记；S7 读取外部内容后 N 次调用内高风险工具必须确认
+   - 待验证：Claude Code 是否声明 elicitation 能力；MCP 2026-07-28 下 elicitation 形态（随第 12 项）
+15. [ ] 体验与生态（2026-10-02 加入；组间独立，与 4c / 4d 穿插）——计划见 `docs/plans/15-experience-ecosystem.md`
+   - X 用户体验：X1 "AI 正在操作"提示与控件高亮、后台调用留痕；X2 `undo` + `history.undo`；X3 Host 托盘（已连 App、配对 / 审批弹窗、审计查看，先做选型验证）；X4 `batch` 工具（子调用逐个审批与审计）
+   - Y 开发者体验：Y1 一致性测试套件（第 14 项后首先做）；Y2 DevTools 面板与调用录制回放；Y3 Vue / Svelte 适配；Y4 Agent 侧类型化客户端用法与文档
+   - Z 覆盖面：Z1 未改造 App 导入器（URI、D-Bus、`.desktop`、Jump List、`.sdef`）；Z2 OS 层 L2 / L3（Windows UIA 优先，macOS AX、Linux AT-SPI）；Z3 浏览器扩展（随 4d）
+   - R 远程：R1 远程 / 跨设备 Agent，先出设计文档，默认关闭
 
 ## 进行中（子代理）
 
