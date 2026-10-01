@@ -1,0 +1,21 @@
+[package]
+name = "app-mcp-example-tauri"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# 独立 workspace（同 crates/tauri-plugin：Linux 需 webkit2gtk-4.1，不放进根 workspace）。
+[workspace]
+
+[features]
+# 用 `cargo run` 直接运行时加载打包好的 ../dist（tauri-cli 构建发布版时也会打开它）。
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+tauri-plugin-app-mcp = { path = "../../../crates/tauri-plugin" }
+serde_json = "1"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

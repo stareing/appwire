@@ -1,0 +1,5 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "允许页面经 @app-mcp/web 桥接登记工具 / 资源并回传调用结果（命令 `op`）。"
+permissions = ["allow-op"]

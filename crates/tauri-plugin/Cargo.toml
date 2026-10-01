@@ -1,0 +1,26 @@
+[package]
+name = "tauri-plugin-app-mcp"
+description = "app-mcp 的 Tauri v2 插件：Rust 侧用 app-mcp-native 连接 Host，WebView 页面经 Tauri IPC 桥接登记工具"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+links = "tauri-plugin-app-mcp"
+
+# 独立 workspace：Tauri 在 Linux 上需要 webkit2gtk-4.1 开发包，不放进根 workspace，
+# 避免 `cargo test --workspace` 因缺少系统库失败。编译产物仍放在仓库根 target/（见 .cargo/config.toml）。
+[workspace]
+
+[dependencies]
+app-mcp-native = { path = "../native" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2.12", default-features = false }
+
+[build-dependencies]
+tauri-plugin = { version = "2.6", features = ["build"] }
+
+[dev-dependencies]
+tauri = { version = "2.12", default-features = false, features = ["test"] }
+app-mcp-hub = { path = "../hub" }
+tokio = { version = "1", features = ["full"] }

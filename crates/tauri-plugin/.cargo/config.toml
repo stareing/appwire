@@ -1,0 +1,3 @@
+# 与仓库其他 crate 共用根目录 target/（根分区空间紧张，不放 ~/.cache）。
+[build]
+target-dir = "../../target"

@@ -114,6 +114,7 @@ const results = await handleAnthropicToolUses(hub, response.content)
 | Web | `@app-mcp/web`, `@app-mcp/react`, `@app-mcp/dom`, `@app-mcp/store`, `@app-mcp/build` | WASM core; WebMCP polyfill/bridge; HTML attributes; Zustand / Redux / Pinia; compile-time `@mcp` |
 | Node / Electron | `@app-mcp/node`, `@app-mcp/electron` | main process + renderer bridge |
 | Rust (Tauri, egui…) | `crates/native` | direct dependency |
+| Tauri v2 | `crates/tauri-plugin`, `@app-mcp/tauri` | plugin: Rust tools + webview pages via Tauri IPC (`@app-mcp/web` unchanged) |
 | C / C++ | `bindings/c`, `sdks/cpp` | stable C ABI (`app_mcp.h`) |
 | C# (WPF, WinUI) | `sdks/dotnet` | P/Invoke; single-instance and protocol activation helpers |
 | Kotlin / Android | `sdks/kotlin` | coroutines; `WakeReceiver` + expedited WorkManager |

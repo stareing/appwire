@@ -1,0 +1,18 @@
+{
+  "name": "@app-mcp/tauri",
+  "version": "0.1.0",
+  "description": "app-mcp 的 Tauri 页面侧：经 tauri-plugin-app-mcp 注入的桥接把工具登记到 Rust 侧客户端",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@app-mcp/web": "workspace:*"
+  }
+}

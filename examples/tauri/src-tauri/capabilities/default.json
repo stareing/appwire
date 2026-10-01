@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口：Tauri 核心能力 + app-mcp 页面桥接",
+  "windows": ["main"],
+  "permissions": ["core:default", "app-mcp:default"]
+}

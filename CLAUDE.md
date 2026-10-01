@@ -17,6 +17,7 @@ crates/
   hub/                  Agent 端 Hub 库（厂商嵌入）：注册表、路由、总览、App 连接、上游聚合、MCP 出口、格式导出
   host/                 app-mcp-host 可执行程序（Hub 之上的命令行薄壳）
   native/               原生共用运行时：后台线程驱动核心、WebSocket 连接、回调分发（Rust App 直接用）
+  tauri-plugin/         tauri-plugin-app-mcp：Tauri v2 插件（独立 workspace，Linux 需 webkit2gtk-4.1）
 bindings/
   wasm/                 app-mcp-core 的 wasm-bindgen 绑定
   c/                    C ABI（include/app_mcp.h 为契约）→ C、C++、C#、Dart
@@ -31,6 +32,7 @@ packages/
   build/                @app-mcp/build：Vite 插件，生成 app-mcp.json
   node/                 @app-mcp/node：Node / Electron 主进程 SDK
   electron/             @app-mcp/electron：主进程接入 + 渲染进程 IPC 桥接
+  tauri/                @app-mcp/tauri：Tauri 页面侧（插件注入的桥接；页面也可直接用 @app-mcp/web）
 sdks/
   cpp/                  C++ 封装（RAII）+ 示例
   dotnet/               C#（P/Invoke）SDK + 示例
@@ -40,6 +42,7 @@ sdks/
   dart/                 Dart（dart:ffi）SDK 与 Flutter 适配
 examples/
   shop/                 React Demo：待办 + 购物车
+  tauri/                Tauri 示例：页面工具 + Rust 工具（src-tauri 为独立 workspace）
 e2e/                    端到端测试（集成阶段）
 ```
 
@@ -48,6 +51,7 @@ e2e/                    端到端测试（集成阶段）
 | 语言 | 绑定路径 | 线程切换（封装层负责） |
 |---|---|---|
 | Rust（Tauri、egui） | 直接依赖 `crates/native` | — |
+| Tauri v2 | `crates/tauri-plugin`（基于 `crates/native`）；页面用 `@app-mcp/web`，经插件注入的桥接走 Tauri IPC | Rust handler 在分发线程；页面 handler 在 WebView 内 |
 | C / C++ | `bindings/c` | 调用方自行处理 |
 | C# | `bindings/c` + P/Invoke | `SynchronizationContext`（WPF Dispatcher、WinUI DispatcherQueue） |
 | Dart / Flutter | `bindings/c` + dart:ffi | 回到主 isolate |

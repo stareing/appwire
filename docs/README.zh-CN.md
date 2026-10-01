@@ -103,6 +103,7 @@ const results = await handleAnthropicToolUses(hub, response.content)
 | Web | `@app-mcp/web`、`@app-mcp/react`、`@app-mcp/dom`、`@app-mcp/store`、`@app-mcp/build` | WASM 核心；WebMCP 兼容；HTML 属性；Zustand / Redux / Pinia；编译期 `@mcp` |
 | Node / Electron | `@app-mcp/node`、`@app-mcp/electron` | 主进程 + 渲染进程桥接 |
 | Rust（Tauri、egui 等） | `crates/native` | 直接依赖 |
+| Tauri v2 | `crates/tauri-plugin`、`@app-mcp/tauri` | 插件：Rust 工具 + WebView 页面经 Tauri IPC 登记（`@app-mcp/web` 用法不变） |
 | C / C++ | `bindings/c`、`sdks/cpp` | 稳定 C ABI（`app_mcp.h`） |
 | C#（WPF、WinUI） | `sdks/dotnet` | P/Invoke；单实例与协议激活辅助 |
 | Kotlin / Android | `sdks/kotlin` | 协程；`WakeReceiver` + 加急 WorkManager |

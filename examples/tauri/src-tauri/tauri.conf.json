@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "app-mcp Tauri 示例",
+  "version": "0.1.0",
+  "identifier": "dev.appmcp.example.tauri",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5175"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "app-mcp Tauri 示例", "width": 480, "height": 360 }],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.png", "icons/icon.ico"]
+  }
+}
