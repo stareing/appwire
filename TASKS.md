@@ -175,7 +175,7 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
      - 未做：Android jniLibs 未重编（真机批次）；iOS 分支、WPF 示例、32 位结构布局未编译 / 测试；真机未验证 `on-demand` 首次前台连接时序（Android 观察者投递、鸿蒙 `applicationStateChange`）；Flutter 鸿蒙未识别为移动端（仍 `persistent`）；C++ / Kotlin / Swift 无 SDK README，说明写在头文件 / KDoc / 文档注释
    - 验收：spec/lifecycle.md 写明新规则与回退开关；cargo / pnpm 全量测试与 clippy 0；魅族 18 Pro 前后对比（一组调用后在线秒数、唤醒次数、CPU 时间、Host 不在时 1 小时唤醒次数、冻结 / Doze）；浏览器隐藏标签页限流、Windows 效率模式实测
    - P2（按调用临时建立连接、系统对端死亡通知）并入 4d
-4c. [ ] 界面级精准暴露 + 页面渐进披露（2026-10-01 加入；4e 与第 14 项第一部分完成后做）
+4c. [ ] 界面级精准暴露 + 页面渐进披露（2026-10-01 加入；4e 完成后做）
    - 原则：不依赖界面的能力是 `app` 工具（后台可调、可唤醒、进清单）；依赖界面的是 `view` 工具，只在"真正可见且处于最上层"时启用；非当前页面的能力经页面目录渐进披露，调用时以与唤醒同构的方式先导航再派发
    - 现状缺口：挂载 ≠ 可见（keep-alive 路由、隐藏标签面板、屏外组件仍注册；仅 @app-mcp/dom 判可见）；无界面层级（弹窗不压制下层）；工具无 surface 区分；其他页面能力不可见、不可达
    - A 协议（只增）：`ToolInfo.surface: "app" | "view"`（缺省 `app`，兼容旧 SDK）、`ToolInfo.page?`；Host→SDK 请求 `app/navigate {page, params?}` → `{ok}`，导航后工具注册 / `app/ready` 语义复用；握手能力协商 `capabilities.navigate`；错误码 `NAVIGATION_FAILED` / `NAVIGATION_DENIED`
@@ -247,18 +247,14 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - 待确认：发布渠道账号与签名证书（npm、PyPI、Homebrew、winget、Windows 代码签名、macOS 公证）
    - D1 结果（2026-10-02）：`.github/workflows/release.yml`（tag `v<版本>` 触发，须等于 Cargo workspace 版本；workflow_dispatch 只构建不发布）：plan（版本校验 + 由 `packaging/platforms.json` 生成矩阵）→ 6 平台 `cargo build --release --locked`（Linux x64/arm64 为 musl 静态，arm64 用 `ubuntu-24.04-arm`；Windows x64/arm64 在 windows-2022 上，arm64 交叉编译，另带 `app-mcp-hostw.exe`；macOS x64/arm64 在 macos-14 上，x64 交叉编译；原生平台冒烟 `--version`）→ GitHub Release（tar.gz / zip + SHA256SUMS）→ npm / PyPI（发布步骤分别以 secrets `NPM_TOKEN`、`PYPI_API_TOKEN` 是否存在为门槛，缺省时 notice 跳过；均可重跑）。新增 `.github/workflows/ci.yml`：rust（clippy -D warnings + test）、js（构建 WASM / napi 后 `pnpm -r --filter '!e2e'` typecheck + test）、packaging（ubuntu / macOS / Windows 跑启动器测试）。验证：actionlint 1.7.12（含 shellcheck 0.11.0）0 问题；本机 `x86_64-unknown-linux-musl` 构建成功（static-pie，无需 musl-tools）。未验证：流水线未在 GitHub 上实际运行（arm64 runner、Windows arm64 交叉编译、macOS 均无本地环境）
    - D2 结果（2026-10-02）：命名——npm 与 PyPI 上的 `appwire` 均已被他人占用（npm `appwire@0.1.0` "Live app REPL for Node.js"，PyPI `appwire` 0.1.5 "Build and push Taps to AppWire"），改用 `appwire-cli`（两边均 404 可用；命令名仍为 `appwire`，另有同名 `appwire-cli` 命令供 `npx appwire-cli` / `uvx appwire-cli`）。`packaging/npm`（无依赖启动器，`process.platform-process.arch` → 可选依赖 `appwire-cli-<平台>`；spawn + 信号转发，退出码 / 信号回传；未声明平台与可选依赖缺失分别报 `UNSUPPORTED_PLATFORM` / `PLATFORM_PACKAGE_MISSING`）+ `packaging/scripts/stage-npm.mjs`；`packaging/pypi`（POSIX `execv`，Windows 子进程等待并回传退出码）+ `packaging/scripts/build_wheels.py`（纯 Python 构建后 `wheel tags` 打复合平台标签，校验可执行位）。不进 pnpm workspace，未改 lockfile。验证：vitest 11（含按 npm 布局实跑 bin：参数透传、退出码 7、SIGTERM、平台包缺失）+ tsc checkJs；pytest 9（含构建本机 wheel → 新 venv `pip install --no-index` → 两个命令的透传 / 退出码 / 信号 / 可执行位）；以真实 musl 二进制手工验证 npm 布局与 `uvx --from <wheel>`、`twine check --strict` 通过。待办：D3 `setup` 需把二进制复制到稳定位置再注册自启（npx / uvx 缓存路径会失效）；README 快速开始（D4）未改；npm `appwire-cli-*` 7 个包名与 PyPI 名需机主注册账号后确认（U2）
-14. [ ] 安全基线：确认、审计、限流、防注入（2026-10-02 加入；**先于 4c**，第 13 项对外发布前必须完成第一部分）——计划见 `docs/plans/14-safety.md`
-   - 现状：经 Host 调用时 `payment` / `destructive` 工具不经确认直接执行（`ApprovalPolicy` 默认不审批、Host 未设处理器），与设计第 14.2 节不符
-   - 第一部分（确认）：S1 Host 默认 `destructive` 及以上需确认、`payment` 每次必确认；S2 MCP elicitation 审批处理器（Agent 不支持时 `payment` 拒绝）；S3 Hub SDK 未设审批处理器时警告
-   - 第二部分：S4 审计日志 `<home>/logs/audit.jsonl` + `app-mcp-host history`（参数只存摘要、敏感字段打码）；S5 按（App, 工具）令牌桶限流，新错误码 `RATE_LIMITED`
-   - 第三部分：S6 外部内容数据边界标记；S7 读取外部内容后 N 次调用内高风险工具必须确认
-   - 待验证：Claude Code 是否声明 elicitation 能力；MCP 2026-07-28 下 elicitation 形态（随第 12 项）
-   - 第四部分（授权模式，2026-10-02 加入）：`interactive` / `unattended` 两种情境显式声明；判定顺序 拒绝规则 → 授权命中 → 实时确认 → 异步审批（`APPROVAL_PENDING` + 票据，凭票重试幂等）→ 拒绝（`UNATTENDED_NOT_AUTHORIZED`）；S8 授权模型（Agent × 范围 × 风险上限 × 约束 × 情境，`<home>/grants.json`）；S9 `grant add/list/revoke/pause/resume`；S10 `ApprovalHandler` 决定枚举（兼容布尔）；S11 异步审批；S12 无人值守不抢前台、不弹选择框、禁像素兜底；S13 异常熔断
-   - 已决定（2026-10-02）：`payment` 不可事先授权，无人值守下只能逐笔异步审批
-   - 第五部分（风险划分，2026-10-02 加入）：单一线性 `risk` 改为多维声明——作用（read / write / destructive）× 影响范围（self / shared / external）× 敏感类别（financial、security、legal、physical、identity、personal-data、device、egress）× 可撤销 × 参数相关风险；Hub 推导确认等级 A 自动 / B 记录 / C 确认（授权须带约束）/ D 必确认（不可授权、无人值守只能逐笔异步审批、可要求系统级身份验证）；旧 `risk` 兼容映射；声明只升不降（关键词启发式、用户覆盖、D 级不可调低）；S14 协议与清单字段、S15 推导规则表、S16 启发式与覆盖、S17 各 SDK / build / codegen
+14. [ ] 职责边界：如实传递与资源保护（2026-10-02 加入，同日按机主决定重写）——计划见 `docs/plans/14-safety.md`
+   - 决定：操作分级、确认、事先授权、无人值守策略不是本库职责——"要不要问用户"归 Agent（有界面、知道是否有人、有放行配置），高风险最终确认归 App（付款在 App 内用自己的验证确认）；原 S1–S17（Host 确认、grant、异步审批、A–D 确认等级等）撤销
+   - S1 App 可直接声明标准 MCP 工具注解（readOnly / destructive / idempotent / openWorld），Hub 原样转发；`risk` 保留为兼容写法
+   - S2 内容标注透传；S3 按（App, 工具）令牌桶限流（`RATE_LIMITED`）；S4 参数 / 结果 / 资源大小上限；S5 `doctor` 展示每个工具的声明
+   - 约束：尽量不引入通用入口 `apps.call`（会使 Agent 按工具放行失效）；调用日志并入第 11 项
 15. [ ] 体验与生态（2026-10-02 加入；组间独立，与 4c / 4d 穿插）——计划见 `docs/plans/15-experience-ecosystem.md`
    - X 用户体验：X1 "AI 正在操作"提示与控件高亮、后台调用留痕；X2 `undo` + `history.undo`；X3 Host 托盘（已连 App、配对 / 审批弹窗、审计查看，先做选型验证）；X4 `batch` 工具（子调用逐个审批与审计）
-   - Y 开发者体验：Y1 一致性测试套件（第 14 项后首先做）；Y2 DevTools 面板与调用录制回放；Y3 Vue / Svelte 适配；Y4 Agent 侧类型化客户端用法与文档
+   - Y 开发者体验：Y1 一致性测试套件（首先做）；Y2 DevTools 面板与调用录制回放；Y3 Vue / Svelte 适配；Y4 Agent 侧类型化客户端用法与文档
    - Z 覆盖面：Z1 未改造 App 导入器（URI、D-Bus、`.desktop`、Jump List、`.sdef`）；Z2 OS 层 L2 / L3（Windows UIA 优先，macOS AX、Linux AT-SPI）；Z3 浏览器扩展（随 4d）
    - R 远程：R1 远程 / 跨设备 Agent，先出设计文档，默认关闭
 16. [ ] Agent OS：数据、权限、事件、事务与协同（2026-10-02 加入）——计划见 `docs/plans/16-agent-os.md`（四象限；按操作系统子系统对照找差距）
