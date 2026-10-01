@@ -221,6 +221,11 @@ export interface AppMcpOptions {
   /** 同时执行的调用上限，默认 1。 */
   maxConcurrentCalls?: number
   /**
+   * 调用去重（spec/protocol.md 3.3）：同一 `callId` 在有效期内只执行一次，重复请求得到首次结果。
+   * 缺省保留 5 分钟、最多 64 条。
+   */
+  callDedup?: CallDedupOptions
+  /**
    * App 总览：握手时发给 Host，模型在会话中首次接触本 App 时由 Host 附带（spec/protocol.md 第 7 节）。
    * 静态总览、不含动态状态（当前页面、登录状态等请用资源提供）。
    */
@@ -265,6 +270,19 @@ export interface ToolContext {
    * 调用进行中本身已视为非空闲，无需手动持有。未启用生命周期时无副作用。
    */
   hold?(): HoldHandle
+  /**
+   * 报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent（MCP `notifications/progress`）。`progress` 应递增
+   * （不递增的值被 Host 丢弃），`total` 未知时省略。调用已结束、未连接或为本地调用（WebMCP）时无副作用。
+   */
+  progress?(progress: number, total?: number, message?: string): void
+}
+
+/** 调用去重策略（{@link AppMcpOptions.callDedup}）。任一字段为 0 关闭去重。 */
+export interface CallDedupOptions {
+  /** 首次结果的保留时长（毫秒），默认 300000。 */
+  ttlMs?: number
+  /** 最多保留的结果数，默认 64。 */
+  maxEntries?: number
 }
 
 /**

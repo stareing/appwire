@@ -213,6 +213,14 @@ public final class ToolContext: @unchecked Sendable {
         return SleepHold(try call.hold())
     }
 
+    /// 报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent（MCP `notifications/progress`）。
+    /// `progress` 应递增（不递增的值被 Host 丢弃），`total` 未知时为 `nil`。调用已结束、已取消或未连接时无副作用。
+    public func progress(_ progress: Double, total: Double? = nil, message: String? = nil) {
+        guard let call, !isCancelled else { return }
+        // 调用刚结束时原生层报 AlreadyCompleted：进度只是提示，不影响结果。
+        try? call.reportProgress(progress: progress, total: total, message: message)
+    }
+
     /// 调用被取消的原因；未取消为 `nil`。取消同时会取消执行 handler 的 Task。
     public var cancelReason: CancelReason? {
         lock.lock()

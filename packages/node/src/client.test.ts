@@ -527,6 +527,27 @@ describe('生命周期', () => {
     expect(native.activeHolds).toBe(0)
   })
 
+  it('ToolContext.progress 交给原生层；调用结束后无副作用、不抛出', async () => {
+    const { app, native } = setup()
+    let saved: { progress(p: number, t?: number, m?: string): void } | undefined
+    app.tool('export', {
+      description: '导出',
+      handler: (_input, ctx) => {
+        ctx.progress(1, 3, '第 1 页')
+        ctx.progress(2)
+        saved = ctx
+        return 'ok'
+      },
+    })
+    expect(await native.call('export')).toMatchObject({ ok: true })
+    expect(native.progressReports.map(({ progress, total, message }) => [progress, total, message])).toEqual([
+      [1, 3, '第 1 页'],
+      [2, null, null],
+    ])
+    expect(() => saved!.progress(3)).not.toThrow()
+    expect(native.progressReports).toHaveLength(2)
+  })
+
   it('idle-exit 事件调用 onIdleExit 与订阅者；dispose 后清除', () => {
     const onIdleExit = vi.fn()
     const { app, native, logger } = setup({ onIdleExit })

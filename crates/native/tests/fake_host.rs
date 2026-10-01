@@ -17,6 +17,7 @@ impl ToolHandler for Add {
         let sum = args["a"].as_i64().unwrap_or(0) + args["b"].as_i64().unwrap_or(0);
         // 从另一个线程完成
         std::thread::spawn(move || {
+            call.report_progress(1.0, Some(2.0), Some("相加")).unwrap();
             call.complete(Some(&json!({ "sum": sum }).to_string()), vec![])
                 .unwrap()
         });
@@ -100,18 +101,21 @@ fn native_client_against_fake_host() {
         .collect();
     let status = child.wait().unwrap();
     assert!(status.success(), "fake_host 退出码 {status:?}");
-    assert_eq!(out.len(), 5, "{out:#?}");
+    assert_eq!(out.len(), 6, "{out:#?}");
     assert_eq!(
         out[0],
         json!({ "type": "tools", "tools": ["math.add", "nope.fail"], "resources": ["app.state"] })
     );
+    assert_eq!(out[1]["type"], "progress");
+    assert_eq!((&out[1]["progress"], &out[1]["total"], &out[1]["message"]), (&json!(1.0), &json!(2.0), &json!("相加")));
+    assert!(out[1]["callId"].is_string());
     assert_eq!(
-        out[1],
+        out[2],
         json!({ "type": "invoke", "name": "math.add", "result": { "data": { "sum": 5 } } })
     );
-    assert_eq!(out[2]["result"]["contents"], json!({ "count": 3 }));
-    assert_eq!(out[3]["error"]["data"]["kind"], "USER_REJECTED");
-    assert_eq!(out[4]["error"]["data"]["kind"], "TOOL_NOT_FOUND");
+    assert_eq!(out[3]["result"]["contents"], json!({ "count": 3 }));
+    assert_eq!(out[4]["error"]["data"]["kind"], "USER_REJECTED");
+    assert_eq!(out[5]["error"]["data"]["kind"], "TOOL_NOT_FOUND");
 }
 
 struct Submit;

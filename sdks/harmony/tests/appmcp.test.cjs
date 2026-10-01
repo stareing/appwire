@@ -216,6 +216,28 @@ test('context.hold 返回幂等持有', async () => {
   assert.deepEqual(call.holdLog, ['release']);
 });
 
+test('context.progress 交给原生层；调用结束后无副作用、不抛出', async () => {
+  const { mcp, client } = create();
+  let saved;
+  mcp.tool('export', {
+    description: 'x',
+    handler: (_i, ctx) => {
+      ctx.progress(1, 3, '第 1 页');
+      ctx.progress(2);
+      saved = ctx;
+      return 1;
+    },
+  });
+  const call = client.invoke('export');
+  await call.done;
+  assert.deepEqual(call.progressLog, [
+    [1, 3, '第 1 页'],
+    [2, null, null],
+  ]);
+  assert.doesNotThrow(() => saved.progress(3));
+  assert.equal(call.progressLog.length, 2);
+});
+
 test('重名抛出原生错误；update 合并变更；dispose 注销', () => {
   const { mcp, client } = create();
   const h = mcp.tool('a', { description: 'A', risk: 'read', handler: () => 1 });

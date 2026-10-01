@@ -30,6 +30,13 @@ public sealed class ToolContext
     /// </summary>
     public IDisposable Hold() => _pending.Hold();
 
+    /// <summary>
+    /// 报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent（MCP notifications/progress）。
+    /// <paramref name="progress"/> 应递增（不递增的值被 Host 丢弃），<paramref name="total"/> 未知时为 null。
+    /// 调用已结束、已取消或未连接时无副作用。
+    /// </summary>
+    public void Progress(double progress, double? total = null, string? message = null) => _pending.Progress(progress, total, message);
+
     /// <summary>添加状态提示（结果中的 stateHints，提示模型哪些状态已变化，如相关资源名）。</summary>
     public void AddStateHint(string hint)
     {

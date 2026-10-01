@@ -139,6 +139,11 @@ export interface ToolContext {
   onCancel(listener: (reason: CancelReason) => void): void;
   /** handler 返回后仍阻止自动休眠，直到释放。调用已结束时抛出（`code` 为 `ALREADY_COMPLETED`）。 */
   hold(): HoldHandle;
+  /**
+   * 报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent（MCP `notifications/progress`）。`progress` 应递增
+   * （不递增的值被 Host 丢弃），`total` 未知时省略。调用已结束、已取消或未连接时无副作用（不抛出）。
+   */
+  progress(progress: number, total?: number, message?: string): void;
 }
 
 /** {@link ToolResult} 的可选字段。 */

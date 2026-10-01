@@ -166,6 +166,18 @@ class CallContext implements ToolContext {
     return new OnceHold(this.call.hold());
   }
 
+  progress(progress: number, total?: number, message?: string): void {
+    if (this.cancelled) {
+      return;
+    }
+    try {
+      this.call.reportProgress(progress, total ?? null, message ?? null);
+    } catch (error) {
+      // 调用刚结束时原生层报 ALREADY_COMPLETED：进度只是提示，不影响结果。
+      this.logger.debug(`[app-mcp] 进度未送达：${String(error)}`);
+    }
+  }
+
   /** 原生侧通知取消。 */
   cancel(reason: CancelReason): void {
     if (this.cancelled) {

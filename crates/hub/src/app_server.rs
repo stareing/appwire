@@ -1005,6 +1005,10 @@ fn handle_notification(
             }
             shared.ensure_subscriptions(app_id);
         }
+        method::TOOLS_PROGRESS => {
+            let p = params!(app_mcp_protocol::ToolsProgressParams);
+            shared.route_progress(conn.id, p);
+        }
         method::RESOURCES_UPDATED => {
             let p = params!(ResourceUpdatedParams);
             shared.resource_updated(app_id, &p.name);

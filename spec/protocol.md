@@ -163,6 +163,7 @@ SDK 核心在处理握手结果之前核对（`app_mcp_protocol::identity::check
 | SDK → Host | `resources/updated` | 通知 | `ResourceUpdatedParams` |
 | SDK → Host | `app/sleep` | 请求 | `SleepParams` → `SleepResult`（第 8 节） |
 | SDK → Host | `app/diagnostic` | 通知 | `DiagnosticParams`（第 10 节） |
+| SDK → Host | `tools/progress` | 通知 | `ToolsProgressParams`（3.3） |
 | Host → SDK | `tools/invoke` | 请求 | `ToolsInvokeParams` → `ToolsInvokeResult` |
 | Host → SDK | `tools/cancel` | 通知 | `ToolsCancelParams` |
 | Host → SDK | `resources/read` | 请求 | `ResourcesReadParams` → `ResourcesReadResult` |
@@ -270,6 +271,8 @@ interface ToolsInvokeResult {
 }
 type ResultStatus = "done" | "pending" | "partial" | "noop"
 interface ToolsCancelParams { callId: string; reason?: string }
+// 进行中调用的进度（3.3）
+interface ToolsProgressParams { callId: string; progress: number; total?: number; message?: string }
 
 interface ResourceInfo {
   name: string
@@ -329,6 +332,29 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
 - **内容注解 `annotations`**（结果与资源）：标准 MCP 内容注解。结果的注解加在 App 给出的内容块（摘要、返回值）上，不加在 Host
   生成的说明、总览与资源变化提示上；资源的注解出现在 MCP `resources/list` 中。Host 不修正、不据此决策。
 
+### 3.3 调用 ID、去重与进度（第 16 项 N7a / O2）
+
+以下均为新增行为，消息格式只多一条可选通知；旧 Host 收到 `tools/progress` 按未知通知忽略（5.7），旧 SDK 不发送。
+
+- **`callId`**：`ToolsInvokeParams.callId` 由 Host 为每次调用生成（MCP 出口每个 `tools/call` 一个新 ID）。Hub API 的调用方可以
+  自带（`CallRequest.call_id`；按 LLM 格式分派时为 tool_call 的 `id`，spec/hub-api.md 3.4），以同一 `callId` 重试同一次调用即可得到
+  去重保护。Host 自身不会在断线 / 唤醒 / 回连后重发 `tools/invoke`（断线时调用以 `APP_DISCONNECTED`"结果未知"结束）。
+  调用元信息（`_meta` 中的 `callId` 等）归第 19 项 R4，不在此定义。
+- **去重（SDK，`app-mcp-core` 实现，所有语言一致）**：handler **已开始执行**的 `callId`，其首次最终回复（成功、handler 错误、
+  `TIMEOUT`、执行中被 `tools/cancel` 的 `CANCELLED`）在有效期内保留；同一 `callId` 的 `tools/invoke` 再次到达时**不再执行**，直接回复
+  该结果。执行中（含排队中）再次到达的请求挂到同一次执行上，完成时一并回复（不再返回 -32602）。执行中因断线或 SDK 停止被中断的
+  调用记为 `CANCELLED`（`data.interrupted: true`、`data.callId`）："结果未知，App 内可能已执行"。排队中被取消 / 超时、在
+  `TOOL_NOT_FOUND` / `TOOL_DISABLED` 等检查处被拒绝的调用 handler 没有执行过，不记录，同一 `callId` 可以再次执行。
+  - 规则对所有工具一致（不区分只读与写）：Host 不复用 `callId`，只读工具只在调用方显式重试同一 `callId` 时得到缓存结果。
+  - 有效期与容量由 SDK 配置 `callDedup`（`ttlMs` 默认 300000、`maxEntries` 默认 64，超出淘汰最早的；任一为 0 关闭，关闭时
+    执行中重复的 `callId` 按旧行为返回 -32602）。去重表跨连接、跨休眠保留，进程退出即清空。
+- **进度 `tools/progress`（SDK → Host，通知）**：handler 经 `ctx.progress(progress, total?, message?)` 报告；只对执行中的调用发送，
+  未连接时丢弃（不排队、不补发）。`progress` 应递增；非有限数不发送，非有限的 `total` 视为未知。
+  Host 只接受被路由到该调用的那条连接发来的进度，按配置的最小间隔合并（间隔内只保留最新一条）、丢弃不递增的值、`message`
+  截断到 200 字符，转发给请求了进度的一方（MCP 请求带 `progressToken` 时为 `notifications/progress`，spec/hub-api.md 3.12）；
+  没有接收方时丢弃。调用结束后到达的进度被忽略。
+- **取消**：Agent 取消（MCP `notifications/cancelled`、Hub API `cancel_call`）→ Host 发 `tools/cancel` → SDK 取消 handler（5.3）。
+
 ## 4. 错误
 
 失败统一用 JSON-RPC 错误对象返回，`data.kind` 为错误类别：
@@ -385,6 +411,7 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
 ### 5.3 调用
 
 - 收到 `tools/invoke`：
+  - `callId` 已执行过（有效期内）→ 回复首次结果，不执行；正在执行或排队 → 挂到同一次执行上（3.3）。
   - 名称不存在 → `TOOL_NOT_FOUND`；存在但禁用 → `TOOL_DISABLED`。
   - 否则进入调用队列。正在执行的调用数小于 `maxConcurrentCalls`（默认 1）时立即执行，
     否则排队，按到达顺序执行。
@@ -392,7 +419,8 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
 - 收到 `tools/cancel`：取消对应调用（排队中的直接移出），返回 `CANCELLED`。
 - handler 完成后返回 `ToolsInvokeResult`；handler 出错返回其错误（缺省类别 `HANDLER_ERROR`）。
 - 已取消或已超时的调用，其后到达的完成结果被丢弃。
-- 连接断开时取消所有进行中和排队的调用，不发送任何响应。
+- 连接断开时取消所有进行中和排队的调用，不发送任何响应（已完成但尚未发出的响应一并丢弃，其结果仍保留在去重表中，3.3）。
+- handler 执行期间可报告进度（`tools/progress`，3.3）。
 - SDK 主动停止（`stop`）或休眠时，已排队但尚未交给驱动层的消息（如刚完成的调用结果）
   先于关闭连接发出；连接已断开时则丢弃。
 

@@ -28,6 +28,8 @@ pub mod method {
     pub const RESOURCES_CHANGED: &str = "resources/changed";
     /// 已订阅资源的内容变化。参数 [`super::ResourceUpdatedParams`]。
     pub const RESOURCES_UPDATED: &str = "resources/updated";
+    /// 进行中调用的进度（spec/protocol.md 3.3）。参数 [`super::ToolsProgressParams`]。
+    pub const TOOLS_PROGRESS: &str = "tools/progress";
 
     // ---- SDK → Host：请求（生命周期，spec/lifecycle.md）----
     /// 请求休眠。参数 [`super::SleepParams`]，结果 [`super::SleepResult`]。
@@ -604,6 +606,22 @@ pub struct ToolsCancelParams {
     pub reason: Option<String>,
 }
 
+/// `tools/progress`（SDK → Host，通知）：进行中调用的进度（spec/protocol.md 3.3）。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolsProgressParams {
+    /// 进行中调用的 `callId`（[`ToolsInvokeParams::call_id`]）。
+    pub call_id: String,
+    /// 已完成的量；同一调用内应递增（MCP `notifications/progress` 的要求，Host 丢弃不递增的值）。
+    pub progress: f64,
+    /// 总量（已知时）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<f64>,
+    /// 一句面向用户的进度说明。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // 资源
 // ---------------------------------------------------------------------------
@@ -916,6 +934,19 @@ mod tests {
         assert_eq!(serde_json::to_value(&r).unwrap()["annotations"]["priority"], json!(0.5));
         let res: ResourceInfo = serde_json::from_value(json!({"name": "n", "description": "d"})).unwrap();
         assert!(serde_json::to_value(&res).unwrap().get("annotations").is_none());
+    }
+
+    #[test]
+    fn progress_params_roundtrip() {
+        let p: ToolsProgressParams = serde_json::from_value(json!({"callId": "c1", "progress": 3})).unwrap();
+        assert_eq!((p.progress, p.total, p.message.as_deref()), (3.0, None, None));
+        assert_eq!(serde_json::to_value(&p).unwrap(), json!({"callId": "c1", "progress": 3.0}));
+        let p = ToolsProgressParams { total: Some(10.0), message: Some("导出中".into()), ..p };
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
+            json!({"callId": "c1", "progress": 3.0, "total": 10.0, "message": "导出中"})
+        );
+        assert!(serde_json::from_value::<ToolsProgressParams>(json!({"callId": "c1"})).is_err(), "progress 必填");
     }
 
     #[test]

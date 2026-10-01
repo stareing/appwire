@@ -262,6 +262,14 @@ final class _PendingCall implements ToolContext {
     if (consumed) throw AppMcpException(AppMcpErrorCode.alreadyCompleted, '调用已完成');
     return rt.hold((out) => b.am_call_hold(ptr, out));
   }
+
+  @override
+  void progress(double progress, {double? total, String? message}) {
+    if (consumed || _reason != null) return;
+    // 调用刚被取消时原生层返回 alreadyCompleted：进度只是提示，忽略返回码。
+    using((arena) => b.am_call_progress(
+        ptr, progress, total ?? -1.0, message == null ? nullptr : message.toNativeUtf8(allocator: arena)));
+  }
 }
 
 final class _PendingRead {

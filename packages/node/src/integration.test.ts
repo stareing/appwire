@@ -153,7 +153,10 @@ describe.skipIf(!existsSync(nativePath))('真实原生模块', () => {
           properties: { a: { type: 'number' }, b: { type: 'number' } },
           required: ['a', 'b'],
         },
-        handler: async ({ a, b }: { a: number; b: number }) => ({ sum: a + b }),
+        handler: async ({ a, b }: { a: number; b: number }, ctx) => {
+          ctx.progress(1, 2, '相加')
+          return { sum: a + b }
+        },
       })
       const scope = app.scope('cart')
       scope.tool('cart.add', { description: '加入购物车', handler: () => ({ data: { count: 1 }, stateHints: ['cart'] }) })
@@ -185,6 +188,7 @@ describe.skipIf(!existsSync(nativePath))('真实原生模块', () => {
       expect(invokes[2]).toMatchObject({ name: 'fail.reject', error: { message: '用户拒绝', data: { kind: 'USER_REJECTED' } } })
       expect(invokes[3]).toMatchObject({ name: 'fail.boom', error: { message: '炸了', data: { kind: 'HANDLER_ERROR' } } })
       expect(byType('read')[0]).toMatchObject({ name: 'cart', result: { contents: { items: 1 } } })
+      expect(byType('progress')).toEqual([expect.objectContaining({ progress: 1, total: 2, message: '相加' })])
       expect(states).toContain('connected')
       expect(paired).toEqual(['fake-token'])
       expect(app.token).toBe('fake-token')

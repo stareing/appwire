@@ -137,6 +137,8 @@ export class Call {
   fail(kind: string, message: string): void;
   failWithDetails(kind: string, message: string, detailsJson?: string | null): void;
   hold(): Hold;
+  /** 报告进度（spec/protocol.md 3.3）；调用已结束时抛出 `ALREADY_COMPLETED`。 */
+  reportProgress(progress: number, total?: number | null, message?: string | null): void;
 }
 
 export class Read {

@@ -15,8 +15,9 @@ use rmcp::model::{
     PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
     Resource, ServerCapabilities, ServerConfig, SubscribeRequestParams, UnsubscribeRequestParams,
 };
+use rmcp::model::{ProgressNotificationParam, ProgressToken};
 use rmcp::service::{NotificationContext, RequestContext};
-use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
+use rmcp::{ErrorData as McpError, Peer, RoleServer, ServerHandler};
 use serde_json::Value;
 
 pub use crate::call::{
@@ -25,6 +26,7 @@ pub use crate::call::{
 use crate::call::{self, CallCtx, to_mcp_error};
 use crate::hub::{DEFAULT_MIME, HubShared, parse_resource_uri, resource_uri};
 use crate::overview;
+use crate::progress::ProgressUpdate;
 
 /// 一个 MCP 会话。
 pub struct McpSession {
@@ -53,6 +55,24 @@ impl Drop for McpSession {
         self.shared.remove_session(self.id);
         self.shared.drop_session_state(&self.key);
     }
+}
+
+/// MCP 请求带 `progressToken` 时：合并后的进度逐条以 `notifications/progress` 发给该客户端（spec/hub-api.md 3.12）。
+/// 转发任务在调用结束（出口被丢弃）后退出。
+fn forward_progress(peer: Peer<RoleServer>, token: ProgressToken) -> call::ProgressSink {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProgressUpdate>();
+    tokio::spawn(async move {
+        while let Some(u) = rx.recv().await {
+            let mut param = ProgressNotificationParam::new(token.clone(), u.progress);
+            param.total = u.total;
+            param.message = u.message;
+            if let Err(e) = peer.notify_progress(param).await {
+                tracing::debug!(error = %e, "进度通知发送失败（MCP 客户端可能已断开）");
+                break;
+            }
+        }
+    });
+    tx
 }
 
 #[allow(deprecated)] // subscribe / unsubscribe 在 rmcp 中标记为仅旧协议可用，本 Hub 只使用旧协议（见模块文档）
@@ -101,6 +121,7 @@ impl ServerHandler for McpSession {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        let progress = context.meta.get_progress_token().map(|token| forward_progress(context.peer.clone(), token));
         let ctx = CallCtx {
             name: request.name.to_string(),
             arguments: Value::Object(request.arguments.unwrap_or_default()),
@@ -110,6 +131,7 @@ impl ServerHandler for McpSession {
             timeout: None,
             call_id: None,
             mcp_session: Some(self.id),
+            progress,
         };
         let ct = context.ct.clone();
         let inv = self

@@ -75,11 +75,17 @@ int main(int argc, char** argv) {
     }, options);
     app_mcp::ToolOptions plain_options;
     plain_options.risk = AM_RISK_READ;
-    auto plain = client.register_tool("plain", "普通", [](app_mcp::Call call) { call.complete(R"({"ok":true})"); },
-                                      plain_options);
+    auto plain = client.register_tool("plain", "普通", [](app_mcp::Call call) {
+        call.progress(1, 2.0, std::string("处理中"));
+        call.progress(2);
+        call.complete(R"({"ok":true})");
+        call.progress(3);  // 已完成：无副作用
+    }, plain_options);
     client.start();
 
     bool info_ok = false, plain_info_ok = false, result_ok = false, plain_ok = false;
+    int progress_lines = 0;
+    bool progress_ok = false;
     while (std::fgets(buf, sizeof buf, host)) {
         std::string line(buf);
         std::fprintf(stderr, "[fake_host] %s", buf);
@@ -94,6 +100,10 @@ int main(int argc, char** argv) {
                         has(R"("stateResource":"order.state")") && has(R"("status":"pending")") &&
                         has("已提交，等待用户在 App 内付款");
         }
+        if (has("\"type\":\"progress\"")) {
+            ++progress_lines;
+            if (has(R"("message":"处理中","progress":1.0,"total":2.0)")) progress_ok = true;
+        }
         if (has("\"type\":\"invoke\"") && has("\"plain\"")) {
             plain_ok = has(R"("result":{"data":{"ok":true}})");
         }
@@ -107,6 +117,8 @@ int main(int argc, char** argv) {
     EXPECT(plain_info_ok);
     EXPECT(result_ok);
     EXPECT(plain_ok);
+    EXPECT(progress_ok);
+    EXPECT(progress_lines == 2);
     int rc = g_failed == 0 ? 0 : 1;
     std::fprintf(stderr, rc == 0 ? "result_cpp: PASS\n" : "result_cpp: FAIL\n");
     return rc;

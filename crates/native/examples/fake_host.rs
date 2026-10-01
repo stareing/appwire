@@ -21,6 +21,7 @@
 //!     然后接受下一个连接，打印 `{"type":"hello","launchToken","resumeToken","wakeReason","toolsCurrent"}`，
 //!     恢复令牌与 `toolsHash` 都与休眠时一致时返回 `toolsCurrent: true`（沿用工具快照）。
 //!     该连接的 `app/ready` 之后照常打印工具列表，并附带 `"synced"`（本连接是否收到了 `tools/sync`）。
+//! - 收到 `tools/progress` 时打印 `{"type":"progress","callId","progress","total"?,"message"?}`（在对应调用结果之前）。
 //! - `--tool-info`：工具列表行另带 `"toolInfo": { <名称>: { risk, annotations?, outputSchema? } }`（核对工具声明）。
 //! - `--lease-ms <ms>`：`app/ready` 之后与每个操作完成后发送 `app/lease { ttlMs }`。
 //! - `--reject-sleep <ms>`：`--await-sleep` 期间收到的第一个 `app/sleep` 以 `retryAfterMs: <ms>` 拒绝，打印
@@ -536,6 +537,11 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                     emit(&line.to_string());
                     started = true;
                     send_lease(&mut ws, host.lease_ms).await?;
+                } else if n.method == method::TOOLS_PROGRESS {
+                    // 进度（spec/protocol.md 3.3）原样打印，供各语言绑定核对 ctx.progress()
+                    let mut line = n.params;
+                    line["type"] = json!("progress");
+                    emit(&line.to_string());
                 } else {
                     if n.method == method::TOOLS_SYNC {
                         synced = true;

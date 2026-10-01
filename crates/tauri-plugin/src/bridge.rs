@@ -141,6 +141,17 @@ enum PageOp {
         #[serde(flatten)]
         outcome: Outcome,
     },
+    /// 页面 handler 的 `context.progress()`（spec/protocol.md 3.3）。
+    #[serde(rename = "call.progress")]
+    CallProgress {
+        #[serde(rename = "callId")]
+        call_id: String,
+        progress: f64,
+        #[serde(default)]
+        total: Option<f64>,
+        #[serde(default)]
+        message: Option<String>,
+    },
     #[serde(rename = "read.result")]
     ReadResult {
         #[serde(rename = "readId")]
@@ -726,6 +737,14 @@ impl Session {
                     // 调用在此期间被取消：忽略。
                     _ => Ok(None),
                 }
+            }
+            PageOp::CallProgress { call_id, progress, total, message } => {
+                // 调用已结束 / 取消时无接收方；进度只是提示，不报错。
+                let call = lock(&self.state).calls.get(&call_id).cloned();
+                if let Some(call) = call {
+                    let _ = call.report_progress(progress, total, message.as_deref());
+                }
+                Ok(None)
             }
             PageOp::ReadResult { read_id, outcome } => {
                 let Some(read) = lock(&self.state).reads.remove(&read_id) else {

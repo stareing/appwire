@@ -67,6 +67,8 @@ impl Hub {
 
     // ---- 操作 ----
     pub async fn call_tool(&self, req: CallRequest) -> Result<CallOutcome, HubError>;
+    pub async fn call_tool_with_progress(&self, req: CallRequest,
+        progress: mpsc::UnboundedSender<ProgressUpdate>) -> Result<CallOutcome, HubError>;   // 3.12
     pub fn cancel_call(&self, call_id: &str);
     pub async fn read_resource(&self, uri: &str) -> Result<ResourceContent, HubError>;
     pub fn subscribe(&self, uri: &str) -> Result<(), HubError>;
@@ -130,7 +132,7 @@ pub struct CallRequest {
     pub arguments: Value,
     pub instance_id: Option<String>, // 指定实例；None 按路由规则
     pub timeout: Option<Duration>,
-    pub call_id: Option<String>,     // 供 cancel_call；None 自动生成
+    pub call_id: Option<String>,     // 供 cancel_call；None 自动生成。以同一 call_id 重试时 App 只执行一次（spec/protocol.md 3.3）
     pub session: Option<String>,     // 厂商会话 ID：用于"首次接触附带总览"按会话计算；None = 默认会话
 }
 pub struct CallOutcome {
@@ -615,6 +617,20 @@ rmcp 的 `server` / `client` 始终开启（模型类型与 `Peer`）。
 - `app-mcp-host doctor`：「资源保护」检查显示策略与各 App 被拒绝次数（有拒绝时为注意）；「工具声明」检查逐个列出每个工具的
   `risk` 与 Agent 实际看到的注解（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` / `title`，注明是声明的还是按
   `risk` 推导的、是否有 `outputSchema`），`--json` 的 `details` 原样给出 `AppStatus.tools`（`ToolDeclaration { name, risk, annotations?, effective, output_schema }`）。
+
+### 3.12 进度与取消（第 16 项 O2）
+
+App 报告进度的消息与 SDK 行为见 spec/protocol.md 3.3（唯一定义）；Hub 侧只做转发与保护 Agent：
+
+- **接收方**：MCP 出口——`tools/call` 请求带 `_meta.progressToken` 时，进度以 `notifications/progress { progressToken, progress,
+  total?, message? }` 发给该会话（rmcp `Peer::notify_progress`）；Hub API——`Hub::call_tool_with_progress` 的 `progress` 通道收到
+  `ProgressUpdate { progress, total, message }`。没有接收方时（普通 `call_tool`、MCP 请求不带 token）进度被丢弃。上游 MCP 服务器的进度不转发。
+- **合并**：`HubConfig::progress_interval`（默认 250 ms；`app-mcp-host` 配置文件 `tools.progressIntervalMs`）——两次转发至少间隔该时长，
+  间隔内只保留最新一条、到期再发；0 = 不合并。任何情况下不递增的进度都丢弃（MCP 要求递增），`message` 截断到 200 字符
+  （`crates/hub/src/progress.rs`）。调用结束时未发出的进度丢弃。
+- **路由**：只接受被路由到该调用的那条 App 连接发来的 `tools/progress`，其他连接以同一 `callId` 发来的进度忽略（记 warn 日志）。
+- **取消**：MCP `notifications/cancelled`（rmcp 取消请求的 `CancellationToken`）与 `Hub::cancel_call` 共用一条路径：等待审批 / 唤醒中
+  直接结束；已转发给 App 时发送 `tools/cancel`，SDK 取消 handler（各语言的取消信号 / 监听），调用以 `CANCELLED` 结束。
 
 ## 4. 进程内 App（可选，M2）
 

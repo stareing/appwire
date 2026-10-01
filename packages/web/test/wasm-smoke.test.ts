@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import type { CoreFactory } from '../src/core'
 import { AppMcpDriver } from '../src/driver'
-import { ToolCallError } from '../src/types'
+import { ToolCallError, type ToolContext } from '../src/types'
 import { wasmCoreFactory, type WasmBindings } from '../src/wasm-loader'
 import { FakeSocket, settle, silentLogger } from './fakes'
 
@@ -49,11 +49,16 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     )
     const sent = (): Json[] => (sockets[0]?.sent ?? []).map((t) => JSON.parse(t) as Json)
 
+    let adds = 0
     app.tool('cart.add', {
       description: '加入购物车',
       input: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
       risk: 'write',
-      handler: ({ id }: { id: string }) => ({ data: { added: id }, stateHints: ['cart.state'] }),
+      handler: ({ id }: { id: string }, ctx?: ToolContext) => {
+        adds++
+        ctx?.progress?.(1, 2, '校验库存')
+        return { data: { added: id }, stateHints: ['cart.state'] }
+      },
     })
     app.tool('order.submit', {
       description: '提交订单',
@@ -120,6 +125,18 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     await settle()
     const r1 = sent().find((m) => m.id === 'h1') as Json
     expect(r1.result).toEqual({ data: { added: 'p1' }, stateHints: ['cart.state'] })
+    // 进度（spec/protocol.md 3.3）
+    expect(sent().find((m) => m.method === 'tools/progress')?.params).toEqual({
+      callId: 'c1',
+      progress: 1,
+      total: 2,
+      message: '校验库存',
+    })
+    // 同一 callId 再次到达：重放首次结果，handler 不再执行
+    ws.receive(JSON.stringify({ jsonrpc: '2.0', id: 'h1b', method: 'tools/invoke', params: { callId: 'c1', name: 'cart.add', arguments: { id: 'p1' } } }))
+    await settle()
+    expect((sent().find((m) => m.id === 'h1b') as Json).result).toEqual(r1.result)
+    expect(adds).toBe(1)
 
     // 结构化结果
     ws.receive(JSON.stringify({ jsonrpc: '2.0', id: 'h4', method: 'tools/invoke', params: { callId: 'c4', name: 'order.submit', arguments: {} } }))

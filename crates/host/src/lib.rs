@@ -143,6 +143,7 @@ fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
         tool_exposure_threshold: s.tool_exposure_threshold,
         limits: s.limits.clone(),
         output_validation: s.output_validation,
+        progress_interval: Duration::from_millis(s.progress_interval_ms),
         ..defaults
     }
 }

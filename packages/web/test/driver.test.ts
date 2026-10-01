@@ -21,6 +21,7 @@ describe('创建与加载', () => {
     const h = setup({
       appVersion: '1.2.3',
       maxConcurrentCalls: 3,
+      callDedup: { ttlMs: 60_000 },
       overview: { summary: '演示商城', body: '## 能力范围', locale: 'zh-CN' },
     })
     await settle()
@@ -31,6 +32,7 @@ describe('创建与加载', () => {
       clientKind: 'web',
       appVersion: '1.2.3',
       maxConcurrentCalls: 3,
+      callDedup: { ttlMs: 60_000 },
       token: 'tk-1',
       overview: { summary: '演示商城', body: '## 能力范围', locale: 'zh-CN' },
     })

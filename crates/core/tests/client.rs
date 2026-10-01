@@ -795,14 +795,42 @@ fn stop_cancels_and_stays_stopped() {
 }
 
 #[test]
-fn duplicate_call_id_is_rejected() {
+fn duplicate_call_id_attaches_or_is_rejected_when_dedup_off() {
+    // 去重开启（默认）：执行中的重复请求挂到同一次执行上，完成时两者得到同一结果
     let mut h = Harness::new();
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    h.invoke(1, "c1", "a", None);
+    let ev = h.invoke(2, "c1", "a", None);
+    assert!(ev.is_empty(), "不执行、不立即回复：{ev:?}");
+    h.c.complete_call("c1", Ok(CallOutput { data: json!(5), ..CallOutput::default() }), h.now).unwrap();
+    let msgs = sends(&h.drain());
+    assert_eq!(msgs.iter().map(|m| m["id"].clone()).collect::<Vec<_>>(), vec![json!(2), json!(1)]);
+    assert!(msgs.iter().all(|m| m["result"] == json!({"data": 5})));
+
+    // 排队中的重复请求同样挂接
+    let mut h = Harness::new();
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    h.invoke(1, "c1", "a", None);
+    h.invoke(2, "c2", "a", None);
+    assert!(h.invoke(3, "c2", "a", None).is_empty());
+    h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
+    assert_eq!(invoked(&h.drain()), vec!["c2".to_owned()], "c2 只执行一次");
+
+    // 关闭去重：旧行为
+    let mut cfg = config();
+    cfg.call_dedup = CallDedupPolicy::OFF;
+    let mut h = Harness::with(cfg);
     h.c.register_tool(tool("a")).unwrap();
     h.connect();
     h.invoke(1, "c1", "a", None);
     let msgs = sends(&h.invoke(2, "c1", "a", None));
     assert_eq!(msgs[0]["id"], 2);
     assert_eq!(msgs[0]["error"]["code"], -32602);
+    h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
+    h.drain();
+    assert_eq!(invoked(&h.invoke(3, "c1", "a", None)), vec!["c1".to_owned()], "关闭时完成后再次执行");
 }
 
 // ---------------------------------------------------------------------------
@@ -1297,4 +1325,124 @@ fn reported_issues_are_sent_after_handshake() {
     let ev = h3.connect();
     let n = methods(&sends(&ev)).iter().filter(|m| **m == "app/diagnostic").count();
     assert_eq!(n, MAX_PENDING_DIAGNOSTICS);
+}
+
+// ---------------------------------------------------------------------------
+// 调用去重（spec/protocol.md 3.3，第 16 项 U1 / N7a）
+// ---------------------------------------------------------------------------
+
+/// U1 复现：handler 已完成、结果还没发出连接就断了（结果随连接丢弃，Host 只能报"结果未知"）；
+/// 同一 callId 在回连后再次到达时不能再执行一次，而是重放首次结果。
+#[test]
+fn u1_same_call_id_after_reconnect_runs_once() {
+    let mut h = Harness::new();
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    assert_eq!(invoked(&h.invoke(1, "c1", "a", None)), vec!["c1".to_owned()]);
+    h.c.complete_call("c1", Ok(CallOutput { data: json!({"orderId": "o1"}), ..CallOutput::default() }), h.now).unwrap();
+    // 驱动层还没取走响应，连接已断：响应被丢弃
+    h.c.handle_disconnected(h.now);
+    let ev = h.drain();
+    assert!(sends(&ev).is_empty(), "断线时丢弃未发出的响应");
+
+    h.advance(500);
+    h.c.handle_connected(h.now);
+    let hello = sends(&h.drain())[0].clone();
+    h.hello_result(&hello, json!({"status": "paired", "protocolVersion": "1", "hostVersion": "0.1.0"}));
+    let ev = h.invoke(7, "c1", "a", None);
+    assert!(invoked(&ev).is_empty(), "同一 callId 不再执行 handler");
+    let msgs = sends(&ev);
+    assert_eq!(msgs, vec![json!({"jsonrpc": "2.0", "id": 7, "result": {"data": {"orderId": "o1"}}})]);
+}
+
+/// 执行中断线：首次执行被中断（handler 已收到取消），回连后同一 callId 得到"中断、结果未知"，不再执行。
+#[test]
+fn interrupted_call_replays_interruption() {
+    let mut h = Harness::new();
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    h.invoke(1, "c1", "a", None);
+    h.c.handle_disconnected(h.now);
+    assert_eq!(cancelled(&h.drain()), vec![("c1".into(), CancelReason::Disconnected)]);
+    h.advance(500);
+    h.c.handle_connected(h.now);
+    let hello = sends(&h.drain())[0].clone();
+    h.hello_result(&hello, json!({"status": "paired", "protocolVersion": "1", "hostVersion": "0.1.0"}));
+    let ev = h.invoke(2, "c1", "a", None);
+    assert!(invoked(&ev).is_empty());
+    let msgs = sends(&ev);
+    assert_eq!(error_kind(&msgs[0]), "CANCELLED");
+    assert_eq!(msgs[0]["error"]["data"]["interrupted"], true);
+    assert_eq!(msgs[0]["error"]["data"]["callId"], "c1");
+}
+
+/// 已开始执行的超时 / 取消记为首次结果；排队中被取消、超时的调用 handler 没执行过，同一 callId 可以重新执行。
+#[test]
+fn dedup_records_only_started_calls() {
+    let mut h = Harness::new();
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    h.invoke(1, "run", "a", Some(100));
+    h.invoke(2, "queued", "a", None);
+    h.recv(json!({"jsonrpc": "2.0", "method": "tools/cancel", "params": {"callId": "queued"}}));
+    h.advance(100);
+    assert_eq!(invoked(&h.drain()), Vec::<String>::new());
+    let ev = h.invoke(3, "run", "a", None);
+    assert!(invoked(&ev).is_empty());
+    assert_eq!(error_kind(&sends(&ev)[0]), "TIMEOUT", "超时结果被重放");
+    assert_eq!(invoked(&h.invoke(4, "queued", "a", None)), vec!["queued".to_owned()], "排队中取消的可重新执行");
+    h.recv(json!({"jsonrpc": "2.0", "method": "tools/cancel", "params": {"callId": "queued"}}));
+    assert_eq!(error_kind(&sends(&h.invoke(5, "queued", "a", None))[0]), "CANCELLED", "执行中取消记为首次结果");
+}
+
+#[test]
+fn dedup_expires_and_is_bounded() {
+    let mut cfg = config();
+    cfg.call_dedup = CallDedupPolicy { ttl_ms: 1_000, max_entries: 1 };
+    let mut h = Harness::with(cfg);
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    for (id, call) in [(1, "c1"), (2, "c2")] {
+        h.invoke(id, call, "a", None);
+        h.c.complete_call(call, Ok(CallOutput::default()), h.now).unwrap();
+        h.drain();
+    }
+    assert_eq!(invoked(&h.invoke(3, "c1", "a", None)), vec!["c1".to_owned()], "超出条数上限的最早记录被淘汰");
+    h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
+    h.drain();
+    assert!(invoked(&h.invoke(4, "c1", "a", None)).is_empty());
+    h.advance(1_000);
+    assert_eq!(invoked(&h.invoke(5, "c1", "a", None)), vec!["c1".to_owned()], "过期后重新执行");
+}
+
+// ---------------------------------------------------------------------------
+// 进度（spec/protocol.md 3.3，第 16 项 O2）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn progress_is_sent_for_running_calls_only() {
+    let mut h = Harness::new();
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    h.invoke(1, "c1", "a", None);
+    h.invoke(2, "c2", "a", None);
+    h.c.report_progress("c1", 1.0, Some(4.0), Some("第 1 步".into()), h.now).unwrap();
+    h.c.report_progress("c1", 2.0, Some(f64::NAN), None, h.now).unwrap();
+    let ev = h.drain();
+    assert_eq!(
+        sends(&ev),
+        vec![
+            json!({"jsonrpc": "2.0", "method": "tools/progress", "params": {"callId": "c1", "progress": 1.0, "total": 4.0, "message": "第 1 步"}}),
+            json!({"jsonrpc": "2.0", "method": "tools/progress", "params": {"callId": "c1", "progress": 2.0}}),
+        ]
+    );
+    h.c.report_progress("c1", f64::INFINITY, None, None, h.now).unwrap();
+    let ev = h.drain();
+    assert!(sends(&ev).is_empty());
+    assert_eq!(warnings(&ev), 1);
+    assert_eq!(h.c.report_progress("c2", 1.0, None, None, h.now), Err(CoreError::UnknownCall("c2".into())), "排队中");
+    assert_eq!(h.c.report_progress("x", 1.0, None, None, h.now), Err(CoreError::UnknownCall("x".into())));
+    h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
+    h.drain();
+    assert_eq!(h.c.report_progress("c1", 3.0, None, None, h.now), Err(CoreError::UnknownCall("c1".into())), "已完成");
 }

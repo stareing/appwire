@@ -89,6 +89,8 @@ export type RendererOp =
   | { op: 'scope.create'; id: number; scopeId?: number; name: string }
   | { op: 'scope.dispose'; id: number }
   | ({ op: 'call.result'; callId: string } & Outcome)
+  /** handler 的 `context.progress()`（spec/protocol.md 3.3），主进程转给 @app-mcp/node 的同名方法。 */
+  | { op: 'call.progress'; callId: string; progress: number; total?: number; message?: string }
   | ({ op: 'read.result'; readId: number } & Outcome)
   /** 生命周期（转给主进程的 @app-mcp/node 客户端）：回连。 */
   | { op: 'lifecycle.wake' }
@@ -308,7 +310,23 @@ class Client {
           )
         })
     handler
-      .then((fn) => fn(value, { callId, signal: controller.signal, hold: () => this.hold() }))
+      .then((fn) =>
+        fn(value, {
+          callId,
+          signal: controller.signal,
+          hold: () => this.hold(),
+          progress: (progress: number, total?: number, message?: string) => {
+            if (controller.signal.aborted || !this.calls.has(callId)) return
+            this.send({
+              op: 'call.progress',
+              callId,
+              progress,
+              ...(total !== undefined && { total }),
+              ...(message !== undefined && { message }),
+            })
+          },
+        }),
+      )
       .then(
         (result) => {
           let normalized: NormalizedResult

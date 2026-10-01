@@ -529,6 +529,10 @@ final class AppMcpBindings {
   late final am_call_hold = library.lookupFunction<
       Int32 Function(Pointer<AmCall>, Pointer<Pointer<AmHold>>),
       int Function(Pointer<AmCall>, Pointer<Pointer<AmHold>>)>('am_call_hold');
+  // v10
+  late final am_call_progress = library.lookupFunction<
+      Int32 Function(Pointer<AmCall>, Double, Double, Pointer<Utf8>),
+      int Function(Pointer<AmCall>, double, double, Pointer<Utf8>)>('am_call_progress');
 
   // 资源读取
   late final am_read_resource_name = library.lookupFunction<

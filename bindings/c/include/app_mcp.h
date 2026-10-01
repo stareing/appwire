@@ -50,7 +50,9 @@
  *   · AmResultStatus、AmCallResult（带 struct_size）+ am_call_complete_ex：结构化调用结果（业务状态 done / pending /
  *     partial / noop、state_resource、summary、内容注解 annotations_json）。am_call_complete 等同于只给 data_json 与 state_hints。
  *   · am_call_fail 的错误类别新增 "RATE_LIMITED"、"PAYLOAD_TOO_LARGE"（由 Host 产生，App 一般不用）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v9 仍为 3。）
+ * - v10（第 16 项 O2 / N7a，spec/protocol.md 3.3）：只新增函数 am_call_progress（报告调用进度）。默认行为变化：
+ *   同一 callId 在 5 分钟内重复到达时不再调用 handler，而是返回首次结果（执行中重复到达的挂到同一次执行上）。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v10 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -483,6 +485,11 @@ AmStatus am_call_fail_with_details(AmCall *call, const char *kind, const char *m
 /* v3：延长持有：调用完成后仍阻止自动休眠（handler 发起的长任务），直到 am_hold_release。
  * 不消费 call；调用已结束时返回 AM_ERR_ALREADY_COMPLETED。 */
 AmStatus am_call_hold(const AmCall *call, AmHold **out);
+/* v10：报告进度（spec/protocol.md 3.3），Host 合并后转发给 Agent。progress 应递增（不递增的值被 Host 丢弃）；
+ * total 为负数或 NaN 表示总量未知；message 可为 NULL。不消费 call，必须在完成 call 之前调用。
+ * 未连接时丢弃并返回 AM_OK；调用已结束（取消、超时）时返回 AM_ERR_ALREADY_COMPLETED；
+ * message 含非法 UTF-8 时返回 AM_ERR_INVALID_ARGUMENT。 */
+AmStatus am_call_progress(const AmCall *call, double progress, double total, const char *message);
 
 /* ---------------------------------------------------------------------------
  * 资源读取

@@ -8,13 +8,15 @@ use app_mcp_protocol as proto;
 use proto::{
     ErrorKind, HelloParams, HelloResult, Message, Notification, PairingResultParams, PairingStatus, Request,
     RequestId, ResourceSubscribeParams, ResourceUpdatedParams, ResourcesReadParams, ResourcesReadResult, Response,
-    RpcError, ToolError, ToolsCancelParams, ToolsInvokeParams, ToolsInvokeResult, VisibilityParams, method,
+    RpcError, ToolError, ToolsCancelParams, ToolsInvokeParams, ToolsInvokeResult, ToolsProgressParams, VisibilityParams,
+    method,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::calls::Call;
+use crate::dedup::Outcome;
 use crate::{
     CallOutput, CancelReason, Client, ConnectionErrorCode, ConnectionIssue, ConnectionState, Event, LifecycleMode,
     Millis, ReadId, ResourceId, SleepReason, Visibility,
@@ -91,6 +93,23 @@ fn to_value<T: Serialize>(v: &T) -> Value {
 
 fn tool_error(kind: ErrorKind, message: impl Into<String>) -> RpcError {
     ToolError::new(kind, message).into()
+}
+
+/// 执行中被断线 / 停止打断的调用在去重表中的结果：同一 `callId` 再次到达时如实告知"结果未知"，不再执行一次。
+fn interrupted_error(call: &Call, reason: CancelReason) -> RpcError {
+    let cause = match reason {
+        CancelReason::Stopped => "客户端停止",
+        _ => "连接断开",
+    };
+    ToolError::new(
+        ErrorKind::Cancelled,
+        format!(
+            "工具 {} 的这次调用（callId {}）此前执行时因{cause}被中断，结果未知：App 内可能已部分或全部执行。请先确认状态，再决定是否以新的调用重试。",
+            call.name, call.call_id
+        ),
+    )
+    .with_details(json!({ "callId": call.call_id, "interrupted": true }))
+    .into()
 }
 
 impl Client {
@@ -182,6 +201,8 @@ impl Client {
             self.events.retain(|e| !matches!(e, Event::Send(_)));
         }
         for call in self.calls.clear() {
+            let outcome = Err(interrupted_error(&call, reason));
+            self.dedup.record(&self.config.call_dedup, &call.call_id, outcome, self.life.last_now);
             self.events.push_back(Event::CancelTool { call_id: call.call_id, reason });
         }
         // @why 订阅随连接清空、由 Host 回连后重新订阅；记下断开时的订阅，期间的变化在重新订阅时补发（B3）。
@@ -386,10 +407,10 @@ impl Client {
         let (running, queued) = self.calls.take_expired(now);
         for call in running {
             self.events.push_back(Event::CancelTool { call_id: call.call_id.clone(), reason: CancelReason::Timeout });
-            self.respond_timeout(call);
+            self.respond_timeout(call, true);
         }
         for call in queued {
-            self.respond_timeout(call);
+            self.respond_timeout(call, false);
         }
         self.pump_calls();
 
@@ -415,13 +436,39 @@ impl Client {
         }
     }
 
-    fn respond_timeout(&mut self, call: Call) {
+    fn respond_timeout(&mut self, call: Call, started: bool) {
         let ms = call.timeout_ms.unwrap_or(0);
         let err = tool_error(
             ErrorKind::Timeout,
             format!("工具 {} 在 {ms}ms 内未完成，已取消。可以稍后重试，或检查 App 是否卡住。", call.name),
         );
-        self.respond(call.request_id, Err(err));
+        self.respond_call(call, Err(err), started);
+    }
+
+    /// 回复一次调用及挂在它上面的重复请求；`started`（handler 已开始执行）时把结果记入去重表（spec/protocol.md 3.3）。
+    fn respond_call(&mut self, call: Call, outcome: Outcome, started: bool) {
+        if started {
+            self.dedup.record(&self.config.call_dedup, &call.call_id, outcome.clone(), self.life.last_now);
+        }
+        for id in call.waiters {
+            self.respond(id, outcome.clone());
+        }
+        self.respond(call.request_id, outcome);
+    }
+
+    /// 发送 `tools/progress`（调用方已确认调用在执行中）。未连接时丢弃。
+    pub(crate) fn send_progress(&mut self, call_id: &str, progress: f64, total: Option<f64>, message: Option<String>) {
+        if !self.connected() {
+            return;
+        }
+        if !progress.is_finite() {
+            // @why 不格式化 f64：core::fmt 的浮点格式化会给 WASM 增加约 2 KB（gzip）。
+            self.warn(format!("调用 {call_id:?} 的进度不是有限数，已丢弃"));
+            return;
+        }
+        let params =
+            ToolsProgressParams { call_id: call_id.to_owned(), progress, total: total.filter(|t| t.is_finite()), message };
+        self.notify(method::TOOLS_PROGRESS, &params);
     }
 
     // ---- 调用 -----------------------------------------------------------
@@ -437,14 +484,14 @@ impl Client {
                         ErrorKind::ToolNotFound,
                         format!("工具 {} 在排队期间已被注销。请重新获取工具列表。", call.name),
                     );
-                    self.respond(call.request_id, Err(err));
+                    self.respond_call(call, Err(err), false);
                 }
                 Some(def) if !def.enabled => {
                     let err = tool_error(
                         ErrorKind::ToolDisabled,
                         format!("工具 {} 在排队期间已被禁用，当前不可用。", call.name),
                     );
-                    self.respond(call.request_id, Err(err));
+                    self.respond_call(call, Err(err), false);
                 }
                 Some(_) => {
                     self.events.push_back(Event::InvokeTool {
@@ -471,15 +518,24 @@ impl Client {
             })),
             Err(e) => Err(RpcError::from(e)),
         };
-        self.respond(call.request_id, outcome);
+        self.respond_call(call, outcome, true);
         self.pump_calls();
     }
 
     fn on_invoke(&mut self, id: RequestId, p: ToolsInvokeParams, now: Millis) {
         self.session.served_call = true;
+        // 去重（spec/protocol.md 3.3）：已开始执行过的 callId 重放首次结果；进行中 / 排队中的挂到同一次执行上。
+        if let Some(outcome) = self.dedup.lookup(&self.config.call_dedup, &p.call_id, now) {
+            self.respond(id, outcome);
+            return;
+        }
         if self.calls.contains(&p.call_id) {
-            let err = RpcError::invalid_params(format!("callId {:?} 已存在", p.call_id));
-            self.respond(id, Err(err));
+            if self.config.call_dedup.enabled() {
+                self.calls.attach(&p.call_id, id);
+            } else {
+                let err = RpcError::invalid_params(format!("callId {:?} 已存在", p.call_id));
+                self.respond(id, Err(err));
+            }
             return;
         }
         let tool = match self.registry.tool_by_name(&p.name) {
@@ -508,23 +564,24 @@ impl Client {
             arguments: p.arguments,
             timeout_ms: p.timeout_ms,
             deadline: p.timeout_ms.map(|t| now.saturating_add(t)),
+            waiters: Vec::new(),
         });
         self.pump_calls();
     }
 
     fn on_cancel(&mut self, p: ToolsCancelParams) {
         let reason = p.reason.as_deref().map(|r| format!("：{r}")).unwrap_or_default();
-        let call = if let Some(call) = self.calls.take_running(&p.call_id) {
+        let (call, started) = if let Some(call) = self.calls.take_running(&p.call_id) {
             self.events.push_back(Event::CancelTool { call_id: call.call_id.clone(), reason: CancelReason::Requested });
-            call
+            (call, true)
         } else if let Some(call) = self.calls.take_queued(&p.call_id) {
-            call
+            (call, false)
         } else {
             self.warn(format!("tools/cancel 指向未知或已结束的调用 {:?}", p.call_id));
             return;
         };
         let err = tool_error(ErrorKind::Cancelled, format!("工具 {} 的调用已被取消{reason}", call.name));
-        self.respond(call.request_id, Err(err));
+        self.respond_call(call, Err(err), started);
         self.pump_calls();
     }
 

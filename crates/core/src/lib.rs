@@ -25,6 +25,7 @@
 
 mod calls;
 mod connection;
+mod dedup;
 mod lifecycle;
 mod registry;
 mod vec_map;
@@ -39,6 +40,7 @@ pub use proto::{
     DiagnosticParams, LifecycleMode, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolError, TransportKind, Visibility,
     WakeDescriptor, WakeKind, WakeReason,
 };
+pub use dedup::CallDedupPolicy;
 pub use lifecycle::parse_wake_token;
 
 /// 调用方提供的单调时钟（毫秒）。
@@ -84,6 +86,9 @@ pub struct ClientConfig {
     /// （[`app_mcp_protocol::Endpoint::transport_kind`]）。[`HeartbeatMode::Auto`] 下本地传输（IPC / 本机回环）不发心跳。
     /// 默认 [`TransportKind::Unknown`]（按远程处理）。
     pub transport: TransportKind,
+    /// 调用去重（spec/protocol.md 3.3）：同一 `callId` 在有效期内只执行一次、重复请求得到首次结果。
+    /// 默认保留 5 分钟、最多 64 条；[`CallDedupPolicy::OFF`] 关闭。
+    pub call_dedup: CallDedupPolicy,
 }
 
 impl ClientConfig {
@@ -115,6 +120,7 @@ impl ClientConfig {
             lifecycle: LifecyclePolicy::default(),
             expected_host_user: None,
             transport: TransportKind::Unknown,
+            call_dedup: CallDedupPolicy::default(),
         }
     }
 }
@@ -472,6 +478,8 @@ pub struct Client {
     events: VecDeque<Event>,
     registry: registry::Registry,
     calls: calls::Calls,
+    /// 已开始执行的调用的首次结果（跨连接保留，spec/protocol.md 3.3）。
+    dedup: dedup::DedupTable,
     session: connection::Session,
     visibility: Visibility,
     focused: bool,
@@ -497,6 +505,7 @@ impl Client {
             events: VecDeque::new(),
             registry: registry::Registry::default(),
             calls: calls::Calls::default(),
+            dedup: dedup::DedupTable::default(),
             session: connection::Session::default(),
             visibility: Visibility::Visible,
             focused: true,
@@ -747,6 +756,26 @@ impl Client {
         let call = self.calls.take_running(call_id).ok_or_else(|| CoreError::UnknownCall(call_id.to_owned()))?;
         self.finish_call(call, outcome);
         self.refresh_idle(now);
+        Ok(())
+    }
+
+    /// 报告进行中调用的进度（`tools/progress`，spec/protocol.md 3.3）。
+    ///
+    /// 未连接时丢弃（进度只是提示）；`progress` 不是有限数时丢弃并产生 [`Event::Warning`]，非有限的 `total` 视为未知。
+    /// 调用不在执行中（排队、已完成、已取消）返回 [`CoreError::UnknownCall`]。
+    pub fn report_progress(
+        &mut self,
+        call_id: &str,
+        progress: f64,
+        total: Option<f64>,
+        message: Option<String>,
+        now: Millis,
+    ) -> Result<(), CoreError> {
+        self.life.last_now = now;
+        if !self.calls.is_running(call_id) {
+            return Err(CoreError::UnknownCall(call_id.to_owned()));
+        }
+        self.send_progress(call_id, progress, total, message);
         Ok(())
     }
 

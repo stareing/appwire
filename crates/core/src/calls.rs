@@ -18,6 +18,8 @@ pub(crate) struct Call {
     pub timeout_ms: Option<Millis>,
     /// 从收到请求起算的截止时刻（包含排队时间）。
     pub deadline: Option<Millis>,
+    /// 执行期间到达的同一 `callId` 的重复请求（spec/protocol.md 3.3），完成时一并回复。
+    pub waiters: Vec<RequestId>,
 }
 
 #[derive(Debug, Default)]
@@ -29,6 +31,21 @@ pub(crate) struct Calls {
 impl Calls {
     pub fn contains(&self, call_id: &str) -> bool {
         self.running.iter().chain(self.queued.iter()).any(|c| c.call_id == call_id)
+    }
+
+    pub fn is_running(&self, call_id: &str) -> bool {
+        self.running.iter().any(|c| c.call_id == call_id)
+    }
+
+    /// 把重复请求挂到同一 `callId` 的进行中 / 排队调用上；没有该调用时返回 `false`。
+    pub fn attach(&mut self, call_id: &str, request_id: RequestId) -> bool {
+        match self.running.iter_mut().chain(self.queued.iter_mut()).find(|c| c.call_id == call_id) {
+            Some(c) => {
+                c.waiters.push(request_id);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn running_len(&self) -> usize {
@@ -95,6 +112,7 @@ mod tests {
             arguments: Value::Null,
             timeout_ms: None,
             deadline,
+            waiters: Vec::new(),
         }
     }
 
@@ -113,5 +131,18 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(c.running_len(), 0);
         assert!(!c.contains("a"));
+    }
+
+    #[test]
+    fn attach_to_running_or_queued() {
+        let mut c = Calls::default();
+        c.start(call("a", None));
+        c.enqueue(call("b", None));
+        assert!(c.is_running("a") && !c.is_running("b"));
+        assert!(c.attach("a", RequestId::from("a2")));
+        assert!(c.attach("b", RequestId::from("b2")));
+        assert!(!c.attach("x", RequestId::from("x2")));
+        assert_eq!(c.take_running("a").map(|x| x.waiters), Some(vec![RequestId::from("a2")]));
+        assert_eq!(c.take_queued("b").map(|x| x.waiters), Some(vec![RequestId::from("b2")]));
     }
 }

@@ -6,7 +6,7 @@
  */
 
 import type { NormalizedResult } from './result'
-import type { Activation, AppOverview, ErrorKind, JsonSchema, OutputSchema, Risk, ToolAnnotations, Visibility } from './types'
+import type { Activation, AppOverview, CallDedupOptions, ErrorKind, JsonSchema, OutputSchema, Risk, ToolAnnotations, Visibility } from './types'
 
 export interface CoreConfig {
   appId: string
@@ -32,6 +32,8 @@ export interface CoreConfig {
   lifecycle?: CoreLifecycle
   /** 到 Host 的传输类别（spec/lifecycle.md 第 11 节），缺省未知（按远程处理）。 */
   transport?: 'ipc' | 'loopback' | 'remote'
+  /** 调用去重（spec/protocol.md 3.3），缺省保留 5 分钟、最多 64 条；任一为 0 关闭。 */
+  callDedup?: CallDedupOptions
 }
 
 export interface CoreWakeDescriptor {
@@ -164,6 +166,8 @@ export interface CoreClient {
   hold(now: number): number
   /** 调用不存在时抛错。 */
   holdForCall(callId: string, now: number): number
+  /** 报告进行中调用的进度（spec/protocol.md 3.3）。调用不在执行中时抛错；未连接时丢弃。 */
+  reportProgress(callId: string, progress: number, total: number | undefined, message: string | undefined, now: number): void
   releaseHold(hold: number, now: number): boolean
   toolsHash(): string
   resumeToken(): string | undefined

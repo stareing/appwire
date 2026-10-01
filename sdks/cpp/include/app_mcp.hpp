@@ -573,6 +573,15 @@ public:
         return HoldGuard(h);
     }
 
+    /// 报告进度（app_mcp.h v10，spec/protocol.md 3.3）：Host 合并后转发给 Agent。progress 应递增，total 未知时省略。
+    /// 必须在完成调用之前、在完成调用的同一线程上调用；调用已完成或已取消、未连接时无副作用（不抛出）。
+    void progress(double progress, std::optional<double> total = std::nullopt,
+                  const std::optional<std::string>& message = std::nullopt) const noexcept {
+        AmCall* c = state_ ? state_->raw.load() : nullptr;
+        if (!c) return;
+        am_call_progress(c, progress, total.value_or(-1.0), message ? message->c_str() : nullptr);
+    }
+
 private:
     AmCall* take() {
         AmCall* c = state_ ? state_->take() : nullptr;

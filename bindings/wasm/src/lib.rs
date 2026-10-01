@@ -255,6 +255,19 @@ impl WasmClient {
         Ok(id.0 as f64)
     }
 
+    /// 报告进行中调用的进度（handler 的 `context.progress()`，spec/protocol.md 3.3）。调用不在执行中时抛错；未连接时丢弃。
+    #[wasm_bindgen(js_name = reportProgress)]
+    pub fn report_progress(
+        &mut self,
+        call_id: &str,
+        progress: f64,
+        total: Option<f64>,
+        message: Option<String>,
+        now: f64,
+    ) -> Result<(), JsError> {
+        self.inner.report_progress(call_id, progress, total, message, millis(now)).map_err(core_err)
+    }
+
     /// 释放持有。已释放或未知的句柄返回 `false`。
     #[wasm_bindgen(js_name = releaseHold)]
     pub fn release_hold(&mut self, hold: f64, now: f64) -> Result<bool, JsError> {

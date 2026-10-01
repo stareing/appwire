@@ -210,7 +210,10 @@ void main() {
             stateResource: 'order.state',
             summary: '已提交，等待用户在 App 内付款',
             annotations: ContentAnnotations(priority: 0.5)));
-    client.tool('plain', description: '普通', risk: Risk.read, handler: (args, ctx) => {'ok': true});
+    client.tool('plain', description: '普通', risk: Risk.read, handler: (args, ctx) {
+      ctx.progress(1, total: 2, message: '处理中');
+      return {'ok': true};
+    });
     client.start();
     try {
       final tools = await host.nextJson();
@@ -236,6 +239,9 @@ void main() {
         'summary': '已提交，等待用户在 App 内付款',
         'annotations': {'priority': 0.5},
       });
+      final progress = await host.nextJson();
+      expect(progress['type'], 'progress');
+      expect([progress['progress'], progress['total'], progress['message']], [1.0, 2.0, '处理中']);
       final plain = await host.nextJson();
       expect(plain['result'], {
         'data': {'ok': true}

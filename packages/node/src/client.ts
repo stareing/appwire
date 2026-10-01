@@ -333,6 +333,14 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
       callId: call.callId,
       signal: controller.signal,
       hold: (): HoldHandle => (call.hold ? wrapHold(call.hold()) : NOOP_HOLD),
+      progress: (progress: number, total?: number, message?: string): void => {
+        if (controller.signal.aborted) return
+        try {
+          call.reportProgress?.(progress, total ?? null, message ?? null)
+        } catch {
+          // @why 调用刚结束时原生层报 ALREADY_COMPLETED：进度只是提示，不影响结果。
+        }
+      },
     }
     handler
       .then((fn) => {

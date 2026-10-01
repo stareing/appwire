@@ -78,6 +78,7 @@ final class IntegrationTests: XCTestCase {
         try client.tool("math.add", description: "两数相加", risk: .read) { (args: AddArgs, ctx) in
             dispatchPrecondition(condition: .onQueue(.main))
             ctx.addStateHint("cart")
+            ctx.progress(1, total: 2, message: "相加")
             return ["sum": args.a + args.b]
         }
         try client.tool("greet", description: "问候") { (g: Greeting, _) in "你好，\(g.name)" }
@@ -102,7 +103,12 @@ final class IntegrationTests: XCTestCase {
         }
         XCTAssertEqual(lines.first?["type"] as? String, "tools")
         var results: [String: [String: Any]] = [:]
-        for l in lines.dropFirst() { results[l["name"] as! String] = l }
+        for l in lines.dropFirst() where l["type"] as? String != "progress" { results[l["name"] as! String] = l }
+        let progress = lines.filter { $0["type"] as? String == "progress" }
+        XCTAssertEqual(progress.count, 1)
+        XCTAssertEqual(progress.first?["progress"] as? Double, 1)
+        XCTAssertEqual(progress.first?["total"] as? Double, 2)
+        XCTAssertEqual(progress.first?["message"] as? String, "相加")
 
         let add = results["math.add"]?["result"] as? [String: Any]
         XCTAssertEqual((add?["data"] as? [String: Any])?["sum"] as? Int, 42)

@@ -197,6 +197,7 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)] internal static partial AmStatus am_call_fail(nint call, byte* kind, byte* message);
     [LibraryImport(Lib)] internal static partial AmStatus am_call_fail_with_details(nint call, byte* kind, byte* message, byte* detailsJson);
     [LibraryImport(Lib)] internal static partial AmStatus am_call_hold(nint call, out nint hold);
+    [LibraryImport(Lib)] internal static partial AmStatus am_call_progress(nint call, double progress, double total, byte* message);
 
     [LibraryImport(Lib)] internal static partial nint am_read_resource_name(nint read);
     [LibraryImport(Lib)] internal static partial AmStatus am_read_complete(nint read, byte* contentsJson);

@@ -973,6 +973,16 @@ impl Call {
             .inner
             .fail_with_details(kind, &message, details_json.as_deref())?)
     }
+    /// 报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent。`progress` 应递增，`total` 未知时为 `None`。
+    /// 未连接时丢弃；调用已结束时返回 `AlreadyCompleted`。
+    pub fn report_progress(
+        &self,
+        progress: f64,
+        total: Option<f64>,
+        message: Option<String>,
+    ) -> Result<(), AppMcpError> {
+        Ok(self.inner.report_progress(progress, total, message.as_deref())?)
+    }
     /// 延长持有：调用完成后仍阻止自动休眠（handler 发起的长任务），直到返回的 `Hold` 被释放。
     /// 调用已结束时返回 `AlreadyCompleted`。
     pub fn hold(&self) -> Result<Arc<Hold>, AppMcpError> {

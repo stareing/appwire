@@ -25,6 +25,7 @@ class FakeCall {
     this.result = undefined;
     this.cancelListener = undefined;
     this.holdLog = [];
+    this.progressLog = [];
     this.done = new Promise((resolve) => {
       this.resolve = resolve;
     });
@@ -61,6 +62,11 @@ class FakeCall {
   }
   hold() {
     return new FakeHold(this.holdLog);
+  }
+  /** 与原生绑定一致：调用已结束时抛 ALREADY_COMPLETED。 */
+  reportProgress(progress, total, message) {
+    if (this.result !== undefined) throw nativeError('ALREADY_COMPLETED', 'call or read already completed or cancelled');
+    this.progressLog.push([progress, total, message]);
   }
   /** 测试用：模拟原生侧取消（之后完成会抛 ALREADY_COMPLETED）。 */
   cancel(reason) {

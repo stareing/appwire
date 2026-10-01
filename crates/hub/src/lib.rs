@@ -24,6 +24,7 @@ mod lifecycle;
 mod limits;
 mod mcp_convert;
 mod power;
+pub mod progress;
 #[cfg(feature = "mcp-server")]
 pub mod mcp;
 pub mod origin;
@@ -43,8 +44,9 @@ pub use format::ToolFormat;
 pub use lease::{LeaseOverrides, LeasePairStatus, LeasePolicy, LeaseStatus};
 pub use limits::{LimitOverrides, LimitPolicy, OutputValidation, RateLimit};
 pub use http_server::{Health, HttpOptions};
+pub use progress::ProgressUpdate;
 pub use hub::{
-    DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
+    DEFAULT_PROGRESS_INTERVAL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
     load_manifests, parse_resource_uri, resource_uri,
 };
 #[cfg(feature = "mcp-server")]

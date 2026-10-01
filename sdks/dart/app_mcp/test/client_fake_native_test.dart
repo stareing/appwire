@@ -242,6 +242,21 @@ void main() {
       expect(() => saved!.hold(),
           throwsA(isA<AppMcpException>().having((e) => e.code, 'code', AppMcpErrorCode.alreadyCompleted)));
     });
+
+    test('ctx.progress()：交给原生层；调用完成后无副作用', () async {
+      ToolContext? saved;
+      fake.progress();
+      client.tool('export', description: '导出', handler: (a, ctx) {
+        ctx.progress(1, total: 3, message: '第 1 页');
+        ctx.progress(2);
+        saved = ctx;
+        return 'ok';
+      });
+      expect((await invoke('export', {}))['data'], 'ok');
+      expect(fake.progress(), '1|3|第 1 页\n2|-|\n');
+      saved!.progress(3);
+      expect(fake.progress(), '');
+    });
   });
 
   test('AM_API_VERSION 与头文件一致', () {

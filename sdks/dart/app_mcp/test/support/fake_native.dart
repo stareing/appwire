@@ -146,6 +146,12 @@ final class FakeNative {
   late final _overview =
       lib.lookupFunction<Pointer<Utf8> Function(), Pointer<Utf8> Function()>('fake_overview');
 
+  late final _progress =
+      lib.lookupFunction<Pointer<Utf8> Function(), Pointer<Utf8> Function()>('fake_progress');
+
+  /// 自上次读取以来 `am_call_progress` 收到的进度（每行 `progress|total|message`，total 未知为 `-`），读取后清空。
+  String progress() => _take(_progress()) ?? '';
+
   String? overview() {
     final p = _overview();
     if (p == nullptr) return null;

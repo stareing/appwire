@@ -223,6 +223,9 @@ async fn page_tool_roundtrip_with_rust_tool() {
     let call = wait_event(&page, "call").await;
     assert_eq!(call["toolId"], 1);
     assert_eq!(call["input"], json!({ "a": 41 }));
+    // 页面在 Hub API 不接收进度时报告进度：无副作用
+    let progress = fx.op(&page, "main", "main", json!({ "op": "call.progress", "callId": call["callId"], "progress": 1 }));
+    assert_eq!(progress, json!({ "ok": true }));
     let reply = fx.op(
         &page,
         "main",
@@ -233,6 +236,27 @@ async fn page_tool_roundtrip_with_rust_tool() {
     let out = pending.await.expect("join").expect("调用");
     assert_eq!(out.result.expect("成功")["sum"], 42);
     assert_eq!(out.state_hints, vec!["cart".to_owned()]);
+
+    // 页面 handler 的进度（call.progress）经原生客户端到达 Hub（spec/protocol.md 3.3）
+    let hub = fx.hub.clone();
+    let (ptx, mut prx) = tokio::sync::mpsc::unbounded_channel();
+    let pending = tokio::spawn(async move {
+        hub.call_tool_with_progress(CallRequest::new("roundtrip.page.add", json!({})), ptx).await
+    });
+    let call = wait_event(&page, "call").await;
+    fx.op(
+        &page,
+        "main",
+        "main",
+        json!({ "op": "call.progress", "callId": call["callId"], "progress": 1, "total": 2, "message": "半" }),
+    );
+    let p = tokio::time::timeout(T, prx.recv()).await.expect("进度").expect("进度");
+    assert_eq!((p.progress, p.total, p.message.as_deref()), (1.0, Some(2.0), Some("半")));
+    fx.op(&page, "main", "main", json!({ "op": "call.result", "callId": call["callId"], "ok": true, "data": 1 }));
+    pending.await.expect("join").expect("调用");
+    // 调用结束后的进度：无接收方，忽略
+    let late = fx.op(&page, "main", "main", json!({ "op": "call.progress", "callId": call["callId"], "progress": 2 }));
+    assert_eq!(late, json!({ "ok": true }));
 
     let native = fx
         .hub

@@ -181,6 +181,10 @@ export class FakeCore implements CoreClient {
     if (callId.startsWith('local-')) throw new Error(`unknown call: ${callId}`)
     return this.nextId++
   }
+  reportProgress(callId: string, progress: number, total: number | undefined, message: string | undefined, now: number): void {
+    this.rec('reportProgress', callId, progress, total, message, now)
+    if (callId.startsWith('local-')) throw new Error(`unknown call: ${callId}`)
+  }
   releaseHold(hold: number, now: number): boolean {
     this.rec('releaseHold', hold, now)
     return true

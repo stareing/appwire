@@ -63,6 +63,7 @@ export interface RawWasmClient {
   sleepWithReason(reason: string, now: number): boolean
   hold(now: number): number
   holdForCall(callId: string, now: number): number
+  reportProgress(callId: string, progress: number, total: number | undefined, message: string | undefined, now: number): void
   releaseHold(hold: number, now: number): boolean
   toolsHash(): string
   resumeToken(): string | undefined
@@ -175,6 +176,9 @@ class WasmCore implements CoreClient {
   }
   holdForCall(callId: string, now: number): number {
     return this.raw.holdForCall(callId, now)
+  }
+  reportProgress(callId: string, progress: number, total: number | undefined, message: string | undefined, now: number): void {
+    this.raw.reportProgress(callId, progress, total, message, now)
   }
   releaseHold(hold: number, now: number): boolean {
     return this.raw.releaseHold(hold, now)

@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 pub use app_mcp_core::{
-    Activation, AppOverview, Audience, ClientKind, ContentAnnotations, HeartbeatMode, LifecycleMode, LifecyclePolicy,
+    Activation, AppOverview, Audience, CallDedupPolicy, ClientKind, ContentAnnotations, HeartbeatMode, LifecycleMode, LifecyclePolicy,
     Residency, ResultStatus, Risk, SleepReason, ToolAnnotations, TransportKind, Visibility, WakeDescriptor, WakeKind,
     WakeReason, parse_wake_token,
 };
@@ -71,6 +71,8 @@ pub struct NativeConfig {
     /// 心跳策略（spec/lifecycle.md 第 11 节）。默认 `Auto`：按端点的传输类别
     /// （[`app_mcp_protocol::Endpoint::transport_kind`]）决定，本地 IPC 与桌面本机回环不发心跳。
     pub heartbeat: HeartbeatMode,
+    /// 调用去重（spec/protocol.md 3.3）：同一 `callId` 在有效期内只执行一次。默认保留 5 分钟、最多 64 条。
+    pub call_dedup: CallDedupPolicy,
 }
 
 impl NativeConfig {
@@ -90,6 +92,7 @@ impl NativeConfig {
             lifecycle: LifecyclePolicy::default(),
             connect_timeout_ms: 5_000,
             heartbeat: HeartbeatMode::Auto,
+            call_dedup: CallDedupPolicy::default(),
         }
     }
 }
@@ -357,6 +360,29 @@ impl CallHandle {
             }
         };
         self.inner.finish(Err(err))
+    }
+    /// 报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent（MCP `notifications/progress`）。`progress` 应递增；
+    /// `total` 未知时为 `None`。未连接时丢弃；调用已结束（完成、取消）时返回 [`NativeError::AlreadyCompleted`]。
+    pub fn report_progress(
+        &self,
+        progress: f64,
+        total: Option<f64>,
+        message: Option<&str>,
+    ) -> Result<(), NativeError> {
+        if self.inner.lock().cancelled.is_some() {
+            return Err(NativeError::AlreadyCompleted);
+        }
+        let shared = &self.inner.shared;
+        let mut st = shared.lock();
+        if st.stopped {
+            return Err(NativeError::Stopped);
+        }
+        st.client
+            .report_progress(&self.inner.call_id, progress, total, message.map(str::to_owned), now_ms())
+            .map_err(core_error)?;
+        drop(st);
+        shared.wake();
+        Ok(())
     }
     /// 延长持有：调用完成后仍阻止自动休眠（handler 发起的长任务），直到返回的句柄被释放。
     /// 调用已结束（完成、取消）时返回 [`NativeError::AlreadyCompleted`]。
@@ -922,6 +948,7 @@ fn build_core_config(
     inner.transport = endpoint.transport_kind(&app_mcp_protocol::platform::Target::CURRENT);
     inner.expected_host_user = app_mcp_protocol::identity::expected_host_user();
     inner.max_concurrent_calls = usize::try_from(config.max_concurrent_calls).unwrap_or(usize::MAX);
+    inner.call_dedup = config.call_dedup;
     Ok((inner, endpoint))
 }
 

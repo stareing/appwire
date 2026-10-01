@@ -797,6 +797,25 @@ AmStatus am_call_fail_with_details(AmCall *call, const char *kind, const char *m
     consume(call, buf);
     return cancelled ? AM_ERR_ALREADY_COMPLETED : AM_OK;
 }
+/* v10：记录进度，"progress|total|message"（total 未知为 -，message 为 NULL 时为空），以换行分隔累积。 */
+static char g_progress[4096];
+AmStatus am_call_progress(const AmCall *call, double progress, double total, const char *message) {
+    if (!call) return AM_ERR_INVALID_ARGUMENT;
+    char line[512];
+    if (total >= 0) snprintf(line, sizeof line, "%g|%g|%s\n", progress, total, message ? message : "");
+    else snprintf(line, sizeof line, "%g|-|%s\n", progress, message ? message : "");
+    lock_global();
+    strncat(g_progress, line, sizeof g_progress - strlen(g_progress) - 1);
+    unlock_global();
+    return AM_OK;
+}
+char *fake_progress(void) {
+    lock_global();
+    char *s = dup_str(g_progress);
+    g_progress[0] = 0;
+    unlock_global();
+    return s;
+}
 AmStatus am_call_hold(const AmCall *call, AmHold **out) {
     if (!call || !out) return AM_ERR_INVALID_ARGUMENT;
     *out = new_hold();

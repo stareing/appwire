@@ -1402,6 +1402,22 @@ pub unsafe extern "C" fn am_call_hold(call: *const AmCall, out: *mut *mut AmHold
     })
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_call_progress(
+    call: *const AmCall,
+    progress: f64,
+    total: f64,
+    message: *const c_char,
+) -> AmStatus {
+    guard(|| {
+        let c = unsafe { call.as_ref() }.ok_or_else(|| FfiError::null("call"))?;
+        let message = unsafe { opt_str(message, "message") }?;
+        let total = (total >= 0.0).then_some(total);
+        c.handle.report_progress(progress, total, message)?;
+        Ok(())
+    })
+}
+
 // ---------------------------------------------------------------------------
 // 资源读取
 // ---------------------------------------------------------------------------

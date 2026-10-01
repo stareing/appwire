@@ -48,6 +48,14 @@ interface ResourceRecord {
   changes: number
 }
 
+/** {@link FakeNativeClient.progressReports} 的一条。 */
+export interface FakeProgress {
+  callId: string
+  progress: number
+  total: number | null
+  message: string | null
+}
+
 class FakeCall implements NativeCall {
   private done = false
   private cancelled: NativeCancelReason | null = null
@@ -134,6 +142,15 @@ class FakeCall implements NativeCall {
 
   /** 由 FakeNativeClient 设置。 */
   holdFactory: () => NativeHold = () => ({ release() {} })
+
+  /** 由 FakeNativeClient 设置：收到的进度。 */
+  progressSink: (p: FakeProgress) => void = () => {}
+
+  /** 与原生绑定一致：调用已结束时抛出 `ALREADY_COMPLETED`。 */
+  reportProgress(progress: number, total?: number | null, message?: string | null): void {
+    if (this.done) throw new NativeErrorWithCode('ALREADY_COMPLETED', 'call or read already completed or cancelled')
+    this.progressSink({ callId: this.callId, progress, total: total ?? null, message: message ?? null })
+  }
 
   cancel(reason: NativeCancelReason): void {
     if (this.done) return
@@ -284,6 +301,8 @@ export class FakeNativeClient extends FakeRegistrarBase implements NativeClient 
   wakePrefix = 'app-mcp-wake:'
   private nextCall = 1
   private readonly calls = new Map<string, FakeCall>()
+  /** handler 经 `ctx.progress()` 报告的进度（按到达顺序）。 */
+  readonly progressReports: FakeProgress[] = []
 
   constructor(
     readonly config: NativeClientConfig,
@@ -377,6 +396,7 @@ export class FakeNativeClient extends FakeRegistrarBase implements NativeClient 
       settle(o)
     })
     call.holdFactory = () => this.hold()
+    call.progressSink = (p) => this.progressReports.push(p)
     this.calls.set(callId, call)
     queueMicrotask(() => rec.handler(call))
     return { callId, result }

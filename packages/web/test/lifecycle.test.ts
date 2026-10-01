@@ -501,6 +501,30 @@ describe('驱动接线', () => {
     expect(h.core.methods()).toContain('hold')
   })
 
+  it('ToolContext.progress 映射为 reportProgress；取消后与本地调用不报错', async () => {
+    const h = setup()
+    await settle()
+    h.socket().open()
+    h.app.tool('t', {
+      description: 't',
+      handler: (_: unknown, ctx: ToolContext) => {
+        ctx.progress?.(1, 4, '第 1 步')
+        ctx.progress?.(2)
+        return 1
+      },
+    })
+    await hostCall(h, 't')
+    const calls = h.core.callsOf('reportProgress') as unknown[][]
+    expect(calls.map((c) => c.slice(1, 4))).toEqual([
+      [1, 4, '第 1 步'],
+      [2, undefined, undefined],
+    ])
+    expect(calls[0]?.[0]).toMatch(/^host-/)
+    // 本地调用：核心不认识该调用，静默忽略
+    const view = getToolHub(h.app)?.list().find((t) => t.name === 't')
+    await expect(view?.call({}, new AbortController().signal)).resolves.toBeDefined()
+  })
+
   it('idle 模式：重新可见且 dormant 时 wakeWithReason("visible")；persistent 不唤醒', async () => {
     const run = async (mode: 'idle' | 'persistent'): Promise<unknown[][]> => {
       const d = new FakeDoc()

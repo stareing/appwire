@@ -151,6 +151,9 @@ pub struct ToolsSection {
     /// App 结果与其 `outputSchema` 不符时：`"log"`（默认）/ `"reject"` / `"off"`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_validation: Option<OutputValidation>,
+    /// 调用进度转发给 Agent 的最小间隔（毫秒，spec/hub-api.md 3.12），默认 250；0 = 不合并。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_interval_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -360,6 +363,7 @@ pub struct Settings {
     pub tool_exposure_threshold: usize,
     pub limits: LimitPolicy,
     pub output_validation: OutputValidation,
+    pub progress_interval_ms: u64,
     pub log_level: String,
     pub log_file: bool,
     pub log_max_bytes: u64,
@@ -452,6 +456,10 @@ impl Settings {
                 .unwrap_or(app_mcp_hub::DEFAULT_TOOL_EXPOSURE_THRESHOLD),
             limits,
             output_validation: c.tools.output_validation.unwrap_or_default(),
+            progress_interval_ms: c
+                .tools
+                .progress_interval_ms
+                .unwrap_or(app_mcp_hub::DEFAULT_PROGRESS_INTERVAL.as_millis() as u64),
             log_level: c.log.level.unwrap_or_else(|| "info".to_owned()),
             log_file: c.log.file.unwrap_or(true),
             log_max_bytes: c.log.max_bytes.unwrap_or(5 * 1024 * 1024),
@@ -668,6 +676,9 @@ mod tests {
         let s = Settings::resolve(&file, &Overrides::default(), &home()).unwrap();
         assert_eq!((s.limits.tool_rate.per_minute, s.limits.tool_rate.burst, s.limits.max_result_bytes), (10, 2, 0));
         assert_eq!(s.output_validation, OutputValidation::Reject);
+        assert_eq!(s.progress_interval_ms, 250, "默认进度间隔");
+        let no_merge: FileConfig = serde_json::from_str(r#"{"tools":{"progressIntervalMs":0}}"#).unwrap();
+        assert_eq!(Settings::resolve(&no_merge, &Overrides::default(), &home()).unwrap().progress_interval_ms, 0);
         // 命令行按字段覆盖，写回配置时合并
         let o = Overrides {
             limits: LimitOverrides { tool_rate_burst: Some(5), app_rate_per_minute: Some(0), ..Default::default() },

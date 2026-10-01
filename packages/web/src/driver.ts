@@ -463,6 +463,7 @@ export class AppMcpDriver implements AppMcp {
         ...(this.options.appVersion !== undefined && { appVersion: this.options.appVersion }),
         ...pageInfo(),
         ...(this.options.maxConcurrentCalls !== undefined && { maxConcurrentCalls: this.options.maxConcurrentCalls }),
+        ...(this.options.callDedup !== undefined && { callDedup: this.options.callDedup }),
         ...(this.options.overview !== undefined && { overview: this.options.overview }),
         ...tokenField(loadToken(this.options.appId)),
         lifecycle: this.coreLifecycle(),
@@ -1073,6 +1074,13 @@ export class AppMcpDriver implements AppMcp {
     }
   }
 
+  /** handler 的 `context.progress()`：调用已结束 / 取消、核心未加载时丢弃（进度只是提示）。 */
+  private reportProgress(callId: string, signal: AbortSignal, progress: number, total?: number, message?: string): void {
+    if (signal.aborted) return
+    // @why 调用刚结束（结果已提交）时核心报未知调用：进度不影响结果，只记 debug。
+    this.input((core) => core.reportProgress(callId, progress, total, message, this.now()), true)
+  }
+
   // ---- 调用 -----------------------------------------------------------
 
   private invoke(callId: string, toolId: number, name: string, args: unknown): void {
@@ -1115,7 +1123,14 @@ export class AppMcpDriver implements AppMcp {
         }
         if (signal.aborted) throw signal.reason
       }
-      return outcomeFromResult(await handler(input, { callId, signal, hold: () => this.acquireHold(callId) }))
+      const context = {
+        callId,
+        signal,
+        hold: () => this.acquireHold(callId),
+        progress: (progress: number, total?: number, message?: string) =>
+          this.reportProgress(callId, signal, progress, total, message),
+      }
+      return outcomeFromResult(await handler(input, context))
     } catch (e) {
       return outcomeFromError(e)
     }

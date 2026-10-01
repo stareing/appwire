@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use app_mcp_protocol::{
     Activation, ErrorKind, Risk, ToolError, ToolInfo, ToolsCancelParams, ToolsInvokeParams,
-    ToolsInvokeResult, method,
+    ToolsInvokeResult, ToolsProgressParams, method,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, MetaObject, ReadResourceRequestParams,
@@ -21,11 +21,12 @@ use rmcp::model::{
 };
 use rmcp::{ErrorData as McpError, Peer, RoleClient, ServiceError};
 use serde_json::{Map, Value, json};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::hub::{
-    DEFAULT_MIME, HubShared, lock, overview_info, parse_resource_uri, resource_uri,
+    DEFAULT_MIME, HubShared, ProgressRoute, lock, overview_info, parse_resource_uri, resource_uri,
 };
+use crate::progress::{ProgressThrottle, ProgressUpdate};
 use crate::limits::{OutputValidation, Payload};
 use crate::mcp_convert::{self, OutputShape};
 use crate::overview::Overview;
@@ -62,7 +63,12 @@ pub(crate) struct CallCtx {
     pub call_id: Option<String>,
     /// 发起调用的 MCP 会话（渐进暴露展开新 App 时只通知该会话）；Hub API 为 `None`。
     pub mcp_session: Option<u64>,
+    /// 调用方要接收进度时的出口（MCP 请求带 `progressToken`，spec/hub-api.md 3.12）；合并后的进度发到这里。
+    pub progress: Option<ProgressSink>,
 }
+
+/// 合并后的进度出口（[`CallCtx::progress`]）。
+pub(crate) type ProgressSink = mpsc::UnboundedSender<ProgressUpdate>;
 
 impl CallCtx {
     pub(crate) fn from_request(req: CallRequest) -> Self {
@@ -75,6 +81,7 @@ impl CallCtx {
             instance_id: req.instance_id,
             timeout: req.timeout,
             call_id: req.call_id,
+            progress: None,
         }
     }
 }
@@ -154,6 +161,51 @@ impl Invocation {
 }
 
 type CancelFut<'a> = Pin<&'a mut (dyn Future<Output = ()> + Send)>;
+
+/// 一次调用的进度接收与合并（[`HubShared::watch_progress`]）；丢弃时注销路由。
+pub(crate) struct ProgressWatch {
+    shared: Arc<HubShared>,
+    call_id: String,
+    token: u64,
+    rx: mpsc::UnboundedReceiver<ToolsProgressParams>,
+    sink: ProgressSink,
+    throttle: ProgressThrottle,
+    started: tokio::time::Instant,
+}
+
+impl ProgressWatch {
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn offer(&mut self, p: ToolsProgressParams) {
+        let now = self.elapsed_ms();
+        if let Some(u) = self.throttle.offer(p.into(), now) {
+            let _ = self.sink.send(u);
+        }
+    }
+
+    fn flush(&mut self) {
+        let now = self.elapsed_ms();
+        if let Some(u) = self.throttle.flush(now) {
+            let _ = self.sink.send(u);
+        }
+    }
+
+    /// 暂存的进度需要转发的时刻。
+    fn flush_deadline(&self) -> Option<tokio::time::Instant> {
+        self.throttle.flush_at().map(|ms| self.started + Duration::from_millis(ms))
+    }
+}
+
+impl Drop for ProgressWatch {
+    fn drop(&mut self) {
+        let mut routes = lock(&self.shared.progress_routes);
+        if routes.get(&self.call_id).is_some_and(|r| r.token == self.token) {
+            routes.remove(&self.call_id);
+        }
+    }
+}
 
 /// 一次 App 工具调用的结果。
 pub(crate) struct ToolRun {
@@ -561,6 +613,8 @@ impl HubShared {
                 ),
             )
         };
+        // 先登记进度路由再发请求：App 收到请求后立即报告的进度也能送达。
+        let mut progress = ctx.progress.as_ref().map(|sink| self.watch_progress(call_id, conn.id, sink.clone()));
         let (req_id, rx) = match conn.start_request(method::TOOLS_INVOKE, params) {
             Ok(v) => v,
             Err(_) => return (Err(disconnected()), instance),
@@ -577,13 +631,29 @@ impl HubShared {
             );
         };
 
-        let outcome = tokio::select! {
-            r = tokio::time::timeout(response_timeout, rx) => r,
-            _ = cancel => {
-                send_cancel("cancelled by MCP client");
-                return (Err(cancelled()), instance);
+        let response = tokio::time::timeout(response_timeout, rx);
+        tokio::pin!(response);
+        let outcome = loop {
+            let flush_at = progress.as_ref().and_then(|p| p.flush_deadline());
+            tokio::select! {
+                r = &mut response => break r,
+                _ = cancel.as_mut() => {
+                    send_cancel("cancelled by MCP client");
+                    return (Err(cancelled()), instance);
+                }
+                Some(p) = async { progress.as_mut()?.rx.recv().await }, if progress.is_some() => {
+                    if let Some(w) = progress.as_mut() {
+                        w.offer(p);
+                    }
+                }
+                _ = tokio::time::sleep_until(flush_at.unwrap_or_else(tokio::time::Instant::now)), if flush_at.is_some() => {
+                    if let Some(w) = progress.as_mut() {
+                        w.flush();
+                    }
+                }
             }
         };
+        drop(progress);
         let result = match outcome {
             Ok(Ok(Ok(v))) => self.accept_result(app_id, tool_name, &target.tool, v),
             Ok(Ok(Err(rpc))) => Err(rpc.to_tool_error()),
@@ -605,6 +675,35 @@ impl HubShared {
         self.registry().touch(app_id, &target.instance_id);
         self.grant_lease(&ctx.session_key, app_id, &conn);
         (result, instance)
+    }
+
+    /// 登记一次调用的进度路由：此后该连接发来的同 callId `tools/progress` 经合并后发往 `sink`；返回值被丢弃时注销。
+    fn watch_progress(self: &Arc<Self>, call_id: &str, conn_id: u64, sink: ProgressSink) -> ProgressWatch {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let token = self.next_id();
+        lock(&self.progress_routes).insert(call_id.to_owned(), ProgressRoute { token, conn_id, tx });
+        ProgressWatch {
+            shared: self.clone(),
+            call_id: call_id.to_owned(),
+            token,
+            rx,
+            sink,
+            throttle: ProgressThrottle::new(u64::try_from(self.config.progress_interval.as_millis()).unwrap_or(u64::MAX)),
+            started: tokio::time::Instant::now(),
+        }
+    }
+
+    /// App 连接发来的 `tools/progress`（spec/protocol.md 3.3）：交给等待该调用进度的一方；
+    /// 调用未登记进度（调用方没要进度、已结束）或来自其他连接时丢弃。
+    pub(crate) fn route_progress(&self, conn_id: u64, p: ToolsProgressParams) {
+        let routes = lock(&self.progress_routes);
+        match routes.get(&p.call_id) {
+            Some(r) if r.conn_id == conn_id => {
+                let _ = r.tx.send(p);
+            }
+            Some(_) => tracing::warn!(call_id = %p.call_id, "tools/progress 来自未处理该调用的连接，忽略"),
+            None => tracing::trace!(call_id = %p.call_id, "tools/progress 没有接收方（未请求进度或调用已结束），忽略"),
+        }
     }
 
     /// 转发给上游 MCP 服务器；结果原样返回，协议错误原样透传。

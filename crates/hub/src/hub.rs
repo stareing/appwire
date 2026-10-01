@@ -164,7 +164,13 @@ pub struct HubConfig {
     pub limits: LimitPolicy,
     /// App 结果与其声明的 `outputSchema` 不符时的处理（第 19 项 R2）。默认只记日志，不拒绝。
     pub output_validation: OutputValidation,
+    /// 调用进度转发给 Agent（MCP `notifications/progress`）的最小间隔（spec/hub-api.md 3.12）：间隔内只保留最新一条。
+    /// 默认 [`DEFAULT_PROGRESS_INTERVAL`]；`0` = 不合并（不递增的进度仍丢弃）。
+    pub progress_interval: Duration,
 }
+
+/// [`HubConfig::progress_interval`] 的默认值。
+pub const DEFAULT_PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 
 /// [`HubConfig::tool_exposure_threshold`] 的默认值。
 pub const DEFAULT_TOOL_EXPOSURE_THRESHOLD: usize = 40;
@@ -213,6 +219,7 @@ impl Default for HubConfig {
             tool_exposure_threshold: DEFAULT_TOOL_EXPOSURE_THRESHOLD,
             limits: LimitPolicy::default(),
             output_validation: OutputValidation::default(),
+            progress_interval: DEFAULT_PROGRESS_INTERVAL,
         }
     }
 }
@@ -267,6 +274,8 @@ pub struct HubShared {
     global_selected: Mutex<HashMap<String, String>>,
     /// 进行中的调用：callId → (登记序号, 取消信号)。
     pub(crate) calls: Mutex<HashMap<String, (u64, oneshot::Sender<()>)>>,
+    /// 等待进度的调用：callId → 进度路由（只接受被路由到的那条 App 连接发来的 `tools/progress`）。
+    pub(crate) progress_routes: Mutex<HashMap<String, ProgressRoute>>,
     approval_handler: Mutex<Option<Arc<dyn ApprovalHandler>>>,
     pairing_handler: Mutex<Option<Arc<dyn PairingHandler>>>,
     /// 配对过的 token → appId（设置了 PairingHandler 时用于免询问重连）。
@@ -287,6 +296,16 @@ pub struct HubShared {
     pub(crate) lease_changed: Notify,
     /// 调用限流状态与每 App 的拒绝计数（spec/hub-api.md 3.11）。
     pub(crate) rates: Mutex<RateBook>,
+}
+
+/// 一次调用的进度路由（[`HubShared::progress_routes`]）。
+#[derive(Debug)]
+pub(crate) struct ProgressRoute {
+    /// 登记序号：同名 callId 被新调用覆盖后，旧调用结束时不删除新登记。
+    pub token: u64,
+    /// 调用被路由到的 App 连接。
+    pub conn_id: u64,
+    pub tx: tokio::sync::mpsc::UnboundedSender<app_mcp_protocol::ToolsProgressParams>,
 }
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -333,6 +352,7 @@ impl HubShared {
             session_state: Mutex::new(HashMap::new()),
             global_selected: Mutex::new(HashMap::new()),
             calls: Mutex::new(HashMap::new()),
+            progress_routes: Mutex::new(HashMap::new()),
             approval_handler: Mutex::new(None),
             pairing_handler: Mutex::new(None),
             paired_tokens: Mutex::new(HashMap::new()),
@@ -1514,6 +1534,21 @@ impl Hub {
             .into_outcome()
     }
 
+    /// 与 [`Hub::call_tool`] 相同，并接收调用进度（spec/hub-api.md 3.12）：App 报告的进度按
+    /// [`HubConfig::progress_interval`] 合并、丢弃不递增的值后逐条发到 `progress`；调用结束后不再发送。
+    pub async fn call_tool_with_progress(
+        &self,
+        req: CallRequest,
+        progress: tokio::sync::mpsc::UnboundedSender<crate::ProgressUpdate>,
+    ) -> Result<CallOutcome, HubError> {
+        let mut ctx = CallCtx::from_request(req);
+        ctx.progress = Some(progress);
+        self.shared
+            .call(ctx, std::future::pending())
+            .await
+            .into_outcome()
+    }
+
     /// 取消进行中的调用（含等待审批中的）；未知 callId 忽略。
     pub fn cancel_call(&self, call_id: &str) {
         if let Some((_, tx)) = lock(&self.shared.calls).remove(call_id) {
@@ -1700,6 +1735,7 @@ impl Hub {
             instance_id: None,
             timeout: None,
             call_id: parsed.id.clone(),
+            progress: None,
         };
         let inv = self.shared.call(ctx, std::future::pending()).await;
         let r = match inv.to_mcp() {

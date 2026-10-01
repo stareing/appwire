@@ -344,6 +344,10 @@ abstract interface class ToolContext {
   /// 延长持有：调用完成后仍阻止自动休眠（handler 发起的长任务），直到返回的持有被释放。
   /// 必须在调用完成前获取；调用已结束时抛出 [AppMcpException]（`alreadyCompleted`）。
   McpHold hold();
+
+  /// 报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent（MCP `notifications/progress`）。
+  /// [progress] 应递增（不递增的值被 Host 丢弃），[total] 未知时省略。调用已结束、已取消或未连接时无副作用。
+  void progress(double progress, {double? total, String? message});
 }
 
 /// 阻止自动休眠的持有（[ToolContext.hold]、`AppMcp.hold`）。[release] 幂等；

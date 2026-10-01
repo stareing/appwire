@@ -52,6 +52,7 @@ public class IntegrationTests(ITestOutputHelper output)
             await Task.Yield(); // 仍在调度器线程上继续
             handlerThreads.Add(Environment.CurrentManagedThreadId);
             ctx.AddStateHint("greetings");
+            ctx.Progress(1, 2, "问候中");
             return new GreetOutput($"Hello, {input.Name}!");
         });
         using var custom = client.RegisterTool("fail.custom", "拒绝", (_, _) =>
@@ -73,6 +74,11 @@ public class IntegrationTests(ITestOutputHelper output)
 
         var invokes = json.Where(j => (string?)j["type"] == "invoke").ToList();
         Assert.Equal(5, invokes.Count);
+
+        var progress = Assert.Single(json, j => (string?)j["type"] == "progress");
+        Assert.Equal(1.0, (double?)progress["progress"]);
+        Assert.Equal(2.0, (double?)progress["total"]);
+        Assert.Equal("问候中", (string?)progress["message"]);
 
         Assert.Equal("Hello, World!", (string?)invokes[0]["result"]!["data"]!["greeting"]);
         Assert.Equal("greetings", (string?)invokes[0]["result"]!["stateHints"]![0]);

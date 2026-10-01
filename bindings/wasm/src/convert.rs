@@ -5,7 +5,7 @@
 //! `WakeDescriptor`、各枚举）仍用其 serde 定义，保持单一来源。输出（状态、事件）用 serde 序列化。
 
 use app_mcp_core::{
-    CallOutput, CancelReason, ClientConfig, ClientKind, ConnectionState, Event, HeartbeatMode,
+    CallDedupPolicy, CallOutput, CancelReason, ClientConfig, ClientKind, ConnectionState, Event, HeartbeatMode,
     HeartbeatPolicy, LifecycleMode, LifecyclePolicy, ReconnectPolicy, Residency, ResourceDef, ScopeId, SleepReason, ToolDef, ToolError,
     ToolUpdate, TransportKind, Visibility, WakeReason,
 };
@@ -259,6 +259,31 @@ impl FromJson for JsHeartbeat {
     }
 }
 
+/// 调用去重（spec/protocol.md 3.3）：`{ ttlMs?, maxEntries? }`，缺省字段取默认值；任一为 0 关闭。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JsCallDedup {
+    pub ttl_ms: Option<u64>,
+    pub max_entries: Option<u64>,
+}
+
+impl FromJson for JsCallDedup {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        let d = JsCallDedup { ttl_ms: f.u64("ttlMs"), max_entries: f.u64("maxEntries") };
+        f.finish(d)
+    }
+}
+
+impl JsCallDedup {
+    fn into_core(self) -> CallDedupPolicy {
+        let d = CallDedupPolicy::default();
+        CallDedupPolicy {
+            ttl_ms: self.ttl_ms.unwrap_or(d.ttl_ms),
+            max_entries: self.max_entries.map_or(d.max_entries, |n| usize::try_from(n).unwrap_or(usize::MAX)),
+        }
+    }
+}
+
 fn parse_heartbeat_mode(s: &str) -> Option<HeartbeatMode> {
     match s {
         "auto" => Some(HeartbeatMode::Auto),
@@ -408,6 +433,8 @@ pub struct JsConfig {
     pub lifecycle: Option<JsLifecycle>,
     /// 传输类别，缺省未知（按远程处理，发心跳）。
     pub transport: Option<TransportKind>,
+    /// 调用去重，缺省保留 5 分钟、最多 64 条。
+    pub call_dedup: Option<JsCallDedup>,
 }
 
 impl FromJson for JsConfig {
@@ -440,6 +467,7 @@ impl FromJson for JsConfig {
             handshake_timeout_ms: f.u64("handshakeTimeoutMs"),
             lifecycle: f.object("lifecycle"),
             transport: f.keyword("transport", "无效的传输类别", parse_transport),
+            call_dedup: f.object("callDedup"),
         };
         f.finish(c)
     }
@@ -494,6 +522,9 @@ impl JsConfig {
         }
         if let Some(t) = self.transport {
             c.transport = t;
+        }
+        if let Some(d) = self.call_dedup {
+            c.call_dedup = d.into_core();
         }
         c
     }
@@ -952,6 +983,22 @@ mod tests {
         assert_eq!(c.reconnect, ReconnectPolicy::default());
         assert_eq!(c.resource_update_throttle_ms, 100);
         assert_eq!(c.overview, None);
+        assert_eq!(c.call_dedup, CallDedupPolicy::default());
+    }
+
+    #[test]
+    fn config_call_dedup() {
+        let base = || json!({ "appId": "shop", "appName": "商城", "instanceId": "i1" });
+        let with = |d: Value| {
+            let mut v = base();
+            v["callDedup"] = d;
+            JsConfig::from_json(v).map(JsConfig::into_core)
+        };
+        assert_eq!(with(json!({ "ttlMs": 0 })).unwrap().call_dedup, CallDedupPolicy { ttl_ms: 0, ..CallDedupPolicy::default() });
+        assert!(!with(json!({ "maxEntries": 0 })).unwrap().call_dedup.enabled());
+        assert_eq!(with(json!({ "ttlMs": 10, "maxEntries": 3 })).unwrap().call_dedup, CallDedupPolicy { ttl_ms: 10, max_entries: 3 });
+        assert!(with(json!({ "ttlMs": -1 })).is_err());
+        assert_eq!(with(json!({ "bogus": 1 })).unwrap().call_dedup, CallDedupPolicy::default(), "未知字段忽略");
     }
 
     #[test]

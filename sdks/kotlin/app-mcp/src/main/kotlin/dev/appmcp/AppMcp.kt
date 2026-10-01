@@ -75,6 +75,20 @@ class ToolContext internal constructor(
         val c = call ?: throw IllegalStateException("该上下文不关联原生调用")
         return HoldHandle(c.hold())
     }
+
+    /**
+     * 报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent（MCP `notifications/progress`）。
+     * [progress] 应递增（不递增的值被 Host 丢弃），[total] 未知时为 null。调用已结束、已取消或未连接时无副作用。
+     */
+    fun progress(progress: Double, total: Double? = null, message: String? = null) {
+        val c = call ?: return
+        if (isCancelled) return
+        try {
+            c.reportProgress(progress, total, message)
+        } catch (_: AppMcpException.AlreadyCompleted) {
+            // 调用刚结束：进度只是提示，不影响结果。
+        }
+    }
 }
 
 /** 已注册的工具。 */

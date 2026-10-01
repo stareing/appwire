@@ -235,6 +235,30 @@ describe('Electron 桥接', () => {
     expect((signal?.reason as { kind?: string }).kind).toBe('CANCELLED')
   })
 
+  it('页面 handler 的 ctx.progress 经 IPC 转给主进程的 @app-mcp/node 调用', async () => {
+    const { ipcMain, native } = setupMain()
+    const { page } = setupPage(ipcMain, new FakeWebContents(1))
+    let release!: () => void
+    page.tool('export', {
+      description: '导出',
+      handler: async (_i, ctx) => {
+        ctx.progress?.(1, 3, '第 1 页')
+        ctx.progress?.(2)
+        await new Promise<void>((r) => (release = r))
+        return 'ok'
+      },
+    })
+    await flush()
+    const { callId, result } = native.invoke('export')
+    await flush()
+    expect(native.progressReports).toEqual([
+      { callId, progress: 1, total: 3, message: '第 1 页' },
+      { callId, progress: 2, total: null, message: null },
+    ])
+    release()
+    expect(await result).toMatchObject({ ok: true, data: 'ok' })
+  })
+
   it('资源读取、变更通知与 scope', async () => {
     const { ipcMain, native } = setupMain()
     const { page } = setupPage(ipcMain, new FakeWebContents(1))

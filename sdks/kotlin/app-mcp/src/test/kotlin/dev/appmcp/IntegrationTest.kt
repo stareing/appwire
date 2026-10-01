@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.double
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -63,6 +64,7 @@ class IntegrationTest {
         client.tool("math.add", "两数相加", risk = Risk.READ) { args, ctx ->
             threads += Thread.currentThread().name
             ctx.addStateHint("cart")
+            ctx.progress(1.0, 2.0, "相加")
             delay(5)
             mapOf("sum" to args["a"]!!.jsonPrimitive.int + args["b"]!!.jsonPrimitive.int)
         }
@@ -88,7 +90,12 @@ class IntegrationTest {
         val tools = lines[0]["tools"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
         assertTrue(tools.containsAll(listOf("math.add", "greet", "cart.checkout", "boom")), tools.toString())
 
-        val results = lines.drop(1).associateBy { it["name"]!!.jsonPrimitive.content }
+        val progress = lines.filter { it["type"]!!.jsonPrimitive.content == "progress" }
+        assertEquals(1, progress.size, progress.toString())
+        assertEquals(1.0, progress[0]["progress"]!!.jsonPrimitive.double)
+        assertEquals(2.0, progress[0]["total"]!!.jsonPrimitive.double)
+        assertEquals("相加", progress[0]["message"]!!.jsonPrimitive.content)
+        val results = lines.drop(1).filter { "name" in it }.associateBy { it["name"]!!.jsonPrimitive.content }
         val add = results["math.add"]!!["result"]!!.jsonObject
         assertEquals(42, add["data"]!!.jsonObject["sum"]!!.jsonPrimitive.int)
         assertEquals(listOf("cart"), add["stateHints"]!!.jsonArray.map { it.jsonPrimitive.content })

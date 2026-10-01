@@ -331,6 +331,19 @@ class ToolContext:
         """
         return Hold(self._call.hold())
 
+    def progress(self, progress: float, total: float | None = None, message: str | None = None) -> None:
+        """报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent（MCP ``notifications/progress``）。
+
+        ``progress`` 应递增（不递增的值被 Host 丢弃），``total`` 未知时省略。调用已结束、已取消或未连接时无副作用。
+        """
+        if self._cancelled.is_set():
+            return
+        try:
+            self._call.report_progress(float(progress), None if total is None else float(total), message)
+        except ffi.AppMcpError.AlreadyCompleted:
+            # @why 调用刚结束：进度只是提示，不影响结果。
+            pass
+
     def on_cancel(self, fn: Callable[[], None]) -> None:
         """注册取消回调（在原生分发线程上调用）；已取消时立即调用。"""
         with self._lock:

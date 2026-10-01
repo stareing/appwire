@@ -284,6 +284,32 @@ fn host_cancel_notifies_listener() {
     );
 }
 
+/// 进度（spec/protocol.md 3.3）与去重（同一 callId 重放首次结果）经原生运行时。
+#[test]
+fn progress_and_dedup() {
+    let host = MockHost::start();
+    let client = NativeClient::new(config(&host), None).unwrap();
+    let (handler, calls) = forward();
+    client.register_tool(ToolSpec::new("export", "导出"), handler).unwrap();
+    connect(&host, &client);
+
+    let id = host.invoke("c1", "export", json!({}));
+    let call = calls.recv_timeout(WAIT).unwrap();
+    call.report_progress(1.0, Some(3.0), Some("第 1 页")).unwrap();
+    assert_eq!(
+        host.wait_notification(method::TOOLS_PROGRESS),
+        json!({ "callId": "c1", "progress": 1.0, "total": 3.0, "message": "第 1 页" })
+    );
+    call.complete(Some("7"), vec![]).unwrap();
+    assert_eq!(host.wait_response(&id).unwrap(), json!({ "data": 7 }));
+    assert_eq!(call.report_progress(2.0, None, None), Err(NativeError::AlreadyCompleted));
+
+    // 同一 callId 再次到达：不再调用 handler，重放首次结果
+    let id = host.invoke("c1", "export", json!({}));
+    assert_eq!(host.wait_response(&id).unwrap(), json!({ "data": 7 }));
+    assert!(calls.recv_timeout(Duration::from_millis(200)).is_err());
+}
+
 #[test]
 fn resource_read() {
     let host = MockHost::start();

@@ -685,6 +685,13 @@ impl Call {
         self.inner.fail_with_details(kind, &message, details_json.as_deref()).map_err(to_js_error)
     }
 
+    /// 报告进度（spec/protocol.md 3.3）：Host 合并后转发给 Agent。`progress` 应递增，`total` 未知时省略。
+    /// 未连接时丢弃；调用已结束时抛出 `ALREADY_COMPLETED`。
+    #[napi]
+    pub fn report_progress(&self, progress: f64, total: Option<f64>, message: Option<String>) -> Result<(), String> {
+        self.inner.report_progress(progress, total, message.as_deref()).map_err(to_js_error)
+    }
+
     /// 调用完成后仍阻止自动休眠（handler 发起的长任务），直到返回的 `Hold` 被 `release()`。
     /// 调用已结束时抛出 `ALREADY_COMPLETED`。
     #[napi]

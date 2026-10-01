@@ -73,6 +73,7 @@ def test_invoke_tools_via_fake_host(fake_host_bin: Path):
     def add(a: int, b: int, ctx: ToolContext) -> dict:
         threads.append(threading.current_thread().name)
         ctx.add_state_hint("cart")
+        ctx.progress(1, 2, "相加")
         return {"sum": a + b}
 
     @client.tool("echo.async", description="异步回显")
@@ -106,7 +107,9 @@ def test_invoke_tools_via_fake_host(fake_host_bin: Path):
     assert catalog["type"] == "tools"
     assert {"math.add", "echo.async", "cart.checkout", "boom"} <= set(map(str, catalog["tools"]))
 
-    results = {l["name"]: l for l in lines[1:]}
+    progress = [l for l in lines if l["type"] == "progress"]
+    assert [(p["progress"], p["total"], p["message"]) for p in progress] == [(1.0, 2.0, "相加")]
+    results = {l["name"]: l for l in lines[1:] if "name" in l}
     assert results["math.add"]["result"] == {"data": {"sum": 42}, "stateHints": ["cart"]}
     assert results["echo.async"]["result"]["data"] == "你好"
     assert results["cart.checkout"]["error"]["data"]["kind"] == "USER_REJECTED"

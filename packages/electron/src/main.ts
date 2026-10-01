@@ -20,7 +20,7 @@
  */
 
 import { ToolCallError, type AppMcp, type Logger, type Registrar, type Scope, type ToolHandle, type ResourceHandle } from '@app-mcp/node'
-import type { ConnectionState, ErrorKind, HoldHandle, ToolResultEnvelope } from '@app-mcp/node'
+import type { ConnectionState, ErrorKind, HoldHandle, ToolContext, ToolResultEnvelope } from '@app-mcp/node'
 import {
   CHANNEL_EVENT,
   CHANNEL_OP,
@@ -87,6 +87,8 @@ class RendererSession {
   private readonly resources = new Map<number, ResourceHandle>()
   private readonly scopes = new Map<number, Scope>()
   private readonly calls = new Map<string, Pending<unknown>>()
+  /** 进行中调用的 `context.progress`（页面的 `call.progress` 转到这里）。 */
+  private readonly progress = new Map<string, ToolContext['progress']>()
   private readonly reads = new Map<number, Pending<unknown>>()
   /** 页面持有的 hold（页面分配的 holdId → 主进程句柄），会话结束时全部释放。 */
   private readonly holds = new Map<number, HoldHandle>()
@@ -126,7 +128,7 @@ class RendererSession {
         requireId(op.id)
         const handle = this.registrar(op.scopeId).tool(op.name, {
           ...toolDefinition(op.spec),
-          handler: (input, context) => this.forwardCall(op.id, input, context.callId, context.signal),
+          handler: (input, context) => this.forwardCall(op.id, input, context),
         })
         this.tools.set(op.id, handle)
         return undefined
@@ -172,6 +174,9 @@ class RendererSession {
         else pending.reject(new ToolCallError(op.kind, op.message))
         return undefined
       }
+      case 'call.progress':
+        this.progress.get(op.callId)?.(op.progress, op.total, op.message)
+        return undefined
       case 'read.result': {
         const pending = this.reads.get(op.readId)
         if (!pending) return undefined
@@ -201,16 +206,23 @@ class RendererSession {
     }
   }
 
-  private forwardCall(toolId: number, input: unknown, callId: string, signal: AbortSignal): Promise<unknown> {
+  private forwardCall(toolId: number, input: unknown, context: ToolContext): Promise<unknown> {
+    const { callId, signal } = context
     return new Promise((resolve, reject) => {
       if (this.disposed) {
         reject(new ToolCallError('APP_DISCONNECTED', '页面已关闭'))
         return
       }
-      this.calls.set(callId, { resolve, reject })
+      this.progress.set(callId, (progress, total, message) => context.progress(progress, total, message))
+      const settle = (fn: (v: unknown) => void) => (v: unknown) => {
+        this.progress.delete(callId)
+        fn(v)
+      }
+      this.calls.set(callId, { resolve: settle(resolve), reject: settle(reject) })
       signal.addEventListener(
         'abort',
         () => {
+          this.progress.delete(callId)
           if (!this.calls.delete(callId)) return
           const reason = signal.reason as { kind?: ErrorKind; message?: string } | undefined
           this.send({
@@ -248,6 +260,7 @@ class RendererSession {
     for (const p of this.calls.values()) p.reject(gone)
     for (const p of this.reads.values()) p.reject(gone)
     this.calls.clear()
+    this.progress.clear()
     this.reads.clear()
     this.tools.clear()
     this.resources.clear()

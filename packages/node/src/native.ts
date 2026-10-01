@@ -136,6 +136,8 @@ export interface NativeCall {
   failWithDetails?(kind: string, message: string, detailsJson?: string | null): void
   /** 调用完成后仍阻止自动休眠，直到释放。调用已结束时抛出 `ALREADY_COMPLETED`。 */
   hold?(): NativeHold
+  /** 报告进度（spec/protocol.md 3.3）。调用已结束时抛出 `ALREADY_COMPLETED`。旧版原生模块没有此方法。 */
+  reportProgress?(progress: number, total?: number | null, message?: string | null): void
 }
 
 export interface NativeRead {

@@ -70,6 +70,19 @@ internal sealed unsafe class PendingCall
         }
     }
 
+    /// <summary>报告进度（v10）。调用已完成、已取消或未连接时无副作用。与 <see cref="Take"/> 互斥，不会用到已被消费的指针。</summary>
+    public void Progress(double progress, double? total, string? message)
+    {
+        lock (_gate)
+        {
+            if (_call == 0 || Token.IsCancellationRequested) return;
+            using var strings = new Utf8Strings();
+            var msg = message is null ? null : strings.AddPtr(message);
+            // 调用刚被取消：原生层返回 AlreadyCompleted，进度只是提示，忽略。
+            _ = NativeMethods.am_call_progress(_call, progress, total ?? -1.0, msg);
+        }
+    }
+
     public void Complete(ToolOutcome outcome, IReadOnlyList<string> stateHints)
     {
         var call = Take();
