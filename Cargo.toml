@@ -59,6 +59,18 @@ lto = true
 codegen-units = 1
 strip = true
 
+# uniffi 绑定的本机库（JVM jar / Python / Swift 随包的 .so）：release 优化，但只去调试信息、保留符号表——
+# uniffi-bindgen 从符号表读取 UniFFI 元数据（strip = true 会报 "No UniFFI metadata found"）。
+[profile.bindings-release]
+inherits = "release"
+strip = "debuginfo"
+
+# 移动端 .so（Android jniLibs）：体积优先。panic 保持 unwind——uniffi 在 FFI 边界 catch_unwind，
+# 把 panic 转成 InternalException 抛给 Kotlin，abort 会直接杀掉 App 进程。
+[profile.mobile-release]
+inherits = "release"
+opt-level = "s"
+
 [profile.wasm-release]
 inherits = "release"
 opt-level = "z"

@@ -29,7 +29,7 @@ MCP 只是 Hub 的一种"对外出口"，与格式导出（第 5 节）并列。
 | `crates/hub`（`app-mcp-hub`） | Hub 库：注册表、路由、总览、App 连接服务、上游聚合、MCP 出口、格式导出、策略回调。由 `crates/host` 的实现迁移而来 |
 | `crates/host`（`app-mcp-host`） | 可执行程序，只含 `main.rs`（命令行）与集成测试 |
 | `bindings/hub-c` | C ABI，头文件 `include/app_mcp_hub.h` → C / C++ / C# / Dart |
-| `bindings/hub-uniffi` | uniffi → Kotlin（Android 厂商）/ Swift / Python |
+| `bindings/hub-uniffi` | uniffi → Kotlin（Android 厂商）/ Swift / Python；Kotlin 为 JVM jar `sdks/kotlin/app-mcp-hub` + Android AAR `sdks/kotlin/app-mcp-hub-android`（四 ABI `.so`，R8 规则随 jar 发布） |
 | `bindings/hub-node` | napi-rs → npm `@app-mcp/hub`（Electron 助手、Node Agent 框架） |
 
 Hub 自带 tokio 多线程运行时（绑定层创建），Rust 用户可在自有运行时中直接使用 async API。

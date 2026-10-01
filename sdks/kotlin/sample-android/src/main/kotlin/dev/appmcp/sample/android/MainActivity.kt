@@ -13,7 +13,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
-/** 显示连接状态、计数与 toolsHash；按钮演示 App 主动 wake / sleep。客户端归 [SampleApp] 所有。 */
+/** 显示连接状态、计数与 toolsHash；按钮演示 App 主动 wake / sleep。客户端归 [SampleApp] 所有。
+ * 带 `hubSelfTest=true` extra 启动时另跑一次进程内 Hub 自检（[HubSelfTest]）。 */
 class MainActivity : Activity() {
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -40,6 +41,8 @@ class MainActivity : Activity() {
                     "状态：$status\n计数：$n\ntoolsHash：${client.toolsHash}"
             }
         }
+        // 进程内 Hub 自检（am start … --ez hubSelfTest true），见 HubSelfTest。
+        if (intent.getBooleanExtra("hubSelfTest", false)) uiScope.launch { HubSelfTest.run() }
     }
 
     override fun onDestroy() {

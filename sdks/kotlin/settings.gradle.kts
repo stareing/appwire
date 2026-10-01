@@ -28,8 +28,9 @@ val androidSdk = System.getenv("ANDROID_HOME")
     ?: "${System.getProperty("user.home")}/Android/Sdk".takeIf { file(it).isDirectory }
 if (androidSdk != null && file(androidSdk).isDirectory) {
     include(":app-mcp-android")
+    include(":app-mcp-hub-android")
     // 最小 Android 示例 App（真机验证用）
     include(":sample-android")
 } else {
-    logger.warn("未找到 Android SDK，跳过 :app-mcp-android")
+    logger.warn("未找到 Android SDK，跳过 Android 模块")
 }

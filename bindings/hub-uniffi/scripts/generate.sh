@@ -3,11 +3,13 @@
 #
 # 用法：bash bindings/hub-uniffi/scripts/generate.sh [--release] [--android] [--abi <abi>]... [--only kotlin|python|swift] [--no-strip]
 #
-#   --release   以 release 配置构建原生库（默认 debug）
-#   --android   额外交叉编译 Android 的 .so（总是 release；默认只编 arm64-v8a 与 x86_64）
-#               到 sdks/kotlin/app-mcp-hub/src/generated/jniLibs/<abi>/
+#   --release   以 cargo profile bindings-release 构建本机库（release 优化，只去调试信息、保留 uniffi 元数据
+#               所在的符号表）。发布 jar / wheel / Swift 包前必须加；默认 debug
+#   --android   额外交叉编译 Android 各 ABI 的 .so（总是 cargo profile mobile-release：体积优先、strip）
+#               到 sdks/kotlin/app-mcp-hub-android/src/main/jniLibs/<abi>/（AAR :app-mcp-hub-android 打包）
 #               （需要 ANDROID_NDK_HOME 或 ~/Android/Sdk/ndk/<ver>，以及对应 rustup target）
-#   --abi X     与 --android 连用，只编译指定 ABI（可重复；arm64-v8a、x86_64、armeabi-v7a、x86）
+#   --abi X     与 --android 连用，只编译指定 ABI（可重复；arm64-v8a、x86_64、armeabi-v7a、x86），
+#               默认全部；发布前必须全 ABI 重编（uniffi 加载时校验 checksum）
 #   --only X    只生成一种语言
 #   --no-strip  复制到 SDK 目录的本机库保留调试信息（默认 strip -S，debug 版约 250 MB → 约 40 MB）
 #
@@ -15,7 +17,7 @@
 #   sdks/python/src/app_mcp_hub/app_mcp_hub_uniffi.py、libapp_mcp_hub_uniffi.so
 #   sdks/kotlin/app-mcp-hub/src/generated/kotlin/dev/appmcp/hub/ffi/app_mcp_hub_uniffi.kt
 #   sdks/kotlin/app-mcp-hub/src/generated/resources/<jna-platform>/libapp_mcp_hub_uniffi.so
-#   sdks/kotlin/app-mcp-hub/src/generated/jniLibs/<abi>/libapp_mcp_hub_uniffi.so（--android）
+#   sdks/kotlin/app-mcp-hub-android/src/main/jniLibs/<abi>/libapp_mcp_hub_uniffi.so（--android）
 #   sdks/swift/Sources/AppMcpHubBindings/AppMcpHubBindings.swift
 #   sdks/swift/Sources/app_mcp_hub_uniffiFFI/include/{app_mcp_hub_uniffiFFI.h,module.modulemap}
 #   sdks/swift/lib/libapp_mcp_hub_uniffi.so（macOS 为 .dylib）
@@ -35,22 +37,23 @@ ABIS=()
 STRIP=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --release) PROFILE=release; CARGO_PROFILE_ARGS=(--release) ;;
+    --release) PROFILE=bindings-release; CARGO_PROFILE_ARGS=(--profile bindings-release) ;;
     --android) ANDROID=1 ;;
     --only) ONLY="$2"; shift ;;
     --abi) ABIS+=("$2"); shift ;;
     --no-strip) STRIP=0 ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
   shift
 done
-[[ ${#ABIS[@]} -gt 0 ]] || ABIS=(arm64-v8a x86_64)
+[[ ${#ABIS[@]} -gt 0 ]] || ABIS=(arm64-v8a armeabi-v7a x86_64 x86)
 
 want() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
 
 cd "$ROOT"
 echo "==> 构建 app-mcp-hub-uniffi（$PROFILE）"
+# 不用 release profile：其 strip = true 会去掉 UniFFI 元数据符号；bindings-release 只去调试信息（见根 Cargo.toml）。
 cargo build -p app-mcp-hub-uniffi "${CARGO_PROFILE_ARGS[@]}"
 
 case "$(uname -s)" in
@@ -122,7 +125,7 @@ if [[ $ANDROID -eq 1 ]]; then
   [[ -d "$NDK" ]] || { echo "找不到 Android NDK（设置 ANDROID_NDK_HOME）" >&2; exit 1; }
   TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
   API=24
-  JNI="$ROOT/sdks/kotlin/app-mcp-hub/src/generated/jniLibs"
+  JNI="$ROOT/sdks/kotlin/app-mcp-hub-android/src/main/jniLibs"
   for pair in aarch64-linux-android:arm64-v8a x86_64-linux-android:x86_64 \
               armv7-linux-androideabi:armeabi-v7a i686-linux-android:x86; do
     triple="${pair%%:*}"; abi="${pair##*:}"
@@ -132,13 +135,13 @@ if [[ $ANDROID -eq 1 ]]; then
       *) clang="$triple$API-clang" ;;
     esac
     env_triple="$(echo "$triple" | tr 'a-z-' 'A-Z_')"
-    echo "==> 交叉编译 $triple → $abi（release）"
+    echo "==> 交叉编译 $triple → $abi（mobile-release）"
     env "CARGO_TARGET_${env_triple}_LINKER=$TOOLCHAIN/$clang" \
         "CC_${triple//-/_}=$TOOLCHAIN/$clang" \
         "AR_${triple//-/_}=$TOOLCHAIN/llvm-ar" \
-      cargo build -p app-mcp-hub-uniffi --lib --no-default-features --target "$triple" --release
+      cargo build -p app-mcp-hub-uniffi --lib --no-default-features --target "$triple" --profile mobile-release
     mkdir -p "$JNI/$abi"
-    cp "$CARGO_TARGET_DIR/$triple/release/libapp_mcp_hub_uniffi.so" "$JNI/$abi/"
+    cp "$CARGO_TARGET_DIR/$triple/mobile-release/libapp_mcp_hub_uniffi.so" "$JNI/$abi/"
   done
 fi
 

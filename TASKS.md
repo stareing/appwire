@@ -134,7 +134,9 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - I 调试：`app-mcp-host doctor` 增加名字服务检查（D-Bus 名 / 激活文件、Android Service 声明、Windows 管道与登记、launchd 登记）；文档给出 `busctl` / `dbus-monitor`、`adb shell dumpsys activity services`、管道列表、`launchctl print` 用法
    - 验收：Linux 全链路（D-Bus 激活冷启动 + 调用 + 休眠 + 再激活）e2e；Android 真机；Windows interop；扩展在 Chromium 实测（无端口完成网页工具调用）；原有 IPC / WebSocket 路径测试全部保留通过；clippy 0；文档：spec/naming.md（新）、spec/protocol.md、spec/lifecycle.md、spec/hub-api.md、README 两语（How it works 图更新）、CLAUDE.md
 5. [ ] WASM 瘦身：核心注册表去 BTreeMap、绑定改 JSON 交换（目标 gzip < 100 KB）
-6. [ ] Android：R8 规则、ABI 拆包（Binder 传输与 bindService 唤醒已并入 4d）
+6. [x] Android：R8 规则、ABI 拆包（Binder 传输与 bindService 唤醒已并入 4d）
+   - 结果（2026-10-01）：R8 规则随 jar 发布（`app-mcp` / `app-mcp-hub` 的 `META-INF/proguard/*.pro`：JNA 全保留、uniffi 的 Structure 子类 / Callback 实现 / native 方法所在类按包名保留、`RuntimeVisibleAnnotations`），`app-mcp-android` consumer 规则只留 `WakeWorker` 类名（WorkManager 持久化类名）；新增 AAR `:app-mcp-hub-android`（打包 hub 四 ABI `.so`，hub 生成脚本改输出到这里、默认四 ABI）。根 `Cargo.toml` 新增 `[profile.bindings-release]`（release + `strip = "debuginfo"`，保留 uniffi 元数据，替代脚本里的环境变量覆盖）与 `[profile.mobile-release]`（release + `opt-level = "s"`，panic 仍为 unwind 以保留 FFI 边界的 catch_unwind）；两个 generate.sh：`--release` 用 bindings-release、`--android` 用 mobile-release，复制本机库默认 `strip -S`（debug 117 MB → 14 MB）。arm64 实测 opt 3 / s / z：app 2.88 / 2.69 / 2.64 MB、hub 9.80 / 9.05 / 8.25 MB，gzip 后 s 最小（app 1.27 MB、hub 3.29 MB）。全 ABI 重编（mobile-release，16 KB 对齐，NEEDED 仅 libc/libm/libdl）：app arm64 2.67 / v7a 1.66 / x86_64 2.96 / x86 2.87 MB，hub 8.97 / 5.61 / 9.75 / 10.26 MB。示例 App：release 开 minify + shrinkResources，ABI 拆 APK（四 ABI + universal；bundle 任务时关闭拆包，由 AAB 按 ABI 分发），排除 JNA 自带的 armeabi / mips / mips64；APK arm64 12.3 MB、v7a 7.9 MB、x86_64 13.3 MB、x86 13.7 MB、universal 45.8 MB，AAB 19.7 MB；dex 8.05 MB（debug）→ 0.94 MB（R8）。新增进程内 Hub 自检 `HubSelfTest`（`--ez hubSelfTest true`）覆盖 hub 绑定的事件 / 审批回调 / async。魅族 18 Pro 一轮（minified arm64 APK，Host `--lease-ms 0` + exec 唤醒器调 adb 广播）：Hub 自检 OK、demo.echo（main 线程）/ increment 正常、后台 5 s 后 DORMANT、调用经广播唤醒 0.20 s 返回、无崩溃；已移除 adb reverse 并 force-stop。Kotlin JVM 11 + Hub 5 测试、Robolectric 通过
+   - 注意：hub `.so` 每 ABI 5.6–10 MB（tokio / axum / rmcp 等全部进来），移动端瘦身需在 crates/hub 做 feature 拆分（不开 HTTP 服务 / MCP 出口时不编译），未做
 7. [x] Windows：`IApplicationActivationManager` 带参激活（AUMID 传令牌）
    - 结果（2026-10-01）：`SystemWaker` 的 aumid 改为 `ActivateApplication(aumid, "app-mcp-wake:<令牌>", AO_NONE)`（`windows` 0.62，COM STA，阻塞线程执行；`SystemWaker::action` 返回 `WakeAction`，去掉 explorer 与 `ignore_exit_code`）；Windows 实测：计算器空参数激活返回 PID 后结束（`--ignored activate_calculator`）；`wake-e2e.mjs` d 以令牌参数激活（计算器自身拒绝启动参数 0x80040904，判定为 Host 行为正确）；a/b 仍通过。打包 App 版的 d 需 MSIX 签名 + 开发者模式，本机未开启，未做
 8. [ ] 鸿蒙 HarmonyOS NEXT：ArkTS SDK（Node-API 兼容）+ 意图框架代码生成
@@ -159,7 +161,7 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
 
 ### 集成与验证
 - [ ] WASM 继续瘦身（需改代码）：core 注册表 BTreeMap→Vec/统一键类型（~87KB 未压缩）、`sort_unstable`、减少 Debug；wasm 绑定改 JSON 字符串交换去掉 serde_wasm_bindgen（~33KB）
-- [ ] Android 其他 ABI（armeabi-v7a/x86/x86_64）.so 为旧版，发布前全 ABI 重编
+- [x] Android 其他 ABI（armeabi-v7a/x86/x86_64）.so 为旧版，发布前全 ABI 重编——app / hub 四 ABI 均已用 mobile-release 重编（优化队列第 6 项）
 - [ ] `bindings/uniffi/scripts/generate.sh` 加 conda 环境清理（`unset CFLAGS CPPFLAGS CXXFLAGS LDFLAGS CC CXX AR`）
 - [ ] Android 未测：进程被杀后广播冷启动、Android ≤11 回退、加急配额耗尽、前台直接处理分支
 - [ ] Python：dbus-daemon 拉起已退出进程、exit-when-idle 冷启动退出路径
@@ -171,7 +173,7 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
 - [ ] Python `qt_dispatcher` 未测（本机无 Qt）
 - [x] `crates/host/tests/serve.rs` `second_serve_exits_zero_when_healthy_instance_runs` 偶发失败（约 1/6；`free_port` 先绑后放的端口竞争，serve 启动即退出码 1）——已消除（4b-G）：监听端口 0、实际地址读登记文件，单实例改由锁判断；改名 `second_serve_exits_zero_when_instance_holds_lock`，连跑 7 次稳定
 - [x] hub-c / hub-node / hub-uniffi 的配置 JSON 尚未暴露 `waker`——已加（随优化队列第 2 项）；清除自定义回调时恢复配置的 waker（`Hub::reset_waker`）
-- [ ] Kotlin jar 发布前用 `--release` 生成（debug `.so` 约 100 MB）
+- [x] Kotlin jar 发布前用 `--release` 生成（debug `.so` 约 100 MB）——`--release` 改用 `bindings-release` profile；复制本机库默认 `strip -S`（debug 117 MB → 14 MB）（优化队列第 6 项）
 - [x] 全量验证：`cargo test --workspace`、`cargo clippy --workspace --all-targets`、`pnpm -r test/typecheck/build`、ctest、dotnet test、dart test（2026-09-30 全部通过，另含 Flutter / Python / Kotlin / Swift / codegen / e2e，见上方"全量验证"）
 - [ ] 在 Claude Code 中实际操作 Demo（已配置：`.mcp.json` → `http://127.0.0.1:7717/mcp`，先 `app-mcp-host service install` 或 `serve`；需重启会话并批准项目 MCP 服务器）
 - [x] 工具名重复前缀：shop 的注释工具 `shop.info` 全名变成 `shop.shop.info`——注释改为局部名 `@mcp info`；写成带 appId 前缀的全名时构建报错（不自动去前缀）

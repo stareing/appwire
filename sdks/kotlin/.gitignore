@@ -3,6 +3,7 @@
 app-mcp/src/generated/
 app-mcp-hub/src/generated/
 app-mcp-android/src/main/jniLibs/
+app-mcp-hub-android/src/main/jniLibs/
 
 .gradle/
 .kotlin/
