@@ -197,7 +197,7 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 |---|---|---|
 | `ErrorKind::code` -32001…-32019，SDK ↔ Host 协议使用（`crates/protocol/src/error.rs:93-101`；`spec/protocol.md` 第 4 节） | 约束对象是 MCP 实现 | SDK ↔ Host 不是 MCP，**码值不变**（E-06）；-32016…-32019 是 2026-10 才分配的（`a15c05d` 等），按本协议自身规则已转向 -31001，不再在该区新增 |
 | MCP 出口 `to_mcp_error` 把 `ErrorKind` 码原样作为 JSON-RPC 错误码（资源读取、上游资源未连接） | 新实现 SHOULD NOT 使用 -32000…-32019；MUST NOT 发 -32002 | `call.rs:1618-1626, 1112-1113`。modern：`ResourceNotFound` / `InvalidInput` → `-32602`，其余 → `-32603`，类别放 `data.kind`；legacy 不变。工具调用走 `isError` 结果，不涉及数值码 |
-| 上游 MCP 错误按数值反查本协议类别 `mcp_error_to_tool` → `ErrorKind::from_code` | 接收方 MUST NOT 对 -32000…-32019（除 -32002）假定含义 | `call.rs:1591-1613`（调用点 `call.rs:151`、`hub.rs:1897, 2078`），测试 `call.rs:1906-1907` 把上游 `-32004` 断言为 `USER_REJECTED`——**缺陷**。改为：上游错误只认 `-32002` / 资源读取上下文的 `-32602` → `RESOURCE_NOT_FOUND`，其余 → `HANDLER_ERROR`，原码放 `details.upstreamCode`；补回归测试（T-08） |
+| 上游 MCP 错误按数值反查本协议类别 `mcp_error_to_tool` → `ErrorKind::from_code` | 接收方 MUST NOT 对 -32000…-32019（除 -32002）假定含义 | `call.rs:1591-1613`（调用点 `call.rs:151`、`hub.rs:1897, 2078`），测试 `call.rs:1906-1907` 把上游 `-32004` 断言为 `USER_REJECTED`——**缺陷**。改为：上游错误只认 `-32002` / 资源读取上下文的 `-32602` → `RESOURCE_NOT_FOUND`，其余 → `HANDLER_ERROR`，原码放 `details.upstreamCode`；补回归测试（T-08）。**入口侧已修复（2026-10-02）** |
 | 12 迁移计划 m10“新增数值码只能用 -32016～-32019” | 新码 MUST NOT 分配在该区 | 作废；以 `spec/protocol.md` 第 4 节（-31001 起）为准 |
 | 第 18 项 U2：是否有“需用户操作”的标准码 | 规范只定义 -32020/-32021/-32022 | 无标准位置；`USER_ACTION_REQUIRED` 保持 AppWire 协议内定义，MCP 出口经工具错误结果 + `data.kind` 传递 |
 

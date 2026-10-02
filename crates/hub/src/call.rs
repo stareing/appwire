@@ -1587,32 +1587,40 @@ fn result_value(r: &CallToolResult) -> Value {
     }
 }
 
-/// MCP 协议错误 → 协议错误类别（`data.kind` 优先，其次错误码）。
+/// MCP 协议错误 → 协议错误类别（工具调用路径）。
+///
+/// `data.kind`（本 Hub 与 AppWire 上游经 [`to_mcp_error`] 写入）优先；没有时只认 MCP 标准码 `-32002` → `RESOURCE_NOT_FOUND`，
+/// 其余一律 `HANDLER_ERROR`，原码放 `details.upstreamCode`。
+///
+/// @compat MCP 2026-07-28：接收方不得对 -32000…-32019（-32002 除外）假定含义，故不按数值反查 [`ErrorKind::from_code`]
+/// （docs/plans/12-mcp-stateless.md 第 5 节，S3）。
 pub(crate) fn mcp_error_to_tool(e: &McpError) -> ToolError {
-    let from_data = e
-        .data
-        .as_ref()
-        .and_then(|d| d.get("kind"))
-        .and_then(|k| serde_json::from_value::<ErrorKind>(k.clone()).ok());
-    let kind = from_data
-        .or_else(|| ErrorKind::from_code(i64::from(e.code.0)))
-        .unwrap_or(if e.code == ErrorCode::RESOURCE_NOT_FOUND {
-            ErrorKind::ResourceNotFound
-        } else {
-            ErrorKind::HandlerError
-        });
-    let details = e
-        .data
-        .as_ref()
-        .and_then(|d| d.get("details"))
-        .cloned();
-    ToolError {
-        kind,
-        message: e.message.to_string(),
-        details,
-    }
+    upstream_error_to_tool(e, &[ErrorCode::RESOURCE_NOT_FOUND])
 }
 
+/// 同 [`mcp_error_to_tool`]，用于资源读取：`-32602`（MCP 2026-07-28 的资源不存在）同样视为 `RESOURCE_NOT_FOUND`。
+pub(crate) fn mcp_resource_error_to_tool(e: &McpError) -> ToolError {
+    upstream_error_to_tool(e, &[ErrorCode::RESOURCE_NOT_FOUND, ErrorCode::INVALID_PARAMS])
+}
+
+fn upstream_error_to_tool(e: &McpError, not_found_codes: &[ErrorCode]) -> ToolError {
+    let data = e.data.as_ref();
+    let details = data.and_then(|d| d.get("details")).cloned();
+    let from_data = data
+        .and_then(|d| d.get("kind"))
+        .and_then(|k| serde_json::from_value::<ErrorKind>(k.clone()).ok());
+    if let Some(kind) = from_data {
+        return ToolError { kind, message: e.message.to_string(), details };
+    }
+    let kind = if not_found_codes.contains(&e.code) { ErrorKind::ResourceNotFound } else { ErrorKind::HandlerError };
+    let mut details = match details {
+        Some(Value::Object(m)) => m,
+        Some(other) => Map::from_iter([("upstream".to_owned(), other)]),
+        None => Map::new(),
+    };
+    details.insert("upstreamCode".to_owned(), json!(e.code.0));
+    ToolError { kind, message: e.message.to_string(), details: Some(Value::Object(details)) }
+}
 
 /// 把协议错误转为 MCP 协议错误（资源读取等非工具调用路径）。
 pub(crate) fn to_mcp_error(e: &ToolError) -> McpError {
@@ -1903,9 +1911,33 @@ mod tests {
         let back = mcp_error_to_tool(&e);
         assert_eq!(back.kind, ErrorKind::AppDisconnected);
         assert_eq!(back.details, Some(json!({"x": 1})));
-        let e = McpError::new(ErrorCode(-32004), "拒绝", None);
-        assert_eq!(mcp_error_to_tool(&e).kind, ErrorKind::UserRejected);
         let e = McpError::internal_error("x", None);
         assert_eq!(mcp_error_to_tool(&e).kind, ErrorKind::HandlerError);
+    }
+
+    /// S3 回归：上游不带 `data.kind` 的 -32000…-32019 不得按本协议码反查（-32004 曾被当成 USER_REJECTED）。
+    #[test]
+    fn upstream_codes_are_not_reverse_mapped() {
+        for code in [-32004, -32001, -32010, -32016] {
+            let back = mcp_error_to_tool(&McpError::new(ErrorCode(code), "上游", None));
+            assert_eq!(back.kind, ErrorKind::HandlerError, "{code}");
+            assert_eq!(back.details, Some(json!({ "upstreamCode": code })));
+        }
+        let e = McpError::new(ErrorCode(-32004), "上游", Some(json!({ "details": { "x": 1 } })));
+        assert_eq!(mcp_error_to_tool(&e).details, Some(json!({ "x": 1, "upstreamCode": -32004 })), "保留上游 details");
+        let e = McpError::new(ErrorCode(-32004), "上游", Some(json!({ "details": "原因" })));
+        assert_eq!(mcp_error_to_tool(&e).details, Some(json!({ "upstream": "原因", "upstreamCode": -32004 })));
+    }
+
+    #[test]
+    fn not_found_codes_by_context() {
+        let legacy = McpError::resource_not_found("无", None);
+        assert_eq!(mcp_error_to_tool(&legacy).kind, ErrorKind::ResourceNotFound);
+        assert_eq!(mcp_resource_error_to_tool(&legacy).kind, ErrorKind::ResourceNotFound);
+        let modern = McpError::invalid_params("无", None);
+        assert_eq!(mcp_resource_error_to_tool(&modern).kind, ErrorKind::ResourceNotFound, "资源读取的 -32602");
+        assert_eq!(mcp_error_to_tool(&modern).kind, ErrorKind::HandlerError, "工具调用的 -32602 不是资源不存在");
+        let tagged = McpError::new(ErrorCode(-32099), "带类别", Some(json!({ "kind": ErrorKind::UserRejected })));
+        assert_eq!(mcp_error_to_tool(&tagged).kind, ErrorKind::UserRejected, "data.kind 优先");
     }
 }

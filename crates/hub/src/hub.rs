@@ -1894,7 +1894,7 @@ impl Hub {
     pub async fn read_resource(&self, uri: &str) -> Result<ResourceContent, HubError> {
         call::read_resource(&self.shared, uri, &api_session_key(None))
             .await
-            .map_err(|e| HubError(call::mcp_error_to_tool(&e)))
+            .map_err(|e| HubError(call::mcp_resource_error_to_tool(&e)))
             .map(|r| call::first_content(uri, r))
     }
 
