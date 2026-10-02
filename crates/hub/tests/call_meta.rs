@@ -11,7 +11,7 @@ use app_mcp_native::{
     CallHandle, LifecycleMode, NativeClient, NativeConfig, StateStatus, ToolHandler, ToolSpec, WakeDescriptor as NativeWake,
     WakeKind as NativeWakeKind,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 const T: Duration = Duration::from_secs(10);
 /// handler 的固定耗时：`durationMs` 至少为此值。
@@ -122,6 +122,7 @@ async fn hub_api_outcome_woke_duration_and_call_id() {
 #[cfg(feature = "mcp-server")]
 mod mcp {
     use super::*;
+    use serde_json::Value;
     use app_mcp_hub::names::{META_CALL_ID, META_DURATION_MS, META_INSTANCE_ID, META_WOKE};
     use rmcp::ServiceExt;
     use rmcp::model::{CallToolRequestParams, CallToolResult};

@@ -44,7 +44,8 @@ mod unix {
     pub(crate) struct IpcListener {
         listener: UnixListener,
         /// 绑定时的套接字文件身份 `(dev, ino)`：停止时只删除仍是自己创建的那个文件。
-        file: (PathBuf, u64, u64),
+        /// 服务管理器交来的套接字（[`IpcListener::adopt`]）为 `None`：文件归服务管理器，不删除。
+        file: Option<(PathBuf, u64, u64)>,
     }
 
     impl IpcListener {
@@ -70,8 +71,28 @@ mod unix {
             let meta = std::fs::symlink_metadata(path)?;
             Ok(Self {
                 listener,
-                file: (path.clone(), meta.dev(), meta.ino()),
+                file: Some((path.clone(), meta.dev(), meta.ino())),
             })
+        }
+
+        /// 接管服务管理器（systemd 套接字激活 / launchd `Sockets`）交来的监听套接字，返回 `(端点字符串, 监听器)`。
+        ///
+        /// @security 与 [`IpcListener::bind`] 相同：套接字所在目录必须属于当前用户且组 / 其他用户不可写；
+        /// 每个连接仍核对对端用户。
+        /// @error 套接字没有文件路径（匿名 / 抽象命名空间）、目录不安全。
+        pub fn adopt(std: std::os::unix::net::UnixListener) -> io::Result<(String, Self)> {
+            let addr = std.local_addr()?;
+            let path = addr
+                .as_pathname()
+                .ok_or_else(|| invalid("交来的本地 IPC 套接字没有文件路径（匿名或抽象命名空间）".to_owned()))?
+                .to_path_buf();
+            let parent = path
+                .parent()
+                .ok_or_else(|| invalid(format!("套接字路径没有上级目录：{}", path.display())))?;
+            check_dir(parent)?;
+            std.set_nonblocking(true)?;
+            let listener = UnixListener::from_std(std)?;
+            Ok((Endpoint::Unix(path).to_string(), Self { listener, file: None }))
         }
 
         /// 接受下一个连接。对端用户不同的连接直接关闭并继续等待。
@@ -101,7 +122,7 @@ mod unix {
 
     impl Drop for IpcListener {
         fn drop(&mut self) {
-            let (path, dev, ino) = &self.file;
+            let Some((path, dev, ino)) = &self.file else { return };
             if let Ok(m) = std::fs::symlink_metadata(path)
                 && m.dev() == *dev
                 && m.ino() == *ino
@@ -117,6 +138,11 @@ mod unix {
             .recursive(true)
             .mode(0o700)
             .create(dir)?;
+        check_dir(dir)
+    }
+
+    /// 目录必须属于当前用户且组 / 其他用户不可写。
+    fn check_dir(dir: &Path) -> io::Result<()> {
         let meta = std::fs::metadata(dir)?;
         if meta.uid() != current_uid() {
             return Err(io::Error::new(
@@ -163,6 +189,56 @@ mod unix {
                 }
             }
             Err(e) => Err(e),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn temp_dir(mode: u32) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!("amcp-adopt-{:016x}", rand::random::<u64>()));
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+            dir
+        }
+
+        /// 服务管理器交来的套接字：端点取自其路径；停止时不删除文件（文件归服务管理器）；仍只接受同一用户。
+        #[tokio::test]
+        async fn adopted_socket_keeps_file_and_accepts() {
+            let dir = temp_dir(0o700);
+            let path = dir.join("hub.sock");
+            let std = std::os::unix::net::UnixListener::bind(&path).unwrap();
+            let (endpoint, mut l) = IpcListener::adopt(std).unwrap();
+            assert_eq!(endpoint, format!("unix:{}", path.display()));
+            let client = tokio::spawn({
+                let path = path.clone();
+                async move { UnixStream::connect(path).await.unwrap() }
+            });
+            let accepted = l.accept().await.unwrap();
+            assert_eq!(accepted.pid, Some(std::process::id()));
+            drop(client.await.unwrap());
+            drop(l);
+            assert!(path.exists(), "交来的套接字文件不应被 Hub 删除");
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn adopted_socket_in_writable_dir_is_refused() {
+            let dir = temp_dir(0o777);
+            let std = std::os::unix::net::UnixListener::bind(dir.join("hub.sock")).unwrap();
+            let err = IpcListener::adopt(std).err().unwrap();
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        /// 所在目录已不存在（无法核对属主与权限）：拒绝接管。
+        #[tokio::test]
+        async fn adopted_socket_without_directory_is_refused() {
+            let dir = temp_dir(0o700);
+            let std = std::os::unix::net::UnixListener::bind(dir.join("x.sock")).unwrap();
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert_eq!(IpcListener::adopt(std).err().unwrap().kind(), io::ErrorKind::NotFound);
         }
     }
 }

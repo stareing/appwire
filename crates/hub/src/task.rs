@@ -17,7 +17,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
 use crate::lifecycle::LeaseEntry;
@@ -36,7 +38,7 @@ pub(crate) enum Principal {
 
 #[cfg(feature = "mcp-server")]
 impl Principal {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Principal::Local => "local",
         }
@@ -52,24 +54,36 @@ pub(crate) enum TaskLifetime {
     UntilIdle,
 }
 
+/// 调用方的种类（`/status` 的 `tasks[].kind`；见模块文档的表）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CallerKind {
+    /// legacy MCP 会话（`mcp:<n>`）。
+    McpSession,
+    /// 无会话（modern）MCP 请求的主体（`principal:<主体>`）。
+    Principal,
+    /// Hub API 会话（`api` / `api:<session>`）。
+    Api,
+}
+
 /// 调用方键（单一定义；见模块文档的表）。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct CallerKey {
     key: String,
-    lifetime: TaskLifetime,
+    kind: CallerKind,
 }
 
 impl CallerKey {
     /// legacy MCP 会话。
     #[cfg(feature = "mcp-server")]
     pub(crate) fn mcp_session(id: u64) -> Self {
-        Self { key: format!("mcp:{id}"), lifetime: TaskLifetime::UntilEnd }
+        Self { key: format!("mcp:{id}"), kind: CallerKind::McpSession }
     }
 
     /// 无会话的 MCP 请求：按主体。
     #[cfg(feature = "mcp-server")]
     pub(crate) fn principal(p: Principal) -> Self {
-        Self { key: format!("principal:{}", p.as_str()), lifetime: TaskLifetime::UntilIdle }
+        Self { key: format!("principal:{}", p.as_str()), kind: CallerKind::Principal }
     }
 
     /// Hub API 的会话（`None` = 默认会话）。
@@ -78,15 +92,27 @@ impl CallerKey {
             Some(s) => format!("api:{s}"),
             None => "api".to_owned(),
         };
-        Self { key, lifetime: TaskLifetime::UntilEnd }
+        Self { key, kind: CallerKind::Api }
     }
 
     pub(crate) fn as_str(&self) -> &str {
         &self.key
     }
 
+    pub(crate) fn kind(&self) -> CallerKind {
+        self.kind
+    }
+
+    /// 无会话（modern）调用方：列表只随服务器状态与主体变化（S5），`apps.select` 带空闲有效期（S6）。
+    pub(crate) fn is_stateless(&self) -> bool {
+        self.kind == CallerKind::Principal
+    }
+
     pub(crate) fn lifetime(&self) -> TaskLifetime {
-        self.lifetime
+        match self.kind {
+            CallerKind::Principal => TaskLifetime::UntilIdle,
+            CallerKind::McpSession | CallerKind::Api => TaskLifetime::UntilEnd,
+        }
     }
 }
 
@@ -104,8 +130,8 @@ impl fmt::Display for CallerKey {
 pub(crate) struct AgentTask {
     /// Hub 签发的任务 ID：`task-` + 128 位随机数的十六进制（S8 作为显式句柄时满足 SEP-2567 的不可猜测要求）。
     pub id: String,
-    /// `apps.select`：appId → instanceId。
-    pub selected: HashMap<String, String>,
+    /// `apps.select`：appId → 选择。
+    pub selected: HashMap<String, Selection>,
     /// 已附带的总览：appId → 版本。
     pub delivered: HashMap<String, String>,
     /// 本任务发出的租约：连接 ID → 租约。
@@ -125,9 +151,49 @@ impl AgentTask {
         }
     }
 
+    /// 记下 `apps.select` 的选择（覆盖同一 App 之前的选择，有效期从现在算起）。
+    pub(crate) fn select(&mut self, app_id: &str, instance_id: &str, now: Instant) {
+        self.selected.insert(app_id.to_owned(), Selection { instance_id: instance_id.to_owned(), used_at: now });
+    }
+
+    /// 路由时取用某 App 的选择：已过期的移除并返回 `None`，未过期的续期（`used_at = now`）。
+    ///
+    /// @input ttl 选择的空闲有效期；`None` = 不过期（legacy 会话、Hub API）。
+    pub(crate) fn use_selection(&mut self, app_id: &str, ttl: Option<Duration>, now: Instant) -> Option<String> {
+        let sel = self.selected.get_mut(app_id)?;
+        if sel.expired(ttl, now) {
+            self.selected.remove(app_id);
+            return None;
+        }
+        sel.used_at = now;
+        Some(sel.instance_id.clone())
+    }
+
+    /// 未过期的选择（不续期，供列出）：(appId, instanceId, 到期时刻；`None` = 不过期)。
+    pub(crate) fn live_selections(&self, ttl: Option<Duration>, now: Instant) -> impl Iterator<Item = (&str, &str, Option<Instant>)> {
+        self.selected
+            .iter()
+            .filter(move |(_, s)| !s.expired(ttl, now))
+            .map(move |(app, s)| (app.as_str(), s.instance_id.as_str(), ttl.map(|t| s.used_at + t)))
+    }
+
     /// 去掉已到期的租约记录（SDK 侧同样已到期，收回时不必再发 `ttlMs: 0`）。
     pub(crate) fn prune_expired_leases(&mut self, now: Instant) {
         self.leases.retain(|_, l| l.expires().is_some_and(|e| e > now));
+    }
+}
+
+/// `apps.select` 的一个选择。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Selection {
+    pub instance_id: String,
+    /// 选定或最近一次用于路由的时刻（空闲有效期从这里算起）。
+    pub used_at: Instant,
+}
+
+impl Selection {
+    fn expired(&self, ttl: Option<Duration>, now: Instant) -> bool {
+        ttl.is_some_and(|t| now.saturating_duration_since(self.used_at) >= t)
     }
 }
 
@@ -195,16 +261,17 @@ mod tests {
     #[test]
     fn caller_keys_are_distinct_and_carry_lifetime() {
         let keys = [
-            (CallerKey::mcp_session(3), "mcp:3", TaskLifetime::UntilEnd),
-            (CallerKey::principal(Principal::Local), "principal:local", TaskLifetime::UntilIdle),
-            (CallerKey::api(None), "api", TaskLifetime::UntilEnd),
-            (CallerKey::api(Some("x")), "api:x", TaskLifetime::UntilEnd),
+            (CallerKey::mcp_session(3), "mcp:3", TaskLifetime::UntilEnd, CallerKind::McpSession),
+            (CallerKey::principal(Principal::Local), "principal:local", TaskLifetime::UntilIdle, CallerKind::Principal),
+            (CallerKey::api(None), "api", TaskLifetime::UntilEnd, CallerKind::Api),
+            (CallerKey::api(Some("x")), "api:x", TaskLifetime::UntilEnd, CallerKind::Api),
         ];
-        for (k, s, life) in &keys {
-            assert_eq!((k.as_str(), k.lifetime()), (*s, *life));
+        for (k, s, life, kind) in &keys {
+            assert_eq!((k.as_str(), k.lifetime(), k.kind()), (*s, *life, *kind));
             assert_eq!(k.to_string(), *s);
+            assert_eq!(k.is_stateless(), *kind == CallerKind::Principal);
         }
-        let set: HashSet<&CallerKey> = keys.iter().map(|(k, _, _)| k).collect();
+        let set: HashSet<&CallerKey> = keys.iter().map(|(k, _, _, _)| k).collect();
         assert_eq!(set.len(), keys.len());
     }
 
@@ -216,7 +283,7 @@ mod tests {
         let id = t.entry(&p).id.clone();
         assert!(id.starts_with("task-") && id.len() == "task-".len() + 32, "{id}");
         // 再次写入同一调用方：同一个任务
-        t.entry(&p).selected.insert("shop".into(), "a".into());
+        t.entry(&p).select("shop", "a", Instant::now());
         assert_eq!(t.entry(&p).id, id);
         assert_eq!(t.len(), 1);
         // 另一个调用方：另一个任务，ID 不同
@@ -228,5 +295,32 @@ mod tests {
         assert!(t.get(&p).is_none());
         assert_ne!(t.entry(&p).id, id);
         assert!(t.get(&p).is_some_and(|x| x.selected.is_empty()));
+    }
+
+    /// 选择的空闲有效期：未用满有效期时可取用并续期；用满即过期（取用时移除）；`None` 不过期。
+    #[test]
+    fn selection_idle_ttl_renews_on_use_and_expires() {
+        let mut t = TaskTable::default();
+        let p = CallerKey::principal(Principal::Local);
+        let t0 = Instant::now();
+        let ttl = Some(Duration::from_secs(60));
+        let task = t.entry(&p);
+        task.select("shop", "a", t0);
+        task.select("mail", "m", t0);
+        // 59 秒时取用：仍有效，并续期到 119 秒
+        assert_eq!(task.use_selection("shop", ttl, t0 + Duration::from_secs(59)).as_deref(), Some("a"));
+        let live: Vec<_> = task.live_selections(ttl, t0 + Duration::from_secs(60)).collect();
+        assert_eq!(live, vec![("shop", "a", Some(t0 + Duration::from_secs(119)))], "mail 未续期，60 秒时已过期");
+        // 列出不续期、不移除；取用已过期的选择时移除
+        assert_eq!(task.use_selection("mail", ttl, t0 + Duration::from_secs(60)), None);
+        assert!(!task.selected.contains_key("mail"));
+        assert_eq!(task.use_selection("shop", ttl, t0 + Duration::from_secs(119)), None);
+        assert!(task.selected.is_empty());
+        // 不过期
+        task.select("shop", "b", t0);
+        assert_eq!(task.use_selection("shop", None, t0 + Duration::from_secs(86_400)).as_deref(), Some("b"));
+        assert_eq!(task.live_selections(None, t0 + Duration::from_secs(86_400)).count(), 1);
+        // 未知 App
+        assert_eq!(task.use_selection("x", ttl, t0), None);
     }
 }

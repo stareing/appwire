@@ -43,9 +43,10 @@ use crate::tool_def::StaticManifest;
 use crate::registry::Registry;
 use crate::task::{CallerKey, TaskTable};
 use crate::types::{
-    AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy, AuthStatus,
+    AgentTaskStatus, AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy, AuthStatus,
     CallOutcome, CallRequest, DiagnosticReport, HubError, HubEvent, HubResource, HubStatus, HubTool,
-    InstanceState, InstanceStatus, LastError, PairingHandler, ResourceContent, ToolExposure, ToolFilter,
+    InstanceState, InstanceStatus, LastError, PairingHandler, ResourceContent, TaskLeaseStatus, TaskSelectionStatus,
+    ToolExposure, ToolFilter,
 };
 use crate::upstream::{UpstreamConfig, UpstreamState, encode_uri_component};
 use crate::connector::Connector;
@@ -193,7 +194,32 @@ pub struct HubConfig {
     /// 回收 = 收回其仍未到期的租约、清除 `apps.select` 等状态）。`0` = 不因空闲回收。默认 [`DEFAULT_TASK_IDLE_TTL`]。
     /// legacy MCP 会话与 Hub API 会话的任务不受影响（随会话结束 / `reset_session`）。
     pub task_idle_ttl: Duration,
+    /// 无会话（modern）MCP 请求的工具暴露方式（spec/hub-api.md 3.7「无会话请求的列表」）。默认 [`ToolExposure::All`]：
+    /// 无会话请求的 `tools/list` 不能随调用 / `apps.tools` / `apps.select` 变化（MCP 2026-07-28，SEP-2567），渐进暴露只剩
+    /// "内置工具 + 全局选定的 App"；客户端是否允许调用未列出的工具尚未验证（docs/plans/12-mcp-stateless.md U3），因此保守地全部列出。
+    /// legacy 会话与 Hub API 仍按 [`HubConfig::tool_exposure`]。
+    pub stateless_tool_exposure: ToolExposure,
+    /// 无会话请求的主体级 `apps.select` 选择的空闲有效期：选定或最近一次用于路由后这么久未再使用即失效，回到默认路由
+    /// （docs/plans/12-mcp-stateless.md S6 / U6）。`0` = 不单独过期（仍随主体任务的空闲回收清除）。默认
+    /// [`DEFAULT_PRINCIPAL_SELECT_TTL`]。legacy 会话与 Hub API 的选择不过期（随会话结束 / `reset_session`）。
+    pub principal_select_ttl: Duration,
+    /// 无会话请求的列表结果（`tools/list`、`resources/list`、`resources/templates/list`、`server/discover`）的 `ttlMs`
+    /// （SEP-2549；`cacheScope` 恒为 `private`）。默认 [`DEFAULT_STATELESS_LIST_TTL`]。legacy 会话的结果不带这两个字段。
+    pub stateless_list_ttl: Duration,
 }
+
+/// [`HubConfig::principal_select_ttl`] 的默认值。
+///
+/// @why 60 秒：与租约空闲收回（`idle_revoke` 30 秒）、自适应租约上限（60 秒）同量级——选择失效时该实例的租约多半也已
+/// 收回；N5 之前所有无会话 Agent 共用一个主体（docs/plans/12-mcp-stateless.md R1），较短的有效期限制一个 Agent 的选择
+/// 影响另一个的时长。`apps.select` 的结果写明有效期，模型可重新选择。
+pub const DEFAULT_PRINCIPAL_SELECT_TTL: Duration = Duration::from_secs(60);
+
+/// [`HubConfig::stateless_list_ttl`] 的默认值。
+///
+/// @why 5 秒：列表随 App 连接 / 断开变化，第 12 项 S7 之前无会话客户端收不到 `list_changed`（`subscriptions/listen` 未实现），
+/// 只能靠过期重取；本机重取的代价很小。S7 之后可按实测调长（12 迁移计划 U5）。
+pub const DEFAULT_STATELESS_LIST_TTL: Duration = Duration::from_secs(5);
 
 /// [`HubConfig::task_idle_ttl`] 的默认值。
 ///
@@ -263,6 +289,9 @@ impl Default for HubConfig {
             connectors: Vec::new(),
             channel_grace: DEFAULT_CHANNEL_GRACE,
             task_idle_ttl: DEFAULT_TASK_IDLE_TTL,
+            stateless_tool_exposure: ToolExposure::All,
+            principal_select_ttl: DEFAULT_PRINCIPAL_SELECT_TTL,
+            stateless_list_ttl: DEFAULT_STATELESS_LIST_TTL,
         }
     }
 }
@@ -324,6 +353,8 @@ pub struct HubShared {
     pub(crate) policy: Mutex<PolicyState>,
     /// 工具注册的变化序号（每次 [`Self::mark_tools_changed`] 加一）；导航后等待目标工具注册时订阅（spec/hub-api.md 3.14）。
     pub(crate) tools_rev: tokio::sync::watch::Sender<u64>,
+    /// 接受闸门与连接计数（按需启动的空闲退出，[`crate::activity`]）。
+    pub(crate) activity: crate::activity::Activity,
 }
 
 /// 一次调用的进度路由（[`HubShared::progress_routes`]）。
@@ -406,6 +437,7 @@ impl HubShared {
             rates: Mutex::new(RateBook::default()),
             policy: Mutex::new(policy),
             tools_rev: tokio::sync::watch::Sender::new(0),
+            activity: crate::activity::Activity::default(),
         }
     }
 
@@ -557,6 +589,8 @@ impl HubShared {
             }
         }
         apps.sort_by(|a, b| a.app_id.cmp(&b.app_id));
+        // 在结构体字面量之外取：字面量中 `lock(&self.leases)` 的守卫活到语句结束，task_statuses 再锁会自锁。
+        let tasks = self.task_statuses();
         HubStatus {
             identity: self.identity.clone(),
             listen: endpoints.and_then(|e| e.listen.clone()),
@@ -576,6 +610,7 @@ impl HubShared {
             output_validation: Some(self.config.output_validation),
             policy: Some(lock(&self.policy).status()),
             dormant_store: self.persist.as_ref().map(crate::lifecycle::Persist::status),
+            tasks: Some(tasks),
         }
     }
 
@@ -649,6 +684,11 @@ impl HubShared {
     }
 
     /// 移除 MCP 会话及其资源订阅。
+    /// 已初始化的 MCP 会话数。
+    pub(crate) fn mcp_session_count(&self) -> usize {
+        lock(&self.sessions).len()
+    }
+
     pub(crate) fn remove_session(self: &Arc<Self>, id: u64) {
         lock(&self.sessions).remove(&id);
         let uris: Vec<String> = lock(&self.resource_subs)
@@ -675,30 +715,95 @@ impl HubShared {
         lock(&self.agent_tasks)
     }
 
-    /// 调用方的 `apps.select` 优先，其次 [`Hub::select_instance`]。
+    /// `/status` 的 `tasks`（只读快照，按调用方键排序）。
+    fn task_statuses(&self) -> Vec<AgentTaskStatus> {
+        let now = tokio::time::Instant::now();
+        let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        // 先取请求活动再锁任务表：与空闲回收（lifecycle::task_expiries）相同的加锁顺序，不同时持有两把锁。
+        let keys: Vec<CallerKey> = lock(&self.agent_tasks).iter().map(|(k, _)| k.clone()).collect();
+        let activity: HashMap<String, (u32, tokio::time::Instant)> = {
+            let book = lock(&self.leases);
+            keys.iter().filter_map(|k| book.activity(k.as_str()).map(|a| (k.as_str().to_owned(), a))).collect()
+        };
+        let tasks = lock(&self.agent_tasks);
+        let mut out: Vec<AgentTaskStatus> = tasks
+            .iter()
+            .map(|(key, t)| {
+                let mut selections: Vec<TaskSelectionStatus> = t
+                    .live_selections(self.selection_ttl(key), now)
+                    .map(|(app_id, instance_id, until)| TaskSelectionStatus {
+                        app_id: app_id.to_owned(),
+                        instance_id: instance_id.to_owned(),
+                        expires_in_ms: until.map(|u| ms(u.saturating_duration_since(now))),
+                    })
+                    .collect();
+                selections.sort_by(|a, b| a.app_id.cmp(&b.app_id));
+                let mut leases: Vec<TaskLeaseStatus> = t
+                    .leases
+                    .values()
+                    .filter_map(|l| {
+                        let until = l.expires().filter(|u| *u > now)?;
+                        Some(TaskLeaseStatus {
+                            connection_id: l.conn.upgrade()?.cid.clone(),
+                            expires_in_ms: ms(until.saturating_duration_since(now)),
+                        })
+                    })
+                    .collect();
+                leases.sort_by(|a, b| a.connection_id.cmp(&b.connection_id));
+                let (inflight, idle_ms) = match activity.get(key.as_str()) {
+                    Some((n, last)) => (*n, Some(ms(now.saturating_duration_since(*last)))),
+                    None => (0, None),
+                };
+                AgentTaskStatus {
+                    id: t.id.clone(),
+                    caller: key.to_string(),
+                    kind: key.kind(),
+                    selections,
+                    leases,
+                    inflight,
+                    idle_ms,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.caller.cmp(&b.caller));
+        out
+    }
+
+    /// 调用方 `apps.select` 选择的空闲有效期：只有无会话调用方（主体级选择）有（[`HubConfig::principal_select_ttl`]）。
+    pub(crate) fn selection_ttl(&self, key: &CallerKey) -> Option<Duration> {
+        let ttl = self.config.principal_select_ttl;
+        (key.is_stateless() && !ttl.is_zero()).then_some(ttl)
+    }
+
+    /// 路由用：调用方的 `apps.select` 优先（无会话调用方的选择过期即移除、未过期则续期），其次 [`Hub::select_instance`]。
     pub(crate) fn selected_for(&self, key: &CallerKey, app_id: &str) -> Option<String> {
+        let ttl = self.selection_ttl(key);
+        let now = tokio::time::Instant::now();
         lock(&self.agent_tasks)
-            .get(key)
-            .and_then(|s| s.selected.get(app_id).cloned())
+            .get_mut(key)
+            .and_then(|s| s.use_selection(app_id, ttl, now))
             .or_else(|| lock(&self.global_selected).get(app_id).cloned())
     }
 
+    /// 列出用（`apps.list`）：全局选择被调用方未过期的选择覆盖；不续期。
     pub(crate) fn merged_selection(&self, key: &CallerKey) -> HashMap<String, String> {
         let mut out = lock(&self.global_selected).clone();
+        let now = tokio::time::Instant::now();
         if let Some(s) = lock(&self.agent_tasks).get(key) {
-            out.extend(s.selected.iter().map(|(k, v)| (k.clone(), v.clone())));
+            out.extend(s.live_selections(self.selection_ttl(key), now).map(|(a, i, _)| (a.to_owned(), i.to_owned())));
         }
         out
     }
 
     pub(crate) fn select_for_caller(&self, key: &CallerKey, app_id: &str, instance_id: &str) {
-        lock(&self.agent_tasks)
-            .entry(key)
-            .selected
-            .insert(app_id.to_owned(), instance_id.to_owned());
+        lock(&self.agent_tasks).entry(key).select(app_id, instance_id, tokio::time::Instant::now());
     }
 
+    /// 记下调用方已看过某 App 的总览（`apps.overview`）。无会话调用方不记：其总览不按"首次附带"送达（S5）。
     pub(crate) fn mark_delivered(&self, key: &CallerKey, app_id: &str, version: &str) {
+        if key.is_stateless() {
+            return;
+        }
         lock(&self.agent_tasks)
             .entry(key)
             .delivered
@@ -706,7 +811,13 @@ impl HubShared {
     }
 
     /// 该调用方首次接触某 App（或其总览版本变化）时返回总览，并记为已附带。
+    ///
+    /// 无会话调用方恒为 `None`：没有会话可去重（按主体去重会让同一主体下的新对话永远拿不到总览），总览改经
+    /// `server/discover` 的 `instructions`、`apps.tools` 与 `apps.overview` 送达（docs/plans/12-mcp-stateless.md 3.2 H7）。
     pub(crate) fn attach_overview(&self, key: &CallerKey, app_id: &str) -> Option<Overview> {
+        if key.is_stateless() {
+            return None;
+        }
         let ov = self.overview(app_id)?;
         let mut st = lock(&self.agent_tasks);
         let s = st.entry(key);
@@ -745,20 +856,43 @@ impl HubShared {
         n
     }
 
-    /// 当前是否按渐进暴露列出工具。
-    pub(crate) fn progressive(&self) -> bool {
-        match self.config.tool_exposure {
+    /// 按 `mode` 是否列为渐进暴露。
+    fn exposure_active(&self, mode: ToolExposure) -> bool {
+        match mode {
             ToolExposure::All => false,
             ToolExposure::Progressive => true,
             ToolExposure::Auto => self.tool_count() > self.config.tool_exposure_threshold,
         }
     }
 
-    /// 调用方直接列出工具的 App：展开过 / 调用过的，以及选定了实例的（调用方 `apps.select` 与全局选择）。
-    /// 渐进暴露未生效时返回 `None`（全部列出）。
+    /// legacy 会话与 Hub API 当前是否按渐进暴露列出工具（[`HubConfig::tool_exposure`]）。
+    pub(crate) fn progressive(&self) -> bool {
+        self.exposure_active(self.config.tool_exposure)
+    }
+
+    /// 无会话请求当前是否按渐进暴露列出工具（[`HubConfig::stateless_tool_exposure`]）。
+    pub(crate) fn stateless_progressive(&self) -> bool {
+        self.exposure_active(self.config.stateless_tool_exposure)
+    }
+
+    /// 该调用方当前是否按渐进暴露列出工具。
+    pub(crate) fn progressive_for(&self, key: &CallerKey) -> bool {
+        if key.is_stateless() { self.stateless_progressive() } else { self.progressive() }
+    }
+
+    /// 调用方直接列出工具的 App；渐进暴露未生效时返回 `None`（全部列出）。
+    ///
+    /// - legacy 会话与 Hub API：展开过 / 调用过的，以及选定了实例的（调用方 `apps.select` 与全局选择）。
+    /// - 无会话调用方：只有全局选择（[`Hub::select_instance`]，服务器状态）。
+    ///
+    /// @invariant 无会话调用方的结果只取决于服务器状态与配置，不读其任务（展开记录、`apps.select`）：MCP 2026-07-28 要求列表
+    /// 不随其他请求的副作用变化（SEP-2567，docs/plans/12-mcp-stateless.md 3.3）。
     pub(crate) fn exposed_apps(&self, key: &CallerKey) -> Option<HashSet<String>> {
-        if !self.progressive() {
+        if !self.progressive_for(key) {
             return None;
+        }
+        if key.is_stateless() {
+            return Some(lock(&self.global_selected).keys().cloned().collect());
         }
         let mut out: HashSet<String> = self.merged_selection(key).into_keys().collect();
         if let Some(s) = lock(&self.agent_tasks).get(key) {
@@ -768,7 +902,11 @@ impl HubShared {
     }
 
     /// 把 App 记为调用方已展开。渐进暴露生效且此前未列出时返回 `true`（调用方的工具列表因此变化）。
+    /// 无会话调用方不记录（其列表不随调用变化），恒为 `false`。
     pub(crate) fn expose_app(&self, key: &CallerKey, app_id: &str) -> bool {
+        if key.is_stateless() {
+            return false;
+        }
         let selected = self.merged_selection(key).contains_key(app_id);
         let inserted = lock(&self.agent_tasks)
             .entry(key)
@@ -1579,6 +1717,12 @@ impl Hub {
     /// 错误：`ResourceBusy`（单实例锁已被持有）、`AddrInUse`（地址 / IPC 端点被占用）、
     /// `PermissionDenied`（非回环地址未允许远程）、`InvalidInput`（配置不合法）。
     pub async fn start(config: HubConfig) -> std::io::Result<Hub> {
+        Self::start_with(config, crate::PreboundListeners::default()).await
+    }
+
+    /// 同 [`Hub::start`]，但用服务管理器交来的监听器（按需启动，[`crate::PreboundListeners`]）代替绑定
+    /// [`HubConfig::listen`] / [`HubConfig::ipc_endpoint`]；没有交来的那一个仍按配置绑定。
+    pub async fn start_with(config: HubConfig, mut prebound: crate::PreboundListeners) -> std::io::Result<Hub> {
         crate::features::check_config(&config)?;
         config
             .lease
@@ -1588,9 +1732,10 @@ impl Hub {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         // 锁先于任何监听：并发启动的两个 Host 只有一个能走到绑定。
         let instance = config.run_dir.as_deref().map(Instance::acquire).transpose()?;
-        let listener = match &config.listen {
-            Some(addr) => Some(bind_listen(addr, &config.listen_alternates).await?),
-            None => None,
+        let listener = match (prebound.take_tcp()?, &config.listen) {
+            (Some(l), _) => Some(l),
+            (None, Some(addr)) => Some(bind_listen(addr, &config.listen_alternates).await?),
+            (None, None) => None,
         };
         let listen_addr = listener.as_ref().map(TcpListener::local_addr).transpose()?;
         if let Some(local) = listen_addr
@@ -1602,8 +1747,9 @@ impl Hub {
                 format!("监听地址 {local} 不是回环地址；如确需远程访问请允许远程（--http-allow-remote）"),
             ));
         }
-        let ipc = match &config.ipc_endpoint {
-            Some(text) => {
+        let ipc = match (prebound.take_ipc()?, &config.ipc_endpoint) {
+            (Some(adopted), _) => Some(adopted),
+            (None, Some(text)) => {
                 let endpoint = app_mcp_protocol::Endpoint::parse(text)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
                 if !endpoint.is_ipc() {
@@ -1615,7 +1761,7 @@ impl Hub {
                 let listener = crate::ipc::IpcListener::bind(&endpoint).await?;
                 Some((endpoint.to_string(), listener))
             }
-            None => None,
+            (None, None) => None,
         };
         let waker = config
             .waker
@@ -1692,9 +1838,16 @@ impl Hub {
     }
 
     /// 内部共享状态（crate 内的测试检查任务表用）。
-    #[cfg(test)]
+    #[cfg(all(test, feature = "mcp-server"))]
     pub(crate) fn shared(&self) -> &Arc<HubShared> {
         &self.shared
+    }
+
+    /// 按需启动（spec/protocol.md 1.9）：等到没有连接、调用、唤醒、在线 App 与 MCP 会话并持续 `idle`，且已停止接受新连接后返回；
+    /// 之后调用方应 [`Hub::shutdown`]（新连接留在服务管理器持有的监听套接字上，由它再次启动进程）。
+    pub async fn wait_idle(&self, idle: Duration) {
+        let shared = self.shared.clone();
+        self.shared.activity.wait_idle(idle, move || shared.idle_blocker()).await;
     }
 
     /// HTTP 服务（`/app`、`/mcp`、`/healthz`）实际监听的地址；未开启时为 `None`。
@@ -1921,7 +2074,7 @@ impl Hub {
                 None => sel.remove(app_id).is_some(),
             }
         };
-        if changed && self.shared.progressive() {
+        if changed && (self.shared.progressive() || self.shared.stateless_progressive()) {
             self.shared.mark_tools_changed();
         }
     }
@@ -2079,6 +2232,8 @@ impl Hub {
             call_id: parsed.id.clone(),
             progress: None,
             idempotency_key: None,
+            principal: None,
+            client_name: None,
         };
         let inv = self.shared.call(ctx, std::future::pending()).await;
         let r = match inv.to_mcp() {

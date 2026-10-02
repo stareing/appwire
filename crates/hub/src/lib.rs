@@ -10,6 +10,7 @@
 //!
 //! 可执行程序 `app-mcp-host` 是本库之上的命令行薄壳。
 
+mod activity;
 mod agent_control;
 pub mod app_server;
 pub mod call;
@@ -56,6 +57,7 @@ pub use dormant_store::{DormantStoreStatus, StoreFileInfo, StoreIssue};
 pub use format::ToolFormat;
 pub use lease::{LeaseOverrides, LeasePairStatus, LeasePolicy, LeaseStatus};
 pub use limits::{LimitOverrides, LimitPolicy, OutputValidation, RateLimit};
+pub use activity::PreboundListeners;
 pub use http_server::{Health, HttpOptions};
 pub use progress::ProgressUpdate;
 pub use policy::{
@@ -64,17 +66,19 @@ pub use policy::{
 };
 pub use connector::{BlockedTarget, ConnectorError, Connector, DialedChannel, DiscoveredName, NameEvent};
 pub use hub::{
-    DEFAULT_CHANNEL_GRACE, DEFAULT_NAVIGATE_TIMEOUT, DEFAULT_PROGRESS_INTERVAL, DEFAULT_TASK_IDLE_TTL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
+    DEFAULT_CHANNEL_GRACE, DEFAULT_NAVIGATE_TIMEOUT, DEFAULT_PRINCIPAL_SELECT_TTL, DEFAULT_PROGRESS_INTERVAL, DEFAULT_STATELESS_LIST_TTL, DEFAULT_TASK_IDLE_TTL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
     load_manifests, parse_resource_uri, resource_uri,
 };
 #[cfg(feature = "mcp-server")]
 pub use mcp::McpSession;
 pub use types::{
     AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy,
-    ApprovalRequest, AuthStatus, Availability, AwakeReason, CallOutcome, CallRequest, DiagnosticReport, HubError,
+    AgentTaskStatus, ApprovalRequest, AuthStatus, Availability, AwakeReason, CallOutcome, CallRequest, DiagnosticReport, HubError,
     HubEvent, HubResource, HubStatus, HubTool, InstanceInfo, InstancePower, InstanceState, InstanceStatus, LastError,
-    PairingHandler, PairingRequest, ResourceContent, ToolDeclaration, ToolExposure, ToolFilter, risk_rank,
+    PairingHandler, PairingRequest, ResourceContent, TaskLeaseStatus, TaskSelectionStatus, ToolDeclaration, ToolExposure,
+    ToolFilter, risk_rank,
 };
+pub use task::CallerKind;
 pub use upstream::UpstreamConfig;
 pub use wake::{
     ExecWaker, Platform, SystemWaker, WakeAction, WakeCommand, WakeDescriptor, WakeKind, WakeRequest,

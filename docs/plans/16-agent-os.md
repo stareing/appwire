@@ -86,7 +86,10 @@
     名下 `apps.select` 选择、已附带总览、租约、渐进暴露）按调用方键寻址：legacy MCP 会话 / Hub API 会话一会话一任务（随结束信号回收），
     无会话 MCP 请求按主体一任务（`principal:local`），寿命按请求流空闲（U9：复用租约的请求活动记录，`HubConfig.task_idle_ttl` 默认 10 分钟），
     回收时收回其租约。契约见 `spec/hub-api.md` 3.6「调用方与 Agent 任务」。
-  - 未实施（挂点已留在 `AgentTask` 上）：任务 ID 对外（第 12 项 S8 句柄 / 可选 `_meta`）、N5 身份、P2 按 Agent 匹配、P3 记账、N6 锁、
+  - **第 12 项 S5 / S6 补充（2026-10-02）**：无会话任务上的展开记录与选择不再影响 `tools/list`（S5）；主体级 `apps.select` 选择带空闲有效期
+    （`HubConfig.principal_select_ttl` 默认 60 秒，取用即续期）；任务以只读形式出现在 `/status` 的 `tasks`（`id`、调用方键与种类、
+    选择、租约、进行中请求、空闲毫秒）；`ApprovalRequest` 带 `principal` 与仅供显示的 `client_name`。见 `spec/hub-api.md` 3.3 / 3.6 / 3.7 / 3.9。
+  - 未实施（挂点已留在 `AgentTask` 上）：任务 ID 作为句柄对外（第 12 项 S8 句柄 / 可选 `_meta`；现只在 `/status` 只读展示）、N5 身份、P2 按 Agent 匹配、P3 记账、N6 锁、
     第 17 项句柄与订阅归属。
 - **P2 策略挂点（2026-10-02 决定实施；第 18 项 L5 暴露开关由此实现）**：类比 LSM，本库只提供执行点，不内置任何判断；无规则时行为与现状完全一致。
   - **执行点**：列出（`tools/list`、`apps.*`）、调用、唤醒、句柄访问（句柄挂点只定义类型，规则用到即校验失败，待第 17 项句柄落地）。

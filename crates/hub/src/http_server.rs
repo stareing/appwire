@@ -404,7 +404,10 @@ impl Router {
         let accept = derive_accept_key(key.as_bytes());
         let on_upgrade = hyper::upgrade::on(req);
         let shared = self.shared.clone();
+        // 升级后的 App 连接比这条 HTTP 连接活得久：另计一次，直到 WebSocket 结束。
+        let guard = self.shared.activity.hold();
         tokio::spawn(async move {
+            let _guard = guard;
             match on_upgrade.await {
                 Ok(upgraded) => {
                     let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(app_ws_config())).await;
@@ -444,15 +447,26 @@ impl Router {
     }
 
     /// 回环 TCP 监听器的接受循环，直到任务被中止。
+    ///
+    /// 每次 accept 前取得接受闸门的许可（[`crate::activity`]）：按需启动的 Host 空闲退出时闸门关闭，
+    /// 正在等待的 accept 被取消（连接留在内核队列，由服务管理器再次启动 Host 接受）。
     pub async fn serve_tcp(self: Arc<Self>, listener: TcpListener) {
         debug_assert_eq!(self.transport, Transport::Tcp);
+        let activity = self.shared.activity.clone();
         loop {
-            match listener.accept().await {
+            let permit = activity.permit().await;
+            let accepted = tokio::select! {
+                r = listener.accept() => r,
+                () = activity.draining() => continue,
+            };
+            match accepted {
                 Ok((stream, addr)) => {
+                    let guard = permit.admit();
                     disable_nagle(&stream, addr);
-                    tokio::spawn(self.clone().serve_connection(stream, Peer::Tcp(addr)));
+                    tokio::spawn(self.clone().serve_counted(stream, Peer::Tcp(addr), guard));
                 }
                 Err(e) => {
+                    drop(permit);
                     tracing::warn!("接受 TCP 连接失败：{e}");
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
@@ -461,19 +475,36 @@ impl Router {
     }
 
     /// 本地 IPC 端点的接受循环，直到任务被中止（中止时监听器被丢弃，Unix 上删除套接字文件）。
+    /// 接受闸门同 [`Router::serve_tcp`]。
     pub async fn serve_ipc(self: Arc<Self>, mut listener: crate::ipc::IpcListener) {
         debug_assert_eq!(self.transport, Transport::Ipc);
+        let activity = self.shared.activity.clone();
         loop {
-            match listener.accept().await {
+            let permit = activity.permit().await;
+            let accepted = tokio::select! {
+                r = listener.accept() => r,
+                () = activity.draining() => continue,
+            };
+            match accepted {
                 Ok(a) => {
-                    tokio::spawn(self.clone().serve_connection(a.stream, Peer::Ipc { pid: a.pid }));
+                    let guard = permit.admit();
+                    tokio::spawn(self.clone().serve_counted(a.stream, Peer::Ipc { pid: a.pid }, guard));
                 }
                 Err(e) => {
+                    drop(permit);
                     tracing::warn!("接受 IPC 连接失败：{e}");
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
         }
+    }
+
+    /// [`Router::serve_connection`]，连接结束时才交回计数。
+    async fn serve_counted<IO>(self: Arc<Self>, io: IO, peer: Peer, _guard: crate::activity::ConnectionGuard)
+    where
+        IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        self.serve_connection(io, peer).await;
     }
 }
 

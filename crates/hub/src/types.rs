@@ -431,6 +431,50 @@ pub struct HubStatus {
     /// 休眠记录持久化（spec/hub-api.md 3.5「持久化」）；未配置 `state_dir` 或旧 Host 时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dormant_store: Option<crate::dormant_store::DormantStoreStatus>,
+    /// Agent 任务（调用方的跨请求状态，spec/hub-api.md 3.6），按调用方键排序；只读。旧 Host 没有时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<Vec<AgentTaskStatus>>,
+}
+
+/// 一个 Agent 任务（[`HubStatus::tasks`]）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskStatus {
+    /// Hub 签发的任务 ID（`task-<128 位十六进制>`）。
+    pub id: String,
+    /// 调用方键：`mcp:<n>` / `principal:<主体>` / `api` / `api:<session>`。
+    pub caller: String,
+    pub kind: crate::task::CallerKind,
+    /// 未过期的 `apps.select` 选择，按 appId 排序。
+    pub selections: Vec<TaskSelectionStatus>,
+    /// 本任务发出、尚未到期且实例仍连接的租约，按连接 ID 排序。
+    pub leases: Vec<TaskLeaseStatus>,
+    /// 进行中的请求数。
+    pub inflight: u32,
+    /// 距最近一次请求活动（开始或结束）的毫秒数；没有活动记录时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_ms: Option<u64>,
+}
+
+/// [`AgentTaskStatus::selections`] 的一项。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSelectionStatus {
+    pub app_id: String,
+    pub instance_id: String,
+    /// 距失效的毫秒数（主体级选择，`HubConfig.principal_select_ttl`）；不单独过期时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in_ms: Option<u64>,
+}
+
+/// [`AgentTaskStatus::leases`] 的一项。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskLeaseStatus {
+    /// 实例的连接 ID（与 [`InstanceInfo::connection_id`] 相同）。
+    pub connection_id: String,
+    /// 距到期的毫秒数。
+    pub expires_in_ms: u64,
 }
 
 /// 主 HTTP 服务的令牌策略。
@@ -631,6 +675,14 @@ pub struct ApprovalRequest {
     /// 工具的 MCP 注解（与 [`HubTool::annotations`] 相同），供厂商按声明决定是否确认。
     #[serde(default)]
     pub annotations: ToolAnnotations,
+    /// MCP 出口：发起调用的认证主体（取自传输层凭据，现在恒为 `local`，第 16 项 N5 按 Agent 发令牌后细分）；Hub API 为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
+    /// MCP 出口：客户端自报的名称（`clientInfo.name`；legacy 取自 `initialize`，无会话请求取自请求 `_meta`）。
+    ///
+    /// @security 自报、不可信，**仅供显示**，不得据此做授权决定（MCP 规范 S-F6）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
 }
 
 /// 厂商 UI 接管 App 配对。

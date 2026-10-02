@@ -205,8 +205,12 @@ pub trait ApprovalHandler: Send + Sync {
 pub struct ApprovalRequest { pub call_id: String, pub app_id: String, pub app_name: String,
     pub tool: String, pub title: Option<String>, pub description: String,
     pub risk: Risk, pub arguments: Value, pub session: Option<String>,
-    pub annotations: ToolAnnotations }      // 与 HubTool.annotations 相同，供厂商按声明决定是否确认
+    pub annotations: ToolAnnotations,       // 与 HubTool.annotations 相同，供厂商按声明决定是否确认
+    pub principal: Option<String>,          // 第 12 项 S6：MCP 出口的认证主体（传输层凭据，现在恒为 "local"）；Hub API 为 None
+    pub client_name: Option<String> }       // 第 12 项 S6：MCP 客户端自报的 clientInfo.name，仅供显示（不可信，不得据此授权）
 // session：Hub API 为 CallRequest.session 原样；MCP 出口为调用方键（legacy `mcp:<n>`，无会话请求 `principal:<主体>`，3.6）
+// principal / client_name 为 None 时 JSON 中不出现（Hub API 发起的审批与之前逐字节相同）；client_name：legacy 取自 initialize，
+// 无会话请求取自请求 _meta 的 io.modelcontextprotocol/clientInfo
 
 #[async_trait]
 pub trait PairingHandler: Send + Sync {
@@ -242,7 +246,7 @@ pub struct PairingRequest { pub app_id: String, pub app_name: String,
   `AppOverviewInfo`（含注入文本 `text`）、`ResourceContent { uri, mime_type, text, blob }`、
   `HubResource`、`Hub::reset_session(session)`、`Hub::dispatch_in_session(format, call, session)`。
 - 风险顺序：read < write < destructive < payment < os-sensitive（协议列举顺序）。
-- 审批：策略要求审批但未设置 `ApprovalHandler` → `USER_REJECTED`。MCP 出口的 `ApprovalRequest.session` 为 `mcp:<n>`。
+- 审批：策略要求审批但未设置 `ApprovalHandler` → `USER_REJECTED`。MCP 出口的 `ApprovalRequest.session` 为调用方键（3.3、3.6）。
   上游工具的风险取自 annotations（`readOnlyHint` → read，`destructiveHint` → destructive，否则 write）。
 - 配对：设置 `PairingHandler` 后，无静态清单或 Origin 不在白名单的 App 握手返回 `pending`，
   handler 结果经 `app/pairingResult` 通知；同意过的 (appId, Origin) 或本 Hub 发出的 token 重连时不再询问。
@@ -308,7 +312,11 @@ pub struct Health {                          // serde camelCase
   `principal:local`（第 16 项 N5 按 Agent 发令牌后细分）。因此**所有无会话请求共用一个任务**（一个 Agent 的 `apps.select` /
   `apps.release` 影响另一个，docs/plans/12-mcp-stateless.md R1）。无会话请求不登记 peer、不发 `list_changed`、处理器析构无副作用
   （rmcp 无状态 HTTP 路径每请求构造一次处理器）。Hub 现在只协商到 2025-11-25，无会话请求只能以该版本及以前的版本经
-  `server/discover` 到达；其列表规则（3.7）与订阅仍同 legacy，分别由 S5、S7 改写。
+  `server/discover` 到达；其列表与总览按 3.7「无会话请求的列表与总览」（第 12 项 S5），订阅仍同 legacy（S7 改写）。
+  **主体级 `apps.select`**（第 12 项 S6）：无会话请求的选择记在主体任务上，对该主体的所有无会话客户端生效，**不改变工具列表**；
+  另有空闲有效期 `HubConfig.principal_select_ttl: Duration`（默认 `DEFAULT_PRINCIPAL_SELECT_TTL` = 60 秒，`0` = 不单独过期）：
+  选定或最近一次用于路由（工具调用、资源读取、`apps.navigate` / `apps.activate`）后这么久未再使用即失效，之后按默认规则路由，
+  `apps.list` 不再显示；结果文本写明作用范围与有效期。过期在取用 / 列出时判定，不设定时器。legacy 会话与 Hub API 的选择不过期。
   `HubConfig.task_idle_ttl: Duration`（默认 `DEFAULT_TASK_IDLE_TTL` = 10 分钟，`0` = 不因空闲回收）：无会话调用方没有进行中的请求、
   距最近一次请求活动（与 3.5 租约的请求流空闲判定共用一份记录）达此时长时，回收其任务——收回仍未到期的租约（`ttlMs: 0`，其他调用方的
   未到期租约随后补发；已到期的不再发消息）、删除其租约统计与状态。没有按空闲回收的任务时 Hub 不设定时器。
@@ -511,7 +519,7 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
   本会话调用过 `apps.tools` 的 App ∪ 本会话调用过其工具的 App（含上游；无论结果成功与否）∪ 本会话 `apps.select` 选定实例的 App ∪
   `Hub::select_instance` 全局选定实例的 App。
 - **未生效时**：列表与之前完全相同（不含 `apps.tools`）；已列出的 App 仍照常记录，切换为生效时沿用。
-- **会话**：MCP 出口为 `mcp:<n>`（无会话请求为 `principal:<主体>`，3.6；其 modern 列表规则由第 12 项 S5 改写）；Hub API 由 `ToolFilter.session`（列表 / 导出）与 `CallRequest.session` /
+- **会话**：MCP 出口为 `mcp:<n>`（无会话请求见下方「无会话请求的列表与总览」）；Hub API 由 `ToolFilter.session`（列表 / 导出）与 `CallRequest.session` /
   `dispatch_in_session` 的 `session`（调用）决定，二者用同一 ID 即对应同一会话。`reset_session` / MCP 会话结束时清除。
 - **`ToolFilter.apps` 显式给出时**不受渐进暴露影响（列出这些 App 的全部工具），供厂商 UI 使用。
 - **`apps.tools`**（`{appId}`，只读）：返回 `{appId, tools: HubTool[], message}`（`HubTool` 为 3.1 的 camelCase 形态，
@@ -521,6 +529,29 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
   按普通列表变化处理（合并后发 `ToolsChanged` 与所有会话的 `list_changed`）。Hub API 调用方在每轮对话重新 `export_tools` 即可。
 - **路由不变**：未列出但存在的工具按全名（或导出名）仍可调用；导出名按全部工具（含 `apps.tools`）计算，展开前后稳定。
 - **`instructions`**：MCP `initialize` 时渐进暴露已生效，则在 7.2 的文本末尾追加一句说明（先调用 `apps.tools`，也可按全名直接调用）。
+
+**无会话请求的列表与总览**（第 12 项 S5，docs/plans/12-mcp-stateless.md 3.3；单一定义，以上各条只适用于 legacy 会话与 Hub API）：
+
+- **列表规则**：无会话请求（`principal:<主体>`，3.6）的 `tools/list` / `resources/list` 只是注册表与 App 连接状态、全局选择
+  （`Hub::select_instance`）、策略 `hide`、请求主体与 Hub 配置的函数，**不读**调用方任务上的展开记录与 `apps.select` 选择——
+  两次 `tools/list` 之间夹任意 `apps.tools` / 工具调用 / `apps.select` / `apps.overview`，结果逐字节相同（MCP 2026-07-28：列表不随
+  其他请求的副作用变化，SEP-2567）。列表顺序确定：内置工具在前，App 按 appId、上游按名称（均为有序表）。
+  已知例外：同一 App 有多个已连接实例且都未聚焦时，`view` 工具取首选实例界面上的，而首选实例的"最近活跃"含"最近一次完成调用"
+  （routing.rs，全局实例状态），调用可能改变列出哪个实例的 `view` 工具（docs/plans/12-mcp-stateless.md S5 记录 U8）。
+- **暴露方式**：`HubConfig.stateless_tool_exposure: ToolExposure`，**默认 `All`**（全部列出，不含 `apps.tools`）。设为
+  `Progressive` / `Auto`（阈值同 `tool_exposure_threshold`）且生效时列表 = 内置工具（含 `apps.tools`）+ 全局选定实例的 App 的工具；
+  `apps.tools` 只返回定义、不改变列表，模型须按全名调用未列出的工具。
+  @why 默认 `All`：modern 客户端是否允许调用 `tools/list` 中未列出的工具尚未实测（docs/plans/12-mcp-stateless.md U3）；
+  不允许时渐进暴露在 modern 下不可用，保守地全部列出，U3 实测后再定默认值。
+- **缓存提示**（SEP-2549）：无会话请求的 `tools/list`、`resources/list`、`resources/templates/list`、`server/discover` 结果带
+  `ttlMs` = `HubConfig.stateless_list_ttl`（默认 `DEFAULT_STATELESS_LIST_TTL` = 5 秒）与 `cacheScope: "private"`；`resources/read`
+  带 `ttlMs: 0`、`cacheScope: "private"`。legacy 会话的结果不带这两个字段（线上格式不变）。
+- **总览**：不在调用结果中"首次附带"（无会话可去重），改为——`server/discover` 的 `instructions`：各 App 一句话简介（同 7.2）+
+  "调用 `apps.overview` 查看完整总览（`apps.tools` 的结果也附带）"，渐进暴露生效时另说明列表不随调用变化；`apps.tools`：每次在内容
+  最前附带该 App 的总览文本（格式同 spec/protocol.md 7.3，说明句为"可用 apps.overview 重新查看"），`structuredContent` 另有
+  `overview` 字段（`apps.overview` 的结构）；`apps.overview` 不变。无会话调用方的任务不记"已附带"。
+- **通知**：无会话请求不登记 peer，收不到 `list_changed`（S7 经 `subscriptions/listen` 提供）；`Hub::select_instance` 在 legacy 或
+  无会话渐进暴露生效时按普通列表变化处理。
 
 配置入口：`app-mcp-host` 配置文件 `tools: {exposure, threshold}`、命令行 `--tool-exposure auto|progressive|all`、
 `--tool-exposure-threshold <N>`；C / Node 配置 JSON `toolExposure`、`toolExposureThreshold`（同时新增 `waker`：`"system"` /
@@ -570,7 +601,15 @@ pub struct HubStatus {
     limits: Option<LimitOverrides>,                    // 第 14 项：资源保护策略（3.11；旧 Host → None）
     output_validation: Option<OutputValidation>,       // 第 19 项 R2（3.11；旧 Host → None）
     dormant_store: Option<DormantStoreStatus>,         // 4f G11：休眠记录持久化（3.5；未配置 state_dir / 旧 Host → None）
+    tasks: Option<Vec<AgentTaskStatus>>,               // 第 12 项 S6：Agent 任务（3.6），按调用方键排序；只读；旧 Host → None
 }
+pub struct AgentTaskStatus { id: String,               // task-<128 位十六进制>
+    caller: String,                                    // 调用方键 mcp:<n> | principal:<主体> | api | api:<session>
+    kind: CallerKind,                                  // mcpSession | principal | api
+    selections: Vec<TaskSelectionStatus>,              // 未过期的 apps.select：{ app_id, instance_id, expires_in_ms: Option<u64> }（主体级才有有效期）
+    leases: Vec<TaskLeaseStatus>,                      // 未到期且实例仍连接的租约：{ connection_id, expires_in_ms }
+    inflight: u32,                                     // 进行中的请求数
+    idle_ms: Option<u64> }                             // 距最近一次请求活动；无活动记录时省略
 pub struct DormantStoreStatus { dir: String,           // <state_dir>/dormant
     loaded_instances, expired_instances, writes: u64,  // 启动时读回 / 因过期丢弃的实例数；启动以来写入（含删除）次数
     issues: Vec<StoreIssue>,                           // 启动时跳过的文件 { file, reason }

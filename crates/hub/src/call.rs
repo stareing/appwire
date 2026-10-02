@@ -68,6 +68,10 @@ pub(crate) struct CallCtx {
     pub progress: Option<ProgressSink>,
     /// Agent 的幂等键（[`CallRequest::idempotency_key`] / MCP 请求 `_meta`），原样转交 App。
     pub idempotency_key: Option<String>,
+    /// MCP 出口：发起调用的认证主体（[`ApprovalRequest::principal`]）；Hub API 为 `None`。
+    pub principal: Option<String>,
+    /// MCP 出口：客户端自报的名称，仅供显示（[`ApprovalRequest::client_name`]）。
+    pub client_name: Option<String>,
 }
 
 /// 合并后的进度出口（[`CallCtx::progress`]）。
@@ -86,6 +90,8 @@ impl CallCtx {
             call_id: req.call_id,
             progress: None,
             idempotency_key: req.idempotency_key,
+            principal: None,
+            client_name: None,
         }
     }
 }
@@ -504,6 +510,8 @@ impl HubShared {
             arguments: args.clone(),
             session: ctx.session.clone(),
             annotations: t.annotations.clone(),
+            principal: ctx.principal.clone(),
+            client_name: ctx.client_name.clone(),
         }
     }
 
@@ -1037,10 +1045,24 @@ impl HubShared {
                 if newly_listed && let Some(id) = ctx.mcp_session {
                     self.notify_session_tools_changed(id);
                 }
+                let message = match self.selection_ttl(key) {
+                    // 主体级选择（S6）：说明作用范围与有效期，工具列表不变。
+                    Some(ttl) => format!(
+                        "之后对 {app_id} 的调用将优先路由到实例 {instance_id}（该实例注册了对应工具且仍连接时）。该选择对本机所有\
+                         无会话的 MCP 客户端生效，{} 秒内未再用于调用即失效（失效后按默认规则路由，可再次调用 apps.select）；\
+                         工具列表不变。",
+                        ttl.as_secs_f64()
+                    ),
+                    None if key.is_stateless() => format!(
+                        "之后对 {app_id} 的调用将优先路由到实例 {instance_id}（该实例注册了对应工具且仍连接时）。该选择对本机所有\
+                         无会话的 MCP 客户端生效；工具列表不变。"
+                    ),
+                    None => format!("本会话中对 {app_id} 的调用将优先路由到实例 {instance_id}（该实例注册了对应工具且仍连接时）。"),
+                };
                 Ok(json_result(json!({
                     "appId": app_id,
                     "instanceId": instance_id,
-                    "message": format!("本会话中对 {app_id} 的调用将优先路由到实例 {instance_id}（该实例注册了对应工具且仍连接时）。"),
+                    "message": message,
                 })))
             }
             TOOL_APPS_OVERVIEW => {
@@ -1068,10 +1090,12 @@ impl HubShared {
                     return Some(Err(unknown_app(&app_id)));
                 }
                 let tools = self.app_tools(&app_id);
-                let progressive = self.progressive();
+                let progressive = self.progressive_for(key);
                 self.expose_in_session(ctx, &app_id);
                 let message = if tools.is_empty() {
                     format!("App「{app_id}」当前没有工具。")
+                } else if progressive && key.is_stateless() {
+                    format!("App「{app_id}」的 {} 个工具见 tools，可直接按全名调用（工具列表不随本调用变化）。", tools.len())
                 } else if progressive {
                     format!(
                         "App「{app_id}」的 {} 个工具已加入本会话的工具列表（客户端刷新列表后可见）；在此之前也可以直接按全名调用。",
@@ -1086,12 +1110,22 @@ impl HubShared {
                 } else {
                     format!("{message} 另有 {} 个页面（pages），其上的工具用 apps.page 查看。", pages.len())
                 };
-                Ok(json_result(json!({
+                let mut body = json!({
                     "appId": app_id,
                     "tools": tools,
                     "pages": pages,
                     "message": message,
-                })))
+                });
+                // 无会话调用方没有"首次附带"，总览随 apps.tools 应请求附带（docs/plans/12-mcp-stateless.md 3.2 H7）。
+                let overview = key.is_stateless().then(|| self.overview(&app_id)).flatten();
+                if let Some(ov) = &overview {
+                    body["overview"] = ov.to_json();
+                }
+                let mut r = json_result(body);
+                if let Some(ov) = &overview {
+                    r.content.insert(0, ContentBlock::text(ov.render_requested()));
+                }
+                Ok(r)
             }
             TOOL_APPS_PAGE => {
                 let (app_id, page) = (arg("appId"), arg("page"));

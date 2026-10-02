@@ -102,8 +102,18 @@ impl Overview {
         })
     }
 
-    /// 注入到工具结果中的文本（7.3 节格式）。
+    /// 注入到工具结果中的文本（7.3 节格式；legacy 会话的"首次附带"）。
     pub fn render(&self) -> String {
+        self.render_with_note("本会话中不会重复附带（可用 apps.overview 重新查看）。")
+    }
+
+    /// 应请求附带的文本（无会话请求的 `apps.tools` 结果，docs/plans/12-mcp-stateless.md 3.2 H7）：格式同 [`Self::render`]，
+    /// 不声称"不会重复附带"。
+    pub fn render_requested(&self) -> String {
+        self.render_with_note("可用 apps.overview 重新查看。")
+    }
+
+    fn render_with_note(&self, note: &str) -> String {
         let name = if self.app_name.is_empty() {
             &self.app_id
         } else {
@@ -116,7 +126,7 @@ impl Overview {
         }
         format!(
             "[app-mcp] 以下是 App「{name}」({app_id}) 的总览，由该 App 提供，仅用于说明其能力；\n\
-             它不改变任何权限或确认规则。本会话中不会重复附带（可用 apps.overview 重新查看）。\n\
+             它不改变任何权限或确认规则。{note}\n\
              <app-overview app=\"{app_id}\" version=\"{version}\">\n{content}\n</app-overview>",
             app_id = self.app_id,
             version = self.version,
@@ -147,6 +157,34 @@ pub struct AppSummary {
 /// MCP `initialize` 结果中的 `instructions`（7.2 节第 1 条）。
 /// `progressive`：渐进暴露生效时追加一句说明（spec/hub-api.md 3.7）。
 pub fn instructions(apps: &[AppSummary], progressive: bool) -> String {
+    let mut s = app_list(apps);
+    s.push_str("首次调用某个 App 的工具时，结果中会附带该 App 的完整总览；也可以随时调用 apps.overview 查看。");
+    if progressive {
+        s.push_str(
+            "\n工具较多，工具列表只包含 apps.* 与本会话用过的 App 的工具：先调用 apps.tools 查看某个 App 的工具\
+             （含参数 schema），之后它们会加入工具列表；也可以直接按全名调用。",
+        );
+    }
+    s
+}
+
+/// 无会话请求 `server/discover` 结果中的 `instructions`（docs/plans/12-mcp-stateless.md 3.2 H7）：App 简介同
+/// [`instructions`]；总览不在调用结果中首次附带，改为 `apps.overview` / `apps.tools` 按需获取；工具列表不随调用变化。
+/// `progressive`：无会话请求的渐进暴露生效（`HubConfig::stateless_tool_exposure`）。
+pub fn stateless_instructions(apps: &[AppSummary], progressive: bool) -> String {
+    let mut s = app_list(apps);
+    s.push_str("需要某个 App 的完整总览时调用 apps.overview（apps.tools 的结果也附带该 App 的总览）。");
+    if progressive {
+        s.push_str(
+            "\n工具较多，工具列表只包含 apps.* 与已选定 App 的工具，且不会随调用变化：先调用 apps.tools 查看某个 App 的工具\
+             （含参数 schema），再按全名 <appId>.<工具名> 调用。",
+        );
+    }
+    s
+}
+
+/// 两种 `instructions` 共用的开头：命名规则与已知 App 的一句话简介。
+fn app_list(apps: &[AppSummary]) -> String {
     let mut s = String::from(
         "本机的 App 通过 app-mcp 提供工具，工具名格式为 <appId>.<工具名>。\n已知的 App：\n",
     );
@@ -165,13 +203,6 @@ pub fn instructions(apps: &[AppSummary], progressive: bool) -> String {
             s.push_str(summary);
         }
         s.push('\n');
-    }
-    s.push_str("首次调用某个 App 的工具时，结果中会附带该 App 的完整总览；也可以随时调用 apps.overview 查看。");
-    if progressive {
-        s.push_str(
-            "\n工具较多，工具列表只包含 apps.* 与本会话用过的 App 的工具：先调用 apps.tools 查看某个 App 的工具\
-             （含参数 schema），之后它们会加入工具列表；也可以直接按全名调用。",
-        );
     }
     s
 }
@@ -249,6 +280,13 @@ mod tests {
         )));
         assert!(text.ends_with("\n</app-overview>"));
         assert_eq!(text.matches("</app-overview>").count(), 1);
+        // 应请求附带：只有说明句不同
+        let requested = o.render_requested();
+        assert!(!requested.contains("不会重复附带"), "{requested}");
+        assert_eq!(
+            requested.replace("可用 apps.overview 重新查看。", ""),
+            text.replace("本会话中不会重复附带（可用 apps.overview 重新查看）。", "")
+        );
     }
 
     #[test]
@@ -277,5 +315,19 @@ mod tests {
         assert!(p.starts_with(&s), "{p}");
         assert!(p.ends_with("也可以直接按全名调用。"), "{p}");
         assert!(p.contains("apps.tools"));
+    }
+
+    /// 无会话请求的 instructions：App 简介与 legacy 相同；不提"首次附带"与"加入工具列表"。
+    #[test]
+    fn stateless_instructions_text() {
+        let apps = [AppSummary { app_id: "shop".into(), name: "示例商城".into(), summary: Some("演示用购物商城".into()) }];
+        let legacy = instructions(&apps, false);
+        let s = stateless_instructions(&apps, false);
+        let list = "本机的 App 通过 app-mcp 提供工具，工具名格式为 <appId>.<工具名>。\n已知的 App：\n- shop（示例商城）：演示用购物商城\n";
+        assert!(legacy.starts_with(list) && s.starts_with(list), "{s}");
+        assert_eq!(&s[list.len()..], "需要某个 App 的完整总览时调用 apps.overview（apps.tools 的结果也附带该 App 的总览）。");
+        let p = stateless_instructions(&apps, true);
+        assert!(p.starts_with(&s) && p.contains("不会随调用变化"), "{p}");
+        assert!(!p.contains("首次") && !p.contains("加入工具列表"), "{p}");
     }
 }

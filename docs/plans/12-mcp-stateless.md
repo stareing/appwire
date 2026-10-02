@@ -1,6 +1,6 @@
 # 12 MCP 无状态协议：会话状态迁移、`_meta` 键名与错误码分区（方案）
 
-> 状态：方案（2026-10-02）；S1、S3、S4 已实施，S2 部分完成（见第 6 节各记录）。
+> 状态：方案（2026-10-02）；S1、S3、S4、S5、S6 已实施，S2 部分完成（见第 6 节各记录）。
 > 与 `docs/plans/12-mcp-2026-07-28.md`（下称「12 迁移计划」）的分工：变更全表（M1–M9、m1–m10）、rmcp 能力核查、传输与版本路由
 > 以 12 迁移计划为准，本文件不重复定义；本文件只负责**依赖 MCP 会话的行为如何迁移**、`_meta` 键名、错误码分区三件事。
 > 本文件第 3 节与 12 迁移计划 3.2 表不一致处（见 3.6），以本文件为准，建议主会话在 12 迁移计划 3.2 / m10 加指向本文件的说明。
@@ -212,8 +212,8 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 | S2 | `resultType` 核查与补齐（12 迁移计划 M8 / U7）；R4 结果元信息按新键输出 | S1 | modern 每种结果（工具、空结果、资源、列表）都带 `resultType: complete`；`_meta.dev.appwire/callId` 与日志 `cid` 可对照。**部分完成（2026-10-02）**，见下方 S2 记录 |
 | S3 | 错误码：modern 出口码映射；修复上游错误反查缺陷；作废 m10 表述 | — | 回归测试：上游 `-32004` 不再变成 `USER_REJECTED`；modern 资源不存在为 `-32602`、legacy 仍 `-32002` |
 | S4 | `CallerKey` 收敛；`McpSession` 分 legacy / stateless；主体键（HTTP 令牌 / IPC）；stdio modern 同样无状态 | 4e 已完成；与 16 P1 同批设计 | 连续 N 个 modern 请求不新增 / 删除 `SessionState`；legacy 与 modern 并发互不影响；租约在 modern 下按空闲收回。**已完成（2026-10-02，与 16 P1 最小任务对象同批）**，见下方 S4 记录 |
-| S5 | modern 列表规则（3.3）与总览改经 discover / `apps.tools`；`ttlMs` / `cacheScope` | S4；与 4c F 合并 | modern 下两次 `tools/list` 之间夹任意 `apps.tools` / 调用 / `apps.select`，结果逐字节相同；`server/discover.instructions` 含 App 简介 |
-| S6 | `apps.select` 主体级语义与 TTL；审批 `principal` 与 `client_name`；`/status` 新字段 | S4 | modern `apps.select` 后路由命中所选实例、列表不变；TTL 到期后回到默认路由 |
+| S5 | modern 列表规则（3.3）与总览改经 discover / `apps.tools`；`ttlMs` / `cacheScope` | S4；与 4c F 合并 | modern 下两次 `tools/list` 之间夹任意 `apps.tools` / 调用 / `apps.select`，结果逐字节相同；`server/discover.instructions` 含 App 简介。**已完成（2026-10-02）**，见下方 S5 记录 |
+| S6 | `apps.select` 主体级语义与 TTL；审批 `principal` 与 `client_name`；`/status` 新字段 | S4 | modern `apps.select` 后路由命中所选实例、列表不变；TTL 到期后回到默认路由。**已完成（2026-10-02）**，见下方 S6 记录 |
 | S7 | `subscriptions/listen`（12 迁移计划 M4）+ 默认放开 2026-07-28 | S1–S6 | Claude Code 2.1.281 实测：Host 日志无 `Mcp-Session-Id`、调用成功、App 上下线后列表刷新；回退开关恢复 legacy |
 | S8 | P1 任务句柄（3.4）：`taskId` 工具参数 + 可选 `_meta` 通道 | 16 P1、N5 | 两个任务句柄各自的选择 / 租约互不影响；过期句柄返回可恢复错误 |
 
@@ -265,6 +265,61 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
   总览首次附带按主体去重（S5 改经 discover / `apps.tools`）；S6 `apps.select` 主体级 TTL（现在随任务空闲回收一起失效）、审批
   `client_name`、`/status` 新字段；S7 放开 2026-07-28 与 `subscriptions/listen`；S8 任务句柄（`AgentTask.id` 已就绪）。
 
+**S5 记录（2026-10-02）**
+
+- 列表规则（3.3 的实现）：`HubShared::exposed_apps` 对无会话调用方（`CallerKey::is_stateless`，即 `principal:<主体>`）只读全局选择，
+  不读任务上的 `exposed` / `selected`；`expose_app` 对其不记录、恒为 `false`；`mcp_tools` 因此是注册表、全局选择、策略 `hide`、配置的函数。
+  legacy 会话与 Hub API 的渐进暴露代码路径不变。
+- U3 的保守处理：新增 `HubConfig.stateless_tool_exposure`（默认 `All`）——无会话请求默认全部列出；设为 `Progressive` / `Auto` 时列表 =
+  内置（含 `apps.tools`）+ 全局选定的 App，`apps.tools` 只返回定义。legacy 仍按 `tool_exposure`。`app-mcp-host` 配置 / 命令行与各绑定
+  未加此项（本次范围外；默认值即保守值，U3 验证后再决定是否开放）。
+- 缓存提示：rmcp 3.5.0 支持（`[R] model.rs:1750-1805` 分页结果的 `ttl_ms` / `cache_scope` 与 `with_ttl_ms` / `with_cache_scope`；
+  `ReadResourceResult` 同，`model.rs:1912-1955`；`DiscoverResult` 的两字段为必填，默认 `0` / `private`，`model.rs:1308-1410`）。
+  rmcp 回复旧版本客户端时只去掉 `resultType: complete`，**不去掉**这两个字段（`[R] model.rs:4789`），所以只对无会话请求设置：
+  `tools/list`、`resources/list`、`resources/templates/list`（新覆盖，legacy 同 rmcp 默认）、`server/discover` 为
+  `HubConfig.stateless_list_ttl`（默认 5 秒）+ `private`；`resources/read` 为 `0` + `private`。legacy 线上格式不变。
+- 总览：`attach_overview` 对无会话调用方恒为 `None`、`mark_delivered` 不记；`McpSession::discover` 覆盖 rmcp 默认实现，`instructions`
+  用 `overview::stateless_instructions`（App 简介同 legacy；说明经 `apps.overview` / `apps.tools` 获取总览、列表不随调用变化）；
+  `apps.tools` 对无会话调用方每次在内容最前附带总览（`Overview::render_requested`，不声称"不会重复附带"），`structuredContent.overview`
+  同 `apps.overview` 结构。`initialize` 的 `instructions`（`get_info`）不变。
+- 测试（`crates/hub/src/mcp.rs`，rmcp `ClientLifecycleMode::Discover`）：`stateless_tools_list_is_pure_function_of_server_state`
+  （`stateless_tool_exposure` 为 `All` 与 `Progressive` 各一轮：`apps.tools` / 调用 / `apps.select` / `apps.overview` 前后与另一处理器的
+  `tools/list` 线上 JSON 逐字节相同、带 `ttlMs: 5000` / `cacheScope: private`；legacy 渐进暴露照旧变化、无缓存字段；
+  `Hub::select_instance` 改变无会话列表）、`stateless_overview_via_discover_and_apps_tools`（discover instructions 含 App 简介、
+  调用结果不附带、`apps.tools` 每次附带、资源列表 / 模板列表缓存提示；legacy 首次附带不变）；`overview.rs` 单测
+  `render_format`（补 `render_requested`）、`stateless_instructions_text`。T-10：见下方 S6 记录末尾。
+- 未做 / 未知：U8（新）——同一 App 多个已连接实例都未聚焦时，`view` 工具取首选实例界面上的，首选实例的"最近活跃"含"最近一次完成调用"
+  （`routing.rs`，H20 全局实例状态），调用可能改变列出哪个实例的 `view` 工具，严格说违反 S-F7。处理：保持现状（列出的工具与调用实际
+  路由的实例一致更重要），在 spec 3.7 写明例外；S7 前评估无会话列表改按"聚焦 → 连接顺序"取首选实例（需与 4c 页面目录一起定）。
+  `apps.tools` 工具描述仍写"加入本会话的工具列表"（只在无会话渐进暴露生效时列出且不准确；结果的 `message` 已按无会话语义）。
+
+**S6 记录（2026-10-02）**
+
+- 主体级 `apps.select`：`AgentTask.selected` 的值改为 `Selection { instance_id, used_at }`；`HubConfig.principal_select_ttl`
+  （默认 `DEFAULT_PRINCIPAL_SELECT_TTL` = 60 秒，`0` = 不单独过期）只作用于无会话调用方。路由取用（`selected_for`：工具调用、资源读取、
+  `apps.navigate` / `apps.activate`、后台替代判定）时过期即移除、未过期即续期；列出（`apps.list`、`/status`）只过滤不续期。不设定时器
+  （过期在取用 / 列出时判定）。结果文本写明作用范围（本机所有无会话客户端）、有效期与"工具列表不变"。U6 默认值 60 秒的理由见
+  `DEFAULT_PRINCIPAL_SELECT_TTL` 的 @why（与 `idle_revoke` 30 秒 / 租约上限 60 秒同量级，限制 R1 的串扰时长），仍待真实使用后调整。
+- 审批：`ApprovalRequest` 新增 `principal: Option<String>`（MCP 出口恒为 `local`，legacy 与无会话相同——主体来自传输层）与
+  `client_name: Option<String>`（rmcp `RequestContext::client_info()`：legacy 取 `initialize`，无会话取请求 `_meta`；仅显示）。
+  Hub API 为 `None`，两字段 `skip_serializing_if`，hub-c / hub-node 的审批 JSON 对 Hub API 调用不变；uniffi 的 `ApprovalRequest` 记录
+  未加字段（绑定在本次范围外）。
+- `/status`：`HubStatus.tasks: Option<Vec<AgentTaskStatus>>`（`id`、`caller`、`kind: CallerKind`、`selections`（含主体级剩余有效期）、
+  `leases`（连接 ID + 剩余毫秒）、`inflight`、`idle_ms`），只读快照，先取请求活动再锁任务表（与空闲回收同序）。`CallerKind`、
+  `AgentTaskStatus`、`TaskSelectionStatus`、`TaskLeaseStatus` 从 crate 根导出。任务 ID 出现在 `/status`（同用户 / 令牌才能读），
+  S8 作为句柄时仍满足 S-F7（对外不可猜测；`/status` 读者本就是同一主体）。`app-mcp-host status` 一行摘要与 doctor 未改（另一会话
+  正在改 `crates/host`，且 doctor 不在本次范围）；hub-uniffi / hub-node 的 `HubStatus` 类型未加 `tasks`（JSON 已带）。
+- 测试：`principal_selection_ttl_approval_and_status_tasks`（两个实例、默认路由取聚焦实例；无会话 `apps.select` 后连续调用（间隔
+  小于有效期）都命中所选实例并续期、列表不变；`/status` 的任务种类 / 选择剩余有效期 / 租约 / 活动、JSON 键；到期后 `apps.list` 不再
+  显示、路由回到默认实例，legacy 会话的选择不过期；审批请求的 `principal` / `client_name`，Hub API 不带且 JSON 无这两个键）；
+  `task.rs` `selection_idle_ttl_renews_on_use_and_expires`、`caller_keys_are_distinct_and_carry_lifetime`（补 `kind`）。
+- **S5 / S6 验证**：`cargo test -p app-mcp-hub -p app-mcp-host` 全部通过（既有测试未改，除 `mcp.rs` 测试辅助函数适配 `Selection`、
+  测试连接关闭 rmcp 客户端的列表缓存——rmcp 3.5.0 客户端按 `ttlMs` 缓存列表，`[R] service/client/cache.rs`，不关会让逐字节比较失效）；
+  `pnpm --filter e2e test` 19/19 通过（legacy 行为不变）；`cargo clippy --workspace --all-targets` 本次改动 0 警告（唯一警告在另一会话的
+  `crates/host/src/activation.rs`）；`cargo clippy -p app-mcp-hub --no-default-features --all-targets` 0 警告（顺带修复
+  `tests/call_meta.rs` 的未用导入与 `Hub::shared` 的 dead_code）。T-10：分别把无会话列表改回读任务状态、恢复无会话首次附带并取消选择有效期、
+  去掉缓存提示 / 改用 legacy instructions / 去掉 `principal`，对应测试分别失败（1 / 2 / 3 个），恢复后全部通过。
+
 顺序：S3（独立缺陷修复，可立即做）→ S1 → S2 → S4 → S5、S6（可并行）→ S7 → S8（随第 16 项 P1）。
 总验收：`cargo test -p app-mcp-hub -p app-mcp-host`、`cargo clippy --workspace --all-targets` 0 警告；默认配置（S7 前）e2e 不变；
 S7 后 `e2e/src/mcp-client.ts` 增加 modern 模式，关键用例两代各跑一遍。
@@ -297,10 +352,12 @@ S7 后 `e2e/src/mcp-client.ts` 增加 modern 模式，关键用例两代各跑�
 |---|---|---|
 | U1 | 项目是否拥有 `appmcp.dev`（或 `appwire.dev`）域名；机主倾向工作名还是品牌名前缀 | **已定**（机主 2026-10-02）：品牌名前缀 `dev.appwire/`；S1 已实施 |
 | U2 | 通用客户端（Claude Code 等）是否透传 / 允许设置厂商 `_meta` 键；工具结果 `_meta` 是否对模型可见 | **验证**：临时 Host（`--home` 临时目录）+ Claude Code 实测，记录请求 `_meta` 全部键；结论只影响“可选通道”是否有用，不影响正确性 |
-| U3 | modern 客户端是否允许调用 `tools/list` 中未列出的工具（决定渐进暴露在 modern 下能否保留“按全名调用”） | **验证**：S5 用 Claude Code 实测；不允许时 modern 默认 `tool_exposure = all`，渐进暴露只在 legacy 生效 |
+| U3 | modern 客户端是否允许调用 `tools/list` 中未列出的工具（决定渐进暴露在 modern 下能否保留“按全名调用”） | **待验证**（S5 时无法实测：Hub 在 S7 前只协商到 2025-11-25，Claude Code 回退 legacy）。已按保守方案实施：`HubConfig.stateless_tool_exposure` 默认 `All`，渐进暴露默认只在 legacy 生效；S7 放开 2026-07-28 后用 Claude Code 实测，允许时再考虑改默认 |
 | U4 | rmcp 自定义 `_meta` 键在 modern 路径是否原样到达 handler | **推断**可以（S-F10 透明 map）；S1 用 `ClientLifecycleMode::Discover` 的集成测试断言。S4 已验证无会话请求经 Discover 生命周期到达 handler（`mcp.rs` 测试），自定义键尚未单独断言 |
 | U5 | -32001…-32015 是否早于 2026-07-28 分配（git 历史从 2026-10-01 起，无法判定） | 不影响结论：modern 出口不再发这些码（第 5 节） |
-| U6 | 主体级 `apps.select` 的空闲 TTL 默认值 | **保守**：与 `idle_revoke` 同量级、可配置；S6 观察后定 |
+| U6 | 主体级 `apps.select` 的空闲 TTL 默认值 | **保守，已实施**：`principal_select_ttl` 默认 60 秒（与 `idle_revoke` 30 秒、租约上限 60 秒同量级）、可配置、取用即续期；S7 后按真实使用观察再定 |
+| U8 | 多实例都未聚焦时，`view` 工具按首选实例列出，首选实例的"最近活跃"含最近完成的调用（H20），调用可能改变无会话列表 | **保持现状、已写入 spec 3.7 例外**；S7 前与 4c 页面目录一起评估无会话列表改按"聚焦 → 连接顺序"取首选实例 |
+| U9 | `stateless_list_ttl` 默认 5 秒是否合适（12 迁移计划 U5） | S7 实现 `subscriptions/listen` 后用 Claude Code 观察是否按 TTL 重拉，再调 |
 | U7 | 规范本身后续是否给“本地错误”“需用户操作”分配标准码 | 跟踪 changelog；有标准码时在 MCP 出口映射，AppWire 协议不变 |
 
 ### 8.3 风险（涉及兼容性、并发、权限）
