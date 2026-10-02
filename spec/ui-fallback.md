@@ -4,7 +4,8 @@
 各实现只写平台映射（见第 8 节与各 SDK README），不重复定义格式。
 
 实现：网页 `@app-mcp/inspect`（`attachInspect`）、Flutter `app_mcp_flutter`（`McpUiFallback`）、WPF `AppMcp.Wpf`
-（`WpfUiFallback`）。后续平台（Android View / Compose、WinUI 3、UIKit、Qt、鸿蒙）沿用本文件。
+（`WpfUiFallback`）、Android View / Compose（`AndroidUiFallback`）、WinUI 3（`WinUIUiFallback`）、Qt Widgets（Python
+`app_mcp.uifallback.qt.QtUiFallback`）、鸿蒙 ArkUI（`@app-mcp/harmony` `HarmonyUiFallback`）。后续平台（UIKit）沿用本文件。
 
 ## 1. 定位
 
@@ -202,3 +203,21 @@
 | 按键 | KeyEvent 按下 / 抬起交给窗口根 View（Compose 在按键分发中处理 Tab / Enter）；Tab 未处理时 `FocusFinder`；文本框 Enter：`onEditorAction`（IME 动作）；Escape 未处理时对话框按返回键取消（主窗口不按返回键） | 文本框 Enter：`OnImeAction`；其余同左 | 不能合成键盘输入，按语义执行：Tab：`FocusManager.TryMoveFocus`；Enter / Space：激活焦点控件，文本框中的 Enter 交给打开的 `ContentDialog` 的默认按钮；Escape：`ContentDialog` 的关闭按钮（没有时 `Hide()`）或关闭轻触即关的弹出层 |
 | 密码类 | `inputType` 为密码变体或 `PasswordTransformationMethod` | `Password` 语义 | `PasswordBox`（`IsPassword()`） |
 | 必填 | 不支持（View 没有对应属性） | 不支持（语义树没有对应属性） | `IsRequiredForForm()` |
+
+### 8.4 平台映射：Qt Widgets / 鸿蒙 ArkUI
+
+| | Qt Widgets（Python `QtUiFallback`，PySide6 / PyQt6） | 鸿蒙 ArkUI（`HarmonyUiFallback`） |
+|---|---|---|
+| 控件树 | `QApplication.topLevelWidgets()` + QWidget 子控件（按位置排序）；标签页、列表 / 树 / 表格的视口内项（`visualRect`，每视图最多 500 项）、菜单栏 / 菜单的 `QAction` 为虚拟子项；名称取 `accessibleName`、Qt 无障碍名称（`QAccessible`）或伙伴标签 | 每次调用时 `UIContext.getFilteredInspectorTree()` 的 JSON（`$type` / `$ID` / `$rect` / `$attrs` / `$children`），按组件类型分类；绑定 onClick 的其他组件经 `FrameNode.getInteractionEventBindingInfo(ON_CLICK)` 列为按钮 |
+| 窗口 / 模态 | 主窗口为 `window`，`QDialog` 为 `dialog`（`QMessageBox` 为 `alertdialog`），`QMenu` 为 `list`，其他弹出层为 `dialog`；最上层弹出层（`activePopupWidget`）遮挡全部窗口，应用模态对话框（`activeModalWidget`）遮挡全部、窗口模态只遮挡其父窗口链 | `enable` / `addWindow` 传入的每个 UIContext 为 `window`；同一窗口中最上层的对话框类覆盖层（`Dialog` / `AlertDialog` / `ActionSheet` / `MenuWrapper` / `SheetWrapper` / `Popup` 等）为 `dialog`，遮挡其余内容 |
+| 引用 | 弱引用 QWidget / `QAction`；标签页、列表项为所属控件 + 下标 / 行列路径，按指纹核对（复用后作废） | 窗口序号 + 检查器 `$ID`；List / Grid / WaterFlow 下按指纹核对 |
+| 可见 | `isVisible()` 且 `visibleRegion()` 非空（被裁剪 / 滚出视口为不可见）；窗口未最小化 | `visibility` 非 Hidden / None、`opacity` 非 0、`$rect` 非空且与窗口及滚动容器矩形相交 |
+| 启用 | `isEnabled()`（项：`ItemIsEnabled`；动作：`QAction.isEnabled()`） | 检查器属性 `enabled` |
+| 点击 | `QAbstractButton.click()`（带菜单的按钮 `showMenu()`）、`QComboBox.showPopup()`、`QTabBar.setCurrentIndex`、项：`setCurrentIndex` + 发 `clicked`（有子项的树节点同时展开 / 收起，复选项改 `CheckStateRole`）、`QAction.trigger()`（先关闭弹出层；有子菜单时 `setActiveAction` 打开）。动作进入 `exec()` 的嵌套事件循环时不等其返回 | `sendEventByKey(组件 id, 10, '')`；组件须设 `.id()`，否则 unsupported |
+| 填写 | `QLineEdit`：`selectAll` + `insert`（经校验器与长度限制，发 `textEdited`；未被接受时报错）；`QTextEdit` / `QPlainTextEdit`：`setPlainText`；复选 / 单选：按状态 `click()`；`QComboBox`：按选项文本 `setCurrentIndex` 并发 `activated` / `textActivated`（可编辑时无匹配项则 `setEditText`）；`QSpinBox` / `QDoubleSpinBox` / `QAbstractSlider`：`setValue`（超出范围报错） | 复选框 / 开关 / 单选框：状态不同时点击；文本框、下拉框、滑块不支持（没有从页面外写入的接口） |
+| 滚动 | 最近的 `QAbstractScrollArea`（含列表 / 文本框）滚动条 `triggerAction(SliderPageStepAdd / Sub)`；到可见：`QScrollArea.ensureWidgetVisible` / `QAbstractItemView.scrollTo`（滚出视口的项按行列路径重建） | 不支持（`Scroller` 由页面持有）；已可见的控件无 `direction` 时返回空变化 |
+| 已声明 | `declare_mcp_tools(控件或 QAction, 工具名)`（动态属性 `appMcpTools`）；标在外层容器上时给子树中唯一的控件 | `.customProperty(MCP_DECLARED_PROPERTY, 工具名)`，经 `FrameNode.getCustomProperty` 读取；标在外层非控件组件上时给子树中唯一的控件 |
+| 可见窗口 | 任一顶层窗口可见且未最小化（监听顶层 `QWindow.visibleChanged` / `windowStateChanged` 与应用 `focusWindowChanged` / `applicationStateChanged`；无激活地显示首个窗口时由应用调用 `refresh()`） | 传入 `applicationContext` 时跟随 `applicationStateChange` 前后台，或 `setVisible` |
+| 按键 | `QKeyEvent` 按下 / 抬起经 `QApplication.sendEvent` 交给窗口焦点控件（未处理时 Qt 沿父控件传递，对话框处理 Enter 默认按钮与 Escape 取消）；单行输入框 Enter 视为已提交（`returnPressed`）；Tab：沿焦点链 `setFocus`；Escape 未处理时对话框 `reject()`、弹出层 `close()` | Tab / Shift+Tab：按树序在设了 id 的可获焦组件间 `FocusController.requestFocus(id)`；Enter / Space / Escape：`UIContext.dispatchKeyEvent(uniqueId, 按下 + 抬起)`，Escape 交给最上层对话框，Enter / Space 未消费时点击非文本控件 |
+| 密码类 | `QLineEdit.echoMode()` 为 `Password` / `PasswordEchoOnEdit` / `NoEcho` | TextInput / TextArea 的 `type` 为 `Password` / `NEW_PASSWORD` / `NUMBER_PASSWORD` |
+| 必填 | 不支持（Qt 没有对应属性） | 不支持（检查器没有对应属性） |

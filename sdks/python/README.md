@@ -93,6 +93,38 @@ def submit() -> ToolResult:
   posting a notification). Make features that must work in the background `app` tools, or give a view tool
   `background_tool="<app tool>"` so the Hub calls that one instead. See `spec/protocol.md` §3.4 "后台与前台".
 
+### Control fallback for Qt Widgets (optional, `spec/ui-fallback.md`)
+
+For screens without declared tools, an opt-in fallback registers `ui.outline` / `ui.click` / `ui.fill` /
+`ui.press` / `ui.scroll` / `ui.read` (behaviour, formats and errors are defined in `spec/ui-fallback.md`). It
+walks the QWidget tree and acts through widget APIs only: no screenshots, no coordinates. Off by default; enable
+it in debug builds or when the user opts in. Requires PySide6 or PyQt6 (`pip install app-mcp[qt]` installs
+PySide6-Essentials).
+
+```python
+from app_mcp.uifallback.qt import QtUiFallback, QtUiFallbackOptions, declare_mcp_tools
+
+fallback = QtUiFallback.enable(app)               # Qt GUI thread, after QApplication exists
+declare_mcp_tools(clear_button, "cart.clear")     # shown as [已声明：cart.clear] in the outline
+fallback.close()                                  # unregisters all ui.* tools
+```
+
+- Tools are `surface="view"` and enabled only while a top-level window is visible and not minimized (tracked via
+  `QWindow` / application signals; no timers, threads or global event filters while idle). Call
+  `fallback.refresh()` if your first window is shown without activation.
+- The engine runs on the SDK's asyncio loop and hops to the GUI thread through a queued signal for each step, so it
+  works whatever `dispatcher` you configured. An action that opens a modal `QDialog.exec()` is not waited on.
+- Mapping: names from `accessibleName`, the Qt accessibility name or the buddy label (`QLabel.setBuddy` /
+  `QFormLayout`); click → `QAbstractButton.click()` / `showMenu()`, `QAction.trigger()` (menus), tab selection,
+  item-view selection; fill → `QLineEdit` (`selectAll` + `insert`, so validators apply and `textEdited` fires),
+  `QTextEdit` / `QPlainTextEdit`, `QSpinBox` / `QDoubleSpinBox`, `QComboBox` (by item text, emits `activated`),
+  `QAbstractSlider`; keys → `QKeyEvent` press/release via `QApplication.sendEvent`, Tab along the focus chain;
+  scroll → scroll-bar page steps, `QScrollArea.ensureWidgetVisible`, `QAbstractItemView.scrollTo`.
+- Popups (menus, combo lists) and modal dialogs occlude the windows below them. Password-mode `QLineEdit`s show
+  `••••` and are never filled or sent keys. "Required" is not supported (Qt has no such property).
+- Other toolkits: implement `UiElement` / `UiWindow` / `UiPlatform` from `app_mcp.uifallback` and reuse
+  `UiInspector` + `UiFallbackTools`.
+
 ## Lifecycle and power
 
 By default a client stays connected (`persistent`). Desktop apps on Linux that export the D-Bus

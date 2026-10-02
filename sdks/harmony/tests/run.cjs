@@ -1,4 +1,4 @@
-// 在 Node 上运行 ArkTS 封装层（AppMcp.ets / Errors.ets / Types.ets / Harmony.ets）的单元测试：
+// 在 Node 上运行 ArkTS 封装层（src/main/ets 下全部 .ets，含 uifallback/）的单元测试：
 // 用 OpenHarmony SDK 的 ohos-typescript 把 .ets 转译为 CommonJS（不依赖 Kit 与 .so，原生模块用假实现注入），
 // 再以 node:test 执行 tests/*.test.cjs。
 //
@@ -22,15 +22,25 @@ if (!fs.existsSync(tsPath)) {
 const ts = require(tsPath);
 
 const out = fs.mkdtempSync(path.join(os.tmpdir(), 'app-mcp-harmony-test-'));
-const sources = ['AppMcp', 'Errors', 'Types', 'Harmony'];
-for (const name of sources) {
-  const text = fs.readFileSync(path.join(PKG, 'src/main/ets', `${name}.ets`), 'utf8');
-  const js = ts.transpileModule(text, {
-    fileName: `${name}.ts`,
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2021 },
-  }).outputText;
-  fs.writeFileSync(path.join(out, `${name}.js`), js);
+// 递归转译 src/main/ets 下全部 .ets（含 uifallback/），保持目录结构，相对导入照常解析。
+const ETS = path.join(PKG, 'src/main/ets');
+function transpileDir(dir, rel) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const relPath = path.join(rel, entry.name);
+    if (entry.isDirectory()) {
+      fs.mkdirSync(path.join(out, relPath), { recursive: true });
+      transpileDir(path.join(dir, entry.name), relPath);
+    } else if (entry.name.endsWith('.ets')) {
+      const text = fs.readFileSync(path.join(dir, entry.name), 'utf8');
+      const js = ts.transpileModule(text, {
+        fileName: entry.name.replace(/\.ets$/, '.ts'),
+        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2021 },
+      }).outputText;
+      fs.writeFileSync(path.join(out, relPath.replace(/\.ets$/, '.js')), js);
+    }
+  }
 }
+transpileDir(ETS, '');
 
 const tests = fs
   .readdirSync(__dirname)

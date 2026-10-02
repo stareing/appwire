@@ -204,6 +204,45 @@ registerShopTools(mcp, handlers);             // MCP 工具
 （给出警告，仍可作为 MCP 工具）。执行结果 `IntentResult<string>`：`code` 0 成功，`result` 为返回值的 JSON；
 失败时 `result` 为 `{"kind","message"}`。
 
+## 控件兜底（`ui.*` 工具，第 4c 项 H）
+
+开发者显式开启后注册 `ui.outline` / `ui.click` / `ui.fill` / `ui.press` / `ui.scroll` / `ui.read`（行为见
+`spec/ui-fallback.md`）。兜底作用于 ArkUI 检查器树中的组件，**不截图、不按坐标点击**；默认关闭，建议只在调试包或用户
+明确开启时使用。
+
+```ts
+import { HarmonyUiFallback, MCP_DECLARED_PROPERTY, UIContextDriver } from '@app-mcp/harmony';
+
+// EntryAbility.onWindowStageCreate：loadContent 完成后（主线程）
+const ui = windowStage.getMainWindowSync().getUIContext();
+const fallback = HarmonyUiFallback.enable(mcp, [new UIContextDriver(ui, '示例商城')],
+  { applicationContext: this.context.getApplicationContext() });
+// fallback.addWindow(new UIContextDriver(subWindow.getUIContext(), '设置'))；fallback.close() 注销全部兜底工具
+
+// 页面：需要被点击的组件设置 id；已有语义工具的组件标注工具名，大纲中显示 [已声明：cart.clear]
+Button('清空').id('clear').customProperty(MCP_DECLARED_PROPERTY, 'cart.clear')
+```
+
+| | ArkUI 实现 |
+|---|---|
+| 控件树 | 每次调用时 `UIContext.getFilteredInspectorTree()`（JSON：`$type` / `$ID` / `$rect` / `$attrs` / `$children`）；按组件类型分类（Button、Toggle、Checkbox、Radio、TextInput / TextArea / Search、Select、Slider、Hyperlink、MenuItem 等），绑定了 onClick 的其他组件（`FrameNode.getInteractionEventBindingInfo(ON_CLICK)`，API 19+）作为按钮列出 |
+| 窗口 / 模态 | `enable` / `addWindow` 传入的每个 UIContext 为 `window`；同一窗口中最上层的对话框类覆盖层（`Dialog` / `AlertDialog` / `ActionSheet` / `MenuWrapper` / `SheetWrapper` / `Popup` 等）为 `dialog` 并遮挡其余内容 |
+| 引用 | 窗口序号 + 检查器 `$ID`（组件 uniqueId）；List / Grid / WaterFlow 下的组件按指纹核对（复用后作废） |
+| 可见 | `visibility` 不为 Hidden / None、`opacity` 不为 0、`$rect` 非空且与窗口及滚动容器的矩形相交 |
+| 启用 | 检查器属性 `enabled` |
+| 点击 | `sendEventByKey(组件 id, 10, '')`：**组件必须设置 `.id()`**，否则返回 unsupported |
+| 填写 | 复选框 / 开关 / 单选框：状态不同时点击；**文本框、下拉框、滑块不支持**（ArkUI 没有从组件外写入的接口，返回 unsupported） |
+| 滚动 | **不支持**（Scroller 由页面持有，没有从组件外滚动任意容器的接口）：可见控件不带 direction 时返回空变化，其余返回 unsupported |
+| 已声明 | `.customProperty(MCP_DECLARED_PROPERTY, 工具名)`（经 `FrameNode.getCustomProperty` 读取）；标在外层非控件组件上时给子树中唯一的控件 |
+| 可见窗口 | `applicationStateChange` 前台（传入 `applicationContext` 时），或 `setVisible` 手动指定；缺省开启时视为可见 |
+| 按键 | Tab / Shift+Tab：按树序在设置了 id 的可获焦组件间 `FocusController.requestFocus(id)`；Enter / Space / Escape：`UIContext.dispatchKeyEvent(uniqueId, 按下 + 抬起)` 交给目标 / 焦点组件（Escape 交给最上层对话框），Enter / Space 未被消费时点击非文本控件 |
+| 密码类 | TextInput / TextArea 的 `type` 为 Password 类（`InputType.Password` / `NEW_PASSWORD` / `NUMBER_PASSWORD`） |
+| 必填 | 不支持（检查器没有对应属性） |
+
+未知项（需在设备上核对）：检查器 JSON 的字段名与对话框覆盖层的组件类型名（d.ts 只声明返回 JSON 字符串）；`$ID` 是否等于
+`getFrameNodeByUniqueId` 的 uniqueId；`sendEventByKey` 在 global.d.ts 中标注 `@test`，正式包中是否可用；
+`dispatchKeyEvent` 的 Enter 是否触发 TextInput 的 `onSubmit`、Escape 是否关闭对话框。
+
 ## 验证
 
 ```bash

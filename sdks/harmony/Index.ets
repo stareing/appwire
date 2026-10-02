@@ -16,3 +16,13 @@ export {
   ToolHandler, ToolResult, ToolResultOptions, ToolSurface, UserActionRequiredOptions, Visibility, WakeDescriptor, WakeKind,
   WakeReason,
 } from './src/main/ets/Types';
+export { HarmonyUiFallback, UiFallbackOptions } from './src/main/ets/uifallback/HarmonyUiFallback';
+export {
+  ArkUiPlatform, ArkUiWindowDriver, InspectorJson, MCP_DECLARED_PROPERTY,
+} from './src/main/ets/uifallback/ArkUiElements';
+export { UIContextDriver } from './src/main/ets/uifallback/ArkUiDriver';
+export { UiInspector, UiPlatform } from './src/main/ets/uifallback/UiInspector';
+export { UiKey } from './src/main/ets/uifallback/UiFallbackInput';
+export {
+  UiActionResult, UiOutline, UiOutlineItem, UiReadResult,
+} from './src/main/ets/uifallback/UiOutlineFormat';

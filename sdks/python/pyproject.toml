@@ -23,6 +23,8 @@ dependencies = []
 pydantic = ["pydantic>=2"]
 # Linux D-Bus 唤醒服务（app_mcp.linux.serve_dbus_wake）
 dbus = ["jeepney>=0.8"]
+# Qt Widgets 控件兜底（app_mcp.uifallback.qt）；也可改装 PySide6 / PyQt6 完整包
+qt = ["PySide6-Essentials>=6.5"]
 test = ["pytest>=8"]
 
 [project.urls]
