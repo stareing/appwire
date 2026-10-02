@@ -34,6 +34,8 @@ typealias AppInfo = dev.appmcp.hub.ffi.AppInfo
 typealias InstanceInfo = dev.appmcp.hub.ffi.InstanceInfo
 typealias AppOverviewInfo = dev.appmcp.hub.ffi.AppOverviewInfo
 typealias HubTool = dev.appmcp.hub.ffi.HubTool
+/** App 工具对界面的依赖（`APP` / `VIEW`，spec/protocol.md 3.4）：[HubTool.surface]；内置与上游工具为 `null`。 */
+typealias ToolSurface = dev.appmcp.hub.ffi.ToolSurface
 typealias HubResource = dev.appmcp.hub.ffi.HubResource
 typealias ResourceContent = dev.appmcp.hub.ffi.ResourceContent
 /** 调用进度（`progress`、`total`、`message`；[Hub.callTool] 的 `onProgress`，spec/hub-api.md 3.12）。 */
@@ -53,6 +55,9 @@ typealias InstanceStatus = dev.appmcp.hub.ffi.InstanceStatus
 typealias InstanceState = dev.appmcp.hub.ffi.InstanceState
 typealias LastError = dev.appmcp.hub.ffi.LastError
 typealias DiagnosticReport = dev.appmcp.hub.ffi.DiagnosticReport
+/** 休眠记录持久化状态（[HubStatus.dormantStore]，配置了 [HubConfig.stateDir] 时）。 */
+typealias DormantStoreStatus = dev.appmcp.hub.ffi.DormantStoreStatus
+typealias StoreIssue = dev.appmcp.hub.ffi.StoreIssue
 
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /** 限流与大小上限（[HubConfig.limits]；[HubStatus.limits] 为全部字段给出的生效值）。为空的字段取默认值。 */
@@ -137,6 +142,8 @@ data class CallResult(
     val summary: String? = null,
     /** App 对结果内容的标注，原样。 */
     val annotations: ContentAnnotations? = null,
+    /** App 在后台、Hub 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则为 `null`。 */
+    val routedTo: String? = null,
 ) {
     val isError: Boolean get() = error != null
 
@@ -262,6 +269,8 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
      * 调用工具（全名 `<appId>.<tool>`）。工具层面的失败（用户拒绝、超时、App 报错……）放在
      * [CallResult.error]；名称无法解析时抛出 [HubException]。协程取消时自动取消调用。
      *
+     * @param idempotencyKey Agent 的幂等键（1..=256 个字符），原样转交 App（spec/hub-api.md 3.15）；不合法时
+     *   [CallResult.error] 为 `INVALID_INPUT`。
      * @param onProgress 接收调用进度（Hub 合并后，spec/hub-api.md 3.12）：在 Hub 的进度线程上按顺序同步调用，须尽快返回
      *   （需要时自行切换线程）；全部回调都在本函数返回之前完成。回调抛出的异常被忽略。为空时不接收进度。
      */
@@ -272,6 +281,7 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
         timeout: Duration? = null,
         session: String? = null,
         callId: String? = null,
+        idempotencyKey: String? = null,
         onProgress: ((ProgressUpdate) -> Unit)? = null,
     ): CallResult {
         val request = dev.appmcp.hub.ffi.CallRequest(
@@ -281,6 +291,7 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
             timeoutMs = timeout?.inWholeMilliseconds?.coerceAtLeast(0)?.toULong(),
             callId = callId,
             session = session,
+            idempotencyKey = idempotencyKey,
         )
         val out = if (onProgress == null) {
             inner.callTool(request)
@@ -306,6 +317,7 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
             stateResource = out.stateResource,
             summary = out.summary,
             annotations = out.annotations,
+            routedTo = out.routedTo,
         )
     }
 

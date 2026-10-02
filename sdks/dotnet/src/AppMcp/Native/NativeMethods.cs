@@ -197,6 +197,8 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)] internal static partial nint am_call_id(nint call);
     [LibraryImport(Lib)] internal static partial nint am_call_tool_name(nint call);
     [LibraryImport(Lib)] internal static partial nint am_call_arguments_json(nint call);
+    /// <summary>v16：Agent 幂等键；没有时返回 0（NULL）。</summary>
+    [LibraryImport(Lib)] internal static partial nint am_call_idempotency_key(nint call);
     [LibraryImport(Lib)] [return: MarshalAs(UnmanagedType.U1)] internal static partial bool am_call_is_cancelled(nint call);
     [LibraryImport(Lib)] internal static partial AmStatus am_call_set_cancel_callback(nint call, nint onCancel, nint userData, nint freeUserData);
     [LibraryImport(Lib)] internal static partial AmStatus am_call_complete(nint call, byte* dataJson, byte** stateHints, nuint stateHintsLen);

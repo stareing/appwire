@@ -276,6 +276,47 @@ final class HubIntegrationTests: XCTestCase {
         XCTAssertTrue(decl.outputSchema)
     }
 
+    /// spec/hub-api.md 3.14 / 3.15：`HubTool.surface` / `page`、`callTool(idempotencyKey:)` 原样转交、`routedTo`、`navigateTimeoutMs`。
+    func testSurfacePageAndIdempotencyKey() async throws {
+        let hub = try Hub(config: HubConfig(listen: "127.0.0.1:0", enableIpc: false, navigateTimeoutMs: 800))
+        defer { hub.close() }
+        let app = try AppMcpClient(config: AppMcpConfig(
+            appId: "cafe", appName: "咖啡", hostURL: "ws://\(hub.listenAddr ?? "")/app"
+        ))
+        try app.tool("cart.checkout", description: "结算", surface: .view, page: "cart") { (_: NoArguments, ctx) in
+            ["key": ctx.idempotencyKey ?? ""]
+        }
+        try app.tool("order.submit", description: "下单") { (_: NoArguments, ctx) in ["key": ctx.idempotencyKey ?? ""] }
+        app.start()
+        defer { app.stop() }
+
+        let deadline = Date().addingTimeInterval(10)
+        var tools: [HubTool] = []
+        while tools.count < 2 || tools.contains(where: { $0.availability != .available }) {
+            if Date() > deadline { return XCTFail("等待工具注册超时") }
+            try await Task.sleep(nanoseconds: 20_000_000)
+            tools = hub.tools(ToolFilter(apps: ["cafe"], includeBuiltin: false))
+        }
+        let checkout = try XCTUnwrap(tools.first { $0.tool == "cart.checkout" })
+        XCTAssertEqual(checkout.surface, HubToolSurface.view)
+        XCTAssertEqual(checkout.page, "cart")
+        let submit = try XCTUnwrap(tools.first { $0.tool == "order.submit" })
+        XCTAssertEqual(submit.surface, HubToolSurface.app)
+        XCTAssertNil(submit.page)
+        let builtins = hub.tools().filter { $0.name.hasPrefix("apps.") }
+        for n in ["apps.activate", "apps.release", "apps.page", "apps.navigate"] {
+            XCTAssertTrue(builtins.contains { $0.name == n }, "缺少内置工具 \(n)")
+        }
+        XCTAssertTrue(builtins.allSatisfy { $0.surface == nil && $0.page == nil })
+
+        let out = try await hub.callTool("cafe.order.submit", idempotencyKey: "order-7")
+        XCTAssertNil(out.error)
+        XCTAssertEqual(out.dataJSON, #"{"key":"order-7"}"#)
+        XCTAssertNil(out.routedTo)
+        let bad = try await hub.callTool("cafe.order.submit", idempotencyKey: "")
+        XCTAssertEqual(bad.error?.kind, "INVALID_INPUT")
+    }
+
     /// 第 16 项 O2：`callTool(onProgress:)` 在返回前收到合并后的进度；资源内容标注经 Hub 列出。
     func testProgressCallbackAndResourceAnnotations() async throws {
         let hub = try Hub(config: HubConfig(listen: "127.0.0.1:0", enableIpc: false))
@@ -392,7 +433,7 @@ final class HubIntegrationTests: XCTestCase {
         ))
         // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
         XCTAssertEqual(hub.tools(ToolFilter(session: "c1")).map(\.name),
-                       ["apps.list", "apps.select", "apps.overview", "apps.tools"])
+                       ["apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release"])
         hub.close()
     }
 
@@ -417,7 +458,10 @@ final class HubIntegrationTests: XCTestCase {
         let hub = try Hub(config: HubConfig(enableListen: false, enableIpc: false))
         XCTAssertNil(hub.listenAddr)
         XCTAssertNil(hub.ipcEndpoint)
-        XCTAssertEqual(Set(hub.tools().map(\.name)), ["apps.list", "apps.select", "apps.overview"])
+        XCTAssertEqual(
+            Set(hub.tools().map(\.name)),
+            ["apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release"]
+        )
         let st = try hub.status()
         XCTAssertNil(st.listen)
         XCTAssertTrue(st.apps.isEmpty && !st.mcpHttp && !st.auth.tokenConfigured)

@@ -60,6 +60,9 @@ public typealias InstanceStatus = AppMcpHubBindings.InstanceStatus
 public typealias InstanceState = AppMcpHubBindings.InstanceState
 public typealias LastError = AppMcpHubBindings.LastError
 public typealias DiagnosticReport = AppMcpHubBindings.DiagnosticReport
+/// 休眠记录持久化状态（`HubStatus.dormantStore`，配置了 `HubConfig.stateDir` 时）。
+public typealias DormantStoreStatus = AppMcpHubBindings.DormantStoreStatus
+public typealias StoreIssue = AppMcpHubBindings.StoreIssue
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。
 public typealias LimitsConfig = AppMcpHubBindings.LimitsConfig
@@ -75,6 +78,8 @@ public typealias HubContentAnnotations = AppMcpHubBindings.ContentAnnotations
 public typealias HubAudience = AppMcpHubBindings.Audience
 /// 调用结果的业务状态：`.done` / `.pending` / `.partial` / `.noop`。
 public typealias HubResultStatus = AppMcpHubBindings.ResultStatus
+/// App 工具对界面的依赖（`HubTool.surface`：`.app` / `.view`，spec/protocol.md 3.4；内置与上游工具为 `nil`）。
+public typealias HubToolSurface = AppMcpHubBindings.ToolSurface
 // 策略挂点（spec/hub-api.md 3.13）。
 /// 策略规则集（`HubConfig.policy`、`Hub.setPolicy`）：按顺序匹配，`.deny` 取第一条命中的规则；空规则集 = 不做任何限制。
 public typealias PolicyConfig = AppMcpHubBindings.PolicyConfig
@@ -121,6 +126,8 @@ public struct CallResult: Sendable, Equatable {
     public let summary: String?
     /// App 对结果内容的标注，原样。
     public let annotations: HubContentAnnotations?
+    /// App 在后台、Hub 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则为 `nil`。
+    public let routedTo: String?
 
     public var isError: Bool { error != nil }
 
@@ -335,6 +342,7 @@ public final class Hub: @unchecked Sendable {
         timeout: TimeInterval? = nil,
         session: String? = nil,
         callId: String? = nil,
+        idempotencyKey: String? = nil,
         onProgress: (@Sendable (ProgressUpdate) -> Void)? = nil
     ) async throws -> CallResult {
         let request = CallRequest(
@@ -343,7 +351,8 @@ public final class Hub: @unchecked Sendable {
             instanceId: instanceId,
             timeoutMs: timeout.map { UInt64(max(0, $0 * 1000)) },
             callId: callId,
-            session: session
+            session: session,
+            idempotencyKey: idempotencyKey
         )
         let out: CallOutcome
         if let onProgress {
@@ -361,7 +370,8 @@ public final class Hub: @unchecked Sendable {
             status: out.status,
             stateResource: out.stateResource,
             summary: out.summary,
-            annotations: out.annotations
+            annotations: out.annotations,
+            routedTo: out.routedTo
         )
     }
 
@@ -373,12 +383,13 @@ public final class Hub: @unchecked Sendable {
         timeout: TimeInterval? = nil,
         session: String? = nil,
         callId: String? = nil,
+        idempotencyKey: String? = nil,
         onProgress: (@Sendable (ProgressUpdate) -> Void)? = nil
     ) async throws -> CallResult {
         let json = String(decoding: try JSONEncoder().encode(arguments), as: UTF8.self)
         return try await callTool(
             name, argumentsJSON: json, instanceId: instanceId, timeout: timeout, session: session, callId: callId,
-            onProgress: onProgress
+            idempotencyKey: idempotencyKey, onProgress: onProgress
         )
     }
 

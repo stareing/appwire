@@ -229,6 +229,7 @@ async fn page_tool_roundtrip_with_rust_tool() {
     let call = wait_event(&page, "call").await;
     assert_eq!(call["toolId"], 1);
     assert_eq!(call["input"], json!({ "a": 41 }));
+    assert!(call.get("idempotencyKey").is_none(), "没有幂等键时不带该字段");
     // 页面在 Hub API 不接收进度时报告进度：无副作用
     let progress = fx.op(&page, "main", "main", json!({ "op": "call.progress", "callId": call["callId"], "progress": 1 }));
     assert_eq!(progress, json!({ "ok": true }));
@@ -242,6 +243,18 @@ async fn page_tool_roundtrip_with_rust_tool() {
     let out = pending.await.expect("join").expect("调用");
     assert_eq!(out.result.expect("成功")["sum"], 42);
     assert_eq!(out.state_hints, vec!["cart".to_owned()]);
+
+    // Agent 的幂等键原样转给页面（spec/protocol.md 3.3）
+    let hub = fx.hub.clone();
+    let pending = tokio::spawn(async move {
+        let mut req = CallRequest::new("roundtrip.page.add", json!({ "a": 1 }));
+        req.idempotency_key = Some("order-7".to_owned());
+        hub.call_tool(req).await
+    });
+    let call = wait_event(&page, "call").await;
+    assert_eq!(call["idempotencyKey"], "order-7");
+    fx.op(&page, "main", "main", json!({ "op": "call.result", "callId": call["callId"], "ok": true }));
+    pending.await.expect("join").expect("带幂等键的调用");
 
     // 页面 handler 的进度（call.progress）经原生客户端到达 Hub（spec/protocol.md 3.3）
     let hub = fx.hub.clone();

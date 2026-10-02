@@ -139,14 +139,8 @@ pub(crate) fn status_note(status: ResultStatus, state_resource: Option<&str>) ->
     Some(note)
 }
 
-/// 结果状态在 MCP `_meta` 中的键（`status` 不是 `done` 时写入）。
-///
-/// @compat 键名前缀 `app-mcp/` 暂定；第 19 项 R4 核实 MCP `_meta` 键命名约定（U3）后可能调整。
-pub const META_STATUS: &str = "app-mcp/status";
-/// `pending` 时可读取后续状态的资源 URI 在 `_meta` 中的键。
-pub const META_STATE_RESOURCE: &str = "app-mcp/stateResource";
-/// 改调了后台替代时实际调用的工具全名在 `_meta` 中的键（spec/hub-api.md 3.14）。
-pub const META_ROUTED_TO: &str = "app-mcp/routedTo";
+/// 结果 `_meta` 的键（唯一定义在 [`crate::names`]）。
+pub use crate::names::{META_ROUTED_TO, META_STATE_RESOURCE, META_STATUS};
 
 #[cfg(test)]
 mod tests {

@@ -91,6 +91,9 @@ fn op_args(op: &Value) -> Result<Vec<String>, String> {
         if let Some(id) = obj.get("callId") {
             a.extend(["--call-id".to_owned(), s(id)?]);
         }
+        if let Some(key) = obj.get("idempotencyKey") {
+            a.extend(["--idempotency-key".to_owned(), s(key)?]);
+        }
         if let Some(n) = num("timeoutMs")? {
             a.extend(["--invoke-timeout-ms".to_owned(), n]);
         }
@@ -327,14 +330,14 @@ mod tests {
             id: "x".into(),
             root: PathBuf::from("."),
             doc: json!({"host": {"toolInfo": true, "leaseMs": 5, "ops": [
-                {"invoke": "t", "args": {"a": 1}, "callId": "c", "timeoutMs": 9, "cancelAfterMs": 3},
+                {"invoke": "t", "args": {"a": 1}, "callId": "c", "timeoutMs": 9, "cancelAfterMs": 3, "idempotencyKey": "k"},
                 {"read": "r"}, {"catalog": 100}, {"delay": 7}, {"awaitSleep": true}, {"wake": true}
             ]}}),
         };
         let args = case.host_args().unwrap();
         assert_eq!(
             args.join(" "),
-            "--tool-info --trace --lease-ms 5 --invoke t --args {\"a\":1} --call-id c --invoke-timeout-ms 9 \
+            "--tool-info --trace --lease-ms 5 --invoke t --args {\"a\":1} --call-id c --idempotency-key k --invoke-timeout-ms 9 \
              --cancel-after-ms 3 --read r --catalog 100 --delay 7 --await-sleep --wake"
         );
         assert!(op_args(&json!({"bogus": 1})).is_err());

@@ -372,6 +372,10 @@ abstract interface class ToolContext {
   /// 被调用的工具名。
   String get toolName;
 
+  /// Agent 给出的幂等键（原样，spec/protocol.md 3.3「idempotencyKey」）；没有时为 null。
+  /// App 自行决定如何使用（如作为业务去重键、传给后端）；同一工具同一键的重复调用已由核心按首次结果重放。
+  String? get idempotencyKey;
+
   /// 调用是否已被取消（Host 取消、超时、断线、停止）。
   bool get isCancelled;
 

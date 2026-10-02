@@ -37,6 +37,8 @@ pub struct NewInstance {
     /// 握手声明了 `capabilities.navigate`（spec/protocol.md 3.4）。
     pub navigate: bool,
     pub conn: Arc<Connection>,
+    /// `app/hello` 中的唤醒描述（`none` 已滤掉）。
+    pub wake: Option<WakeDescriptor>,
 }
 
 /// 一个已连接的实例（标签页 / 进程）。
@@ -54,6 +56,8 @@ pub struct Instance {
     /// 能处理 `app/navigate`（握手声明了 `capabilities.navigate`）。
     pub navigate: bool,
     pub conn: Arc<Connection>,
+    /// `app/hello` 中的唤醒描述：有它的实例才持久化（spec/hub-api.md 3.5「持久化」）。
+    pub wake: Option<WakeDescriptor>,
     /// 尚未收到 `app/visibility` 时为 `None`。
     pub visibility: Option<Visibility>,
     pub focused: bool,
@@ -69,6 +73,31 @@ pub struct Instance {
 }
 
 impl Instance {
+    /// 在线实例的持久化视图（spec/hub-api.md 3.5「持久化」）：Host 异常退出后按休眠实例读回、经唤醒描述唤醒。
+    /// 没有恢复令牌（`resume_token` 为空，回连时总是完整同步）；`slept_at` 取写出时刻，保留期由此起算。
+    fn persisted(&self, now: SystemTime) -> Option<DormantInstance> {
+        let wake = self.wake.clone()?;
+        self.ready.then(|| DormantInstance {
+            instance_id: self.instance_id.clone(),
+            app_name: self.app_name.clone(),
+            client_kind: self.client_kind,
+            app_version: self.app_version.clone(),
+            title: self.title.clone(),
+            url: self.url.clone(),
+            overview: self.overview.clone(),
+            visibility: self.visibility,
+            tools: self.tools.clone(),
+            resources: self.resources.clone(),
+            resume_token: String::new(),
+            tools_hash: String::new(),
+            wake: Some(wake),
+            slept_at: now,
+            connected_at: self.connected_at,
+            last_active_at: self.last_active_at,
+            recency: self.last_active_seq.unwrap_or(self.connected_seq),
+        })
+    }
+
     /// Host 是否订阅了本实例声明 `realtime` 的资源（spec/lifecycle.md 第 13 节 B3：只有这类订阅阻止休眠）。
     pub fn has_realtime_subscription(&self) -> bool {
         self.subscriptions.iter().any(|n| self.resources.get(n).is_some_and(|r| r.realtime))
@@ -264,8 +293,8 @@ fn visibility_str(v: Option<Visibility>) -> Value {
     }
 }
 
-/// 过滤 SDK 发来的非法工具条目，合法的转为共享的紧凑定义。
-fn sanitize_tools(app_id: &str, tools: Vec<ToolInfo>) -> Vec<SharedTool> {
+/// 过滤 SDK 发来（或从休眠记录文件读回）的非法工具条目，合法的转为共享的紧凑定义。
+pub(crate) fn sanitize_tools(app_id: &str, tools: Vec<ToolInfo>) -> Vec<SharedTool> {
     tools
         .into_iter()
         .filter(|t| {
@@ -280,7 +309,7 @@ fn sanitize_tools(app_id: &str, tools: Vec<ToolInfo>) -> Vec<SharedTool> {
         .collect()
 }
 
-fn sanitize_resources(app_id: &str, resources: Vec<ResourceInfo>) -> Vec<ResourceInfo> {
+pub(crate) fn sanitize_resources(app_id: &str, resources: Vec<ResourceInfo>) -> Vec<ResourceInfo> {
     resources
         .into_iter()
         .filter(|r| {
@@ -338,6 +367,7 @@ impl Registry {
             pid: new.pid,
             navigate: new.navigate,
             conn: new.conn,
+            wake: new.wake,
             visibility: None,
             focused: false,
             ready: false,
@@ -440,6 +470,48 @@ impl Registry {
         }
         self.apps.retain(|_, e| !e.is_empty());
         out
+    }
+
+    /// 某 App 要持久化的实例与页面目录中 SDK 上报过的页面工具（spec/hub-api.md 3.5「持久化」）：休眠记录，
+    /// 加上已就绪且声明了唤醒描述的在线实例（Host 异常退出时它们来不及转为休眠）。工具定义共享，不深拷贝。
+    pub(crate) fn dormant_view(&self, app_id: &str) -> (Vec<DormantInstance>, Vec<SharedTool>) {
+        let Some(e) = self.apps.get(app_id) else {
+            return (Vec::new(), Vec::new());
+        };
+        let now = SystemTime::now();
+        let mut out = e.dormant.clone();
+        out.extend(e.instances.iter().filter_map(|i| i.persisted(now)));
+        if out.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        (out, e.learned_pages.tools().cloned().collect())
+    }
+
+    /// 登记从文件读回的休眠记录（Hub 启动时）：按读回顺序（旧 → 新）重新分配路由优先级，已有同 ID 的记录不覆盖；
+    /// 页面工具记入页面目录。返回登记的实例数。
+    pub(crate) fn restore_dormant(
+        &mut self,
+        app_id: &str,
+        instances: Vec<DormantInstance>,
+        page_tools: &[SharedTool],
+    ) -> usize {
+        let mut n = 0;
+        for mut d in instances {
+            d.recency = self.next_seq();
+            let entry = self.apps.entry(app_id.to_owned()).or_default();
+            if entry.dormant.iter().any(|x| x.instance_id == d.instance_id)
+                || entry.instances.iter().any(|x| x.instance_id == d.instance_id)
+            {
+                continue;
+            }
+            entry.learned_pages.learn(app_id, d.tools.values());
+            entry.dormant.push(d);
+            n += 1;
+        }
+        if let Some(entry) = self.apps.get_mut(app_id) {
+            entry.learned_pages.learn(app_id, page_tools);
+        }
+        n
     }
 
     /// 快速恢复：把休眠快照作为新连接实例的工具 / 资源（SDK 跳过了 `tools/sync`）。
@@ -681,10 +753,12 @@ impl Registry {
         }
     }
 
-    pub fn set_ready(&mut self, app_id: &str, conn_id: u64) {
-        if let Some(inst) = self.instance_mut(app_id, conn_id) {
+    /// 标记实例就绪。返回该实例是否要持久化（声明了唤醒描述）。
+    pub fn set_ready(&mut self, app_id: &str, conn_id: u64) -> bool {
+        self.instance_mut(app_id, conn_id).is_some_and(|inst| {
             inst.ready = true;
-        }
+            inst.wake.is_some()
+        })
     }
 
     /// 记一次活跃（完成一次调用后）。
@@ -760,6 +834,17 @@ impl Registry {
     /// 是否有已连接实例。
     pub fn has_connected(&self, app_id: &str) -> bool {
         self.apps.get(app_id).is_some_and(|e| !e.instances.is_empty())
+    }
+
+    /// App 的已连接实例中按路由优先级（`prefer` 优先，其次焦点 / 最近活跃）排第一的已就绪实例。
+    pub fn preferred_instance(&self, app_id: &str, prefer: Option<&str>) -> Option<(String, Arc<Connection>)> {
+        let entry = self.apps.get(app_id)?;
+        entry.ordered(prefer, |i| i.ready).first().map(|i| (i.instance_id.clone(), i.conn.clone()))
+    }
+
+    /// App 各已连接实例的连接 ID（`apps.release` 据此收回租约）。
+    pub fn connection_ids(&self, app_id: &str) -> std::collections::HashSet<u64> {
+        self.apps.get(app_id).map(|e| e.instances.iter().map(|i| i.conn.id).collect()).unwrap_or_default()
     }
 
     /// 导航目标：已就绪且声明了导航能力的实例，按路由优先级（`prefer` 优先，其次焦点 / 最近活跃）。
@@ -1271,6 +1356,7 @@ mod tests {
                 pid: None,
                 navigate: false,
                 conn: conn.clone(),
+                wake: None,
             },
         );
         (conn, old)
@@ -1312,6 +1398,7 @@ mod tests {
                 pid: None,
                 navigate: false,
                 conn: conn.clone(),
+                wake: None,
             },
         );
         let o = reg.overview("shop").unwrap();
@@ -1502,6 +1589,7 @@ mod tests {
             pid: None,
             navigate,
             conn,
+            wake: None,
         };
         reg.add_instance("app", new("x", true, conn.clone()));
         assert!(reg.navigation_target("app", None).is_none(), "未就绪");

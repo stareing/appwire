@@ -1,0 +1,26 @@
+{
+  "id": "idempotency-key-dedup",
+  "title": "幂等键：不同 callId、同一工具的同一 idempotencyKey 重放首次结果；不同键、无键或其他工具照常执行",
+  "spec": ["protocol.md 3.3"],
+  "requires": [],
+  "app": {
+    "tools": [
+      { "name": "k.count", "description": "计数", "handler": { "counter": true } },
+      { "name": "k.other", "description": "计数后返回固定值", "handler": { "counter": true, "return": { "other": true } } }
+    ]
+  },
+  "host": { "ops": [
+    { "invoke": "k.count", "callId": "ik-1", "idempotencyKey": "order-1" },
+    { "invoke": "k.count", "callId": "ik-2", "idempotencyKey": "order-1" },
+    { "invoke": "k.count", "callId": "ik-3", "idempotencyKey": "order-2" },
+    { "invoke": "k.count", "callId": "ik-4" },
+    { "invoke": "k.other", "callId": "ik-5", "idempotencyKey": "order-1" }
+  ] },
+  "expect": [
+    { "type": "invoke", "name": "k.count", "result": { "data": { "count": 1 } } },
+    { "type": "invoke", "name": "k.count", "result": { "data": { "count": 1 } } },
+    { "type": "invoke", "name": "k.count", "result": { "data": { "count": 2 } } },
+    { "type": "invoke", "name": "k.count", "result": { "data": { "count": 3 } } },
+    { "type": "invoke", "name": "k.other", "result": { "data": { "other": true } } }
+  ]
+}

@@ -172,6 +172,7 @@ object AppMcpAndroid {
         )
         wakeTarget = AppMcpWakeTarget(client)
         if (trackVisibility) {
+            initialVisibility()?.let { client.setVisibility(it, false) }
             val observer = object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
                     if (client.isClosed) return
@@ -190,6 +191,16 @@ object AppMcpAndroid {
         }
         return client
     }
+
+    /**
+     * 创建客户端时的初始可见性：在主线程且进程不在前台（如被唤醒广播在后台冷启动、没有界面）时为 `HIDDEN`，否则 `null`
+     * （保持核心默认，之后由 ON_START / ON_STOP 上报）。
+     *
+     * @why 后台冷启动不会收到 ON_STOP，若不在握手前上报隐藏，这条连接会被当作前台连接，按 Hub 的默认值租约在线
+     * （spec/lifecycle.md 第 13 节 B4「后台连接」）。
+     */
+    internal fun initialVisibility(): Visibility? =
+        if (Looper.myLooper() == Looper.getMainLooper() && !isForeground()) Visibility.HIDDEN else null
 
     /** 进程是否在前台（至少一个 Activity 处于 started）。只能在主线程调用。 */
     internal fun isForeground(): Boolean = runCatching {

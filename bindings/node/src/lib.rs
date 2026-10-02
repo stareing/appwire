@@ -686,6 +686,12 @@ impl Call {
         self.inner.arguments_json()
     }
 
+    /// Agent 给出的幂等键（原样，spec/protocol.md 3.3）；没有时为 `null`。
+    #[napi(getter)]
+    pub fn idempotency_key(&self) -> Option<String> {
+        self.inner.idempotency_key()
+    }
+
     #[napi]
     pub fn is_cancelled(&self) -> bool {
         self.inner.is_cancelled()

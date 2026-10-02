@@ -186,6 +186,17 @@ impl From<hub::Availability> for Availability {
 }
 enum_map!(ToolFormat <=> hub::ToolFormat { Mcp, OpenAiChat, OpenAiResponses, Anthropic, Gemini });
 
+/// App 工具对界面的依赖（spec/protocol.md 3.4）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum ToolSurface {
+    /// 不依赖界面，App 在后台也可调用（未声明即此值）。
+    App,
+    /// 只在所在界面可见且处于最上层时注册。
+    View,
+}
+
+enum_map!(ToolSurface <=> hub::ToolSurface { App, View });
+
 /// 结果与其 `outputSchema` 不符时 Hub 的处理（spec/hub-api.md 3.11）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
 pub enum OutputValidation {
@@ -374,6 +385,10 @@ pub struct HubConfig {
     /// 单实例锁与登记文件目录（`<run_dir>/hub.lock`、`endpoints.json`，spec/protocol.md 1.5、1.7）；为空时不参与。
     #[uniffi(default = None)]
     pub run_dir: Option<String>,
+    /// 持久状态目录（spec/hub-api.md 3.5「持久化」）：休眠记录写到 `<state_dir>/dormant/<appId>.json`（原子写、仅当前用户可读），
+    /// 启动时读回，重启前休眠的 App 仍可列出、可唤醒。为空时不读写任何文件。
+    #[uniffi(default = None)]
+    pub state_dir: Option<String>,
     /// 本地 IPC 端点（`unix:<绝对路径>` / `pipe:\\.\pipe\<名称>`，spec/protocol.md 1.2）；
     /// 为空时为平台默认端点（原生 App 默认连接这里）。
     #[uniffi(default = None)]
@@ -426,6 +441,10 @@ pub struct HubConfig {
     /// 唤醒后等待 App 回连的上限（默认 15 s），超时 → `APP_NOT_RESPONDING`。
     #[uniffi(default = None)]
     pub wake_timeout_ms: Option<u64>,
+    /// 导航等待上限（App 回复 + 目标工具注册，默认 5 s，独立于 `wake_timeout_ms`；spec/hub-api.md 3.14 / 3.15），
+    /// 超时 → `NAVIGATION_FAILED`。
+    #[uniffi(default = None)]
+    pub navigate_timeout_ms: Option<u64>,
     /// 唤醒令牌有效期（默认 60 s）。
     #[uniffi(default = None)]
     pub wake_token_ttl_ms: Option<u64>,
@@ -480,6 +499,7 @@ impl Default for HubConfig {
             enable_listen: true,
             mcp_http: false,
             run_dir: None,
+            state_dir: None,
             ipc_endpoint: None,
             enable_ipc: true,
             manifest_files: Vec::new(),
@@ -498,6 +518,7 @@ impl Default for HubConfig {
             list_changed_debounce_ms: None,
             lease_ttl_ms: None,
             wake_timeout_ms: None,
+            navigate_timeout_ms: None,
             wake_token_ttl_ms: None,
             dormant_ttl_ms: None,
             dormant_replaced_by_new_instance: None,
@@ -779,6 +800,7 @@ impl HubConfig {
         }
         c.mcp_http = self.mcp_http;
         c.run_dir = self.run_dir.map(PathBuf::from);
+        c.state_dir = self.state_dir.map(PathBuf::from);
         if !self.enable_ipc {
             c.ipc_endpoint = None;
         } else if let Some(endpoint) = self.ipc_endpoint {
@@ -829,6 +851,7 @@ impl HubConfig {
         set(&mut c.list_changed_debounce, self.list_changed_debounce_ms);
         set(&mut c.lease_ttl, self.lease_ttl_ms);
         set(&mut c.wake_timeout, self.wake_timeout_ms);
+        set(&mut c.navigate_timeout, self.navigate_timeout_ms);
         set(&mut c.wake_token_ttl, self.wake_token_ttl_ms);
         set(&mut c.dormant_ttl, self.dormant_ttl_ms);
         if let Some(v) = self.dormant_replaced_by_new_instance {
@@ -1254,6 +1277,49 @@ pub struct HubStatus {
     /// 策略规则、命中次数与最近的加载错误；旧 Host 为空。
     #[uniffi(default = None)]
     pub policy: Option<PolicyStatus>,
+    /// 休眠记录持久化状态；未配置 `state_dir` 或旧 Host 时为空。
+    #[uniffi(default = None)]
+    pub dormant_store: Option<DormantStoreStatus>,
+}
+
+/// 休眠记录持久化状态（`HubStatus.dormant_store`，配置了 `HubConfig.state_dir` 时）。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct DormantStoreStatus {
+    /// 休眠记录目录（`<state_dir>/dormant`）。
+    pub dir: String,
+    /// 启动时读回的实例数。
+    pub loaded_instances: u64,
+    /// 启动时因过期丢弃的实例数。
+    pub expired_instances: u64,
+    /// 启动以来成功写入 / 删除文件的次数。
+    pub writes: u64,
+    /// 启动时跳过的文件（损坏、版本未知、超出上限）。
+    pub issues: Vec<StoreIssue>,
+    /// 最近一次写入失败。
+    #[uniffi(default = None)]
+    pub last_error: Option<String>,
+}
+
+/// 读取 / 写入中被跳过的文件或失败。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct StoreIssue {
+    /// 文件名（相对于休眠记录目录）。
+    pub file: String,
+    /// 中文说明。
+    pub reason: String,
+}
+
+impl From<hub::DormantStoreStatus> for DormantStoreStatus {
+    fn from(s: hub::DormantStoreStatus) -> Self {
+        DormantStoreStatus {
+            dir: s.dir,
+            loaded_instances: s.loaded_instances,
+            expired_instances: s.expired_instances,
+            writes: s.writes,
+            issues: s.issues.into_iter().map(|i| StoreIssue { file: i.file, reason: i.reason }).collect(),
+            last_error: s.last_error,
+        }
+    }
 }
 
 impl From<hub::LastError> for LastError {
@@ -1329,6 +1395,7 @@ impl From<hub::HubStatus> for HubStatus {
             limits: s.limits.map(Into::into),
             output_validation: s.output_validation.map(Into::into),
             policy: s.policy.map(Into::into),
+            dormant_store: s.dormant_store.map(Into::into),
         }
     }
 }
@@ -1356,6 +1423,12 @@ pub struct HubTool {
     /// App 声明的结果 JSON Schema 文本（原样）；未声明时为空。
     #[uniffi(default = None)]
     pub output_schema_json: Option<String>,
+    /// App 工具的界面依赖（未声明即 `App`）；内置与上游工具为空。
+    #[uniffi(default = None)]
+    pub surface: Option<ToolSurface>,
+    /// App 工具所在页面（spec/hub-api.md 3.14）；不属于页面时为空。
+    #[uniffi(default = None)]
+    pub page: Option<String>,
 }
 
 impl From<hub::HubTool> for HubTool {
@@ -1372,6 +1445,8 @@ impl From<hub::HubTool> for HubTool {
             availability: t.availability.into(),
             annotations: t.annotations.into(),
             output_schema_json: t.output_schema.map(|v| v.to_string()),
+            surface: t.surface.map(Into::into),
+            page: t.page,
         }
     }
 }
@@ -1523,6 +1598,9 @@ pub struct CallRequest {
     /// 厂商会话 ID；为空 = 默认会话。
     #[uniffi(default = None)]
     pub session: Option<String>,
+    /// Agent 的幂等键（1..=256 个字符），原样转交 App（spec/hub-api.md 3.15）；不合法时调用以 `INVALID_INPUT` 结束。
+    #[uniffi(default = None)]
+    pub idempotency_key: Option<String>,
 }
 
 impl CallRequest {
@@ -1538,6 +1616,7 @@ impl CallRequest {
             timeout: self.timeout_ms.map(Duration::from_millis),
             call_id: self.call_id,
             session: self.session,
+            idempotency_key: self.idempotency_key,
         })
     }
 }
@@ -1590,6 +1669,9 @@ pub struct CallOutcome {
     /// App 对结果内容的标注，原样。
     #[uniffi(default = None)]
     pub annotations: Option<ContentAnnotations>,
+    /// 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则为空。
+    #[uniffi(default = None)]
+    pub routed_to: Option<String>,
 }
 
 impl From<hub::CallOutcome> for CallOutcome {
@@ -1616,6 +1698,7 @@ impl From<hub::CallOutcome> for CallOutcome {
             state_resource: o.state_resource,
             summary: o.summary,
             annotations: o.annotations.map(Into::into),
+            routed_to: o.routed_to,
         }
     }
 }
@@ -1878,8 +1961,10 @@ mod tests {
         assert_eq!(c.listen_alternates, d.listen_alternates);
         assert!(!c.mcp_http);
         assert_eq!(c.run_dir, None);
+        assert_eq!(c.state_dir, None);
         assert_eq!(c.ipc_endpoint, d.ipc_endpoint);
         assert_eq!(c.response_timeout, d.response_timeout);
+        assert_eq!(c.navigate_timeout, hub::DEFAULT_NAVIGATE_TIMEOUT);
         assert_eq!(c.approval, d.approval);
         assert!(c.manifests.is_empty() && c.upstreams.is_empty());
     }
@@ -1890,9 +1975,11 @@ mod tests {
             listen: Some("127.0.0.1:0".into()),
             mcp_http: true,
             run_dir: Some("/tmp/r".into()),
+            state_dir: Some("/tmp/s".into()),
             approval_min_risk: Some(Risk::Destructive),
             approval_timeout_ms: Some(500),
             response_timeout_ms: Some(1234),
+            navigate_timeout_ms: Some(800),
             upstreams: vec![UpstreamSpec {
                 name: "fs".into(),
                 command: "npx".into(),
@@ -1908,9 +1995,11 @@ mod tests {
         assert!(c.listen_alternates.is_empty(), "显式地址不尝试备选端口");
         assert!(c.mcp_http);
         assert_eq!(c.run_dir, Some(PathBuf::from("/tmp/r")));
+        assert_eq!(c.state_dir, Some(PathBuf::from("/tmp/s")));
         assert_eq!(c.approval.require_at_or_above, Some(hub::Risk::Destructive));
         assert_eq!(c.approval.timeout, Some(Duration::from_millis(500)));
         assert_eq!(c.response_timeout, Duration::from_millis(1234));
+        assert_eq!(c.navigate_timeout, Duration::from_millis(800));
         assert_eq!(c.upstreams["fs"].env["A"], "1");
         assert_eq!(c.manifests[0].app_id, "shop");
 
@@ -1956,9 +2045,11 @@ mod tests {
             timeout_ms: Some(10),
             call_id: None,
             session: Some("s".into()),
+            idempotency_key: Some("order-7".into()),
         };
         let h = r.clone().into_hub().unwrap();
         assert_eq!(h.arguments, json!({}));
+        assert_eq!(h.idempotency_key.as_deref(), Some("order-7"));
         assert_eq!(h.timeout, Some(Duration::from_millis(10)));
         let h = CallRequest {
             arguments_json: Some(r#"{"x":1}"#.into()),
@@ -2032,10 +2123,11 @@ mod tests {
                 priority: Some(0.5),
                 last_modified: None,
             }),
-            routed_to: None,
+            routed_to: Some("shop.cart.addItem".into()),
         }
         .into();
         assert_eq!(o.status, ResultStatus::Pending);
+        assert_eq!(o.routed_to.as_deref(), Some("shop.cart.addItem"));
         assert_eq!(o.state_resource.as_deref(), Some("app-mcp://shop/order.state"));
         assert_eq!(o.summary.as_deref(), Some("等待付款"));
         assert_eq!(
@@ -2257,7 +2349,9 @@ mod tests {
                 {"appId": "u", "name": "U", "kind": "upstream", "state": "disconnected", "instances": []}
             ],
             "reports": [{"appId": "a", "instanceId": "i1", "connectionId": "abc123-1",
-                         "code": "BLOCKED_MIXED_CONTENT", "message": "m", "count": 1, "receivedAtMs": 12}]
+                         "code": "BLOCKED_MIXED_CONTENT", "message": "m", "count": 1, "receivedAtMs": 12}],
+            "dormantStore": {"dir": "/s/dormant", "loadedInstances": 3, "expiredInstances": 1, "writes": 4,
+                             "issues": [{"file": "x.json", "reason": "损坏"}], "lastError": "磁盘满"}
         }))
         .unwrap();
         let s = HubStatus::from(st);
@@ -2299,6 +2393,17 @@ mod tests {
                 count: 1,
                 received_at_ms: 12
             }]
+        );
+        assert_eq!(
+            s.dormant_store,
+            Some(DormantStoreStatus {
+                dir: "/s/dormant".into(),
+                loaded_instances: 3,
+                expired_instances: 1,
+                writes: 4,
+                issues: vec![StoreIssue { file: "x.json".into(), reason: "损坏".into() }],
+                last_error: Some("磁盘满".into()),
+            })
         );
         assert_eq!(InstanceState::from(hub::InstanceState::Dormant), InstanceState::Dormant);
         assert_eq!(AppState::from(hub::AppState::Waking), AppState::Waking);

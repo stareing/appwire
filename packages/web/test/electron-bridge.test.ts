@@ -108,6 +108,27 @@ describe('createAppMcp 在 Electron 页面中', () => {
     expect(fake.listenerCount()).toBe(0)
   })
 
+  it('call 事件的幂等键进入 handler 上下文（spec/protocol.md 3.3），非字符串时忽略', async () => {
+    const fake = fakeBridge()
+    g.appMcpBridge = fake.bridge
+    const app = createAppMcp({ appId: 'shop', appName: 'Shop', logger: silentLogger() })
+    const keys: unknown[] = []
+    app.tool('order.create', {
+      description: '下单',
+      handler: (_input: unknown, ctx: { idempotencyKey?: string }) => {
+        keys.push('idempotencyKey' in ctx ? ctx.idempotencyKey : 'absent')
+        return null
+      },
+    })
+    await settle()
+    fake.emit({ type: 'call', callId: 'c1', toolId: 1, input: {}, idempotencyKey: 'order-7' })
+    fake.emit({ type: 'call', callId: 'c2', toolId: 1, input: {} })
+    fake.emit({ type: 'call', callId: 'c3', toolId: 1, input: {}, idempotencyKey: 42 as never })
+    await settle()
+    expect(keys).toEqual(['order-7', 'absent', 'absent'])
+    app.dispose()
+  })
+
   it('enabled: false 时不使用桥接', () => {
     const fake = fakeBridge()
     g.appMcpBridge = fake.bridge

@@ -15,11 +15,20 @@ pub(crate) struct Call {
     pub tool: ToolId,
     pub name: String,
     pub arguments: Value,
+    /// Agent 给出的幂等键（`ToolsInvokeParams.idempotencyKey`，spec/protocol.md 3.3），原样交给 handler。
+    pub idempotency_key: Option<String>,
     pub timeout_ms: Option<Millis>,
     /// 从收到请求起算的截止时刻（包含排队时间）。
     pub deadline: Option<Millis>,
     /// 执行期间到达的同一 `callId` 的重复请求（spec/protocol.md 3.3），完成时一并回复。
     pub waiters: Vec<RequestId>,
+}
+
+impl Call {
+    /// 去重表中的幂等匹配键（[`crate::dedup::idempotency_match_key`]）。
+    pub fn idem(&self) -> Option<String> {
+        self.idempotency_key.as_deref().map(|k| crate::dedup::idempotency_match_key(&self.name, k))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -31,6 +40,18 @@ pub(crate) struct Calls {
 impl Calls {
     pub fn contains(&self, call_id: &str) -> bool {
         self.running.iter().chain(self.queued.iter()).any(|c| c.call_id == call_id)
+    }
+
+    /// 把重复请求挂到同一（工具名, 幂等键）的进行中 / 排队调用上；没有该调用时返回 `false`。
+    pub fn attach_idempotent(&mut self, name: &str, key: &str, request_id: RequestId) -> bool {
+        let same = |c: &&mut Call| c.name == name && c.idempotency_key.as_deref() == Some(key);
+        match self.running.iter_mut().chain(self.queued.iter_mut()).find(same) {
+            Some(c) => {
+                c.waiters.push(request_id);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn is_running(&self, call_id: &str) -> bool {
@@ -110,6 +131,7 @@ mod tests {
             tool: ToolId(1),
             name: "t".into(),
             arguments: Value::Null,
+            idempotency_key: None,
             timeout_ms: None,
             deadline,
             waiters: Vec::new(),

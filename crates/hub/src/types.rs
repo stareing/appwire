@@ -5,7 +5,8 @@
 use std::time::Duration;
 
 use app_mcp_protocol::{
-    Activation, ContentAnnotations, ErrorKind, LifecycleMode, ResultStatus, Risk, ToolAnnotations, ToolError, Visibility,
+    Activation, ContentAnnotations, ErrorKind, LifecycleMode, ResultStatus, Risk, ToolAnnotations, ToolError, ToolSurface,
+    Visibility,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -104,6 +105,12 @@ pub struct HubTool {
     /// App 声明的结果 JSON Schema（原样；MCP 出口按需包装，spec/hub-api.md 3.2）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
+    /// App 工具声明的界面依赖（spec/protocol.md 3.4；未声明即 `app`）；内置与上游工具为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<ToolSurface>,
+    /// App 工具所在页面（声明的 `page`，或页面目录中的页面，spec/hub-api.md 3.14）；不属于页面时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -254,6 +261,9 @@ pub struct CallRequest {
     pub call_id: Option<String>,
     /// 厂商会话 ID：总览的首次附带、`apps.select` 按会话计算；`None` = 默认会话。
     pub session: Option<String>,
+    /// Agent 的幂等键：原样转交 App（`ToolsInvokeParams.idempotencyKey`，spec/protocol.md 3.3），1..=256 个字符；
+    /// MCP 出口取自请求 `_meta` 的 `app-mcp/idempotencyKey`（spec/hub-api.md 3.15）。
+    pub idempotency_key: Option<String>,
 }
 
 impl CallRequest {
@@ -411,6 +421,9 @@ pub struct HubStatus {
     /// 策略规则与命中次数、最近的加载错误（spec/hub-api.md 3.13）；旧 Host 没有时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<crate::policy::PolicyStatus>,
+    /// 休眠记录持久化（spec/hub-api.md 3.5「持久化」）；未配置 `state_dir` 或旧 Host 时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dormant_store: Option<crate::dormant_store::DormantStoreStatus>,
 }
 
 /// 主 HTTP 服务的令牌策略。

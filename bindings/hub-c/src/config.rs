@@ -27,6 +27,8 @@ pub(crate) struct ConfigJson {
     pub mcp_http: Option<bool>,
     /// 单实例锁与登记文件目录（`<runDir>/hub.lock`、`endpoints.json`）；缺省不参与。
     pub run_dir: Option<PathBuf>,
+    /// v12：持久状态目录（休眠记录写到 `<stateDir>/dormant/<appId>.json`，启动时读回）；缺省不读写任何文件。
+    pub state_dir: Option<PathBuf>,
     /// 本地 IPC 端点（`unix:…` / `pipe:…`）；缺省为平台默认端点；显式 `null` 表示不开。
     pub ipc_endpoint: Option<String>,
     pub manifests: Vec<Value>,
@@ -44,6 +46,8 @@ pub(crate) struct ConfigJson {
     pub progress_interval_ms: Option<u64>,
     pub lease_ttl_ms: Option<u64>,
     pub wake_timeout_ms: Option<u64>,
+    /// v13：自动 / 显式导航的回复与工具注册等待上限（spec/hub-api.md 3.14 / 3.15），缺省 5000。
+    pub navigate_timeout_ms: Option<u64>,
     pub wake_token_ttl_ms: Option<u64>,
     pub dormant_ttl_ms: Option<u64>,
     pub dormant_replaced_by_new_instance: Option<bool>,
@@ -77,6 +81,7 @@ impl Default for ConfigJson {
             listen: None,
             mcp_http: None,
             run_dir: None,
+            state_dir: None,
             ipc_endpoint: HubConfig::default().ipc_endpoint,
             manifests: Vec::new(),
             manifest_files: Vec::new(),
@@ -92,6 +97,7 @@ impl Default for ConfigJson {
             progress_interval_ms: None,
             lease_ttl_ms: None,
             wake_timeout_ms: None,
+            navigate_timeout_ms: None,
             wake_token_ttl_ms: None,
             dormant_ttl_ms: None,
             dormant_replaced_by_new_instance: None,
@@ -149,6 +155,7 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
         listen_alternates,
         mcp_http: c.mcp_http.unwrap_or(defaults.mcp_http),
         run_dir: c.run_dir,
+        state_dir: c.state_dir,
         ipc_endpoint: c.ipc_endpoint,
         allow_origins: c.allow_origins,
         upstreams: c.upstreams,
@@ -166,6 +173,7 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     // 生命周期（spec/hub-api.md 3.5）。
     set_ms(&mut hub.lease_ttl, c.lease_ttl_ms);
     set_ms(&mut hub.wake_timeout, c.wake_timeout_ms);
+    set_ms(&mut hub.navigate_timeout, c.navigate_timeout_ms);
     set_ms(&mut hub.wake_token_ttl, c.wake_token_ttl_ms);
     set_ms(&mut hub.dormant_ttl, c.dormant_ttl_ms);
     if let Some(v) = c.dormant_replaced_by_new_instance {
@@ -236,13 +244,15 @@ mod tests {
         assert_eq!(p.hub.listen_alternates, d.listen_alternates);
         assert!(!p.hub.mcp_http);
         assert_eq!(p.hub.run_dir, None);
+        assert_eq!(p.hub.state_dir, None);
         assert_eq!(p.worker_threads, DEFAULT_WORKER_THREADS);
         // 显式地址：只绑定该地址
-        let p = parse(Some(r#"{"listen": "127.0.0.1:0", "mcpHttp": true, "runDir": "/tmp/r"}"#)).unwrap();
+        let p = parse(Some(r#"{"listen": "127.0.0.1:0", "mcpHttp": true, "runDir": "/tmp/r", "stateDir": "/tmp/s"}"#)).unwrap();
         assert_eq!(p.hub.listen.as_deref(), Some("127.0.0.1:0"));
         assert!(p.hub.listen_alternates.is_empty());
         assert!(p.hub.mcp_http);
         assert_eq!(p.hub.run_dir, Some(PathBuf::from("/tmp/r")));
+        assert_eq!(p.hub.state_dir, Some(PathBuf::from("/tmp/s")));
         let p = parse(Some(r#"{"listen": null, "responseTimeoutMs": 1500,
             "approval": {"requireAtOrAbove": "payment", "timeout": 200}}"#))
         .map_err(|e| e.message)
@@ -278,6 +288,16 @@ mod tests {
         assert_eq!(p.hub.dormant_ttl, Duration::from_millis(4000));
         assert!(!p.hub.dormant_replaced_by_new_instance);
         assert!(p.hub.wake_from_launch);
+    }
+
+    #[test]
+    fn navigate_timeout_field() {
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert_eq!(p.hub.navigate_timeout, hub::DEFAULT_NAVIGATE_TIMEOUT);
+        let p = parse(Some(r#"{"navigateTimeoutMs": 1234}"#)).map_err(|e| e.message).expect("解析");
+        assert_eq!(p.hub.navigate_timeout, Duration::from_millis(1234));
+        let e = parse(Some(r#"{"navigateTimeoutMs": "5s"}"#)).err().map(|e| e.status);
+        assert_eq!(e, Some(AmHubStatus::InvalidJson), "非整数报错");
     }
 
     #[test]

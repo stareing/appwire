@@ -189,7 +189,7 @@ def test_formats_and_shutdown() -> None:
     hub = Hub(enable_listen=False, enable_ipc=False)
     assert hub.listen_addr is None
     assert hub.ipc_endpoint is None
-    assert {t.name for t in hub.tools()} == {"apps.list", "apps.select", "apps.overview"}
+    assert {t.name for t in hub.tools()} == {"apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release"}
     gemini = hub.export_tools("gemini")
     assert "functionDeclarations" in gemini
     st = hub.status()
@@ -200,6 +200,27 @@ def test_formats_and_shutdown() -> None:
         hub.status()
     with pytest.raises(HubError):
         hub.call_tool_sync("apps.list")
+
+
+def test_state_dir_reports_dormant_store(tmp_path) -> None:
+    dormant = tmp_path / "dormant"
+    dormant.mkdir()
+    (dormant / "broken.json").write_text("{")
+    plain = Hub(enable_listen=False, enable_ipc=False)
+    try:
+        assert plain.status().dormant_store is None
+    finally:
+        plain.close()
+    hub = Hub(enable_listen=False, enable_ipc=False, state_dir=str(tmp_path))
+    try:
+        store = hub.status().dormant_store
+        assert store is not None
+        assert store.dir == str(dormant)
+        assert (store.loaded_instances, store.expired_instances, store.writes) == (0, 0, 0)
+        assert [i.file for i in store.issues] == ["broken.json"]
+        assert store.last_error is None
+    finally:
+        hub.close()
 
 
 def test_unsupported_feature_is_distinct_category() -> None:
@@ -230,7 +251,7 @@ def test_progressive_exposure() -> None:
         app = start_notes_app(hub)
         try:
             wait_tools(hub, 2)
-            builtins = ["apps.list", "apps.select", "apps.overview", "apps.tools"]
+            builtins = ["apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release"]
             assert [t.name for t in hub.tools(session="c1")] == builtins
             r = hub.call_tool_sync("apps.tools", {"appId": "notes"}, session="c1")
             assert r.error is None
@@ -238,7 +259,7 @@ def test_progressive_exposure() -> None:
             assert "notes.add" in {t.name for t in hub.tools(session="c1")}
             assert [t.name for t in hub.tools()] == builtins
             names = [t["name"] for t in hub.export_tools("anthropic", session="c1")]
-            assert len(names) == 6
+            assert len(names) == len(builtins) + 2
         finally:
             app.stop()
 
@@ -342,6 +363,48 @@ def test_native_app_over_ipc(tmp_path) -> None:
             assert r.error is None and r.data == {"saved": "经 IPC"}
             inst = next(a for a in hub.apps() if a.app_id == "notes").instances[0]
             assert inst.pid == os.getpid()
+        finally:
+            app.stop()
+
+
+def test_surface_page_and_idempotency_key() -> None:
+    """spec/hub-api.md 3.14 / 3.15：HubTool.surface / page、call_tool(idempotency_key=) 原样转交、routed_to、navigate_timeout_ms。"""
+    from app_mcp.hub import ToolSurface
+
+    with Hub(listen="127.0.0.1:0", enable_ipc=False, navigate_timeout_ms=800) as hub:
+        app = AppMcp("cafe", "咖啡", host_url=f"ws://{hub.listen_addr}/app")
+
+        @app.tool("cart.checkout", description="结算", surface="view", page="cart")
+        def checkout(ctx: ToolContext) -> dict:
+            return {"key": ctx.idempotency_key}
+
+        @app.tool("order.submit", description="下单")
+        def submit(ctx: ToolContext) -> dict:
+            return {"key": ctx.idempotency_key}
+
+        app.start()
+        try:
+            deadline = time.monotonic() + 10
+            while True:
+                tools = hub.tools(apps=["cafe"], include_builtin=False)
+                if len(tools) == 2:
+                    break
+                assert time.monotonic() < deadline, "等待工具注册超时"
+                time.sleep(0.02)
+            by_tool = {t.tool: t for t in tools}
+            assert (by_tool["cart.checkout"].surface, by_tool["cart.checkout"].page) == (ToolSurface.VIEW, "cart")
+            assert (by_tool["order.submit"].surface, by_tool["order.submit"].page) == (ToolSurface.APP, None)
+            builtins = {t.name: t for t in hub.tools() if t.name.startswith("apps.")}
+            assert {"apps.activate", "apps.release", "apps.page", "apps.navigate"} <= builtins.keys()
+            assert all(t.surface is None and t.page is None for t in builtins.values())
+
+            out = hub.call_tool_sync("cafe.order.submit", idempotency_key="order-7")
+            assert out.error is None, out
+            assert out.data == {"key": "order-7"}
+            assert out.routed_to is None
+            assert hub.call_tool_sync("cafe.order.submit").data == {"key": None}
+            bad = hub.call_tool_sync("cafe.order.submit", idempotency_key="")
+            assert bad.error is not None and bad.error.kind == "INVALID_INPUT"
         finally:
             app.stop()
 

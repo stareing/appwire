@@ -33,6 +33,7 @@ export interface HandlerSpec {
   result?: ResultSpec
   return?: Json
   echo?: boolean
+  returnIdempotencyKey?: boolean
   returnNothing?: boolean
 }
 
@@ -137,6 +138,8 @@ export type HandlerOutcome =
 export interface HandlerEnv {
   count: number
   args: unknown
+  /** handler 上下文中的幂等键（spec/protocol.md 3.3）；没有时 undefined / null。 */
+  idempotencyKey?: string | null
   progress(progress: number, total?: number, message?: string): void
   isCancelled(): boolean
   mutate(op: MutationOp): void

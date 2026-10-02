@@ -163,7 +163,8 @@ export interface HelloReply {
 export type OpReply = { ok: true; value?: unknown } | { ok: false; code?: string; message: string }
 
 export type MainEvent =
-  | { type: 'call'; callId: string; toolId: number; input: unknown }
+  /** `idempotencyKey`：Agent 的幂等键（spec/protocol.md 3.3），没有时缺省（旧主进程 / Rust 侧也不带）。 */
+  | { type: 'call'; callId: string; toolId: number; input: unknown; idempotencyKey?: string }
   | { type: 'cancel'; callId: string; kind: ErrorKind; message: string }
   | { type: 'read'; readId: number; resourceId: number }
   /** `connectionId`：该状态下主进程客户端的连接 ID；未连接或旧主进程时缺省。 */
@@ -360,7 +361,7 @@ class Client {
     )
   }
 
-  onCall(callId: string, toolId: number, input: unknown): void {
+  onCall(callId: string, toolId: number, input: unknown, idempotencyKey?: string): void {
     const entry = this.tools.get(toolId)
     if (!entry) {
       this.send({ op: 'call.result', callId, ok: false, kind: 'TOOL_NOT_FOUND', message: '工具已注销' })
@@ -395,6 +396,7 @@ class Client {
       .then((fn) =>
         fn(value, {
           callId,
+          ...(idempotencyKey !== undefined && { idempotencyKey }),
           signal: controller.signal,
           hold: () => this.hold(),
           progress: (progress: number, total?: number, message?: string) => {
@@ -792,7 +794,12 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
     if (this.disposed) return
     switch (event.type) {
       case 'call':
-        this.client.onCall(event.callId, event.toolId, event.input)
+        this.client.onCall(
+          event.callId,
+          event.toolId,
+          event.input,
+          typeof event.idempotencyKey === 'string' ? event.idempotencyKey : undefined,
+        )
         break
       case 'cancel':
         this.client.onCancel(event.callId, event.kind, event.message)

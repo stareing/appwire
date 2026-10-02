@@ -26,7 +26,7 @@ const SDK: &str = "rust";
 /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md。
 const FEATURES: &[&str] = &[
     "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
-    "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation",
+    "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
 ];
 
 fn repo_root() -> PathBuf {
@@ -216,6 +216,9 @@ fn complete(spec: &Value, count: u64, call: &CallHandle) -> Result<(), app_mcp_n
     }
     if spec["echo"].as_bool() == Some(true) {
         return call.complete(Some(&call.arguments_json()), vec![]);
+    }
+    if spec["returnIdempotencyKey"].as_bool() == Some(true) {
+        return call.complete(Some(&json!({ "idempotencyKey": call.idempotency_key() }).to_string()), vec![]);
     }
     if spec["counter"].as_bool() == Some(true) {
         return call.complete(Some(&json!({ "count": count }).to_string()), vec![]);

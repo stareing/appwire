@@ -60,6 +60,8 @@ AppInfo = ffi.AppInfo
 InstanceInfo = ffi.InstanceInfo
 AppOverviewInfo = ffi.AppOverviewInfo
 HubTool = ffi.HubTool
+#: App 工具对界面的依赖（``HubTool.surface``：``ToolSurface.APP`` / ``VIEW``，spec/protocol.md 3.4；内置与上游工具为 ``None``）。
+ToolSurface = ffi.ToolSurface
 HubResource = ffi.HubResource
 ResourceContent = ffi.ResourceContent
 #: 调用进度（``progress``、``total``、``message``；:meth:`Hub.call_tool` 的 ``on_progress``，spec/hub-api.md 3.12）。
@@ -91,6 +93,9 @@ InstanceStatus = ffi.InstanceStatus
 InstanceState = ffi.InstanceState
 LastError = ffi.LastError
 DiagnosticReport = ffi.DiagnosticReport
+#: 休眠记录持久化状态（``HubStatus.dormant_store``，配置了 ``HubConfig.state_dir`` 时）。
+DormantStoreStatus = ffi.DormantStoreStatus
+StoreIssue = ffi.StoreIssue
 # 资源保护与工具声明（spec/hub-api.md 3.11）。
 #: 限流与大小上限（``HubConfig.limits``；``HubStatus.limits`` 为全部字段给出的生效值）。为空的字段取默认值。
 LimitsConfig = ffi.LimitsConfig
@@ -162,6 +167,7 @@ __all__ = [
     "CallResult",
     "ContentAnnotations",
     "DiagnosticReport",
+    "DormantStoreStatus",
     "EventStream",
     "Hub",
     "ProgressUpdate",
@@ -188,6 +194,7 @@ __all__ = [
     "ResourceContent",
     "ResultStatus",
     "Risk",
+    "StoreIssue",
     "ToolAnnotations",
     "ToolDeclaration",
     "ToolError",
@@ -195,6 +202,7 @@ __all__ = [
     "ToolExposure",
     "ToolFilter",
     "ToolFormat",
+    "ToolSurface",
     "UpstreamSpec",
     "Visibility",
     "WakeDescriptor",
@@ -370,6 +378,8 @@ class CallResult:
     summary: str | None = None
     #: App 对结果内容的标注，原样。
     annotations: ContentAnnotations | None = None
+    #: App 在后台、Hub 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则为 ``None``。
+    routed_to: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -705,6 +715,7 @@ class Hub:
         timeout: float | None = None,
         session: str | None = None,
         call_id: str | None = None,
+        idempotency_key: str | None = None,
         on_progress: Callable[[ProgressUpdate], Any] | None = None,
     ) -> CallResult:
         """调用工具（全名 ``<appId>.<tool>``，``timeout`` 单位秒）。
@@ -713,6 +724,8 @@ class Hub:
         名称无法解析时抛出 :data:`HubError`。任务被取消时自动取消调用。
         ``on_progress``：接收调用进度（:data:`ProgressUpdate`，Hub 合并后），在调用方的事件循环线程上按顺序调用，
         都在结果返回之前；回调抛出的异常记日志后忽略。
+        ``idempotency_key``：Agent 的幂等键（1..=256 个字符），原样转交 App（spec/hub-api.md 3.15）；不合法时
+        ``CallResult.error.kind`` 为 ``INVALID_INPUT``。
         """
         req = ffi.CallRequest(
             name=name,
@@ -721,6 +734,7 @@ class Hub:
             timeout_ms=_millis(timeout),
             call_id=call_id,
             session=session,
+            idempotency_key=idempotency_key,
         )
         if on_progress is None:
             out = await self._inner.call_tool(req)
@@ -738,6 +752,7 @@ class Hub:
             state_resource=out.state_resource,
             summary=out.summary,
             annotations=out.annotations,
+            routed_to=out.routed_to,
         )
 
     def call_tool_sync(self, name: str, arguments: dict[str, Any] | None = None, **kwargs: Any) -> CallResult:

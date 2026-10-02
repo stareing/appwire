@@ -553,6 +553,7 @@ public:
             id_ = am_call_id(c);
             tool_name_ = am_call_tool_name(c);
             arguments_json_ = am_call_arguments_json(c);
+            if (const char* key = am_call_idempotency_key(c)) idempotency_key_ = key;
         }
     }
     Call(Call&&) noexcept = default;
@@ -563,6 +564,7 @@ public:
             id_ = std::move(other.id_);
             tool_name_ = std::move(other.tool_name_);
             arguments_json_ = std::move(other.arguments_json_);
+            idempotency_key_ = std::move(other.idempotency_key_);
         }
         return *this;
     }
@@ -574,6 +576,9 @@ public:
     const std::string& tool_name() const noexcept { return tool_name_; }
     /// 参数（JSON 对象文本，已由 Host 按 inputSchema 校验）。
     const std::string& arguments_json() const noexcept { return arguments_json_; }
+    /// Agent 给出的幂等键（app_mcp.h v16，spec/protocol.md 3.3，原样）；没有时为 nullopt。
+    /// App 自行决定如何使用（如作为业务去重键）。
+    const std::optional<std::string>& idempotency_key() const noexcept { return idempotency_key_; }
 
     /// 是否仍待完成。
     bool pending() const noexcept { return state_ && state_->raw.load() != nullptr; }
@@ -694,6 +699,7 @@ private:
     std::string id_;
     std::string tool_name_;
     std::string arguments_json_;
+    std::optional<std::string> idempotency_key_;
 };
 
 /// 一次资源读取。只能移动；必须完成一次，否则析构时以 HANDLER_ERROR 失败。

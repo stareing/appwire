@@ -224,6 +224,10 @@ pub struct HubArgs {
     #[arg(long, value_name = "MS")]
     pub wake_timeout_ms: Option<u64>,
 
+    /// 导航等待上限（毫秒）：`app/navigate` 的回复与导航后等待目标工具注册合计，默认 5000。
+    #[arg(long, value_name = "MS")]
+    pub navigate_timeout_ms: Option<u64>,
+
     /// 唤醒令牌的有效期（毫秒，spec/lifecycle.md 4.4），默认 60000。
     #[arg(long, value_name = "MS")]
     pub wake_token_ttl_ms: Option<u64>,
@@ -341,6 +345,7 @@ impl HubArgs {
             upstreams,
             lease_ms: self.lease_ms,
             wake_timeout_ms: self.wake_timeout_ms,
+            navigate_timeout_ms: self.navigate_timeout_ms,
             wake_token_ttl_ms: self.wake_token_ttl_ms,
             wake_rate_limit: self.wake_rate_limit,
             legacy_heartbeat: self.legacy_heartbeat.then_some(true),

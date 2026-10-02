@@ -702,7 +702,7 @@ export class AppMcpDriver implements AppMcp {
         else this.log.warn(`${this.tag} 连接未建立，丢弃消息`)
         break
       case 'invokeTool':
-        this.invoke(ev.callId, ev.tool, ev.name, ev.arguments)
+        this.invoke(ev.callId, ev.tool, ev.name, ev.arguments, ev.idempotencyKey)
         break
       case 'cancelTool': {
         const controller = this.calls.get(ev.callId)
@@ -1150,7 +1150,7 @@ export class AppMcpDriver implements AppMcp {
 
   // ---- 调用 -----------------------------------------------------------
 
-  private invoke(callId: string, toolId: number, name: string, args: unknown): void {
+  private invoke(callId: string, toolId: number, name: string, args: unknown, idempotencyKey?: string): void {
     const rec = this.toolsByCoreId.get(toolId)
     if (!rec) {
       this.input(
@@ -1162,13 +1162,19 @@ export class AppMcpDriver implements AppMcp {
     const controller = new AbortController()
     this.calls.get(callId)?.abort(new ToolCallError('CANCELLED', '重复的调用 ID'))
     this.calls.set(callId, controller)
-    void this.runTool(rec, args, callId, controller.signal).then((outcome) =>
+    void this.runTool(rec, args, callId, controller.signal, idempotencyKey).then((outcome) =>
       this.finishCall(callId, controller, outcome),
     )
   }
 
   /** 执行 handler（含 zod 校验），结果与异常都转换为 {@link CoreOutcome}。 */
-  private async runTool(rec: ToolRec, args: unknown, callId: string, signal: AbortSignal): Promise<CoreOutcome> {
+  private async runTool(
+    rec: ToolRec,
+    args: unknown,
+    callId: string,
+    signal: AbortSignal,
+    idempotencyKey?: string,
+  ): Promise<CoreOutcome> {
     try {
       await Promise.resolve()
       let input = args
@@ -1192,6 +1198,7 @@ export class AppMcpDriver implements AppMcp {
       }
       const context = {
         callId,
+        ...(idempotencyKey !== undefined && { idempotencyKey }),
         signal,
         hold: () => this.acquireHold(callId),
         progress: (progress: number, total?: number, message?: string) =>

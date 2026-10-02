@@ -109,9 +109,10 @@ def test_user_action_required_details():
 
 
 class FakeCall:
-    def __init__(self, args: dict, name: str = "t"):
+    def __init__(self, args: dict, name: str = "t", idempotency_key: str | None = None):
         self._args = json.dumps(args)
         self._name = name
+        self._key = idempotency_key
         self.done = threading.Event()
         self.result = None
         self.listener = None
@@ -124,6 +125,9 @@ class FakeCall:
 
     def arguments_json(self):
         return self._args
+
+    def idempotency_key(self):
+        return self._key
 
     def set_cancel_listener(self, listener):
         self.listener = listener
@@ -179,6 +183,18 @@ def test_sync_handler_returns_json(client):
     call = FakeCall({"a": 2, "b": 3})
     adapter(client, add).invoke(call)
     assert call.wait() == ("ok", {"sum": 5, "same_thread": False}, ["cart"])
+
+
+def test_idempotency_key_in_context(client):
+    def key(ctx: ToolContext):
+        return {"key": ctx.idempotency_key}
+
+    call = FakeCall({}, idempotency_key="Agent 键 / 1")
+    adapter(client, key).invoke(call)
+    assert call.wait() == ("ok", {"key": "Agent 键 / 1"}, [])
+    call = FakeCall({})
+    adapter(client, key).invoke(call)
+    assert call.wait() == ("ok", {"key": None}, [])
 
 
 def test_tool_result_hints(client):

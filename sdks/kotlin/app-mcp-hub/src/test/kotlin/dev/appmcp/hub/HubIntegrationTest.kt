@@ -24,6 +24,7 @@ import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import dev.appmcp.Risk as AppRisk
@@ -256,12 +257,34 @@ class HubIntegrationTest {
         val hub = Hub.start(HubConfig(enableListen = false, enableIpc = false))
         assertEquals(null, hub.listenAddr)
         assertEquals(null, hub.ipcEndpoint)
-        assertEquals(setOf("apps.list", "apps.select", "apps.overview"), hub.tools().map { it.name }.toSet())
+        assertEquals(
+            setOf("apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release"),
+            hub.tools().map { it.name }.toSet(),
+        )
         val st = hub.status()
         assertEquals(null, st.listen)
         assertTrue(st.apps.isEmpty() && !st.mcpHttp && !st.auth.tokenConfigured)
         hub.close()
         hub.close() // 幂等
+    }
+
+    @Test
+    fun stateDirReportsDormantStore() {
+        val dir = java.nio.file.Files.createTempDirectory("app-mcp-kt-state-").toFile()
+        try {
+            val dormant = java.io.File(dir, "dormant").apply { mkdirs() }
+            java.io.File(dormant, "broken.json").writeText("{")
+            Hub.start(HubConfig(enableListen = false, enableIpc = false)).use { assertEquals(null, it.status().dormantStore) }
+            Hub.start(HubConfig(enableListen = false, enableIpc = false, stateDir = dir.path)).use { hub ->
+                val store: DormantStoreStatus = assertNotNull(hub.status().dormantStore)
+                assertEquals(dormant.path, store.dir)
+                assertEquals(listOf(0uL, 0uL, 0uL), listOf(store.loadedInstances, store.expiredInstances, store.writes))
+                assertEquals(listOf("broken.json"), store.issues.map(StoreIssue::file))
+                assertEquals(null, store.lastError)
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 
     @Test
@@ -277,10 +300,49 @@ class HubIntegrationTest {
         )
         // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
         assertEquals(
-            listOf("apps.list", "apps.select", "apps.overview", "apps.tools"),
+            listOf("apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release"),
             hub.tools(ToolFilter(session = "c1")).map { it.name },
         )
         hub.close()
+    }
+
+    /** spec/hub-api.md 3.14 / 3.15：HubTool.surface / page、callTool(idempotencyKey) 原样转交、routedTo、navigateTimeoutMs。 */
+    @Test
+    fun surfacePageAndIdempotencyKey() = runBlocking {
+        val hub = Hub.start(HubConfig(listen = "127.0.0.1:0", enableIpc = false, navigateTimeoutMs = 800uL))
+        val app = AppMcp.create(
+            AppMcpConfig("cafe", "咖啡", hostUrl = "ws://${hub.listenAddr}/app", dispatcher = Dispatchers.Default),
+        )
+        val echoKey: dev.appmcp.ToolFunction = { _, ctx -> buildJsonObject { put("key", ctx.idempotencyKey) } }
+        app.tool("cart.checkout", "结算", surface = dev.appmcp.ToolSurface.VIEW, page = "cart", handler = echoKey)
+        app.tool("order.submit", "下单", handler = echoKey)
+        try {
+            app.start()
+            val tools = withTimeout(10.seconds) {
+                var t = hub.tools(ToolFilter(apps = listOf("cafe"), includeBuiltin = false))
+                while (t.size < 2 || t.any { it.availability != Availability.AVAILABLE }) {
+                    delay(20)
+                    t = hub.tools(ToolFilter(apps = listOf("cafe"), includeBuiltin = false))
+                }
+                t
+            }
+            val checkout = tools.first { it.tool == "cart.checkout" }
+            assertEquals(ToolSurface.VIEW to "cart", checkout.surface to checkout.page)
+            val submit = tools.first { it.tool == "order.submit" }
+            assertEquals(ToolSurface.APP to null, submit.surface to submit.page)
+            val builtins = hub.tools().filter { it.appId == "apps" || it.name.startsWith("apps.") }
+            assertTrue(builtins.map { it.name }.containsAll(listOf("apps.activate", "apps.release", "apps.page", "apps.navigate")))
+            assertTrue(builtins.all { it.surface == null && it.page == null })
+
+            val out = hub.callTool("cafe.order.submit", idempotencyKey = "order-7")
+            assertEquals(null, out.error, out.toString())
+            assertEquals("order-7", out.data?.jsonObject?.get("key")?.jsonPrimitive?.content)
+            assertEquals(null, out.routedTo)
+            assertEquals("INVALID_INPUT", hub.callTool("cafe.order.submit", idempotencyKey = "").error?.kind)
+        } finally {
+            app.close()
+            hub.close()
+        }
     }
 
     /** 第 14 / 19 项：限流 / 大小上限配置与统计、工具注解 / outputSchema、结构化调用结果。 */

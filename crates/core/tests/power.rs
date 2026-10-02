@@ -1,4 +1,4 @@
-//! 功耗回归测试（spec/lifecycle.md 第 11 节 A1–A3、第 13 节 B1 / B3 / B4、O2）：用确定性时间模拟驱动层，统计定时器触发、
+//! 功耗回归测试（spec/lifecycle.md 第 11 节 A1–A3、第 13 节 B1 / B3 / B4（含后台连接）、O2）：用确定性时间模拟驱动层，统计定时器触发、
 //! 连接发起与心跳次数的上限。新增唤醒 / 定时器会使这些上限断言失败。
 
 use app_mcp_core::*;
@@ -141,6 +141,11 @@ impl Sim {
 
     fn lease(&mut self, ttl_ms: Millis) {
         self.host_sends(json!({"jsonrpc": "2.0", "method": "app/lease", "params": {"ttlMs": ttl_ms}}));
+    }
+
+    /// Hub 按调用间隔统计发出的租约（`adaptive: true`）。
+    fn adaptive_lease(&mut self, ttl_ms: Millis) {
+        self.host_sends(json!({"jsonrpc": "2.0", "method": "app/lease", "params": {"ttlMs": ttl_ms, "adaptive": true}}));
     }
 
     /// 截至当前的累计在线毫秒数。
@@ -493,4 +498,45 @@ fn background_sleeps_at_once() {
     let mut legacy = cfg;
     legacy.lifecycle.legacy_timers = true;
     assert_eq!(online_after_background(legacy), 60_000 + 15_000, "旧行为：租约后再计隐藏空闲 15 s");
+}
+
+/// 隐藏中被唤醒（Android 广播 → WorkManager 回连）后一次调用 + 60 s 默认值租约（`adaptive_ms > 0` 时另有自适应租约），
+/// 调用完成到发出 `app/sleep` 的时长与此后 1 小时的连接次数。
+fn online_after_background_wake(cfg: ClientConfig, adaptive_ms: Millis) -> (Millis, u32) {
+    let mut s = Sim::new(cfg, true);
+    s.c.set_visibility(Visibility::Hidden, false, s.now);
+    s.start();
+    assert!(s.c.handle_wake("app-mcp-wake:wk", s.now));
+    s.pump();
+    s.call(7);
+    s.lease(60_000);
+    if adaptive_ms > 0 {
+        s.adaptive_lease(adaptive_ms);
+    }
+    let at = s.now;
+    while s.sleep_at.is_none() {
+        let t = s.c.poll_timeout().expect("应有休眠定时器");
+        s.run_until(t);
+    }
+    let online = s.sleep_at.unwrap_or(0) - at;
+    s.run_until(s.now + HOUR);
+    assert_eq!(s.c.poll_timeout(), None, "休眠后无定时器");
+    (online, s.connects)
+}
+
+#[test]
+fn background_woken_connection_stays_only_merge_window() {
+    // 真机（Android 后台唤醒）实测：默认值租约让 App 在线约 32 s（至请求流空闲收回）；后台连接只留合并窗口 2 s
+    let mut cfg = config(LifecycleMode::OnDemand, TransportKind::Remote);
+    cfg.lifecycle.sleep_on_background = true;
+    assert_eq!(online_after_background_wake(cfg.clone(), 0), (2_000, 1));
+    // 自适应租约（Hub 的预测）照常生效
+    assert_eq!(online_after_background_wake(cfg.clone(), 9_000), (9_000, 1));
+    // 关闭或旧行为：按默认值租约在线 60 s（旧行为另加 grace 10 s）
+    let mut off = cfg.clone();
+    off.lifecycle.sleep_on_background = false;
+    assert_eq!(online_after_background_wake(off, 0).0, 60_000);
+    let mut legacy = cfg;
+    legacy.lifecycle.legacy_timers = true;
+    assert_eq!(online_after_background_wake(legacy, 0).0, 70_000);
 }

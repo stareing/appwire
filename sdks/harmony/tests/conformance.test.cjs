@@ -19,7 +19,7 @@ const SDK = 'harmony';
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
-  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation',
+  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey',
 ];
 
 const build = process.env.APP_MCP_HARMONY_BUILD;
@@ -107,6 +107,7 @@ function startApp(support, native, testCase, url) {
             await support.execHandler(spec, {
               count: ++runs,
               args: input,
+              idempotencyKey: ctx.idempotencyKey,
               progress: (p, t, m) => ctx.progress(p, t, m),
               isCancelled: () => ctx.isCancelled(),
               mutate: (op) => registry.mutate(op),

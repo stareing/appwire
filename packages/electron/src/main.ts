@@ -245,7 +245,7 @@ class RendererSession {
   }
 
   private forwardCall(toolId: number, input: unknown, context: ToolContext): Promise<unknown> {
-    const { callId, signal } = context
+    const { callId, signal, idempotencyKey } = context
     return new Promise((resolve, reject) => {
       if (this.disposed) {
         reject(new ToolCallError('APP_DISCONNECTED', '页面已关闭'))
@@ -273,7 +273,7 @@ class RendererSession {
         },
         { once: true },
       )
-      this.send({ type: 'call', callId, toolId, input })
+      this.send({ type: 'call', callId, toolId, input, ...(idempotencyKey !== undefined && { idempotencyKey }) })
     })
   }
 

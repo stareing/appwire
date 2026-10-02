@@ -64,6 +64,8 @@ export interface FakeProgress {
 }
 
 class FakeCall implements NativeCall {
+  /** 与原生模块一致：没有幂等键时为 `null`。 */
+  idempotencyKey: string | null = null
   private done = false
   private cancelled: NativeCancelReason | null = null
   private cancelListener: ((reason: NativeCancelReason) => void) | null = null
@@ -451,7 +453,12 @@ export class FakeNativeClient extends FakeRegistrarBase implements NativeClient 
   }
 
   /** 模拟 Host 调用工具；返回调用 ID 与结果 Promise。 */
-  invoke(name: string, args: unknown = {}): { callId: string; result: Promise<CallOutcome> } {
+  /** `options.idempotencyKey`：模拟 Host 转来的 Agent 幂等键（spec/protocol.md 3.3）。 */
+  invoke(
+    name: string,
+    args: unknown = {},
+    options: { idempotencyKey?: string } = {},
+  ): { callId: string; result: Promise<CallOutcome> } {
     const rec = this.tools.get(name)
     if (!rec) throw new Error(`fake: no tool ${name}`)
     const callId = `c${this.nextCall++}`
@@ -461,6 +468,7 @@ export class FakeNativeClient extends FakeRegistrarBase implements NativeClient 
       this.calls.delete(callId)
       settle(o)
     })
+    call.idempotencyKey = options.idempotencyKey ?? null
     call.holdFactory = () => this.hold()
     call.progressSink = (p) => this.progressReports.push(p)
     this.calls.set(callId, call)
@@ -468,8 +476,8 @@ export class FakeNativeClient extends FakeRegistrarBase implements NativeClient 
     return { callId, result }
   }
 
-  call(name: string, args: unknown = {}): Promise<CallOutcome> {
-    return this.invoke(name, args).result
+  call(name: string, args: unknown = {}, options: { idempotencyKey?: string } = {}): Promise<CallOutcome> {
+    return this.invoke(name, args, options).result
   }
 
   cancel(callId: string, reason: NativeCancelReason = 'requested'): void {

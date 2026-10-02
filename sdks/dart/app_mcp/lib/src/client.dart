@@ -211,6 +211,9 @@ T _withStrings2<T>(String a, String b, T Function(Pointer<Utf8>, Pointer<Utf8>) 
 Pointer<Utf8> _optStr(String? s, Allocator arena) =>
     s == null ? nullptr : s.toNativeUtf8(allocator: arena);
 
+/// 读取库持有的字符串（不释放）；NULL 为 null。
+String? _borrowedString(Pointer<Utf8> p) => p == nullptr ? null : p.toDartString();
+
 String? _takeString(AppMcpBindings b, Pointer<Utf8> p) {
   if (p == nullptr) return null;
   try {
@@ -262,7 +265,7 @@ final class _ResourceEntry {
 
 /// 进行中的调用。
 final class _PendingCall implements ToolContext {
-  _PendingCall(this.rt, this.ptr, this.callId, this.toolName);
+  _PendingCall(this.rt, this.ptr, this.callId, this.toolName, this.idempotencyKey);
 
   final _Runtime rt;
   AppMcpBindings get b => rt.b;
@@ -271,6 +274,8 @@ final class _PendingCall implements ToolContext {
   final String callId;
   @override
   final String toolName;
+  @override
+  final String? idempotencyKey;
   int cancelId = 0;
   bool consumed = false;
   CancelReason? _reason;
@@ -760,6 +765,7 @@ final class AppMcp {
       ptr,
       _b.am_call_id(ptr).toDartString(),
       _b.am_call_tool_name(ptr).toDartString(),
+      _borrowedString(_b.am_call_idempotency_key(ptr)),
     );
     final argsJson = _b.am_call_arguments_json(ptr).toDartString();
     if (_disposed) {

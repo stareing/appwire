@@ -136,6 +136,7 @@ fn req(name: &str, args: Value) -> CallRequest {
         timeout_ms: Some(5000),
         call_id: None,
         session: None,
+        idempotency_key: None,
     }
 }
 
@@ -908,6 +909,73 @@ fn call_tool_with_progress_delivers_updates() {
 
     let out = wait(hub.call_tool(req("slow.work", json!({})))).expect("调用");
     assert_eq!(out.error, None);
+    app.stop();
+    hub.shutdown();
+}
+
+/// 回显 Agent 给出的幂等键（spec/hub-api.md 3.15）。
+struct KeyEcho;
+
+impl native::ToolHandler for KeyEcho {
+    fn invoke(&self, call: native::CallHandle) {
+        let data = json!({ "key": call.idempotency_key() });
+        let _ = call.complete(Some(&data.to_string()), vec![]);
+    }
+}
+
+/// `HubTool.surface` / `page`、`CallRequest.idempotency_key` 原样转交（不合法 → INVALID_INPUT）、`routed_to` 未改调时为空、
+/// 内置工具 apps.activate / apps.release 与（有页面目录时）apps.page / apps.navigate。
+#[test]
+fn surface_page_idempotency_key_and_builtins() {
+    let hub = AppMcpHub::start(HubConfig {
+        listen: Some("127.0.0.1:0".into()),
+        enable_ipc: false,
+        navigate_timeout_ms: Some(800),
+        ..Default::default()
+    })
+    .expect("启动 Hub");
+    let mut cfg = native::NativeConfig::new("shop", "商店");
+    cfg.host_url = format!("ws://{}/app", hub.listen_addr().expect("监听地址"));
+    let app = native::NativeClient::new(cfg, None).expect("App");
+    let view = native::ToolOptions {
+        surface: native::ToolSurface::View,
+        page: Some("cart".into()),
+        ..native::ToolOptions::default()
+    };
+    app.register_tool_with(native::ToolSpec::new("cart.checkout", "结算"), view, Arc::new(KeyEcho)).expect("注册");
+    app.register_tool(native::ToolSpec::new("order.submit", "下单"), Arc::new(KeyEcho)).expect("注册");
+    app.start();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let tools = loop {
+        let t = hub.tools(ToolFilter { apps: Some(vec!["shop".into()]), include_builtin: false, ..Default::default() });
+        if t.len() == 2 && t.iter().all(|t| t.availability == Availability::Available) {
+            break t;
+        }
+        assert!(Instant::now() < deadline, "App 未连上");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let checkout = tools.iter().find(|t| t.tool == "cart.checkout").expect("view 工具");
+    assert_eq!((checkout.surface, checkout.page.as_deref()), (Some(ToolSurface::View), Some("cart")));
+    let submit = tools.iter().find(|t| t.tool == "order.submit").expect("app 工具");
+    assert_eq!((submit.surface, submit.page.as_deref()), (Some(ToolSurface::App), None));
+
+    let all = hub.tools(ToolFilter::default());
+    for n in ["apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.page", "apps.navigate"] {
+        let t = all.iter().find(|t| t.name == n).unwrap_or_else(|| panic!("缺少内置工具 {n}"));
+        assert_eq!((t.surface, t.page.as_deref()), (None, None), "内置工具不带 surface / page");
+    }
+
+    let mut r = req("shop.order.submit", json!({}));
+    r.idempotency_key = Some("order-7".into());
+    let out = wait(hub.call_tool(r.clone())).expect("调用");
+    assert!(out.error.is_none(), "{out:?}");
+    let data: Value = serde_json::from_str(out.data_json.as_deref().unwrap_or("null")).unwrap_or_default();
+    assert_eq!(data["key"], "order-7");
+    assert_eq!(out.routed_to, None, "未改调");
+    r.idempotency_key = Some(String::new());
+    let out = wait(hub.call_tool(r)).expect("调用");
+    assert_eq!(out.error.as_ref().map(|e| e.kind.as_str()), Some("INVALID_INPUT"), "{out:?}");
     app.stop();
     hub.shutdown();
 }

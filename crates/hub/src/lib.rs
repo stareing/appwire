@@ -10,9 +10,11 @@
 //!
 //! 可执行程序 `app-mcp-host` 是本库之上的命令行薄壳。
 
+mod agent_control;
 pub mod app_server;
 pub mod call;
 pub mod connection;
+pub mod dormant_store;
 pub mod features;
 pub mod format;
 mod heap;
@@ -25,6 +27,7 @@ mod lifecycle;
 mod limits;
 mod mcp_convert;
 mod navigate;
+pub mod names;
 pub mod pages;
 pub mod policy;
 mod power;
@@ -34,6 +37,7 @@ pub mod mcp;
 pub mod origin;
 pub mod overview;
 pub mod registry;
+mod request_meta;
 pub mod routing;
 pub mod schema;
 pub mod tool_def;
@@ -43,8 +47,9 @@ pub mod wake;
 
 pub use app_mcp_protocol::{
     Activation, Audience, ContentAnnotations, ErrorKind, LifecycleMode, ResultStatus, Risk, ToolAnnotations, ToolError,
-    Visibility,
+    ToolSurface, Visibility,
 };
+pub use dormant_store::{DormantStoreStatus, StoreFileInfo, StoreIssue};
 pub use format::ToolFormat;
 pub use lease::{LeaseOverrides, LeasePairStatus, LeasePolicy, LeaseStatus};
 pub use limits::{LimitOverrides, LimitPolicy, OutputValidation, RateLimit};
@@ -55,7 +60,7 @@ pub use policy::{
     PolicyStatus,
 };
 pub use hub::{
-    DEFAULT_PROGRESS_INTERVAL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
+    DEFAULT_NAVIGATE_TIMEOUT, DEFAULT_PROGRESS_INTERVAL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
     load_manifests, parse_resource_uri, resource_uri,
 };
 #[cfg(feature = "mcp-server")]

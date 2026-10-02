@@ -54,6 +54,8 @@ class ToolContext internal constructor(
     val toolName: String,
     val arguments: JsonObject,
     private val call: Call? = null,
+    /** Agent 给出的幂等键（原样，spec/protocol.md 3.3）；没有时为 null。App 自行决定如何使用（如作为业务去重键）。 */
+    val idempotencyKey: String? = null,
 ) {
     @Volatile
     var cancelReason: CancelReason? = null
@@ -531,7 +533,7 @@ class AppMcp private constructor(
             failQuietly(call, ErrorKind.INVALID_INPUT, "参数不是合法的 JSON 对象：${e.message}")
             return
         }
-        val ctx = ToolContext(call.callId(), call.toolName(), args, call)
+        val ctx = ToolContext(call.callId(), call.toolName(), args, call, call.idempotencyKey())
         val job = launchGuarded(
             label = "工具 ${call.toolName()}（callId ${call.callId()}）",
             fail = { kind, msg, details -> failQuietly(call, kind, msg, details) },

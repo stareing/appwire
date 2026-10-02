@@ -256,6 +256,7 @@ fn null_pointers_are_invalid_argument() {
     assert!(unsafe { am_call_id(ptr::null()) }.is_null());
     assert!(unsafe { am_call_tool_name(ptr::null()) }.is_null());
     assert!(unsafe { am_call_arguments_json(ptr::null()) }.is_null());
+    assert!(unsafe { am_call_idempotency_key(ptr::null()) }.is_null());
     assert!(!unsafe { am_call_is_cancelled(ptr::null()) });
     assert_eq!(
         unsafe { am_call_complete(ptr::null_mut(), ptr::null(), ptr::null(), 0) },
@@ -443,6 +444,8 @@ fn header_consistency() {
         // v15
         "am_client_set_navigate_in_background",
         "am_navigate_fail_user_action",
+        // v16
+        "am_call_idempotency_key",
     ];
     // 收集头文件中形如 `am_xxx(` 的声明。
     let mut declared = Vec::new();
@@ -1248,6 +1251,18 @@ unsafe extern "C" fn submit_tool(_ud: *mut c_void, call: *mut AmCall) {
         let _ = unsafe { am_call_fail_user_action(call, msg.as_ptr(), ptr::null(), ptr::null()) };
         return;
     }
+    if name == "key" {
+        // v16：幂等键原样可读；没有时为 NULL
+        let key = unsafe { am_call_idempotency_key(call) };
+        let value = if key.is_null() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(unsafe { CStr::from_ptr(key) }.to_string_lossy().into_owned())
+        };
+        let data = CString::new(serde_json::json!({ "key": value }).to_string()).unwrap_or_default();
+        let _ = unsafe { am_call_complete(call, data.as_ptr(), ptr::null(), 0) };
+        return;
+    }
     if name == "plain" {
         // 进度：total 为负数表示未知；非法 UTF-8 的说明被拒绝（调用不受影响）
         let msg = CString::new("处理中").unwrap_or_default();
@@ -1318,7 +1333,8 @@ fn tool_options_and_call_result_reach_host() {
     let Ok(mut child) = Command::new(bin)
         .args([
             "--tool-info", "--invoke", "order.submit", "--invoke", "plain", "--invoke", "login", "--invoke", "front",
-            "--read", "session", "--read", "quota", "--timeout-ms", "8000",
+            "--read", "session", "--read", "quota", "--invoke", "key", "--idempotency-key", "Agent 键 / 1",
+            "--invoke", "key", "--timeout-ms", "8000",
         ])
         .stdout(Stdio::piped())
         .spawn()
@@ -1395,7 +1411,7 @@ fn tool_options_and_call_result_reach_host() {
         AmStatus::Ok
     );
     let mut ua_tools = Vec::new();
-    for n in ["login", "front"] {
+    for n in ["login", "front", "key"] {
         let n = CString::new(n).unwrap_or_default();
         let ua_spec = AmToolSpec { name: n.as_ptr(), risk: 0, ..spec };
         let mut t: *mut AmTool = ptr::null_mut();
@@ -1473,6 +1489,9 @@ fn tool_options_and_call_result_reach_host() {
         })
     );
     assert_eq!(out[8]["error"]["data"], serde_json::json!({ "kind": "USER_REJECTED", "quota": 0 }));
+    // v16：am_call_idempotency_key
+    assert_eq!(out[9]["result"], serde_json::json!({ "data": { "key": "Agent 键 / 1" } }));
+    assert_eq!(out[10]["result"], serde_json::json!({ "data": { "key": null } }));
 }
 
 /// v15 导航回调：以 USER_ACTION_REQUIRED（foreground + uri）回复，随后关闭 navigateInBackground

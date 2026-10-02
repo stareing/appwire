@@ -207,6 +207,7 @@ interface HelloParams {
   heartbeatMs?: number     // SDK 心跳声明（5.5）：0 = 不发心跳、靠连接断开感知；> 0 = 每隔该毫秒数发 ping；省略 = 旧行为
   lifecycleMode?: LifecycleMode // SDK 的生命周期模式（8.5），供 Host 观测；省略 = 未知
   capabilities?: SdkCapabilities // 可选能力（3.4）；省略 = 都不支持（旧 SDK）
+  wake?: WakeDescriptor    // 本实例的唤醒描述（同 app/sleep.wake，8.2）；Host 据此持久化在线实例，Host 异常退出重启后仍可唤醒；省略 = 未配置或旧 SDK
 }
 
 interface SdkCapabilities {
@@ -272,7 +273,8 @@ interface ContentAnnotations {
 interface ToolsSyncParams { tools: ToolInfo[] }
 interface ToolsChangedParams { upserted: ToolInfo[]; removed: string[] }
 
-interface ToolsInvokeParams { callId: string; name: string; arguments: object; timeoutMs?: number }
+interface ToolsInvokeParams { callId: string; name: string; arguments: object; timeoutMs?: number;
+  idempotencyKey?: string }   // Agent 的幂等键，1..=256 个字符，原样（3.3）
 interface ToolsInvokeResult {
   data: unknown            // 无返回值时为 null
   stateHints?: string[]
@@ -356,6 +358,15 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
   自带（`CallRequest.call_id`；按 LLM 格式分派时为 tool_call 的 `id`，spec/hub-api.md 3.4），以同一 `callId` 重试同一次调用即可得到
   去重保护。Host 自身不会在断线 / 唤醒 / 回连后重发 `tools/invoke`（断线时调用以 `APP_DISCONNECTED`"结果未知"结束）。
   调用元信息（`_meta` 中的 `callId` 等）归第 19 项 R4，不在此定义。
+- **`idempotencyKey`（Agent 幂等键，第 4f 项 j）**：Agent 在 MCP 请求 `_meta` 中给出的幂等键（键名与 Hub 侧规则见
+  spec/hub-api.md 3.15），Host **原样**放进 `ToolsInvokeParams.idempotencyKey`（1..=256 个字符，`MAX_IDEMPOTENCY_KEY_LEN`；Host 拒绝
+  不合法的键，不转发）。用途：MCP 客户端重试同一操作时每次是新的 `callId`，`callId` 去重保护不到；Agent 给出的幂等键跨重试不变。
+  - SDK 在 handler 上下文中原样提供（没有时为空），App 决定如何使用（如作为业务层去重键、传给后端）。各语言入口：Rust 核心
+    `Event::InvokeTool.idempotency_key`、原生运行时 `CallHandle::idempotency_key()`、C ABI v16 `am_call_idempotency_key`、uniffi
+    `Call.idempotency_key()`、Node 原生模块 `Call.idempotencyKey`、WASM `invokeTool` 事件 `idempotencyKey`；各语言封装的
+    handler 上下文 `idempotencyKey`（Python `idempotency_key`、C# `IdempotencyKey`）。
+  - 去重（下一条）**另外**按（工具名, 幂等键）匹配：不同 `callId`、同一工具的同一幂等键与同一 `callId` 一样处理（重放首次结果 /
+    挂到执行中的调用）；同一键用于其他工具互不影响；没有键时只按 `callId`。去重关闭时只透传。
 - **去重（SDK，`app-mcp-core` 实现，所有语言一致）**：handler **已开始执行**的 `callId`，其首次最终回复（成功、handler 错误、
   `TIMEOUT`、执行中被 `tools/cancel` 的 `CANCELLED`）在有效期内保留；同一 `callId` 的 `tools/invoke` 再次到达时**不再执行**，直接回复
   该结果。执行中（含排队中）再次到达的请求挂到同一次执行上，完成时一并回复（不再返回 -32602）。执行中因断线或 SDK 停止被中断的
@@ -509,7 +520,7 @@ docs/plans/12-mcp-2026-07-28.md m10），本协议不使用；此后新增的类
 ### 5.3 调用
 
 - 收到 `tools/invoke`：
-  - `callId` 已执行过（有效期内）→ 回复首次结果，不执行；正在执行或排队 → 挂到同一次执行上（3.3）。
+  - `callId`（或同一工具的同一 `idempotencyKey`）已执行过（有效期内）→ 回复首次结果，不执行；正在执行或排队 → 挂到同一次执行上（3.3）。
   - 名称不存在 → `TOOL_NOT_FOUND`；存在但禁用 → `TOOL_DISABLED`。
   - 否则进入调用队列。正在执行的调用数小于 `maxConcurrentCalls`（默认 1）时立即执行，
     否则排队，按到达顺序执行。
@@ -665,8 +676,10 @@ Host 对总览做长度截断（`summary` 100 字符、`body` 2000 字符，超�
 
 ### 8.2 `app/lease`（Host → SDK，通知）
 
-`{ ttlMs }`：Host 预计还会调用本实例（如 MCP 会话仍活跃、模型刚调用过），在 ttl 内不要休眠；`ttlMs: 0` 取消。
+`{ ttlMs, adaptive? }`：Host 预计还会调用本实例（如 MCP 会话仍活跃、模型刚调用过），在 ttl 内不要休眠；`ttlMs: 0` 取消（两种租约都取消）。
 SDK 取当前租约与新值中较晚的截止时刻；收到租约时重新开始空闲计时，休眠时刻 = max(空闲起点 + 空闲时长, 租约到期)（8.5）。Host 可在每次调用完成后发送。
+`adaptive`（可选，只在为 `true` 时发送）：租约来自 Host 按调用间隔的统计；缺省为默认值租约。SDK 分别记两种租约，
+后台连接（握手时不可见且 `sleepOnBackground`）只认自适应租约（spec/lifecycle.md 第 13 节 B4）。旧 SDK 忽略该字段。
 
 ### 8.3 握手扩展与快速恢复
 

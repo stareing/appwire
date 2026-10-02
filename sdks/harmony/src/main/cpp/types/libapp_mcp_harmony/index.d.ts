@@ -145,6 +145,8 @@ export class Call {
   readonly callId: string;
   readonly toolName: string;
   readonly argumentsJson: string;
+  /** Agent 给出的幂等键（原样，spec/protocol.md 3.3）；没有时为 null / undefined。 */
+  readonly idempotencyKey?: string | null;
   isCancelled(): boolean;
   setCancelListener(listener: (reason: string) => void): void;
   complete(dataJson?: string | null, stateHints?: string[] | null): void;

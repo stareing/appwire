@@ -47,7 +47,8 @@ namespace fs = std::filesystem;
 /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。
 const std::vector<std::string> kFeatures = {"toolOptions", "mutate",      "lifecycle",       "wake",       "richResult",
                                             "userAction",  "progress",    "resourceOptions", "readFailure",
-                                            "surface",     "navigation",  "backgroundTool",  "backgroundNavigation"};
+                                            "surface",     "navigation",  "backgroundTool",  "backgroundNavigation",
+                                            "idempotencyKey"};
 
 // ---------------------------------------------------------------------------
 // 用例字段 → SDK 枚举（协议同名字符串，spec/protocol.md 第 3 节）
@@ -120,6 +121,8 @@ class CallPort {
 public:
     virtual ~CallPort() = default;
     virtual std::string arguments_json() const = 0;
+    /// handler 上下文中的幂等键（spec/protocol.md 3.3）；没有时 nullopt。
+    virtual std::optional<std::string> idempotency_key() const = 0;
     virtual bool is_cancelled() const = 0;
     virtual void progress(double progress, std::optional<double> total, const std::optional<std::string>& message) = 0;
     /// 按 handler 描述的结果部分完成调用（第一个出现的结果键，见 conformance/README.md 2.1）。
@@ -234,10 +237,14 @@ void run_handler(const Json& spec, uint64_t count, App& app, CallPort& call) {
     call.finish(spec, count);
 }
 
-/// 结果键 `return` / `echo` / `counter` 对应的 data JSON；都没有时 nullopt（无返回值）。
-std::optional<std::string> plain_data(const Json& spec, uint64_t count, const std::string& arguments_json) {
+/// 结果键 `return` / `echo` / `returnIdempotencyKey` / `counter` 对应的 data JSON；都没有时 nullopt（无返回值）。
+std::optional<std::string> plain_data(const Json& spec, uint64_t count, const CallPort& port) {
     if (const Json* v = spec.find("return")) return v->dump();
-    if (spec["echo"].boolean() == true) return arguments_json;
+    if (spec["echo"].boolean() == true) return port.arguments_json();
+    if (spec["returnIdempotencyKey"].boolean() == true) {
+        auto key = port.idempotency_key();
+        return "{\"idempotencyKey\":" + (key ? Json::quote(*key) : std::string("null")) + "}";
+    }
     if (spec["counter"].boolean() == true) return "{\"count\":" + std::to_string(count) + "}";
     return std::nullopt;
 }
@@ -292,6 +299,7 @@ public:
     explicit CppPort(app_mcp::Call call) : call_(std::move(call)) {}
 
     std::string arguments_json() const override { return call_.arguments_json(); }
+    std::optional<std::string> idempotency_key() const override { return call_.idempotency_key(); }
     bool is_cancelled() const override { return call_.is_cancelled(); }
     void progress(double progress, std::optional<double> total, const std::optional<std::string>& message) override {
         call_.progress(progress, total, message);
@@ -314,7 +322,7 @@ public:
             call_.complete(result);
             return;
         }
-        if (auto data = plain_data(spec, count, call_.arguments_json())) {
+        if (auto data = plain_data(spec, count, *this)) {
             call_.complete(*data);
             return;
         }
@@ -518,6 +526,10 @@ public:
     explicit CPort(AmCall* call) : call_(call) {}
 
     std::string arguments_json() const override { return am_call_arguments_json(call_); }
+    std::optional<std::string> idempotency_key() const override {
+        const char* key = am_call_idempotency_key(call_);
+        return key ? std::optional<std::string>(key) : std::nullopt;
+    }
     bool is_cancelled() const override { return am_call_is_cancelled(call_); }
     void progress(double progress, std::optional<double> total, const std::optional<std::string>& message) override {
         am_call_progress(call_, progress, total.value_or(-1.0), c_or_null(message));
@@ -556,7 +568,7 @@ public:
             am_call_complete_ex(call, &result);
             return;
         }
-        if (auto data = plain_data(spec, count, arguments_json())) {
+        if (auto data = plain_data(spec, count, *this)) {
             am_call_complete(call, data->c_str(), nullptr, 0);
             return;
         }

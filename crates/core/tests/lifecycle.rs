@@ -1178,3 +1178,84 @@ fn background_in_backoff_goes_dormant_and_switch_is_scoped() {
     h.c.set_visibility(Visibility::Frozen, false, h.now);
     assert_eq!(methods(&sends(&h.drain())), vec!["app/visibility"]);
 }
+
+// ---------------------------------------------------------------------------
+// 后台连接只认自适应租约（spec/lifecycle.md 第 13 节 B4「后台连接」）
+// ---------------------------------------------------------------------------
+
+/// 隐藏中被 OS 激活唤醒（`on-demand` + `sleepOnBackground`），握手完成，处理一次调用，返回调用完成时刻。
+fn background_woken(cfg: ClientConfig) -> (Harness, Millis) {
+    let mut h = Harness::with(cfg);
+    h.c.register_tool(tool("a")).unwrap();
+    h.c.set_visibility(Visibility::Hidden, false, h.now);
+    h.c.start(h.now);
+    h.drain();
+    assert!(h.c.handle_wake("app-mcp-wake:tok-bg", h.now));
+    assert!(h.drain().contains(&Event::Connect));
+    let hello = h.link();
+    assert_eq!(hello["params"]["wakeReason"], "os-activation");
+    h.paired(&hello, false);
+    h.invoke("c1", "a");
+    h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
+    h.drain();
+    let t = h.now;
+    (h, t)
+}
+
+#[test]
+fn background_connection_ignores_default_lease_and_sleeps_after_merge_window() {
+    // 设备实测（Android 后台唤醒）：默认值租约 60 s 让 App 在线到租约收回（约 32 s）。现在只留合并窗口。
+    let (mut h, t) = background_woken(background_cfg(LifecycleMode::OnDemand));
+    h.notify("app/lease", json!({"ttlMs": 60_000}));
+    let (sleep, at) = h.wait_sleep(3 * IDLE).expect("应休眠");
+    assert_eq!(at, t + MERGE, "默认值租约不延长后台连接");
+    assert_eq!(sleep["params"]["reason"], "grace", "不是进入后台（B4 立即休眠），原因按模式");
+}
+
+#[test]
+fn background_connection_honours_adaptive_lease() {
+    let (mut h, t) = background_woken(background_cfg(LifecycleMode::OnDemand));
+    h.notify("app/lease", json!({"ttlMs": 60_000}));
+    h.notify("app/lease", json!({"ttlMs": 8_000, "adaptive": true}));
+    assert_eq!(h.wait_sleep(3 * IDLE).unwrap().1, t + 8_000, "自适应租约是 Hub 的预测，照常生效");
+
+    // ttlMs: 0 两种都取消，随后补发的自适应剩余照常生效
+    let (mut h, t) = background_woken(background_cfg(LifecycleMode::OnDemand));
+    h.notify("app/lease", json!({"ttlMs": 20_000, "adaptive": true}));
+    h.notify("app/lease", json!({"ttlMs": 0}));
+    h.notify("app/lease", json!({"ttlMs": 5_000, "adaptive": true}));
+    assert_eq!(h.wait_sleep(3 * IDLE).unwrap().1, t + 5_000);
+}
+
+#[test]
+fn background_connection_becoming_visible_honours_earlier_default_lease() {
+    let (mut h, t) = background_woken(background_cfg(LifecycleMode::OnDemand));
+    h.notify("app/lease", json!({"ttlMs": 60_000}));
+    h.advance(1_000);
+    h.c.set_visibility(Visibility::Visible, true, h.now);
+    h.drain();
+    assert_eq!(h.wait_sleep(3 * IDLE).unwrap().1, t + 60_000, "回到可见：普通规则，之前记下的默认值租约生效");
+}
+
+#[test]
+fn background_connection_switch_is_scoped() {
+    // 未开启 sleepOnBackground、legacy_timers、握手时可见：默认值租约照常生效
+    let mut off = config(LifecycleMode::OnDemand);
+    off.lifecycle.sleep_on_background = false;
+    let mut legacy = background_cfg(LifecycleMode::OnDemand);
+    legacy.lifecycle.legacy_timers = true;
+    // legacy：租约到期后再计 grace（10 s）
+    for (name, cfg, after_lease) in [("off", off, 0), ("legacy", legacy, 10_000)] {
+        let (mut h, t) = background_woken(cfg);
+        h.notify("app/lease", json!({"ttlMs": 60_000}));
+        assert_eq!(h.wait_sleep(3 * IDLE).unwrap().1, t + 60_000 + after_lease, "{name}");
+    }
+    let mut h = Harness::with(background_cfg(LifecycleMode::Idle));
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    h.invoke("c1", "a");
+    h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
+    h.notify("app/lease", json!({"ttlMs": 60_000}));
+    let t = h.now;
+    assert_eq!(h.wait_sleep(3 * IDLE).unwrap().1, t + 60_000, "握手时可见");
+}

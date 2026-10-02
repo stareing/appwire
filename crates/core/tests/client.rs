@@ -547,7 +547,7 @@ fn call_success_and_handler_error() {
     let ev = h.invoke(10, "c1", "a", Some(5_000));
     assert_eq!(
         ev,
-        vec![Event::InvokeTool { call_id: "c1".into(), tool: a, name: "a".into(), arguments: json!({"x": 1}) }]
+        vec![Event::InvokeTool { call_id: "c1".into(), tool: a, name: "a".into(), arguments: json!({"x": 1}), idempotency_key: None }]
     );
     h.c.complete_call(
         "c1",
@@ -1422,6 +1422,52 @@ fn dedup_records_only_started_calls() {
     assert_eq!(invoked(&h.invoke(4, "queued", "a", None)), vec!["queued".to_owned()], "排队中取消的可重新执行");
     h.recv(json!({"jsonrpc": "2.0", "method": "tools/cancel", "params": {"callId": "queued"}}));
     assert_eq!(error_kind(&sends(&h.invoke(5, "queued", "a", None))[0]), "CANCELLED", "执行中取消记为首次结果");
+}
+
+/// Agent 幂等键（spec/protocol.md 3.3，第 4f 项 j）：原样进入 `InvokeTool`；同一工具的同一幂等键以新 callId 到达时——
+/// 执行中挂到同一次执行、完成后重放首次结果；其他工具或没有键的调用照常执行。去重关闭时只透传。
+#[test]
+fn idempotency_key_passthrough_and_dedup() {
+    let mut h = Harness::new();
+    h.c.register_tool(tool("a")).unwrap();
+    h.c.register_tool(tool("b")).unwrap();
+    h.connect();
+    let invoke_keyed = |h: &mut Harness, id: i64, call: &str, name: &str, key: &str| {
+        h.request(id, "tools/invoke", json!({"callId": call, "name": name, "arguments": {}, "idempotencyKey": key}))
+    };
+    let ev = invoke_keyed(&mut h, 1, "c1", "a", "k1");
+    let keys: Vec<_> = ev
+        .iter()
+        .filter_map(|e| match e {
+            Event::InvokeTool { idempotency_key, .. } => Some(idempotency_key.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(keys, vec![Some("k1".to_owned())], "幂等键原样交给 handler");
+    let ev = invoke_keyed(&mut h, 2, "c2", "a", "k1");
+    assert!(invoked(&ev).is_empty(), "执行中：挂到同一次执行");
+    assert_eq!(warnings(&ev), 1);
+    h.c.complete_call("c1", Ok(CallOutput { data: json!({"n": 1}), ..CallOutput::default() }), h.now).unwrap();
+    let msgs = sends(&h.drain());
+    assert_eq!(msgs.len(), 2, "两个请求都收到首次结果");
+    assert!(msgs.iter().all(|m| m["result"]["data"] == json!({"n": 1})));
+    let ev = invoke_keyed(&mut h, 3, "c3", "a", "k1");
+    assert!(invoked(&ev).is_empty(), "完成后：重放首次结果");
+    assert_eq!(sends(&ev)[0]["result"]["data"], json!({"n": 1}));
+    assert_eq!(invoked(&invoke_keyed(&mut h, 4, "c4", "b", "k1")), vec!["c4".to_owned()], "其他工具不受影响");
+    h.c.complete_call("c4", Ok(CallOutput::default()), h.now).unwrap();
+    h.drain();
+    assert_eq!(invoked(&h.invoke(5, "c5", "a", None)), vec!["c5".to_owned()], "没有键时只按 callId");
+
+    let mut cfg = config();
+    cfg.call_dedup = CallDedupPolicy::OFF;
+    let mut h = Harness::with(cfg);
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    assert_eq!(invoked(&invoke_keyed(&mut h, 1, "c1", "a", "k")), vec!["c1".to_owned()]);
+    assert_eq!(invoked(&invoke_keyed(&mut h, 2, "c2", "a", "k")), Vec::<String>::new(), "并发上限 1：排队");
+    h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
+    assert_eq!(invoked(&h.drain()), vec!["c2".to_owned()], "去重关闭时同一幂等键照常执行");
 }
 
 #[test]

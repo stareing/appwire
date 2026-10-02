@@ -1160,3 +1160,150 @@ fn call_with_progress_delivers_progress_before_result() {
     unsafe { am_hub_free(hub) };
 }
 
+
+// ---------------------------------------------------------------------------
+// 休眠记录持久化（stateDir）：重启后休眠的 App 仍可列出；HubStatus.dormantStore
+// ---------------------------------------------------------------------------
+
+#[test]
+fn state_dir_persists_dormant_across_restart() {
+    let dir = std::env::temp_dir().join(format!("app-mcp-hub-c-state-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let config = json!({
+        "listen": "127.0.0.1:0", "listChangedDebounceMs": 20, "leaseTtlMs": 0, "stateDir": dir,
+    })
+    .to_string();
+
+    // 未配置 stateDir：status 不含 dormantStore
+    let plain = start_hub(r#"{"listen":null}"#);
+    // SAFETY: 有效参数。
+    let st = query_json(|o| unsafe { am_hub_status_json(plain, o) });
+    assert!(st.get("dormantStore").is_none(), "{st}");
+    // SAFETY: 有效句柄。
+    unsafe { am_hub_free(plain) };
+
+    let hub = start_hub(&config);
+    let (etx, erx) = mpsc::channel::<String>();
+    // SAFETY: 有效参数；Sender 归库所有。
+    unsafe {
+        let st = am_hub_set_event_cb(hub, Some(on_event), Box::into_raw(Box::new(etx)).cast(), Some(free_sender_quiet));
+        assert_eq!(st, AmHubStatus::Ok);
+    }
+    let (client, _h) = start_idle_app(hub);
+    assert!(wait_event(&erx, |e| e["type"] == "appDormant" && e["appId"] == "sleepy"), "应收到 appDormant");
+    let deadline = Instant::now() + WAIT;
+    loop {
+        // SAFETY: 有效参数。
+        let st = query_json(|o| unsafe { am_hub_status_json(hub, o) });
+        let store = &st["dormantStore"];
+        assert_eq!(store["dir"], dir.join("dormant").display().to_string(), "{st}");
+        if store["writes"].as_u64().is_some_and(|w| w >= 1) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "休眠记录未写入：{st}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // SAFETY: 有效句柄。
+    unsafe { am_hub_free(hub) };
+    client.stop();
+
+    // 重启：从 stateDir 读回休眠实例
+    let hub = start_hub(&config);
+    // SAFETY: 有效参数。
+    let apps = query_json(|o| unsafe { am_hub_apps_json(hub, o) });
+    let app = apps
+        .as_array()
+        .and_then(|a| a.iter().find(|a| a["appId"] == "sleepy"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(app["dormantInstances"][0]["instanceId"], "s1", "{apps}");
+    // SAFETY: 有效参数。
+    let st = query_json(|o| unsafe { am_hub_status_json(hub, o) });
+    assert_eq!(st["dormantStore"]["loadedInstances"], 1, "{st}");
+    assert_eq!(st["dormantStore"]["issues"], json!([]), "{st}");
+    // SAFETY: 有效句柄。
+    unsafe { am_hub_free(hub) };
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 回显 Agent 给出的幂等键（spec/hub-api.md 3.15）。
+struct KeyEcho;
+
+impl ToolHandler for KeyEcho {
+    fn invoke(&self, call: CallHandle) {
+        let data = json!({ "key": call.idempotency_key() });
+        let _ = call.complete(Some(&data.to_string()), Vec::new());
+    }
+}
+
+/// v13：配置 navigateTimeoutMs；CallRequest.idempotencyKey 原样转交 App、不合法时 INVALID_INPUT；
+/// HubTool.surface / page；内置工具 apps.activate / apps.release 与（有页面目录时）apps.page / apps.navigate。
+#[test]
+fn surface_page_idempotency_key_and_builtins() {
+    let bad = c(r#"{"listen":null,"ipcEndpoint":null,"navigateTimeoutMs":-1}"#);
+    let mut out = ptr::null_mut();
+    // SAFETY: 有效参数。
+    assert_eq!(unsafe { am_hub_start(bad.as_ptr(), &mut out) }, AmHubStatus::InvalidJson);
+    assert!(out.is_null());
+
+    let hub = start_hub(r#"{"listen":"127.0.0.1:0","navigateTimeoutMs":800}"#);
+    // SAFETY: 有效句柄。
+    let addr = unsafe { take(am_hub_listen_addr(hub)) };
+    let mut cfg = NativeConfig::new("shop", "商店");
+    cfg.host_url = format!("ws://{addr}/app");
+    let client = NativeClient::new(cfg, None).expect("创建 App");
+    let view = ToolOptions {
+        surface: app_mcp_native::ToolSurface::View,
+        page: Some("cart".into()),
+        ..ToolOptions::default()
+    };
+    let _view = client
+        .register_tool_with(ToolSpec::new("cart.checkout", "结算"), view, Arc::new(KeyEcho))
+        .expect("注册");
+    let _plain = client.register_tool(ToolSpec::new("order.submit", "下单"), Arc::new(KeyEcho)).expect("注册");
+    client.start();
+
+    let deadline = Instant::now() + WAIT;
+    let filter = c(r#"{"apps":["shop"],"onlyAvailable":true,"includeBuiltin":false}"#);
+    let tools = loop {
+        // SAFETY: 有效参数。
+        let t = query_json(|o| unsafe { am_hub_tools_json(hub, filter.as_ptr(), o) });
+        if t.as_array().map(Vec::len) == Some(2) {
+            break t;
+        }
+        assert!(Instant::now() < deadline, "工具未同步：{t}");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let by_name = |n: &str| tools.as_array().and_then(|a| a.iter().find(|t| t["name"] == n)).cloned();
+    let checkout = by_name("shop.cart.checkout").expect("view 工具");
+    assert_eq!((&checkout["surface"], &checkout["page"]), (&json!("view"), &json!("cart")), "{tools}");
+    let submit = by_name("shop.order.submit").expect("app 工具");
+    assert_eq!(submit["surface"], "app", "{tools}");
+    assert!(submit.get("page").is_none(), "无页面时不出现：{tools}");
+
+    // SAFETY: 有效参数（filter 为 NULL = 全部，含内置工具）。
+    let all = query_json(|o| unsafe { am_hub_tools_json(hub, ptr::null(), o) });
+    let names: Vec<&str> = all.as_array().into_iter().flatten().filter_map(|t| t["name"].as_str()).collect();
+    for n in ["apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.page", "apps.navigate"] {
+        assert!(names.contains(&n), "缺少内置工具 {n}：{names:?}");
+    }
+    for t in all.as_array().into_iter().flatten().filter(|t| t["name"].as_str().is_some_and(|n| n.starts_with("apps."))) {
+        assert!(t.get("surface").is_none() && t.get("page").is_none(), "内置工具不带 surface / page：{t}");
+    }
+
+    let (tx, rx) = mpsc::channel();
+    call(hub, json!({"name":"shop.order.submit","idempotencyKey":"order-7"}), &tx);
+    let o = recv(&rx);
+    assert_eq!(o["result"]["ok"]["key"], "order-7", "{o}");
+    assert!(o.get("routedTo").is_none(), "未改调时不出现：{o}");
+    call(hub, json!({"name":"shop.order.submit"}), &tx);
+    let o = recv(&rx);
+    assert_eq!(o["result"]["ok"]["key"], Value::Null, "{o}");
+    call(hub, json!({"name":"shop.order.submit","idempotencyKey":""}), &tx);
+    let o = recv(&rx);
+    assert_eq!(o["result"]["error"]["kind"], "INVALID_INPUT", "{o}");
+
+    client.stop();
+    // SAFETY: 有效句柄。
+    unsafe { am_hub_free(hub) };
+}

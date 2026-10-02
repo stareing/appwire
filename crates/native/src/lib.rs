@@ -308,6 +308,10 @@ impl CallHandle {
     pub fn arguments_json(&self) -> String {
         self.inner.arguments_json.clone()
     }
+    /// Agent 给出的幂等键（原样，spec/protocol.md 3.3）；没有时为 `None`。App 决定如何使用（如作为业务去重键）。
+    pub fn idempotency_key(&self) -> Option<String> {
+        self.inner.idempotency_key.clone()
+    }
     pub fn is_cancelled(&self) -> bool {
         self.inner.lock().cancelled.is_some()
     }
@@ -1407,6 +1411,7 @@ impl Shared {
                     tool,
                     name,
                     arguments,
+                    idempotency_key,
                 } => {
                     let Some(handler) = st.tools.get(&tool).map(|e| e.handler.clone()) else {
                         let err =
@@ -1419,6 +1424,7 @@ impl Shared {
                         call_id: call_id.clone(),
                         tool_name: name,
                         arguments_json: arguments.to_string(),
+                        idempotency_key,
                         state: Mutex::new(CallState::default()),
                     });
                     st.calls.insert(call_id, call.clone());
@@ -1543,6 +1549,7 @@ struct CallInner {
     call_id: String,
     tool_name: String,
     arguments_json: String,
+    idempotency_key: Option<String>,
     state: Mutex<CallState>,
 }
 

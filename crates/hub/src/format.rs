@@ -488,6 +488,8 @@ mod tests {
             availability: Availability::Available,
             annotations: risk.annotations(),
             output_schema: None,
+            surface: None,
+            page: None,
         }
     }
 

@@ -17,7 +17,7 @@ use app_mcp_protocol::{
     MuxResult, Notification, PROTOCOL_VERSION,
     PairingResultParams, PairingStatus, Request, ResourceUpdatedParams, ResourcesChangedParams,
     ResourcesSyncParams, RpcError, SleepParams, SleepResult, ToolError, ToolsChangedParams,
-    ToolsSyncParams, Visibility, VisibilityParams, is_valid_app_id, method,
+    ToolsSyncParams, Visibility, VisibilityParams, WakeKind, is_valid_app_id, method,
 };
 use futures::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
@@ -473,7 +473,10 @@ where
     }
     if let Some(reg) = registered {
         let removed = shared.registry().remove_instance(&reg.app_id, conn.id);
-        if removed.is_some() {
+        if let Some(inst) = &removed {
+            if inst.wake.is_some() {
+                shared.mark_dormant_dirty(&reg.app_id);
+            }
             tracing::info!(cid = %conn.cid, app_id = %reg.app_id, instance_id = %reg.instance_id, "实例断开");
             shared.emit(HubEvent::AppDisconnected {
                 app_id: reg.app_id.clone(),
@@ -787,6 +790,7 @@ fn take_resume(shared: &Arc<HubShared>, hello: &HelloParams) -> (Option<DormantI
         return (None, false);
     };
     drop(reg);
+    shared.mark_dormant_dirty(&hello.app_id);
     let current = hello.resume_token.as_deref() == Some(d.resume_token.as_str())
         && hello.tools_hash.as_deref() == Some(d.snapshot_hash().as_str());
     tracing::info!(app_id = %hello.app_id, instance_id = %hello.instance_id, tools_current = current, "休眠实例回连");
@@ -837,6 +841,7 @@ fn register_instance_with(
             pid: peer.pid(),
             navigate: hello.capabilities.as_ref().is_some_and(|c| c.navigate),
             conn: conn.clone(),
+            wake: hello.wake.clone().filter(|w| w.kind != WakeKind::None),
         },
     );
     if let Some(old) = replaced {
@@ -939,6 +944,7 @@ fn handle_sleep(
         };
     }
     tracing::info!(cid = %conn.cid, app_id = %reg.app_id, instance_id = %reg.instance_id, reason = ?p.reason, "实例进入休眠");
+    shared.mark_dormant_dirty(&reg.app_id);
     shared.emit(HubEvent::AppDormant {
         app_id: reg.app_id.clone(),
         instance_id: reg.instance_id.clone(),
@@ -1047,7 +1053,9 @@ fn handle_notification(
             });
         }
         method::READY => {
-            shared.registry().set_ready(app_id, conn.id);
+            if shared.registry().set_ready(app_id, conn.id) {
+                shared.mark_dormant_dirty(app_id);
+            }
             // 回连后重新订阅仍被订阅的资源（spec/lifecycle.md 第 13 节 B3）；同步时已订阅的不重复发送。
             shared.ensure_subscriptions(app_id);
             shared.wake_arrived(app_id, &reg.instance_id, reg.launch_token.as_deref());

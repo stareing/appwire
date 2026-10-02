@@ -49,9 +49,11 @@ public class HubBasicTests
         var json = JsonNode.Parse(o.ToConfigJson())!.AsObject();
         Assert.Equal("127.0.0.1:0", (string?)json["listen"]);
         Assert.False(json.ContainsKey("mcpHttp"));
-        var extra = JsonNode.Parse(new HubOptions { McpHttp = true, RunDir = "/tmp/r" }.ToConfigJson())!.AsObject();
+        var extra = JsonNode.Parse(new HubOptions { McpHttp = true, RunDir = "/tmp/r", StateDir = "/tmp/s" }.ToConfigJson())!.AsObject();
         Assert.True((bool?)extra["mcpHttp"]);
         Assert.Equal("/tmp/r", (string?)extra["runDir"]);
+        Assert.Equal("/tmp/s", (string?)extra["stateDir"]);
+        Assert.False(json.ContainsKey("stateDir"));
         Assert.Equal("unix:/run/x/hub.sock", (string?)json["ipcEndpoint"]);
         Assert.Equal("os-sensitive", (string?)json["approval"]!["requireAtOrAbove"]);
         Assert.Equal(3000, (int?)json["approval"]!["timeout"]);
@@ -65,6 +67,7 @@ public class HubBasicTests
             Listen = "127.0.0.1:0",
             LeaseTtl = TimeSpan.Zero,
             WakeTimeout = TimeSpan.FromSeconds(2),
+            NavigateTimeout = TimeSpan.FromMilliseconds(800),
             WakeTokenTtl = TimeSpan.FromSeconds(3),
             DormantTtl = TimeSpan.FromMinutes(1),
             DormantReplacedByNewInstance = false,
@@ -72,6 +75,8 @@ public class HubBasicTests
         }.ToConfigJson())!.AsObject();
         Assert.Equal(0, (int?)life["leaseTtlMs"]);
         Assert.Equal(2000, (int?)life["wakeTimeoutMs"]);
+        Assert.Equal(800, (int?)life["navigateTimeoutMs"]);
+        Assert.False(json.ContainsKey("navigateTimeoutMs"));
         Assert.Equal(3000, (int?)life["wakeTokenTtlMs"]);
         Assert.Equal(60000, (int?)life["dormantTtlMs"]);
         Assert.False((bool?)life["dormantReplacedByNewInstance"]);
@@ -117,7 +122,7 @@ public class HubBasicTests
         {
             // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
             var names = h.ListTools(new ToolFilter { Session = "c1" }).Select(t => t.Name).ToArray();
-            Assert.Equal(["apps.list", "apps.select", "apps.overview", "apps.tools"], names);
+            Assert.Equal(["apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release"], names);
         }
 
         var disabled = JsonNode.Parse(new HubOptions { DisableListen = true, DisableIpc = true }.ToConfigJson())!.AsObject();
@@ -235,6 +240,30 @@ public class HubBasicTests
     }
 
     [Fact]
+    public void StateDirReportsDormantStore()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"app-mcp-cs-state-{Environment.ProcessId}");
+        if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        Directory.CreateDirectory(Path.Combine(dir, "dormant"));
+        File.WriteAllText(Path.Combine(dir, "dormant", "broken.json"), "{");
+        try
+        {
+            using var hub = AppMcpHub.Start(new HubOptions { DisableListen = true, DisableIpc = true, Dispatcher = null, StateDir = dir });
+            var store = hub.Status().DormantStore;
+            Assert.NotNull(store);
+            Assert.Equal(Path.Combine(dir, "dormant"), store!.Dir);
+            Assert.Equal(0UL, store.LoadedInstances);
+            Assert.Equal(0UL, store.Writes);
+            Assert.Equal("broken.json", Assert.Single(store.Issues).File);
+            Assert.Null(store.LastError);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
     public async Task QueriesWithoutApps()
     {
         using var hub = AppMcpHub.Start(new HubOptions { DisableListen = true, DisableIpc = true, Dispatcher = null });
@@ -259,6 +288,7 @@ public class HubBasicTests
         Assert.Equal(60000UL, status.Lease.DefaultMs);
         Assert.Equal(20U, status.Lease.Window);
         Assert.Empty(status.Lease.Pairs);
+        Assert.Null(status.DormantStore);
         Assert.Equal("app-mcp", hub.GetStatus().GetProperty("service").GetString());
 
         // 内置工具 apps.list 等
@@ -743,6 +773,52 @@ public class HubIntegrationTests
     }
 
     /// <summary>同步收集进度（不经同步上下文转发）。</summary>
+    /// <summary>spec/hub-api.md 3.14 / 3.15：HubToolInfo.Surface / Page、CallRequest.IdempotencyKey 原样转交、CallOutcome.RoutedTo。</summary>
+    [Fact]
+    public async Task SurfacePageAndIdempotencyKey()
+    {
+        await using var hub = AppMcpHub.Start(new HubOptions
+        {
+            Listen = "127.0.0.1:0",
+            DisableIpc = true,
+            NavigateTimeout = TimeSpan.FromMilliseconds(800),
+            Dispatcher = null,
+        });
+        await using var app = AppMcp.AppMcpClient.Create(new AppMcp.AppMcpClientOptions
+        {
+            AppId = "cafe",
+            AppName = "咖啡",
+            HostUrl = $"ws://{hub.ListenAddress}/app",
+            Dispatcher = null,
+        });
+        Func<JsonElement, AppMcp.ToolContext, Task<object?>> EchoKey = (_, ctx) => Task.FromResult<object?>(new { key = ctx.IdempotencyKey });
+        using var checkout = app.RegisterTool("cart.checkout", "结算", EchoKey,
+            new AppMcp.ToolOptions { Surface = AppMcp.ToolSurface.View, Page = "cart" });
+        using var submit = app.RegisterTool("order.submit", "下单", EchoKey);
+        app.Start();
+        await WaitUntil(() => hub.ListTools(new ToolFilter { Apps = ["cafe"], OnlyAvailable = true, IncludeBuiltin = false }).Count == 2,
+            "工具未同步");
+        var tools = hub.ListTools(new ToolFilter { Apps = ["cafe"], IncludeBuiltin = false });
+        var view = tools.Single(t => t.Tool == "cart.checkout");
+        Assert.Equal((HubToolSurface.View, "cart"), (view.Surface, view.Page));
+        var plain = tools.Single(t => t.Tool == "order.submit");
+        Assert.Equal((HubToolSurface.App, (string?)null), (plain.Surface, plain.Page));
+        var builtins = hub.ListTools().Where(t => t.Name.StartsWith("apps.", StringComparison.Ordinal)).ToList();
+        foreach (var n in new[] { "apps.activate", "apps.release", "apps.page", "apps.navigate" })
+        {
+            Assert.Contains(builtins, t => t.Name == n);
+        }
+        Assert.All(builtins, t => Assert.True(t.Surface is null && t.Page is null, t.Name));
+
+        var out1 = await hub.CallAsync(new CallRequest("cafe.order.submit") { IdempotencyKey = "order-7" });
+        Assert.True(out1.IsSuccess, out1.Json.ToString());
+        Assert.Equal("order-7", out1.Data!.Value.GetProperty("key").GetString());
+        Assert.Null(out1.RoutedTo);
+        var bad = await hub.CallAsync(new CallRequest("cafe.order.submit") { IdempotencyKey = "" });
+        Assert.Equal("INVALID_INPUT", bad.Error?.Kind);
+        app.Stop();
+    }
+
     private sealed class ProgressLog : IProgress<CallProgress>
     {
         public ConcurrentQueue<CallProgress> Items { get; } = new();

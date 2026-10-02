@@ -378,6 +378,8 @@ class ToolContext:
         self._call = call
         self.call_id: str = call.call_id()
         self.tool_name: str = call.tool_name()
+        # Agent 给出的幂等键（原样，spec/protocol.md 3.3）；没有时为 None。App 自行决定如何使用（如作为业务去重键）。
+        self.idempotency_key: str | None = call.idempotency_key()
         self.arguments = arguments
         self.state_hints: list[str] = []
         self.cancel_reason: ffi.CancelReason | None = None

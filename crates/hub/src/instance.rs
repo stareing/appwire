@@ -53,12 +53,7 @@ impl Instance {
     /// 原子写入登记文件。
     pub fn publish(&mut self, reg: &EndpointRegistry) -> io::Result<()> {
         let text = serde_json::to_vec_pretty(reg).map_err(io::Error::other)?;
-        let tmp = self.registry.with_extension(format!("json.{}.tmp", std::process::id()));
-        let result = write_private(&tmp, &text).and_then(|()| std::fs::rename(&tmp, &self.registry));
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        result?;
+        write_atomic(&self.registry, &text)?;
         self.published = true;
         Ok(())
     }
@@ -75,6 +70,19 @@ impl Drop for Instance {
             let _ = std::fs::remove_file(&self.registry);
         }
     }
+}
+
+/// 原子写入只有当前用户可读写的文件：先写同目录下的临时文件（`<文件名>.<pid>.tmp`）再改名，读方不会看到写了一半的内容；
+/// 失败时删除临时文件。
+pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = path.with_file_name(name);
+    let result = write_private(&tmp, data).and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// 写入只有当前用户可读写的文件（Unix 0600；Windows 继承用户目录的 ACL）。
@@ -150,13 +158,14 @@ fn try_lock(file: &File) -> io::Result<bool> {
     }
 }
 
+/// 准备只属于当前用户的目录：Unix 上不存在时以 0700 创建，已存在时必须属于当前用户且组 / 其他用户不可写。
 #[cfg(unix)]
-fn prepare_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn prepare_dir(dir: &Path) -> io::Result<()> {
     crate::ipc::prepare_private_dir(dir)
 }
 
 #[cfg(windows)]
-fn prepare_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn prepare_dir(dir: &Path) -> io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 

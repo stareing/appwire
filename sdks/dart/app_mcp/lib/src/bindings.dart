@@ -532,6 +532,10 @@ final class AppMcpBindings {
   late final am_call_arguments_json = library.lookupFunction<
       Pointer<Utf8> Function(Pointer<AmCall>),
       Pointer<Utf8> Function(Pointer<AmCall>)>('am_call_arguments_json');
+  // v16：Agent 幂等键；没有时返回 nullptr。
+  late final am_call_idempotency_key = library.lookupFunction<
+      Pointer<Utf8> Function(Pointer<AmCall>),
+      Pointer<Utf8> Function(Pointer<AmCall>)>('am_call_idempotency_key');
   late final am_call_is_cancelled = library
       .lookupFunction<Bool Function(Pointer<AmCall>), bool Function(Pointer<AmCall>)>(
           'am_call_is_cancelled');

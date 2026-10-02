@@ -121,7 +121,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
  * 按 handler 描述执行（顺序：progress → delayMs → mutate → counter 计数 → 结果，conformance/README.md 2.1）。
  * @input spec handler 描述；env.count 本次执行序号（counter 用，从 1 开始，由调用方按工具计数）；
- *   env.args 调用参数；env.progress / env.isCancelled / env.mutate 由 SDK 映射。
+ *   env.args 调用参数；env.idempotencyKey handler 上下文中的幂等键（没有时 undefined / null）；
+ *   env.progress / env.isCancelled / env.mutate 由 SDK 映射。
  * @output 与 SDK 无关的结果描述（`{kind:'throw'|'userAction'|'result'|'value'|'nothing', …}`），由 runner 映射为该语言的写法。
  */
 export async function execHandler(spec, env) {
@@ -136,6 +137,7 @@ export async function execHandler(spec, env) {
   if (spec.result && typeof spec.result === 'object') return { kind: 'result', result: spec.result };
   if ('return' in spec) return { kind: 'value', value: spec.return };
   if (spec.echo === true) return { kind: 'value', value: env.args };
+  if (spec.returnIdempotencyKey === true) return { kind: 'value', value: { idempotencyKey: env.idempotencyKey ?? null } };
   if (spec.counter === true) return { kind: 'value', value: { count: env.count } };
   return { kind: 'nothing' };
 }
@@ -286,6 +288,7 @@ export function registerJsApp(app, testCase, ToolCallError) {
             await execHandler(spec, {
               count: ++runs,
               args: input,
+              idempotencyKey: ctx.idempotencyKey,
               progress: (p, t, m) => ctx.progress?.(p, t, m),
               isCancelled: () => ctx.signal.aborted,
               mutate: (op) => registry.mutate(op),

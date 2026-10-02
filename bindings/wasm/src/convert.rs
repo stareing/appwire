@@ -931,7 +931,7 @@ pub enum JsEvent {
     Connect,
     Disconnect,
     Send { text: String },
-    InvokeTool { call_id: String, tool: u64, name: String, arguments: Value },
+    InvokeTool { call_id: String, tool: u64, name: String, arguments: Value, idempotency_key: Option<String> },
     CancelTool { call_id: String, reason: &'static str },
     ReadResource { read: u64, resource: u64, name: String },
     Navigate { navigate: u64, page: String, params: Value },
@@ -947,8 +947,8 @@ impl JsEvent {
             Event::Connect => JsEvent::Connect,
             Event::Disconnect => JsEvent::Disconnect,
             Event::Send(text) => JsEvent::Send { text },
-            Event::InvokeTool { call_id, tool, name, arguments } => {
-                JsEvent::InvokeTool { call_id, tool: tool.0, name, arguments }
+            Event::InvokeTool { call_id, tool, name, arguments, idempotency_key } => {
+                JsEvent::InvokeTool { call_id, tool: tool.0, name, arguments, idempotency_key }
             }
             Event::CancelTool { call_id, reason } => JsEvent::CancelTool { call_id, reason: cancel_reason(reason) },
             Event::ReadResource { read, resource, name } => {
@@ -968,13 +968,19 @@ impl JsEvent {
             JsEvent::Connect => object(vec![("type", "connect".into())]),
             JsEvent::Disconnect => object(vec![("type", "disconnect".into())]),
             JsEvent::Send { text } => object(vec![("type", "send".into()), ("text", text.into())]),
-            JsEvent::InvokeTool { call_id, tool, name, arguments } => object(vec![
-                ("type", "invokeTool".into()),
-                ("callId", call_id.into()),
-                ("tool", tool.into()),
-                ("name", name.into()),
-                ("arguments", arguments),
-            ]),
+            JsEvent::InvokeTool { call_id, tool, name, arguments, idempotency_key } => {
+                let mut fields = vec![
+                    ("type", "invokeTool".into()),
+                    ("callId", call_id.into()),
+                    ("tool", tool.into()),
+                    ("name", name.into()),
+                    ("arguments", arguments),
+                ];
+                if let Some(key) = idempotency_key {
+                    fields.push(("idempotencyKey", key.into()));
+                }
+                object(fields)
+            }
             JsEvent::CancelTool { call_id, reason } => {
                 object(vec![("type", "cancelTool".into()), ("callId", call_id.into()), ("reason", reason.into())])
             }
@@ -1285,8 +1291,24 @@ mod tests {
             (Event::Disconnect, json!({ "type": "disconnect" })),
             (Event::Send("x".into()), json!({ "type": "send", "text": "x" })),
             (
-                Event::InvokeTool { call_id: "c1".into(), tool: ToolId(7), name: "t".into(), arguments: json!({ "a": 1 }) },
+                Event::InvokeTool {
+                    call_id: "c1".into(),
+                    tool: ToolId(7),
+                    name: "t".into(),
+                    arguments: json!({ "a": 1 }),
+                    idempotency_key: None,
+                },
                 json!({ "type": "invokeTool", "callId": "c1", "tool": 7, "name": "t", "arguments": { "a": 1 } }),
+            ),
+            (
+                Event::InvokeTool {
+                    call_id: "c2".into(),
+                    tool: ToolId(7),
+                    name: "t".into(),
+                    arguments: json!({}),
+                    idempotency_key: Some("k-1".into()),
+                },
+                json!({ "type": "invokeTool", "callId": "c2", "tool": 7, "name": "t", "arguments": {}, "idempotencyKey": "k-1" }),
             ),
             (
                 Event::CancelTool { call_id: "c1".into(), reason: CancelReason::Timeout },

@@ -140,6 +140,9 @@ pub struct HubConfig {
     pub lease: LeasePolicy,
     /// 唤醒后等待 App 回连的上限，超时返回 `APP_NOT_RESPONDING`。
     pub wake_timeout: Duration,
+    /// 导航等待（spec/hub-api.md 3.14）：`app/navigate` 的回复与之后等待目标工具注册合计的上限，默认 5 秒
+    /// （[`DEFAULT_NAVIGATE_TIMEOUT`]）。显式导航（`apps.navigate`）只等回复，同样受此约束。
+    pub navigate_timeout: Duration,
     /// 唤醒令牌的有效期。
     pub wake_token_ttl: Duration,
     /// 每个 App 每分钟最多实际发出的唤醒激活次数（spec/lifecycle.md 第 12 节）；`0` = 不限。默认
@@ -151,6 +154,10 @@ pub struct HubConfig {
     pub dormant_ttl: Duration,
     /// 同一 appId 以新的实例 ID 连接时，移除该 App 的全部休眠记录。默认 `true`。
     pub dormant_replaced_by_new_instance: bool,
+    /// 持久状态目录（spec/hub-api.md 3.5「持久化」）：休眠记录写到 `<state_dir>/dormant/<appId>.json`（原子写、仅当前用户可读），
+    /// [`Hub::start`] 时读回，重启前休眠的 App 仍可列出、可唤醒。默认 `None`：Hub 不读写任何文件（嵌入式厂商按需开启）；
+    /// `app-mcp-host` 为 `<配置目录>/state`。
+    pub state_dir: Option<PathBuf>,
     /// App 未运行、清单没有显式声明 `wake` 时，是否由清单 `launch` 推导唤醒方式并冷启动
     /// （`launch.web` 的地址会被打开）。默认 `false`：只返回 `APP_DISCONNECTED` 与启动提示。
     pub wake_from_launch: bool,
@@ -187,6 +194,9 @@ pub const DEFAULT_TOOL_EXPOSURE_THRESHOLD: usize = 40;
 /// 限制在约 0.1 秒 CPU / 分钟。
 pub const DEFAULT_WAKE_RATE_LIMIT: u32 = 6;
 
+/// [`HubConfig::navigate_timeout`] 的默认值。
+pub const DEFAULT_NAVIGATE_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl Default for HubConfig {
     fn default() -> Self {
         Self {
@@ -213,11 +223,13 @@ impl Default for HubConfig {
             lease_ttl: Duration::from_secs(60),
             lease: LeasePolicy::default(),
             wake_timeout: Duration::from_secs(15),
+            navigate_timeout: DEFAULT_NAVIGATE_TIMEOUT,
             wake_token_ttl: Duration::from_secs(60),
             wake_rate_limit: DEFAULT_WAKE_RATE_LIMIT,
             legacy_heartbeat: false,
             dormant_ttl: Duration::from_secs(24 * 60 * 60),
             dormant_replaced_by_new_instance: true,
+            state_dir: None,
             wake_from_launch: false,
             waker: WakerConfig::System,
             tool_exposure: ToolExposure::Auto,
@@ -298,6 +310,8 @@ pub struct HubShared {
     pub(crate) power: Mutex<crate::power::PowerBook>,
     /// 自适应租约统计与会话请求活动（spec/lifecycle.md 第 13 节 B2）。
     pub(crate) leases: Mutex<LeaseBook>,
+    /// 休眠记录持久化（[`HubConfig::state_dir`]）；未配置时为 `None`。
+    pub(crate) persist: Option<crate::lifecycle::Persist>,
     /// 请求活动 / 默认租约变化时唤醒空闲收回任务。
     pub(crate) lease_changed: Notify,
     /// 调用限流状态与每 App 的拒绝计数（spec/hub-api.md 3.11）。
@@ -353,6 +367,7 @@ impl HubShared {
         }
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let policy = PolicyState::new(config.policy.clone(), unix_millis());
+        let persist = config.state_dir.as_deref().map(crate::lifecycle::Persist::new);
         Self {
             identity: HostIdentity::current(env!("CARGO_PKG_VERSION")),
             run_tag: format!("{:06x}", rand::random::<u32>() & 0x00ff_ffff),
@@ -382,6 +397,7 @@ impl HubShared {
             wakes: Mutex::new(Vec::new()),
             power: Mutex::new(crate::power::PowerBook::default()),
             leases: Mutex::new(LeaseBook::default()),
+            persist,
             lease_changed: Notify::new(),
             rates: Mutex::new(RateBook::default()),
             policy: Mutex::new(policy),
@@ -555,6 +571,7 @@ impl HubShared {
             limits: Some(LimitOverrides::from_policy(&self.config.limits)),
             output_validation: Some(self.config.output_validation),
             policy: Some(lock(&self.policy).status()),
+            dormant_store: self.persist.as_ref().map(crate::lifecycle::Persist::status),
         }
     }
 
@@ -937,6 +954,22 @@ impl HubShared {
             Some(i) => {
                 self.policy_hit(&policy, i);
                 Err(crate::policy::denied_error(&policy.rules[i].id, PolicyHook::Call, app_id, Some(tool)))
+            }
+        }
+    }
+
+    /// 调用执行点的 App 级检查（不针对具体工具的操作，如 `apps.navigate`）：只有不带 `tool` / `annotations` 的 `deny`（call）
+    /// 规则匹配 → `POLICY_DENIED`。App 整体隐藏由调用方按 appId 未知处理。
+    pub(crate) fn check_app_call_policy(&self, app_id: &str) -> Result<(), ToolError> {
+        let policy = self.policy();
+        if policy.is_empty() {
+            return Ok(());
+        }
+        match policy.denied(PolicyHook::Call, app_id, None) {
+            None => Ok(()),
+            Some(i) => {
+                self.policy_hit(&policy, i);
+                Err(crate::policy::denied_error(&policy.rules[i].id, PolicyHook::Call, app_id, None))
             }
         }
     }
@@ -1587,6 +1620,8 @@ impl Hub {
             .build()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.0.message))?;
         let shared = Arc::new(HubShared::new(config, waker));
+        // 先于任何监听读回休眠记录：App 回连时能按实例 ID 认领快照。
+        shared.load_persisted();
         let ipc_endpoint = ipc.as_ref().map(|(e, _)| e.clone());
         let mut hub = Hub {
             shared: shared.clone(),
@@ -1597,6 +1632,7 @@ impl Hub {
                 tokio::spawn(shared.clone().notify_loop()),
                 tokio::spawn(shared.clone().dormant_sweep_loop()),
                 tokio::spawn(shared.clone().lease_idle_loop()),
+                tokio::spawn(shared.clone().persist_loop()),
             ]),
             instance: Mutex::new(instance),
         };
@@ -1692,6 +1728,7 @@ impl Hub {
         for t in lock(&self.tasks).drain(..) {
             t.abort();
         }
+        self.shared.persist_flush();
         let conns = self.shared.registry().all_connections();
         for c in &conns {
             c.close();
@@ -2015,6 +2052,7 @@ impl Hub {
             timeout: None,
             call_id: parsed.id.clone(),
             progress: None,
+            idempotency_key: None,
         };
         let inv = self.shared.call(ctx, std::future::pending()).await;
         let r = match inv.to_mcp() {

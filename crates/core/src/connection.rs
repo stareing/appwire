@@ -75,8 +75,10 @@ pub(crate) struct Session {
     pub sleep_retry_at: Option<Millis>,
     /// 空闲条件（租约除外）开始成立的时刻。
     pub idle_anchor: Option<Millis>,
-    /// Host 租约截止时刻。
+    /// Host 租约截止时刻（两种租约中较晚者）。
     pub lease_until: Option<Millis>,
+    /// 其中自适应租约（`app/lease.adaptive`）的截止时刻：后台连接只看它（spec/lifecycle.md 第 13 节 B4）。
+    pub adaptive_lease_until: Option<Millis>,
     /// Host 不支持 `app/sleep`：本连接内不再尝试自动休眠。
     pub sleep_unsupported: bool,
     /// 休眠握手期间收到唤醒 / 持有：休眠完成后立即回连。
@@ -87,6 +89,8 @@ pub(crate) struct Session {
     pub served_call: bool,
     /// 进入后台后待立即休眠（B4）：空闲条件一成立就休眠，不等租约与空闲时长。
     pub background_sleep: bool,
+    /// 后台连接（B4）：握手完成时不可见且启用后台休眠——只认自适应租约，回到可见时清除。
+    pub background_connection: bool,
 }
 
 fn to_value<T: Serialize>(v: &T) -> Value {
@@ -186,6 +190,7 @@ impl Client {
             heartbeat_ms: (!c.lifecycle.legacy_timers).then(|| self.heartbeat_interval().unwrap_or(0)),
             lifecycle_mode: Some(c.lifecycle.mode),
             capabilities: c.navigation.then_some(proto::SdkCapabilities { navigate: true }),
+            wake: c.lifecycle.wake.clone().filter(|w| w.kind != proto::WakeKind::None),
         };
         let params = match self.life.resume_token.clone() {
             Some(resume) => HelloParams { resume_token: Some(resume), tools_hash: Some(self.tools_hash()), ..params },
@@ -205,7 +210,8 @@ impl Client {
         }
         for call in self.calls.clear() {
             let outcome = Err(interrupted_error(&call, reason));
-            self.dedup.record(&self.config.call_dedup, &call.call_id, outcome, self.life.last_now);
+            let idem = call.idem();
+            self.dedup.record(&self.config.call_dedup, &call.call_id, idem.as_deref(), outcome, self.life.last_now);
             self.events.push_back(Event::CancelTool { call_id: call.call_id, reason });
         }
         // @why 订阅随连接清空、由 Host 回连后重新订阅；记下断开时的订阅，期间的变化在重新订阅时补发（B3）。
@@ -330,6 +336,7 @@ impl Client {
         self.session.heartbeat =
             Heartbeat { next_ping_at: self.heartbeat_interval().map(|ms| now.saturating_add(ms)), outstanding: None };
         self.set_state(ConnectionState::Connected);
+        self.mark_background_connection();
         self.refresh_idle(now);
     }
 
@@ -451,7 +458,8 @@ impl Client {
     /// 回复一次调用及挂在它上面的重复请求；`started`（handler 已开始执行）时把结果记入去重表（spec/protocol.md 3.3）。
     fn respond_call(&mut self, call: Call, outcome: Outcome, started: bool) {
         if started {
-            self.dedup.record(&self.config.call_dedup, &call.call_id, outcome.clone(), self.life.last_now);
+            let idem = call.idem();
+            self.dedup.record(&self.config.call_dedup, &call.call_id, idem.as_deref(), outcome.clone(), self.life.last_now);
         }
         for id in call.waiters {
             self.respond(id, outcome.clone());
@@ -502,6 +510,7 @@ impl Client {
                         tool: call.tool,
                         name: call.name.clone(),
                         arguments: call.arguments.clone(),
+                        idempotency_key: call.idempotency_key.clone(),
                     });
                     self.calls.start(call);
                 }
@@ -527,9 +536,11 @@ impl Client {
 
     fn on_invoke(&mut self, id: RequestId, p: ToolsInvokeParams, now: Millis) {
         self.session.served_call = true;
-        // 去重（spec/protocol.md 3.3）：已开始执行过的 callId 重放首次结果；进行中 / 排队中的挂到同一次执行上。
+        // 去重（spec/protocol.md 3.3）：已开始执行过的 callId（或同一工具的同一幂等键）重放首次结果；
+        // 进行中 / 排队中的挂到同一次执行上。
         // @why 命中只记一条警告日志（SDK 本地可观测，spec/protocol.md 3.3），不另设计数器或上报 Host。
-        if let Some(outcome) = self.dedup.lookup(&self.config.call_dedup, &p.call_id, now) {
+        let idem = p.idempotency_key.as_deref().map(|k| crate::dedup::idempotency_match_key(&p.name, k));
+        if let Some(outcome) = self.dedup.lookup(&self.config.call_dedup, &p.call_id, idem.as_deref(), now) {
             self.warn(format!("callId {:?} 重复到达（调用去重）：重放首次结果，不再执行", p.call_id));
             self.respond(id, outcome);
             return;
@@ -542,6 +553,13 @@ impl Client {
                 let err = RpcError::invalid_params(format!("callId {:?} 已存在", p.call_id));
                 self.respond(id, Err(err));
             }
+            return;
+        }
+        if self.config.call_dedup.enabled()
+            && let Some(key) = p.idempotency_key.as_deref()
+            && self.calls.attach_idempotent(&p.name, key, id.clone())
+        {
+            self.warn(format!("callId {:?} 的幂等键与执行中的调用相同（调用去重）：挂到同一次调用", p.call_id));
             return;
         }
         let tool = match self.registry.tool_by_name(&p.name) {
@@ -568,6 +586,7 @@ impl Client {
             tool,
             name: p.name,
             arguments: p.arguments,
+            idempotency_key: p.idempotency_key,
             timeout_ms: p.timeout_ms,
             deadline: p.timeout_ms.map(|t| now.saturating_add(t)),
             waiters: Vec::new(),
@@ -786,7 +805,7 @@ impl Client {
                     return;
                 }
                 match serde_json::from_value::<proto::LeaseParams>(n.params) {
-                    Ok(p) => self.on_lease(p.ttl_ms, now),
+                    Ok(p) => self.on_lease(p.ttl_ms, p.adaptive, now),
                     Err(e) => self.warn(format!("app/lease 参数无效：{e}")),
                 }
             }

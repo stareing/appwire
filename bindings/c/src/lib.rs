@@ -1342,6 +1342,14 @@ pub unsafe extern "C" fn am_call_arguments_json(call: *const AmCall) -> *const c
     unsafe { call.as_ref() }.map_or(std::ptr::null(), |c| c.arguments.as_ptr())
 }
 
+/// v16：Agent 幂等键（spec/protocol.md 3.3）；没有时返回 NULL。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_call_idempotency_key(call: *const AmCall) -> *const c_char {
+    unsafe { call.as_ref() }
+        .and_then(|c| c.idempotency_key.as_ref())
+        .map_or(std::ptr::null(), |k| k.as_ptr())
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn am_call_is_cancelled(call: *const AmCall) -> bool {
     guard_value(false, || {

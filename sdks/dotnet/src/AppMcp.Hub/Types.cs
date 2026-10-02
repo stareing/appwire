@@ -232,6 +232,12 @@ public sealed class HubOptions
     public string? RunDir { get; set; }
 
     /// <summary>
+    /// 持久状态目录（spec/hub-api.md 3.5「持久化」）：休眠记录写到 &lt;StateDir&gt;/dormant/&lt;appId&gt;.json（原子写、仅当前用户可读），
+    /// 启动时读回，重启前休眠的 App 仍可列出、可唤醒。null 时不读写任何文件。
+    /// </summary>
+    public string? StateDir { get; set; }
+
+    /// <summary>
     /// 本地 IPC 端点（原生 App 默认连接这里，spec/protocol.md 1.2）："unix:&lt;绝对路径&gt;" 或
     /// "pipe:\\.\pipe\&lt;名称&gt;"；null 时为平台默认端点（Windows 为 \\.\pipe\app-mcp-&lt;用户 SID&gt;）。
     /// </summary>
@@ -262,6 +268,9 @@ public sealed class HubOptions
     public TimeSpan? LeaseTtl { get; set; }
     /// <summary>唤醒后等待 App 回连的上限（默认 15 秒），超时 → APP_NOT_RESPONDING。</summary>
     public TimeSpan? WakeTimeout { get; set; }
+    /// <summary>导航等待上限（App 回复 + 目标工具注册，默认 5 秒，独立于 <see cref="WakeTimeout"/>；spec/hub-api.md 3.14 / 3.15），
+    /// 超时 → NAVIGATION_FAILED。</summary>
+    public TimeSpan? NavigateTimeout { get; set; }
     /// <summary>唤醒令牌有效期（默认 60 秒）。</summary>
     public TimeSpan? WakeTokenTtl { get; set; }
     /// <summary>休眠记录保留时长（默认 24 小时），过期后不再列出其工具。</summary>
@@ -338,6 +347,7 @@ public sealed class HubOptions
         else if (Listen is not null) o["listen"] = Listen;
         if (McpHttp) o["mcpHttp"] = true;
         if (RunDir is not null) o["runDir"] = RunDir;
+        if (StateDir is not null) o["stateDir"] = StateDir;
         if (DisableIpc) o["ipcEndpoint"] = null;
         else if (IpcEndpoint is not null) o["ipcEndpoint"] = IpcEndpoint;
         if (Manifests.Count > 0) o["manifests"] = new JsonArray(Manifests.Select(m => m.DeepClone()).ToArray());
@@ -354,6 +364,7 @@ public sealed class HubOptions
         AddMs(o, "progressIntervalMs", ProgressInterval);
         AddMs(o, "leaseTtlMs", LeaseTtl);
         AddMs(o, "wakeTimeoutMs", WakeTimeout);
+        AddMs(o, "navigateTimeoutMs", NavigateTimeout);
         AddMs(o, "wakeTokenTtlMs", WakeTokenTtl);
         AddMs(o, "dormantTtlMs", DormantTtl);
         if (DormantReplacedByNewInstance is { } drn) o["dormantReplacedByNewInstance"] = drn;
@@ -508,6 +519,8 @@ public sealed class CallRequest
     public string? CallId { get; init; }
     /// <summary>厂商会话 ID；null = 默认会话。</summary>
     public string? Session { get; init; }
+    /// <summary>Agent 的幂等键（1..=256 个字符），原样转交 App（spec/hub-api.md 3.15）；不合法时结果为 INVALID_INPUT。</summary>
+    public string? IdempotencyKey { get; init; }
 
     internal string ToJson(JsonSerializerOptions options)
     {
@@ -520,6 +533,7 @@ public sealed class CallRequest
         if (Timeout is { } t) o["timeout"] = (ulong)Math.Max(0, t.TotalMilliseconds);
         if (CallId is not null) o["callId"] = CallId;
         if (Session is not null) o["session"] = Session;
+        if (IdempotencyKey is not null) o["idempotencyKey"] = IdempotencyKey;
         return o.ToJsonString();
     }
 }
@@ -604,6 +618,7 @@ public sealed class CallOutcome
         {
             Annotations = ann.Deserialize<HubContentAnnotations>(AppMcpHub.WireOptions);
         }
+        if (json.TryGetProperty("routedTo", out var rt) && rt.ValueKind == JsonValueKind.String) RoutedTo = rt.GetString();
     }
 
     public string CallId { get; }
@@ -623,6 +638,8 @@ public sealed class CallOutcome
     public string? Summary { get; }
     /// <summary>App 对结果内容的标注（MCP 内容注解），原样。</summary>
     public HubContentAnnotations? Annotations { get; }
+    /// <summary>App 在后台、Hub 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则为 null。</summary>
+    public string? RoutedTo { get; }
     /// <summary>原始 CallOutcome JSON。</summary>
     public JsonElement Json { get; }
 
@@ -671,6 +688,15 @@ public static class HubAvailability
     public const string Dormant = "dormant";
 }
 
+/// <summary>App 工具对界面的依赖（HubTool.surface 的取值，spec/protocol.md 3.4）。</summary>
+public static class HubToolSurface
+{
+    /// <summary>不依赖界面（未声明即此值）。</summary>
+    public const string App = "app";
+    /// <summary>只在所在界面可见且处于最上层时注册。</summary>
+    public const string View = "view";
+}
+
 /// <summary>实例信息（InstanceInfo）。</summary>
 public sealed record InstanceInfo(
     string InstanceId,
@@ -707,7 +733,27 @@ public sealed record HubStatusInfo(
     public OutputValidation? OutputValidation { get; init; }
     /// <summary>策略规则、命中次数与最近的加载错误；旧 Hub 为 null。</summary>
     public HubPolicyStatusInfo? Policy { get; init; }
+    /// <summary>休眠记录持久化状态；未配置 <see cref="HubOptions.StateDir"/> 或旧 Hub 时为 null。</summary>
+    public DormantStoreStatusInfo? DormantStore { get; init; }
 }
+
+/// <summary>
+/// 休眠记录持久化状态（DormantStoreStatus）。Dir：&lt;StateDir&gt;/dormant；LoadedInstances / ExpiredInstances：启动时读回 / 因过期丢弃的实例数；
+/// Writes：启动以来成功写入 / 删除文件的次数；Issues：启动时跳过的文件（损坏、版本未知、超出上限）。
+/// </summary>
+public sealed record DormantStoreStatusInfo(
+    string Dir,
+    ulong LoadedInstances,
+    ulong ExpiredInstances,
+    ulong Writes,
+    IReadOnlyList<StoreIssueInfo> Issues)
+{
+    /// <summary>最近一次写入失败。</summary>
+    public string? LastError { get; init; }
+}
+
+/// <summary>被跳过的文件（File：相对于休眠记录目录）与中文说明。</summary>
+public sealed record StoreIssueInfo(string File, string Reason);
 
 /// <summary>策略状态（PolicyStatus）：生效的规则（按顺序）与命中次数、规则集生效时刻（Unix 毫秒）。</summary>
 public sealed record HubPolicyStatusInfo(IReadOnlyList<HubPolicyRuleStatus> Rules, ulong LoadedAtMs)
@@ -865,6 +911,10 @@ public sealed record HubToolInfo(
     public HubToolAnnotations? Annotations { get; init; }
     /// <summary>App 声明的结果 JSON Schema（MCP outputSchema）；未声明为 null。</summary>
     public JsonElement? OutputSchema { get; init; }
+    /// <summary>App 工具的界面依赖（<see cref="HubToolSurface"/> 的取值）；内置与上游工具为 null。</summary>
+    public string? Surface { get; init; }
+    /// <summary>App 工具所在页面（spec/hub-api.md 3.14）；不属于页面时为 null。</summary>
+    public string? Page { get; init; }
 }
 
 /// <summary>唤醒请求（WakeRequest，spec/hub-api.md 3.5），交给 <see cref="AppMcpHub.Waker"/>。</summary>

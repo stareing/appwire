@@ -1,14 +1,17 @@
-//! Host 侧的生命周期配合（spec/lifecycle.md §9）：休眠、唤醒等待、租约、休眠记录过期。
+//! Host 侧的生命周期配合（spec/lifecycle.md §9）：休眠、唤醒等待、租约、休眠记录过期与持久化。
 
+use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use app_mcp_protocol::{ErrorKind, LeaseParams, ToolError, method};
 use serde_json::{Value, json};
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 use tokio::time::Instant;
 
 use crate::connection::Connection;
+use crate::dormant_store::{DormantStore, DormantStoreStatus};
 use crate::hub::{HubShared, lock};
 use crate::registry::{WakePlan, WakeTargetPresence};
 use crate::types::{AwakeReason, HubEvent};
@@ -355,7 +358,7 @@ impl HubShared {
         let now = Instant::now();
         let g = lock(&self.leases).grant(session_key, app_id, &self.config.lease, self.config.lease_ttl, now);
         tracing::debug!(cid = %conn.cid, app_id, session = session_key, ttl_ms = g.ttl.as_millis() as u64, adaptive = g.adaptive, "发出租约");
-        send_lease(conn, g.ttl);
+        send_lease(conn, g.ttl, g.adaptive);
         self.session_state()
             .entry(session_key.to_owned())
             .or_default()
@@ -380,10 +383,21 @@ impl HubShared {
     /// 未到期租约，以及 [`Revoke::DefaultOnly`] 时本会话的自适应部分。返回实际发出收回（实例仍在连接）的个数。
     /// `DefaultOnly` 时默认值部分不决定有效截止的连接只清除记录、不发消息。
     fn revoke_leases(&self, session_key: &str, scope: Revoke) -> u64 {
+        self.revoke_leases_where(session_key, scope, |_| true)
+    }
+
+    /// `apps.release`（spec/hub-api.md 3.5「显式释放」）：收回会话在 `conn_ids` 这些连接上的全部租约，其他会话的未到期租约
+    /// 随后补发。返回实际发出收回的个数。
+    pub(crate) fn release_leases_on(&self, session_key: &str, conn_ids: &std::collections::HashSet<u64>) -> u64 {
+        self.revoke_leases_where(session_key, Revoke::All, |id| conn_ids.contains(&id))
+    }
+
+    /// [`HubShared::revoke_leases`]，只作用于 `include` 选中的连接。
+    fn revoke_leases_where(&self, session_key: &str, scope: Revoke, include: impl Fn(u64) -> bool) -> u64 {
         let mut states = self.session_state();
         let now = Instant::now();
         let Some(mine) = states.get_mut(session_key).map(|s| {
-            let ids: Vec<u64> = s.leases.keys().copied().collect();
+            let ids: Vec<u64> = s.leases.keys().copied().filter(|id| include(*id)).collect();
             let mut out = Vec::new();
             for id in ids {
                 let Some(mut entry) = s.leases.remove(&id) else { continue };
@@ -408,14 +422,20 @@ impl HubShared {
         let mut n = 0;
         for (conn_id, conn, keep) in mine {
             let Some(conn) = conn.upgrade() else { continue };
-            let others = states
+            // @why 按种类分别补发：SDK 分别记两种租约，后台连接只认自适应租约（spec/lifecycle.md 第 13 节 B4）。
+            let others: Vec<&LeaseEntry> = states
                 .iter()
                 .filter(|(k, _)| k.as_str() != session_key)
-                .filter_map(|(_, s)| s.leases.get(&conn_id).and_then(LeaseEntry::expires))
-                .max();
-            send_lease(&conn, Duration::ZERO);
-            if let Some(exp) = others.max(keep).filter(|e| *e > now) {
-                send_lease(&conn, exp - now);
+                .filter_map(|(_, s)| s.leases.get(&conn_id))
+                .collect();
+            let default = others.iter().filter_map(|l| l.default_until).max().filter(|e| *e > now);
+            let adaptive = others.iter().filter_map(|l| l.adaptive_until).max().max(keep).filter(|e| *e > now);
+            send_lease(&conn, Duration::ZERO, false);
+            if let Some(exp) = default.filter(|d| adaptive.is_none_or(|a| d > &a)) {
+                send_lease(&conn, exp - now, false);
+            }
+            if let Some(exp) = adaptive {
+                send_lease(&conn, exp - now, true);
             }
             n += 1;
         }
@@ -476,16 +496,116 @@ impl HubShared {
         for (app_id, instance_id) in removed {
             tracing::info!(app_id, instance_id, "移除休眠实例记录");
             lock(&self.power).forget(&app_id, &instance_id);
+            self.mark_dormant_dirty(&app_id);
             self.emit(HubEvent::AppDisconnected { app_id, instance_id });
         }
         self.mark_tools_changed();
         self.mark_resources_changed();
     }
+
+    // ------------------------------------------------------------------
+    // 休眠记录持久化（spec/hub-api.md 3.5「持久化」；格式与文件 I/O 见 crate::dormant_store）
+    // ------------------------------------------------------------------
+
+    /// 某 App 的休眠记录变化（休眠、回连取走、移除）：未配置持久化时不做任何事；否则由 [`HubShared::persist_loop`] 重写其文件。
+    pub(crate) fn mark_dormant_dirty(&self, app_id: &str) {
+        if let Some(p) = &self.persist {
+            lock(&p.dirty).insert(app_id.to_owned());
+            p.notify.notify_one();
+        }
+    }
+
+    /// 启动时读回休眠记录并登记到注册表（[`Hub::start`](crate::Hub::start) 在监听之前调用）。
+    pub(crate) fn load_persisted(&self) {
+        let Some(p) = &self.persist else { return };
+        let report = p.store.load(SystemTime::now(), self.config.dormant_ttl);
+        let (mut loaded, mut expired) = (0u64, 0u64);
+        for app in report.apps {
+            expired += app.expired as u64;
+            let n = self.registry().restore_dormant(&app.app_id, app.instances, &app.page_tools);
+            loaded += n as u64;
+            if app.expired > 0 {
+                // 文件里还有过期实例：按内存中的记录重写。
+                self.mark_dormant_dirty(&app.app_id);
+            }
+            tracing::info!(app_id = %app.app_id, instances = n, "读回休眠记录");
+        }
+        let mut st = lock(&p.status);
+        st.loaded_instances = loaded;
+        st.expired_instances = expired;
+        st.issues = report.issues;
+    }
+
+    /// 按变化重写休眠记录文件。没有变化时只等待通知，不设定时器；未配置持久化时立即结束。
+    pub(crate) async fn persist_loop(self: Arc<Self>) {
+        let Some(p) = &self.persist else { return };
+        loop {
+            p.notify.notified().await;
+            let shared = self.clone();
+            // @why 文件写入是阻塞 I/O，放到阻塞线程池；同一时刻只有这一个写入方，同一 App 的写入不会乱序。
+            if let Err(e) = tokio::task::spawn_blocking(move || shared.persist_flush()).await {
+                tracing::error!(error = %e, "休眠记录写入任务异常结束");
+            }
+        }
+    }
+
+    /// 立即写出所有待写的 App（[`Hub::shutdown`](crate::Hub::shutdown) 与 [`HubShared::persist_loop`]）。阻塞。
+    pub(crate) fn persist_flush(&self) {
+        let Some(p) = &self.persist else { return };
+        // @why 串行化：shutdown 与仍在运行的持久化任务同时写同一 App 时，后取快照的必须后写。
+        let _writing = lock(&p.writing);
+        let apps = std::mem::take(&mut *lock(&p.dirty));
+        for app_id in apps {
+            let (dormant, page_tools) = self.registry().dormant_view(&app_id);
+            let content = crate::dormant_store::snapshot(&app_id, &dormant, &page_tools, SystemTime::now());
+            let result = p.store.save(&app_id, content.as_ref());
+            let mut st = lock(&p.status);
+            match result {
+                Ok(()) => st.writes += 1,
+                Err(e) => {
+                    tracing::warn!(app_id, error = %e, dir = %p.store.dir().display(), "写休眠记录失败");
+                    st.last_error = Some(format!("{app_id}：{e}"));
+                }
+            }
+        }
+    }
 }
 
-fn send_lease(conn: &Connection, ttl: Duration) {
+/// 休眠记录持久化的运行状态（[`HubShared::persist`]，配置了 `HubConfig::state_dir` 时存在）。
+///
+/// @invariant 只有 [`HubShared::persist_flush`] 写文件（持久化任务与 `shutdown` 都经它，持 `writing` 串行执行；`dirty` 取出即清空）。
+pub(crate) struct Persist {
+    store: DormantStore,
+    writing: std::sync::Mutex<()>,
+    /// 待重写的 appId。
+    dirty: std::sync::Mutex<BTreeSet<String>>,
+    notify: Notify,
+    status: std::sync::Mutex<DormantStoreStatus>,
+}
+
+impl Persist {
+    pub(crate) fn new(state_dir: &Path) -> Self {
+        let store = DormantStore::new(state_dir);
+        let status = DormantStoreStatus { dir: store.dir().display().to_string(), ..Default::default() };
+        Self {
+            store,
+            writing: std::sync::Mutex::new(()),
+            dirty: Default::default(),
+            notify: Notify::new(),
+            status: std::sync::Mutex::new(status),
+        }
+    }
+
+    pub(crate) fn status(&self) -> DormantStoreStatus {
+        lock(&self.status).clone()
+    }
+}
+
+/// 发送 `app/lease`；`adaptive` 标明租约来自调用间隔统计（spec/lifecycle.md 第 13 节 B4：后台连接只认这种）。
+fn send_lease(conn: &Connection, ttl: Duration, adaptive: bool) {
     let p = LeaseParams {
         ttl_ms: ttl.as_millis() as u64,
+        adaptive,
     };
     conn.notify(
         method::LEASE,

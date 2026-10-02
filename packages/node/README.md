@@ -103,6 +103,9 @@ the process itself).
   `heartbeat`, `callDedup` (`{ ttlMs?, maxEntries? }`, default 300000 ms / 64 entries, either 0 turns it off: a
   repeated `callId` within the TTL gets the first result replayed instead of running the handler again; each hit is
   logged as a warning).
+- Handler context: `callId`, `signal`, `hold()`, `progress()`, and `idempotencyKey` (the agent's idempotency key, passed
+  through verbatim and stable across retries; absent when the agent gave none - see spec/protocol.md 3.3). Use it as a
+  business-level dedup key or forward it to your backend.
 - `AppMcp` - `tool`, `resource`, `scope`, `state`, `onStateChange`, `dispose`, plus Node-specific
   `start`, `setVisibility`, `handleWake`, `wake`, `connectNow`, `sleep`, `hold`, `onIdleExit`, `token`.
 - Navigation (spec/protocol.md 3.4): tool options `surface` (`'app'` default / `'view'`: only registered while its screen

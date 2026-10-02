@@ -129,6 +129,8 @@ pub struct AmCall {
     pub(crate) id: CString,
     pub(crate) tool_name: CString,
     pub(crate) arguments: CString,
+    /// v16：Agent 幂等键（spec/protocol.md 3.3）；没有时为 None。
+    pub(crate) idempotency_key: Option<CString>,
 }
 
 impl AmCall {
@@ -136,11 +138,13 @@ impl AmCall {
         let id = to_cstring_lossy(&handle.call_id());
         let tool_name = to_cstring_lossy(&handle.tool_name());
         let arguments = to_cstring_lossy(&handle.arguments_json());
+        let idempotency_key = handle.idempotency_key().map(|k| to_cstring_lossy(&k));
         Self {
             handle,
             id,
             tool_name,
             arguments,
+            idempotency_key,
         }
     }
 }

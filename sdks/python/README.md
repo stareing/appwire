@@ -72,6 +72,10 @@ def submit() -> ToolResult:
 - Call de-duplication (`spec/protocol.md` §3.3): a retried `callId` replays the first result for 300 s / 64 entries by
   default. Tune or disable it with `AppMcp(..., call_dedup=CallDedup(ttl=60, max_entries=16))` /
   `call_dedup=CallDedup.OFF`; each hit is logged as a warning.
+- Agent idempotency key (`spec/protocol.md` §3.3): a handler that takes `ctx: ToolContext` reads
+  `ctx.idempotency_key` — the key the agent attached to the request, verbatim, or `None`. Repeats of the same key on
+  the same tool are already replayed by the SDK like a retried `callId`; use the key yourself for business-level
+  de-duplication (e.g. pass it to your backend).
 
 ### View tools and navigation (optional, `spec/protocol.md` §3.4)
 
@@ -153,6 +157,14 @@ when a result does not match the tool's `outputSchema`: skip the check, log a wa
 `HANDLER_ERROR`. Rejected calls still return a `CallResult` whose `error.kind` is `"RATE_LIMITED"` or
 `"PAYLOAD_TOO_LARGE"`. `CallResult` also carries the app's `status` (`ResultStatus`), `state_resource`, `summary`
 and `annotations`.
+
+Pages, navigation and idempotency (`spec/hub-api.md` §3.14 / §3.15): `HubTool.surface` (`ToolSurface.APP` / `VIEW`)
+and `HubTool.page` describe an app tool's UI dependency and page (`None` for built-in and upstream tools).
+`Hub(navigate_timeout_ms=5000)` bounds automatic navigation (default 5 s). `await hub.call_tool("shop.order.submit",
+{...}, idempotency_key="order-7")` passes the agent's idempotency key to the app unchanged (`ctx.idempotency_key`);
+an invalid key ends the call with `INVALID_INPUT`. When the Hub routes a view tool to its declared background tool,
+`CallResult.routed_to` names the tool actually called. Built-in tools `apps.activate` / `apps.release` are always
+listed, plus `apps.page` / `apps.navigate` when a page catalog exists.
 
 Policy hook points (`spec/hub-api.md` §3.13): `Hub(policy={"rules": [{"id": "no-pay", "action": "deny", "app": "shop",
 "tool": "pay*"}]})` or `hub.set_policy(...)` at runtime. `hide` removes an app / tool from every list (calls get

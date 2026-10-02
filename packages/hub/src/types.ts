@@ -10,6 +10,8 @@
 export type Risk = 'read' | 'write' | 'destructive' | 'payment' | 'os-sensitive'
 export type Activation = 'headless' | 'background' | 'foreground'
 export type Visibility = 'visible' | 'hidden' | 'frozen'
+/** App 工具对界面的依赖（spec/protocol.md 3.4）：`app` 不依赖界面（未声明即此值）；`view` 只在所在界面处于最上层时注册。 */
+export type ToolSurface = 'app' | 'view'
 
 /** 协议错误类别（spec/protocol.md §4）。 */
 export type ErrorKind =
@@ -219,6 +221,11 @@ export interface HubConfig {
   /** 单实例锁与登记文件目录（`<runDir>/hub.lock`、`endpoints.json`，spec/protocol.md 1.5、1.7）；缺省不参与。 */
   runDir?: string
   /**
+   * 持久状态目录（spec/hub-api.md 3.5「持久化」）：休眠记录写到 `<stateDir>/dormant/<appId>.json`（原子写、仅当前用户可读），
+   * 启动时读回，重启前休眠的 App 仍可列出、可唤醒。缺省不读写任何文件。
+   */
+  stateDir?: string
+  /**
    * 本地 IPC 端点（原生 App 默认连接这里，spec/protocol.md 1.2）：`unix:<绝对路径>` 或 `pipe:\\.\pipe\<名称>`（JS 字符串中反斜杠需转义）；
    * 缺省为平台默认端点（Linux `$XDG_RUNTIME_DIR/app-mcp/hub.sock` 等）；`null` = 不开。
    */
@@ -247,6 +254,11 @@ export interface HubConfig {
   leaseTtlMs?: number
   /** 唤醒后等待 App 回连的上限，缺省 15000（超时 → APP_NOT_RESPONDING）。 */
   wakeTimeoutMs?: number
+  /**
+   * 导航等待上限（App 回复 + 目标工具注册，spec/hub-api.md 3.14 / 3.15），缺省 5000，独立于 `wakeTimeoutMs`
+   * （超时 → NAVIGATION_FAILED）。
+   */
+  navigateTimeoutMs?: number
   /** 唤醒令牌有效期，缺省 60000。 */
   wakeTokenTtlMs?: number
   /** 休眠记录保留时长，缺省 86400000（24 小时）。 */
@@ -345,6 +357,10 @@ export interface HubTool {
   outputSchema?: JsonSchema
   activation: Activation
   availability: Availability
+  /** App 工具的界面依赖；内置与上游工具缺省。 */
+  surface?: ToolSurface
+  /** App 工具所在页面（spec/hub-api.md 3.14）；不属于页面时缺省。 */
+  page?: string
 }
 
 export interface ToolFilter {
@@ -415,6 +431,11 @@ export interface CallRequest {
   callId?: string | null
   /** 厂商会话 ID：总览首次附带、`apps.select` 按会话计算。 */
   session?: string | null
+  /**
+   * Agent 的幂等键（1..=256 个字符），原样转交 App（spec/hub-api.md 3.15）；同一键的重复调用由 App 决定是否只执行一次。
+   * 不合法时调用以 `INVALID_INPUT` 结束。
+   */
+  idempotencyKey?: string | null
 }
 
 /** 一条调用进度（spec/hub-api.md 3.12）：已按 `progressIntervalMs` 合并、丢弃不递增的值；`message` 最长 200 字符。 */
@@ -614,6 +635,32 @@ export interface HubStatus {
   outputValidation?: OutputValidation
   /** 策略规则、命中次数与最近的加载错误；旧 Hub 缺省。 */
   policy?: PolicyStatus
+  /** 休眠记录持久化状态；未配置 `stateDir` 或旧 Hub 时缺省。 */
+  dormantStore?: DormantStoreStatus
+}
+
+/** 休眠记录持久化状态（`HubConfig.stateDir`）。 */
+export interface DormantStoreStatus {
+  /** 休眠记录目录（`<stateDir>/dormant`）。 */
+  dir: string
+  /** 启动时读回的实例数。 */
+  loadedInstances: number
+  /** 启动时因过期丢弃的实例数。 */
+  expiredInstances: number
+  /** 启动以来成功写入 / 删除文件的次数。 */
+  writes: number
+  /** 启动时跳过的文件（损坏、版本未知、超出上限）。 */
+  issues: StoreIssue[]
+  /** 最近一次写入失败。 */
+  lastError?: string
+}
+
+/** 读取 / 写入中被跳过的文件或失败。 */
+export interface StoreIssue {
+  /** 文件名（相对于休眠记录目录）。 */
+  file: string
+  /** 中文说明。 */
+  reason: string
 }
 
 /** 租约策略与统计。 */

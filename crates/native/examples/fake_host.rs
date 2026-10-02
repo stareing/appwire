@@ -32,7 +32,8 @@
 //! 一致性测试（conformance/README.md）用到的附加参数（都是可选的新增，不影响上面的行为）：
 //!
 //! - `--invoke` 之后的修饰：`--call-id <id>`（指定 `callId`，缺省 `c<序号>`）、`--invoke-timeout-ms <ms>`（缺省 5000）、
-//!   `--cancel-after-ms <ms>`（发出调用后该时间仍未收到结果则发送 `tools/cancel`）。
+//!   `--cancel-after-ms <ms>`（发出调用后该时间仍未收到结果则发送 `tools/cancel`）、`--idempotency-key <key>`
+//!   （`ToolsInvokeParams.idempotencyKey`，spec/protocol.md 3.3）。
 //! - `--catalog <settleMs>`：继续处理消息 settleMs 后打印
 //!   `{"type":"catalog","tools":{<名称>:ToolInfo},"resources":{<名称>:ResourceInfo},"toolsHash"}`（`toolsHash` 由 Host 按 8.4 计算）。
 //! - `--delay <ms>`：继续处理消息 ms 后再执行下一步。
@@ -87,6 +88,7 @@ struct InvokeOpts {
     call_id: Option<String>,
     timeout_ms: Option<u64>,
     cancel_after_ms: Option<u64>,
+    idempotency_key: Option<String>,
 }
 
 impl Op {
@@ -159,13 +161,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
                     _ => return Err("--args 必须紧跟在 --invoke <tool> 之后".to_owned()),
                 }
             }
-            "--call-id" | "--invoke-timeout-ms" | "--cancel-after-ms" => {
+            "--call-id" | "--invoke-timeout-ms" | "--cancel-after-ms" | "--idempotency-key" => {
                 let text = value(&flag)?;
                 let Some(Op::Invoke { opts: inv, .. }) = opts.ops.last_mut() else {
                     return Err(format!("{flag} 必须跟在 --invoke <tool> 之后"));
                 };
                 match flag.as_str() {
                     "--call-id" => inv.call_id = Some(text),
+                    "--idempotency-key" => inv.idempotency_key = Some(text),
                     "--invoke-timeout-ms" => inv.timeout_ms = Some(parse_u64(&flag, &text)?),
                     _ => inv.cancel_after_ms = Some(parse_u64(&flag, &text)?),
                 }
@@ -593,6 +596,7 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                         name: name.clone(),
                         arguments: args,
                         timeout_ms: Some(opts.timeout_ms.unwrap_or(5000)),
+                        idempotency_key: opts.idempotency_key,
                     };
                     let msg = Message::request(id.clone(), method::TOOLS_INVOKE, to_value(&params));
                     send(&mut ws, &msg).await?;
@@ -858,7 +862,7 @@ where
 {
     match lease_ms {
         Some(ttl_ms) => {
-            let msg = Message::notification(method::LEASE, to_value(&LeaseParams { ttl_ms }));
+            let msg = Message::notification(method::LEASE, to_value(&LeaseParams { ttl_ms, ..Default::default() }));
             send(ws, &msg).await
         }
         None => Ok(()),
@@ -961,7 +965,7 @@ mod tests {
                 Op::Invoke {
                     name: "a".into(),
                     args: json!({}),
-                    opts: InvokeOpts { call_id: Some("x".into()), timeout_ms: Some(100), cancel_after_ms: Some(50) },
+                    opts: InvokeOpts { call_id: Some("x".into()), timeout_ms: Some(100), cancel_after_ms: Some(50), idempotency_key: None },
                 },
                 Op::Catalog { settle_ms: 200 },
                 Op::Delay { ms: 10 },

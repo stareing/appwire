@@ -64,6 +64,10 @@ impl AppHome {
     pub fn registry_file(&self) -> PathBuf {
         self.run_dir().join(app_mcp_protocol::registry::REGISTRY_FILE)
     }
+    /// 持久状态目录（`HubConfig::state_dir`）：休眠记录 `dormant/<appId>.json`（spec/hub-api.md 3.5「持久化」）。
+    pub fn state_dir(&self) -> PathBuf {
+        self.dir.join("state")
+    }
 }
 
 /// 转为绝对路径（不要求存在），并展开开头的 `~/`。
@@ -123,6 +127,9 @@ pub struct LifecycleSection {
     pub lease_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wake_timeout_ms: Option<u64>,
+    /// 导航等待上限（毫秒，spec/hub-api.md 3.14 / 3.15），默认 5000（`HubConfig::navigate_timeout`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub navigate_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wake_from_launch: Option<bool>,
     /// 唤醒令牌有效期（毫秒），默认 60000。
@@ -258,6 +265,7 @@ pub struct Overrides {
     pub upstreams: BTreeMap<String, UpstreamConfig>,
     pub lease_ms: Option<u64>,
     pub wake_timeout_ms: Option<u64>,
+    pub navigate_timeout_ms: Option<u64>,
     pub wake_from_launch: Option<bool>,
     pub wake_token_ttl_ms: Option<u64>,
     pub wake_rate_limit: Option<u32>,
@@ -295,6 +303,7 @@ impl FileConfig {
         set(&mut self.http.auth, &o.auth);
         set(&mut self.lifecycle.lease_ms, &o.lease_ms);
         set(&mut self.lifecycle.wake_timeout_ms, &o.wake_timeout_ms);
+        set(&mut self.lifecycle.navigate_timeout_ms, &o.navigate_timeout_ms);
         set(&mut self.lifecycle.wake_from_launch, &o.wake_from_launch);
         set(&mut self.lifecycle.wake_token_ttl_ms, &o.wake_token_ttl_ms);
         set(&mut self.lifecycle.wake_rate_limit, &o.wake_rate_limit);
@@ -357,6 +366,7 @@ pub struct Settings {
     pub upstreams: BTreeMap<String, UpstreamConfig>,
     pub lease_ms: u64,
     pub wake_timeout_ms: u64,
+    pub navigate_timeout_ms: u64,
     pub wake_from_launch: bool,
     pub wake_token_ttl_ms: u64,
     pub wake_rate_limit: u32,
@@ -447,6 +457,10 @@ impl Settings {
             upstreams: c.upstreams,
             lease_ms: c.lifecycle.lease_ms.unwrap_or(60_000),
             wake_timeout_ms: c.lifecycle.wake_timeout_ms.unwrap_or(15_000),
+            navigate_timeout_ms: c
+                .lifecycle
+                .navigate_timeout_ms
+                .unwrap_or(app_mcp_hub::DEFAULT_NAVIGATE_TIMEOUT.as_millis() as u64),
             wake_from_launch: c.lifecycle.wake_from_launch.unwrap_or(false),
             wake_token_ttl_ms: c.lifecycle.wake_token_ttl_ms.unwrap_or(60_000),
             wake_rate_limit: c.lifecycle.wake_rate_limit.unwrap_or(app_mcp_hub::DEFAULT_WAKE_RATE_LIMIT),
@@ -547,7 +561,7 @@ mod tests {
               "manifestDirs": ["/m"],
               "allowOrigins": ["https://app.example.com"],
               "upstreams": { "files": { "command": "npx", "args": ["x"] } },
-              "lifecycle": { "leaseMs": 500, "wakeTimeoutMs": 2000, "wakeFromLaunch": true,
+              "lifecycle": { "leaseMs": 500, "wakeTimeoutMs": 2000, "navigateTimeoutMs": 3000, "wakeFromLaunch": true,
                              "waker": { "exec": ["node", "wake.mjs"] } },
               "tools": { "exposure": "progressive", "threshold": 10 },
               "log": { "level": "debug", "file": false, "maxBytes": 1024, "keep": 1 }
@@ -565,8 +579,8 @@ mod tests {
         assert_eq!(s.manifest_dirs, vec![(abs("/m"), true)]);
         assert_eq!(s.upstreams["files"].command, "npx");
         assert_eq!(
-            (s.lease_ms, s.wake_timeout_ms, s.wake_from_launch),
-            (500, 2000, true)
+            (s.lease_ms, s.wake_timeout_ms, s.navigate_timeout_ms, s.wake_from_launch),
+            (500, 2000, 3000, true)
         );
         assert_eq!(
             s.waker,

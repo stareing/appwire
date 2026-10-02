@@ -157,6 +157,21 @@ void main() {
       });
     });
 
+    test('上下文 idempotencyKey 原样取自 am_call_idempotency_key（v16）；没有时为 null', () async {
+      client.tool('k.key', description: 'k', handler: (args, ctx) => {'key': ctx.idempotencyKey});
+      final idx = fake.invokeWithKey('k.key', '{}', 'Agent 键 / 1');
+      expect(jsonDecode(await fake.waitResult(idx)), {
+        'ok': true,
+        'data': {'key': 'Agent 键 / 1'},
+        'hints': <Object?>[]
+      });
+      expect(await invoke('k.key', {}), {
+        'ok': true,
+        'data': {'key': null},
+        'hints': <Object?>[]
+      });
+    });
+
     test('只带 stateHints 的 ToolResult 与普通返回值仍走 am_call_complete（回归）', () async {
       client.tool('a', description: 'a', handler: (args, ctx) => const ToolResult(1, stateHints: ['x']));
       client.tool('b', description: 'b', handler: (args, ctx) => {'ok': true});

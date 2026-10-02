@@ -136,6 +136,22 @@ describe('Electron 桥接', () => {
     expect(page.instanceId).toBe('fake-instance')
   })
 
+  it('Agent 的幂等键经桥接到达渲染进程 handler 上下文（spec/protocol.md 3.3），没有时缺省', async () => {
+    const { ipcMain, native } = setupMain()
+    const { page } = setupPage(ipcMain, new FakeWebContents(1))
+    page.tool('order.create', {
+      description: '下单',
+      handler: (_input, ctx) => ({ key: ctx.idempotencyKey ?? null, has: 'idempotencyKey' in ctx }),
+    })
+    await flush()
+    expect(await native.call('order.create', {}, { idempotencyKey: 'order-7' })).toEqual({
+      ok: true,
+      data: { key: 'order-7', has: true },
+      stateHints: [],
+    })
+    expect(await native.call('order.create', {})).toEqual({ ok: true, data: { key: null, has: false }, stateHints: [] })
+  })
+
   it('注解、outputSchema 与结构化结果经桥接往返；update 可清除声明', async () => {
     const { ipcMain, native } = setupMain()
     const { page } = setupPage(ipcMain, new FakeWebContents(1))

@@ -47,6 +47,7 @@ fn config(policy: PolicyConfig) -> HubConfig {
         ipc_endpoint: None,
         list_changed_debounce: Duration::from_millis(10),
         wake_timeout: Duration::from_secs(2),
+        navigate_timeout: Duration::from_secs(2),
         manifests: vec![manifest()],
         policy,
         ..Default::default()

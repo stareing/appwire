@@ -1,0 +1,19 @@
+{
+  "id": "idempotency-key-context",
+  "title": "幂等键原样出现在 handler 上下文中；没有时为空",
+  "spec": ["protocol.md 3.3"],
+  "requires": ["idempotencyKey"],
+  "app": {
+    "tools": [
+      { "name": "k.key", "description": "返回收到的幂等键", "handler": { "returnIdempotencyKey": true } }
+    ]
+  },
+  "host": { "ops": [
+    { "invoke": "k.key", "callId": "ic-1", "idempotencyKey": "Agent 键 / 1" },
+    { "invoke": "k.key", "callId": "ic-2" }
+  ] },
+  "expect": [
+    { "type": "invoke", "name": "k.key", "result": { "data": { "idempotencyKey": "Agent 键 / 1" } } },
+    { "type": "invoke", "name": "k.key", "result": { "data": { "idempotencyKey": null } } }
+  ]
+}

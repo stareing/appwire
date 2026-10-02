@@ -38,18 +38,11 @@ use crate::types::{
 };
 use crate::upstream::decode_uri_component;
 
-/// 内置工具名。
-pub const TOOL_APPS_LIST: &str = "apps.list";
-pub const TOOL_APPS_SELECT: &str = "apps.select";
-pub const TOOL_APPS_OVERVIEW: &str = "apps.overview";
-/// 渐进暴露（spec/hub-api.md 3.7）：查看某个 App 的工具并加入本会话的工具列表。
-pub const TOOL_APPS_TOOLS: &str = "apps.tools";
-
-/// 页面渐进披露（spec/hub-api.md 3.14 L3）：查看某个 App 某个页面上的工具（不在当前页面的工具调用时 Hub 先导航）。
-pub const TOOL_APPS_PAGE: &str = "apps.page";
-
-/// 内置工具的 appId（保留名）。
-pub const BUILTIN_APP_ID: &str = "apps";
+/// 内置工具名（唯一定义在 [`crate::names`]）。
+pub use crate::names::{
+    BUILTIN_APP_ID, TOOL_APPS_ACTIVATE, TOOL_APPS_LIST, TOOL_APPS_NAVIGATE, TOOL_APPS_OVERVIEW, TOOL_APPS_PAGE,
+    TOOL_APPS_RELEASE, TOOL_APPS_SELECT, TOOL_APPS_TOOLS,
+};
 
 /// 静态工具在 App 已连接但没有实例注册时的描述前缀（spec/manifest.md 第 5 节）。
 pub const UNAVAILABLE_PREFIX: &str = "[当前不可用] ";
@@ -70,6 +63,8 @@ pub(crate) struct CallCtx {
     pub mcp_session: Option<u64>,
     /// 调用方要接收进度时的出口（MCP 请求带 `progressToken`，spec/hub-api.md 3.12）；合并后的进度发到这里。
     pub progress: Option<ProgressSink>,
+    /// Agent 的幂等键（[`CallRequest::idempotency_key`] / MCP 请求 `_meta`），原样转交 App。
+    pub idempotency_key: Option<String>,
 }
 
 /// 合并后的进度出口（[`CallCtx::progress`]）。
@@ -87,6 +82,7 @@ impl CallCtx {
             timeout: req.timeout,
             call_id: req.call_id,
             progress: None,
+            idempotency_key: req.idempotency_key,
         }
     }
 }
@@ -291,6 +287,10 @@ impl HubShared {
             routed_to: None,
         };
 
+        if let Some(Err(e)) = ctx.idempotency_key.as_deref().map(crate::request_meta::check_idempotency_key) {
+            return inv(None, Body::Builtin(Err(e)));
+        }
+
         // 策略：整体隐藏的 App / 上游与不存在的 appId 相同（spec/hub-api.md 3.13）。
         if let Some((app_id, _)) = name.split_once('.')
             && builtin_schema(&name).is_none()
@@ -345,6 +345,9 @@ impl HubShared {
 
         // 内置工具
         if let Some(r) = self.call_builtin(&ctx, &name, &args) {
+            return inv(None, Body::Builtin(r));
+        }
+        if let Some(r) = self.call_control_builtin(&ctx, &name, &args, cancel.as_mut()).await {
             return inv(None, Body::Builtin(r));
         }
 
@@ -426,7 +429,7 @@ impl HubShared {
 
     /// 转发前的资源保护（spec/hub-api.md 3.11）：参数大小上限，然后（App, 工具）与 App 两级限流。
     /// 超出时计入该 App 的拒绝计数，返回 `PAYLOAD_TOO_LARGE` / `RATE_LIMITED`。
-    fn guard_call(&self, app_id: &str, tool: &str, args: &Value) -> Result<(), ToolError> {
+    pub(crate) fn guard_call(&self, app_id: &str, tool: &str, args: &Value) -> Result<(), ToolError> {
         let limits = &self.config.limits;
         if limits.max_arguments_bytes > 0 {
             let size = serde_json::to_vec(args).map_or(0, |v| v.len());
@@ -696,6 +699,7 @@ impl HubShared {
             name: tool_name.to_owned(),
             arguments,
             timeout_ms: Some(sdk_timeout.as_millis() as u64),
+            idempotency_key: ctx.idempotency_key.clone(),
         };
         let params = match serde_json::to_value(params) {
             Ok(p) => p,
@@ -791,7 +795,7 @@ impl HubShared {
     ) -> Result<String, ToolError> {
         let tool_name = target.tool.name.as_str();
         if !target.navigable {
-            return Err(HubShared::not_navigable(app_id, tool_name, &target.page));
+            return Err(HubShared::not_navigable(app_id, Some(tool_name), &target.page));
         }
         if !approved {
             if let SchemaCheck::Invalid(msg) = schema::check_json(target.tool.input_schema_json(), arguments) {
@@ -804,18 +808,7 @@ impl HubShared {
             let req = self.approval_request(call_id, &hub_tool, arguments, ctx);
             self.approve(req, cancel.as_mut()).await?;
         }
-        let mut woken = woken;
-        if !self.registry().has_connected(app_id) {
-            let plan = self
-                .registry()
-                .wake_plan_app(app_id, selected)
-                .filter(|p| p.instance_id.is_some() || self.resolve_wake_descriptor(p).is_some());
-            let Some(plan) = plan.filter(|_| self.wake_enabled()) else {
-                return Err(self.registry().disconnected_error(app_id));
-            };
-            self.check_wake_policy(app_id, Some(tool_name))?;
-            woken = Some(self.wake_and_wait(&plan, cancel.as_mut()).await?);
-        }
+        let woken = self.wake_app_if_disconnected(app_id, selected, Some(tool_name), cancel.as_mut()).await?.or(woken);
         // 唤醒后实例可能已停在该页面。
         if let Some(id) = woken.as_deref().filter(|id| self.registry().instance_has_tool(app_id, id, tool_name)) {
             return Ok(id.to_owned());
@@ -855,7 +848,9 @@ impl HubShared {
             .map(|t| {
                 let availability =
                     if reg.tool_registered(app_id, &t.name) { Availability::Available } else { Availability::NotRegistered };
-                app_hub_tool(app_id, t, availability)
+                let mut tool = app_hub_tool(app_id, t, availability);
+                tool.page.get_or_insert_with(|| p.name.clone());
+                tool
             })
             .collect();
         drop(reg);
@@ -1226,10 +1221,11 @@ fn obj(v: Value) -> Map<String, Value> {
 }
 
 /// 内置工具（MCP 形式）。`with_apps_tools`：是否包含 `apps.tools`（只在渐进暴露生效时列出）；`with_apps_page`：是否包含
-/// `apps.page`（只在有页面目录时列出）。两者任何时候都可调用。
+/// `apps.page` 与 `apps.navigate`（只在有页面目录时列出）。不列出时也都可调用。
 pub(crate) fn builtin_tools(with_apps_tools: bool, with_apps_page: bool) -> Vec<Tool> {
     let mut tools = all_builtin_tools();
-    tools.retain(|t| (with_apps_tools || t.name != TOOL_APPS_TOOLS) && (with_apps_page || t.name != TOOL_APPS_PAGE));
+    let page_tool = |n: &str| n == TOOL_APPS_PAGE || n == TOOL_APPS_NAVIGATE;
+    tools.retain(|t| (with_apps_tools || t.name != TOOL_APPS_TOOLS) && (with_apps_page || !page_tool(&t.name)));
     tools
 }
 
@@ -1296,6 +1292,53 @@ fn all_builtin_tools() -> Vec<Tool> {
             })),
         )
         .with_annotations(ToolAnnotations::new().read_only(true)),
+        Tool::new(
+            TOOL_APPS_NAVIGATE,
+            "让 App 打开某个页面（会改变用户看到的界面；App 可以拒绝，在后台时可能需要用户先切到 App）。params 为页面参数\
+             （格式见 apps.page 返回的 page.params）。App 未运行时先唤醒。调用不在当前页面的工具时 Hub 会自动导航，\
+             只在需要页面参数或只想打开页面时使用本工具。",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "appId": { "type": "string", "description": "App 标识" },
+                    "page": { "type": "string", "description": "页面名（见 apps.tools 的 pages）" },
+                    "params": { "type": "object", "description": "页面参数（按该页面的 params schema）" }
+                },
+                "required": ["appId", "page"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
+        ),
+        Tool::new(
+            TOOL_APPS_ACTIVATE,
+            "预先唤醒 App（不调用任何工具），例如即将连续使用它时。App 已在运行则不做任何事。返回实例与是否唤醒。\
+             不再需要时可调用 apps.release。",
+            obj(json!({
+                "type": "object",
+                "properties": { "appId": { "type": "string", "description": "App 标识" } },
+                "required": ["appId"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
+        ),
+        Tool::new(
+            TOOL_APPS_RELEASE,
+            "告诉 Hub 本会话暂时不再使用某个 App：收回本会话对它的保活（租约），App 之后可按自己的设置休眠以节省资源。\
+             不影响其他会话；之后再调用其工具时会照常唤醒。",
+            obj(json!({
+                "type": "object",
+                "properties": { "appId": { "type": "string", "description": "App 标识" } },
+                "required": ["appId"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
+        ),
     ]
 }
 
@@ -1319,9 +1362,10 @@ pub(crate) fn builtin_hub_tools(with_apps_tools: bool, with_apps_page: bool) -> 
                 name,
                 app_id: BUILTIN_APP_ID.to_owned(),
                 title: None,
-                description: t.description.map(|d| d.to_string()).unwrap_or_default(),
+                description: t.description.as_deref().unwrap_or_default().to_owned(),
                 input_schema: Value::Object((*t.input_schema).clone()),
-                risk: Risk::Read,
+                // 只读的为 read，其余（apps.navigate / activate / release）为 write，与按注解推导的规则相同。
+                risk: upstream_risk(&t),
                 activation: Activation::Headless,
                 availability: Availability::Available,
                 annotations: t
@@ -1330,6 +1374,8 @@ pub(crate) fn builtin_hub_tools(with_apps_tools: bool, with_apps_page: bool) -> 
                     .map(mcp_convert::from_mcp_tool_annotations)
                     .unwrap_or_default(),
                 output_schema: None,
+                surface: None,
+                page: None,
             }
         })
         .collect()
@@ -1349,6 +1395,8 @@ pub(crate) fn app_hub_tool(app_id: &str, info: &ToolDef, availability: Availabil
         activation: info.activation_or_default(),
         availability,
         output_schema: info.output_schema(),
+        surface: Some(info.surface),
+        page: info.page.clone(),
     }
 }
 
@@ -1405,6 +1453,8 @@ pub(crate) fn upstream_hub_tool(name: &str, t: &Tool) -> HubTool {
         availability: Availability::Available,
         annotations: upstream_annotations(t),
         output_schema: t.output_schema.as_ref().map(|s| Value::Object((**s).clone())),
+        surface: None,
+        page: None,
     }
 }
 
@@ -1785,12 +1835,20 @@ mod tests {
     #[test]
     fn builtins_and_upstream_risk() {
         let b = builtin_hub_tools(false, false);
-        assert_eq!(b.len(), 3);
-        assert_eq!(b[0].name, "apps.list");
+        let names: Vec<&str> = b.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release"]);
         assert_eq!(b[0].tool, "list");
+        assert_eq!(b[0].risk, Risk::Read);
+        // apps.activate / apps.release 改变 App 状态：非只读，风险按注解推导为 write
+        assert_eq!((b[3].risk, b[3].annotations.read_only_hint, b[3].annotations.idempotent_hint), (Risk::Write, Some(false), Some(true)));
+        assert!(b.iter().all(|t| t.surface.is_none() && t.page.is_none()));
         let b = builtin_hub_tools(true, false);
-        assert_eq!(b.len(), 4);
+        assert_eq!(b.len(), 6);
         assert_eq!(b[3].name, "apps.tools");
+        // 有页面目录时另有 apps.page 与 apps.navigate
+        let names: Vec<String> = builtin_hub_tools(false, true).into_iter().map(|t| t.name).collect();
+        assert!(names.contains(&"apps.page".to_owned()) && names.contains(&"apps.navigate".to_owned()));
+        assert!(builtin_schema("apps.navigate").is_some(), "未列出时也可调用");
         assert!(builtin_schema("apps.select").is_some());
         // 未列出时 apps.tools 仍可调用
         assert!(builtin_schema("apps.tools").is_some());

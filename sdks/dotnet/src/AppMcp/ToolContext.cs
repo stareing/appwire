@@ -8,15 +8,22 @@ public sealed class ToolContext
     private readonly PendingCall _pending;
     private readonly List<string> _stateHints = new();
 
-    internal ToolContext(string callId, string toolName, PendingCall pending)
+    internal ToolContext(string callId, string toolName, PendingCall pending, string? idempotencyKey = null)
     {
         CallId = callId;
         ToolName = toolName;
+        IdempotencyKey = idempotencyKey;
         _pending = pending;
     }
 
     public string CallId { get; }
     public string ToolName { get; }
+
+    /// <summary>
+    /// Agent 给出的幂等键（原样，spec/protocol.md 3.3「idempotencyKey」）；没有时为 null。
+    /// App 自行决定如何使用（如作为业务去重键、传给后端）；同一工具同一键的重复调用已由核心按首次结果重放。
+    /// </summary>
+    public string? IdempotencyKey { get; }
 
     /// <summary>Host 取消、超时、断线或客户端停止时触发。</summary>
     public CancellationToken CancellationToken => _pending.Token;

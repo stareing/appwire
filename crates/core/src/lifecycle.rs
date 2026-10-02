@@ -353,6 +353,7 @@ impl Client {
     pub(crate) fn on_visibility_changed(&mut self, was_visible: bool, now: Millis) {
         if self.visibility == Visibility::Visible {
             self.session.background_sleep = false;
+            self.session.background_connection = false;
             return;
         }
         if !was_visible || !self.background_sleep_enabled() {
@@ -372,6 +373,18 @@ impl Client {
         }
     }
 
+    /// 握手完成时：不可见且启用后台休眠 → 本连接为后台连接（B4，如被 OS 激活在后台唤醒、隐藏中回连推送），
+    /// 只认自适应租约。
+    pub(crate) fn mark_background_connection(&mut self) {
+        self.session.background_connection =
+            self.visibility != Visibility::Visible && self.background_sleep_enabled();
+    }
+
+    /// 决定休眠时刻的租约截止：后台连接只看自适应租约（默认值租约是 Hub 无历史时的猜测，不为它在后台保持在线）。
+    fn effective_lease_until(&self) -> Option<Millis> {
+        if self.session.background_connection { self.session.adaptive_lease_until } else { self.session.lease_until }
+    }
+
     /// 下一次发送 `app/sleep` 的时刻。
     pub(crate) fn sleep_deadline(&self) -> Option<Millis> {
         if self.state != ConnectionState::Connected || self.session.sleeping.is_some() {
@@ -388,7 +401,7 @@ impl Client {
             // B4：进入后台后空闲条件一成立即休眠，不等租约与空闲时长。
             return Some(anchor);
         }
-        let lease = self.session.lease_until.unwrap_or(0);
+        let lease = self.effective_lease_until().unwrap_or(0);
         match self.session.sleep_retry_at {
             Some(retry) => Some(retry.max(lease)),
             // 旧行为：租约到期后才开始计空闲时长（串行）。
@@ -420,11 +433,22 @@ impl Client {
         }
     }
 
-    pub(crate) fn on_lease(&mut self, ttl_ms: Millis, now: Millis) {
-        self.session.lease_until = match ttl_ms {
-            0 => None,
-            ttl => Some(self.session.lease_until.unwrap_or(0).max(now.saturating_add(ttl))),
-        };
+    /// `app/lease`：两种租约分别取较晚截止；`ttl_ms = 0` 两种都取消。不影响本连接休眠时刻的租约（后台连接收到的
+    /// 默认值租约）只记下（回到可见后生效），不重新开始空闲计时。
+    pub(crate) fn on_lease(&mut self, ttl_ms: Millis, adaptive: bool, now: Millis) {
+        let extend = |until: Option<Millis>| Some(until.unwrap_or(0).max(now.saturating_add(ttl_ms)));
+        if ttl_ms == 0 {
+            self.session.lease_until = None;
+            self.session.adaptive_lease_until = None;
+        } else {
+            self.session.lease_until = extend(self.session.lease_until);
+            if adaptive {
+                self.session.adaptive_lease_until = extend(self.session.adaptive_lease_until);
+            }
+        }
+        if ttl_ms != 0 && !adaptive && self.session.background_connection {
+            return;
+        }
         self.restart_idle_timer(now);
     }
 

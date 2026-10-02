@@ -25,6 +25,11 @@ pub(crate) struct LearnedPages {
 }
 
 impl LearnedPages {
+    /// 记下的全部页面工具。
+    pub fn tools(&self) -> impl Iterator<Item = &SharedTool> {
+        self.pages.values().flat_map(|p| p.values())
+    }
+
     /// 记下带 `page` 的工具（运行时定义覆盖之前记下的）；超出上限的忽略并记 warn 日志。返回目录是否变化。
     pub fn learn<'a>(&mut self, app_id: &str, tools: impl IntoIterator<Item = &'a SharedTool>) -> bool {
         let mut changed = false;

@@ -7,7 +7,7 @@
  *
  * @app-mcp/node 未链接进本包的 node_modules（并行开发期间不运行 pnpm install），这里用相对路径导入其源码。
  */
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -131,9 +131,9 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
   it('渐进暴露：apps.tools 展开后按会话导出；waker / toolExposure 配置透传', async () => {
     const { hub } = await startHub({ toolExposure: 'progressive', toolExposureThreshold: 1, waker: 'none' })
     const log = await startShop(hub)
-    const builtins = ['apps.list', 'apps.select', 'apps.overview', 'apps.tools']
+    const builtins = ['apps.list', 'apps.select', 'apps.overview', 'apps.tools', 'apps.activate', 'apps.release']
     expect(hub.tools().map((t) => t.name)).toEqual(builtins)
-    expect(toAnthropicTools(hub, { session: 'c1' }).map((t) => t.name)).toHaveLength(4)
+    expect(toAnthropicTools(hub, { session: 'c1' }).map((t) => t.name)).toHaveLength(builtins.length)
 
     const [r] = await handleAnthropicToolUses(
       hub,
@@ -145,7 +145,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(listed.tools.find((t) => t.name === 'shop.cart.add')?.inputSchema).toMatchObject({ required: ['sku', 'qty'] })
 
     // 会话 c1 的导出包含 shop；默认会话不包含
-    expect(toAnthropicTools(hub, { session: 'c1' }).length).toBe(7)
+    expect(toAnthropicTools(hub, { session: 'c1' }).length).toBe(builtins.length + 3)
     expect(hub.tools({ session: 'c1' }).map((t) => t.name)).toContain('shop.cart.add')
     expect(hub.tools().map((t) => t.name)).toEqual(builtins)
 
@@ -480,6 +480,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(before.startedAtMs).toBeGreaterThan(0)
     expect(before.ipcEndpoint).toBeUndefined()
     expect(before.lease).toMatchObject({ mode: 'adaptive', defaultMs: 60000, maxMs: 60000, window: 20, pairs: [] })
+    expect(before.dormantStore).toBeUndefined()
 
     await startShop(hub)
     const shop = hub.status().apps.find((a) => a.appId === 'shop')
@@ -488,6 +489,23 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(inst.state).toBe('connected')
     expect(inst.connectionId).toMatch(/^[0-9a-f]+-\d+$/)
     expect(hub.apps().find((a) => a.appId === 'shop')?.instances[0]?.connectionId).toBe(inst.connectionId)
+  })
+
+  it('stateDir：启动时读回休眠记录目录，问题文件记入 status().dormantStore.issues', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'app-mcp-hub-ts-state-'))
+    try {
+      mkdirSync(join(stateDir, 'dormant'))
+      writeFileSync(join(stateDir, 'dormant', 'broken.json'), '{')
+      const { hub } = await startHub({ stateDir })
+      const store = hub.status().dormantStore
+      expect(store).toMatchObject({ dir: join(stateDir, 'dormant'), loadedInstances: 0, expiredInstances: 0, writes: 0 })
+      expect(store?.issues).toHaveLength(1)
+      expect(store?.issues[0]?.file).toBe('broken.json')
+      expect(store?.lastError).toBeUndefined()
+    } finally {
+      for (const hub of hubs.splice(0)) await hub.shutdown()
+      rmSync(stateDir, { recursive: true, force: true })
+    }
   })
 
   it('注解、outputSchema 与结构化结果经 Hub 原样到达；status 列出工具声明', async () => {
@@ -552,6 +570,44 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     })
     expect(declared.find((t) => t.name === 'order.list')).toMatchObject({ risk: 'read', outputSchema: false })
     expect(declared.find((t) => t.name === 'order.list')).not.toHaveProperty('annotations')
+  })
+
+  it('surface / page、idempotencyKey 原样转交、navigateTimeoutMs 配置与新内置工具（spec/hub-api.md 3.14 / 3.15）', async () => {
+    const { hub } = await startHub({ navigateTimeoutMs: 800 })
+    const app = createAppMcp({ appId: 'cafe', appName: '咖啡', hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false })
+    apps.push(app)
+    const key = (_: unknown, ctx: { idempotencyKey?: string }) => ({ key: ctx.idempotencyKey ?? null })
+    app.tool('cart.checkout', { description: '结算', surface: 'view', page: 'cart', handler: key })
+    app.tool('order.submit', { description: '下单', handler: key })
+    app.start()
+    const tools = await until(() => {
+      const list = hub.tools({ apps: ['cafe'], onlyAvailable: true, includeBuiltin: false })
+      return list.length === 2 ? list : undefined
+    }, 'cafe 工具登记')
+    expect(tools.find((t) => t.tool === 'cart.checkout')).toMatchObject({ surface: 'view', page: 'cart' })
+    const submit = tools.find((t) => t.tool === 'order.submit')!
+    expect(submit.surface).toBe('app')
+    expect(submit).not.toHaveProperty('page')
+
+    const all = hub.tools()
+    for (const n of ['apps.list', 'apps.select', 'apps.overview', 'apps.activate', 'apps.release', 'apps.page', 'apps.navigate']) {
+      const t = all.find((x) => x.name === n)
+      expect(t, n).toBeDefined()
+      expect(t).not.toHaveProperty('surface')
+      expect(t).not.toHaveProperty('page')
+    }
+
+    const out = await hub.callTool({ name: 'cafe.order.submit', idempotencyKey: 'order-7' })
+    expect(out.result.ok).toEqual({ key: 'order-7' })
+    expect(out).not.toHaveProperty('routedTo')
+    const none = await hub.callTool({ name: 'cafe.order.submit' })
+    expect(none.result.ok).toEqual({ key: null })
+    const bad = await hub.callTool({ name: 'cafe.order.submit', idempotencyKey: '' })
+    expect(bad.result.error?.kind).toBe('INVALID_INPUT')
+  })
+
+  it('navigateTimeoutMs 必须是非负整数', async () => {
+    await expect(Hub.start({ listen: null, ipcEndpoint: null, navigateTimeoutMs: -1 })).rejects.toBeInstanceOf(HubError)
   })
 
   it('资源保护：limits / outputValidation 配置透传，超出时 RATE_LIMITED / PAYLOAD_TOO_LARGE 并计数', async () => {

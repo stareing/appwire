@@ -19,7 +19,7 @@ const _sdk = 'dart';
 /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。
 const _features = {
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', //
-  'readFailure', 'surface', 'navigation', 'backgroundTool', 'backgroundNavigation',
+  'readFailure', 'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey',
 };
 
 final String _repoRoot = Directory('${Directory.current.path}/../../..').absolute.path;
@@ -166,11 +166,11 @@ final class _CaseApp {
     for (final op in (spec['mutate'] as List?) ?? const []) {
       _mutate(_map(op)!);
     }
-    return _complete(spec, count, args);
+    return _complete(spec, count, args, ctx);
   }
 
   /// Dart 最自然的写法：失败抛异常；无返回值即 handler 不返回（null）。
-  static Object? _complete(Map<String, Object?> spec, int count, Map<String, dynamic> args) {
+  static Object? _complete(Map<String, Object?> spec, int count, Map<String, dynamic> args, ToolContext ctx) {
     if (spec['throw'] case final String message) throw Exception(message);
     if (_map(spec['userAction']) case final u?) {
       throw UserActionRequiredError(u['message'] as String? ?? '', reason: u['reason'] as String?, uri: u['uri'] as String?);
@@ -185,6 +185,7 @@ final class _CaseApp {
     }
     if (spec.containsKey('return')) return spec['return'];
     if (spec['echo'] == true) return args;
+    if (spec['returnIdempotencyKey'] == true) return {'idempotencyKey': ctx.idempotencyKey};
     if (spec['counter'] == true) return {'count': count};
     // returnNothing（以及未声明结果）：Dart 的"无返回值"即 handler 不返回值（null）。
     return null;

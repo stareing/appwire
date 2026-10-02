@@ -80,6 +80,7 @@ App 固定为 `appId: "conf"`、`appName: "Conformance"`；runner 连接 fake_ho
 | `result: {data?, status?, stateResource?, summary?, stateHints?, annotations?}` | SDK 的完整结果 API；缺 `data` = 无返回值 |
 | `return: <JSON>` | 直接返回该值（含 `null`：显式返回 null） |
 | `echo: true` | 返回调用参数 |
+| `returnIdempotencyKey: true` | 返回 `{"idempotencyKey": <handler 上下文中的幂等键，没有时为 null>}`（spec/protocol.md 3.3） |
 | `counter: true`（无其他结果时） | 返回 `{"count": <执行次数>}` |
 | 都没有 / `returnNothing: true` | **该语言的"无返回值"**：`void` / `None` / `undefined` / `Unit` / `complete(null)` |
 
@@ -121,7 +122,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 
 | 操作 | 含义 |
 |---|---|
-| `{invoke, args?, callId?, timeoutMs?, cancelAfterMs?}` | 发 `tools/invoke`，等结果（`cancelAfterMs` 到期仍未完成则发 `tools/cancel`） |
+| `{invoke, args?, callId?, timeoutMs?, cancelAfterMs?, idempotencyKey?}` | 发 `tools/invoke`（`idempotencyKey` 给出时带上该字段），等结果（`cancelAfterMs` 到期仍未完成则发 `tools/cancel`） |
 | `{read}` | 发 `resources/read` |
 | `{navigate, params?}` | 发 `app/navigate {page, params?}`，等回复 |
 | `{catalog: settleMs}` | 继续处理消息 settleMs 后打印 Host 当前目录与按 8.4 计算的 `toolsHash` |
@@ -168,6 +169,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `navigation` | 设置导航回调（2.4） |
 | `backgroundTool` | 工具 `backgroundTool` |
 | `backgroundNavigation` | `app.visibility`、`app.config.navigateInBackground`、导航行为 `userAction` |
+| `idempotencyKey` | handler 上下文中的幂等键（handler 结果 `returnIdempotencyKey`） |
 
 ## 5. 各 SDK 的 runner
 

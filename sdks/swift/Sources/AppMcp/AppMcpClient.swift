@@ -142,7 +142,8 @@ final class ToolBridge: ToolHandler, @unchecked Sendable {
 
     // 在原生分发线程上调用：只做登记，立即返回。
     func invoke(call: Call) {
-        let ctx = ToolContext(callId: call.callId(), toolName: call.toolName(), argumentsJSON: call.argumentsJson(), call: call)
+        let ctx = ToolContext(callId: call.callId(), toolName: call.toolName(), argumentsJSON: call.argumentsJson(), call: call,
+                              idempotencyKey: call.idempotencyKey())
         let body = self.body
         let task = launch(on: target, timeout: timeout, fail: { failQuietly(call, $0, $1, $2) }) {
             var result = try await body(ctx.argumentsJSON, ctx)

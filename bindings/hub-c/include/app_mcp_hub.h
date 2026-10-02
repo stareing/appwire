@@ -73,6 +73,15 @@
  * - v11（调用进度，spec/hub-api.md 3.12）：只做新增，AM_HUB_API_VERSION 仍为 3。
  *   · AmHubProgressFn + am_hub_call_with_progress：调用时接收 App 报告的进度。
  *   · am_hub_start 配置新增可选字段 progressIntervalMs（进度转发的最小间隔，缺省 250）。
+ * - v12（休眠记录持久化，spec/hub-api.md 3.5「持久化」）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 stateDir。
+ *   · HubStatus JSON 中新增：dormantStore（dir、loadedInstances、expiredInstances、writes、issues[{file, reason}]、
+ *     lastError?；未配置 stateDir 时缺省）。
+ * - v13（页面导航与 Agent 显式控制，spec/hub-api.md 3.14 / 3.15）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 navigateTimeoutMs。
+ *   · CallRequest 新增可选字段 idempotencyKey（1..=256 个字符，原样转交 App）。
+ *   · JSON 中新增：HubTool.surface（"app" | "view"）/ page（缺省表示无）；CallOutcome.routedTo（改调后台替代时）。
+ *   · 新内置工具 apps.activate、apps.release（总是列出），apps.page、apps.navigate（有页面目录时）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -180,6 +189,8 @@ void am_hub_string_free(char *s);
  *   mcpHttp              v5：是否在 listen 上提供 MCP Streamable HTTP（/mcp），默认 false
  *   runDir               v5：单实例锁与登记文件目录（<runDir>/hub.lock、endpoints.json）；省略时不参与。
  *                        锁已被其他 Hub 持有时报 AM_HUB_ERR_IO
+ *   stateDir             v12：持久状态目录：休眠记录写到 <stateDir>/dormant/<appId>.json（原子写、仅当前用户可读），
+ *                        启动时读回，重启前休眠的 App 仍可列出、可唤醒。省略时不读写任何文件
  *   ipcEndpoint          v4：本地 IPC 端点（原生 App 默认连接这里，spec/protocol.md 1.2）："unix:<绝对路径>" /
  *                        "pipe:\\\\.\\pipe\\<名称>"（JSON 转义）；缺省为平台默认端点；null = 不开。
  *                        已有 Hub 在该端点监听时报 AM_HUB_ERR_IO
@@ -195,6 +206,8 @@ void am_hub_string_free(char *s);
  *   —— v2 生命周期（spec/hub-api.md 3.5）——
  *   leaseTtlMs           调用完成后发给实例的租约时长，默认 60000；0 关闭
  *   wakeTimeoutMs        唤醒后等待 App 回连的上限，默认 15000（超时 → APP_NOT_RESPONDING）
+ *   navigateTimeoutMs    v13：导航等待上限（App 回复 + 目标工具注册，spec/hub-api.md 3.14 / 3.15），默认 5000，
+ *                        独立于 wakeTimeoutMs（超时 → NAVIGATION_FAILED，reason "timeout" / "tool-not-registered"）
  *   wakeTokenTtlMs       唤醒令牌有效期，默认 60000
  *   dormantTtlMs         休眠记录保留时长，默认 86400000（24 小时）
  *   dormantReplacedByNewInstance  同一 appId 以新实例 ID 连接时移除其休眠记录，默认 true
@@ -254,7 +267,8 @@ AmHubStatus am_hub_serve_http(AmHub *hub, const char *addr, bool allow_remote, c
 
 /* AppInfo 数组（含上游，kind = "upstream"）。 */
 AmHubStatus am_hub_apps_json(const AmHub *hub, char **out_json);
-/* HubTool 数组（v9 起含 annotations：声明优先、缺少的按 risk 推导；outputSchema?：App 声明的原样 schema）。filter_json 可为 NULL：ToolFilter {apps, maxRisk, onlyAvailable, includeBuiltin, session}。
+/* HubTool 数组（v9 起含 annotations：声明优先、缺少的按 risk 推导；outputSchema?：App 声明的原样 schema；
+ * v13 起 App 工具含 surface?："app" | "view"（界面依赖）与 page?：所在页面，内置 / 上游工具缺省）。filter_json 可为 NULL：ToolFilter {apps, maxRisk, onlyAvailable, includeBuiltin, session}。
  * 渐进暴露生效且未给 apps 时，只含内置工具与 session 会话已展开 / 调用过 / 选定了实例的 App 的工具。 */
 AmHubStatus am_hub_tools_json(const AmHub *hub, const char *filter_json, char **out_json);
 /* HubResource 数组（v9 起可带 annotations：MCP 内容注解）。 */
@@ -273,20 +287,25 @@ AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **ou
  *   AppStatus.rateLimited / tooLarge（启动以来 RATE_LIMITED / PAYLOAD_TOO_LARGE 的拒绝次数）、
  *   AppStatus.tools：[{name（局部名）, risk, annotations?（App 声明的原样注解）, effective（Agent 看到的注解）, outputSchema（bool：是否声明）}]
  * v10 起另有 policy：{rules: [{id, action, app, tool?, annotations?, hooks?, hits（自本规则集生效以来的拒绝 / 按不存在处理次数）}],
- *   loadedAtMs, lastError?: {message, atMs}（最近一次 am_hub_set_policy 失败，之后成功时清除）} */
+ *   loadedAtMs, lastError?: {message, atMs}（最近一次 am_hub_set_policy 失败，之后成功时清除）}
+ * v12 起另有 dormantStore（配置了 stateDir 时）：{dir（<stateDir>/dormant）, loadedInstances（启动时读回的实例数）,
+ *   expiredInstances（启动时因过期丢弃的实例数）, writes（启动以来成功写入 / 删除文件的次数）,
+ *   issues: [{file, reason}]（启动时跳过的文件：损坏、版本未知、超出上限）, lastError?（最近一次写入失败）} */
 AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------
  * 调用
  * ------------------------------------------------------------------------- */
 
-/* 异步调用工具。request_json 为 CallRequest：{name, arguments, instanceId, timeout(ms), callId, session}。
+/* 异步调用工具。request_json 为 CallRequest：{name, arguments, instanceId, timeout(ms), callId, session,
+ * idempotencyKey（v13：Agent 幂等键，1..=256 个字符，原样转交 App；不合法 → INVALID_INPUT）}。
  * out_call_id 可为 NULL；否则写入本次 callId（请求未给出时自动生成，需 am_hub_string_free），供 am_hub_cancel_call。
  * cb 收到 CallOutcome JSON：
  *   {"callId":…, "result": {"ok": <data>} | {"error": {"kind","message","details"?}},
  *    "stateHints": […], "instanceId": …|null, "overview": AppOverviewInfo|null,
  *    v9："status": "done"|"pending"|"partial"|"noop", "stateResource"?: "app-mcp://<appId>/<名>",
- *        "summary"?: …, "annotations"?: {"audience"?, "priority"?, "lastModified"?}}
+ *        "summary"?: …, "annotations"?: {"audience"?, "priority"?, "lastModified"?},
+ *    v13："routedTo"?: 改调后台替代时实际调用的工具全名（spec/hub-api.md 3.14）}
  * 名称无法解析（appId 未知等）也以 CallOutcome 形式返回（result.error，kind 为 TOOL_NOT_FOUND）。 */
 AmHubStatus am_hub_call(AmHub *hub, const char *request_json, AmHubResultFn cb, void *user_data,
                         char **out_call_id);

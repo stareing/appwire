@@ -166,6 +166,10 @@ pub struct HelloParams {
     /// SDK 支持的可选能力（spec/protocol.md 3.4）；省略 = 都不支持（旧 SDK）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<SdkCapabilities>,
+    /// 本实例的唤醒描述（与 `app/sleep.wake` 相同）。Host 据此持久化在线实例，Host 重启后仍能唤醒
+    /// （spec/lifecycle.md 第 9 节）；省略 = 未配置或旧 SDK。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<WakeDescriptor>,
 }
 
 /// SDK 在握手中声明的可选能力（`app/hello.capabilities`）。缺省字段为 `false`，`false` 时不序列化。
@@ -199,6 +203,7 @@ impl Default for HelloParams {
             heartbeat_ms: None,
             lifecycle_mode: None,
             capabilities: None,
+            wake: None,
         }
     }
 }
@@ -447,11 +452,15 @@ pub struct SleepResult {
     pub retry_after_ms: Option<u64>,
 }
 
-/// `app/lease` 参数。`ttl_ms` 为 0 表示取消租约。
+/// `app/lease` 参数。`ttl_ms` 为 0 表示取消租约（两种租约都取消）。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LeaseParams {
     pub ttl_ms: u64,
+    /// 租约按调用间隔统计得出（Hub 自适应租约，spec/lifecycle.md 第 13 节 B2）；缺省 `false` = 默认值租约
+    /// （无历史时的保守值、固定租约、旧 Host）。后台连接只认自适应租约（第 13 节 B4）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub adaptive: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -622,7 +631,14 @@ pub struct ToolsInvokeParams {
     /// SDK 侧超时（毫秒）。超时后 SDK 取消 handler 并返回 `TIMEOUT`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Agent 给出的幂等键（spec/protocol.md 3.3）：Host 原样转交（1..=[`MAX_IDEMPOTENCY_KEY_LEN`] 个字符）；SDK 去重另按
+    /// （工具名, 幂等键）匹配，并在 handler 上下文中提供。省略 = 没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
+
+/// [`ToolsInvokeParams::idempotency_key`] 的长度上限（字符数）：Host 拒绝更长的键（spec/protocol.md 3.3）。
+pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 256;
 
 /// 调用结果的业务状态（spec/protocol.md 3.2）。handler 正常返回只说明请求被处理，不一定说明业务已完成。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -835,6 +851,7 @@ mod tests {
             heartbeat_ms: None,
             lifecycle_mode: None,
             capabilities: None,
+            wake: None,
         };
         let v = serde_json::to_value(&p).unwrap();
         assert_eq!(
@@ -934,7 +951,13 @@ mod tests {
         assert_eq!(ok.resume_token.as_deref(), Some("r"));
         let no: SleepResult = serde_json::from_value(json!({"accepted": false, "retryAfterMs": 5000})).unwrap();
         assert_eq!(no.retry_after_ms, Some(5000));
-        assert_eq!(serde_json::to_value(LeaseParams { ttl_ms: 0 }).unwrap(), json!({"ttlMs": 0}));
+        assert_eq!(serde_json::to_value(LeaseParams { ttl_ms: 0, adaptive: false }).unwrap(), json!({"ttlMs": 0}));
+        assert_eq!(
+            serde_json::to_value(LeaseParams { ttl_ms: 5, adaptive: true }).unwrap(),
+            json!({"ttlMs": 5, "adaptive": true})
+        );
+        let old: LeaseParams = serde_json::from_value(json!({"ttlMs": 7})).unwrap();
+        assert!(!old.adaptive, "旧 Host 不带 adaptive：按默认值租约");
     }
 
     #[test]
@@ -1104,5 +1127,15 @@ mod tests {
         // 旧 SDK 不带这两个字段
         let old = serde_json::to_value(HelloParams::default()).unwrap();
         assert!(old.get("heartbeatMs").is_none() && old.get("lifecycleMode").is_none());
+    }
+
+    #[test]
+    fn hello_wake_descriptor() {
+        let wake = WakeDescriptor { kind: WakeKind::Uri, target: Some("appmcp-x".into()), background: true };
+        let p = HelloParams { wake: Some(wake), ..HelloParams::default() };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["wake"], json!({ "kind": "uri", "target": "appmcp-x", "background": true }));
+        assert_eq!(serde_json::from_value::<HelloParams>(v).unwrap(), p);
+        assert!(serde_json::to_value(HelloParams::default()).unwrap().get("wake").is_none());
     }
 }

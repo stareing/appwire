@@ -75,7 +75,9 @@
  *     false；false 时直接以 USER_ACTION_REQUIRED、reason "foreground" 回复）。
  *   · am_navigate_fail_user_action：导航以 USER_ACTION_REQUIRED 结束（消费 AmNavigate，语义同
  *     am_call_fail_user_action）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v15 仍为 3。）
+ * - v16（第 4f 项 j，spec/protocol.md 3.3「idempotencyKey」）：只新增函数 am_call_idempotency_key（Agent 给出的
+ *   幂等键，原样；没有时为 NULL）。已有结构体布局与函数签名不变。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v16 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -515,6 +517,9 @@ void am_resource_free(AmResource *resource);
 const char *am_call_id(const AmCall *call);
 const char *am_call_tool_name(const AmCall *call);
 const char *am_call_arguments_json(const AmCall *call);
+/* v16：Agent 给出的幂等键（spec/protocol.md 3.3，原样，1..=256 个字符）；没有时为 NULL。在 call 被消费前有效。
+ * App 自行决定如何使用（如作为业务去重键）；同一工具同一键的重复调用已由核心按首次结果重放。 */
+const char *am_call_idempotency_key(const AmCall *call);
 bool am_call_is_cancelled(const AmCall *call);
 /* 设置取消回调。已取消时立即在当前线程回调一次。 */
 AmStatus am_call_set_cancel_callback(AmCall *call, AmCancelFn on_cancel, void *user_data, AmFreeFn free_user_data);

@@ -3,7 +3,7 @@
 //! - `serve`：常驻模式（推荐）。一个进程在同一端口（默认 `127.0.0.1:7717`）提供 App 连接（`/app`，WebSocket）、
 //!   MCP Streamable HTTP（`/mcp`）与 `/healthz`，另有本地 IPC；多个 MCP 客户端各自建立 HTTP 会话，
 //!   共享同一组 App 连接（每个会话有独立的实例选择与总览附带状态）。单实例由 `<home>/run/hub.lock` 保证，
-//!   实际监听位置写在 `<home>/run/endpoints.json`。
+//!   实际监听位置写在 `<home>/run/endpoints.json`；休眠实例记录写在 `<home>/state/dormant/`（重启后读回，仍可唤醒）。
 //! - `service install|uninstall|status|start|stop`：当前用户的登录自启服务（[`service`]）；`install` 先检查端口占用。
 //! - `doctor`：逐项诊断（[`doctor`]）；`status`：一行状态摘要。
 //! - `setup` / `uninstall`：一条命令安装（二进制就位、自启、写入已装 Agent 的 MCP 配置、自检）与撤销（[`setup`]）。
@@ -131,11 +131,13 @@ fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
         listen_alternates: if s.listen_explicit { Vec::new() } else { defaults.listen_alternates },
         ipc_endpoint: s.ipc_endpoint.clone(),
         run_dir: Some(home.run_dir()),
+        state_dir: Some(home.state_dir()),
         manifests,
         allow_origins: s.allow_origins.clone(),
         upstreams: s.upstreams.clone(),
         lease_ttl: Duration::from_millis(s.lease_ms),
         wake_timeout: Duration::from_millis(s.wake_timeout_ms),
+        navigate_timeout: Duration::from_millis(s.navigate_timeout_ms),
         wake_from_launch: s.wake_from_launch,
         wake_token_ttl: Duration::from_millis(s.wake_token_ttl_ms),
         wake_rate_limit: s.wake_rate_limit,

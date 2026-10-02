@@ -18,10 +18,11 @@ class FakeHold {
 }
 
 class FakeCall {
-  constructor(toolName, argumentsJson) {
+  constructor(toolName, argumentsJson, idempotencyKey = null) {
     this.callId = `c-${Math.random().toString(16).slice(2)}`;
     this.toolName = toolName;
     this.argumentsJson = argumentsJson;
+    this.idempotencyKey = idempotencyKey;
     this.result = undefined;
     this.cancelListener = undefined;
     this.holdLog = [];
@@ -244,8 +245,13 @@ class FakeNativeClient extends FakeRegistrar {
     return last === undefined ? undefined : last[1];
   }
   /** 测试用：模拟 Host 调用工具。 */
-  invoke(name, args) {
-    const call = new FakeCall(name, args === undefined ? '{}' : typeof args === 'string' ? args : JSON.stringify(args));
+  /** 测试用：模拟 Host 调用工具；`idempotencyKey` 缺省为 null（与原生绑定一致：没有时为 null）。 */
+  invoke(name, args, idempotencyKey = null) {
+    const call = new FakeCall(
+      name,
+      args === undefined ? '{}' : typeof args === 'string' ? args : JSON.stringify(args),
+      idempotencyKey,
+    );
     this.tools.get(name).handler(call);
     return call;
   }

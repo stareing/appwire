@@ -399,6 +399,7 @@ pub async fn run(home: &AppHome, s: &Settings) -> Report {
 
     // 9. App 实例
     checks.push(apps_check(status.as_ref()));
+    checks.push(dormant_store_check(&home.state_dir(), status.as_ref()));
     checks.push(lease_check(status.as_ref()));
     checks.push(tools_check(status.as_ref()));
     checks.push(limits_check(status.as_ref()));
@@ -648,6 +649,45 @@ fn apps_check(status: Option<&Result<HubStatus, String>>) -> Check {
             .hint("按错误码处理（spec/protocol.md 10.1）；唤醒失败时检查清单的 wake 配置与 App 是否已安装")
             .details(details)
     }
+}
+
+/// 休眠记录持久化（spec/hub-api.md 3.5「持久化」）：离线检查 `<home>/state/dormant/` 中的文件（Host 未运行也可用），
+/// 并附上运行中 Host 的写入状态。被跳过的文件（损坏、版本未知、超出上限）给出警告。
+fn dormant_store_check(state_dir: &Path, status: Option<&Result<HubStatus, String>>) -> Check {
+    const T: &str = "休眠记录";
+    let ttl = app_mcp_hub::HubConfig::default().dormant_ttl;
+    let running = match status {
+        Some(Ok(st)) => st.dormant_store.as_ref(),
+        _ => None,
+    };
+    let dir = state_dir.join(app_mcp_hub::dormant_store::DORMANT_DIR);
+    let files = match app_mcp_hub::dormant_store::inspect(state_dir, std::time::SystemTime::now(), ttl) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Check::new("dormant_store", T, Level::Info, format!("{} 不存在（还没有 App 休眠过）", dir.display()));
+        }
+        Err(e) => {
+            return Check::new("dormant_store", T, Level::Warn, format!("{} 无法读取：{e}", dir.display()))
+                .hint("检查目录权限；Host 读不到时重启后不能列出重启前休眠的 App（App 回连后恢复）");
+        }
+    };
+    let details = json!({ "dir": dir.display().to_string(), "files": files, "running": running });
+    let instances: u64 = files.iter().map(|f| f.instances).sum();
+    let bad: Vec<String> =
+        files.iter().filter_map(|f| f.problem.as_ref().map(|p| format!("{}：{p}", f.file))).collect();
+    let mut summary = format!("{}：{} 个 App、{instances} 个休眠实例", dir.display(), files.len() - bad.len());
+    if let Some(e) = running.and_then(|r| r.last_error.as_deref()) {
+        summary.push_str(&format!("；最近写入失败：{e}"));
+    }
+    if bad.is_empty() && running.and_then(|r| r.last_error.as_ref()).is_none() {
+        return Check::new("dormant_store", T, Level::Ok, summary).details(details);
+    }
+    if !bad.is_empty() {
+        summary.push_str(&format!("；跳过的文件：{}", bad.join("；")));
+    }
+    Check::new("dormant_store", T, Level::Warn, summary)
+        .hint("被跳过的文件不会读回（不影响启动，对应 App 回连后恢复）；版本未知的文件可能由更新的 Host 写入，确认无用后可删除")
+        .details(details)
 }
 
 /// 租约策略与统计（spec/lifecycle.md 第 13 节 B2）。
@@ -1164,5 +1204,28 @@ mod tests {
         assert!(p.busy[0].1.contains("其他程序"), "{:?}", p.busy);
         #[cfg(any(target_os = "linux", windows))]
         assert!(p.busy[0].1.contains(&format!("pid {}", std::process::id())), "{:?}", p.busy);
+    }
+
+    #[test]
+    fn dormant_store_check_reports_skipped_files() {
+        let n: u64 = rand::random();
+        let state = std::env::temp_dir().join(format!("app-mcp-doctor-state-{}-{n:x}", std::process::id()));
+        assert!(matches!(dormant_store_check(&state, None).status, Level::Info), "目录不存在");
+        let dir = state.join("dormant");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let good = json!({"version": 1, "appId": "calc", "savedAtMs": now, "tools": [], "instances": [{
+            "instanceId": "i1", "appName": "计算器", "clientKind": "native", "tools": [], "resumeToken": "r",
+            "toolsHash": "h", "sleptAtMs": now, "connectedAtMs": now}]});
+        std::fs::write(dir.join("calc.json"), good.to_string()).unwrap();
+        let c = dormant_store_check(&state, None);
+        assert!(matches!(c.status, Level::Ok), "{}", c.summary);
+        assert!(c.summary.contains("1 个 App、1 个休眠实例"), "{}", c.summary);
+        std::fs::write(dir.join("broken.json"), "{").unwrap();
+        let c = dormant_store_check(&state, None);
+        assert!(matches!(c.status, Level::Warn));
+        assert!(c.summary.contains("broken.json"), "{}", c.summary);
+        assert!(c.hint.is_some());
+        std::fs::remove_dir_all(&state).unwrap();
     }
 }

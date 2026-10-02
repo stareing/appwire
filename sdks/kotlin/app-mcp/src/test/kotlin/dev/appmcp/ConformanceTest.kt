@@ -34,7 +34,7 @@ class ConformanceTest {
         /** 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。 */
         val FEATURES = setOf(
             "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
-            "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation",
+            "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
         )
         val VERDICT_OK = setOf("pass", "xfail", "xpass", "skip")
         val repoRoot: File = FakeHostSupport.repoRoot.canonicalFile
@@ -229,6 +229,9 @@ class ConformanceTest {
         }
         if ("return" in spec) return spec["return"]
         if (spec.bool("echo") == true) return args
+        if (spec.bool("returnIdempotencyKey") == true) {
+            return JsonObject(mapOf("idempotencyKey" to JsonPrimitive(ctx.idempotencyKey)))
+        }
         if (spec.bool("counter") == true) return mapOf("count" to count)
         // returnNothing（以及未声明结果）：Kotlin 的"无返回值"即返回 Unit。
         return Unit

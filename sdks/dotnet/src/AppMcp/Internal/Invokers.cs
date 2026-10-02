@@ -227,11 +227,12 @@ internal sealed class ToolInvoker(RawToolHandler handler, SynchronizationContext
         var id = NativeMethods.PtrToString(NativeMethods.am_call_id(call)) ?? string.Empty;
         var name = NativeMethods.PtrToString(NativeMethods.am_call_tool_name(call)) ?? string.Empty;
         var args = NativeMethods.PtrToString(NativeMethods.am_call_arguments_json(call)) ?? "{}";
+        var idempotencyKey = NativeMethods.PtrToString(NativeMethods.am_call_idempotency_key(call));
 
         // user_data 的所有权交给库（失败时库会立即调用 FreeGCHandle）。
         NativeMethods.am_call_set_cancel_callback(call, Callbacks.CancelPtr, Callbacks.Alloc(pending), Callbacks.FreeGCHandlePtr);
 
-        var context = new ToolContext(id, name, pending);
+        var context = new ToolContext(id, name, pending, idempotencyKey);
         Dispatch.Run(dispatcher, () => RunAsync(pending, args, context));
     }
 

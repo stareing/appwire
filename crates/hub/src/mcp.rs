@@ -27,6 +27,7 @@ use crate::call::{self, CallCtx, to_mcp_error};
 use crate::hub::{DEFAULT_MIME, HubShared, parse_resource_uri, resource_uri};
 use crate::overview;
 use crate::progress::ProgressUpdate;
+use crate::request_meta;
 
 /// 一个 MCP 会话。
 pub struct McpSession {
@@ -121,6 +122,11 @@ impl ServerHandler for McpSession {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        // Agent 的截止时间与幂等键（spec/hub-api.md 3.15）：不合法时不执行，以工具错误返回。
+        let agent = match request_meta::parse(&context.meta) {
+            Ok(m) => m,
+            Err(e) => return Ok(call::error_result(&e).into()),
+        };
         let progress = context.meta.get_progress_token().map(|token| forward_progress(context.peer.clone(), token));
         let ctx = CallCtx {
             name: request.name.to_string(),
@@ -128,10 +134,11 @@ impl ServerHandler for McpSession {
             session_key: self.key.clone(),
             session: Some(self.key.clone()),
             instance_id: None,
-            timeout: None,
+            timeout: request_meta::effective_timeout(agent.timeout, self.shared.config.response_timeout),
             call_id: None,
             mcp_session: Some(self.id),
             progress,
+            idempotency_key: agent.idempotency_key,
         };
         let ct = context.ct.clone();
         let inv = self

@@ -639,3 +639,77 @@ async fn policy_file_reload_and_cli() {
     assert_ne!(code, 0);
     assert!(err.contains("策略规则文件无效"), "{err}");
 }
+
+/// 休眠记录持久化（spec/hub-api.md 3.5「持久化」）：App 休眠后 Host 被杀掉重启（同一 `--home`），重启后的 Host 仍列出
+/// 该 App 的工具，调用经唤醒器（exec，测试程序把唤醒请求写到文件，测试据此把激活参数交给 App）带回同一实例并完成，
+/// 且用读回的恢复令牌快速恢复。回归（Windows 实测）：重启后调用返回 TOOL_NOT_FOUND。
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn dormant_app_wakes_after_host_restart() {
+    use app_mcp_native::{LifecycleMode, WakeDescriptor, WakeKind};
+
+    let home = TempHome::new("restart");
+    let wake_log = home.0.join("wake.jsonl");
+    let waker = json!({"exec": ["sh", "-c", r#"cat >> "$0""#, wake_log.to_string_lossy()]}).to_string();
+    let args = ["--waker", waker.as_str()];
+    let serve = start_serve(&home, &args).await;
+
+    let mut c = NativeConfig::new("calc", "计算器");
+    c.host_url = serve.ipc.clone();
+    c.instance_id = Some("calc-restart".into());
+    c.lifecycle.mode = LifecycleMode::Idle;
+    c.lifecycle.idle_timeout_ms = 200;
+    c.lifecycle.wake = Some(WakeDescriptor { kind: WakeKind::Uri, target: Some("calc-app".into()), background: true });
+    let app = NativeClient::new(c, None).unwrap();
+    let mut spec = ToolSpec::new("math.add", "加法");
+    spec.input_schema_json = Some(r#"{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}}}"#.into());
+    app.register_tool(spec, Arc::new(Add)).unwrap();
+    app.start();
+
+    // 空闲休眠 → 写出休眠记录（在线时写出的记录没有恢复令牌，休眠后重写时带上）
+    let record = home.0.join("state").join("dormant").join("calc.json");
+    let deadline = Instant::now() + T;
+    let slept = || {
+        app.state().status == app_mcp_native::StateStatus::Dormant
+            && std::fs::read_to_string(&record).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).is_some_and(|v| {
+                v["instances"][0]["resumeToken"].as_str().is_some_and(|t| !t.is_empty())
+            })
+    };
+    while !slept() {
+        assert!(Instant::now() < deadline, "没有写出休眠记录");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // 模拟崩溃：直接杀掉，不走正常停止
+    drop(serve);
+
+    let serve = start_serve(&home, &args).await;
+    let client = mcp(serve.addr, None).await;
+    wait_tool(&client, "calc.math.add").await;
+    // 唤醒器被调用后，把激活参数交给 App（模拟操作系统激活）
+    let wake_log2 = wake_log.clone();
+    let app2 = app.clone();
+    let forward = tokio::spawn(async move {
+        let deadline = Instant::now() + T;
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&wake_log2)
+                && let Some(line) = text.lines().next()
+            {
+                let req: Value = serde_json::from_str(line).unwrap();
+                assert_eq!(req["instanceId"], "calc-restart");
+                assert_eq!(req["descriptor"]["target"], "calc-app");
+                assert!(app2.handle_wake(req["activationArg"].as_str().unwrap()));
+                return;
+            }
+            assert!(Instant::now() < deadline, "唤醒器没有被调用");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    let r = add(&client, 30, 12).await;
+    assert_eq!(r.structured_content.as_ref().map(|v| v["sum"].clone()), Some(json!(42)), "{:?}", texts(&r));
+    forward.await.unwrap();
+    let log = std::fs::read_to_string(home.0.join("logs").join("app-mcp-host.log")).unwrap();
+    assert!(log.contains("读回休眠记录"), "{log}");
+    assert!(log.lines().any(|l| l.contains("休眠实例回连") && l.contains("tools_current=true")), "应快速恢复：{log}");
+    app.stop();
+    drop(serve);
+}

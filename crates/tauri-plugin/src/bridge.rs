@@ -1089,7 +1089,12 @@ impl Session {
             }
             st.calls.insert(call_id.clone(), call.clone());
         }
-        self.send(&json!({ "type": "call", "callId": call_id, "toolId": tool_id, "input": input }));
+        let mut event = json!({ "type": "call", "callId": call_id, "toolId": tool_id, "input": input });
+        // Agent 的幂等键（spec/protocol.md 3.3）：有才带，页面侧缺省即没有
+        if let Some(key) = call.idempotency_key() {
+            event["idempotencyKey"] = Value::String(key);
+        }
+        self.send(&event);
         // 先发 call 再挂取消监听：已取消时监听立即回调，页面收到的 cancel 总在 call 之后。
         call.set_cancel_listener(Arc::new(PageCancel {
             session: Arc::downgrade(self),

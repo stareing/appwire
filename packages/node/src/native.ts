@@ -136,6 +136,8 @@ export interface NativeCall {
   readonly callId: string
   readonly toolName: string
   readonly argumentsJson: string
+  /** Agent 给出的幂等键（spec/protocol.md 3.3）；没有时为 `null`。旧版原生模块没有此属性（`undefined`）。 */
+  readonly idempotencyKey?: string | null
   isCancelled(): boolean
   setCancelListener(listener: (reason: NativeCancelReason) => void): void
   complete(dataJson?: string | null, stateHints?: string[]): void

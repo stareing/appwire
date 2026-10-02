@@ -56,6 +56,8 @@ appMcp.tool('order.cancel', {
   `stateResource`）/ `partial`（只完成一部分，用 `summary` 说明）/ `noop`（没有改动）。`annotations` 是结果内容的标注
   （`audience` / `priority` / `lastModified`）。封装层可用导出的 `isToolResultEnvelope(value)` 按同一规则判断。
 - **无返回值**（`undefined` / `null`）且没有 `summary` 时，Host 对模型输出"已完成"，而不是 `null`。
+- **幂等键**：handler 上下文 `ctx.idempotencyKey` 是 Agent 给出的幂等键（原样，跨重试不变；没有时缺省，spec/protocol.md 3.3），
+  可作为业务层去重键或传给后端。Electron / Tauri 页面经桥接同样拿到。
 - **资源的内容标注**：`appMcp.resource(name, { description, annotations: { audience: ['user'], priority: 0.5 }, read })`，
   Hub 放到 MCP `resources/list` 的资源注解上；缺省不声明。
 - Host 还会对调用限流、限制参数 / 结果 / 资源大小，超出时 Agent 收到 `RATE_LIMITED` / `PAYLOAD_TOO_LARGE`

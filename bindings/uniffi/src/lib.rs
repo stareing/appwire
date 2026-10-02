@@ -987,6 +987,10 @@ impl Call {
     pub fn arguments_json(&self) -> String {
         self.inner.arguments_json()
     }
+    /// Agent 给出的幂等键（原样，spec/protocol.md 3.3）；没有时为 `None`。App 决定如何使用（如作为业务去重键）。
+    pub fn idempotency_key(&self) -> Option<String> {
+        self.inner.idempotency_key()
+    }
     pub fn is_cancelled(&self) -> bool {
         self.inner.is_cancelled()
     }
@@ -1729,6 +1733,48 @@ mod tests {
             })
         );
         assert_eq!(out[4]["error"]["data"], serde_json::json!({ "kind": "USER_REJECTED", "quota": 0 }));
+    }
+
+    /// 返回收到的幂等键：`{"key": <键或 null>}`。
+    struct KeyTool;
+
+    impl ToolHandler for KeyTool {
+        fn invoke(&self, call: Arc<Call>) {
+            let data = serde_json::json!({ "key": call.idempotency_key() }).to_string();
+            let _ = call.complete(Some(data), Vec::new());
+        }
+    }
+
+    /// 端到端：`Call::idempotency_key` 原样给出 Host 的 `idempotencyKey`；没有时为 None。
+    #[test]
+    fn idempotency_key_reaches_handler() {
+        let (mut child, lines, addr) = spawn_fake_host(&[
+            "--invoke", "k.key", "--idempotency-key", "Agent 键 / 1", "--invoke", "k.key", "--timeout-ms", "8000",
+        ]);
+        let client = AppMcpClient::new(fake_host_config("uniffi-key", &addr), None).expect("client");
+        let spec = ToolSpec {
+            name: "k.key".into(),
+            description: "d".into(),
+            input_schema_json: None,
+            risk: Some(Risk::Read),
+            activation: None,
+            title: None,
+            enabled: true,
+            annotations: None,
+            output_schema_json: None,
+            surface: None,
+            page: None,
+            background_tool: None,
+        };
+        let _tool = client.register_tool(spec, Arc::new(KeyTool)).expect("tool");
+        client.start();
+        let out: Vec<serde_json::Value> =
+            lines.map_while(Result::ok).filter_map(|l| serde_json::from_str(&l).ok()).collect();
+        let ok = child.wait().is_ok_and(|s| s.success());
+        client.stop();
+        assert!(ok, "fake_host 退出码非 0：{out:?}");
+        assert_eq!(out[1]["result"], serde_json::json!({ "data": { "key": "Agent 键 / 1" } }));
+        assert_eq!(out[2]["result"], serde_json::json!({ "data": { "key": null } }));
     }
 
     /// 连接 fake_host（`addr`）的最小配置。

@@ -120,6 +120,7 @@ struct AmResource { AmClient *client; ResRec *rec; };
 struct AmCall {
     int index;
     char *id, *tool_name, *args;
+    char *idempotency_key; /* v16：NULL = 无幂等键 */
     int cancelled;
     AmCancelFn on_cancel;
     void *cancel_ud;
@@ -727,6 +728,7 @@ void am_resource_free(AmResource *r) { free(r); }
 const char *am_call_id(const AmCall *call) { return call->id; }
 const char *am_call_tool_name(const AmCall *call) { return call->tool_name; }
 const char *am_call_arguments_json(const AmCall *call) { return call->args; }
+const char *am_call_idempotency_key(const AmCall *call) { return call ? call->idempotency_key : NULL; }
 bool am_call_is_cancelled(const AmCall *call) {
     lock_global();
     int c = call->cancelled;
@@ -757,6 +759,7 @@ static void consume(AmCall *call, char *result) {
     free(call->tool_name);
     memset(call->args, 0, strlen(call->args));
     free(call->args);
+    free(call->idempotency_key);
     free(call);
 }
 
@@ -940,8 +943,8 @@ static void invoke_job(void *p) {
     free(j);
 }
 
-/* 在新线程上调用工具。返回结果槽位；工具不存在时返回 -1。 */
-int fake_invoke(const char *tool, const char *args_json) {
+/* 在新线程上调用工具（idempotency_key 为 NULL = 无幂等键）。返回结果槽位；工具不存在时返回 -1。 */
+int fake_invoke_with_key(const char *tool, const char *args_json, const char *idempotency_key) {
     AmClient *c = g_client;
     ToolRec *t = find_tool(c, tool);
     if (!t || !t->enabled) return -1;
@@ -955,6 +958,7 @@ int fake_invoke(const char *tool, const char *args_json) {
     call->id = dup_str(id);
     call->tool_name = dup_str(tool);
     call->args = dup_str(args_json);
+    call->idempotency_key = idempotency_key ? dup_str(idempotency_key) : NULL;
     g_calls[idx] = call;
     InvokeJob *j = malloc(sizeof *j);
     j->t = t;
@@ -962,6 +966,9 @@ int fake_invoke(const char *tool, const char *args_json) {
     run_on_thread(invoke_job, j);
     return idx;
 }
+
+/* 在新线程上调用工具（无幂等键）。 */
+int fake_invoke(const char *tool, const char *args_json) { return fake_invoke_with_key(tool, args_json, NULL); }
 
 typedef struct { ResRec *r; AmRead *read; } ReadJob;
 static void read_job(void *p) {

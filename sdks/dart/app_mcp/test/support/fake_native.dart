@@ -87,6 +87,9 @@ final class FakeNative {
 
   late final _invoke = lib.lookupFunction<Int32 Function(Pointer<Utf8>, Pointer<Utf8>),
       int Function(Pointer<Utf8>, Pointer<Utf8>)>('fake_invoke');
+  late final _invokeWithKey = lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>),
+      int Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>)>('fake_invoke_with_key');
   late final _read = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>(
       'fake_read');
   late final cancel =
@@ -172,6 +175,11 @@ final class FakeNative {
 
   int invoke(String tool, String argsJson) =>
       using((a) => _invoke(tool.toNativeUtf8(allocator: a), argsJson.toNativeUtf8(allocator: a)));
+
+  /// 带幂等键调用工具（Host 的 `ToolsInvokeParams.idempotencyKey`）。
+  int invokeWithKey(String tool, String argsJson, String idempotencyKey) => using((a) => _invokeWithKey(
+      tool.toNativeUtf8(allocator: a), argsJson.toNativeUtf8(allocator: a),
+      idempotencyKey.toNativeUtf8(allocator: a)));
 
   int read(String name) => using((a) => _read(name.toNativeUtf8(allocator: a)));
 

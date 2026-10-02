@@ -158,6 +158,11 @@ export interface HoldHandle {
 export interface ToolContext {
   /** Host 生成的调用 ID。 */
   readonly callId: string;
+  /**
+   * Agent 给出的幂等键（原样，spec/protocol.md 3.3）；没有时为 undefined。跨重试不变（每次重试是新的 `callId`），
+   * App 决定如何使用（如作为业务层去重键、传给后端）。
+   */
+  readonly idempotencyKey?: string;
   /** 调用是否已被取消（Host 取消、超时、断线、停止）。 */
   isCancelled(): boolean;
   /** 取消时回调（已取消时也会经事件循环回调一次）。 */

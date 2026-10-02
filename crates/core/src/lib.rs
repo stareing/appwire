@@ -430,8 +430,9 @@ pub enum Event {
     Disconnect,
     /// 通过当前连接发送一条文本消息。只会在连接建立期间产生。
     Send(String),
-    /// 调用 handler。完成后调用 [`Client::complete_call`]。
-    InvokeTool { call_id: String, tool: ToolId, name: String, arguments: Value },
+    /// 调用 handler。完成后调用 [`Client::complete_call`]。`idempotency_key` 为 Agent 给出的幂等键（原样，
+    /// spec/protocol.md 3.3），供 handler 上下文读取；App 决定如何使用。
+    InvokeTool { call_id: String, tool: ToolId, name: String, arguments: Value, idempotency_key: Option<String> },
     /// 取消调用：驱动层应中止 handler（如触发 AbortSignal）。之后的 `complete_call` 会被忽略。
     CancelTool { call_id: String, reason: CancelReason },
     /// 读取资源。完成后调用 [`Client::complete_read`]。

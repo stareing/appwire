@@ -574,6 +574,24 @@ describe('工具调用', () => {
     expect(handler.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal)
   })
 
+  it('Agent 的幂等键进入 handler 上下文（spec/protocol.md 3.3），没有时缺省', async () => {
+    const h = await connected()
+    const seen: ToolContext[] = []
+    h.app.tool('t', {
+      description: '',
+      handler: (_input: unknown, ctx: ToolContext) => {
+        seen.push(ctx)
+        return null
+      },
+    })
+    const toolId = h.core.callsOf('registerTool').length
+    h.socket().script({ type: 'invokeTool', callId: 'c1', tool: toolId, name: 't', arguments: {}, idempotencyKey: 'order-7' })
+    h.socket().script({ type: 'invokeTool', callId: 'c2', tool: toolId, name: 't', arguments: {} })
+    await settle()
+    expect(seen[0]?.idempotencyKey).toBe('order-7')
+    expect(seen[1] && 'idempotencyKey' in seen[1]).toBe(false)
+  })
+
   it('拆开 { data, stateHints }', async () => {
     const { outcome } = await invoke(async () => ({ data: { ok: true }, stateHints: ['cart.state'] }))
     expect(outcome()).toEqual({ data: { ok: true }, stateHints: ['cart.state'] })

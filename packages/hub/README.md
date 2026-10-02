@@ -183,10 +183,20 @@ hub.setWaker(null)                                                 // 恢复配�
 `wakeFromLaunch`（App 未运行且清单无显式 `wake` 时由 `launch` 推导唤醒方式，默认 false）、
 `waker`（`'system'` 默认 / `'none'` 不唤醒 / `{ exec: ['node', 'wake.mjs'] }`）。
 
+## 页面、导航与 Agent 显式控制（spec/hub-api.md 3.14 / 3.15）
+
+- `HubTool.surface`（`'app'` / `'view'`）与 `page`：App 工具的界面依赖与所在页面；内置与上游工具缺省。
+- 调用不在当前页面的工具时 Hub 自动导航，等待上限 `navigateTimeoutMs`（默认 5000，独立于 `wakeTimeoutMs`）；超时 →
+  `NAVIGATION_FAILED`。改调了 view 工具声明的后台替代时，`CallOutcome.routedTo` 为实际调用的工具全名。
+- `callTool({ name, arguments, idempotencyKey: 'order-7' })`：Agent 的幂等键（1..=256 个字符）原样转交 App（handler 的
+  `context.idempotencyKey`）；不合法时结果为 `INVALID_INPUT`。
+- 内置工具 `apps.activate`（只唤醒不调用）/ `apps.release`（收回本会话租约）总是列出；有页面目录时另有 `apps.page` / `apps.navigate`。
+
 ## 渐进暴露（工具很多时）
 
 `toolExposure: 'auto'`（默认）下，App 与上游工具总数超过 `toolExposureThreshold`（默认 40）时，`tools()` / `exportTools()`
-只返回内置工具 `apps.list` / `apps.select` / `apps.overview` / `apps.tools`，以及该会话展开过、调用过或选定了实例的 App 的工具。
+只返回内置工具（`apps.list` / `apps.select` / `apps.overview` / `apps.tools` / `apps.activate` / `apps.release`，有页面目录时另有
+`apps.page` / `apps.navigate`），以及该会话展开过、调用过或选定了实例的 App 的工具。
 模型调用 `apps.tools({ appId })` 得到该 App 的工具（含 schema），之后这些工具出现在同一会话的导出里；未列出的工具按全名 / 导出名
 仍可直接调用。会话由 `ToolFilter.session` 与 `dispatch(format, call, session)` 的会话对应：
 

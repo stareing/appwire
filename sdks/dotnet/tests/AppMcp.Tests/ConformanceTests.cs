@@ -19,7 +19,7 @@ public class ConformanceTests(ITestOutputHelper output)
     private static readonly HashSet<string> Features =
     [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure",
-        "surface", "navigation", "backgroundTool", "backgroundNavigation",
+        "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
     ];
 
     private static readonly IReadOnlyDictionary<string, ToolRisk> Risks = new Dictionary<string, ToolRisk>
@@ -299,11 +299,11 @@ public class ConformanceTests(ITestOutputHelper output)
                 }
             }
             foreach (var op in Items(Get(spec, "mutate"))) Mutate(op);
-            return Complete(spec, count, args);
+            return Complete(spec, count, args, ctx);
         }
 
         /// <summary>C# 最自然的写法：失败抛异常；无返回值即 handler 返回 null。</summary>
-        private static object? Complete(JsonElement spec, int count, JsonElement args)
+        private static object? Complete(JsonElement spec, int count, JsonElement args, ToolContext ctx)
         {
             if (Text(Get(spec, "throw")) is { } message) throw new InvalidOperationException(message);
             if (IsSet(Get(spec, "userAction")))
@@ -325,6 +325,8 @@ public class ConformanceTests(ITestOutputHelper output)
             }
             if (Has(spec, "return")) return Get(spec, "return");
             if (Get(spec, "echo").ValueKind == JsonValueKind.True) return args;
+            if (Get(spec, "returnIdempotencyKey").ValueKind == JsonValueKind.True)
+                return new Dictionary<string, string?> { ["idempotencyKey"] = ctx.IdempotencyKey };
             if (Get(spec, "counter").ValueKind == JsonValueKind.True) return new { count };
             // returnNothing（以及未声明结果）：C# 的"无返回值"即 handler 返回 null。
             return null;

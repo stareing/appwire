@@ -163,6 +163,14 @@ var outcome = await hub.CallAsync("notes.add", new { text = "买牛奶" });  // 
   （调用按 `TOOL_NOT_FOUND`），`deny` 使调用以 `HubError.PolicyDenied` 结束（`Details.ruleId`）。无规则时行为不变；生效规则与命中次数见
   `HubStatusInfo.Policy`。
 
+### 页面、导航与幂等键（spec/hub-api.md 3.14 / 3.15）
+
+- `HubToolInfo.Surface`（`HubToolSurface.App` / `View`）与 `Page`：App 工具的界面依赖与所在页面；内置与上游工具为 `null`。
+- 自动导航的等待上限 `HubOptions.NavigateTimeout`（默认 5 秒）；改调后台替代时 `CallOutcome.RoutedTo` 为实际调用的工具全名。
+- `new CallRequest("shop.order.submit", args) { IdempotencyKey = "order-7" }`：幂等键原样转交 App（`ToolContext.IdempotencyKey`），
+  不合法时 `Error.Kind` 为 `INVALID_INPUT`。
+- 内置工具 `apps.activate` / `apps.release` 总是列出，有页面目录时另有 `apps.page` / `apps.navigate`（经 `CallAsync` / `DispatchAsync` 调用）。
+
 ### 休眠与唤醒（spec/hub-api.md 3.5）
 
 App 以 `LifecycleMode.Idle` 等方式运行时，空闲后进入休眠：其工具仍列出（`Availability == "dormant"`），
@@ -229,6 +237,9 @@ var client = AppMcpClient.Create(new AppMcpClientOptions
 调用去重（spec/protocol.md 3.3）：同一 `callId` 在有效期内重复到达时重放首次结果、不再执行 handler。
 `AppMcpClientOptions.CallDedup = new CallDedupOptions { Ttl = TimeSpan.FromMinutes(5), MaxEntries = 64 }`（为 null 时即此默认值；
 `CallDedupOptions.Off` 或任一项为 0 关闭）。命中时 SDK 记一条警告日志。
+
+幂等键（spec/protocol.md 3.3「idempotencyKey」）：`ToolContext.IdempotencyKey`（`string?`）是 Agent 给出的幂等键，原样提供，没有时为 null；
+同一工具同一键的重复调用已按首次结果重放（同上，去重关闭时只透传），App 可另作业务去重键或传给后端。
 
 `LifecycleOptions` 为 record，可用 `with` 改个别字段。
 

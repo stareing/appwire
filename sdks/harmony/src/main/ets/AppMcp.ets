@@ -137,6 +137,7 @@ class OnceHold implements HoldHandle {
 
 class CallContext implements ToolContext {
   readonly callId: string;
+  readonly idempotencyKey?: string;
   private readonly call: Call;
   private cancelled: boolean = false;
   private cancelReason: CancelReason | undefined = undefined;
@@ -146,6 +147,10 @@ class CallContext implements ToolContext {
   constructor(call: Call, logger: Logger) {
     this.call = call;
     this.callId = call.callId;
+    const key = call.idempotencyKey;
+    if (key !== undefined && key !== null) {
+      this.idempotencyKey = key;
+    }
     this.logger = logger;
   }
 

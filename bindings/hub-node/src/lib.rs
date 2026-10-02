@@ -133,6 +133,9 @@ struct ConfigJson {
     mcp_http: Option<bool>,
     /// 单实例锁与登记文件目录（`<runDir>/hub.lock`、`endpoints.json`）；缺省不参与。
     run_dir: Option<PathBuf>,
+    /// 持久状态目录：休眠记录写到 `<stateDir>/dormant/<appId>.json`（原子写、仅当前用户可读），启动时读回；
+    /// 缺省不读写任何文件（spec/hub-api.md 3.5「持久化」）。
+    state_dir: Option<PathBuf>,
     /// 本地 IPC 端点（`unix:…` / `pipe:…`，spec/protocol.md 1.2）；缺省为平台默认端点；显式 `null` = 不开。
     #[serde(deserialize_with = "present")]
     ipc_endpoint: Option<Option<String>>,
@@ -150,6 +153,8 @@ struct ConfigJson {
     pairing_timeout_ms: Option<u64>,
     lease_ttl_ms: Option<u64>,
     wake_timeout_ms: Option<u64>,
+    /// 导航等待上限（App 回复 + 目标工具注册，spec/hub-api.md 3.14 / 3.15），缺省 5000。
+    navigate_timeout_ms: Option<u64>,
     wake_token_ttl_ms: Option<u64>,
     dormant_ttl_ms: Option<u64>,
     dormant_replaced_by_new_instance: Option<bool>,
@@ -192,6 +197,7 @@ impl ConfigJson {
             c.mcp_http = v;
         }
         c.run_dir = self.run_dir;
+        c.state_dir = self.state_dir;
         if let Some(endpoint) = self.ipc_endpoint {
             c.ipc_endpoint = endpoint;
         }
@@ -229,6 +235,9 @@ impl ConfigJson {
         }
         if let Some(v) = self.wake_timeout_ms {
             c.wake_timeout = ms(v);
+        }
+        if let Some(v) = self.navigate_timeout_ms {
+            c.navigate_timeout = ms(v);
         }
         if let Some(v) = self.wake_token_ttl_ms {
             c.wake_token_ttl = ms(v);

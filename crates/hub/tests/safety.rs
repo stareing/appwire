@@ -77,7 +77,7 @@ async fn connect_app(hub: &Hub) {
             }
         }
     });
-    let filter = ToolFilter { apps: Some(vec!["shop".into()]), ..Default::default() };
+    let filter = ToolFilter { apps: Some(vec!["shop".into()]), include_builtin: false, ..Default::default() };
     timeout(T, async {
         while hub.tools(&filter).len() < 5 {
             tokio::time::sleep(Duration::from_millis(10)).await;

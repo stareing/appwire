@@ -156,6 +156,8 @@ HarmonyAppMcp.create(this.context, { appId: 'shop', appName: '示例商城', lif
 
 `AppMcpOptions.callDedup`：`{ ttlMs?, maxEntries? }`（缺省 300000 ms / 64 条，任一为 0 关闭）——同一 `callId` 在有效期内再次到达时
 重放首次结果、不再执行 handler（spec/protocol.md 3.3），命中时记一条警告日志。
+handler 上下文 `ToolContext.idempotencyKey`：Agent 给出的幂等键（原样，跨重试不变；没有时为 `undefined`，spec/protocol.md 3.3），
+App 可作为业务层去重键或传给后端。
 资源可声明 `annotations`（MCP 内容注解 `audience` / `priority` / `lastModified`，Hub 放到 `resources/list` 的资源注解上）；
 `read` 抛出 `ToolCallError`（含 `ToolCallError.userActionRequired`）时类别与详情（`reason` / `uri`）原样交给 Host，与工具一致。
 

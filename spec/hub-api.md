@@ -44,6 +44,7 @@ pub struct HubConfig {
     pub http: HttpOptions,                  // 令牌（只作用于 /mcp）、allow_remote
     pub mcp_http: bool,                     // listen 与 IPC 端点上是否提供 /mcp，默认 false（3.6、3.8）
     pub run_dir: Option<PathBuf>,           // 单实例锁 + 登记文件目录，默认 None（3.6）
+    pub state_dir: Option<PathBuf>,         // 持久状态（休眠记录）目录，默认 None = 不读写文件（3.5「持久化」）
     pub ipc_endpoint: Option<String>,       // 本地 IPC 端点，默认平台默认端点；None = 不开（3.8）
     pub approval: ApprovalPolicy,           // 见 3.3
     pub limits: LimitPolicy,                // 资源保护：限流与大小上限（3.11）
@@ -120,7 +121,9 @@ pub struct HubTool {
     pub availability: Availability,   // Available | Disconnected | NotRegistered | Dormant
     pub annotations: ToolAnnotations, // Agent 实际看到的 MCP 注解（声明优先，缺少的按 risk 推导；上游原样，spec/protocol.md 3.2）
     pub output_schema: Option<Value>, // App 声明的结果 schema（原样；MCP 出口按需包装）
-}
+    pub surface: Option<ToolSurface>, // App 工具的界面依赖 app | view（spec/protocol.md 3.4；未声明即 app）；内置 / 上游为 None
+    pub page: Option<String>,         // App 工具所在页面（声明的 page，或页面目录中的页面，3.14）；没有时 None
+}                                     // surface / page 为 None 时 JSON 中不出现
 // HubResource 另有 annotations: Option<ContentAnnotations>（App 对资源内容的标注，原样）
 pub struct ToolFilter {
     pub apps: Option<Vec<String>>,          // None = 全部
@@ -137,6 +140,7 @@ pub struct CallRequest {
     pub timeout: Option<Duration>,
     pub call_id: Option<String>,     // 供 cancel_call；None 自动生成。以同一 call_id 重试时 App 只执行一次（spec/protocol.md 3.3）
     pub session: Option<String>,     // 厂商会话 ID：用于"首次接触附带总览"按会话计算；None = 默认会话
+    pub idempotency_key: Option<String>, // Agent 幂等键，原样转交 App（3.15；spec/protocol.md 3.3）
 }
 pub struct CallOutcome {
     pub call_id: String,
@@ -148,6 +152,7 @@ pub struct CallOutcome {
     pub state_resource: Option<String>,       // pending 时的状态资源 URI（app-mcp://<appId>/<名>）
     pub summary: Option<String>,              // App 给出的一句结论
     pub annotations: Option<ContentAnnotations>, // App 对结果内容的标注（原样）
+    pub routed_to: Option<String>,            // 改调了后台替代时实际调用的工具全名（3.14）
 }
 
 pub enum HubEvent {
@@ -181,7 +186,7 @@ App 工具与上游工具在路由 / 审批之前先过资源保护（3.11）：
 `outputSchema` = 声明的 schema（根类型非 object 时包装为 `{result}`）；成功结果的内容块依次为：状态说明（`status` 非 `done`）→
 `summary` → 返回值 JSON（无返回值、无摘要且 `done` 时为"已完成"）→ 资源变化提示（`stateHints`），App 的内容标注只加在
 摘要与返回值块上；`structuredContent` 按 `outputSchema` 决定（无返回值时不填）；`status` 非 `done` 时 `_meta` 带
-`app-mcp/status` 与 `app-mcp/stateResource`（键名前缀暂定，第 19 项 R4 核实 MCP `_meta` 命名约定后可能调整）。
+`app-mcp/status` 与 `app-mcp/stateResource`（全部 `_meta` 键见 3.15 的键表）。
 资源列表的 `annotations` 为 App 声明的内容注解。Hub API（`CallOutcome`）给出同样的信息：`result` 为原始 `data`（无返回值为 `null`），
 另有 `status`、`state_resource`、`summary`、`annotations` 字段。
 
@@ -315,6 +320,28 @@ Hub 返回 `{accepted: false, retryAfterMs: 1000}`；否则生成恢复令牌（
 - 休眠记录保留 `HubConfig.dormant_ttl`（默认 24 小时）；同一 appId 以**新的**实例 ID 连接时（`dormant_replaced_by_new_instance`，默认开）
   移除该 App 的全部休眠记录。记录被移除时发 `AppDisconnected` 与列表变化。
 
+**持久化**（4f G11，spec/lifecycle.md 第 9 节）：`HubConfig.state_dir` 为 `Some` 时休眠记录跨 Hub 重启保留；缺省 `None` 时
+Hub 不读写任何文件（嵌入式厂商按需开启；`app-mcp-host` 为 `<home>/state`）。
+
+- 文件：每个 App 一个 `<state_dir>/dormant/<appId>.json`（appId 须满足 `[a-z][a-z0-9-]{0,62}`），原子写（同目录临时文件 + 改名），
+  Unix 目录 0700、文件 0600。内容 `{version: 1, appId, savedAtMs, tools: [ToolInfo], instances: [...], pageTools: [下标]}`：工具定义
+  按内容去重只存一份，实例与页面目录以下标引用，读回后同一定义共享一个对象（与内存中相同）；实例含 `instanceId`、`appName`、
+  `clientKind`、可选 `appVersion` / `title` / `url` / `overview` / `visibility`、`tools`（下标）、`resources`、`resumeToken`、
+  `toolsHash`、`wake`、`sleptAtMs`、`connectedAtMs`、`lastActiveAtMs`。只有声明，没有调用参数 / 结果。
+- 保存的实例：休眠记录，加上已就绪、在 `app/hello.wake` 中声明了唤醒描述的在线实例（Host 异常退出时它们来不及转为休眠；
+  `resumeToken` / `toolsHash` 为空、`sleptAtMs` 为写出时刻，读回后按休眠实例列出，回连时完整同步）。在线实例的工具变化不触发重写，
+  文件中是就绪时（或该 App 其他变化时）的工具，回连同步后即更正。
+- 写入时机：实例休眠、休眠记录被回连取走 / 被新实例替换 / 过期移除、声明了唤醒描述的实例就绪 / 断开时，由一个后台任务按 App 重写
+  （记录为空则删除文件）；没有变化时不设定时器。`Hub::shutdown` 时写出未写的变化。Host 被强制结束时，最近一次变化之前的记录已在磁盘上（写入在变化后毫秒级完成）。
+- 读回：`Hub::start` 在开始监听之前读回（单实例锁之后）；`sleptAtMs` 早于 `dormant_ttl` 的实例丢弃（全部过期的文件删除），保留的
+  按原活跃顺序登记，工具 / 资源按 SDK 上报同一套规则过滤。已有连接后才读回的情况不存在（读回先于监听）。
+- 上限与容错：单个文件 ≤ 4 MiB（写入超出时不写并删除旧文件，`last_error` 记原因）；读回最多 1024 个文件（按修改时间从新到旧）。
+  内容损坏、版本未知（如更新的 Host 写的）、文件名与内容不符、下标越界、超出上限 → 跳过该文件并记 warn 日志与
+  `HubStatus.dormant_store.issues`，不删除、不中断启动。
+- 观测：`HubStatus.dormant_store: Option<DormantStoreStatus>`（3.9）；`app-mcp-host doctor` 的「休眠记录」检查离线读目录
+  （Host 未运行也可用，`app_mcp_hub::dormant_store::inspect`），列出可读回的 App / 实例数与被跳过的文件。
+- 绑定：hub-c / hub-node JSON `stateDir`、`@app-mcp/hub` `HubConfig.stateDir`、hub-uniffi `HubConfig.state_dir`、C# `HubOptions.StateDir`。
+
 **快速恢复**：`app/hello` 带 `resumeToken` + `toolsHash`，且令牌与该实例的休眠记录一致、`toolsHash` 等于
 `app_mcp_protocol::tools_hash(快照)` → `HelloResult.toolsCurrent = true`，Hub 直接沿用快照；否则 `false`（SDK 完整同步）。
 恢复令牌一次性：同一实例 ID 回连即消耗休眠记录。需要 `PairingHandler` 重新确认配对的握手不做快速恢复。
@@ -401,14 +428,19 @@ pub struct LeaseOverrides {     // JSON 形式（camelCase，未知字段报错�
   自适应租约本身就是对下一次调用的预测，按时到期，不提前收回（收回默认值部分后随 `ttlMs: 0` 补发其剩余时长）。
   SDK 取较大截止时刻（spec/lifecycle.md 4.2），样本凑满后发出的较短自适应租约不会缩短先前的默认值租约，因此 Hub 按（会话, 实例）
   分别记默认值与自适应租约的最晚截止，空闲收回看前者。没有待收回的会话时 Hub 不设定时器。
+- **租约种类**：按统计发出的租约在 `app/lease` 上带 `adaptive: true`（默认值租约不带）；收回后补发时两种租约分别补发
+  （其他会话的默认值部分只在晚于自适应部分时补发）。SDK 的后台连接只认自适应租约（spec/lifecycle.md 第 13 节 B4），Hub 不区分连接是否在后台。
 - **内存上界**：（会话, App）统计与会话活动表各最多 1024 项，超出时淘汰最久未活动（会话：且无进行中请求）的一项。
 - **观测**：`HubStatus.lease: Option<LeaseStatus>`（3.9）。
+- **定位**：自适应租约是 Hub 的**缺省策略**，不是机制本身（CLAUDE.md「微内核范围」）：`--fixed-lease` / `LeasePolicy.adaptive = false`
+  关闭它，回到固定 `lease_ttl`；之后可经第 16 项 P2 的策略挂点替换。Agent 的显式决定优先：`apps.release`（3.15）立即收回本会话在
+  该 App 上的全部租约（默认值与自适应部分），`apps.activate` 发一次租约。
 
 **新增配置**（`HubConfig`）：`lease_ttl`、`wake_timeout`、`wake_token_ttl`、`dormant_ttl`、
 
-**新增配置**（`HubConfig`）：`lease_ttl`、`wake_timeout`、`wake_token_ttl`、`dormant_ttl`、
+**新增配置**（`HubConfig`）：`lease_ttl`、`wake_timeout`、`navigate_timeout`（3.14，默认 5 秒）、`wake_token_ttl`、`dormant_ttl`、
 `dormant_replaced_by_new_instance`、`wake_from_launch`、`waker`。`app-mcp-host` 对应命令行：`--lease-ms`、`--wake-timeout-ms`、
-`--wake-from-launch`、`--waker system|none|<JSON>`。
+`--navigate-timeout-ms`（配置文件 `lifecycle.navigateTimeoutMs`）、`--wake-from-launch`、`--waker system|none|<JSON>`。
 
 **功耗相关配置（4e，spec/lifecycle.md 第 11–12 节）**：
 
@@ -453,7 +485,7 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
 - **是否生效**：`All` 从不；`Progressive` 总是；`Auto` 在 App 工具（注册表列出的，含静态、休眠）与上游工具总数
   **大于** `tool_exposure_threshold` 时生效。每次列出时重新判断（App 连接 / 断开会使结果变化，已有 `ToolsChanged` 覆盖）。
 - **生效时的列表**（MCP `tools/list`、`Hub::tools`、`Hub::export_tools`）：内置工具 `apps.list`、`apps.select`、`apps.overview`、
-  `apps.tools`（有页面目录时另有 `apps.page`，3.14），加上**会话已列出的 App** 的全部工具。会话已列出的 App =
+  `apps.tools`、`apps.activate`、`apps.release`（有页面目录时另有 `apps.page`、`apps.navigate`，3.14 / 3.15），加上**会话已列出的 App** 的全部工具。会话已列出的 App =
   本会话调用过 `apps.tools` 的 App ∪ 本会话调用过其工具的 App（含上游；无论结果成功与否）∪ 本会话 `apps.select` 选定实例的 App ∪
   `Hub::select_instance` 全局选定实例的 App。
 - **未生效时**：列表与之前完全相同（不含 `apps.tools`）；已列出的 App 仍照常记录，切换为生效时沿用。
@@ -515,7 +547,12 @@ pub struct HubStatus {
     lease: Option<LeaseStatus>,                        // 4e B2：租约策略与统计（旧 Host 无此字段 → None）
     limits: Option<LimitOverrides>,                    // 第 14 项：资源保护策略（3.11；旧 Host → None）
     output_validation: Option<OutputValidation>,       // 第 19 项 R2（3.11；旧 Host → None）
+    dormant_store: Option<DormantStoreStatus>,         // 4f G11：休眠记录持久化（3.5；未配置 state_dir / 旧 Host → None）
 }
+pub struct DormantStoreStatus { dir: String,           // <state_dir>/dormant
+    loaded_instances, expired_instances, writes: u64,  // 启动时读回 / 因过期丢弃的实例数；启动以来写入（含删除）次数
+    issues: Vec<StoreIssue>,                           // 启动时跳过的文件 { file, reason }
+    last_error: Option<String> }                       // 最近一次写入失败
 pub struct LeaseStatus { mode: String,                 // adaptive | fixed | off（lease_ttl = 0）
     default_ms, min_ms, max_ms, margin_ms: u64, window: u32, idle_revoke_ms: u64,
     adaptive_grants, default_grants, revoked_session_end, revoked_idle: u64,
@@ -750,8 +787,8 @@ App 决定（拒绝即 `NAVIGATION_DENIED`），Hub 不经 `ApprovalHandler` 另
    与资源读取触发的唤醒相同）。唤醒后实例已注册该工具则直接派发。
 4. 选导航目标：已就绪、声明了 `capabilities.navigate`、未冻结的实例，按路由优先级（调用方指定的 `instanceId` 严格、唤醒的实例、
    会话选定的实例优先）。没有 → `NAVIGATION_FAILED`（`unsupported`）。
-5. 发 `app/navigate {page}`（自动导航不带 `params`），等待回复；回复后等待该实例注册目标工具（`tools/sync` / `tools/changed`）。
-   回复与等待合计受 `HubConfig::wake_timeout` 约束（超时分别为 `timeout` / `tool-not-registered`），调用取消（3.12）随时结束等待；
+5. 发 `app/navigate {page}`（自动导航不带 `params`；需要页面参数时由 Agent 用 `apps.navigate`，3.15），等待回复；回复后等待该实例注册目标工具（`tools/sync` / `tools/changed`）。
+   回复与等待合计受 `HubConfig::navigate_timeout`（默认 5 秒，独立于 `wake_timeout`）约束（超时分别为 `timeout` / `tool-not-registered`），调用取消（3.12）随时结束等待；
    期间该连接记为有进行中的工作（`app/sleep` 被拒绝）。旧 SDK 回 `-32601` 按 `unsupported`；App 回 `NAVIGATION_*` 与
    `USER_ACTION_REQUIRED`（实例在后台、不能自行回到前台，spec/protocol.md 3.4）原样；其他错误归为 `NAVIGATION_FAILED`（`error`）。
    错误另带 `appId`、`page`。
@@ -769,13 +806,78 @@ App 决定（拒绝即 `NAVIGATION_DENIED`），Hub 不经 `ApprovalHandler` 另
   之后与直接调用它相同（不再改调）。
 - 结果标出改调：Hub API `CallOutcome.routed_to`（`routedTo`，实际调用的工具全名，未改调时不出现）；MCP 结果 `_meta` 的
   `app-mcp/routedTo`（同值，成功与失败结果都有）。各 Hub 绑定按 JSON 透传 `CallOutcome` 的（hub-c、hub-node、`@app-mcp/hub`）带
-  `routedTo`；hub-uniffi 的 `CallOutcome` 记录暂不含该字段（需要时经 MCP 出口或 JSON 结果获取）。
+  `routedTo`；hub-uniffi `CallOutcome.routed_to`（Kotlin / Swift 封装 `CallResult.routedTo`、Python `CallResult.routed_to`），C# `CallOutcome.RoutedTo`。
 - 替代不可用（不存在、不是 app 工具、指向自身、参数不符）时不改调、记 warn 日志，按上面的导航规则处理（在后台时即得到
   `USER_ACTION_REQUIRED` / `foreground`）。实现：`crates/hub/src/navigate.rs`（判定）、`crates/hub/src/call.rs`（改调）。
 
 **绑定**：内置工具与结果形状对所有入口一致（MCP 出口、Hub API、各格式导出与分派、hub-c / hub-uniffi / hub-node），各绑定无需新增
-接口；导出名按全部内置工具（含 `apps.tools`、`apps.page`）计算，展开前后稳定。`HubTool` 结构不变（`surface` / `page` 暂不进入
-`HubTool`）。
+接口；导出名按全部内置工具（含 `apps.tools`、`apps.page`、3.15 的内置工具）计算，展开前后稳定。`HubTool` 带 `surface` / `page`（3.1）：
+hub-c / hub-node / `@app-mcp/hub` 为 JSON 字段 `surface` / `page`，hub-uniffi `HubTool.surface: ToolSurface?` / `page: String?`，
+C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `HubToolSurface`），Kotlin / Swift / Python 同名属性
+（枚举类型：Kotlin / Python `ToolSurface`，Swift `HubToolSurface`）。
+
+### 3.15 Agent 显式控制：导航、激活 / 释放、截止时间与幂等键（第 4c 项决定、第 4f 项 a / c / j）
+
+都是机制：何时导航、预热、释放，截止时间多长，幂等键怎么取，由 Agent 决定；Hub 只执行并保证策略挂点（3.13）、资源保护（3.11）、
+唤醒速率上限（3.5）照常生效。实现：`crates/hub/src/agent_control.rs`（内置工具）、`crates/hub/src/request_meta.rs`（请求 `_meta`）。
+
+**名称表**（本节为唯一定义；代码中只在 `crates/hub/src/names.rs` 定义一次，`app_mcp_hub::names`）。`_meta` 键前缀 `app-mcp/` 暂定：
+第 19 项 R4 核实 MCP `_meta` 命名约定（U3）后可能统一改名，届时只改本表与该文件。
+
+| 名称 | 方向 | 含义 |
+|---|---|---|
+| `apps.list` / `apps.select` / `apps.overview` / `apps.tools` / `apps.page` | 内置工具 | 3.7、3.14 与第 7 节 |
+| `apps.navigate` | 内置工具 | 显式导航（下文） |
+| `apps.activate` | 内置工具 | 只唤醒不调用（下文） |
+| `apps.release` | 内置工具 | 收回本会话在该 App 上的租约（下文） |
+| `app-mcp/status`、`app-mcp/stateResource` | 结果 `_meta` | 结果状态（spec/protocol.md 3.2，3.2） |
+| `app-mcp/routedTo` | 结果 `_meta` | 改调后台替代时实际调用的工具全名（3.14） |
+| `app-mcp/timeoutMs` | 请求 `_meta`（`tools/call`） | Agent 的截止时间（下文） |
+| `app-mcp/idempotencyKey` | 请求 `_meta`（`tools/call`） | Agent 的幂等键（下文） |
+
+**`apps.navigate {appId, page, params?}`**（有 Agent 可见的页面目录时列出，任何时候可调用；注解 `readOnlyHint: false`、
+`idempotentHint: true`，风险 write）：承载显式导航参数；调用不在当前页面的工具时的自动导航（3.14）仍不带参数。
+
+1. appId 未知 / 被 `hide` 整体隐藏（上游 MCP 服务器同样）→ `TOOL_NOT_FOUND`；`page` 不在 Agent 可见的页面目录中 → `TOOL_NOT_FOUND`；
+   页面 `navigable: false` → `NAVIGATION_DENIED`（`not-navigable`），不发请求。
+2. `params`（对象；缺省按 `{}` 校验、请求中不带）按页面的 `params` schema（清单 `pages[].params`）校验 → `INVALID_INPUT`（未启用
+   `schema-validation` 时不校验；页面没有 schema 时不校验）。
+3. 策略 `call` 执行点：只有 App 级规则（不带 `tool` / `annotations`）匹配 → `POLICY_DENIED`。资源保护：限流按（App, `apps.navigate`）
+   与 App 两级计数（3.11），参数大小同调用参数。
+4. App 没有已连接实例：按唤醒规则唤醒（与 3.14 第 3 步相同，策略 `wake` 执行点只匹配 App 级规则）。
+5. 选导航目标（3.14 第 4 步；会话选定 / 刚唤醒的实例优先），发 `app/navigate {page, params?}`，等回复（`navigate_timeout`）；
+   错误与 3.14 第 5 步相同（`unsupported` / `error` / `timeout`、`NAVIGATION_DENIED`、`USER_ACTION_REQUIRED`），不等待工具注册。
+6. 结果 `{appId, instanceId, page, ok: true, woke, message}`。不经 `ApprovalHandler`（是否允许由 App 决定，3.14）。
+
+**`apps.activate {appId}`**（总是列出；`readOnlyHint: false`、`idempotentHint: true`，风险 write）：只唤醒不调用，供 Agent 在即将连续使用
+某 App 时预热（取代第 16 项 O5 的预测预热）。已有已连接实例 → 不唤醒；否则按唤醒规则唤醒（策略 `wake` 执行点只匹配 App 级规则、
+唤醒速率上限、`waker: none` → `APP_DISCONNECTED`，与资源读取触发的唤醒相同）。随后向首选实例发一次本会话的租约（与调用完成后相同，
+3.5），实例在租约内不休眠。结果 `{appId, instanceId, state: "connected", woke, message}`；appId 未知 / 隐藏 → `TOOL_NOT_FOUND`。
+
+**`apps.release {appId}`**（总是列出；同上注解）：收回本会话在该 App 各已连接实例上的全部租约——`app/lease {ttlMs: 0}`，其他会话对同一
+实例的未到期租约随后补发（与会话结束时的收回相同）。不断开、不要求休眠：之后何时休眠由 App 的生命周期设置决定；再次调用其工具时照常
+唤醒 / 续租。结果 `{appId, released, message}`（`released` = 发出收回的实例数，没有租约时为 0、不发消息）。Hub API 的会话为
+`CallRequest.session`。
+
+**截止时间 `app-mcp/timeoutMs`**（MCP `tools/call` 请求 `_meta`）：正整数毫秒，含义为"从 Hub 收到请求起还愿意等待多久"。用相对时长
+而不是绝对时刻：不依赖 Agent 与 Hub 的时钟一致，与协议 `ToolsInvokeParams.timeoutMs`、Hub API `CallRequest.timeout` 同一语义。
+Hub 以 min(该值, `response_timeout`) 作为本次调用等待 App 结果的上限（等同于 Hub API 的 `CallRequest.timeout`；SDK 侧 `timeoutMs`
+相应为 min(它, `invoke_timeout`)），超时 → `TIMEOUT`。审批、唤醒与导航的等待仍按各自的配置（`ApprovalPolicy.timeout`、`wake_timeout`、
+`navigate_timeout`）。上游 MCP 服务器的调用同样适用。
+
+**幂等键 `app-mcp/idempotencyKey`**（MCP `tools/call` 请求 `_meta`；Hub API `CallRequest.idempotency_key`）：1..=256 个字符的字符串，
+原样进入 `ToolsInvokeParams.idempotencyKey`（App 侧语义与 SDK 去重见 spec/protocol.md 3.3）。改调后台替代（3.14）时随调用转交。
+不转发给上游 MCP 服务器。
+
+**不合法的值**（`timeoutMs` 不是正整数；幂等键不是字符串、为空或超过 256 个字符）：调用不执行，以工具错误 `INVALID_INPUT` 结束
+（MCP 结果 `isError: true`），不静默忽略。没有这两个键时行为与之前完全相同。
+`Hub::dispatch`（第 5 节，含 `Mcp` 格式的完整 JSON-RPC 请求）不读这两个键：厂商自有循环用 `CallRequest.timeout` /
+`CallRequest.idempotency_key`。
+
+**绑定**：内置工具对所有入口一致，无需新增接口。`CallRequest.idempotency_key`：hub-c / hub-node / `@app-mcp/hub` 请求 JSON
+`idempotencyKey`，hub-uniffi `CallRequest.idempotency_key`，C# `CallRequest.IdempotencyKey`，Kotlin / Swift / Python 的调用方法可选参数（`idempotencyKey` /
+`idempotency_key`）。`HubConfig.navigate_timeout`：hub-c / hub-node JSON `navigateTimeoutMs`、`@app-mcp/hub` `navigateTimeoutMs`、
+hub-uniffi `HubConfig.navigate_timeout_ms`、C# `HubOptions.NavigateTimeout`。
 
 ## 4. 进程内 App（可选，M2）
 

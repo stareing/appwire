@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createAppMcp, ToolCallError, type AppMcp, type ConnectionState } from './index.js'
+import { createAppMcp, ToolCallError, type AppMcp, type ConnectionState, type ToolContext } from './index.js'
 import { setZodImporter } from './schema.js'
 import { FakeNativeClient, fakeBinding } from './testing/fake-native.js'
 
@@ -162,6 +162,23 @@ describe('工具', () => {
     })
     expect(await native.call('math.double', { n: 21 })).toEqual({ ok: true, data: { doubled: 42 }, stateHints: [] })
     expect(handler.mock.calls[0]?.[1]?.callId).toBe('c1')
+  })
+
+  it('handler 上下文带 Agent 的幂等键（spec/protocol.md 3.3），没有时缺省', async () => {
+    const { app, native } = setup()
+    const seen: ToolContext[] = []
+    app.tool('order.create', {
+      description: '下单',
+      handler: (_input, ctx) => {
+        seen.push(ctx)
+        return null
+      },
+    })
+    await native.call('order.create', {}, { idempotencyKey: 'order-7' })
+    await native.call('order.create', {})
+    expect(seen[0]?.idempotencyKey).toBe('order-7')
+    expect(seen[1]?.idempotencyKey).toBeUndefined()
+    expect('idempotencyKey' in (seen[1] ?? {})).toBe(false)
   })
 
   it('无 input 时不带 schema；返回 undefined 时数据为 null', async () => {

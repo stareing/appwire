@@ -12,7 +12,7 @@ final class ConformanceTests: XCTestCase {
     /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。
     private static let features: Set<String> = [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
-        "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation",
+        "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
     ]
     private static let verdictOK: Set<String> = ["pass", "xfail", "xpass", "skip"]
 
@@ -216,6 +216,9 @@ private final class CaseApp {
         }
         if let v = spec["return"] { return ToolResult(data: v) } // 含 null：显式返回 null
         if spec["echo"]?.boolValue == true { return ToolResult(data: args) }
+        if spec["returnIdempotencyKey"]?.boolValue == true {
+            return ToolResult(data: .object(["idempotencyKey": ctx.idempotencyKey.map(JSONValue.string) ?? .null]))
+        }
         if spec["counter"]?.boolValue == true { return ToolResult(data: .object(["count": .number(Double(count))])) }
         return ToolResult(data: nil) // returnNothing：Swift 的"无返回值"
     }

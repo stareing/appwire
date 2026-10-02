@@ -364,8 +364,10 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
             `加载工具 ${this.name} 的 handler 失败：${error instanceof Error ? error.message : String(error)}`,
           )
         })
+    const idempotencyKey = call.idempotencyKey ?? undefined
     const context = {
       callId: call.callId,
+      ...(idempotencyKey !== undefined && { idempotencyKey }),
       signal: controller.signal,
       hold: (): HoldHandle => (call.hold ? wrapHold(call.hold()) : NOOP_HOLD),
       progress: (progress: number, total?: number, message?: string): void => {

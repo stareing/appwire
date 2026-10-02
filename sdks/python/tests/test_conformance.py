@@ -51,6 +51,7 @@ FEATURES = frozenset(
         "navigation",
         "backgroundTool",
         "backgroundNavigation",
+        "idempotencyKey",
     }
 )
 ROOT = Path(__file__).resolve().parents[3]
@@ -222,6 +223,8 @@ class CaseApp:
             return spec["return"]
         if spec.get("echo") is True:
             return ctx.arguments
+        if spec.get("returnIdempotencyKey") is True:
+            return {"idempotencyKey": ctx.idempotency_key}
         if spec.get("counter") is True:
             return {"count": count}
         # returnNothing（以及未声明结果）：Python 的"无返回值"即函数返回 None。

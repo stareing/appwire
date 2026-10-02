@@ -150,7 +150,8 @@ export type CoreEvent =
   | { type: 'connect' }
   | { type: 'disconnect' }
   | { type: 'send'; text: string }
-  | { type: 'invokeTool'; callId: string; tool: number; name: string; arguments: unknown }
+  /** `idempotencyKey`：Agent 的幂等键（spec/protocol.md 3.3），没有时缺省。 */
+  | { type: 'invokeTool'; callId: string; tool: number; name: string; arguments: unknown; idempotencyKey?: string }
   | { type: 'cancelTool'; callId: string; reason: CancelReason }
   | { type: 'readResource'; read: number; resource: number; name: string }
   | { type: 'stateChanged'; state: CoreState }

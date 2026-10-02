@@ -5,8 +5,10 @@
 //   d) aumid：IApplicationActivationManager::ActivateApplication(<计算器 AUMID>, "app-mcp-wake:<令牌>")，
 //      确认 Host 以令牌参数激活、计算器进程被拉起后结束该进程（计算器自身不接受启动参数，会以 0x8004090x
 //      拒绝本次激活并退出——这是计算器的行为，接入 SDK 的打包 App 由 handleWake 识别该参数）
+//   e) Host 重启（无静态清单，spec/hub-api.md 3.5「持久化」）：App 休眠后 Host 被强制结束 → 同一 --home 重启 →
+//      工具按休眠记录列出 → 调用经 uri 唤醒原进程并快速恢复；另记录"Host 结束时 App 仍在线"的结果（该实例未写盘）
 //
-// 用法：node tests\windows\wake-e2e.mjs [a b c d]（缺省全部）
+// 用法：node tests\windows\wake-e2e.mjs [a b c d e]（缺省 a–d）
 // 需要：target\win\debug\app-mcp-host.exe、target\win\dotnet\bin\WakeApp\debug\AppMcpWakeApp.exe（见 README）。
 // 只写 HKCU\Software\Classes\appmcp-wintest，结束时删除。
 
@@ -26,6 +28,7 @@ const hostLog = path.join(work, 'host.log')
 const WS_PORT = 7791
 const CALC_AUMID = 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App'
 const selected = new Set(process.argv.slice(2).length ? process.argv.slice(2) : ['a', 'b', 'c', 'd'])
+const home = path.join(work, 'home')
 
 const results = []
 const out = (s) => process.stdout.write(`${s}\n`)
@@ -158,6 +161,87 @@ function startRecorder() {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, hits, port: server.address().port })))
 }
 
+// ---------------------------------------------------------------- e) Host 重启后按休眠记录唤醒
+function startHost(emptyDir) {
+  return new Mcp([
+    '--home', home,
+    '--ws-addr', `127.0.0.1:${WS_PORT}`,
+    '--ipc-endpoint', 'none',
+    '--manifest-dir', emptyDir,
+    '--lease-ms', '1000',
+    '--wake-timeout-ms', '12000',
+    '--log-level', 'debug',
+  ])
+}
+
+async function stopApp() {
+  spawnSync(appExe, ['--quit'])
+  await sleep(1000)
+  for (const pid of processes('AppMcpWakeApp.exe')) spawnSync('taskkill', ['/PID', String(pid), '/F'])
+}
+
+const toolNames = async (mcp) => (await mcp.request('tools/list', {})).tools.map((t) => t.name)
+
+async function restartScenario(emptyDir) {
+  fs.rmSync(home, { recursive: true, force: true })
+  // e1：App 休眠后 Host 被强制结束
+  let mcp = startHost(emptyDir)
+  try {
+    await mcp.init()
+    const before = readAppLog().length
+    spawn(appExe, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+    await waitFor(() => /STATE Dormant/.test(readAppLog().slice(before)), 15000, 'e1 App 首次休眠')
+    const dormantFile = path.join(home, 'state', 'dormant', 'wintest.json')
+    await waitFor(() => fs.existsSync(dormantFile), 5000, 'e1 休眠记录写盘').catch(() => {})
+    record('e1 休眠记录写盘', fs.existsSync(dormantFile), dormantFile)
+  } finally {
+    mcp.close()
+  }
+  const appPid = processes('AppMcpWakeApp.exe')[0]
+  await sleep(2000)
+  mcp = startHost(emptyDir)
+  try {
+    await mcp.init()
+    const tools = await toolNames(mcp)
+    record('e1 重启后列出', tools.includes('wintest.echo'), tools.join(', '))
+    const before = readAppLog().length
+    const { r, ms } = await mcp.call('wintest.echo', { text: 'after-restart' })
+    const d = r.structuredContent ?? {}
+    const tail = readAppLog().slice(before)
+    const resumed = /tools_current=true/.test(readHostLog().replace(/\x1b\[[0-9;]*m/g, ''))
+    record('e1 重启后唤醒原进程', !r.isError && d.pid === appPid && /FORWARDED|ACTIVATED/.test(tail),
+      `${ms}ms pid=${d.pid ?? '-'}（原 ${appPid}）快速恢复=${resumed} ${r.isError ? JSON.stringify(r.content).slice(0, 200) : ''}`)
+  } finally {
+    mcp.close()
+  }
+  await stopApp()
+
+  // e2：Host 结束时 App 仍在线（空闲 3 秒内），App 之后按 A2 转休眠
+  fs.rmSync(home, { recursive: true, force: true })
+  mcp = startHost(emptyDir)
+  try {
+    await mcp.init()
+    const before = readAppLog().length
+    spawn(appExe, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+    await waitFor(() => /STATE Connected/.test(readAppLog().slice(before)), 15000, 'e2 App 连接')
+  } finally {
+    mcp.close()
+  }
+  const before2 = readAppLog().length
+  await waitFor(() => /STATE Dormant/.test(readAppLog().slice(before2)), 60000, 'e2 App 转休眠').catch(() => {})
+  mcp = startHost(emptyDir)
+  try {
+    await mcp.init()
+    const tools = await toolNames(mcp)
+    const { r, ms } = await mcp.call('wintest.echo', { text: 'online-at-exit' }).catch((e) => ({ r: { isError: true, content: String(e) }, ms: 0 }))
+    record('e2 Host 结束时在线 → 重启后唤醒', !r.isError,
+      `listed=${tools.includes('wintest.echo')} ${ms}ms ${r.isError ? JSON.stringify(r.content).slice(0, 200) : `pid=${r.structuredContent?.pid}`}`)
+  } finally {
+    mcp.close()
+  }
+  await stopApp()
+}
+
 // ---------------------------------------------------------------- 主流程
 async function main() {
   if (!fs.existsSync(hostExe)) throw new Error(`找不到 ${hostExe}`)
@@ -195,7 +279,11 @@ async function main() {
     }),
   ]
 
+  if (selected.has('e')) await restartScenario(emptyDir)
+  if (!['a', 'b', 'c', 'd'].some((k) => selected.has(k))) return finish(recorder)
+
   const mcp = new Mcp([
+    '--home', home,
     '--ws-addr', `127.0.0.1:${WS_PORT}`,
     // 不占用本机常驻 Host 的默认命名管道。
     '--ipc-endpoint', 'none',
@@ -281,12 +369,16 @@ async function main() {
     await sleep(1000)
     for (const pid of processes('AppMcpWakeApp.exe')) spawnSync('taskkill', ['/PID', String(pid), '/F'])
     mcp.close()
-    recorder.server.closeAllConnections()
-    recorder.server.close()
-    spawnSync(appExe, ['--unregister'])
-    const left = regQuery('HKCU\\Software\\Classes\\appmcp-wintest')
-    record('cleanup', left === null && processes('AppMcpWakeApp.exe').length === 0, `注册表键已删除=${left === null}`)
   }
+  return finish(recorder)
+}
+
+async function finish(recorder) {
+  recorder.server.closeAllConnections()
+  recorder.server.close()
+  spawnSync(appExe, ['--unregister'])
+  const left = regQuery('HKCU\\Software\\Classes\\appmcp-wintest')
+  record('cleanup', left === null && processes('AppMcpWakeApp.exe').length === 0, `注册表键已删除=${left === null}`)
 
   out('\n---- Host 唤醒相关日志 ----')
   for (const l of readHostLog().split(/\r?\n/).filter((l) => /唤醒|wake|Waking|Dormant|休眠/i.test(l)).slice(0, 40)) {

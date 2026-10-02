@@ -85,6 +85,13 @@ test('工具调用：返回值序列化为 JSON，ToolResult 带 stateHints', as
   assert.equal((await client.invoke('noop').done).dataJson, 'null');
 });
 
+test('handler 上下文带 Agent 的幂等键（spec/protocol.md 3.3），没有时为 undefined', async () => {
+  const { mcp, client } = create();
+  mcp.tool('order.create', { description: '下单', handler: (_input, ctx) => ({ key: ctx.idempotencyKey ?? 'none' }) });
+  assert.equal((await client.invoke('order.create', {}, 'order-7').done).dataJson, '{"key":"order-7"}');
+  assert.equal((await client.invoke('order.create').done).dataJson, '{"key":"none"}');
+});
+
 test('注解与 outputSchema 随注册下发；update 整体替换', () => {
   const { mcp, client } = create();
   const h = mcp.tool('order.submit', {

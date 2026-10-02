@@ -229,6 +229,8 @@ public final class ToolContext: @unchecked Sendable {
     public let toolName: String
     /// 已由 Host 按 inputSchema 校验过的参数（JSON 文本）。
     public let argumentsJSON: String
+    /// Agent 给出的幂等键（原样，spec/protocol.md 3.3）；没有时为 `nil`。App 自行决定如何使用（如作为业务去重键）。
+    public let idempotencyKey: String?
 
     private let lock = NSLock()
     private var _cancelReason: CancelReason?
@@ -236,10 +238,11 @@ public final class ToolContext: @unchecked Sendable {
     /// 原生调用句柄（单元测试构造的上下文为 `nil`）。
     let call: Call?
 
-    init(callId: String, toolName: String, argumentsJSON: String, call: Call? = nil) {
+    init(callId: String, toolName: String, argumentsJSON: String, call: Call? = nil, idempotencyKey: String? = nil) {
         self.callId = callId
         self.toolName = toolName
         self.argumentsJSON = argumentsJSON
+        self.idempotencyKey = idempotencyKey
         self.call = call
     }
 
