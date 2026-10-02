@@ -119,6 +119,9 @@ AppWire 定位为 Agent 的系统调用层（模型 = 用户态程序，App 工�
 - 每个模块都要有测试。Rust 用内置测试；TS 用 vitest。
 - 日志：Host 的 stdout 专用于 MCP 协议，所有日志写 stderr。
 - 测试里启动 Hub / Host 时不要占用默认 IPC 端点（常驻 Host 可能正在用）：设 `ipc_endpoint: None`（各绑定 `ipcEndpoint: null` / `enable_ipc = false` / `DisableIpc`）或临时路径。
+- 文件行数上限：源码 800 行、测试 1200 行（`pnpm check:size`，即 `scripts/check-file-size.mjs`；提交前钩子 `.githooks/pre-commit`，
+  启用：`git config core.hooksPath .githooks`）。已超限的文件记在 `scripts/file-size-baseline.json`，只许变小不许变大：
+  往这些文件里加功能时，新代码放进新的子模块（Rust 用 `foo.rs` + `foo/` 目录按职责拆分），顺手拆小后运行 `--update` 收紧基线。
 - 测试里的 TCP 监听一律绑定端口 0，从监听器（`Hub::listen_addr()`）或登记文件（`<home>/run/endpoints.json`）取实际地址；
   不要"先绑定 0 取端口再释放"（释放后可能被其他进程占用）。启动 `app-mcp-host` 进程的测试用临时 `--home`（锁与登记文件在其中）。
 

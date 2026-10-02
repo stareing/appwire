@@ -1,0 +1,3 @@
+#!/bin/sh
+# 提交前检查源文件行数上限（scripts/check-file-size.mjs；启用：git config core.hooksPath .githooks）。
+exec node "$(git rev-parse --show-toplevel)/scripts/check-file-size.mjs"
