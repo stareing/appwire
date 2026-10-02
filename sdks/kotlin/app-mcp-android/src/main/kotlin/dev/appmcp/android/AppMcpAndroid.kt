@@ -3,6 +3,7 @@ package dev.appmcp.android
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -11,6 +12,7 @@ import dev.appmcp.AppMcp
 import dev.appmcp.AppMcpConfig
 import dev.appmcp.LifecycleMode
 import dev.appmcp.LifecyclePolicy
+import dev.appmcp.LogLevel
 import dev.appmcp.Residency
 import dev.appmcp.StateStatus
 import dev.appmcp.Visibility
@@ -165,6 +167,7 @@ object AppMcpAndroid {
                 instanceTitle = title,
                 dispatcher = config.dispatcher ?: Dispatchers.Main,
                 lifecycle = lifecycle,
+                onLog = config.onLog ?: ::logcat,
             ),
         )
         wakeTarget = AppMcpWakeTarget(client)
@@ -192,6 +195,20 @@ object AppMcpAndroid {
     internal fun isForeground(): Boolean = runCatching {
         ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
     }.getOrDefault(false)
+
+    /** [AppMcpConfig.onLog] 的缺省实现：写入 Logcat（标签 [LOG_TAG]）。 */
+    internal fun logcat(level: LogLevel, message: String) {
+        val priority = when (level) {
+            LogLevel.DEBUG -> Log.DEBUG
+            LogLevel.INFO -> Log.INFO
+            LogLevel.WARN -> Log.WARN
+            LogLevel.ERROR -> Log.ERROR
+        }
+        Log.println(priority, LOG_TAG, message)
+    }
+
+    /** 缺省日志（[logcat]）使用的 Logcat 标签。 */
+    const val LOG_TAG = "AppMcp"
 
     /** 取得唤醒接收方：已注册的 [wakeTarget]，否则由 `Application`（[AppMcpProvider]）创建。 */
     internal fun resolveTarget(context: Context): WakeTarget? {

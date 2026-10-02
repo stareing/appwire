@@ -152,7 +152,10 @@ data class AppMcpConfig(
     val dispatchTimeoutMillis: Long = 10_000,
     /** 配对成功得到的新 token，App 应持久化，下次放入 [token]。在原生分发线程上调用。 */
     val onPaired: ((String) -> Unit)? = null,
-    /** 原生库日志。在原生分发线程上调用；为空时丢弃。 */
+    /**
+     * 日志：原生库日志（在原生分发线程上调用），以及工具 / 导航 / 资源回调抛出的未预期异常（ERROR，含堆栈，在执行回调的线程上调用）。
+     * 为空时丢弃；Android 封装（`AppMcpAndroid.create`）缺省写入 Logcat。
+     */
     val onLog: ((LogLevel, String) -> Unit)? = null,
     /** 生命周期策略（spec/lifecycle.md）；为空时为 `PERSISTENT`（不休眠）。Android 封装默认 `ON_DEMAND` + `sleepOnBackground`。 */
     val lifecycle: LifecyclePolicy? = null,

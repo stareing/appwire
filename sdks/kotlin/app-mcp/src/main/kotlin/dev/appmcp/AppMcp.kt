@@ -517,6 +517,7 @@ class AppMcp private constructor(
         }
         val ctx = ToolContext(call.callId(), call.toolName(), args, call)
         val job = launchGuarded(
+            label = "工具 ${call.toolName()}（callId ${call.callId()}）",
             fail = { kind, msg, details -> failQuietly(call, kind, msg, details) },
         ) {
             val result = handler(args, ctx)
@@ -559,7 +560,7 @@ class AppMcp private constructor(
             finishNavigate(request, NavigationResult.Failed("页面参数不合法：${e.message}"))
             return
         }
-        launchGuarded(fail = { kind, msg, _ ->
+        launchGuarded(label = "导航 ${request.page()}", fail = { kind, msg, _ ->
             val result = if (kind == ErrorKind.NAVIGATION_DENIED) NavigationResult.Denied(msg) else NavigationResult.Failed(msg)
             finishNavigate(request, result)
         }) {
@@ -581,7 +582,7 @@ class AppMcp private constructor(
 
     /** 在分发线程上调用。 */
     internal fun runRead(read: Read, reader: ResourceFunction) {
-        launchGuarded(fail = { kind, msg, details -> failQuietly(read, kind, msg, details) }) {
+        launchGuarded(label = "资源 ${read.resourceName()}", fail = { kind, msg, details -> failQuietly(read, kind, msg, details) }) {
             val data = anyToJson(reader())
             try {
                 read.complete(data.toString())
@@ -593,8 +594,12 @@ class AppMcp private constructor(
     /**
      * 启动（LAZY）执行协程：异常映射为错误类别；在 [AppMcpConfig.dispatchTimeoutMillis] 内未开始执行时
      * 以 `APP_NOT_RESPONDING` 失败，之后即使开始也不再执行。
+     *
+     * @side-effect 未预期异常（非 [ToolCallException]、非取消）经 [AppMcpConfig.onLog] 记一条 ERROR 日志（含堆栈），
+     *   [label] 标明是哪个工具 / 导航 / 资源；回复给 Host 的消息仍只有异常消息，不含堆栈（E-05）
      */
     private fun launchGuarded(
+        label: String,
         fail: (String, String, JsonElement?) -> Unit,
         body: suspend () -> Unit,
     ): Job {
@@ -622,11 +627,16 @@ class AppMcp private constructor(
             } catch (e: ToolCallException) {
                 fail(e.kind, e.message, e.details)
             } catch (e: Throwable) {
+                logUnexpected(label, e)
                 fail(ErrorKind.HANDLER_ERROR, e.message ?: e::class.java.simpleName, null)
             }
         }
         job.invokeOnCompletion { watchdog?.cancel() }
         return job
+    }
+
+    private fun logUnexpected(label: String, e: Throwable) {
+        runCatching { config.onLog?.invoke(LogLevel.ERROR, "$label 未预期异常：${e.stackTraceToString()}") }
     }
 
     private fun failQuietly(call: Call, kind: String, message: String, details: JsonElement? = null) {

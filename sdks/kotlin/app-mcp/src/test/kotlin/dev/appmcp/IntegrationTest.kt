@@ -63,8 +63,12 @@ class IntegrationTest {
         assertTrue(first.startsWith("LISTENING "), first)
         val addr = first.removePrefix("LISTENING ").trim()
 
+        val errorLogs = java.util.concurrent.CopyOnWriteArrayList<String>()
         val client = AppMcp.create(
-            AppMcpConfig("kotlin-it", "Kotlin 集成测试", hostUrl = "ws://$addr", callDedup = CallDedupPolicy(ttlMs = 1_000u)),
+            AppMcpConfig(
+                "kotlin-it", "Kotlin 集成测试", hostUrl = "ws://$addr", callDedup = CallDedupPolicy(ttlMs = 1_000u),
+                onLog = { level, msg -> if (level == LogLevel.ERROR) errorLogs += msg },
+            ),
         )
         val threads = mutableListOf<String>()
         client.tool("math.add", "两数相加", risk = Risk.READ) { args, ctx ->
@@ -122,10 +126,14 @@ class IntegrationTest {
         val rejected = results["cart.checkout"]!!["error"]!!.jsonObject
         assertEquals("USER_REJECTED", rejected["data"]!!.jsonObject["kind"]!!.jsonPrimitive.content)
         assertEquals("用户取消了结账", rejected["message"]!!.jsonPrimitive.content)
-        assertEquals(
-            "HANDLER_ERROR",
-            results["boom"]!!["error"]!!.jsonObject["data"]!!.jsonObject["kind"]!!.jsonPrimitive.content,
-        )
+        val boom = results["boom"]!!["error"]!!.jsonObject
+        assertEquals("HANDLER_ERROR", boom["data"]!!.jsonObject["kind"]!!.jsonPrimitive.content)
+        // 未预期异常：设备端日志带工具名与堆栈，回复给 Host 的消息不带堆栈
+        assertEquals("炸了", boom["message"]!!.jsonPrimitive.content)
+        val boomLog = errorLogs.single { "工具 boom" in it }
+        assertTrue("IllegalStateException: 炸了" in boomLog && "\tat " in boomLog, boomLog)
+        // ToolCallException（业务错误）不记 ERROR 日志
+        assertTrue(errorLogs.none { "cart.checkout" in it || "account.login" in it || "session" in it }, errorLogs.toString())
         val login = results["account.login"]!!["error"]!!.jsonObject
         assertEquals("登录已过期", login["message"]!!.jsonPrimitive.content)
         assertEquals(
