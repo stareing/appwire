@@ -21,13 +21,32 @@ import kotlinx.serialization.json.JsonObject
  * 恢复时 `setEnabled(true)`，暂停或离开组合时 `setEnabled(false)`。
  *
  * Navigation Compose 中每个目的地有自己的 `LocalLifecycleOwner`（NavBackStackEntry），切到其他页面即暂停；
- * 弹窗（Dialog）不改变下层目的地的生命周期——需要压制时由 App 自行 `setEnabled(false)`。
+ * 弹窗（Dialog）不改变下层目的地的生命周期——需要压制时传 `enabled = !dialogOpen`（不要直接 `setEnabled`：
+ * 界面恢复时会被本效果重新启用）。
+ *
+ * @input enabled App 侧条件（如没有弹窗压在上面）；实际启用 = RESUMED 且 [enabled]
  */
 @Composable
-fun ViewToolEffect(handle: ToolHandle, lifecycleOwner: LifecycleOwner = LocalLifecycleOwner.current) {
-    LifecycleResumeEffect(handle, lifecycleOwner = lifecycleOwner) {
-        handle.setEnabled(true)
-        onPauseOrDispose { handle.setEnabled(false) }
+fun ViewToolEffect(
+    handle: ToolHandle,
+    lifecycleOwner: LifecycleOwner = LocalLifecycleOwner.current,
+    enabled: Boolean = true,
+) {
+    ViewEnabledEffect(handle, lifecycleOwner, enabled, handle::setEnabled)
+}
+
+/** [ViewToolEffect] 的实现（不依赖原生库，便于测试）：RESUMED 且 [enabled] 时 `setEnabled(true)`，否则 false。 */
+@Composable
+internal fun ViewEnabledEffect(
+    key: Any,
+    lifecycleOwner: LifecycleOwner,
+    enabled: Boolean,
+    setEnabled: (Boolean) -> Unit,
+) {
+    val apply by rememberUpdatedState(setEnabled)
+    LifecycleResumeEffect(key, enabled, lifecycleOwner = lifecycleOwner) {
+        apply(enabled)
+        onPauseOrDispose { apply(false) }
     }
 }
 
@@ -43,6 +62,7 @@ fun ViewToolEffect(handle: ToolHandle, lifecycleOwner: LifecycleOwner = LocalLif
  * ```
  *
  * @input name / description / inputSchema 等同 [AppMcpRegistrar.tool]；名称或注册入口变化时重新注册
+ * @input enabled 见 [ViewToolEffect]（如弹窗打开时传 false 压制下层工具）
  */
 @Composable
 fun rememberViewTool(
@@ -56,6 +76,7 @@ fun rememberViewTool(
     annotations: ToolAnnotations? = null,
     outputSchema: JsonObject? = null,
     lifecycleOwner: LifecycleOwner = LocalLifecycleOwner.current,
+    enabled: Boolean = true,
     handler: ToolFunction,
 ): ToolHandle {
     val current by rememberUpdatedState(handler)
@@ -73,6 +94,6 @@ fun rememberViewTool(
     DisposableEffect(handle) {
         onDispose { handle.dispose() }
     }
-    ViewToolEffect(handle, lifecycleOwner)
+    ViewToolEffect(handle, lifecycleOwner, enabled)
     return handle
 }

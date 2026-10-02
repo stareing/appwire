@@ -3,6 +3,8 @@
 // demo.account.profile（USER_ACTION_REQUIRED）、demo.sync 工具与 demo.counter 资源；生命周期为 idle 模式
 // （空闲 10 s / 后台 5 s 休眠），可被 `am broadcast -a dev.appmcp.action.WAKE -n <pkg>/dev.appmcp.android.WakeReceiver
 // --es token <t>` 唤醒。另带进程内 Hub 自检（HubSelfTest，`--ez hubSelfTest true` 启动）。
+// Compose 导航示例（NavActivity，第 4c 项）：counter / notes 两个页面的 view 工具、Navigation Compose 导航回调、
+// 一个确认弹窗（打开时压制下层工具）。
 //
 // 发布形态：release 开启 R8（minify + 资源压缩），规则全部来自依赖（jar 的 META-INF/proguard、AAR 的 consumer 规则）；
 // 按 ABI 拆 APK（arm64-v8a、armeabi-v7a、x86_64、x86 + universal），App Bundle 按 ABI 拆分发。
@@ -13,6 +15,7 @@
 plugins {
     id("com.android.application")
     kotlin("android")
+    kotlin("plugin.compose")
 }
 
 // SDK 原生库提供的 ABI（bindings/*/scripts/generate.sh --android）；-Pappmcp.abis=arm64-v8a 只出指定 ABI。
@@ -67,6 +70,10 @@ android {
         }
     }
 
+    buildFeatures {
+        compose = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -83,4 +90,8 @@ dependencies {
     implementation(project(":app-mcp-android"))
     // 进程内 Hub 自检（HubSelfTest）
     implementation(project(":app-mcp-hub-android"))
+    // Compose 导航示例（NavActivity）：view 工具与导航适配；界面只用 foundation（不引入 Material）
+    implementation(project(":app-mcp-compose"))
+    implementation("androidx.activity:activity-compose:1.8.0")
+    implementation("androidx.compose.foundation:foundation:1.9.0")
 }

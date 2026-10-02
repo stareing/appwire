@@ -59,7 +59,8 @@ class PageRouter {
         pages[page]?.invoke(params) ?: NavigationResult.Failed("未知页面：$page")
 }
 
-private val ROUTE_PARAM = Regex("""\{([A-Za-z0-9_]+)}""")
+// @compat 两个花括号都要转义：Android 的正则（ICU）把未转义的 `}` 视为语法错误，类初始化失败（JVM 不报错）
+private val ROUTE_PARAM = Regex("""\{([A-Za-z0-9_]+)\}""")
 
 /**
  * 用页面参数填充路由模板（Navigation Compose 等以字符串路由导航的框架共用）：`orders/{id}` + `{"id":"o1"}` → `orders/o1`。

@@ -15,5 +15,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Compose 导航示例（第 4c 项）：导航回调会从后台把它切到前台（am start -n …/.NavActivity 也可直接打开） -->
+        <activity
+            android:name=".NavActivity"
+            android:exported="true" />
     </application>
 </manifest>

@@ -1,12 +1,16 @@
 package dev.appmcp.sample.android
 
 import android.app.Application
+import android.content.Intent
+import android.os.SystemClock
 import android.util.Log
 import dev.appmcp.AppMcp
 import dev.appmcp.AppMcpConfig
 import dev.appmcp.AppOverview
 import dev.appmcp.ErrorKind
 import dev.appmcp.LogLevel
+import dev.appmcp.NavigateFunction
+import dev.appmcp.NavigationResult
 import dev.appmcp.Risk
 import dev.appmcp.ToolCallException
 import dev.appmcp.ToolAnnotations
@@ -19,7 +23,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -30,6 +38,9 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
 internal const val TAG = "AppMcpSample"
+
+/** 导航时把界面切到前台的等待上限：超时 = 系统没让界面到前台（如后台启动 Activity 受限）。 */
+private const val FOREGROUND_TIMEOUT_MS = 5_000L
 
 /**
  * 客户端放在 Application 里（而不是 Activity）：进程被唤醒广播冷启动时没有 Activity，
@@ -42,6 +53,13 @@ internal const val TAG = "AppMcpSample"
  */
 class SampleApp : Application(), AppMcpProvider {
     val counter = MutableStateFlow(0)
+    val notes = MutableStateFlow<List<String>>(emptyList())
+
+    /**
+     * 处于前台（RESUMED）的 Compose 导航界面登记的导航函数（[NavActivity]）；null = 界面不在前台。
+     * @invariant 只在主线程写（Activity 生命周期回调）
+     */
+    val foregroundNavigator = MutableStateFlow<NavigateFunction?>(null)
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     val mcp: AppMcp by lazy { createClient() }
@@ -67,6 +85,9 @@ class SampleApp : Application(), AppMcpProvider {
                 onIdleExit = { Log.i(TAG, "onIdleExit（residency=keep 时不会出现）") },
             ),
         )
+
+        // 导航回调在 start() 之前设置：握手时声明 capabilities.navigate（被唤醒冷启动、还没有界面时也能导航）。
+        c.setNavigationHandler(::navigate)
 
         val echoSchema = buildJsonObject {
             put("type", "object")
@@ -161,6 +182,28 @@ class SampleApp : Application(), AppMcpProvider {
         c.start()
         Log.i(TAG, "started instanceId=${c.instanceId} toolsHash=${c.toolsHash}")
         return c
+    }
+
+    /**
+     * Host 的 `app/navigate`：界面在前台时直接交给它；否则先把 [NavActivity] 切到前台（冷启动或从后台带回），
+     * 等它登记导航函数后再导航。
+     * @error 界面没能在 [FOREGROUND_TIMEOUT_MS] 内到前台 → [NavigationResult.Failed]
+     */
+    private suspend fun navigate(page: String, params: JsonObject?): NavigationResult {
+        foregroundNavigator.value?.let { return it(page, params) }
+        val t0 = SystemClock.elapsedRealtime()
+        startActivity(
+            Intent(this, NavActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
+        )
+        val navigator = withTimeoutOrNull(FOREGROUND_TIMEOUT_MS) { foregroundNavigator.filterNotNull().first() }
+        val dt = SystemClock.elapsedRealtime() - t0
+        if (navigator == null) {
+            Log.w(TAG, "navigate page=$page：界面 ${dt}ms 内未到前台")
+            return NavigationResult.Failed("无法把界面切到前台（系统可能限制后台启动界面）")
+        }
+        Log.i(TAG, "navigate page=$page：界面到前台用时 ${dt}ms")
+        return navigator(page, params)
     }
 
     private fun priority(level: LogLevel): Int = when (level) {

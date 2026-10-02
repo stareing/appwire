@@ -1,6 +1,7 @@
 package dev.appmcp.sample.android
 
 import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.widget.Button
@@ -25,12 +26,17 @@ class MainActivity : Activity() {
         val label = TextView(this).apply { textSize = 20f; setPadding(48, 96, 48, 48) }
         val wake = Button(this).apply { text = "立即回连（wake）"; setOnClickListener { client.wake() } }
         val sleep = Button(this).apply { text = "立即休眠（sleep）"; setOnClickListener { client.sleep() } }
+        val compose = Button(this).apply {
+            text = "Compose 导航示例"
+            setOnClickListener { startActivity(Intent(this@MainActivity, NavActivity::class.java)) }
+        }
         setContentView(
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(label)
                 addView(wake)
                 addView(sleep)
+                addView(compose)
             },
         )
         uiScope.launch {
