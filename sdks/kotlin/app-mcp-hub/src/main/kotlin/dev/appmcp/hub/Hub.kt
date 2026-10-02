@@ -158,6 +158,10 @@ data class CallResult(
     val annotations: ContentAnnotations? = null,
     /** App 在后台、Hub 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则为 `null`。 */
     val routedTo: String? = null,
+    /** 从 Hub 收到调用到得出结果的毫秒数（spec/hub-api.md 3.15 `dev.appwire/durationMs`）。 */
+    val durationMs: Long = 0,
+    /** 本次调用是否唤醒了 App（`dev.appwire/woke`）。 */
+    val woke: Boolean = false,
 ) {
     val isError: Boolean get() = error != null
 
@@ -346,6 +350,8 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
             summary = out.summary,
             annotations = out.annotations,
             routedTo = out.routedTo,
+            durationMs = out.durationMs.toLong(),
+            woke = out.woke,
         )
     }
 

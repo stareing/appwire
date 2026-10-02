@@ -338,6 +338,8 @@ class HubIntegrationTest {
             assertEquals(null, out.error, out.toString())
             assertEquals("order-7", out.data?.jsonObject?.get("key")?.jsonPrimitive?.content)
             assertEquals(null, out.routedTo)
+            assertEquals(false, out.woke, "已连接的 App 不唤醒")
+            assertTrue(out.durationMs >= 0)
             assertEquals("INVALID_INPUT", hub.callTool("cafe.order.submit", idempotencyKey = "").error?.kind)
         } finally {
             app.close()

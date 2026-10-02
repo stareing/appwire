@@ -128,6 +128,10 @@ public struct CallResult: Sendable, Equatable {
     public let annotations: HubContentAnnotations?
     /// App 在后台、Hub 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则为 `nil`。
     public let routedTo: String?
+    /// 从 Hub 收到调用到得出结果的毫秒数（spec/hub-api.md 3.15 `dev.appwire/durationMs`）。
+    public let durationMs: UInt64
+    /// 本次调用是否唤醒了 App（`dev.appwire/woke`）。
+    public let woke: Bool
 
     public var isError: Bool { error != nil }
 
@@ -371,7 +375,9 @@ public final class Hub: @unchecked Sendable {
             stateResource: out.stateResource,
             summary: out.summary,
             annotations: out.annotations,
-            routedTo: out.routedTo
+            routedTo: out.routedTo,
+            durationMs: out.durationMs,
+            woke: out.woke
         )
     }
 

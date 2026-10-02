@@ -380,6 +380,10 @@ class CallResult:
     annotations: ContentAnnotations | None = None
     #: App 在后台、Hub 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则为 ``None``。
     routed_to: str | None = None
+    #: 从 Hub 收到调用到得出结果的毫秒数（spec/hub-api.md 3.15 ``dev.appwire/durationMs``）。
+    duration_ms: int = 0
+    #: 本次调用是否唤醒了 App（``dev.appwire/woke``）。
+    woke: bool = False
 
     @property
     def ok(self) -> bool:
@@ -753,6 +757,8 @@ class Hub:
             summary=out.summary,
             annotations=out.annotations,
             routed_to=out.routed_to,
+            duration_ms=out.duration_ms,
+            woke=out.woke,
         )
 
     def call_tool_sync(self, name: str, arguments: dict[str, Any] | None = None, **kwargs: Any) -> CallResult:

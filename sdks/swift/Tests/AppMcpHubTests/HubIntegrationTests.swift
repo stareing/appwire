@@ -313,6 +313,7 @@ final class HubIntegrationTests: XCTestCase {
         XCTAssertNil(out.error)
         XCTAssertEqual(out.dataJSON, #"{"key":"order-7"}"#)
         XCTAssertNil(out.routedTo)
+        XCTAssertFalse(out.woke, "已连接的 App 不唤醒")
         let bad = try await hub.callTool("cafe.order.submit", idempotencyKey: "")
         XCTAssertEqual(bad.error?.kind, "INVALID_INPUT")
     }

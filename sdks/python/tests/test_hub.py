@@ -402,6 +402,8 @@ def test_surface_page_and_idempotency_key() -> None:
             assert out.error is None, out
             assert out.data == {"key": "order-7"}
             assert out.routed_to is None
+            assert out.woke is False, "已连接的 App 不唤醒"
+            assert out.duration_ms >= 0
             assert hub.call_tool_sync("cafe.order.submit").data == {"key": None}
             bad = hub.call_tool_sync("cafe.order.submit", idempotency_key="")
             assert bad.error is not None and bad.error.kind == "INVALID_INPUT"
