@@ -97,7 +97,8 @@ chrome-devtools MCP 的 `take_snapshot` 返回整棵无障碍树：每个布局�
 - 操作类工具的风险等级为 `write`，Host 仍会按风险策略确认；但真正高风险的动作请用语义工具并标注 `payment` / `destructive`。
 - `ui.eval` 可执行任意脚本、读写页面上的任何数据（包括登录态），风险等级为 `destructive`，**默认不注册**，
   除非在本地调试时明确需要，否则不要开启 `allowScript`。在启用严格 CSP（禁止 `unsafe-eval`）的页面上它会报错。
-- 大纲不会输出密码框的值；`ui.read` 对密码框也只返回 `••••`。
+- 密码框（`input[type=password]`）：大纲、`ui.read` 与变化摘要只显示 `••••`（不泄露长度，为空时不显示值）；`ui.fill` 与对其按键（含 `ui.press` 不带 `ref` 而焦点在密码框上）一律拒绝，
+  `INVALID_INPUT`，`data.reason = "secure"`（spec/ui-fallback.md 7.1、8.1）。`ui.eval` 不受此限（可读写任何数据，见上）。
 
 ## 限制
 

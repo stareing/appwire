@@ -388,6 +388,17 @@ export function accessibleName(el: Element, info: Info): string {
   return truncate(name, info.role === 'status' || info.role === 'alert' ? STATUS_MAX : NAME_MAX)
 }
 
+/** 密码类控件的值掩码（spec/ui-fallback.md 8.1：固定 4 个点，不泄露长度）。 */
+export const SECURE_MASK = '••••'
+
+/**
+ * 密码类控件（spec/ui-fallback.md 8.1 网页映射：`input[type=password]`）。
+ * @security 值只显示 SECURE_MASK；fill 与对其按键一律拒绝。
+ */
+export function isSecure(el: Element): boolean {
+  return el.tagName === 'INPUT' && (el as HTMLInputElement).type === 'password'
+}
+
 /** 当前值（用于大纲展示；密码只显示是否已填写）。 */
 export function currentValue(el: Element, info: Info): string | undefined {
   const tag = el.tagName
@@ -402,7 +413,7 @@ export function currentValue(el: Element, info: Info): string | undefined {
       case 'image':
         return undefined
       case 'password':
-        return input.value ? '••••' : undefined
+        return input.value ? SECURE_MASK : undefined
       case 'file':
         return input.files && input.files.length > 0
           ? Array.from(input.files).map((f) => f.name).join('、')

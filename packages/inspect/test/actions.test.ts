@@ -377,6 +377,79 @@ describe('ui.submit / ui.scroll / ui.read', () => {
   })
 })
 
+describe('密码类控件（spec/ui-fallback.md 7.1 / 8.1）', () => {
+  const html = `
+    <form id="f">
+      <input type="password" aria-label="短口令" value="pw">
+      <input type="password" aria-label="长口令" value="a-much-longer-secret-value">
+      <input type="password" aria-label="空口令">
+      <input aria-label="用户名" value="u">
+    </form>`
+
+  it('大纲、ui.read 与变化摘要中只显示 ••••，不泄露长度与内容', async () => {
+    setup(html)
+    const out = await reg.call('ui.outline', { limit: 500 })
+    const byName = Object.fromEntries(out.items.map((i: any) => [i.name, i]))
+    expect(byName['短口令'].value).toBe('••••')
+    expect(byName['长口令'].value).toBe('••••')
+    expect(byName['空口令'].value).toBeUndefined()
+    expect(out.text).not.toContain('pw')
+    expect(out.text).not.toContain('secret')
+    expect((await reg.call('ui.read', { ref: byName['短口令'].ref })).text).toBe('••••')
+    expect((await reg.call('ui.read', { ref: byName['长口令'].ref })).text).toBe('••••')
+    expect((await reg.call('ui.read', { ref: byName['空口令'].ref })).text).toBe('')
+    expect((await reg.call('ui.read', {})).text).not.toContain('secret')
+    const changed = await reg.call('ui.fill', { ref: byName['用户名'].ref, value: 'v' })
+    const pw = document.querySelector('input[aria-label="长口令"]') as HTMLInputElement
+    pw.value = 'x'
+    const after = await reg.call('ui.click', { ref: byName['用户名'].ref })
+    expect(JSON.stringify([changed, after])).not.toMatch(/secret|"x"/)
+  })
+
+  it('ui.fill 拒绝并给出 reason: secure，值不变、不派发事件', async () => {
+    setup(html)
+    const r0 = await refs()
+    const pw = document.querySelector('input[aria-label="短口令"]') as HTMLInputElement
+    const onInput = vi.fn()
+    pw.addEventListener('input', onInput)
+    const err = await reg.call('ui.fill', { ref: r0['短口令'], value: 'hacked' }).catch((e) => e)
+    expect(err).toBeInstanceOf(ToolCallError)
+    expect(err.kind).toBe('INVALID_INPUT')
+    expect(err.message).toBe(`${r0['短口令']} 密码框「短口令」是密码类控件，兜底工具不填写`)
+    expect(err.details).toEqual({ ref: r0['短口令'], reason: 'secure' })
+    expect(pw.value).toBe('pw')
+    expect(onInput).not.toHaveBeenCalled()
+  })
+
+  it('ui.press 指定引用或作用于焦点密码框时都拒绝，不派发按键', async () => {
+    setup(html)
+    const r0 = await refs()
+    const pw = document.querySelector('input[aria-label="短口令"]') as HTMLInputElement
+    const form = document.getElementById('f') as HTMLFormElement
+    const onKey = vi.fn()
+    const onSubmit = vi.fn((e: Event) => e.preventDefault())
+    pw.addEventListener('keydown', onKey)
+    form.addEventListener('submit', onSubmit)
+    for (const key of ['Enter', 'a', 'Tab']) {
+      const err = await reg.call('ui.press', { ref: r0['短口令'], key }).catch((e) => e)
+      expect(err.kind).toBe('INVALID_INPUT')
+      expect(err.details).toEqual({ ref: r0['短口令'], reason: 'secure' })
+    }
+    pw.focus()
+    const err = await reg.call('ui.press', { key: 'Enter' }).catch((e) => e)
+    expect(err.details).toEqual({ ref: r0['短口令'], reason: 'secure' })
+    expect(onKey).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('禁用的密码框先报 TOOL_DISABLED（核对顺序）', async () => {
+    setup(`<input type="password" aria-label="口令" disabled>`)
+    const r0 = await refs()
+    const err = await reg.call('ui.fill', { ref: r0['口令'], value: 'x' }).catch((e) => e)
+    expect(err.details).toEqual({ ref: r0['口令'], reason: 'TOOL_DISABLED' })
+  })
+})
+
 describe('变化摘要', () => {
   it('名称、值、状态、标题、新增与移除；超过上限时截断', async () => {
     setup(`

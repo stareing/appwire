@@ -14,7 +14,17 @@ import { type Registrar, ToolCallError, type ToolHandle } from '@app-mcp/web'
 import { click, fill, parseKey, press, scroll, settle, submit } from './actions'
 import { collect, describe } from './collect'
 import { diff, snapshot } from './diff'
-import { accessibleName, classify, declaredTool, isDisabled, isVisible, visibleText, windowOf } from './dom'
+import {
+  accessibleName,
+  classify,
+  declaredTool,
+  isDisabled,
+  isSecure,
+  isVisible,
+  SECURE_MASK,
+  visibleText,
+  windowOf,
+} from './dom'
 import { type OutlineResult, renderOutline } from './outline'
 import { REF_PATTERN, RefRegistry } from './refs'
 
@@ -114,6 +124,12 @@ export function attachInspect(registrar: Registrar, options: InspectOptions = {}
     return el
   }
 
+  /** 写入前核对（spec/ui-fallback.md 7.1）：密码类控件不填写、不按键。 */
+  const rejectSecure = (el: Element, ref: string): void => {
+    if (!isSecure(el)) return
+    throw new ToolCallError('INVALID_INPUT', `${label(el, ref)}是密码类控件，兜底工具不填写`, { ref, reason: 'secure' })
+  }
+
   const act = async (root: Element, el: Element | null, run: () => void | Promise<void>): Promise<ActionResult> => {
     const before = snapshot(root, refs)
     await run()
@@ -202,6 +218,7 @@ export function attachInspect(registrar: Registrar, options: InspectOptions = {}
         const root = getRoot()
         const ref = refArg(input) as string
         const el = actionable(ref, root)
+        rejectSecure(el, ref)
         if (!input || !('value' in input)) throw new ToolCallError('INVALID_INPUT', '缺少参数 value')
         return act(root, el, () => fill(el, input.value, ref, prefix))
       },
@@ -237,6 +254,7 @@ export function attachInspect(registrar: Registrar, options: InspectOptions = {}
           const active = root.ownerDocument.activeElement
           target = active && active !== root.ownerDocument.documentElement ? active : root
         }
+        rejectSecure(target, ref ?? refs.refOf(target))
         const usable = (el: Element) => root.contains(el) && isVisible(el) && !isDisabled(el)
         return act(root, ref ? target : null, () => press(target, spec, usable))
       },
@@ -312,8 +330,10 @@ export function attachInspect(registrar: Registrar, options: InspectOptions = {}
           const v =
             tag === 'SELECT'
               ? Array.from((el as HTMLSelectElement).selectedOptions).map((o) => o.text.trim()).join('、')
-              : (el as HTMLInputElement).type === 'password'
-                ? '••••'
+              : isSecure(el)
+                ? (el as HTMLInputElement).value
+                  ? SECURE_MASK
+                  : ''
                 : (el as HTMLInputElement).value
           return { ref: ref ?? 'root', text: v.length > max ? `${v.slice(0, max - 1)}…` : v, truncated: v.length > max }
         }
