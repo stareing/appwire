@@ -29,6 +29,15 @@ pub const META_STATUS: &str = "dev.appwire/status";
 pub const META_STATE_RESOURCE: &str = "dev.appwire/stateResource";
 /// 改调了后台替代时实际调用的工具全名（spec/hub-api.md 3.14）。
 pub const META_ROUTED_TO: &str = "dev.appwire/routedTo";
+/// 本次调用的 callId（每个工具调用结果都带）：与转交 App 的 `ToolsInvokeParams.callId`、App handler 看到的 callId、
+/// Hub 日志「转发工具调用」记录的 `call_id` 字段相同。
+pub const META_CALL_ID: &str = "dev.appwire/callId";
+/// 实际处理调用的 App 实例（App 工具路由到实例时带）。
+pub const META_INSTANCE_ID: &str = "dev.appwire/instanceId";
+/// Hub 收到调用到得出结果的毫秒数（含审批、唤醒与等待 App；每个工具调用结果都带）。
+pub const META_DURATION_MS: &str = "dev.appwire/durationMs";
+/// 本次 App 工具调用是否经历了唤醒（调用时目标未连接，唤醒回连后才送达；只在 App 工具结果中出现）。
+pub const META_WOKE: &str = "dev.appwire/woke";
 
 // ---- MCP 请求 `_meta`（Agent → Hub，`tools/call`）----
 

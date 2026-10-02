@@ -29,7 +29,7 @@
 |---|---|---|
 | U1 | 各 Agent 是否读取 MCP `outputSchema`、`structuredContent`、`_meta` | **验证**：临时 Host 在 Claude Code 实测；结论只影响文档建议，Hub 按 MCP 规范输出 |
 | U2 | 非网页 SDK（C ABI、uniffi、Node、Dart）对"无返回值"的处理是否与 K3 一致 | **已验证（8b54b50，Y1 一致性套件）**：各 SDK 无返回值都发 `{data: null}`，与 spec 一致；Hub 侧按 R3 输出"已完成" |
-| U3 | MCP 2026-07-28 `_meta` 键命名约定（反向域名前缀）与 `resultType` 的关系 | **核实**规范（第 12 项 F1）后定键名，未确认前不落地 R4 |
+| U3 | MCP 2026-07-28 `_meta` 键命名约定（反向域名前缀）与 `resultType` 的关系 | **已核实**（第 12 项第 4 节）：前缀 `dev.appwire/`，`status` 与 `resultType` 正交；R4 已按此落地 |
 | U4 | `pending` 结果后续状态的查询载体（状态资源 vs 第 16 项 P5 作业） | **保守**：先用 App 声明的状态资源名；P5 落地后增加作业 ID |
 
 ## 3. 未知的已知（可复用）
@@ -55,6 +55,16 @@
   无返回值时 Hub 输出固定文本"已完成"而非 `null`，`structuredContent` 不填。
 - **R4 调用元信息**：MCP 出口 `_meta` 带 `callId`、`instanceId`、`durationMs`、`woke`（本次是否唤醒 App），键名按 U3（前缀已定为 `dev.appwire/`，第 12 项 S1；下文 `app-mcp/` 为改名前的旧键）；同一套键名规则还覆盖已落地的暂定键（7f587d8，前缀 `app-mcp/`，单一定义在 `crates/hub/src/names.rs` 与 `spec/hub-api.md` 3.15，改前缀只改这两处）：请求侧 `app-mcp/timeoutMs`（相对毫秒，Hub 取其与 `response_timeout` 的较小者，只限制等待 App 结果；第 16 项 P6 / 4f c）、`app-mcp/idempotencyKey`（1–256 字符，原样进 `ToolsInvokeParams.idempotencyKey`；第 16 项 N7a / 4f j），结果侧 `app-mcp/status`、`app-mcp/stateResource`（R1）、`app-mcp/routedTo`；R4 新增的 `callId` 等键沿用同一处定义；
   与 Host / SDK 日志 `cid` 可对照；Hub API `CallOutcome` 补 `duration_ms`、`woke`。
+  **已实现（2026-10-02，随第 12 项 S2）**：键 `dev.appwire/callId`、`instanceId`、`durationMs`、`woke` 定义在 `crates/hub/src/names.rs`，
+  键表与语义见 `spec/hub-api.md` 3.15（`callId` / `durationMs` 每个工具调用结果都带；`instanceId` 路由到实例时带；`woke` 只在 App 工具结果中）。
+  对照方式（事实）：`callId` 即转交 App 的 `tools/invoke` 参数 `callId`（`crates/hub/src/call.rs` `invoke_routed` 构造 `ToolsInvokeParams`），
+  App handler 所见（原生 `CallHandle::call_id()`，`crates/native/src/lib.rs`；SDK 核心的去重告警也按 callId 记录，`crates/core/src/connection.rs`）；
+  Hub 日志新增 info 记录「转发工具调用」，字段 `cid`（App 连接 ID）+ `call_id` + `instance_id` + `woke`，把 callId 与连接 `cid` 关联。
+  `woke` 判定：调用时目标未连接（`wake_target_presence` 为 Absent），经唤醒回连后送达；审批期间目标自行连上则为 false。
+  Hub API `CallOutcome.duration_ms` / `woke` 只增字段（serde 缺省 0 / false），hub-c v14、hub-node / `@app-mcp/hub`（JSON 透传）、
+  hub-uniffi（`CallOutcome.duration_ms` / `woke`，`routed_to` 已有）同步。测试：`crates/hub/src/call.rs` `call_meta_keys_and_result_type`、
+  `crates/hub/tests/call_meta.rs`（休眠唤醒 woke = true、热调用 false、durationMs ≥ handler 耗时、callId 等于 handler 所见；去掉实现时均失败）。
+  未做：内置工具 `apps.activate` / `apps.navigate` 的 `_meta` 不带 `woke`（其结果 `structuredContent.woke` 已给出；Hub API `woke` 为 false）。
 - **R5 可重试标注**：错误码表加"可重试"列（是 / 否 / 视 `retryAfterMs`），作为唯一定义；SDK 与 Hub 按表填 `data.retryable`。
 - **R6 结构化状态提示**：`stateHints` 在 MCP 出口改为 `resource_link` 内容块（随第 17 项 C1），保留现有文本一个版本后移除（E-06）。
 

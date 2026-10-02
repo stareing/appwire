@@ -82,6 +82,9 @@
  *   · CallRequest 新增可选字段 idempotencyKey（1..=256 个字符，原样转交 App）。
  *   · JSON 中新增：HubTool.surface（"app" | "view"）/ page（缺省表示无）；CallOutcome.routedTo（改调后台替代时）。
  *   · 新内置工具 apps.activate、apps.release（总是列出），apps.page、apps.navigate（有页面目录时）。
+ * - v14（调用元信息，docs/plans/19-result-contract.md R4）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · JSON 中新增：CallOutcome.durationMs（Hub 收到调用到得出结果的毫秒数）、CallOutcome.woke（本次 App 工具调用是否
+ *     经历了唤醒；内置 / 上游工具恒为 false）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -305,7 +308,8 @@ AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
  *    "stateHints": […], "instanceId": …|null, "overview": AppOverviewInfo|null,
  *    v9："status": "done"|"pending"|"partial"|"noop", "stateResource"?: "app-mcp://<appId>/<名>",
  *        "summary"?: …, "annotations"?: {"audience"?, "priority"?, "lastModified"?},
- *    v13："routedTo"?: 改调后台替代时实际调用的工具全名（spec/hub-api.md 3.14）}
+ *    v13："routedTo"?: 改调后台替代时实际调用的工具全名（spec/hub-api.md 3.14），
+ *    v14："durationMs": <毫秒>, "woke": <bool>（本次 App 工具调用是否经历了唤醒）}
  * 名称无法解析（appId 未知等）也以 CallOutcome 形式返回（result.error，kind 为 TOOL_NOT_FOUND）。 */
 AmHubStatus am_hub_call(AmHub *hub, const char *request_json, AmHubResultFn cb, void *user_data,
                         char **out_call_id);

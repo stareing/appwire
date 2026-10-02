@@ -1679,6 +1679,12 @@ pub struct CallOutcome {
     /// 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则为空。
     #[uniffi(default = None)]
     pub routed_to: Option<String>,
+    /// Hub 收到调用到得出结果的毫秒数（含审批、唤醒与等待 App；第 19 项 R4）。
+    #[uniffi(default = 0)]
+    pub duration_ms: u64,
+    /// 本次 App 工具调用是否经历了唤醒；内置工具与上游工具恒为 false（第 19 项 R4）。
+    #[uniffi(default = false)]
+    pub woke: bool,
 }
 
 impl From<hub::CallOutcome> for CallOutcome {
@@ -1706,6 +1712,8 @@ impl From<hub::CallOutcome> for CallOutcome {
             summary: o.summary,
             annotations: o.annotations.map(Into::into),
             routed_to: o.routed_to,
+            duration_ms: o.duration_ms,
+            woke: o.woke,
         }
     }
 }
@@ -2089,9 +2097,12 @@ mod tests {
             summary: None,
             annotations: None,
             routed_to: None,
+            duration_ms: 0,
+            woke: false,
         }
         .into();
         assert_eq!(o.status, ResultStatus::Done);
+        assert_eq!((o.duration_ms, o.woke), (0, false));
         let e = o.error.unwrap();
         assert_eq!(e.kind, "USER_REJECTED");
         assert_eq!(e.details_json.as_deref(), Some(r#"{"a":1}"#));
@@ -2131,9 +2142,12 @@ mod tests {
                 last_modified: None,
             }),
             routed_to: Some("shop.cart.addItem".into()),
+            duration_ms: 1234,
+            woke: true,
         }
         .into();
         assert_eq!(o.status, ResultStatus::Pending);
+        assert_eq!((o.duration_ms, o.woke), (1234, true));
         assert_eq!(o.routed_to.as_deref(), Some("shop.cart.addItem"));
         assert_eq!(o.state_resource.as_deref(), Some("app-mcp://shop/order.state"));
         assert_eq!(o.summary.as_deref(), Some("等待付款"));

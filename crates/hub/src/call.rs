@@ -17,7 +17,7 @@ use app_mcp_protocol::{
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, MetaObject, ReadResourceRequestParams,
-    ReadResourceResult, ResourceContents, TextContent, Tool, ToolAnnotations,
+    ReadResourceResult, ResourceContents, ResultType, TextContent, Tool, ToolAnnotations,
 };
 use rmcp::{ErrorData as McpError, Peer, RoleClient, ServiceError};
 use serde_json::{Map, Value, json};
@@ -28,9 +28,11 @@ use crate::hub::{
 };
 use crate::progress::{ProgressThrottle, ProgressUpdate};
 use crate::limits::{OutputValidation, Payload};
+use crate::names;
 use crate::mcp_convert::{self, OutputShape};
 use crate::navigate::{self, PageTool};
 use crate::overview::Overview;
+use crate::registry::WakeTargetPresence;
 use crate::schema::{self, SchemaCheck};
 use crate::tool_def::ToolDef;
 use crate::types::{
@@ -108,6 +110,10 @@ pub(crate) struct Invocation {
     pub output_shape: OutputShape,
     /// 改调了后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）。
     pub routed_to: Option<String>,
+    /// Hub 收到调用到得出结果的毫秒数（[`HubShared::call`] 填写）。
+    pub duration_ms: u64,
+    /// 本次 App 工具调用是否经历了唤醒（[`ToolRun::woke`]）。
+    pub woke: bool,
 }
 
 impl Invocation {
@@ -124,8 +130,20 @@ impl Invocation {
         if let Some(ov) = &self.overview {
             r.content.insert(0, ContentBlock::text(ov.render()));
         }
+        // @compat 上游结果来自旧协议版本时没有 `resultType`；补成 `complete`（CallToolResult 只能是该值），
+        // 由 rmcp 在回复旧协议版本的客户端时去掉（docs/plans/12-mcp-stateless.md S2）。
+        r.result_type.get_or_insert(ResultType::COMPLETE);
+        let meta = r.meta.get_or_insert_with(MetaObject::new);
         if let Some(to) = &self.routed_to {
-            r.meta.get_or_insert_with(MetaObject::new).insert(mcp_convert::META_ROUTED_TO.to_owned(), json!(to));
+            meta.insert(mcp_convert::META_ROUTED_TO.to_owned(), json!(to));
+        }
+        meta.insert(names::META_CALL_ID.to_owned(), json!(self.call_id));
+        meta.insert(names::META_DURATION_MS.to_owned(), json!(self.duration_ms));
+        if let Some(id) = &self.instance_id {
+            meta.insert(names::META_INSTANCE_ID.to_owned(), json!(id));
+        }
+        if matches!(self.body, Body::App(_)) {
+            meta.insert(names::META_WOKE.to_owned(), json!(self.woke));
         }
         Ok(r)
     }
@@ -163,6 +181,8 @@ impl Invocation {
             summary: r.summary,
             annotations: r.annotations,
             routed_to: self.routed_to,
+            duration_ms: self.duration_ms,
+            woke: self.woke,
         })
     }
 }
@@ -220,6 +240,8 @@ pub(crate) struct ToolRun {
     /// 实际处理调用的实例。
     pub instance_id: Option<String>,
     pub output_shape: OutputShape,
+    /// 调用时目标未连接、经唤醒回连后才送达（休眠实例唤醒、按清单冷启动、页面工具的 App 唤醒）。
+    pub woke: bool,
 }
 
 fn cancelled() -> ToolError {
@@ -245,6 +267,7 @@ impl HubShared {
         ctx: CallCtx,
         cancel: impl Future<Output = ()> + Send,
     ) -> Invocation {
+        let started = tokio::time::Instant::now();
         let call_id = ctx.call_id.clone().unwrap_or_else(|| self.new_call_id());
         let _activity = self.session_request(&ctx.session_key);
         let (tx, rx) = oneshot::channel::<()>();
@@ -262,7 +285,8 @@ impl HubShared {
             }
         };
         let mut combined = std::pin::pin!(combined);
-        let inv = self.call_inner(&call_id, ctx, combined.as_mut()).await;
+        let mut inv = self.call_inner(&call_id, ctx, combined.as_mut()).await;
+        inv.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut calls = lock(&self.calls);
         if calls.get(&call_id).is_some_and(|(t, _)| *t == token) {
             calls.remove(&call_id);
@@ -285,6 +309,8 @@ impl HubShared {
             body,
             output_shape: OutputShape::Undeclared,
             routed_to: None,
+            duration_ms: 0,
+            woke: false,
         };
 
         if let Some(Err(e)) = ctx.idempotency_key.as_deref().map(crate::request_meta::check_idempotency_key) {
@@ -389,12 +415,15 @@ impl HubShared {
             && navigate::needs_foreground(e)
             && let Some(alt) = self.background_alternative(app_id, tool, &args)
         {
+            let first_woke = run.woke;
             run = self.run_routed_tool(call_id, app_id, &alt, args, &ctx, cancel.as_mut()).await;
+            run.woke |= first_woke;
             routed_to = Some(alt);
         }
         let mut out = inv(Some(app_id), Body::App(run.result));
         out.instance_id = run.instance_id;
         out.output_shape = run.output_shape;
+        out.woke = run.woke;
         out.routed_to = routed_to.map(|alt| format!("{app_id}.{alt}"));
         out.overview = self.attach_overview(&ctx.session_key, app_id);
         self.expose_in_session(&ctx, app_id);
@@ -413,7 +442,7 @@ impl HubShared {
     ) -> ToolRun {
         tracing::info!(app_id, tool, "App 在后台，改调 view 工具声明的后台替代");
         if let Err(e) = self.check_call_policy(app_id, tool).and_then(|()| self.guard_call(app_id, tool, &args)) {
-            return ToolRun { result: Err(e), instance_id: None, output_shape: OutputShape::Undeclared };
+            return ToolRun { result: Err(e), instance_id: None, output_shape: OutputShape::Undeclared, woke: false };
         }
         self.invoke_tool(call_id, app_id, tool, args, ctx, cancel).await
     }
@@ -518,10 +547,11 @@ impl HubShared {
         cancel: CancelFut<'_>,
     ) -> ToolRun {
         let mut output_shape = OutputShape::Undeclared;
+        let mut woke = false;
         let (result, instance_id) = self
-            .invoke_routed(call_id, app_id, tool_name, arguments, ctx, cancel, &mut output_shape)
+            .invoke_routed(call_id, app_id, tool_name, arguments, ctx, cancel, &mut output_shape, &mut woke)
             .await;
-        ToolRun { result, instance_id, output_shape }
+        ToolRun { result, instance_id, output_shape, woke }
     }
 
     /// 结果到达后的处理：大小上限 → 解析 → 按 [`OutputValidation`] 核对 `outputSchema`。
@@ -568,7 +598,8 @@ impl HubShared {
         }
     }
 
-    /// [`HubShared::invoke_tool`] 的主体：返回结果与目标实例；路由到实例后把其 `outputSchema` 形式写入 `output_shape`。
+    /// [`HubShared::invoke_tool`] 的主体：返回结果与目标实例；路由到实例后把其 `outputSchema` 形式写入 `output_shape`，
+    /// 经历唤醒（[`ToolRun::woke`]）时把 `woke` 置真。
     #[allow(clippy::too_many_arguments)]
     async fn invoke_routed(
         self: &Arc<Self>,
@@ -579,6 +610,7 @@ impl HubShared {
         ctx: &CallCtx,
         mut cancel: CancelFut<'_>,
         output_shape: &mut OutputShape,
+        woke: &mut bool,
     ) -> (Result<ToolsInvokeResult, ToolError>, Option<String>) {
         self.lease_call_started(&ctx.session_key, app_id);
         let selected = ctx
@@ -624,8 +656,16 @@ impl HubShared {
                 }
                 approved = true;
             }
+            // @why 审批期间目标可能已自行连上，此时 wake_and_wait 直接返回、不算唤醒。
+            let absent = matches!(
+                self.registry().wake_target_presence(app_id, plan.instance_id.as_deref()),
+                WakeTargetPresence::Absent
+            );
             match self.wake_and_wait(&plan, cancel.as_mut()).await {
-                Ok(id) => woken = Some(id),
+                Ok(id) => {
+                    *woke = absent;
+                    woken = Some(id);
+                }
                 Err(e) => return (Err(e), plan.instance_id.clone()),
             }
         }
@@ -635,7 +675,8 @@ impl HubShared {
                 .reach_page_tool(call_id, app_id, &target, &arguments, ctx, selected.as_deref(), woken.clone(), approved, cancel.as_mut())
                 .await
             {
-                Ok(id) => {
+                Ok((id, page_woke)) => {
+                    *woke |= page_woke;
                     woken = Some(id);
                     approved = true;
                 }
@@ -721,6 +762,7 @@ impl HubShared {
             Ok(v) => v,
             Err(_) => return (Err(disconnected()), instance),
         };
+        tracing::info!(cid = %conn.cid, call_id, app_id, tool = tool_name, instance_id = %target.instance_id, woke = *woke, "转发工具调用");
         let send_cancel = |reason: &str| {
             conn.forget(&req_id);
             let p = ToolsCancelParams {
@@ -780,7 +822,7 @@ impl HubShared {
     }
 
     /// 页面工具的到达：`navigable: false` 拒绝 → 按目录定义校验并审批（未审批时）→ App 没有连接时唤醒 → 导航并等待
-    /// 工具注册。返回注册了该工具的实例。
+    /// 工具注册。返回注册了该工具的实例，以及本步是否唤醒了 App。
     #[allow(clippy::too_many_arguments)]
     async fn reach_page_tool(
         self: &Arc<Self>,
@@ -793,7 +835,7 @@ impl HubShared {
         woken: Option<String>,
         approved: bool,
         mut cancel: CancelFut<'_>,
-    ) -> Result<String, ToolError> {
+    ) -> Result<(String, bool), ToolError> {
         let tool_name = target.tool.name.as_str();
         if !target.navigable {
             return Err(HubShared::not_navigable(app_id, Some(tool_name), &target.page));
@@ -809,14 +851,16 @@ impl HubShared {
             let req = self.approval_request(call_id, &hub_tool, arguments, ctx);
             self.approve(req, cancel.as_mut()).await?;
         }
-        let woken = self.wake_app_if_disconnected(app_id, selected, Some(tool_name), cancel.as_mut()).await?.or(woken);
+        let page_woken = self.wake_app_if_disconnected(app_id, selected, Some(tool_name), cancel.as_mut()).await?;
+        let woke = page_woken.is_some();
+        let woken = page_woken.or(woken);
         // 唤醒后实例可能已停在该页面。
         if let Some(id) = woken.as_deref().filter(|id| self.registry().instance_has_tool(app_id, id, tool_name)) {
-            return Ok(id.to_owned());
+            return Ok((id.to_owned(), woke));
         }
         let strict = ctx.instance_id.is_some();
         let prefer = ctx.instance_id.as_deref().or(woken.as_deref()).or(selected);
-        self.navigate_for_tool(app_id, &target.page, tool_name, prefer, strict, cancel).await
+        self.navigate_for_tool(app_id, &target.page, tool_name, prefer, strict, cancel).await.map(|id| (id, woke))
     }
 
     /// `apps.tools` 的页面摘要（spec/hub-api.md 3.14 L2）：`{name, title?, description?, navigable, current, toolCount}`。
@@ -1142,6 +1186,8 @@ async fn read_upstream_resource(
         }
     }
     check_resource_size(shared, name, uri, &result.contents)?;
+    // @compat 同工具结果：旧协议版本的上游不带 `resultType`，补成 `complete`（docs/plans/12-mcp-stateless.md S2）。
+    result.result_type.get_or_insert(ResultType::COMPLETE);
     Ok(result)
 }
 
@@ -1693,6 +1739,8 @@ mod tests {
             body: Body::App(r),
             output_shape: OutputShape::Undeclared,
             routed_to: routed_to.map(str::to_owned),
+            duration_ms: 0,
+            woke: false,
         };
         let pending = ToolsInvokeResult { status: crate::ResultStatus::Pending, ..ToolsInvokeResult::default() };
         let r = inv(Some("shop.cart.add"), Ok(pending.clone())).to_mcp().unwrap();
@@ -1701,9 +1749,67 @@ mod tests {
         assert_eq!(meta.get(mcp_convert::META_STATUS), Some(&json!("pending")));
         let r = inv(Some("shop.cart.add"), Err(ToolError::new(ErrorKind::HandlerError, "x"))).to_mcp().unwrap();
         assert_eq!(r.meta.unwrap().get("dev.appwire/routedTo"), Some(&json!("shop.cart.add")), "错误结果同样标出");
-        assert_eq!(inv(None, Ok(ToolsInvokeResult::default())).to_mcp().unwrap().meta, None);
+        let meta = inv(None, Ok(ToolsInvokeResult::default())).to_mcp().unwrap().meta.unwrap();
+        assert!(meta.get(mcp_convert::META_ROUTED_TO).is_none() && meta.get(mcp_convert::META_STATUS).is_none(), "{meta:?}");
         let o = inv(Some("shop.cart.add"), Ok(pending)).into_outcome().unwrap();
         assert_eq!(o.routed_to.as_deref(), Some("shop.cart.add"));
+    }
+
+    /// 第 19 项 R4：调用元信息。callId、durationMs 每种结果都带；instanceId 只在路由到实例时带；woke 只在 App 工具结果中出现。
+    /// 第 12 项 S2：结果带 `resultType: complete`（上游旧协议结果缺省时补齐）。
+    #[test]
+    fn call_meta_keys_and_result_type() {
+        let inv = |body: Body, instance: Option<&str>, woke: bool| Invocation {
+            call_id: "call-7".into(),
+            app_id: Some("shop".into()),
+            instance_id: instance.map(str::to_owned),
+            overview: None,
+            body,
+            output_shape: OutputShape::Undeclared,
+            routed_to: None,
+            duration_ms: 42,
+            woke,
+        };
+        let r = inv(Body::App(Ok(ToolsInvokeResult::default())), Some("shop-1"), true).to_mcp().unwrap();
+        assert_eq!(r.result_type, Some(ResultType::COMPLETE));
+        let meta = r.meta.unwrap();
+        assert_eq!(meta.get(names::META_CALL_ID), Some(&json!("call-7")));
+        assert_eq!(meta.get(names::META_INSTANCE_ID), Some(&json!("shop-1")));
+        assert_eq!(meta.get(names::META_DURATION_MS), Some(&json!(42)));
+        assert_eq!(meta.get(names::META_WOKE), Some(&json!(true)));
+
+        let err = ToolError::new(ErrorKind::Timeout, "x");
+        let meta = inv(Body::App(Err(err.clone())), None, false).to_mcp().unwrap().meta.unwrap();
+        assert_eq!(meta.get(names::META_WOKE), Some(&json!(false)), "失败的 App 工具调用同样带 woke");
+        assert!(meta.get(names::META_INSTANCE_ID).is_none());
+
+        for body in [Body::Builtin(Ok(json_result(json!({})))), Body::NotFound(err)] {
+            let meta = inv(body, None, false).to_mcp().unwrap().meta.unwrap();
+            assert_eq!(meta.get(names::META_CALL_ID), Some(&json!("call-7")));
+            assert_eq!(meta.get(names::META_DURATION_MS), Some(&json!(42)));
+            assert!(meta.get(names::META_WOKE).is_none() && meta.get(names::META_INSTANCE_ID).is_none(), "{meta:?}");
+        }
+
+        // 上游旧协议结果：没有 resultType → 补 complete；原有 _meta 保留
+        let mut legacy: CallToolResult =
+            serde_json::from_value(json!({"content": [], "_meta": {"x/y": 1}})).unwrap();
+        assert_eq!(legacy.result_type, None);
+        legacy.is_error = Some(false);
+        let r = inv(Body::Upstream(Ok(legacy)), None, false).to_mcp().unwrap();
+        assert_eq!(r.result_type, Some(ResultType::COMPLETE));
+        let meta = r.meta.unwrap();
+        assert_eq!(meta.get("x/y"), Some(&json!(1)));
+        assert_eq!(meta.get(names::META_CALL_ID), Some(&json!("call-7")));
+
+        let o = inv(Body::App(Ok(ToolsInvokeResult::default())), Some("shop-1"), true).into_outcome().unwrap();
+        assert_eq!((o.call_id.as_str(), o.duration_ms, o.woke), ("call-7", 42, true));
+        let v = serde_json::to_value(&o).unwrap();
+        assert_eq!((v["durationMs"].clone(), v["woke"].clone()), (json!(42), json!(true)));
+        // 旧 JSON（没有新字段）仍可解析
+        let mut old = v.clone();
+        old.as_object_mut().unwrap().retain(|k, _| k != "durationMs" && k != "woke");
+        let o: CallOutcome = serde_json::from_value(old).unwrap();
+        assert_eq!((o.duration_ms, o.woke), (0, false));
     }
 
     /// 第 19 项 R3：无返回值 → "已完成"、不填 structuredContent；有摘要时摘要代替。

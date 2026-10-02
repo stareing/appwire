@@ -303,6 +303,13 @@ pub struct CallOutcome {
     /// App 在后台、改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routed_to: Option<String>,
+    /// Hub 收到调用到得出结果的毫秒数（含审批、唤醒与等待 App）。
+    #[serde(default)]
+    pub duration_ms: u64,
+    /// 本次 App 工具调用是否经历了唤醒（调用时目标未连接，唤醒回连后才送达）。内置工具与上游工具恒为 `false`
+    /// （`apps.activate` / `apps.navigate` 的结果自带 `woke`）。
+    #[serde(default)]
+    pub woke: bool,
 }
 
 /// Hub 操作失败：[`ToolError`] 的包装（同一套错误码，spec/protocol.md §4）。
@@ -779,8 +786,11 @@ mod tests {
             status: Default::default(),
             summary: None,
             routed_to: None,
+            duration_ms: 5,
+            woke: true,
         };
         let v = serde_json::to_value(&o).unwrap();
+        assert_eq!((v["durationMs"].clone(), v["woke"].clone()), (json!(5), json!(true)));
         assert_eq!(v["result"]["error"]["kind"], "USER_REJECTED");
         assert!(v.get("routedTo").is_none(), "未改调时不序列化");
         let back: CallOutcome = serde_json::from_value(v).unwrap();

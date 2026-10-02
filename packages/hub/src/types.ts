@@ -482,6 +482,10 @@ export interface CallOutcome {
   annotations?: ContentAnnotations
   /** App 在后台、Hub 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）。 */
   routedTo?: string
+  /** Hub 收到调用到得出结果的毫秒数（含审批、唤醒与等待 App）；旧 Hub 缺省。 */
+  durationMs?: number
+  /** 本次 App 工具调用是否经历了唤醒（调用时目标未连接）；内置 / 上游工具为 `false`；旧 Hub 缺省。 */
+  woke?: boolean
 }
 
 // ---------------------------------------------------------------------------

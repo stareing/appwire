@@ -335,6 +335,8 @@ fn outcome_error_json(call_id: &str, e: ToolError) -> String {
         summary: None,
         annotations: None,
         routed_to: None,
+        duration_ms: 0,
+        woke: false,
     };
     serde_json::to_string(&o).unwrap_or_default()
 }

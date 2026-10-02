@@ -188,7 +188,7 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 
 - `resultType` 是核心结果字段，取值只能是规范定义值或已在能力中声明的扩展值，客户端遇到未知值 MUST 视为无效（S-F2）。
 - 因此 AppWire 的 `status`（`done` / `pending` / `partial` / `noop`）**不得**放入 `resultType`；`pending` 也不等于 `input_required`
-  （后者是 MRTR，要求客户端补输入后重发原请求）。结论：`resultType` 一律 `complete`（rmcp 构造器负责，见 12 迁移计划 M8 待验证），
+  （后者是 MRTR，要求客户端补输入后重发原请求）。结论：`resultType` 一律 `complete`（rmcp 构造器负责，已核实 rmcp 3.5.0，见第 6 节 S2 记录），
   状态继续经 `dev.appwire/status` + 文本说明（R1 已实现文本），两者正交。
 
 ## 5. 错误码分区影响
@@ -209,13 +209,30 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 | # | 内容 | 依赖 | 验收 |
 |---|---|---|---|
 | S1 | `_meta` 前缀改 `dev.appwire/`（4.2），请求侧旧键弃用期内兼容 | U1 机主定前缀 | 单测：新键、旧键、两者冲突、非法值；`spec/hub-api.md` 3.15 键表更新 |
-| S2 | `resultType` 核查与补齐（12 迁移计划 M8 / U7）；R4 结果元信息按新键输出 | S1 | modern 每种结果（工具、空结果、资源、列表）都带 `resultType: complete`；`_meta.dev.appwire/callId` 与日志 `cid` 可对照 |
+| S2 | `resultType` 核查与补齐（12 迁移计划 M8 / U7）；R4 结果元信息按新键输出 | S1 | modern 每种结果（工具、空结果、资源、列表）都带 `resultType: complete`；`_meta.dev.appwire/callId` 与日志 `cid` 可对照。**部分完成（2026-10-02）**，见下方 S2 记录 |
 | S3 | 错误码：modern 出口码映射；修复上游错误反查缺陷；作废 m10 表述 | — | 回归测试：上游 `-32004` 不再变成 `USER_REJECTED`；modern 资源不存在为 `-32602`、legacy 仍 `-32002` |
 | S4 | `CallerKey` 收敛；`McpSession` 分 legacy / stateless；主体键（HTTP 令牌 / IPC）；stdio modern 同样无状态 | 4e 已完成；与 16 P1 同批设计 | 连续 N 个 modern 请求不新增 / 删除 `SessionState`；legacy 与 modern 并发互不影响；租约在 modern 下按空闲收回 |
 | S5 | modern 列表规则（3.3）与总览改经 discover / `apps.tools`；`ttlMs` / `cacheScope` | S4；与 4c F 合并 | modern 下两次 `tools/list` 之间夹任意 `apps.tools` / 调用 / `apps.select`，结果逐字节相同；`server/discover.instructions` 含 App 简介 |
 | S6 | `apps.select` 主体级语义与 TTL；审批 `principal` 与 `client_name`；`/status` 新字段 | S4 | modern `apps.select` 后路由命中所选实例、列表不变；TTL 到期后回到默认路由 |
 | S7 | `subscriptions/listen`（12 迁移计划 M4）+ 默认放开 2026-07-28 | S1–S6 | Claude Code 2.1.281 实测：Host 日志无 `Mcp-Session-Id`、调用成功、App 上下线后列表刷新；回退开关恢复 legacy |
 | S8 | P1 任务句柄（3.4）：`taskId` 工具参数 + 可选 `_meta` 通道 | 16 P1、N5 | 两个任务句柄各自的选择 / 租约互不影响；过期句柄返回可恢复错误 |
+
+**S2 记录（2026-10-02，rmcp 锁定版本 3.5.0，源码 `~/.cargo/registry/src/*/rmcp-3.5.0`，未升级）**
+
+- 事实：rmcp 3.5.0 有 `model::ResultType`（`complete` / `input_required` / `task`，`src/model.rs:866`）；`CallToolResult`、
+  `ReadResourceResult`、各分页列表（`ListToolsResult`、`ListResourcesResult` 等）、`CompleteResult`、`GetPromptResult` 带
+  `result_type: Option<ResultType>`，构造器与 `Default` 都填 `Some(COMPLETE)`（如 `src/model.rs:1785`、`4061`）；反序列化缺省为 `None`。
+- 事实：服务端 handler 在协商版本 < 2026-07-28 时调用 `ServerResult::strip_result_type_for_legacy_peer` 去掉 `complete`
+  （`src/handler/server.rs:246-258`、`src/model.rs:4789`），所以 legacy 线上格式不变。
+- 事实：Hub 目前只协商到 `LATEST_WITH_INITIALIZE` = 2025-11-25（`crates/hub/src/mcp.rs` `get_info` / `supported_protocol_versions`），
+  modern（2026-07-28）客户端尚不能协商成功（S7 才放开），所以 modern 线上 `resultType` 现阶段无法端到端验证。
+- 已补齐：Hub 自建的工具、资源、列表结果都经 rmcp 构造器（带 `complete`）；唯一会是 `None` 的是上游 MCP 服务器透传的结果（上游按旧协议回复时没有该字段）。
+  `Invocation::to_mcp` 与 `read_upstream_resource` 对缺省值补 `complete`（`CallToolResult` 只允许该值；已有值不改），单测
+  `call_meta_keys_and_result_type` 覆盖。R4 结果元信息已按新键输出（第 19 项 R4）。
+- 未知（留给 S7）：空结果（`ping`、`resources/subscribe`、`unsubscribe`、`logging/setLevel`）在 rmcp 3.5.0 中是 `EmptyObject {}`
+  （`#[serde(deny_unknown_fields)]`，`src/model.rs:77`，经 `ServerResult::empty`），不带 `resultType`；2026-07-28 要求"每个结果"都带时
+  这些回复缺该字段。Hub 的 `subscribe` / `unsubscribe` 返回 `()`，无法在 Hub 侧补齐。处理：S7 放开 modern 前核实规范对空结果的要求，
+  并检查届时的 rmcp 版本（升级 rmcp 不在本项范围）；在此之前 modern 不会被协商，不影响现有客户端。
 
 顺序：S3（独立缺陷修复，可立即做）→ S1 → S2 → S4 → S5、S6（可并行）→ S7 → S8（随第 16 项 P1）。
 总验收：`cargo test -p app-mcp-hub -p app-mcp-host`、`cargo clippy --workspace --all-targets` 0 警告；默认配置（S7 前）e2e 不变；

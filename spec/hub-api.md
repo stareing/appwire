@@ -153,6 +153,8 @@ pub struct CallOutcome {
     pub summary: Option<String>,              // App 给出的一句结论
     pub annotations: Option<ContentAnnotations>, // App 对结果内容的标注（原样）
     pub routed_to: Option<String>,            // 改调了后台替代时实际调用的工具全名（3.14）
+    pub duration_ms: u64,                     // Hub 收到调用到得出结果的毫秒数（含审批、唤醒与等待 App；3.15 键表）
+    pub woke: bool,                           // 本次 App 工具调用是否经历了唤醒；内置 / 上游工具恒为 false（3.15 键表）
 }
 
 pub enum HubEvent {
@@ -840,8 +842,16 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `apps.release` | 内置工具 | 收回本会话在该 App 上的租约（下文） |
 | `dev.appwire/status`、`dev.appwire/stateResource` | 结果 `_meta` | 结果状态（spec/protocol.md 3.2，3.2） |
 | `dev.appwire/routedTo` | 结果 `_meta` | 改调后台替代时实际调用的工具全名（3.14） |
+| `dev.appwire/callId` | 结果 `_meta`（每个工具调用结果） | 本次调用的 callId：即转交 App 的 `tools/invoke` 参数 `callId`（App handler 所见，如原生 `CallHandle::call_id()`）与 Hub 日志「转发工具调用」记录的 `call_id` 字段（同一记录带该 App 连接的 `cid`，spec/protocol.md 10.3）；Hub API 为 `CallOutcome.call_id` |
+| `dev.appwire/instanceId` | 结果 `_meta`（路由到 App 实例时） | 实际处理调用的实例；Hub API 为 `CallOutcome.instance_id` |
+| `dev.appwire/durationMs` | 结果 `_meta`（每个工具调用结果） | Hub 收到调用到得出结果的毫秒数（含审批、唤醒与等待 App）；Hub API 为 `CallOutcome.duration_ms` |
+| `dev.appwire/woke` | 结果 `_meta`（只在 App 工具结果中） | 本次调用是否经历了唤醒：调用时目标未连接（休眠实例、按清单冷启动、页面工具所在 App 未运行），唤醒回连后才送达；并发调用合并到同一次唤醒时各自为 `true`；Hub API 为 `CallOutcome.woke`（内置 / 上游工具恒为 `false`，`apps.activate` / `apps.navigate` 的结果自带 `woke`） |
 | `dev.appwire/timeoutMs` | 请求 `_meta`（`tools/call`） | Agent 的截止时间（下文） |
 | `dev.appwire/idempotencyKey` | 请求 `_meta`（`tools/call`） | Agent 的幂等键（下文） |
+
+**调用元信息**（第 19 项 R4）：`callId`、`durationMs` 在每个工具调用结果（含错误结果、内置与上游工具）的 `_meta` 中；`instanceId`、
+`woke` 见上表。只增字段：各 Hub 绑定按 JSON 透传 `CallOutcome` 的（hub-c v14、hub-node、`@app-mcp/hub`）带 `durationMs`、`woke`；
+hub-uniffi `CallOutcome.duration_ms` / `woke`（缺省 0 / false）。上游结果原有的 `_meta` 键保留，Hub 的键覆盖同名键。
 
 **`apps.navigate {appId, page, params?}`**（有 Agent 可见的页面目录时列出，任何时候可调用；注解 `readOnlyHint: false`、
 `idempotentHint: true`，风险 write）：承载显式导航参数；调用不在当前页面的工具时的自动导航（3.14）仍不带参数。

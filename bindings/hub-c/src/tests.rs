@@ -381,6 +381,7 @@ fn static_manifest_queries_export_and_errors() {
         let o = recv(&rx);
         assert_eq!(o["callId"], "mine");
         assert_eq!(o["result"]["error"]["kind"], "TOOL_NOT_FOUND");
+        assert_eq!((o["durationMs"].clone(), o["woke"].clone()), (json!(0), json!(false)), "{o}");
         let bad_req = c("[1]");
         let mut id = ptr::null_mut();
         assert_eq!(
@@ -1296,6 +1297,8 @@ fn surface_page_idempotency_key_and_builtins() {
     let o = recv(&rx);
     assert_eq!(o["result"]["ok"]["key"], "order-7", "{o}");
     assert!(o.get("routedTo").is_none(), "未改调时不出现：{o}");
+    // v14：调用元信息（App 已连接，不经过唤醒）
+    assert!(o["durationMs"].is_u64() && o["woke"] == false, "{o}");
     call(hub, json!({"name":"shop.order.submit"}), &tx);
     let o = recv(&rx);
     assert_eq!(o["result"]["ok"]["key"], Value::Null, "{o}");

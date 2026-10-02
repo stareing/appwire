@@ -600,6 +600,9 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     const out = await hub.callTool({ name: 'cafe.order.submit', idempotencyKey: 'order-7' })
     expect(out.result.ok).toEqual({ key: 'order-7' })
     expect(out).not.toHaveProperty('routedTo')
+    // 调用元信息（第 19 项 R4）：App 已连接，不经过唤醒
+    expect(out.woke).toBe(false)
+    expect(Number.isInteger(out.durationMs)).toBe(true)
     const none = await hub.callTool({ name: 'cafe.order.submit' })
     expect(none.result.ok).toEqual({ key: null })
     const bad = await hub.callTool({ name: 'cafe.order.submit', idempotencyKey: '' })
