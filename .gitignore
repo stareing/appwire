@@ -10,3 +10,7 @@ packages/web/src/wasm/
 # 本机 Claude Code 设置
 .claude/settings.local.json
 # Windows 构建产物目录在 target/ 下，已被忽略
+
+# Windows 测试用 .NET App（tests/windows）的构建产物
+tests/windows/**/bin/
+tests/windows/**/obj/
