@@ -38,8 +38,9 @@ class AgentActivity : Activity() {
         settingsButton = Button(this).apply { text = "去设置"; visibility = View.GONE }
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(output)
+            // @why 按钮在输出之上：工具结果文本很长时不会被推到屏幕外
             addView(settingsButton)
+            addView(output)
         }
         setContentView(ScrollView(this).apply { addView(column) })
         val tool = intent.getStringExtra(EXTRA_TOOL) ?: DEFAULT_TOOL
