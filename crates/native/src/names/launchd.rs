@@ -106,72 +106,45 @@ fn transient(e: &std::io::Error) -> bool {
 
 /// `launch_activate_socket(3)` 的错误码 → 说明。
 fn activation_error(code: i32) -> String {
-    const ENOENT: i32 = 2;
-    const ESRCH: i32 = 3;
     match code {
-        ENOENT => format!(
+        names::ACTIVATE_ENOENT => format!(
             "launchd plist 的 Sockets 中没有键 {}（重新 app-mcp-host app install 或按 spec/naming.md 4.4 补全 Agent plist）",
             names::SOCKET_KEY
         ),
-        ESRCH => "本进程不是由 launchd 启动的（用户直接打开的进程不持有按名寻址的套接字，走 App 拨 Hub 路径）".to_owned(),
+        names::ACTIVATE_ESRCH => "本进程不是由 launchd 启动的（用户直接打开的进程不持有按名寻址的套接字，走 App 拨 Hub 路径）".to_owned(),
         other => format!("launch_activate_socket 失败：{}", std::io::Error::from_raw_os_error(other)),
     }
 }
 
-/// `launch_activate_socket` 的唯一调用处（G-06）。
+/// [`names::activate_socket`] 的失败 → 说明。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn activate_failure(e: names::ActivateSocketError) -> String {
+    match e {
+        names::ActivateSocketError::Os(code) => activation_error(code),
+        names::ActivateSocketError::Count(n) => format!("launchd 交来的套接字数量异常：{n}"),
+        names::ActivateSocketError::InvalidKey => format!("套接字键 {:?} 含 NUL", names::SOCKET_KEY),
+    }
+}
+
+/// launchd 交来的套接字（FFI 在 [`app_mcp_protocol::naming::launchd::activate_socket`]，G-06）。
 #[cfg(target_os = "macos")]
 mod sys {
-    use std::ffi::{CString, c_char, c_int, c_void};
-    use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
+    use std::os::fd::OwnedFd;
     use std::sync::OnceLock;
-
-    unsafe extern "C" {
-        /// `<launch.h>`：`int launch_activate_socket(const char *name, int **fds, size_t *cnt)`；成功返回 0，`*fds` 由调用方 `free`。
-        fn launch_activate_socket(name: *const c_char, fds: *mut *mut c_int, cnt: *mut usize) -> c_int;
-        fn free(ptr: *mut c_void);
-    }
-
-    /// 一次激活最多接受的 fd 数（一个 `SockPathName` 只有一个；超出即视为异常，G-07）。
-    const MAX_FDS: usize = 16;
 
     /// launchd 交来的原始 fd：每个进程只能取一次（再取为 `EALREADY`），因此取到后留在进程内、不关闭；
     /// 每次登记复制一份（[`activated_sockets`]），登记结束只关闭副本。
-    static ACTIVATED: OnceLock<Result<Vec<RawFd>, String>> = OnceLock::new();
+    static ACTIVATED: OnceLock<Result<Vec<OwnedFd>, String>> = OnceLock::new();
 
     /// 取得键 `key` 的监听套接字（每次返回新的副本）。
     pub(super) fn activated_sockets(key: &str) -> Result<Vec<OwnedFd>, String> {
-        let raw = ACTIVATED.get_or_init(|| activate(key)).as_ref().map_err(Clone::clone)?;
-        raw.iter()
-            .map(|&fd| {
-                // SAFETY: fd 来自 launchd，保存在 ACTIVATED 中、进程存活期间从不关闭。
-                unsafe { BorrowedFd::borrow_raw(fd) }
-                    .try_clone_to_owned()
-                    .map_err(|e| format!("无法复制 launchd 套接字：{e}"))
-            })
+        let fds = ACTIVATED
+            .get_or_init(|| super::names::activate_socket(key).map_err(super::activate_failure))
+            .as_ref()
+            .map_err(Clone::clone)?;
+        fds.iter()
+            .map(|fd| fd.try_clone().map_err(|e| format!("无法复制 launchd 套接字：{e}")))
             .collect()
-    }
-
-    fn activate(key: &str) -> Result<Vec<RawFd>, String> {
-        let name = CString::new(key).map_err(|_| format!("套接字键 {key:?} 含 NUL"))?;
-        let mut fds: *mut c_int = std::ptr::null_mut();
-        let mut cnt: usize = 0;
-        // SAFETY: name 是有效的 C 字符串；fds / cnt 指向本函数的局部变量。
-        let rc = unsafe { launch_activate_socket(name.as_ptr(), &mut fds, &mut cnt) };
-        if rc != 0 {
-            return Err(super::activation_error(rc));
-        }
-        if fds.is_null() {
-            return Err("launchd 没有交来任何套接字".to_owned());
-        }
-        let out = if cnt == 0 || cnt > MAX_FDS {
-            Err(format!("launchd 交来的套接字数量异常：{cnt}"))
-        } else {
-            // SAFETY: 成功时 fds 指向 cnt 个 int（launch(3)），在 free 之前有效；cnt 已限定在 MAX_FDS 内。
-            Ok(unsafe { std::slice::from_raw_parts(fds, cnt) }.to_vec())
-        };
-        // SAFETY: fds 由 launch_activate_socket 以 malloc 分配，调用方负责 free（launch(3)），之后不再使用。
-        unsafe { free(fds.cast()) };
-        out
     }
 }
 
@@ -267,5 +240,8 @@ mod tests {
         assert!(activation_error(2).contains("AppMcp"));
         assert!(activation_error(3).contains("不是由 launchd 启动"));
         assert!(activation_error(37).starts_with("launch_activate_socket 失败"));
+        assert!(activate_failure(names::ActivateSocketError::Os(3)).contains("不是由 launchd 启动"));
+        assert!(activate_failure(names::ActivateSocketError::Count(0)).contains("数量异常"));
+        assert!(activate_failure(names::ActivateSocketError::InvalidKey).contains("NUL"));
     }
 }

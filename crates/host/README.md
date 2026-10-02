@@ -103,6 +103,29 @@ app-mcp-host uninstall [--purge] [--dry-run] [--json]
 选 `Run` 项而不是计划任务：两者都无需管理员，但计划任务运行控制台程序会弹窗，且 `Run` 项最简单、可在“任务管理器 > 启动”中查看和禁用。
 Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）一律带 `CREATE_NO_WINDOW`，常驻进程不会间接弹出控制台。
 
+### 按需启动（`service install --on-demand`）
+
+Linux / macOS 上 Host 可以不常驻：服务管理器代为监听 HTTP 端口与本地 IPC 套接字，**第一个连接到来时**启动 `serve`，
+空闲 `lifecycle.idleExitMs`（`--idle-exit-ms`，缺省 10 分钟，0 = 不退出）后退出；对 App 与 MCP 客户端透明（规范见
+spec/protocol.md 1.9）。缺省仍为登录自启：`status` / `doctor` / 安装时的就绪检查会连接监听地址，按需模式下也会因此启动 Host；
+冷启动要重新读清单、拉起上游 MCP 服务器，首个请求多等一次启动。`setup` 重新安装时保持已安装的方式。
+
+| 平台 | 写入 | 说明 |
+|---|---|---|
+| Linux | `app-mcp-host.socket`（两条 `ListenStream`，IPC `0600` / 目录 `0700`，`WantedBy=sockets.target`）+ 无 `[Install]` 的 `app-mcp-host.service` | 按 `sd_listen_fds` 协议取 fd（不依赖 libsystemd）；`service stop` 连同套接字单元一起停；`journalctl --user -u app-mcp-host` |
+| macOS | plist `Sockets`（键 `Http`、`Ipc`），无 `RunAtLoad` / `KeepAlive` | `launch_activate_socket` 取 fd；`service stop` 为 `bootout`（launchd 不再代为监听），`start` 重新 `bootstrap`；**未在真机验证** |
+| Windows | 不支持（报错） | 没有与套接字激活对等的机制，保持登录自启；常驻成本见下 |
+
+- 监听地址必须是 `IP:端口` 且端口不为 0；激活时只服务交来的套接字，配置中没有交来的那一个不自己绑定。
+- 空闲判定：没有已接受的连接（含 SSE 流、App WebSocket）、进行中的调用 / 唤醒、在线 App（含按名拨入的通道）与 MCP 会话。
+  连接进出由事件驱动；空闲期间只有一个一次性倒计时（`crates/hub/src/activity.rs`）。退出前关闭接受闸门并复核，漏进来的连接会被完整服务。
+- 休眠 App 的记录已持久化（`<home>/state/dormant/`），空闲退出、再次启动后仍列出、可唤醒（`tests/on_demand.rs`）。
+
+**Windows 常驻成本**（2026-10-02，release，`serve --listen 127.0.0.1:0`、无 App、无清单，Windows 11 build 26200，
+`Get-Process` 每 15 秒采样 3 分钟）：工作集 14.0 MB（峰值 14.1 MB）、私有内存 5.6 MB、线程 25–27（tokio 每核一个工作线程）、
+句柄 193–195；3 分钟内 CPU 时间增量 0（低于 `TotalProcessorTime` 约 15.6 ms 的分辨率）——空闲时没有定时唤醒。
+据此 Windows 保持登录自启：常驻代价为约 14 MB 工作集（其中可换出部分系统内存紧张时会被修剪），没有可测的 CPU / 唤醒开销。
+
 ### 本地 IPC
 
 原生 App（C / C++ / C# / Dart / Kotlin JVM / Swift / Python / Node / Rust）默认连接本地 IPC 端点，不经 TCP；

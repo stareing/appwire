@@ -139,7 +139,9 @@ impl HostOps for SystemHost {
             },
             ..Default::default()
         };
-        let out = crate::install_service(&args, exe.to_path_buf()).await?;
+        // 重新安装保持原来的启动方式（按需启动 / 登录自启）。
+        let on_demand = service::installed()? && service::on_demand_installed()?;
+        let out = crate::install_service(&args, exe.to_path_buf(), on_demand).await?;
         Ok(ServiceOutcome { location: out.location, messages: out.messages, registry: out.registry })
     }
 

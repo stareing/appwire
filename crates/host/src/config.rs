@@ -153,6 +153,10 @@ pub struct LifecycleSection {
     /// 按名拨入的通道在最后一次调用后保持的时间（毫秒，spec/naming.md 7.2），默认 15000。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_grace_ms: Option<u64>,
+    /// 按需启动（spec/protocol.md 1.9）时空闲多久退出（毫秒），默认 600000；0 = 不退出。
+    /// 只在监听套接字由 systemd / launchd 交来时生效（否则退出后没有谁再启动 Host）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_exit_ms: Option<u64>,
 }
 
 /// 工具列表（spec/hub-api.md 3.7）。
@@ -288,6 +292,7 @@ pub struct Overrides {
     pub log_file: Option<bool>,
     pub name_service: Option<bool>,
     pub channel_grace_ms: Option<u64>,
+    pub idle_exit_ms: Option<u64>,
 }
 
 impl FileConfig {
@@ -322,6 +327,7 @@ impl FileConfig {
         set(&mut self.lifecycle.waker, &o.waker);
         set(&mut self.lifecycle.name_service, &o.name_service);
         set(&mut self.lifecycle.channel_grace_ms, &o.channel_grace_ms);
+        set(&mut self.lifecycle.idle_exit_ms, &o.idle_exit_ms);
         set(&mut self.tools.exposure, &o.tool_exposure);
         set(&mut self.tools.threshold, &o.tool_exposure_threshold);
         set(&mut self.tools.output_validation, &o.output_validation);
@@ -386,6 +392,8 @@ pub struct Settings {
     /// 按名寻址（Linux：D-Bus 会话总线连接器）。
     pub name_service: bool,
     pub channel_grace_ms: u64,
+    /// 按需启动时的空闲退出时间（毫秒）；0 = 不退出。
+    pub idle_exit_ms: u64,
     pub tool_exposure: ToolExposure,
     pub tool_exposure_threshold: usize,
     pub limits: LimitPolicy,
@@ -485,6 +493,7 @@ impl Settings {
                 .lifecycle
                 .channel_grace_ms
                 .unwrap_or(app_mcp_hub::DEFAULT_CHANNEL_GRACE.as_millis() as u64),
+            idle_exit_ms: c.lifecycle.idle_exit_ms.unwrap_or(crate::activation::DEFAULT_IDLE_EXIT_MS),
             tool_exposure: c.tools.exposure.unwrap_or_default(),
             tool_exposure_threshold: c
                 .tools
@@ -529,6 +538,19 @@ mod tests {
         let s = Settings::resolve(&file, &Overrides::default(), &home()).unwrap();
         assert!(s.name_service);
         assert_eq!(s.channel_grace_ms, 2000);
+    }
+
+    #[test]
+    fn idle_exit_from_file_and_override() {
+        let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home()).unwrap();
+        assert_eq!(s.idle_exit_ms, crate::activation::DEFAULT_IDLE_EXIT_MS);
+        let mut file: FileConfig = serde_json::from_str(r#"{"lifecycle":{"idleExitMs":0}}"#).unwrap();
+        assert_eq!(Settings::resolve(&file, &Overrides::default(), &home()).unwrap().idle_exit_ms, 0);
+        let o = Overrides { idle_exit_ms: Some(1500), ..Default::default() };
+        assert_eq!(Settings::resolve(&file, &o, &home()).unwrap().idle_exit_ms, 1500);
+        // service install 持久化覆盖项
+        file.apply(&o).unwrap();
+        assert!(serde_json::to_string(&file).unwrap().contains(r#""idleExitMs":1500"#));
     }
 
     #[test]

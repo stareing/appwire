@@ -308,6 +308,65 @@ pub mod launchd {
 "#
         ))
     }
+
+    /// 一次 `launch_activate_socket` 最多接受的 fd 数（一个 `SockPathName` / `SockServiceName` 通常只有一到两个；超出视为异常，G-07）。
+    pub const MAX_ACTIVATED_FDS: usize = 16;
+
+    /// `launch_activate_socket(3)` 的错误码：plist 的 `Sockets` 中没有该键。
+    pub const ACTIVATE_ENOENT: i32 = 2;
+    /// `launch_activate_socket(3)` 的错误码：本进程不是由 launchd 启动的。
+    pub const ACTIVATE_ESRCH: i32 = 3;
+
+    /// [`activate_socket`] 的失败。
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum ActivateSocketError {
+        /// `launch_activate_socket` 返回的错误码（[`ACTIVATE_ENOENT`]、[`ACTIVATE_ESRCH`]、`EALREADY` 等）。
+        Os(i32),
+        /// 交来的 fd 数为 0 或超过 [`MAX_ACTIVATED_FDS`]。
+        Count(usize),
+        /// 键含 NUL。
+        InvalidKey,
+    }
+
+    /// 取得 launchd 为本作业 `Sockets` 中键 `key` 持有的监听套接字（App 侧 `names/launchd.rs` 与 Host 按需启动共用，
+    /// 是 `launch_activate_socket` 的唯一调用处，G-06）。
+    ///
+    /// @side-effect 每个键每个进程只能取一次（再取为 `EALREADY`）：调用方负责保存或关闭返回的 fd。
+    #[cfg(target_os = "macos")]
+    pub fn activate_socket(key: &str) -> Result<Vec<std::os::fd::OwnedFd>, ActivateSocketError> {
+        use std::ffi::{CString, c_char, c_int};
+        use std::os::fd::FromRawFd;
+
+        unsafe extern "C" {
+            /// `<launch.h>`：`int launch_activate_socket(const char *name, int **fds, size_t *cnt)`；成功返回 0，`*fds` 由调用方 `free`。
+            fn launch_activate_socket(name: *const c_char, fds: *mut *mut c_int, cnt: *mut usize) -> c_int;
+        }
+
+        let name = CString::new(key).map_err(|_| ActivateSocketError::InvalidKey)?;
+        let mut fds: *mut c_int = std::ptr::null_mut();
+        let mut cnt: usize = 0;
+        // SAFETY: name 是有效的 C 字符串；fds / cnt 指向本函数的局部变量。
+        let rc = unsafe { launch_activate_socket(name.as_ptr(), &mut fds, &mut cnt) };
+        if rc != 0 {
+            return Err(ActivateSocketError::Os(rc));
+        }
+        if fds.is_null() {
+            return Err(ActivateSocketError::Count(0));
+        }
+        let out = if cnt == 0 || cnt > MAX_ACTIVATED_FDS {
+            Err(ActivateSocketError::Count(cnt))
+        } else {
+            // SAFETY: 成功时 fds 指向 cnt 个 int（launch(3)），在 free 之前有效；cnt 已限定在 MAX_ACTIVATED_FDS 内；
+            // 每个 fd 由 launchd 交给本进程、此前没有所有者，这里取得唯一所有权。
+            Ok(unsafe { std::slice::from_raw_parts(fds, cnt) }
+                .iter()
+                .map(|&fd| unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+                .collect())
+        };
+        // SAFETY: fds 由 launch_activate_socket 以 malloc 分配，调用方负责 free（launch(3)），之后不再使用。
+        unsafe { libc::free(fds.cast()) };
+        out
+    }
 }
 
 /// App 登记文件（spec/naming.md 5.3）：桌面平台共用的 JSON，由安装程序 / `app-mcp-host app install` / SDK 自报写入，

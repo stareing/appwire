@@ -1,13 +1,21 @@
 //! 当前用户的登录自启服务：Linux systemd `--user`、macOS launchd LaunchAgent、Windows 当前用户 `Run` 项。
 //!
-//! 服务文件内容由纯函数生成（[`systemd_unit`]、[`launchd_plist`]、[`windows_run_command`]），
+//! 服务文件内容由纯函数生成（[`systemd_unit`]、[`systemd_socket_unit`]、[`launchd_plist`]、[`windows_run_command`]），
 //! 启动命令为 `<可执行文件绝对路径> serve --home <配置目录>`；其余设置都在 `<配置目录>/config.json`。
 //! 所有操作都不需要管理员权限。
+//!
+//! 两种方式（[`ServiceSpec::on_demand`]）：
+//! - 登录自启（缺省）：登录即运行，常驻。
+//! - 按需启动（`service install --on-demand`，spec/protocol.md 1.9）：Linux 写 `app-mcp-host.socket`（HTTP 监听与本地 IPC
+//!   由 systemd 持有）+ 不随登录启动的 `app-mcp-host.service`；macOS plist 带 `Sockets`、不设 `RunAtLoad` / `KeepAlive`。
+//!   首个连接时系统启动 Host，Host 空闲 `lifecycle.idleExitMs` 后退出。Windows 没有对等机制，不支持。
 
 use std::path::{Path, PathBuf};
 
 /// systemd unit 名。
 pub const SYSTEMD_UNIT: &str = "app-mcp-host.service";
+/// systemd 套接字单元名（按需启动；与服务同名，激活 [`SYSTEMD_UNIT`]）。
+pub const SYSTEMD_SOCKET_UNIT: &str = "app-mcp-host.socket";
 /// launchd Label（plist 文件名为 `<Label>.plist`）。
 pub const LAUNCHD_LABEL: &str = "dev.app-mcp.host";
 /// Windows `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的值名。
@@ -24,6 +32,39 @@ pub struct ServiceSpec {
     pub exe: PathBuf,
     /// 配置目录绝对路径。
     pub home: PathBuf,
+    /// 按需启动时由服务管理器持有的监听套接字；`None` = 登录自启。
+    pub on_demand: Option<OnDemandSockets>,
+}
+
+/// 按需启动时服务管理器代为监听的套接字（spec/protocol.md 1.9）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OnDemandSockets {
+    /// HTTP 监听（`/app`、`/mcp`、`/healthz`），必须是 `IP:端口`。
+    pub listen: std::net::SocketAddr,
+    /// 本地 IPC 套接字的绝对路径；`None` = 不开 IPC。
+    pub ipc: Option<PathBuf>,
+}
+
+impl OnDemandSockets {
+    /// 由 Host 设置得出：`listen` 必须是 `IP:端口`；IPC 端点必须是 `unix:<绝对路径>`。
+    ///
+    /// @error 监听地址是主机名或端口 0、IPC 端点是命名管道（Windows 没有按需启动）。
+    pub fn from_settings(listen: &str, ipc_endpoint: Option<&str>) -> anyhow::Result<Self> {
+        let listen: std::net::SocketAddr = listen
+            .parse()
+            .map_err(|_| anyhow::anyhow!("按需启动需要 IP:端口 形式的监听地址（服务管理器代为监听），而不是 {listen}"))?;
+        // @why systemd 忽略 `ListenStream=…:0`（不绑定），launchd 亦无随机端口语义：客户端需要固定地址才能连接即启动。
+        if listen.port() == 0 {
+            anyhow::bail!("按需启动需要固定端口（服务管理器代为监听，客户端连接即启动），不能用端口 0");
+        }
+        let ipc = match ipc_endpoint.map(app_mcp_protocol::Endpoint::parse) {
+            None => None,
+            Some(Ok(app_mcp_protocol::Endpoint::Unix(path))) if path.is_absolute() => Some(path),
+            Some(Ok(other)) => anyhow::bail!("按需启动只支持 unix:<绝对路径> 形式的本地 IPC 端点，而不是 {other}"),
+            Some(Err(e)) => anyhow::bail!("本地 IPC 端点不合法：{e}"),
+        };
+        Ok(Self { listen, ipc })
+    }
 }
 
 impl ServiceSpec {
@@ -73,10 +114,17 @@ pub fn systemd_unit(spec: &ServiceSpec) -> String {
         .map(|a| systemd_quote(a))
         .collect::<Vec<_>>()
         .join(" ");
+    // 按需启动：由套接字单元激活，不随登录启动（没有 [Install]）；空闲退出码 0，Restart=on-failure 不会重启。
+    let (unit_extra, install) = if spec.on_demand.is_some() {
+        (format!("Requires={SYSTEMD_SOCKET_UNIT}\nAfter={SYSTEMD_SOCKET_UNIT}\n"), String::new())
+    } else {
+        (String::new(), "\n[Install]\nWantedBy=default.target\n".to_owned())
+    };
     format!(
         "# 由 app-mcp-host service install 生成；设置见 {home}/config.json。\n\
          [Unit]\n\
          Description=app-mcp Host（本机 App 的 MCP 服务）\n\
+         {unit_extra}\
          StartLimitIntervalSec=60\n\
          StartLimitBurst=5\n\
          \n\
@@ -85,11 +133,49 @@ pub fn systemd_unit(spec: &ServiceSpec) -> String {
          ExecStart={exec}\n\
          Restart=on-failure\n\
          RestartSec=2\n\
-         \n\
-         [Install]\n\
-         WantedBy=default.target\n",
+         {install}",
         home = spec.home.display(),
     )
+}
+
+/// systemd 路径值的转义：`%` → `%%`（说明符）；路径中的空白与控制字符不能出现在 `ListenStream=` 中，显式失败。
+fn systemd_path(p: &Path) -> anyhow::Result<String> {
+    let s = p.to_str().ok_or_else(|| anyhow::anyhow!("路径不是 UTF-8：{}", p.display()))?;
+    if s.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        anyhow::bail!("套接字路径含空白或控制字符，无法写入 systemd 单元：{s:?}");
+    }
+    Ok(s.replace('%', "%%"))
+}
+
+/// `~/.config/systemd/user/app-mcp-host.socket` 的内容（按需启动）。
+///
+/// 一个单元里放 HTTP 与 IPC 两个 `ListenStream`：`FileDescriptorName=` 对单元内所有 fd 生效，Host 按地址族区分
+/// （[`crate::activation`]）。IPC 套接字 `0600`、目录 `0700`（与 Host 自己绑定时相同，spec/protocol.md 1.4）。
+///
+/// @error IPC 路径不能写入单元（非 UTF-8、含空白）。
+pub fn systemd_socket_unit(spec: &ServiceSpec, sockets: &OnDemandSockets) -> anyhow::Result<String> {
+    let ipc = match &sockets.ipc {
+        Some(p) => format!("ListenStream={}\nSocketMode=0600\nDirectoryMode=0700\n", systemd_path(p)?),
+        None => String::new(),
+    };
+    Ok(format!(
+        "# 由 app-mcp-host service install --on-demand 生成；设置见 {home}/config.json。\n\
+         # 首个连接时 systemd 启动 {SYSTEMD_UNIT}，Host 空闲后退出（lifecycle.idleExitMs）。\n\
+         [Unit]\n\
+         Description=app-mcp Host 按需启动套接字\n\
+         \n\
+         [Socket]\n\
+         ListenStream={listen}\n\
+         {ipc}\
+         FileDescriptorName={name}\n\
+         Service={SYSTEMD_UNIT}\n\
+         \n\
+         [Install]\n\
+         WantedBy=sockets.target\n",
+        home = spec.home.display(),
+        listen = sockets.listen,
+        name = crate::activation::SYSTEMD_FD_NAME,
+    ))
 }
 
 fn xml_escape(s: &str) -> String {
@@ -100,9 +186,50 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// 按需启动的 `Sockets` 字典（键 [`crate::activation::LAUNCHD_HTTP_KEY`] / [`crate::activation::LAUNCHD_IPC_KEY`]）。
+fn launchd_sockets(sockets: &OnDemandSockets) -> String {
+    let family = if sockets.listen.is_ipv4() { "IPv4" } else { "IPv6" };
+    let ipc = sockets.ipc.as_ref().map_or_else(String::new, |p| {
+        format!(
+            "    <key>{key}</key>\n\
+             \x20   <dict>\n\
+             \x20     <key>SockPathName</key>\n\
+             \x20     <string>{path}</string>\n\
+             \x20     <key>SockPathMode</key>\n\
+             \x20     <integer>{mode}</integer>\n\
+             \x20   </dict>\n",
+            key = crate::activation::LAUNCHD_IPC_KEY,
+            path = xml_escape(&p.to_string_lossy()),
+            mode = app_mcp_protocol::naming::launchd::SOCK_PATH_MODE,
+        )
+    });
+    format!(
+        "\x20 <key>Sockets</key>\n\
+         \x20 <dict>\n\
+         \x20   <key>{key}</key>\n\
+         \x20   <dict>\n\
+         \x20     <key>SockNodeName</key>\n\
+         \x20     <string>{ip}</string>\n\
+         \x20     <key>SockServiceName</key>\n\
+         \x20     <string>{port}</string>\n\
+         \x20     <key>SockType</key>\n\
+         \x20     <string>stream</string>\n\
+         \x20     <key>SockFamily</key>\n\
+         \x20     <string>{family}</string>\n\
+         \x20   </dict>\n\
+         {ipc}\
+         \x20 </dict>\n",
+        key = crate::activation::LAUNCHD_HTTP_KEY,
+        ip = sockets.listen.ip(),
+        port = sockets.listen.port(),
+    )
+}
+
 /// `~/Library/LaunchAgents/dev.app-mcp.host.plist` 的内容。
 ///
-/// `KeepAlive.SuccessfulExit = false`：异常退出时重启；正常退出（包括“已有实例在运行”退出码 0）不重启。
+/// 登录自启：`RunAtLoad`，`KeepAlive.SuccessfulExit = false`：异常退出时重启；正常退出（包括“已有实例在运行”退出码 0）不重启。
+/// 按需启动：`Sockets`（launchd 代为监听，首个连接时启动），不设 `RunAtLoad` / `KeepAlive`（`SuccessfulExit` 隐含
+/// `RunAtLoad`，launchd.plist(5)）；异常退出后由下一个连接再次启动。
 /// stdout / stderr 丢弃：日志已写入 `<home>/logs/`（按大小轮转），避免 launchd 日志无限增长。
 pub fn launchd_plist(spec: &ServiceSpec) -> String {
     let args = spec
@@ -110,6 +237,17 @@ pub fn launchd_plist(spec: &ServiceSpec) -> String {
         .iter()
         .map(|a| format!("    <string>{}</string>\n", xml_escape(a)))
         .collect::<String>();
+    let start = match &spec.on_demand {
+        Some(sockets) => launchd_sockets(sockets),
+        None => "\x20 <key>RunAtLoad</key>\n\
+                 \x20 <true/>\n\
+                 \x20 <key>KeepAlive</key>\n\
+                 \x20 <dict>\n\
+                 \x20   <key>SuccessfulExit</key>\n\
+                 \x20   <false/>\n\
+                 \x20 </dict>\n"
+            .to_owned(),
+    };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
@@ -121,13 +259,7 @@ pub fn launchd_plist(spec: &ServiceSpec) -> String {
          \x20 <array>\n\
          {args}\
          \x20 </array>\n\
-         \x20 <key>RunAtLoad</key>\n\
-         \x20 <true/>\n\
-         \x20 <key>KeepAlive</key>\n\
-         \x20 <dict>\n\
-         \x20   <key>SuccessfulExit</key>\n\
-         \x20   <false/>\n\
-         \x20 </dict>\n\
+         {start}\
          \x20 <key>ThrottleInterval</key>\n\
          \x20 <integer>5</integer>\n\
          \x20 <key>ProcessType</key>\n\
@@ -235,6 +367,11 @@ pub fn installed() -> anyhow::Result<bool> {
     platform::installed()
 }
 
+/// 已安装的是否为按需启动方式（`setup` 重新安装时保持原方式）。
+pub fn on_demand_installed() -> anyhow::Result<bool> {
+    platform::on_demand_installed()
+}
+
 /// 由服务管理器启动（Windows：直接以无窗口方式启动后台进程）。
 pub fn start(spec: &ServiceSpec) -> anyhow::Result<()> {
     platform::start(spec)
@@ -277,9 +414,21 @@ fn run(program: &str, args: &[&str]) -> anyhow::Result<String> {
 mod platform {
     use super::*;
 
-    fn unit_path() -> anyhow::Result<PathBuf> {
+    fn unit_dir() -> anyhow::Result<PathBuf> {
         let base = dirs::config_dir().ok_or_else(|| anyhow::anyhow!("无法确定 ~/.config 目录"))?;
-        Ok(base.join("systemd").join("user").join(SYSTEMD_UNIT))
+        Ok(base.join("systemd").join("user"))
+    }
+
+    fn unit_path() -> anyhow::Result<PathBuf> {
+        Ok(unit_dir()?.join(SYSTEMD_UNIT))
+    }
+
+    fn socket_path() -> anyhow::Result<PathBuf> {
+        Ok(unit_dir()?.join(SYSTEMD_SOCKET_UNIT))
+    }
+
+    fn write(path: &Path, text: &str) -> anyhow::Result<()> {
+        std::fs::write(path, text).map_err(|e| anyhow::anyhow!("写入 {} 失败：{e}", path.display()))
     }
 
     fn systemctl(args: &[&str]) -> anyhow::Result<String> {
@@ -319,45 +468,79 @@ mod platform {
         Ok(unit_path()?.exists())
     }
 
+    pub fn on_demand_installed() -> anyhow::Result<bool> {
+        Ok(socket_path()?.exists())
+    }
+
     pub fn install(spec: &ServiceSpec) -> anyhow::Result<String> {
         require()?;
         let path = unit_path()?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        let socket = socket_path()?;
+        std::fs::create_dir_all(unit_dir()?)?;
+        match &spec.on_demand {
+            Some(sockets) => {
+                let socket_text = systemd_socket_unit(spec, sockets)?;
+                write(&path, &systemd_unit(spec))?;
+                write(&socket, &socket_text)?;
+                systemctl(&["daemon-reload"])?;
+                // 原登录自启方式的实例占着端口 / 套接字：先停下并取消随登录启动，监听交给 systemd。
+                let _ = systemctl(&["disable", SYSTEMD_UNIT]);
+                let _ = systemctl(&["stop", SYSTEMD_UNIT]);
+                systemctl(&["enable", SYSTEMD_SOCKET_UNIT])?;
+                // 重新安装时让新的监听地址生效。
+                systemctl(&["restart", SYSTEMD_SOCKET_UNIT])?;
+                Ok(format!("{}、{}", socket.display(), path.display()))
+            }
+            None => {
+                if socket.exists() {
+                    let _ = systemctl(&["disable", "--now", SYSTEMD_SOCKET_UNIT]);
+                    std::fs::remove_file(&socket)
+                        .map_err(|e| anyhow::anyhow!("删除 {} 失败：{e}", socket.display()))?;
+                }
+                write(&path, &systemd_unit(spec))?;
+                systemctl(&["daemon-reload"])?;
+                systemctl(&["enable", SYSTEMD_UNIT])?;
+                // 重新安装时让新的 unit 生效。
+                systemctl(&["restart", SYSTEMD_UNIT])?;
+                Ok(path.display().to_string())
+            }
         }
-        std::fs::write(&path, systemd_unit(spec))
-            .map_err(|e| anyhow::anyhow!("写入 {} 失败：{e}", path.display()))?;
-        systemctl(&["daemon-reload"])?;
-        systemctl(&["enable", SYSTEMD_UNIT])?;
-        // 重新安装时让新的 unit 生效。
-        systemctl(&["restart", SYSTEMD_UNIT])?;
-        Ok(path.display().to_string())
     }
 
     pub fn uninstall() -> anyhow::Result<bool> {
-        let path = unit_path()?;
-        if !path.exists() {
+        let files = [socket_path()?, unit_path()?];
+        if !files.iter().any(|p| p.exists()) {
             return Ok(false);
         }
-        if available().is_ok() {
+        let manager = available().is_ok();
+        if manager {
+            // 先停套接字：否则停服务后新连接会再次激活它。
+            let _ = systemctl(&["disable", "--now", SYSTEMD_SOCKET_UNIT]);
             let _ = systemctl(&["disable", "--now", SYSTEMD_UNIT]);
         }
-        std::fs::remove_file(&path)
-            .map_err(|e| anyhow::anyhow!("删除 {} 失败：{e}", path.display()))?;
-        if available().is_ok() {
+        for f in files.iter().filter(|p| p.exists()) {
+            std::fs::remove_file(f).map_err(|e| anyhow::anyhow!("删除 {} 失败：{e}", f.display()))?;
+        }
+        if manager {
             let _ = systemctl(&["daemon-reload"]);
-            let _ = systemctl(&["reset-failed", SYSTEMD_UNIT]);
+            let _ = systemctl(&["reset-failed", SYSTEMD_SOCKET_UNIT, SYSTEMD_UNIT]);
         }
         Ok(true)
     }
 
+    /// 按需启动：启动套接字单元（之后的第一个连接启动 Host）；登录自启：启动服务。
     pub fn start(_spec: &ServiceSpec) -> anyhow::Result<()> {
         require()?;
-        systemctl(&["start", SYSTEMD_UNIT]).map(|_| ())
+        let unit = if on_demand_installed()? { SYSTEMD_SOCKET_UNIT } else { SYSTEMD_UNIT };
+        systemctl(&["start", unit]).map(|_| ())
     }
 
+    /// 按需启动时连同套接字单元一起停（否则下一个连接会再次启动 Host）。
     pub fn stop() -> anyhow::Result<()> {
         require()?;
+        if on_demand_installed()? {
+            systemctl(&["stop", SYSTEMD_SOCKET_UNIT])?;
+        }
         systemctl(&["stop", SYSTEMD_UNIT]).map(|_| ())
     }
 
@@ -373,6 +556,13 @@ mod platform {
         };
         let enabled = out(&["is-enabled", SYSTEMD_UNIT])?;
         let active = out(&["is-active", SYSTEMD_UNIT])?;
+        if on_demand_installed().unwrap_or(false) {
+            let socket_enabled = out(&["is-enabled", SYSTEMD_SOCKET_UNIT])?;
+            let socket_active = out(&["is-active", SYSTEMD_SOCKET_UNIT])?;
+            return Some(format!(
+                "systemd 按需启动：{SYSTEMD_SOCKET_UNIT} {socket_enabled}，{socket_active}；{SYSTEMD_UNIT} {active}（空闲时未运行属正常）"
+            ));
+        }
         Some(format!("systemd：{enabled}，{active}"))
     }
 }
@@ -411,10 +601,23 @@ mod platform {
         Ok(plist_path()?.exists())
     }
 
+    pub fn on_demand_installed() -> anyhow::Result<bool> {
+        Ok(std::fs::read_to_string(plist_path()?).is_ok_and(|t| t.contains("<key>Sockets</key>")))
+    }
+
     pub fn install(spec: &ServiceSpec) -> anyhow::Result<String> {
         let path = plist_path()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+        // launchd 只创建套接字文件、不创建目录：按 Host 自己绑定时的要求建 0700 目录（spec/protocol.md 1.4）。
+        if let Some(dir) = spec.on_demand.as_ref().and_then(|s| s.ipc.as_deref()).and_then(Path::parent) {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .map_err(|e| anyhow::anyhow!("创建 {} 失败：{e}", dir.display()))?;
         }
         if loaded() {
             let _ = run("launchctl", &["bootout", &target()?]);
@@ -444,10 +647,18 @@ mod platform {
             let p = plist_path()?.display().to_string();
             run("launchctl", &["bootstrap", &domain()?, &p])?;
         }
+        if on_demand_installed()? {
+            // 按需启动：载入即由 launchd 代为监听，第一个连接启动 Host。
+            return Ok(());
+        }
         run("launchctl", &["kickstart", &target()?]).map(|_| ())
     }
 
     pub fn stop() -> anyhow::Result<()> {
+        if on_demand_installed()? {
+            // 按需启动：卸载作业（launchd 关闭代为监听的套接字），否则下一个连接会再次启动 Host；`start` 重新 bootstrap。
+            return run("launchctl", &["bootout", &target()?]).map(|_| ());
+        }
         // SIGTERM → serve 正常退出（退出码 0），KeepAlive.SuccessfulExit=false 不会重启。
         run("launchctl", &["kill", "SIGTERM", &target()?]).map(|_| ())
     }
@@ -506,7 +717,16 @@ mod platform {
         Ok(read_value().is_some())
     }
 
+    pub fn on_demand_installed() -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
     pub fn install(spec: &ServiceSpec) -> anyhow::Result<String> {
+        if spec.on_demand.is_some() {
+            anyhow::bail!(
+                "Windows 没有与 systemd / launchd 套接字激活对等的机制，不支持按需启动；请去掉 --on-demand 使用登录自启（常驻成本见 crates/host/README.md「按需启动」）"
+            );
+        }
         if !spec.exe.exists() {
             anyhow::bail!(
                 "找不到 {}：Windows 常驻进程使用无控制台窗口的 {WINDOWS_BACKGROUND_EXE}（与 app-mcp-host.exe 一同构建 / 发布，放在同一目录）。",
@@ -607,6 +827,7 @@ mod tests {
         ServiceSpec {
             exe: PathBuf::from("/opt/app mcp/bin/app-mcp-host"),
             home: PathBuf::from("/home/u/.app-mcp"),
+            on_demand: None,
         }
     }
 
@@ -630,6 +851,131 @@ WantedBy=default.target
         assert_eq!(systemd_unit(&unix_spec()), expected);
     }
 
+
+    fn on_demand(ipc: Option<&str>) -> OnDemandSockets {
+        OnDemandSockets { listen: "127.0.0.1:7717".parse().unwrap(), ipc: ipc.map(PathBuf::from) }
+    }
+
+    #[test]
+    fn systemd_on_demand_units_snapshot() {
+        let spec = ServiceSpec { on_demand: Some(on_demand(Some("/run/user/1000/app-mcp/hub.sock"))), ..unix_spec() };
+        let expected = r#"# 由 app-mcp-host service install 生成；设置见 /home/u/.app-mcp/config.json。
+[Unit]
+Description=app-mcp Host（本机 App 的 MCP 服务）
+Requires=app-mcp-host.socket
+After=app-mcp-host.socket
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart="/opt/app mcp/bin/app-mcp-host" "serve" "--home" "/home/u/.app-mcp"
+Restart=on-failure
+RestartSec=2
+"#;
+        assert_eq!(systemd_unit(&spec), expected, "按需启动的服务不随登录启动（没有 [Install]）");
+        let expected = r#"# 由 app-mcp-host service install --on-demand 生成；设置见 /home/u/.app-mcp/config.json。
+# 首个连接时 systemd 启动 app-mcp-host.service，Host 空闲后退出（lifecycle.idleExitMs）。
+[Unit]
+Description=app-mcp Host 按需启动套接字
+
+[Socket]
+ListenStream=127.0.0.1:7717
+ListenStream=/run/user/1000/app-mcp/hub.sock
+SocketMode=0600
+DirectoryMode=0700
+FileDescriptorName=app-mcp-host
+Service=app-mcp-host.service
+
+[Install]
+WantedBy=sockets.target
+"#;
+        assert_eq!(systemd_socket_unit(&spec, spec.on_demand.as_ref().unwrap()).unwrap(), expected);
+
+        let no_ipc = on_demand(None);
+        let text = systemd_socket_unit(&spec, &no_ipc).unwrap();
+        assert_eq!(text.matches("ListenStream=").count(), 1);
+        assert!(!text.contains("SocketMode"));
+        let v6 = OnDemandSockets { listen: "[::1]:7737".parse().unwrap(), ipc: Some(PathBuf::from("/run/a%b/hub.sock")) };
+        let text = systemd_socket_unit(&spec, &v6).unwrap();
+        assert!(text.contains("ListenStream=[::1]:7737\n"), "{text}");
+        assert!(text.contains("ListenStream=/run/a%%b/hub.sock\n"), "% 是 systemd 说明符：{text}");
+        let spaced = OnDemandSockets { ipc: Some(PathBuf::from("/run/a b/hub.sock")), ..on_demand(None) };
+        assert!(systemd_socket_unit(&spec, &spaced).is_err(), "ListenStream 不能含空白");
+    }
+
+    #[test]
+    fn launchd_on_demand_plist_snapshot() {
+        let spec = ServiceSpec {
+            exe: PathBuf::from("/Users/u/.cargo/bin/app-mcp-host"),
+            home: PathBuf::from("/Users/u/.app-mcp"),
+            on_demand: Some(on_demand(Some("/Users/u/.app-mcp/run/hub.sock"))),
+        };
+        let expected = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.app-mcp.host</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/u/.cargo/bin/app-mcp-host</string>
+    <string>serve</string>
+    <string>--home</string>
+    <string>/Users/u/.app-mcp</string>
+  </array>
+  <key>Sockets</key>
+  <dict>
+    <key>Http</key>
+    <dict>
+      <key>SockNodeName</key>
+      <string>127.0.0.1</string>
+      <key>SockServiceName</key>
+      <string>7717</string>
+      <key>SockType</key>
+      <string>stream</string>
+      <key>SockFamily</key>
+      <string>IPv4</string>
+    </dict>
+    <key>Ipc</key>
+    <dict>
+      <key>SockPathName</key>
+      <string>/Users/u/.app-mcp/run/hub.sock</string>
+      <key>SockPathMode</key>
+      <integer>384</integer>
+    </dict>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/dev/null</string>
+  <key>StandardErrorPath</key>
+  <string>/dev/null</string>
+</dict>
+</plist>
+"#;
+        let text = launchd_plist(&spec);
+        assert_eq!(text, expected);
+        assert!(!text.contains("RunAtLoad") && !text.contains("KeepAlive"), "按需启动不能隐含 RunAtLoad");
+        let v6 = ServiceSpec { on_demand: Some(OnDemandSockets { listen: "[::1]:7737".parse().unwrap(), ipc: None }), ..spec };
+        let text = launchd_plist(&v6);
+        assert!(text.contains("<string>::1</string>") && text.contains("<string>IPv6</string>"), "{text}");
+        assert!(!text.contains("<key>Ipc</key>"));
+    }
+
+    #[test]
+    fn on_demand_sockets_from_settings() {
+        let s = OnDemandSockets::from_settings("127.0.0.1:7717", Some("unix:/run/user/1/app-mcp/hub.sock")).unwrap();
+        assert_eq!(s, on_demand(Some("/run/user/1/app-mcp/hub.sock")));
+        assert_eq!(OnDemandSockets::from_settings("127.0.0.1:7717", None).unwrap().ipc, None);
+        assert!(OnDemandSockets::from_settings("localhost:7717", None).is_err(), "服务管理器需要 IP");
+        assert!(OnDemandSockets::from_settings("127.0.0.1:0", None).is_err(), "systemd 不绑定端口 0");
+        assert!(OnDemandSockets::from_settings("127.0.0.1:7717", Some(r"pipe:\\.\pipe\x")).is_err());
+        assert!(OnDemandSockets::from_settings("127.0.0.1:7717", Some("ws://127.0.0.1:1")).is_err());
+    }
+
     #[test]
     fn systemd_quoting() {
         assert_eq!(systemd_quote(r#"a"b\c%d$e"#), r#""a\"b\\c%%d$$e""#);
@@ -640,6 +986,7 @@ WantedBy=default.target
         let spec = ServiceSpec {
             exe: PathBuf::from("/Users/u/.cargo/bin/app-mcp-host"),
             home: PathBuf::from("/Users/u/.app-mcp & co"),
+            on_demand: None,
         };
         let expected = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -680,6 +1027,7 @@ WantedBy=default.target
         let spec = ServiceSpec {
             exe: PathBuf::from(r"C:\Program Files\app-mcp\app-mcp-hostw.exe"),
             home: PathBuf::from(r"C:\Users\Zhang San\.app-mcp"),
+            on_demand: None,
         };
         assert_eq!(
             windows_run_command(&spec),
@@ -688,6 +1036,7 @@ WantedBy=default.target
         let spec = ServiceSpec {
             exe: PathBuf::from(r"D:\tools\app-mcp-hostw.exe"),
             home: PathBuf::from(r"D:\cfg\"),
+            on_demand: None,
         };
         assert_eq!(
             windows_run_command(&spec),

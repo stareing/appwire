@@ -16,6 +16,7 @@
 |---|---|---|
 | K1 | Host 只能从源码编译（`cargo build -p app-mcp-host`），仓库无发布流水线（无 `.github/workflows`） | `CLAUDE.md`「在 Claude Code 中使用」；仓库目录 |
 | K2 | 自启服务已有：`service install/uninstall/status/start/stop`（systemd --user / launchd / Windows 登录启动项），参数写 `<home>/config.json` | `crates/host/src/cli.rs` `ServiceAction` |
+| K2b | 按需启动（2026-10-02，第 4f 项 f / 4g b）：`service install --on-demand` 改为 systemd 套接字激活 / launchd `Sockets`，首个连接启动、空闲退出；`setup` 重装保持已装方式；Windows 保持登录自启（常驻约 14 MB 工作集、空闲 CPU 0） | spec/protocol.md 1.9、`crates/host/src/activation.rs` |
 | K3 | 令牌默认策略 `browser`：只有带 `Origin` 的请求需要令牌，本机非浏览器 MCP 客户端可不带；`all` 才需 `APP_MCP_TOKEN` | `crates/host/src/config.rs` `AuthMode` |
 | K4 | 原生 SDK 缺省端点 = `APP_MCP_ENDPOINT` → 平台 IPC → ws，已实测 Python App 零配置经 IPC 配对 | `TASKS.md` 第 3 项结果 |
 | K5 | 网页 SDK 依次尝试 7717 / 7737 / 7757；Chrome 本地网络访问拦截已能检测并提示 | `TASKS.md` 第 4、4b 项 |

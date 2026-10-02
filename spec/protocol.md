@@ -167,6 +167,39 @@ SDK 核心在处理握手结果之前核对（`app_mcp_protocol::identity::check
 - 实现：`app_mcp_core::Client::accept_channel`（核心）、`app_mcp_native::NativeConfig::register_name`（原生运行时登记与接受）、
   `app_mcp_hub::connector`（Hub 拨号）。
 
+### 1.9 Host 按需启动（第 4f 项 f / 4g b）
+
+Host 自身也可以"召之即来，挥之即去"：服务管理器代为持有 1.3 的 TCP 监听与 1.2 的本地 IPC 套接字，**第一个连接到来时**启动
+`app-mcp-host serve`，Host 空闲后退出。对 SDK 与 MCP 客户端完全透明——端点、帧、握手都不变，只是连接可能多等一次 Host 冷启动。
+
+- **安装**：`app-mcp-host service install --on-demand`（缺省仍为登录自启）。
+  - Linux：`~/.config/systemd/user/app-mcp-host.socket`（`ListenStream=<IP:端口>` 与 `ListenStream=<IPC 路径>`，`SocketMode=0600`、
+    `DirectoryMode=0700`，`WantedBy=sockets.target`）+ 不随登录启动的 `app-mcp-host.service`（`Requires=` 套接字单元，没有 `[Install]`）。
+  - macOS：LaunchAgent plist 的 `Sockets`（键 `Http`：`SockNodeName` / `SockServiceName` / `SockFamily`；键 `Ipc`：`SockPathName`、
+    `SockPathMode` 384 = `0600`），不设 `RunAtLoad` / `KeepAlive`（`KeepAlive.SuccessfulExit` 隐含 `RunAtLoad`）。IPC 目录由安装命令以 `0700` 创建。
+  - 监听地址必须是 `IP:端口` 且端口不为 0（systemd 不绑定 `…:0`；客户端需要固定地址才能"连接即启动"）。
+  - Windows：没有与套接字激活对等的机制（命名管道与 TCP 都不能交给系统代为监听并按需拉起普通进程），保持登录自启。
+- **取得套接字**：Linux 按 `sd_listen_fds(3)` 协议读 `LISTEN_PID`（必须等于本进程，否则视为给别的进程的变量而忽略）/ `LISTEN_FDS`
+  （fd 从 3 起，上限 8）/ `LISTEN_FDNAMES`（只用于日志），取到后清除这三个变量并给 fd 设 `FD_CLOEXEC`（上游 MCP 子进程不继承）；
+  macOS 以 `launch_activate_socket("Http" / "Ipc")` 取得（不是由 launchd 启动、或没有该键时视为未激活）。交来的 fd 按地址族分类：
+  IPv4 / IPv6 → HTTP 监听，Unix → 本地 IPC；必须是监听中的流套接字，同类多于一个、变量不是数字时**启动失败**。
+  IPC 套接字所在目录同样必须属于当前用户且组 / 其他用户不可写（1.4），每个连接仍核对对端用户。
+- **只服务交来的监听**：激活时 `listen` / `ipcEndpoint` 配置被交来的套接字取代；没有交来的那一个**不自己绑定**（自己绑定的端口在空闲退出后
+  无人监听，也不会触发再次启动）。Host 不删除交来的套接字文件（归服务管理器）。单实例锁与登记文件（1.5、1.7）照常：登记文件写交来的地址。
+  同一配置目录已有手动运行的 Host（锁被占用）时激活的实例**以失败退出**（以 0 退出会让服务管理器因队列中的连接立即再次启动它）。
+- **空闲退出**（`lifecycle.idleExitMs` / `--idle-exit-ms`，缺省 600000 = 10 分钟，0 = 不退出；只在套接字由服务管理器交来时生效）：
+  - 占用：已接受、尚未结束的连接（含其上的请求、SSE 流、升级后的 App WebSocket，TCP 与 IPC 都算），以及进行中的调用、进行中的唤醒、
+    在线 App 实例（含按名拨入的通道）、MCP 会话（`Mcp-Session-Id`）。连接进出由事件通知驱动，不轮询。
+  - 没有占用并持续 `idleExitMs` 后：关闭接受闸门（正在等待的 `accept` 被取消，连接留在内核队列中），等所有接受循环都离开 `accept`，
+    再复核一次占用与连接计数——期间漏进来的连接会被完整服务、闸门重新打开；确认无占用后正常停止（写出休眠记录、删除登记文件、退出码 0）。
+  - 空闲期间只有这一个一次性倒计时；倒计时到点时若仍有非连接类占用（如按名拨入的通道），重新倒计时（每 `idleExitMs` 至多一次唤醒）。
+  - 退出后排在监听套接字上的连接由服务管理器再次启动 Host 接受；休眠实例记录已持久化（spec/hub-api.md 3.5「持久化」），
+    重启后休眠 App 仍列出、可唤醒。租约（spec/lifecycle.md 4.2）随 Host 退出失效，只影响保温，不影响正确性。
+- `status` / `doctor` / `service install` 的就绪检查会连接监听地址，因此也会按需启动 Host（之后照常空闲退出）。
+- 实现：`crates/host/src/activation.rs`（取得套接字）、`crates/host/src/service.rs`（单元 / plist）、`app_mcp_hub::PreboundListeners` +
+  `Hub::start_with` / `Hub::wait_idle`（`crates/hub/src/activity.rs`：接受闸门与连接计数）、
+  `app_mcp_protocol::naming::launchd::activate_socket`（与 App 侧共用的唯一 `launch_activate_socket` FFI）。
+
 ## 2. 消息一览
 
 | 方向 | 方法 | 类型 | 参数 → 结果 |

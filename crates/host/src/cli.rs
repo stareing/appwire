@@ -186,7 +186,7 @@ pub struct AppTargetArgs {
 #[derive(Debug, Subcommand)]
 pub enum ServiceAction {
     /// 安装并启动。给出的 serve 参数写入配置文件（`<home>/config.json`）。
-    Install(Box<ServeArgs>),
+    Install(Box<ServiceInstallArgs>),
     /// 停止并卸载。
     Uninstall(HomeArg),
     /// 显示安装与运行状态。
@@ -466,6 +466,11 @@ pub struct ServeArgs {
     /// 不写日志文件（只写 stderr）。
     #[arg(long)]
     pub no_log_file: bool,
+
+    /// 按需启动（监听套接字由 systemd / launchd 交来，spec/protocol.md 1.9）时，没有连接、调用、在线 App 与 MCP 会话
+    /// 持续多久后退出（毫秒），默认 600000；0 = 不退出。普通 `serve` 不受影响。
+    #[arg(long, value_name = "MS")]
+    pub idle_exit_ms: Option<u64>,
 }
 
 impl ServeArgs {
@@ -475,8 +480,21 @@ impl ServeArgs {
         o.http_allow_remote = self.http_allow_remote.then_some(true);
         o.auth = self.auth;
         o.log_file = self.no_log_file.then_some(false);
+        o.idle_exit_ms = self.idle_exit_ms;
         Ok(o)
     }
+}
+
+/// `service install` 的参数。
+#[derive(Debug, Clone, Default, Args)]
+pub struct ServiceInstallArgs {
+    #[command(flatten)]
+    pub serve: ServeArgs,
+
+    /// 按需启动（spec/protocol.md 1.9）：Linux systemd 套接字激活、macOS launchd Sockets 代为监听，首个连接时启动 Host，
+    /// 空闲 `--idle-exit-ms`（默认 10 分钟）后退出。缺省为登录自启（常驻）。Windows 不支持。
+    #[arg(long)]
+    pub on_demand: bool,
 }
 
 #[derive(Debug, Clone, Default, Args)]
@@ -649,6 +667,11 @@ mod tests {
                 action: ServiceAction::Install(_)
             })
         ));
+        let cli = Cli::try_parse_from(["app-mcp-host", "service", "install", "--on-demand", "--idle-exit-ms", "60000"]).unwrap();
+        let Some(Command::Service { action: ServiceAction::Install(a) }) = cli.command else { panic!() };
+        assert!(a.on_demand);
+        assert_eq!(a.serve.overrides().unwrap().idle_exit_ms, Some(60_000));
+        assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--on-demand"]).is_err(), "--on-demand 只属于 service install");
         let cli =
             Cli::try_parse_from(["app-mcp-host", "service", "status", "--home", "/x"]).unwrap();
         let Some(Command::Service {

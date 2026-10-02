@@ -4,7 +4,8 @@
 //!   MCP Streamable HTTP（`/mcp`）与 `/healthz`，另有本地 IPC；多个 MCP 客户端各自建立 HTTP 会话，
 //!   共享同一组 App 连接（每个会话有独立的实例选择与总览附带状态）。单实例由 `<home>/run/hub.lock` 保证，
 //!   实际监听位置写在 `<home>/run/endpoints.json`；休眠实例记录写在 `<home>/state/dormant/`（重启后读回，仍可唤醒）。
-//! - `service install|uninstall|status|start|stop`：当前用户的登录自启服务（[`service`]）；`install` 先检查端口占用。
+//! - `service install|uninstall|status|start|stop`：当前用户的登录自启服务（[`service`]）；`install` 先检查端口占用；
+//!   `install --on-demand` 改为按需启动（systemd 套接字激活 / launchd `Sockets`，[`activation`]），空闲后退出。
 //! - `doctor`：逐项诊断（[`doctor`]）；`status`：一行状态摘要。
 //! - `setup` / `uninstall`：一条命令安装（二进制就位、自启、写入已装 Agent 的 MCP 配置、自检）与撤销（[`setup`]）。
 //! - `policy show|validate|reload|hide|deny|remove`：策略规则 `<home>/policy.json`（[`policy`]）。
@@ -12,6 +13,7 @@
 //!
 //! stdout 在 stdio 模式下专用于 MCP 协议，所有日志写 stderr（常驻模式另写 `<home>/logs/`）。
 
+pub mod activation;
 pub mod app_install;
 pub mod cli;
 pub mod config;
@@ -36,6 +38,7 @@ use app_mcp_protocol::ConnectionErrorCode;
 use app_mcp_protocol::registry::EndpointRegistry;
 use clap::Parser;
 
+use crate::activation::{ActivationError, Inherited};
 use crate::cli::{Cli, Command, HomeArg, LegacyArgs, ServeArgs, ServiceAction, SetupArgs, UninstallArgs};
 use crate::config::{AppHome, AuthMode, FileConfig, Overrides, Settings};
 use crate::probe::Probe;
@@ -46,6 +49,11 @@ pub const EXIT_NOT_RUNNING: u8 = 3;
 /// 程序入口（`app-mcp-host` 与 Windows 无窗口版 `app-mcp-hostw` 共用）。
 pub fn main_entry() -> ExitCode {
     let cli = Cli::parse();
+    // @why 先于创建运行时（其他线程）：取得交来的套接字时要清除 LISTEN_* 环境变量（activation::take_inherited 的约定）。
+    let inherited = match &cli.command {
+        Some(Command::Serve(_)) => activation::take_inherited(),
+        _ => Ok(None),
+    };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -56,7 +64,7 @@ pub fn main_entry() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(run(cli)) {
+    match runtime.block_on(run(cli, inherited)) {
         Ok(code) => code,
         Err(e) => {
             tracing::error!("{e:#}");
@@ -66,7 +74,7 @@ pub fn main_entry() -> ExitCode {
     }
 }
 
-async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+async fn run(cli: Cli, inherited: Result<Option<Inherited>, ActivationError>) -> anyhow::Result<ExitCode> {
     match cli.command {
         None => run_legacy(cli.legacy).await,
         Some(Command::Stdio(args)) => {
@@ -77,7 +85,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             })
             .await
         }
-        Some(Command::Serve(args)) => serve(args).await,
+        Some(Command::Serve(args)) => serve(args, inherited).await,
         Some(Command::Service { action }) => service_cmd(action).await,
         Some(Command::Doctor { home, json }) => {
             let home = AppHome::resolve(home.home.as_deref())?;
@@ -344,7 +352,7 @@ async fn occupied_error(s: &Settings, e: std::io::Error) -> anyhow::Error {
     )
 }
 
-async fn serve(args: ServeArgs) -> anyhow::Result<ExitCode> {
+async fn serve(args: ServeArgs, inherited: Result<Option<Inherited>, ActivationError>) -> anyhow::Result<ExitCode> {
     let home = AppHome::resolve(args.hub.home.home.as_deref())?;
     let file = load_file(&home, args.hub.config.as_deref(), true)?;
     let s = Settings::resolve(&file, &args.overrides()?, &home)?;
@@ -362,6 +370,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<ExitCode> {
         "app-mcp-host serve 启动"
     );
     log_notices(&s);
+    let inherited = inherited?;
+    let idle_exit = on_demand_idle(inherited.as_ref(), s.idle_exit_ms);
+    let prebound = match inherited {
+        Some(i) => i.listeners,
+        None => app_mcp_hub::PreboundListeners::default(),
+    };
 
     let token = match s.auth {
         AuthMode::Off => None,
@@ -372,14 +386,25 @@ async fn serve(args: ServeArgs) -> anyhow::Result<ExitCode> {
         token,
         require_token_without_origin: s.auth == AuthMode::All,
     };
-    let config = HubConfig {
+    let mut config = HubConfig {
         http: options.clone(),
         mcp_http: true,
         policy: policy::load(&home)?,
         ..hub_config(&s, &home)
     };
-    let hub = match Hub::start(config).await {
+    if !prebound.is_empty() {
+        without_unhanded_listeners(&mut config, &prebound);
+    }
+    let activated = !prebound.is_empty();
+    let hub = match Hub::start_with(config, prebound).await {
         Ok(h) => h,
+        Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy && activated => {
+            // @why 以 0 退出时服务管理器看到套接字上仍有未接受的连接，会立即再次启动本进程（循环）；报错让它记为失败。
+            anyhow::bail!(
+                "[{}] {e}：同一配置目录已有不经服务管理器运行的 Host，按需启动的实例无法接管；请停止手动运行的 serve",
+                ConnectionErrorCode::LockHeld
+            );
+        }
         Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => {
             tracing::info!(code = ConnectionErrorCode::LockHeld.as_str(), "{e}");
             return already_running(&home, &e).await;
@@ -402,10 +427,43 @@ async fn serve(args: ServeArgs) -> anyhow::Result<ExitCode> {
         s.auth,
         home.registry_file().display(),
     );
-    shutdown_signal().await;
-    tracing::info!("收到退出信号，停止");
+    match idle_exit {
+        Some(idle) => tokio::select! {
+            () = shutdown_signal() => tracing::info!("收到退出信号，停止"),
+            () = hub.wait_idle(idle) => tracing::info!("空闲 {} 秒，退出（下一个连接由服务管理器再次启动）", idle.as_secs_f32()),
+        },
+        None => {
+            shutdown_signal().await;
+            tracing::info!("收到退出信号，停止");
+        }
+    }
     hub.shutdown().await;
     Ok(ExitCode::SUCCESS)
+}
+
+/// 按需启动时只服务交来的监听器：没有交来的那一个不自己绑定。
+///
+/// @why 自己绑定的端口 / 套接字在空闲退出后无人监听，客户端连不上也不会触发再次启动；监听位置归服务管理器的单元 / plist。
+fn without_unhanded_listeners(config: &mut HubConfig, prebound: &app_mcp_hub::PreboundListeners) {
+    if prebound.tcp.is_none() && config.listen.take().is_some() {
+        tracing::warn!("服务管理器没有交来 TCP 监听套接字：本次不开 HTTP 服务（/app、/mcp）；检查单元的 ListenStream / plist 的 Sockets");
+    }
+    #[cfg(unix)]
+    if prebound.ipc.is_none() && config.ipc_endpoint.take().is_some() {
+        tracing::info!("服务管理器没有交来本地 IPC 套接字：本次不开本地 IPC");
+    }
+}
+
+/// 按需启动时的空闲退出时间：只在监听套接字由服务管理器交来时生效（否则退出后没有谁再启动 Host），`0` = 不退出。
+fn on_demand_idle(inherited: Option<&Inherited>, idle_exit_ms: u64) -> Option<Duration> {
+    let i = inherited?;
+    tracing::info!(
+        "按需启动（{}）：监听 {}；{}",
+        i.source,
+        i.described.join("、"),
+        if idle_exit_ms == 0 { "不空闲退出（idleExitMs = 0）".to_owned() } else { format!("空闲 {idle_exit_ms} ms 后退出") }
+    );
+    (idle_exit_ms > 0).then(|| Duration::from_millis(idle_exit_ms))
 }
 
 /// Ctrl+C，或 Unix 上的 SIGTERM（systemd / launchd 停止服务）。
@@ -487,6 +545,7 @@ fn spec_for(home: &AppHome) -> anyhow::Result<service::ServiceSpec> {
     Ok(service::ServiceSpec {
         exe: service::service_exe()?,
         home: home.dir.clone(),
+        on_demand: None,
     })
 }
 
@@ -556,8 +615,9 @@ pub(crate) struct ServiceInstalled {
 /// 写入 `<home>/config.json`、端口预检、生成令牌、以 `exe` 安装并启动登录自启服务，等待最多 10 秒就绪。
 ///
 /// @input exe 服务运行的可执行文件（Windows 上为同目录的无窗口版，见 [`service::background_exe_for`]）。
-/// @error 不支持 `--config`；监听地址均被占用时不安装（PORT_BUSY）。
-pub(crate) async fn install_service(args: &ServeArgs, exe: std::path::PathBuf) -> anyhow::Result<ServiceInstalled> {
+/// @input on_demand 按需启动（spec/protocol.md 1.9）：服务管理器代为监听预检选定的地址；就绪检查经 `/healthz` 连接即触发启动。
+/// @error 不支持 `--config`；监听地址均被占用时不安装（PORT_BUSY）；按需启动时监听地址不是 `IP:端口` 或 IPC 端点不是 `unix:`。
+pub(crate) async fn install_service(args: &ServeArgs, exe: std::path::PathBuf, on_demand: bool) -> anyhow::Result<ServiceInstalled> {
     if args.hub.config.is_some() {
         anyhow::bail!("service install 使用 <home>/config.json，不支持 --config；可用 --home 指定配置目录");
     }
@@ -568,8 +628,22 @@ pub(crate) async fn install_service(args: &ServeArgs, exe: std::path::PathBuf) -
     file.save(&home.config_file())?;
     let s = Settings::resolve(&file, &Overrides::default(), &home)?;
     let mut messages: Vec<String> = s.notices.iter().map(|n| format!("提示：{n}")).collect();
+    // 按需启动的监听地址：预检选定的地址（缺省端口被占用时为备选端口），本配置目录的实例在运行时为它的地址。
+    let mut on_demand_listen = s.listen.clone();
+    let running = running_instance(&home).await;
+    if on_demand && let Some(reg) = &running {
+        // 端口 / 套接字要交给服务管理器：停下现有实例（登录自启或手动运行的 serve）。
+        on_demand_listen = reg.listen.clone().unwrap_or(on_demand_listen);
+        if service::MANAGED_BY_OS && service::installed()? {
+            let _ = service::stop();
+        }
+        if running_instance(&home).await.is_some() {
+            service::kill_pid(reg.identity.pid)?;
+        }
+        messages.push(format!("已停止运行中的实例（pid {}），监听交给服务管理器", reg.identity.pid));
+    }
     // 端口预检（本配置目录的实例已在运行时跳过：端口由它占用）。
-    if running_instance(&home).await.is_none() {
+    if running.is_none() {
         let plan = doctor::port_preflight(&s).await;
         messages.extend(plan.busy.iter().map(|(_, why)| format!("端口检查：{why}")));
         match &plan.chosen {
@@ -578,19 +652,30 @@ pub(crate) async fn install_service(args: &ServeArgs, exe: std::path::PathBuf) -
                 ConnectionErrorCode::PortBusy.hint(),
                 code = ConnectionErrorCode::PortBusy
             ),
-            Some(addr) if !plan.busy.is_empty() => messages.push(format!(
-                "提示：默认端口被占用，Host 将改用 {addr}（网页 SDK 会依次尝试 7717、7737、7757）；建议停止占用者以使用默认端口"
-            )),
+            Some(addr) if !plan.busy.is_empty() => {
+                on_demand_listen = addr.clone();
+                messages.push(format!(
+                    "提示：默认端口被占用，Host 将改用 {addr}（网页 SDK 会依次尝试 7717、7737、7757）；建议停止占用者以使用默认端口"
+                ))
+            }
             Some(_) => {}
         }
     }
     if s.auth != AuthMode::Off {
         token::load_or_create(&home.token_file())?;
     }
-    let spec = service::ServiceSpec { exe, home: home.dir.clone() };
+    let on_demand = match on_demand {
+        true => Some(service::OnDemandSockets::from_settings(&probe_addr(&on_demand_listen), s.ipc_endpoint.as_deref())?),
+        false => None,
+    };
+    let spec = service::ServiceSpec { exe, home: home.dir.clone(), on_demand };
     let location = service::install(&spec)?;
     if cfg!(windows) {
         service::start(&spec)?;
+    }
+    if let Some(sockets) = &spec.on_demand {
+        // 连接即启动：就绪检查之前先连一次服务管理器代为监听的地址（可能是备选端口，与配置的 listen 不同）。
+        let _ = probe::probe(&sockets.listen.to_string()).await;
     }
     let registry = match wait_status(&home, &s, true, Duration::from_secs(10)).await {
         Status::Running(reg) => Ok(reg),
@@ -613,11 +698,15 @@ pub(crate) async fn uninstall_service(home: &AppHome) -> anyhow::Result<bool> {
 async fn service_cmd(action: ServiceAction) -> anyhow::Result<ExitCode> {
     match action {
         ServiceAction::Install(args) => {
-            let out = install_service(&args, service::service_exe()?).await?;
+            let out = install_service(&args.serve, service::service_exe()?, args.on_demand).await?;
             for line in &out.messages {
                 println!("{line}");
             }
-            println!("已安装登录自启服务：{}", out.location);
+            println!(
+                "已安装{}：{}",
+                if args.on_demand { "按需启动服务（首个连接时启动，空闲后退出）" } else { "登录自启服务" },
+                out.location
+            );
             println!("配置文件：{}", out.home.config_file().display());
             let listen = match &out.registry {
                 Ok(reg) => {
