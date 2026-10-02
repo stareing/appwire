@@ -7,8 +7,8 @@ use crate::vec_map::VecMap;
 use app_mcp_protocol as proto;
 use proto::{
     ErrorKind, HelloParams, HelloResult, Message, NavigateParams, NavigateResult, Notification, PairingResultParams,
-    PairingStatus, Request, RequestId, ResourceSubscribeParams, ResourceUpdatedParams, ResourcesReadParams, ResourcesReadResult, Response,
-    RpcError, ToolError, ToolsCancelParams, ToolsInvokeParams, ToolsInvokeResult, ToolsProgressParams, VisibilityParams,
+    PairingStatus, Request, RequestId, ResourceSubscribeParams, ResourceUpdatedParams, ResourcesReadParams, Response,
+    RpcError, ToolError, ToolsCancelParams, ToolsInvokeParams, ToolsProgressParams, VisibilityParams,
     method,
 };
 use serde::Serialize;
@@ -97,6 +97,111 @@ fn to_value<T: Serialize>(v: &T) -> Value {
     serde_json::to_value(v).unwrap_or(Value::Null)
 }
 
+/// 成功回复的文本，`result_json` 为 `result` 成员的 JSON 文本。
+///
+/// @invariant 与 `Message::result(id, v).to_json()` 逐字节相同：`Value` 对象按键的字节序输出（id < jsonrpc < result）。
+fn result_message(id: &RequestId, result_json: &str) -> String {
+    let id = match id {
+        RequestId::Number(n) => Value::from(*n),
+        RequestId::String(s) => Value::String(s.clone()),
+    }
+    .to_string();
+    let mut out = String::with_capacity(id.len() + result_json.len() + 32);
+    out.push_str(r#"{"id":"#);
+    out.push_str(&id);
+    out.push_str(r#","jsonrpc":"2.0","result":"#);
+    out.push_str(result_json);
+    out.push('}');
+    out
+}
+
+/// 把 `v` 的紧凑 JSON 追加到 `out`。
+///
+/// @why 统一经 `Value` 的 `Display`（`Message::to_json` 已用到的同一份序列化代码）：按引用序列化、不深拷贝，
+/// 且不为每种结果类型实例化一套 serde 序列化器（WASM 体积）。
+fn push_json(out: &mut String, v: &Value) {
+    use std::fmt::Write;
+    // `Value` 的序列化不会失败，写入 String 也不会失败。
+    let _ = write!(out, "{v}");
+}
+
+fn push_json_str(out: &mut String, s: &str) {
+    push_json(out, &Value::String(s.to_owned()));
+}
+
+/// `tools/invoke` 成功结果（[`proto::ToolsInvokeResult`] 的线上形式）的 JSON 文本。
+///
+/// @invariant 与 `to_value(&ToolsInvokeResult { .. }).to_string()` 逐字节相同：键按字节序
+/// （annotations < data < stateHints < stateResource < status < summary），省略规则同 `ToolsInvokeResult` 的 serde 属性。
+fn invoke_result_json(out: &CallOutput) -> String {
+    let mut s = String::new();
+    s.push('{');
+    if let Some(a) = &out.annotations {
+        s.push_str(r#""annotations":"#);
+        push_json(&mut s, &to_value(a));
+        s.push(',');
+    }
+    s.push_str(r#""data":"#);
+    push_json(&mut s, &out.data);
+    if !out.state_hints.is_empty() {
+        s.push_str(r#","stateHints":["#);
+        for (i, hint) in out.state_hints.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            push_json_str(&mut s, hint);
+        }
+        s.push(']');
+    }
+    if let Some(r) = &out.state_resource {
+        s.push_str(r#","stateResource":"#);
+        push_json_str(&mut s, r);
+    }
+    if !out.status.is_done() {
+        s.push_str(r#","status":"#);
+        push_json(&mut s, &to_value(&out.status));
+    }
+    if let Some(summary) = &out.summary {
+        s.push_str(r#","summary":"#);
+        push_json_str(&mut s, summary);
+    }
+    s.push('}');
+    s
+}
+
+/// 资源读取结果（[`proto::ResourcesReadResult`] 的线上形式）的 JSON 文本，与经 `Value` 逐字节相同（contents < mimeType）。
+fn read_result_json(contents: &Value, mime_type: Option<&str>) -> String {
+    let mut s = String::from(r#"{"contents":"#);
+    push_json(&mut s, contents);
+    if let Some(m) = mime_type {
+        s.push_str(r#","mimeType":"#);
+        push_json_str(&mut s, m);
+    }
+    s.push('}');
+    s
+}
+
+/// `tools/invoke` 参数：各字段类型都合法时直接从 `params` 中移出（参数子树不经 `from_value` 重建）；
+/// 否则返回 `None`、`params` 不变，由 serde 解析给出原有的错误回复。
+///
+/// @invariant 接受的输入与 `serde_json::from_value::<ToolsInvokeParams>` 结果相同（未知字段忽略、缺省 / null 的可选字段为 `None`、
+/// 缺省的 `arguments` 为 `null`）；结构体字面量列出全部字段，`ToolsInvokeParams` 增加字段时这里编译失败。
+fn take_invoke_params(params: &mut Value) -> Option<ToolsInvokeParams> {
+    let obj = params.as_object_mut()?;
+    let call_id = obj.get("callId")?.as_str()?.to_owned();
+    let name = obj.get("name")?.as_str()?.to_owned();
+    let timeout_ms = match obj.get("timeoutMs").filter(|v| !v.is_null()) {
+        Some(v) => Some(v.as_u64()?),
+        None => None,
+    };
+    let idempotency_key = match obj.get("idempotencyKey").filter(|v| !v.is_null()) {
+        Some(v) => Some(v.as_str()?.to_owned()),
+        None => None,
+    };
+    let arguments = obj.remove("arguments").unwrap_or(Value::Null);
+    Some(ToolsInvokeParams { call_id, name, arguments, timeout_ms, idempotency_key })
+}
+
 fn tool_error(kind: ErrorKind, message: impl Into<String>) -> RpcError {
     ToolError::new(kind, message).into()
 }
@@ -160,6 +265,14 @@ impl Client {
         self.send(msg);
     }
 
+    /// 以已序列化的调用结果回复（[`Outcome`]）。
+    fn respond_outcome(&mut self, id: RequestId, outcome: &Outcome) {
+        match outcome {
+            Ok(text) => self.events.push_back(Event::Send(result_message(&id, text))),
+            Err(e) => self.respond(id, Err(e.clone())),
+        }
+    }
+
     /// 连接已建立（包括握手中）。
     pub(crate) fn link_up(&self) -> bool {
         self.state.is_link_up()
@@ -197,7 +310,7 @@ impl Client {
             wake: c.lifecycle.wake.clone().filter(|w| w.kind != proto::WakeKind::None),
         };
         let params = match self.life.resume_token.clone() {
-            Some(resume) => HelloParams { resume_token: Some(resume), tools_hash: Some(self.tools_hash()), ..params },
+            Some(resume) => HelloParams { resume_token: Some(resume), tools_hash: Some(self.registry.tools_hash()), ..params },
             None => params,
         };
         self.session.resume_sent = params.resume_token.is_some();
@@ -464,14 +577,14 @@ impl Client {
 
     /// 回复一次调用及挂在它上面的重复请求；`started`（handler 已开始执行）时把结果记入去重表（spec/protocol.md 3.3）。
     fn respond_call(&mut self, call: Call, outcome: Outcome, started: bool) {
+        for id in &call.waiters {
+            self.respond_outcome(id.clone(), &outcome);
+        }
+        self.respond_outcome(call.request_id.clone(), &outcome);
         if started {
             let idem = call.idem();
-            self.dedup.record(&self.config.call_dedup, &call.call_id, idem.as_deref(), outcome.clone(), self.life.last_now);
+            self.dedup.record(&self.config.call_dedup, &call.call_id, idem.as_deref(), outcome, self.life.last_now);
         }
-        for id in call.waiters {
-            self.respond(id, outcome.clone());
-        }
-        self.respond(call.request_id, outcome);
     }
 
     /// 发送 `tools/progress`（调用方已确认调用在执行中）。未连接时丢弃。
@@ -512,11 +625,14 @@ impl Client {
                     self.respond_call(call, Err(err), false);
                 }
                 Some(_) => {
+                    let mut call = call;
+                    // @why 参数移交给 handler 而不深拷贝：开始执行后核心不再读取参数（1 MiB 对象数组省约 3 ms / 13 万次分配）。
+                    let arguments = std::mem::take(&mut call.arguments);
                     self.events.push_back(Event::InvokeTool {
                         call_id: call.call_id.clone(),
                         tool: call.tool,
                         name: call.name.clone(),
-                        arguments: call.arguments.clone(),
+                        arguments,
                         idempotency_key: call.idempotency_key.clone(),
                     });
                     self.calls.start(call);
@@ -526,15 +642,9 @@ impl Client {
     }
 
     pub(crate) fn finish_call(&mut self, call: Call, outcome: Result<CallOutput, ToolError>) {
+        // @why 直接序列化为文本：经 `to_value` 再 `to_json` 会深拷贝两次（1 MiB 对象数组约 20 ms / 36 万次分配）。
         let outcome = match outcome {
-            Ok(out) => Ok(to_value(&ToolsInvokeResult {
-                data: out.data,
-                state_hints: out.state_hints,
-                annotations: out.annotations,
-                status: out.status,
-                state_resource: out.state_resource,
-                summary: out.summary,
-            })),
+            Ok(out) => Ok(invoke_result_json(&out)),
             Err(e) => Err(RpcError::from(e)),
         };
         self.respond_call(call, outcome, true);
@@ -549,7 +659,7 @@ impl Client {
         let idem = p.idempotency_key.as_deref().map(|k| crate::dedup::idempotency_match_key(&p.name, k));
         if let Some(outcome) = self.dedup.lookup(&self.config.call_dedup, &p.call_id, idem.as_deref(), now) {
             self.warn(format!("callId {:?} 重复到达（调用去重）：重放首次结果，不再执行", p.call_id));
-            self.respond(id, outcome);
+            self.respond_outcome(id, &outcome);
             return;
         }
         if self.calls.contains(&p.call_id) {
@@ -638,10 +748,10 @@ impl Client {
 
     pub(crate) fn finish_read(&mut self, pending: PendingRead, outcome: Result<Value, ToolError>) {
         let outcome = match outcome {
-            Ok(contents) => Ok(to_value(&ResourcesReadResult { contents, mime_type: pending.mime_type })),
+            Ok(contents) => Ok(read_result_json(&contents, pending.mime_type.as_deref())),
             Err(e) => Err(RpcError::from(e)),
         };
-        self.respond(pending.request_id, outcome);
+        self.respond_outcome(pending.request_id, &outcome);
     }
 
     // ---- 导航（spec/protocol.md 3.4）------------------------------------
@@ -772,7 +882,10 @@ impl Client {
                 self.respond(id, Err(err));
             }
             method::TOOLS_INVOKE => {
-                if let Some(p) = self.parse_params(&id, &m, params) {
+                let mut params = params;
+                if let Some(p) = take_invoke_params(&mut params) {
+                    self.on_invoke(id, p, now);
+                } else if let Some(p) = self.parse_params(&id, &m, params) {
                     self.on_invoke(id, p, now);
                 }
             }
@@ -924,4 +1037,78 @@ fn foreground_required(page: &str) -> ToolError {
         Some(proto::user_action_reason::FOREGROUND),
         None,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `take_invoke_params` 与 serde 逐条对照（T-09）：接受时结果相同；不接受时 `params` 不变（交给 serde 报错或按其规则接受）。
+    #[test]
+    fn take_invoke_params_matches_serde() {
+        let cases = [
+            json!({"callId": "c", "name": "n", "arguments": {"a": [1, {"b": null}]}, "timeoutMs": 9, "idempotencyKey": "k"}),
+            json!({"callId": "c", "name": "n"}),
+            json!({"callId": "c", "name": "n", "arguments": null, "timeoutMs": null, "idempotencyKey": null, "x": [1]}),
+            json!({"callId": "c", "name": "n", "timeoutMs": u64::MAX}),
+            json!({"callId": "c", "name": "n", "timeoutMs": 1.0}),
+            json!({"callId": "c", "name": "n", "timeoutMs": -1}),
+            json!({"callId": "c", "name": "n", "timeoutMs": "5"}),
+            json!({"callId": "c", "name": "n", "idempotencyKey": 1}),
+            json!({"callId": "c", "name": 1}),
+            json!({"callId": null, "name": "n"}),
+            json!({"name": "n"}),
+            json!({"callId": "c"}),
+            json!(["c", "n"]),
+            json!(null),
+            json!("c"),
+        ];
+        for case in cases {
+            let serde = serde_json::from_value::<ToolsInvokeParams>(case.clone()).ok();
+            let mut v = case.clone();
+            match take_invoke_params(&mut v) {
+                Some(p) => assert_eq!(Some(p), serde, "{case}"),
+                None => assert_eq!(v, case, "不接受时不修改 params：{case}"),
+            }
+            // 只有 serde 能接受而这里不接受的形态：数组（按字段顺序）。
+            if serde.is_some() && !case.is_object() {
+                assert!(take_invoke_params(&mut case.clone()).is_none());
+            }
+        }
+    }
+
+    /// 结果文本与经 `Value` 的序列化逐字节相同（各可省略字段分别出现 / 省略）。
+    #[test]
+    fn invoke_result_json_matches_value_serialization() {
+        let base = CallOutput { data: json!({"z": 1, "a": [true, "é\n"]}), ..Default::default() };
+        let variants = [
+            base.clone(),
+            CallOutput { state_hints: vec!["a".into(), "b\"".into()], ..base.clone() },
+            CallOutput { state_resource: Some("job".into()), status: proto::ResultStatus::Pending, ..base.clone() },
+            CallOutput { status: proto::ResultStatus::Noop, summary: Some("无变化".into()), ..base.clone() },
+            CallOutput { annotations: Some(proto::ContentAnnotations { priority: Some(1.0), ..Default::default() }), ..base },
+        ];
+        for out in variants {
+            let legacy = to_value(&proto::ToolsInvokeResult {
+                data: out.data.clone(),
+                state_hints: out.state_hints.clone(),
+                annotations: out.annotations.clone(),
+                status: out.status,
+                state_resource: out.state_resource.clone(),
+                summary: out.summary.clone(),
+            })
+            .to_string();
+            assert_eq!(invoke_result_json(&out), legacy);
+        }
+        for mime in [None, Some("text/plain")] {
+            let contents = json!({"b": 1, "a": "x"});
+            let legacy = to_value(&proto::ResourcesReadResult { contents: contents.clone(), mime_type: mime.map(str::to_owned) })
+                .to_string();
+            assert_eq!(read_result_json(&contents, mime), legacy);
+        }
+        assert_eq!(
+            result_message(&RequestId::from("a\"b"), "{}"),
+            Message::result(RequestId::from("a\"b"), json!({})).to_json()
+        );
+    }
 }

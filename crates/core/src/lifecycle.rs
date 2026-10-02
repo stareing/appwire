@@ -499,7 +499,7 @@ impl Client {
         let params = SleepParams {
             reason,
             wake: self.config.lifecycle.wake.clone(),
-            tools_hash: self.tools_hash(),
+            tools_hash: self.registry.tools_hash(),
         };
         let params = serde_json::to_value(&params).unwrap_or(Value::Null);
         self.request(method::SLEEP, params, Outgoing::Sleep);

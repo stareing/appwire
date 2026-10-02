@@ -981,8 +981,7 @@ impl Client {
 
     /// 当前工具与资源定义的摘要 `toolsHash`（spec/lifecycle.md 第 6 节）。
     pub fn tools_hash(&self) -> String {
-        let (tools, resources) = self.registry.snapshot();
-        proto::tools_hash(&tools, &resources)
+        self.registry.peek_tools_hash()
     }
 
     /// 上次休眠时 Host 返回、尚未用于握手的恢复令牌。

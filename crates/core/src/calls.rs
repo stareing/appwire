@@ -14,6 +14,7 @@ pub(crate) struct Call {
     pub request_id: RequestId,
     pub tool: ToolId,
     pub name: String,
+    /// 排队期间的参数；开始执行时移交给 [`crate::Event::InvokeTool`]，之后为 `Null`。
     pub arguments: Value,
     /// Agent 给出的幂等键（`ToolsInvokeParams.idempotencyKey`，spec/protocol.md 3.3），原样交给 handler。
     pub idempotency_key: Option<String>,

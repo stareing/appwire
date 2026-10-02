@@ -33,6 +33,10 @@ pub(crate) struct Registry {
     host_resources: VecMap<String, ResourceInfo>,
     dirty_tools: VecSet<String>,
     dirty_resources: VecSet<String>,
+
+    /// 当前定义的 `toolsHash`（[`Registry::tools_hash`]）；任何工具 / 资源变更时清除。
+    /// @why 休眠（`app/sleep`）与快速恢复（`app/hello`）各要一次摘要，定义不变时不重算（16 工具约 140 µs、128 工具约 1.1 ms）。
+    hash_cache: Option<String>,
 }
 
 fn tool_info(def: &ToolDef) -> ToolInfo {
@@ -261,12 +265,14 @@ impl Registry {
     // ---- 变更追踪 -------------------------------------------------------
 
     fn mark_tool(&mut self, name: &str) {
+        self.hash_cache = None;
         if self.tracking {
             self.dirty_tools.insert(name.to_owned());
         }
     }
 
     fn mark_resource(&mut self, name: &str) {
+        self.hash_cache = None;
         if self.tracking {
             self.dirty_resources.insert(name.to_owned());
         }
@@ -282,6 +288,28 @@ impl Registry {
         let tools: Vec<ToolInfo> = self.tools.values().filter(|d| d.enabled).map(tool_info).collect();
         let resources: Vec<ResourceInfo> = self.resources.values().map(resource_info).collect();
         (ToolsSyncParams { tools }, ResourcesSyncParams { resources })
+    }
+
+    /// 当前定义的 `toolsHash`（spec/lifecycle.md 第 6 节），定义不变时复用上次结果。
+    ///
+    /// @invariant 工具 / 资源定义只经 `mark_tool` / `mark_resource` 所在的方法修改，缓存随之清除。
+    pub fn tools_hash(&mut self) -> String {
+        if let Some(h) = &self.hash_cache {
+            return h.clone();
+        }
+        let h = self.compute_tools_hash();
+        self.hash_cache = Some(h.clone());
+        h
+    }
+
+    /// 不写缓存的只读版本：有缓存时直接返回。
+    pub fn peek_tools_hash(&self) -> String {
+        self.hash_cache.clone().unwrap_or_else(|| self.compute_tools_hash())
+    }
+
+    fn compute_tools_hash(&self) -> String {
+        let (tools, resources) = self.snapshot();
+        app_mcp_protocol::tools_hash(&tools, &resources)
     }
 
     /// 生成全量同步内容，并开始追踪增量变更。

@@ -18,3 +18,8 @@ app-mcp-protocol.workspace = true
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 thiserror.workspace = true
+
+# 热路径基准（TASKS 第 10 项）：`cargo bench -p app-mcp-core --bench hot_path`；自定义计数分配器，无额外依赖。
+[[bench]]
+name = "hot_path"
+harness = false

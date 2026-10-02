@@ -5,13 +5,12 @@
 //! 用 `Vec` 而不是 `VecDeque`：条数上限很小（默认 64），且不为 WASM 多实例化一套容器代码。
 
 use app_mcp_protocol::RpcError;
-use serde_json::Value;
 
 use crate::Millis;
 
 /// 调用去重策略（[`crate::ClientConfig::call_dedup`]）。
 ///
-/// @invariant 内存上限 = `max_entries` × 单个结果大小（结果受 Host 的结果大小上限约束，spec/hub-api.md 3.11）。
+/// @invariant 内存上限 = `max_entries` × 单个结果的 JSON 文本大小（结果受 Host 的结果大小上限约束，spec/hub-api.md 3.11）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CallDedupPolicy {
     /// 首次结果的保留时长。0 表示关闭去重（重复的进行中 `callId` 按旧行为返回 -32602）。
@@ -39,8 +38,11 @@ impl Default for CallDedupPolicy {
     }
 }
 
-/// 一次调用的最终回复：`tools/invoke` 的结果或错误。
-pub(crate) type Outcome = Result<Value, RpcError>;
+/// 一次调用的最终回复：`tools/invoke` 结果的 JSON 文本（JSON-RPC `result` 成员的值），或错误。
+///
+/// @why 存文本而不是 `Value`：对象较多的结果解析成 `Value` 约为 JSON 的 6–7 倍（1 MiB 对象数组 ≈ 6.8 MiB），
+/// 去重表最多保留 64 条；文本也免去回复与重放时的深拷贝和再序列化。
+pub(crate) type Outcome = Result<String, RpcError>;
 
 /// 幂等键在去重表中的匹配键：工具名 + 换行 + 幂等键。
 ///
@@ -98,6 +100,11 @@ impl DedupTable {
         let excess = (self.entries.len() + 1).saturating_sub(policy.max_entries);
         self.entries.drain(..excess.min(self.entries.len()));
         let expires_at = now.saturating_add(policy.ttl_ms);
+        // @why 序列化缓冲按倍增扩容，容量最多约为长度的 2 倍；条目要保留到过期，收回多余容量。
+        let outcome = outcome.map(|mut text| {
+            text.shrink_to_fit();
+            text
+        });
         self.entries.push(Entry { call_id: call_id.to_owned(), idem: idem.map(str::to_owned), expires_at, outcome });
     }
 
@@ -110,15 +117,18 @@ impl DedupTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+
+    fn json(v: i64) -> String {
+        v.to_string()
+    }
 
     const P: CallDedupPolicy = CallDedupPolicy { ttl_ms: 100, max_entries: 2 };
 
     #[test]
     fn replays_until_expiry() {
         let mut t = DedupTable::default();
-        t.record(&P, "a", None, Ok(json!(1)), 0);
-        assert_eq!(t.lookup(&P, "a", None, 99), Some(Ok(json!(1))));
+        t.record(&P, "a", None, Ok(json(1)), 0);
+        assert_eq!(t.lookup(&P, "a", None, 99), Some(Ok(json(1))));
         assert_eq!(t.lookup(&P, "b", None, 99), None);
         assert_eq!(t.lookup(&P, "a", None, 100), None, "到期即失效");
         assert_eq!(t.len(), 0);
@@ -127,20 +137,20 @@ mod tests {
     #[test]
     fn first_outcome_wins() {
         let mut t = DedupTable::default();
-        t.record(&P, "a", None, Ok(json!(1)), 0);
+        t.record(&P, "a", None, Ok(json(1)), 0);
         t.record(&P, "a", None, Err(RpcError::invalid_params("x")), 1);
-        assert_eq!(t.lookup(&P, "a", None, 2), Some(Ok(json!(1))));
+        assert_eq!(t.lookup(&P, "a", None, 2), Some(Ok(json(1))));
     }
 
     #[test]
     fn bounded_evicts_oldest() {
         let mut t = DedupTable::default();
-        t.record(&P, "a", None, Ok(json!(1)), 0);
-        t.record(&P, "b", None, Ok(json!(2)), 1);
-        t.record(&P, "c", None, Ok(json!(3)), 2);
+        t.record(&P, "a", None, Ok(json(1)), 0);
+        t.record(&P, "b", None, Ok(json(2)), 1);
+        t.record(&P, "c", None, Ok(json(3)), 2);
         assert_eq!(t.len(), 2);
         assert_eq!(t.lookup(&P, "a", None, 3), None);
-        assert_eq!(t.lookup(&P, "c", None, 3), Some(Ok(json!(3))));
+        assert_eq!(t.lookup(&P, "c", None, 3), Some(Ok(json(3))));
     }
 
     /// 幂等键（第 4f 项 j）：不同 callId、同一（工具, 幂等键）命中首次结果；同一幂等键用于其他工具不命中。
@@ -148,11 +158,11 @@ mod tests {
     fn idempotency_key_matches_across_call_ids() {
         let mut t = DedupTable::default();
         let k = idempotency_match_key("cart.add", "order-7");
-        t.record(&P, "a", Some(&k), Ok(json!(1)), 0);
-        assert_eq!(t.lookup(&P, "b", Some(&k), 1), Some(Ok(json!(1))));
+        t.record(&P, "a", Some(&k), Ok(json(1)), 0);
+        assert_eq!(t.lookup(&P, "b", Some(&k), 1), Some(Ok(json(1))));
         assert_eq!(t.lookup(&P, "b", Some(&idempotency_match_key("cart.remove", "order-7")), 1), None);
         assert_eq!(t.lookup(&P, "b", None, 1), None, "没有幂等键时只按 callId");
-        t.record(&P, "c", Some(&k), Ok(json!(2)), 2);
+        t.record(&P, "c", Some(&k), Ok(json(2)), 2);
         assert_eq!(t.lookup(&P, "c", None, 3), None, "同一幂等键已有记录：首次结果为准，不另记");
     }
 
@@ -161,7 +171,7 @@ mod tests {
         let mut t = DedupTable::default();
         for p in [CallDedupPolicy::OFF, CallDedupPolicy { ttl_ms: 10, max_entries: 0 }, CallDedupPolicy { ttl_ms: 0, max_entries: 5 }] {
             assert!(!p.enabled());
-            t.record(&p, "a", None, Ok(json!(1)), 0);
+            t.record(&p, "a", None, Ok(json(1)), 0);
             assert_eq!(t.lookup(&p, "a", None, 0), None);
         }
         assert_eq!(t.len(), 0);
