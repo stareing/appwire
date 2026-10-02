@@ -342,7 +342,7 @@ impl DormantStore {
             }
         };
         // 新的优先：超出数量上限时丢弃最旧的。
-        files.sort_by(|a, b| b.1.cmp(&a.1));
+        files.sort_by_key(|f| std::cmp::Reverse(f.1));
         for (i, (name, _, len)) in files.into_iter().enumerate() {
             let issue = |reason: String| StoreIssue { file: name.clone(), reason };
             if i >= MAX_STORE_FILES {

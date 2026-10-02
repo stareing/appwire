@@ -188,6 +188,7 @@ pub(crate) async fn handle_websocket<S>(
 pub(crate) async fn handle_dialed_channel(shared: Arc<HubShared>, channel: crate::connector::DialedChannel) {
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request as WsRequest, Response as WsResponse};
     let peer = Peer::Dialed { pid: channel.pid };
+    #[allow(clippy::result_large_err)] // @why 签名由 tungstenite 的握手 Callback 规定（Err 为 http::Response）
     let check_path = |req: &WsRequest, resp: WsResponse| -> Result<WsResponse, ErrorResponse> {
         let path = req.uri().path();
         if path == app_mcp_protocol::APP_PATH || path == "/" {

@@ -93,14 +93,27 @@ fn context_switches() -> Option<u64> {
 }
 
 /// 进程 CPU 时间（用户 + 系统）。
-fn cpu_time() -> Duration {
+///
+/// @compat 只在 Unix 统计（getrusage）；其他平台为 `None`，报告中显示「—」。
+#[cfg(unix)]
+fn cpu_time() -> Option<Duration> {
     // @security 只读当前进程的资源用量。
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
     if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) } != 0 {
-        return Duration::ZERO;
+        return None;
     }
     let tv = |t: libc::timeval| Duration::from_secs(t.tv_sec as u64) + Duration::from_micros(t.tv_usec as u64);
-    tv(ru.ru_utime) + tv(ru.ru_stime)
+    Some(tv(ru.ru_utime) + tv(ru.ru_stime))
+}
+
+#[cfg(not(unix))]
+fn cpu_time() -> Option<Duration> {
+    None
+}
+
+/// 两次 [`cpu_time`] 之差按次数平均。
+fn cpu_per_call(before: Option<Duration>, after: Option<Duration>, calls: u32) -> Option<Duration> {
+    after.zip(before).map(|(a, b)| a.saturating_sub(b) / calls)
 }
 
 fn opt<T: std::fmt::Display>(v: Option<T>) -> String {
@@ -333,7 +346,7 @@ async fn lifecycle_metrics() {
         lat.push(t.elapsed());
         assert_eq!(out.result.expect("ok"), small);
     }
-    let cpu_small = (cpu_time() - cpu0) / CALLS as u32;
+    let cpu_small = cpu_per_call(cpu0, cpu_time(), CALLS as u32);
     row("热调用：小参数（已连接）", &lat);
 
     // Hub 默认参数上限 1 MiB（spec/hub-api.md 3.11）：取略小于上限的大小。
@@ -354,7 +367,7 @@ async fn lifecycle_metrics() {
         peak = peak.max(HEAP_PEAK.load(Ordering::Relaxed).saturating_sub(base));
     }
     let heap_retained = heap() as i64 - heap_before as i64;
-    let cpu_big = (cpu_time() - cpu0) / 10;
+    let cpu_big = cpu_per_call(cpu0, cpu_time(), 10);
     let rss_big = rss_kib().zip(rss0).map(|(a, b)| a.saturating_sub(b));
     row(&format!("热调用：{:.2} MiB 对象数组参数 + 同样大小结果", big_len as f64 / (1 << 20) as f64), &lat);
 
@@ -428,7 +441,7 @@ async fn lifecycle_metrics() {
     let cpu0 = cpu_time();
     tokio::time::sleep(Duration::from_secs(3)).await;
     let idle_cs = cs0.zip(context_switches()).map(|(a, b)| b.saturating_sub(a));
-    let idle_cpu = cpu_time() - cpu0;
+    let idle_cpu = cpu_per_call(cpu0, cpu_time(), 1);
 
     // ---- 进程内冷唤醒：休眠后实例被回收（客户端停止并丢弃），新客户端带令牌回连 ------
     let mut cold = Vec::new();
@@ -455,8 +468,8 @@ async fn lifecycle_metrics() {
 
 
     println!("\n| 资源 | 值 |\n|---|---|");
-    println!("| 单次小调用 CPU（Hub + 客户端，进程合计） | {} |", ms(cpu_small));
-    println!("| 单次 1 MiB 调用 CPU（Hub + 客户端，进程合计） | {} |", ms(cpu_big));
+    println!("| 单次小调用 CPU（Hub + 客户端，进程合计） | {} |", cpu_small.map_or("—".into(), ms));
+    println!("| 单次 1 MiB 调用 CPU（Hub + 客户端，进程合计） | {} |", cpu_big.map_or("—".into(), ms));
     println!("| 单次 1 MiB 调用峰值堆增量（Hub + 客户端） | {} |", kib(peak as i64));
     println!("| 10 次 1 MiB 调用后保留的堆（去重表等） | {} |", kib(heap_retained));
     println!("| 10 次 1 MiB 调用后 RSS 增量（含分配器保留） | {} |", opt(rss_big.map(|k| format!("{k} KiB"))));
@@ -465,7 +478,7 @@ async fn lifecycle_metrics() {
     println!("| 每个休眠客户端：线程 | {} |", opt(per(th0, th2)));
     println!("| 每个休眠客户端：堆（含 Hub 侧休眠快照） | {} |", per_heap(heap0, heap2));
     println!("| {CLIENTS} 个已连接客户端（本地回环、无心跳）3 s 上下文切换 | {} |", opt(connected_cs));
-    println!("| Hub + 1 个休眠客户端 3 s 上下文切换 / CPU | {} / {} |", opt(idle_cs), ms(idle_cpu));
+    println!("| Hub + 1 个休眠客户端 3 s 上下文切换 / CPU | {} / {} |", opt(idle_cs), idle_cpu.map_or("—".into(), ms));
     println!("| 唤醒器调用次数（热 {WAKE_ROUNDS} 轮 + 冷 {WAKE_ROUNDS} 轮） | {} |", waker.wakes.load(Ordering::SeqCst));
     println!("| 冷唤醒恢复率 | {cold_ok}/{WAKE_ROUNDS} |");
     println!(

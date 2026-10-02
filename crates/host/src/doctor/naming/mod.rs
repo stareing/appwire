@@ -54,6 +54,7 @@ pub struct NamingEnv {
     /// D-Bus 会话服务激活文件目录（spec/naming.md 4.1），用户级在前。
     pub dbus_service_dirs: Vec<PathBuf>,
     /// D-Bus 地址；`None` = 当前用户的会话总线。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // @why 只有 Linux 的 naming.dbus 检查读取
     pub dbus_address: Option<String>,
     /// PATH 中的 `adb`。
     pub adb: Option<PathBuf>,
