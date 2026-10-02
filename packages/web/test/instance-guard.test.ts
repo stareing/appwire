@@ -8,33 +8,7 @@ import {
   instanceChannelName,
 } from '../src/instance-guard'
 import { instanceIdKey } from '../src/storage'
-import { FakeCore, silentLogger } from './fakes'
-
-/** 内存中的 BroadcastChannel：同名通道之间异步投递（不投递给发送者自己）。 */
-function channelHub(): { factory: BroadcastChannelFactory; posted: unknown[] } {
-  const channels = new Map<string, Set<BroadcastChannelLike>>()
-  const posted: unknown[] = []
-  const factory: BroadcastChannelFactory = (name) => {
-    const set = channels.get(name) ?? new Set()
-    channels.set(name, set)
-    const ch: BroadcastChannelLike = {
-      onmessage: null,
-      postMessage(message) {
-        posted.push(message)
-        const data = structuredClone(message)
-        for (const other of set) {
-          if (other !== ch) queueMicrotask(() => other.onmessage?.({ data }))
-        }
-      },
-      close() {
-        set.delete(ch)
-      },
-    }
-    set.add(ch)
-    return ch
-  }
-  return { factory, posted }
-}
+import { channelHub, FakeCore, silentLogger } from './fakes'
 
 beforeEach(() => {
   sessionStorage.clear()

@@ -24,6 +24,7 @@ import type {
 import { normalizeToolResult, toJsonValue } from './result'
 import { describeParseError, isZodLike, toJsonSchema, toOutputSchema } from './schema'
 import { type BroadcastChannelFactory, InstanceGuard } from './instance-guard'
+import { WakeHandoff } from './wake-handoff'
 import { checkHandlerOrLoad, loadHandler } from './lazy'
 import { channelDisconnectIssue, socketDisconnectIssue } from './disconnect'
 import { hostTransport } from './host-transport'
@@ -113,6 +114,8 @@ export interface DriverDeps {
   createBroadcastChannel?: BroadcastChannelFactory
   /** 冲突探测的等待窗口（毫秒），默认 60。 */
   instanceProbeMs?: number
+  /** 带唤醒令牌打开时把令牌交给已有休眠标签页的等待上限（毫秒），默认 1000（见 wake-handoff.ts）。 */
+  wakeHandoffMs?: number
   /**
    * 共享连接（见 shared-connection.ts）：首次连接时调用一次，返回 undefined 表示不可用。
    * 缺省不共享（每个实例直接连接）；`createAppMcp` 在 `sharedConnection !== false` 时传入。
@@ -276,6 +279,8 @@ export class AppMcpDriver implements AppMcp {
   private readonly hubListeners = new Set<(event: ToolHubEvent) => void>()
   private readonly hub: ToolHub
   private readonly guard: InstanceGuard
+  /** 网页唤醒交接（没有 BroadcastChannel 时为 undefined）。 */
+  private readonly handoff: WakeHandoff | undefined
 
   // ---- 生命周期 ----
   private readonly mode: 'persistent' | 'idle' | 'on-demand'
@@ -323,6 +328,16 @@ export class AppMcpDriver implements AppMcp {
       onLateConflict: (id) =>
         this.log.warn(`${this.tag} 连接建立后才发现其他标签页使用相同的 instanceId ${id}，刷新本页可解决`),
     })
+
+    this.handoff = deps.createBroadcastChannel
+      ? new WakeHandoff({
+          appId: options.appId,
+          createChannel: deps.createBroadcastChannel,
+          canClaim: () => this.canClaimWake(),
+          acceptToken: (token) => this.acceptHandedWake(token),
+          ...(deps.wakeHandoffMs !== undefined && { timeoutMs: deps.wakeHandoffMs }),
+        })
+      : undefined
 
     const win = deps.window ?? (typeof window === 'undefined' ? undefined : window)
     const doc = deps.document ?? (typeof document === 'undefined' ? undefined : document)
@@ -455,6 +470,7 @@ export class AppMcpDriver implements AppMcp {
     this.visibility.dispose()
     for (const off of this.pageListeners.splice(0)) off()
     this.guard.dispose()
+    this.handoff?.dispose()
     this.net.dispose()
     this.blocked = undefined
     clearTimeout(this.blockedTimer)
@@ -483,6 +499,8 @@ export class AppMcpDriver implements AppMcp {
     let factory
     // 冲突探测与 WASM 加载并行；核心创建时 instanceId 已确定。
     const probe = this.guard.active ? this.guard.probe() : undefined
+    // 带唤醒令牌打开：先尝试交给已有的休眠标签页（与 WASM 加载并行）。
+    const handoff = this.offerWakeHandoff()
     try {
       factory = await this.deps.loadCore(this.options.wasmUrl)
       if (probe) await probe
@@ -492,7 +510,9 @@ export class AppMcpDriver implements AppMcp {
       this.setState({ status: 'rejected', reason: `WASM 核心加载失败：${errorMessage(e)}`, code: 'SDK_INIT_FAILED' })
       return
     }
+    const handedOff = handoff ? await handoff : false
     if (this.disposed) return
+    if (handedOff && this.leaveAfterHandoff()) return
     if (typeof factory.parseWakeToken === 'function') this.parseWake = factory.parseWakeToken
     let core: CoreClient
     try {
@@ -1032,15 +1052,79 @@ export class AppMcpDriver implements AppMcp {
       token = undefined
     }
     if (token === undefined) return
-    const stripped = stripWakeFragment(href)
-    if (stripped !== undefined) {
-      try {
-        this.win?.history?.replaceState(this.win.history.state, '', stripped)
-      } catch (e) {
-        this.log.debug(`${this.tag} 无法从地址栏移除唤醒令牌：${errorMessage(e)}`)
-      }
-    }
+    this.stripWakeFromAddressBar(href)
     core.handleWake(href, this.now())
+  }
+
+  private stripWakeFromAddressBar(href: string): void {
+    const stripped = stripWakeFragment(href)
+    if (stripped === undefined) return
+    try {
+      this.win?.history?.replaceState(this.win.history.state, '', stripped)
+    } catch (e) {
+      this.log.debug(`${this.tag} 无法从地址栏移除唤醒令牌：${errorMessage(e)}`)
+    }
+  }
+
+  // ---- 网页唤醒交接（wake-handoff.ts） ----
+
+  /** 地址中有唤醒令牌时发出交接；没有令牌或没有通道时返回 undefined。 */
+  private offerWakeHandoff(): Promise<boolean> | undefined {
+    const href = this.currentHref()
+    if (!this.handoff || href === undefined) return undefined
+    const token = parseWakeTokenJs(href)
+    return token === undefined ? undefined : this.handoff.offer(token)
+  }
+
+  /**
+   * 令牌已由原标签页接手：移除地址栏中的令牌并尝试关闭本标签页。
+   * 返回 true 表示本标签页正在关闭（不再创建核心）；关不掉时显示提示，之后按普通标签页继续。
+   */
+  private leaveAfterHandoff(): boolean {
+    const href = this.currentHref()
+    if (href !== undefined) this.stripWakeFromAddressBar(href)
+    this.log.debug(`${this.tag} 唤醒令牌已交给原标签页`)
+    const win = this.win
+    try {
+      win?.close()
+      // @why 规范中 close() 被允许时立即置 closed（is closing），不需要定时器确认
+      if (win?.closed === true) return true
+    } catch (e) {
+      this.log.debug(`${this.tag} 无法关闭本标签页：${errorMessage(e)}`)
+    }
+    this.showHandoffNotice()
+    return false
+  }
+
+  private showHandoffNotice(): void {
+    const doc = this.doc
+    if (!doc?.body || typeof doc.createElement !== 'function') return
+    const note = doc.createElement('div')
+    note.setAttribute('role', 'status')
+    note.setAttribute('data-app-mcp-handoff', '')
+    note.textContent = HANDOFF_NOTICE
+    note.style.cssText =
+      'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:2147483647;max-width:calc(100% - 32px);' +
+      'padding:8px 14px;border-radius:8px;background:rgba(32,33,36,.92);color:#fff;font:14px/1.4 system-ui,sans-serif;cursor:pointer'
+    note.addEventListener('click', () => note.remove())
+    doc.body.appendChild(note)
+  }
+
+  /** @invariant 只有休眠（或等待重连）中的实例认领；连接中 / 已连接的实例不需要令牌。 */
+  private canClaimWake(): boolean {
+    if (!this.core || this.disposed) return false
+    const status = this.currentState.status
+    return status === 'dormant' || status === 'backoff'
+  }
+
+  private acceptHandedWake(token: string): boolean {
+    if (!this.core || this.disposed) return false
+    let accepted = false
+    this.input((c) => {
+      accepted = c.handleWake(`#${WAKE_PARAM}${token}`, this.now())
+    })
+    if (accepted) this.log.debug(`${this.tag} 接手新标签页交来的唤醒令牌`)
+    return accepted
   }
 
   private watchPage(win: Window | undefined, doc: Document | undefined): void {
@@ -1622,6 +1706,7 @@ function detach(ws: WebSocketLike): void {
 }
 
 const WAKE_PARAM = 'app-mcp-wake='
+const HANDOFF_NOTICE = '已交给原来的标签页处理，可以关闭此标签页。'
 
 /** JS 版唤醒令牌解析（只识别 URL 片段 `#app-mcp-wake=<token>`）；WASM 核心提供完整实现。 */
 export function parseWakeTokenJs(args: string): string | undefined {

@@ -108,6 +108,30 @@ export class Browser {
     return page
   }
 
+  /**
+   * 像操作系统交给浏览器一个地址那样直接以 `url` 新建标签页（不先打开 about:blank，会话历史只有一条），
+   * 返回 targetId；不附加会话、不等待加载。
+   */
+  async openTarget(url: string): Promise<string> {
+    const { targetId } = await this.send<{ targetId: string }>('Target.createTarget', { url })
+    return targetId
+  }
+
+  /** 标签页是否仍存在（页面自己 `window.close()` 后不再存在）。 */
+  async targetExists(targetId: string): Promise<boolean> {
+    const { targetInfos } = await this.send<{ targetInfos: Array<{ targetId: string }> }>('Target.getTargets')
+    return targetInfos.some((t) => t.targetId === targetId)
+  }
+
+  /** 附加到已存在的标签页。 */
+  async attach(targetId: string): Promise<Page> {
+    const { sessionId } = await this.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true })
+    const page = new Page(this, targetId, sessionId)
+    await page.send('Runtime.enable')
+    this.pages.add(page)
+    return page
+  }
+
   async close(): Promise<void> {
     try {
       await Promise.race([this.send('Browser.close'), new Promise((r) => setTimeout(r, 2000))])

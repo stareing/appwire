@@ -617,7 +617,8 @@ fn not_responding(app_id: &str, timeout: Duration) -> ToolError {
     ToolError::new(
         ErrorKind::AppNotResponding,
         format!(
-            "已尝试唤醒 App「{app_id}」，但它在 {} 秒内没有回连。请让用户手动打开该 App 后重试。",
+            "已尝试唤醒 App「{app_id}」，但它在 {} 秒内没有回连。请让用户手动打开该 App 后重试；\
+             App 已在运行时，也可能是系统负载过高或 App 进程优先级过低，未能及时处理唤醒（可运行 app-mcp-host doctor 查看）。",
             timeout.as_secs_f32()
         ),
     )

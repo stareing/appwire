@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use app_mcp_hub::{AppState, AwakeReason, HubStatus, InstancePower, LeaseStatus, ToolAnnotations};
 use app_mcp_protocol::registry::{EndpointRegistry, LOCK_FILE};
-use app_mcp_protocol::{ConnectionErrorCode, LISTEN_CANDIDATE_PORTS};
+use app_mcp_protocol::{ConnectionErrorCode, ErrorKind, LISTEN_CANDIDATE_PORTS};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -399,6 +399,7 @@ pub async fn run(home: &AppHome, s: &Settings) -> Report {
 
     // 9. App 实例
     checks.push(apps_check(status.as_ref()));
+    checks.push(wake_check(status.as_ref()));
     checks.push(dormant_store_check(&home.state_dir(), status.as_ref()));
     checks.push(lease_check(status.as_ref()));
     checks.push(tools_check(status.as_ref()));
@@ -649,6 +650,40 @@ fn apps_check(status: Option<&Result<HubStatus, String>>) -> Check {
             .hint("按错误码处理（spec/protocol.md 10.1）；唤醒失败时检查清单的 wake 配置与 App 是否已安装")
             .details(details)
     }
+}
+
+/// 视为"唤醒未完成"的最近错误类别：激活命令失败（含单实例转交超时后第二实例非 0 退出）或唤醒后未回连。
+const WAKE_FAILURE_KINDS: [ErrorKind; 2] = [ErrorKind::LaunchFailed, ErrorKind::AppNotResponding];
+
+const WAKE_FAILURE_HINT: &str = "App 未运行时检查清单的 wake 配置与 App 是否已安装；App 进程在运行却唤醒失败时，\
+多半是它没能及时处理激活：检查该进程的优先级是否被设为「低」（IDLE）或处于 Windows 效率模式（任务管理器 → 详细信息 / 进程右键），\
+以及系统 CPU 是否满载；负载下降后通常自行恢复。本库不调整进程调度，需要时由用户或 App 调整";
+
+/// 唤醒失败排查（TASKS 4f G12）：最近错误为 `LAUNCH_FAILED` / `APP_NOT_RESPONDING` 的 App 给出修复提示。
+/// 唤醒速率超限（`WAKE_RATE_LIMITED`）不在此列，见 App 实例检查。
+fn wake_check(status: Option<&Result<HubStatus, String>>) -> Check {
+    const T: &str = "唤醒";
+    let Some(Ok(st)) = status else {
+        return Check::new("wake", T, Level::Skip, "无法读取运行中 Host 的状态");
+    };
+    let failed: Vec<String> = st
+        .apps
+        .iter()
+        .filter_map(|a| {
+            let e = a.last_error.as_ref()?;
+            let code = e.code.as_deref()?;
+            WAKE_FAILURE_KINDS
+                .iter()
+                .any(|k| k.as_str() == code)
+                .then(|| format!("{}：[{code}] {}", a.app_id, e.message))
+        })
+        .collect();
+    if failed.is_empty() {
+        return Check::new("wake", T, Level::Ok, "最近没有唤醒失败");
+    }
+    Check::new("wake", T, Level::Warn, format!("最近唤醒失败：{}", failed.join("；")))
+        .hint(WAKE_FAILURE_HINT)
+        .details(json!({ "apps": failed }))
 }
 
 /// 休眠记录持久化（spec/hub-api.md 3.5「持久化」）：离线检查 `<home>/state/dormant/` 中的文件（Host 未运行也可用），
@@ -1114,6 +1149,33 @@ mod tests {
         let mut old = status_with_tools(3);
         old.limits = None;
         assert!(matches!(limits_check(Some(&Ok(old))).status, Level::Skip));
+    }
+
+    fn status_with_error(code: Option<&str>) -> HubStatus {
+        let mut st = status_with_tools(0);
+        st.apps[0].last_error = code.map(|c| app_mcp_hub::LastError {
+            code: Some(c.into()),
+            message: format!("唤醒 App「shop」失败：{c}"),
+            at_ms: 1,
+        });
+        st
+    }
+
+    #[test]
+    fn wake_check_hints_priority_on_wake_failures() {
+        for code in ["LAUNCH_FAILED", "APP_NOT_RESPONDING"] {
+            let c = wake_check(Some(&Ok(status_with_error(Some(code)))));
+            assert!(matches!(c.status, Level::Warn), "{code}");
+            assert!(c.summary.contains(&format!("shop：[{code}]")), "{}", c.summary);
+            let hint = c.hint.as_deref().unwrap_or_default();
+            assert!(hint.contains("优先级") && hint.contains("效率模式") && hint.contains("满载"), "{hint}");
+        }
+        for code in [None, Some("WAKE_RATE_LIMITED"), Some("PAIRING_REJECTED")] {
+            let c = wake_check(Some(&Ok(status_with_error(code))));
+            assert!(matches!(c.status, Level::Ok) && c.hint.is_none(), "{code:?}");
+        }
+        assert!(matches!(wake_check(None).status, Level::Skip));
+        assert!(matches!(wake_check(Some(&Err("x".into()))).status, Level::Skip));
     }
 
     #[test]

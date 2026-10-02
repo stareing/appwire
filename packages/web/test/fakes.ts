@@ -15,6 +15,7 @@ import type {
   WakeReason,
 } from '../src/core'
 import { AppMcpDriver, type DriverDeps, parseWakeTokenJs, type WebSocketLike } from '../src/driver'
+import type { BroadcastChannelFactory, BroadcastChannelLike } from '../src/instance-guard'
 import type { AppMcpOptions, Logger, Visibility } from '../src/types'
 
 export type Call = [method: string, ...args: unknown[]]
@@ -339,4 +340,30 @@ export async function connected(options: Partial<AppMcpOptions> = {}): Promise<H
   await settle()
   h.socket().open()
   return h
+}
+
+/** 内存中的 BroadcastChannel：同名通道之间异步投递（不投递给发送者自己）。 */
+export function channelHub(): { factory: BroadcastChannelFactory; posted: unknown[] } {
+  const channels = new Map<string, Set<BroadcastChannelLike>>()
+  const posted: unknown[] = []
+  const factory: BroadcastChannelFactory = (name) => {
+    const set = channels.get(name) ?? new Set()
+    channels.set(name, set)
+    const ch: BroadcastChannelLike = {
+      onmessage: null,
+      postMessage(message) {
+        posted.push(message)
+        const data = structuredClone(message)
+        for (const other of set) {
+          if (other !== ch) queueMicrotask(() => other.onmessage?.({ data }))
+        }
+      },
+      close() {
+        set.delete(ch)
+      },
+    }
+    set.add(ch)
+    return ch
+  }
+  return { factory, posted }
 }

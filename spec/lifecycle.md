@@ -138,6 +138,19 @@ SDK 回连时在 `app/hello.launchToken` 中携带（沿用现有字段），Hos
 
 多实例：Host 优先唤醒**最近活跃的休眠实例**；若实例的唤醒描述不可用，退回清单 `launch` 冷启动新实例。
 
+**Web 唤醒交接**：浏览器处理 `web-url` 时通常新开标签页，而被唤醒的休眠标签页仍在。Web SDK 按以下规则把唤醒交还已有标签页
+（实现 `packages/web/src/wake-handoff.ts`）：
+
+- 带 `#app-mcp-wake=<token>` 加载的标签页，在创建核心之前于 `BroadcastChannel("app-mcp:<appId>:wake")` 上发出 `offer`（不含令牌）；
+  BroadcastChannel 只在同源内投递，消息另带 appId 校验，令牌因此只交给同源、同 appId 的标签页。
+- 状态为休眠（`dormant`，或等待重连 `backoff`）的标签页回 `claim`；新标签页只向**第一个**认领者发 `grant`（唯一携带令牌的消息），
+  认领者调用 `handleWake` 带令牌回连，核心接受后回 `taken`。
+- 收到 `taken`：新标签页从地址栏移除令牌，不创建核心并调用 `window.close()`；浏览器不允许关闭时显示一句中文提示（不阻塞），
+  之后按普通标签页启动（不再使用该令牌）。
+- 1 秒内未收到 `taken`（没有休眠标签页、对方被冻结或拒绝）：新标签页自己用令牌回连，行为与没有交接时相同，唤醒不丢失。
+  极端情况下双方都用了令牌，第二次握手按 4.4 节"已作废令牌"处理为普通连接。
+- 资源：只在带令牌加载时有一个最长 1 秒的定时器；其余时间每个标签页只保留一个通道监听，无轮询。没有 `BroadcastChannel` 时不交接。
+
 ## 6. 工具摘要（toolsHash）
 
 `sha256(规范化 JSON(按名称排序的 tools/sync 与 resources/sync 参数))` 的前 16 个十六进制字符。
