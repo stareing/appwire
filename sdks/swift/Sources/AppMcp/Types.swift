@@ -332,6 +332,14 @@ public struct AppMcpConfig {
     /// iOS 为 `false`（后台不能自行打开界面，导航立即以 `USER_ACTION_REQUIRED`（reason `foreground`）回复）。
     /// 设为 `true` 时由回调决定，如发本地通知请用户点开后返回 `.userActionRequired(...)`。
     public var navigateInBackground: Bool?
+    /// 按名寻址（spec/naming.md）：`start()` 后在系统名字服务登记本 App，Hub（`app-mcp-host serve --name-service`）按名拨入，
+    /// 进程未运行时由系统激活；通常与 `lifecycle` 的 `.onDemand` 同用。Linux：D-Bus 会话总线名 `dev.appmcp.App.<appId>`；
+    /// Windows：每 App 命名管道；两者都需先 `app-mcp-host app install` 登记。macOS（launchd 方案未实现）与 iOS（不支持，
+    /// spec/naming.md 4.5）上经 `onLog` 报告一条日志，其余照常。默认 `false`。
+    public var registerName: Bool
+    /// 登记实例名（`[a-z][a-z0-9-]{0,31}`，不能是 `default`）：另登记 `dev.appmcp.App.<appId>.<instance>`，
+    /// 供 `appmcp://<appId>/<instance>` 寻址。不合法时创建客户端抛 `AppMcpError.InvalidConfig`。
+    public var nameInstance: String?
 
     public init(
         appId: String,
@@ -353,7 +361,9 @@ public struct AppMcpConfig {
         heartbeat: HeartbeatMode = .auto,
         onIdleExit: (@MainActor @Sendable () -> Void)? = nil,
         callDedup: CallDedupPolicy? = nil,
-        navigateInBackground: Bool? = nil
+        navigateInBackground: Bool? = nil,
+        registerName: Bool = false,
+        nameInstance: String? = nil
     ) {
         self.appId = appId
         self.appName = appName
@@ -375,6 +385,8 @@ public struct AppMcpConfig {
         self.onIdleExit = onIdleExit
         self.callDedup = callDedup
         self.navigateInBackground = navigateInBackground
+        self.registerName = registerName
+        self.nameInstance = nameInstance
     }
 }
 
@@ -396,7 +408,9 @@ extension AppMcpConfig {
             lifecycle: lifecycle.ffi,
             connectTimeoutMs: connectTimeout.map { UInt32(max(1, min(Double(UInt32.max), $0 * 1000))) },
             heartbeat: heartbeat,
-            callDedup: callDedup
+            callDedup: callDedup,
+            registerName: registerName,
+            nameInstance: nameInstance
         )
     }
 }

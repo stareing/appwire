@@ -265,6 +265,13 @@ pub struct ClientConfig {
     pub heartbeat: Option<String>,
     /// 调用去重（spec/protocol.md 3.3）：同一 `callId` 在有效期内重放首次结果。缺省保留 5 分钟、最多 64 条。
     pub call_dedup: Option<CallDedupInit>,
+    /// 按名寻址（spec/naming.md）：`start()` 后在系统名字服务登记本 App，Hub 按名拨入（进程未运行时由系统激活）。
+    /// Linux：D-Bus 会话总线名 `dev.appmcp.App.<appId>`；Windows：命名管道 `\\.\pipe\appmcp-<用户 SID>-<appId>`；
+    /// 两者都需先 `app-mcp-host app install` 登记。其他平台不支持（经日志事件报告，其余照常）。默认 `false`。
+    pub register_name: Option<bool>,
+    /// 登记实例名（`[a-z][a-z0-9-]{0,31}`，不能是 `default`）：另登记 `dev.appmcp.App.<appId>.<instance>`
+    /// （Windows 管道 `…-<appId>.<instance>`），供 `appmcp://<appId>/<instance>` 寻址。不合法时构造抛错。
+    pub name_instance: Option<String>,
 }
 
 /// 调用去重策略。未提供的字段取默认值（`ttlMs` 300000、`maxEntries` 64）；任一为 0 关闭去重。
@@ -979,6 +986,8 @@ impl JsNativeClient {
         if let Some(d) = config.call_dedup {
             cfg.call_dedup = d.into_policy()?;
         }
+        cfg.register_name = config.register_name.unwrap_or(false);
+        cfg.name_instance = config.name_instance;
 
         let listener = listener.map(|tsfn| Arc::new(JsClientListener { tsfn: Mutex::new(Some(Arc::new(tsfn))) }));
         let dyn_listener = listener.clone().map(|l| l as Arc<dyn native::ClientListener>);

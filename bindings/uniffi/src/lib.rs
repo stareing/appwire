@@ -505,6 +505,16 @@ pub struct ClientConfig {
     /// 调用去重（spec/protocol.md 3.3）。为空时保留 5 分钟、最多 64 条；任一字段为 0 关闭。
     #[uniffi(default = None)]
     pub call_dedup: Option<CallDedupPolicy>,
+    /// 按名寻址（spec/naming.md）：`start` 后在系统名字服务登记本 App，Hub 按名拨入（进程未运行时由系统激活）。
+    /// Linux：D-Bus 会话总线名 `dev.appmcp.App.<appId>`；Windows：命名管道 `\\.\pipe\appmcp-<用户 SID>-<appId>`；
+    /// 两者都需先 `app-mcp-host app install` 登记。Android 不使用本字段（按名寻址经导出的 ToolsService，spec/naming.md 4.2），
+    /// macOS / iOS 不支持：本平台不支持时经 `ClientListener.on_log` 报告，其余照常。通常与 `LifecycleMode::OnDemand` 同用。
+    #[uniffi(default = false)]
+    pub register_name: bool,
+    /// 登记实例名（`[a-z][a-z0-9-]{0,31}`，不能是 `default`）：另登记 `dev.appmcp.App.<appId>.<instance>`
+    /// （Windows 管道 `…-<appId>.<instance>`），供 `appmcp://<appId>/<instance>` 寻址。不合法时构造客户端返回配置错误。
+    #[uniffi(default = None)]
+    pub name_instance: Option<String>,
 }
 
 /// 调用去重策略（spec/protocol.md 3.3）：已开始执行的 `callId` 的首次结果在有效期内重放。任一字段为 0 关闭去重。
@@ -658,6 +668,8 @@ impl From<ClientConfig> for native::NativeConfig {
         if let Some(d) = c.call_dedup {
             n.call_dedup = d.into();
         }
+        n.register_name = c.register_name;
+        n.name_instance = c.name_instance;
         n
     }
 }
@@ -1460,6 +1472,8 @@ mod tests {
             connect_timeout_ms: None,
             heartbeat: None,
             call_dedup: None,
+            register_name: false,
+            name_instance: None,
         };
         let n: native::NativeConfig = cfg.clone().into();
         assert_eq!(n, native::NativeConfig::new("shop", "Shop"));
@@ -1489,6 +1503,40 @@ mod tests {
         assert_eq!(n.client_kind, native::ClientKind::Hybrid);
         assert_eq!(n.host_url, "ws://127.0.0.1:1");
         assert_eq!(n.max_concurrent_calls, 4);
+    }
+
+    #[test]
+    fn register_name_passes_through_and_instance_is_validated() {
+        let cfg = ClientConfig {
+            app_id: "shop".into(),
+            app_name: "Shop".into(),
+            instance_id: None,
+            client_kind: None,
+            host_url: None,
+            app_version: None,
+            instance_title: None,
+            token: None,
+            launch_token: None,
+            max_concurrent_calls: 1,
+            overview: None,
+            lifecycle: None,
+            connect_timeout_ms: None,
+            heartbeat: None,
+            call_dedup: None,
+            register_name: true,
+            name_instance: Some("w2".into()),
+        };
+        let n: native::NativeConfig = cfg.clone().into();
+        assert!(n.register_name);
+        assert_eq!(n.name_instance.as_deref(), Some("w2"));
+        assert_eq!(n.name_service_address, None, "名字服务地址按环境取");
+
+        for bad in ["default", "W2", "2w", ""] {
+            let err = AppMcpClient::new(ClientConfig { name_instance: Some(bad.into()), ..cfg.clone() }, None)
+                .err()
+                .unwrap_or_else(|| panic!("实例名 {bad:?} 应被拒绝"));
+            assert!(matches!(err, AppMcpError::InvalidConfig { .. }), "{bad:?}：{err:?}");
+        }
     }
 
     #[test]
@@ -1682,6 +1730,8 @@ mod tests {
             connect_timeout_ms: Some(1000),
             heartbeat: Some(HeartbeatMode::Off),
             call_dedup: Some(CallDedupPolicy { ttl_ms: 1_000, max_entries: 4 }),
+            register_name: false,
+            name_instance: None,
         };
         let client = AppMcpClient::new(cfg, None).expect("client");
         assert!(!client.handle_wake("not-a-wake".into()));
@@ -1846,6 +1896,8 @@ mod tests {
             connect_timeout_ms: None,
             heartbeat: None,
             call_dedup: None,
+            register_name: false,
+            name_instance: None,
         }
     }
 

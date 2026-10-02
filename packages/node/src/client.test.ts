@@ -547,6 +547,14 @@ describe('生命周期', () => {
     expect(setup().native.config).not.toHaveProperty('callDedup')
   })
 
+  it('registerName / nameInstance 传给原生客户端；未给出时不出现', () => {
+    const { native } = setup({ registerName: true, nameInstance: 'w2', lifecycle: { mode: 'on-demand' } })
+    expect(native.config).toMatchObject({ registerName: true, nameInstance: 'w2' })
+    const plain = setup().native.config
+    expect(plain).not.toHaveProperty('registerName')
+    expect(plain).not.toHaveProperty('nameInstance')
+  })
+
   it('handleWake 接受字符串或数组，识别到即返回 true', () => {
     const { app, native } = setup()
     expect(app.handleWake(['/usr/bin/app', '--flag'])).toBe(false)

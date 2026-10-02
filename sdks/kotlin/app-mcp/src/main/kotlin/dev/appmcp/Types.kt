@@ -185,6 +185,20 @@ data class AppMcpConfig(
      * [NavigationResult.UserActionRequired] 回复（Android 见 `dev.appmcp.android.AppMcpContinueNotification`）。
      */
     val navigateInBackground: Boolean? = null,
+    /**
+     * 按名寻址（spec/naming.md）：[AppMcp.start] 后在系统名字服务登记本 App，Hub（`app-mcp-host serve --name-service`）
+     * 按名拨入，进程未运行时由系统激活；通常与 `LifecyclePolicy(mode = LifecycleMode.ON_DEMAND)` 同用。
+     * Linux：D-Bus 会话总线名 `dev.appmcp.App.<appId>`；Windows：命名管道 `\\.\pipe\appmcp-<用户 SID>-<appId>`；
+     * 两者都需先 `app-mcp-host app install` 登记。**Android 不使用本选项**（按名寻址经导出的 `dev.appmcp.TOOLS`
+     * Service，见 `app-mcp-android` 的 ToolsService，spec/naming.md 4.2）；本平台不支持时经 [onLog] 报告一条日志，其余照常。
+     */
+    val registerName: Boolean = false,
+    /**
+     * 登记实例名（`[a-z][a-z0-9-]{0,31}`，不能是 `default`）：另登记 `dev.appmcp.App.<appId>.<instance>`
+     * （Windows 管道 `…-<appId>.<instance>`），供 `appmcp://<appId>/<instance>` 寻址。不合法时创建客户端抛
+     * `AppMcpException.InvalidConfig`。
+     */
+    val nameInstance: String? = null,
 ) {
     internal fun toFfi() = dev.appmcp.ffi.ClientConfig(
         appId = appId,
@@ -201,5 +215,7 @@ data class AppMcpConfig(
         connectTimeoutMs = connectTimeoutMillis?.coerceIn(1, UInt.MAX_VALUE.toLong())?.toUInt(),
         heartbeat = heartbeat,
         callDedup = callDedup,
+        registerName = registerName,
+        nameInstance = nameInstance,
     )
 }

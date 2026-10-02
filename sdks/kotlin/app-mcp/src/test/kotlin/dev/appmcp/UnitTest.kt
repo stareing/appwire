@@ -117,6 +117,23 @@ class UnitTest {
     }
 
     @Test
+    fun registerNameMapsToFfi() {
+        val plain = AppMcpConfig("kotlin-unit", "按名").toFfi()
+        assertEquals(false, plain.registerName)
+        assertEquals(null, plain.nameInstance)
+        val named = AppMcpConfig("kotlin-unit", "按名", registerName = true, nameInstance = "w2").toFfi()
+        assertEquals(true, named.registerName)
+        assertEquals("w2", named.nameInstance)
+        AppMcp.create(AppMcpConfig("kotlin-unit", "按名", hostUrl = "ws://127.0.0.1:9", registerName = true, nameInstance = "w2"))
+            .close()
+        for (bad in listOf("default", "W2", "2w")) {
+            assertFailsWith<AppMcpException.InvalidConfig>(bad) {
+                AppMcp.create(AppMcpConfig("kotlin-unit", "按名", hostUrl = "ws://127.0.0.1:9", nameInstance = bad))
+            }
+        }
+    }
+
+    @Test
     fun heartbeatMapsToFfi() {
         assertEquals(HeartbeatMode.AUTO, AppMcpConfig("kotlin-unit", "心跳").toFfi().heartbeat)
         for (mode in HeartbeatMode.entries) {

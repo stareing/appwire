@@ -128,6 +128,24 @@ over local IPC or desktop loopback), and `@app.resource(..., realtime=True)` /
 resource keeps the app online, and a change while the app is asleep reconnects it to push the update.
 Ordinary resources (the default) do not block sleep; their changes are delivered on the next connection.
 
+### Addressing by name (`spec/naming.md`)
+
+Instead of connecting to the Host, an app can register a name with the system name service and let the
+Hub dial it on demand; when the app is not running, the system starts it:
+
+```python
+app = AppMcp("notes", "Notes",
+             lifecycle=LifecyclePolicy(mode="on-demand", residency="exit-when-idle"),
+             register_name=True,            # Linux: D-Bus name dev.appmcp.App.notes; Windows: per-app named pipe
+             name_instance=None,            # optional: also register appmcp://notes/<instance>
+             on_idle_exit=quit_app)         # activated process: exit after the Hub closes the channel
+```
+
+Register the activation once with `app-mcp-host app install --app-id notes --exec /path/to/notes` and run the
+Hub with `app-mcp-host serve --name-service`. Supported on Linux (D-Bus) and Windows (named pipes); on other
+platforms the option is ignored with a log line. `name_instance` must match `[a-z][a-z0-9-]{0,31}` and not be
+`"default"` (otherwise `AppMcpError.InvalidConfig`). See `examples/named_app.py`.
+
 ## Embedding the Hub in your own agent
 
 `app_mcp.hub.Hub` embeds the hub in a Python agent: export tools in MCP, OpenAI, Anthropic or

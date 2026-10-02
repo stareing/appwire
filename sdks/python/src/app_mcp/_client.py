@@ -994,6 +994,12 @@ class AppMcp(_Registrar):
     ``"always"`` / ``"off"``（spec/lifecycle.md 第 11 节 A3）；``call_dedup``：调用去重（:class:`CallDedup`，
     缺省 300 秒、64 条，``CallDedup.OFF`` 关闭）；``navigate_in_background``：后台时是否仍把导航交给导航回调
     （:meth:`set_navigate_in_background`），``None`` 取平台默认（桌面为 ``True``）。
+
+    ``register_name``：按名寻址（spec/naming.md）——``start()`` 后在系统名字服务登记，Hub 按名拨入、进程未运行时由系统
+    激活（Linux：D-Bus 会话总线名 ``dev.appmcp.App.<app_id>``；Windows：命名管道；都需先 ``app-mcp-host app install``
+    登记），通常与 ``LifecyclePolicy(mode=LifecycleMode.ON_DEMAND)`` 同用；本平台不支持（macOS 等）时记一条日志、其余照常。
+    ``name_instance``：另登记实例名（``[a-z][a-z0-9-]{0,31}``，不能是 ``"default"``），供 ``appmcp://<app_id>/<instance>``
+    寻址；不合法时构造抛出 ``AppMcpError.InvalidConfig``。
     """
 
     def __init__(
@@ -1020,6 +1026,8 @@ class AppMcp(_Registrar):
         heartbeat: Literal["auto", "always", "off"] | ffi.HeartbeatMode = "auto",
         call_dedup: CallDedup | None = None,
         navigate_in_background: bool | None = None,
+        register_name: bool = False,
+        name_instance: str | None = None,
     ) -> None:
         self._owner = self
         self._on_idle_exit = on_idle_exit
@@ -1064,6 +1072,8 @@ class AppMcp(_Registrar):
             connect_timeout_ms=None if connect_timeout is None else max(1, _ms(connect_timeout)),
             heartbeat=_enum_arg(heartbeat, _HEARTBEATS, "心跳策略"),
             call_dedup=None if call_dedup is None else call_dedup._ffi(),
+            register_name=register_name,
+            name_instance=name_instance,
         )
         self._inner = ffi.AppMcpClient(config, _ClientListener(self))
         if navigate_in_background is not None:

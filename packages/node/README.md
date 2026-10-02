@@ -102,7 +102,13 @@ the process itself).
   Electron), `instanceTitle`, `token` / `onPaired`, `autoStart`, `keepAlive`, `lifecycle`, `onIdleExit`,
   `heartbeat`, `callDedup` (`{ ttlMs?, maxEntries? }`, default 300000 ms / 64 entries, either 0 turns it off: a
   repeated `callId` within the TTL gets the first result replayed instead of running the handler again; each hit is
-  logged as a warning).
+  logged as a warning), `registerName` / `nameInstance` (addressing by name, spec/naming.md: register the app with
+  the system name service so the Hub - `app-mcp-host serve --name-service` - dials it on demand and the system starts
+  it when not running; Linux uses the D-Bus name `dev.appmcp.App.<appId>`, Windows a per-app named pipe, both
+  registered once with `app-mcp-host app install --app-id <id> --exec <program>`; other platforms ignore it with a log
+  line. Usually combined with `lifecycle: { mode: 'on-demand', residency: 'exit-when-idle' }` and an `onIdleExit` that
+  exits. `nameInstance` (`[a-z][a-z0-9-]{0,31}`, not `'default'`) additionally registers `appmcp://<appId>/<instance>`;
+  an invalid value throws).
 - Handler context: `callId`, `signal`, `hold()`, `progress()`, and `idempotencyKey` (the agent's idempotency key, passed
   through verbatim and stable across retries; absent when the agent gave none - see spec/protocol.md 3.3). Use it as a
   business-level dedup key or forward it to your backend.

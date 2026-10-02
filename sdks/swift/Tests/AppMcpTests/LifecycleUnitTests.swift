@@ -79,6 +79,26 @@ final class LifecycleUnitTests: XCTestCase {
         _ = try AppMcpClient(config: off)
     }
 
+    func testRegisterNameMapsToFfiConfig() throws {
+        let base = AppMcpConfig(appId: "swift-unit", appName: "按名", hostURL: "ws://127.0.0.1:9")
+        XCTAssertFalse(base.ffi(lifecycle: .persistent).registerName)
+        XCTAssertNil(base.ffi(lifecycle: .persistent).nameInstance)
+        var named = base
+        named.registerName = true
+        named.nameInstance = "w2"
+        let ffi = named.ffi(lifecycle: .persistent)
+        XCTAssertTrue(ffi.registerName)
+        XCTAssertEqual(ffi.nameInstance, "w2")
+        _ = try AppMcpClient(config: named)
+        for bad in ["default", "W2", "2w"] {
+            var c = base
+            c.nameInstance = bad
+            XCTAssertThrowsError(try AppMcpClient(config: c), bad) { error in
+                guard case AppMcpError.InvalidConfig = error else { return XCTFail("\(bad)：\(error)") }
+            }
+        }
+    }
+
     func testRealtimeResourceChangesToolsHash() throws {
         func hash(_ register: (AppMcpClient) throws -> Void) throws -> String {
             let c = try client()

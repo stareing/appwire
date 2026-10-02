@@ -600,6 +600,8 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
       ...(options.connectTimeoutMs !== undefined && { connectTimeoutMs: options.connectTimeoutMs }),
       ...(options.heartbeat !== undefined && { heartbeat: options.heartbeat }),
       ...(options.callDedup !== undefined && { callDedup: { ...options.callDedup } }),
+      ...(options.registerName !== undefined && { registerName: options.registerName }),
+      ...(options.nameInstance !== undefined && { nameInstance: options.nameInstance }),
     }
     this.client = new binding.NativeClient(config, (event) => this.onEvent(event))
     this.currentState = mapState(this.client.state)

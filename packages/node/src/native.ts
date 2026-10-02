@@ -74,6 +74,10 @@ export interface NativeClientConfig {
   heartbeat?: 'auto' | 'always' | 'off'
   /** 调用去重（旧版原生模块忽略）。 */
   callDedup?: { ttlMs?: number; maxEntries?: number }
+  /** 按名寻址：在系统名字服务登记（旧版原生模块忽略）。 */
+  registerName?: boolean
+  /** 登记实例名（旧版原生模块忽略）。 */
+  nameInstance?: string
 }
 
 export interface NativeToolSpec {

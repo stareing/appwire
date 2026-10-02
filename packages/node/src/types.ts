@@ -326,6 +326,20 @@ export interface NodeAppMcpOptions {
    */
   callDedup?: CallDedupOptions
   /**
+   * 按名寻址（spec/naming.md）：`start()` 后在系统名字服务登记本 App，Hub（`app-mcp-host serve --name-service`）
+   * 按名拨入，进程未运行时由系统激活；App 不必常驻、不必主动连接 Host。通常与 `lifecycle: { mode: 'on-demand' }` 同用。
+   * Linux：D-Bus 会话总线名 `dev.appmcp.App.<appId>`；Windows：命名管道 `\\.\pipe\appmcp-<用户 SID>-<appId>`；
+   * 两者都需先 `app-mcp-host app install --app-id <appId> --exec <程序>` 登记。其他平台（macOS 等）不支持：
+   * 经 `logger` 报告一条日志，其余照常。默认 `false`。
+   */
+  registerName?: boolean
+  /**
+   * 登记实例名（spec/naming.md 2.1，`[a-z][a-z0-9-]{0,31}`，不能是 `'default'`）：另登记
+   * `dev.appmcp.App.<appId>.<instance>`（Windows 管道 `…-<appId>.<instance>`），供 `appmcp://<appId>/<instance>` 寻址。
+   * 只在 `registerName` 为 `true` 时生效；不合法时构造抛出配置错误。
+   */
+  nameInstance?: string
+  /**
    * 已休眠且 `lifecycle.residency` 允许退出进程时调用。SDK **不会**自行退出进程：
    * App 在这里自行 `process.exit()`（Electron 为 `app.quit()`），或什么都不做。
    * 也可以用 {@link AppMcp.onIdleExit} 订阅。

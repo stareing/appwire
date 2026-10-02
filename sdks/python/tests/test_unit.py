@@ -423,6 +423,14 @@ def test_call_dedup_config():
         AppMcp("py-dedup", "Py", host_url="ws://127.0.0.1:9", call_dedup=d).close()
 
 
+def test_register_name_config():
+    assert ffi.ClientConfig(app_id="a", app_name="A").register_name is False, "绑定默认不登记"
+    AppMcp("py-named", "Py", host_url="ws://127.0.0.1:9", register_name=True, name_instance="w2").close()
+    for bad in ("default", "W2", "2w"):
+        with pytest.raises(ffi.AppMcpError.InvalidConfig):
+            AppMcp("py-named", "Py", host_url="ws://127.0.0.1:9", register_name=True, name_instance=bad)
+
+
 # ---------------------------------------------------------------------------
 # 原生客户端（不连接 Host）
 # ---------------------------------------------------------------------------
