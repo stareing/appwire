@@ -245,6 +245,33 @@ flowchart TD
     而用 AppExtension 声明，或在包清单中把 `app-mcp\apps` 排除出虚拟化。
 - **接入**：C#、C++、Rust、Python；WSL 侧 Hub 经 interop 的可达性列为待验证。
 
+实现时的决定（2026-10-02，4d-E；实现状态见 14.3）：
+
+- **激活方式**（5.3 `activation.kind`，本段新增 `exec` 与 `aumid`）：
+  - `exec`（未打包 App 的默认值，`app-mcp-host app install` 写入）：Hub 直接运行 `target`（为空时用 `executable`）并追加
+    `--app-mcp-activation`（与 D-Bus `Exec` 相同，SDK 据此视为激活启动、通道关闭后发出 idle-exit），工作目录为程序所在目录、不建控制台窗口、
+    不经 shell。程序不存在 → `NAME_NOT_FOUND`（调用 `APP_NOT_INSTALLED`）；激活后进程以失败状态退出 → 立即 `ACTIVATION_DENIED`，不等到超时。
+  - `uri`：复用唤醒器的协议激活（`<scheme>://app-mcp/wake?token=<随机>`），令牌不登记、Hub 不据此认领；这样启动的 App 没有
+    `--app-mcp-activation`，不会在空闲时自行退出。若 App 把该 URI 交给 SDK 的唤醒处理而改为拨 Hub，按 9.2 由 App 发起的连接认领本次调用。
+  - `aumid`（打包 App，U-07 之前的替代）：复用唤醒器的 `IApplicationActivationManager::ActivateApplication`，参数为 `--app-mcp-activation`。
+  - `none` 或其他值：不激活，只在 App 运行（管道存在）时可拨号；发现记录标为不可激活，Hub 不按名路由到它。
+- **等待管道**：首次打开得到"不存在"才激活，之后按 50 ms 起、×2、上限 1 s 退避重试，总时长不超过 Hub 的唤醒超时；"所有实例忙"
+  （`ERROR_PIPE_BUSY`）同样重试但不激活。带实例的地址只打开一次、不激活，不存在即 `NAME_NOT_FOUND`。
+- **App 侧调用方身份**：不调用 `GetNamedPipeClientProcessId` 核对 SID，而以管道 DACL（只授予当前用户）与 `PIPE_REJECT_REMOTE_CLIENTS`
+  为准——由内核执行，与 Host 自己的本地 IPC 管道（spec/protocol.md 1.4）相同。
+- **Hub 侧身份**：打开后、交出通道前核对 ①管道所有者 SID 为当前用户；②服务端进程（`GetNamedPipeServerProcessId`）映像
+  （`QueryFullProcessImageNameW`）与登记文件 `executable` 一致（去掉 `\\?\` 前缀、`/` 视为 `\`、不区分大小写；`app install` 写出的路径不带
+  `\\?\`）。取不到映像按不一致处理；不一致即 `PEER_IDENTITY_MISMATCH`。登记中没有 `executable` 时只核对所有者。
+- **拒绝通道**：Windows 没有方法错误可回，App 在该管道连接上写一行 `<CODE>：<说明>\n`（与 4.2 Binder 说明前缀相同，≤ 512 字节），
+  等 Hub 读取并关闭（最长 2 s）后断开；已有连接 → `CHANNEL_LIMIT`，SDK 已停止 → `ACTIVATION_DENIED`。Hub 交出通道前读取第一段数据：以
+  `GET ` 开头即 SDK 的升级请求（读到的字节原样回放给 App 连接服务），否则按拒绝行解析码（未知码 `ACTIVATION_DENIED`）；未发送任何数据即关闭
+  → `ACTIVATION_DENIED`；超时 → `ACTIVATION_TIMEOUT`。
+- **发现与更新**：只读登记目录；`executable` 已不存在的登记跳过（5.4）。目录变更用重叠 I/O 的 `ReadDirectoryChangesW`，由一个阻塞在
+  `WaitForMultipleObjects` 上的线程等待（无定时器、不轮询；只在启用按名寻址时存在，连接器的事件流被丢弃即退出）；缓冲溢出时重新枚举（F-25）。
+  文件出现 / 改动 → 安装事件，删除或失效 → 卸载事件。登记目录不存在时 Hub 创建它（以便监视）。登记目录 / 文件的属主检查（5.3 末段）未做：
+  `%LOCALAPPDATA%` 默认只有本用户可写。管道不能枚举，发现记录的 `running` 恒为否（正在运行的实例由拨号得知）。
+- **清单**：登记文件的 `manifest` 指向的静态清单由连接器读取（Host 不必重启即可按清单列出新登记 App 的工具），卸载事件随之撤下。
+
 ### 4.4 macOS：launchd + XPC
 
 - **名字**：用户 LaunchAgent（标签 `dev.appmcp.App.<appId>`）的 `MachServices` 中声明 `dev.appmcp.App.<appId>`；
@@ -350,7 +377,7 @@ flowchart TD
   "manifest": "/opt/shop/app-mcp.json",         // 静态清单的绝对路径（可省略）
   "manifestSha256": "…",                        // 清单内容摘要（可省略）
   "executable": "/opt/shop/bin/shop",           // 用于判断"已不存在"与核对通道对端
-  "activation": { "kind": "dbus" | "launchd" | "uri" | "com" | "app-service" | "none", "target": "…" },
+  "activation": { "kind": "dbus" | "exec" | "launchd" | "uri" | "aumid" | "com" | "app-service" | "none", "target": "…" },   // exec / aumid 见 4.3
   "signature": { "kind": "authenticode" | "codesign" | "none", "fingerprint": "sha256:…" } }   // 可省略；Hub 自己计算的值优先
 ```
 
@@ -593,27 +620,70 @@ Android 上每个 App 是不同的 uid，"同用户"不成立，App 须判断拨
 
 ## 11. 调试
 
-`app-mcp-host doctor` 增加名字服务检查组（检查项 ID 以 `naming.` 开头，`--json` 中同名）：
+`app-mcp-host doctor` 增加名字服务检查组（检查项 ID 以 `naming.` 开头，`--json` 中同名）。各平台运行哪些检查由检查表决定
+（`crates/host/src/doctor/naming/`）；平台上尚无连接器实现的检查报「跳过：未实现」，不做假检查。所有探测只读：不激活名字、
+不 `bindService`、不改系统设置；外部命令与总线调用各有 5 秒超时，总线 / adb 缺失时快速返回。
 
-| 检查项 | 内容 |
-|---|---|
-| `naming.discovery` | 每个 App 的发现来源（`source`、首次 / 最近见到时间）、指纹状态、是否可激活 |
-| `naming.dbus`（Linux） | 会话总线可达；`dev.appmcp.App.*` 激活文件与名字列表；激活文件中 `Exec` 指向的程序是否存在 |
-| `naming.android`（Android 端 Hub，或经 adb） | `dev.appmcp.TOOLS` Service 声明、`<meta-data>` 清单资源、最近一次绑定结果（含 OEM 拦截提示） |
-| `naming.pipes`（Windows） | `appmcp-<SID>-*` 管道列表、App 登记文件与其 `executable` 是否存在 |
-| `naming.launchd`（macOS） | `dev.appmcp.App.*` Agent 登记与 Mach 服务 |
-| `naming.bindings` | 当前通道 / 绑定数与上限、每条通道的宽限剩余时间、最近的对端死亡事件 |
+| 检查项 | 平台 | 内容 | 状态（2026-10-02） |
+|---|---|---|---|
+| `naming.registrations` | Linux / Windows / macOS | App 登记文件（5.3，用户级目录优先、同名只认第一个）：格式 / 版本 / 文件名与 appId（`naming::registration::parse`）、`executable` 是否存在、清单可读且与 `manifestSha256` 一致、文件权限（Unix）；激活方式按 kind 核对：`dbus` 须有同名激活文件且目标为 `dev.appmcp.App.<id>`，`exec` 的程序存在，`uri` / `aumid` 有 `target`，未知 kind 按不可激活提示 | 已实现 |
+| `naming.dbus` | Linux | 会话总线可达（经 Hub 的 `DbusConnector::discover`：`ListActivatableNames` + `ListNames`，不触发激活）；`$XDG_DATA_HOME` / `$XDG_DATA_DIRS` 下 `dbus-1/services/dev.appmcp.App.*.service`：`Name=` 合法且与文件名一致、不是实例名字、`Exec` 程序为绝对路径且存在（否则 `NAME_NOT_FOUND`，调用报 `APP_NOT_INSTALLED`）、带 `--app-mcp-activation`、名字在总线的可激活列表中（不在则提示 `ReloadConfig`）；列出总线上 `dev.appmcp.App.*` 名字的可激活 / 运行状态 | 已实现 |
+| `naming.android` | 任意（经 adb） | PATH 中有 adb 且有已连接设备时（最多 4 台）：`cmd package query-services -a dev.appmcp.TOOLS` 的 Service（导出、启用、`android:permission`）；独立 Hub App（`dev.appmcp.HUB`）是否安装；`getprop` 识别 ROM（Flyme 已真机确认，MIUI / HyperOS、EMUI / HarmonyOS、ColorOS、OriginOS 为未验证的常见设置位置）；`logcat -d -s ActivityManager:W` 中相关包的绑定拦截记录（目前只收录 Flyme 原文 `requires a ifw permit`）→ 注意 + `ACTIVATION_BLOCKED` + 放行路径 | 已实现 |
+| `naming.pipes` | Windows | `appmcp-<SID>-*` 管道与登记文件的对应 | 未实现（Hub 侧 Windows 连接器未完成，14.3）；登记文件由 `naming.registrations` 检查 |
+| `naming.launchd` | macOS | `dev.appmcp.App.*` Agent 登记与 Mach 服务 | 未实现（macOS 连接器未完成，4.4） |
+| `naming.discovery` | 全部 | 每个 App 的发现来源（`source`、首次 / 最近见到时间）、指纹状态、是否可激活 | 未做（目前见 `apps.list` 的 `nameService`；发现记录持久化与指纹未做，14.3） |
+| `naming.bindings` | 全部 | 当前通道 / 绑定数与上限、每条通道的宽限剩余时间、最近的对端死亡事件 | 未做（绑定上限未实现，14.3） |
 
-人工排查命令（文档给出用法）：
+### 11.1 人工排查
 
-| 平台 | 命令 |
-|---|---|
-| Linux | `busctl --user list \| grep dev.appmcp`、`busctl --user introspect dev.appmcp.App.<id> /dev/appmcp/App`、`dbus-monitor --session "type='signal',member='NameOwnerChanged'"` |
-| Android | `adb shell dumpsys activity services <包名>`、`adb shell dumpsys package <包名>`（Service 与权限声明）、`adb shell dumpsys activity processes`（进程状态 / 冻结） |
-| Windows | PowerShell `Get-ChildItem \\.\pipe\ \| Where-Object Name -like 'appmcp-*'`（非官方文档化的用法，仅供人工排查；`doctor` 不依赖它，以登记文件为准，U-06） |
-| macOS | `launchctl print gui/$(id -u)/dev.appmcp.App.<id>`（输出不是稳定接口，`doctor` 不解析，只提示命令） |
+doctor 结论不够时按平台逐步看（命令输出均不是稳定接口，doctor 只解析上表列出的几种）：
 
-Android 冻结状态：`adb shell dumpsys activity | grep -A 20 "Apps frozen:"`。
+**Linux（D-Bus）**
+
+```bash
+busctl --user list | grep dev.appmcp                     # 总线上的名字（含可激活但未运行的：ACTIVATABLE 列）
+busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ListActivatableNames | tr ' ' '\n' | grep dev.appmcp
+ls ~/.local/share/dbus-1/services/dev.appmcp.App.*.service   # 激活文件（app install 写入）
+busctl --user introspect dev.appmcp.App.<id> /dev/appmcp/App # 会激活该 App：确认 dev.appmcp.App1.Open 存在
+busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig   # 新写的激活文件未生效时
+dbus-monitor --session "type='signal',member='NameOwnerChanged',arg0namespace='dev.appmcp'"     # 名字出现 / 消失
+journalctl --user -b | grep -i dbus                      # 激活失败（Spawn.ExecFailed 等）的原因
+```
+
+`ServiceUnknown` / `Spawn.ExecFailed`：激活文件缺失或 `Exec` 程序不存在（重新 `app-mcp-host app install`）；`AccessDenied`：调用方不是同一用户；
+WSL 没有用户总线时 `DBUS_SESSION_BUS_ADDRESS` 为空（启用 systemd，或 `eval $(dbus-launch --sh-syntax)`）。
+
+**Android（adb）**
+
+```bash
+adb shell cmd package query-services -a dev.appmcp.TOOLS     # 声明了 App 端 Service 的包（看 exported=true、permission=null）
+adb shell cmd package query-services -a dev.appmcp.HUB       # 独立 Hub App
+adb shell dumpsys activity services dev.appmcp               # 当前绑定（ServiceRecord、recentCallingPackage）
+adb shell dumpsys package <包名>                              # Service 与权限声明、<meta-data>
+adb logcat -d -s ActivityManager:W | grep -E "ifw permit|dev.appmcp"   # 系统拦截绑定的记录
+adb shell dumpsys activity processes | grep -A3 <包名>        # 进程状态（cached / 冻结）
+adb shell dumpsys activity | grep -A 20 "Apps frozen:"        # 冻结列表
+```
+
+国产 ROM 的关联启动 / 自启动管控会拦截第三方 App 之间的 `bindService`（Flyme：`Binding to a service in package … requires a ifw permit[3rd app inter-call]`），
+调用返回 `USER_ACTION_REQUIRED`（`reason: "os-permission"`，`data.code = ACTIVATION_BLOCKED`）。只能由机主在系统设置中放行（Flyme：设置 → 应用管理 →
+该 App → 耗电和后台中允许自启动与关联启动，约 1 分钟后生效）；Hub App 与目标 App 都可能需要放行。本库与 doctor 不修改这些设置。
+
+**Windows（命名管道）**
+
+```powershell
+[System.IO.Directory]::GetFiles("\\.\pipe\") | Where-Object { $_ -like '*appmcp-*' }   # 管道列表（非官方文档化用法，U-06；doctor 不依赖）
+Get-ChildItem "$env:LOCALAPPDATA\app-mcp\apps"                                         # App 登记文件
+Get-Content "$env:LOCALAPPDATA\app-mcp\apps\<appId>.json" | ConvertFrom-Json            # 看 executable 与 activation
+```
+
+**macOS（launchd）**
+
+```bash
+launchctl print gui/$UID | grep dev.appmcp                   # 已登记的 Agent 与 Mach 服务
+launchctl print gui/$UID/dev.appmcp.App.<id>                 # 单个 Agent 的状态（输出不是稳定接口，doctor 不解析）
+ls ~/Library/LaunchAgents/dev.appmcp.App.*.plist ~/Library/Application\ Support/app-mcp/apps/
+```
 
 ## 12. 错误码（新增，待合入）
 
@@ -824,7 +894,21 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 - **发现增量**：未用 `getChangedPackages(sequence)`，Hub 启动时总是全量 `queryIntentServices`。
 - **未用 `linkToDeath`**（4.2"对端死亡"）。
 
-### 14.3 未做（后续段落）
+### 14.3 第三段：Windows 命名管道（2026-10-02，4d-E）
+
+| 部分 | 已实现 | 位置 |
+|---|---|---|
+| 名字映射与登记文件 | `naming::pipe`（管道名、拒绝行、可执行文件路径比较）、`naming::registration`（5.3 的类型、解析校验、`apps_dir`）、`codes::lookup` | `app_mcp_protocol::naming` |
+| 原生运行时 | Windows `NameServer`：`FILE_FLAG_FIRST_PIPE_INSTANCE` 登记默认 / 实例管道（DACL 当前用户、拒绝远程），接受任务阻塞在 `ConnectNamedPipe` 上，连接后先备好下一个实例再交给核心 `accept_channel`（与 Linux 同一路径、同一帧）；拒绝写拒绝行（4.3）；`NativeConfig::register_name` 在 Windows 上生效（C ABI `register_name` 随之生效，ABI 不变） | `crates/native/src/names/pipe.rs` |
+| Hub | `PipeConnector`：登记目录发现 + `ReadDirectoryChangesW` 事件、按名拨号（`exec` / `uri` / `aumid` 激活 + 有界退避等待）、所有者 SID 与进程映像核对、拒绝识别；平台操作在 `PipeSystem` 之后，其余逻辑在 Linux 上以替身测试 | `crates/hub/src/connector/pipe.rs`（`pipe/win.rs`、`pipe/tests.rs`） |
+| Host | `serve --name-service` 在 Windows 上启用 `PipeConnector`；`app install` / `app uninstall` 写 / 删 `%LOCALAPPDATA%\app-mcp\apps\<appId>.json`（`exec`）与清单副本 | `crates/host/src/lib.rs`、`app_install.rs` |
+| e2e（Windows 实机） | 库级：发现不激活 → 调用 exec 冷启动 → 宽限后关闭（App 退出、管道消失、Hub 句柄第二轮不增长）→ 再激活；常驻 App 已有通道 → `CHANNEL_LIMIT`；同名管道被其他程序抢注 → `PEER_IDENTITY_MISMATCH`；运行中新增 / 删除登记即时生效；激活程序缺失 → `APP_NOT_INSTALLED`。Host 级：`app install` → stdio Host 列出不启动 → 冷启动 → 宽限后退出 → 再激活 → `app uninstall` 后记录移除 | `crates/hub/tests/naming_pipe.rs`、`tests/windows/naming-e2e.mjs` |
+
+未做 / 未验证：打包 App 的 AppExtension 发现与 COM / App Service 激活（U-07、U-08）；`uri` / `aumid` 激活只经单元测试与已有唤醒器实测，未在按名寻址
+链路上实机跑；WSL 中的 Hub 打开 Windows 管道（U-10）；C# / C++ / Python SDK 的登记选项（C# SDK 尚未暴露 `register_name`）；`doctor` 的
+`naming.pipes`；Authenticode 发布者指纹（5.4）。
+
+### 14.4 未做（后续段落）
 
 - 发现：App 登记文件（5.3）的读取与目录监视（Host 的 `app install` 已写入）、自报登记 `app/register`（5.5）、签名指纹与
   `fingerprintChanged`（5.4）、发现记录持久化 `discovery.json`。

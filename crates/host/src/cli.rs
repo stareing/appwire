@@ -65,9 +65,9 @@ pub enum Command {
         #[command(subcommand)]
         action: PolicyCommand,
     },
-    /// 按名寻址的 App 登记（spec/naming.md 4.1、5.3）：生成名字服务激活文件（Linux：
-    /// `$XDG_DATA_HOME/dbus-1/services/dev.appmcp.App.<appId>.service`）与 App 登记文件，Hub（`serve --name-service`）
-    /// 不启动 App 即可发现它，调用时由系统按需激活。
+    /// 按名寻址的 App 登记（spec/naming.md 4.1、4.3、5.3）：生成 App 登记文件（Linux 另生成 D-Bus 激活文件
+    /// `$XDG_DATA_HOME/dbus-1/services/dev.appmcp.App.<appId>.service`；Windows 写 `%LOCALAPPDATA%\app-mcp\apps\<appId>.json`），
+    /// Hub（`serve --name-service`）不启动 App 即可发现它，调用时按需激活。
     App {
         #[command(subcommand)]
         action: AppAction,
@@ -172,10 +172,10 @@ pub struct AppUninstallArgs {
 pub struct AppTargetArgs {
     #[command(flatten)]
     pub home: HomeArg,
-    /// 数据目录（激活文件与登记文件的根），默认 $XDG_DATA_HOME 或 ~/.local/share。
+    /// 数据目录（激活文件与登记文件的根），默认 Linux $XDG_DATA_HOME 或 ~/.local/share、Windows %LOCALAPPDATA%。
     #[arg(long, value_name = "DIR")]
     pub data_home: Option<PathBuf>,
-    /// 写入后不调用 D-Bus ReloadConfig（默认调用：dbus-broker 是否自动发现新文件未确认，spec/naming.md U-05）。
+    /// 写入后不调用 D-Bus ReloadConfig（默认调用：dbus-broker 是否自动发现新文件未确认，spec/naming.md U-05；Windows 无效）。
     #[arg(long)]
     pub no_reload: bool,
 }
@@ -370,7 +370,8 @@ pub struct HubArgs {
     pub output_validation: Option<OutputValidation>,
 
     /// 按名寻址（spec/naming.md）：经系统名字服务发现 App（只读，不启动进程），调用时按名拨号、未运行由系统激活，
-    /// 宽限后关闭通道。Linux 为 D-Bus 会话总线（App 用 `app install` 生成激活文件）；其他平台暂不支持（忽略并提示）。
+    /// 宽限后关闭通道。Linux 为 D-Bus 会话总线、Windows 为每 App 命名管道（App 都用 `app install` 登记）；
+    /// 其他平台暂不支持（忽略并提示）。
     #[arg(long)]
     pub name_service: bool,
 

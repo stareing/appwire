@@ -5,8 +5,9 @@
 //!   得到的通道交给 App 连接服务，其上跑与本地 IPC 相同的帧与消息（SDK 先发 `app/hello`）。
 //! - 连接器只做机制：何时拨号、何时关闭由 Hub 的路由与生命周期决定（7.2）。
 //!
-//! 平台实现：Linux D-Bus 会话总线（[`DbusConnector`]，cargo feature `dbus`）；由宿主语言实现发现与拨号的
-//! [`HostedConnector`]（Unix，Android 经 hub-uniffi 的 Kotlin 实现，spec/naming.md 4.2）。
+//! 平台实现：Linux D-Bus 会话总线（[`DbusConnector`]，cargo feature `dbus`）；Windows 每 App 每用户命名管道
+//! （`PipeConnector`，spec/naming.md 4.3）；由宿主语言实现发现与拨号的 [`HostedConnector`]（Unix，Android 经
+//! hub-uniffi 的 Kotlin 实现，spec/naming.md 4.2）。
 
 use std::fmt;
 
@@ -19,6 +20,11 @@ use tokio::io::{AsyncRead, AsyncWrite};
 mod dbus;
 #[cfg(all(target_os = "linux", not(target_env = "ohos"), feature = "dbus"))]
 pub use dbus::DbusConnector;
+// @why 平台无关的部分（登记解析、拨号退避、拒绝识别）在测试中于各平台运行；公开类型只在 Windows 上导出。
+#[cfg(any(windows, test))]
+mod pipe;
+#[cfg(windows)]
+pub use pipe::PipeConnector;
 #[cfg(unix)]
 mod hosted;
 #[cfg(unix)]

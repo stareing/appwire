@@ -3,7 +3,9 @@
 //!
 //! ```text
 //! cargo run -p app-mcp-native --example named_app            # 用户直接运行：登记名字，常驻直到 Ctrl-C
-//! app-mcp-host app install --app-id named-demo --exec <本程序路径>   # 生成 D-Bus 激活文件后可被按需拉起
+//! app-mcp-host app install --app-id named-demo --exec <本程序路径>   # 登记后可被按需拉起（Linux：D-Bus 激活文件；
+//!                                                                    # Windows：%LOCALAPPDATA%\app-mcp\apps\named-demo.json）
+//! app-mcp-host serve --name-service                                  # Hub 按名发现、调用时拨号
 //! ```
 //!
 //! 环境变量：`APP_MCP_APP_ID`（默认 `named-demo`）；`APP_MCP_EVENT_LOG`（可选，追加 `start <pid>` / `exit <pid>` 行，

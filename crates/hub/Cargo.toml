@@ -69,7 +69,8 @@ libc = "0.2"
 # 单实例锁用 LockFileEx（windows-sys，与 app-mcp-protocol 同一版本）。
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+# 按名寻址（connector::PipeConnector）：管道服务端进程（Pipes / Threading）、登记目录变更通知（FileSystem / IO / Security）。
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [dev-dependencies]
 # test-support：tests/naming.rs 用私有 D-Bus 会话总线（test_bus）与示例程序构建（test_support::example_path）。

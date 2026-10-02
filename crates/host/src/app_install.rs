@@ -1,76 +1,88 @@
-//! `app-mcp-host app install / uninstall`：按名寻址的 App 登记（spec/naming.md 4.1、5.3）。
+//! `app-mcp-host app install / uninstall`：按名寻址的 App 登记（spec/naming.md 4.1、4.3、5.3）。
 //!
-//! Linux 写两个文件（只写用户目录，不需要特权）：
-//! - 会话服务激活文件 `<数据目录>/dbus-1/services/dev.appmcp.App.<id>.service`（`Name=` 与文件名一致，
-//!   `Exec="<程序>" --app-mcp-activation`），写入后调用 `ReloadConfig`；
-//! - App 登记文件 `<数据目录>/app-mcp/apps/<appId>.json`（`source: "manual"`，`activation.kind: "dbus"`）。
+//! 只写用户目录，不需要特权：
+//! - App 登记文件 `<数据目录>/app-mcp/apps/<appId>.json`（`source: "manual"`）：Linux 数据目录为 `$XDG_DATA_HOME`，
+//!   激活方式 `dbus`；Windows 为 `%LOCALAPPDATA%`，激活方式 `exec`（Hub 直接运行程序并追加 `--app-mcp-activation`），
+//!   它是 Windows 上 Hub 发现 App 的唯一来源（Hub 经目录变更通知即时看到，无需重启）；
+//! - 仅 Linux：会话服务激活文件 `<数据目录>/dbus-1/services/dev.appmcp.App.<id>.service`（`Name=` 与文件名一致，
+//!   `Exec="<程序>" --app-mcp-activation`），写入后调用 `ReloadConfig`。
 //!
-//! 给出静态清单时另复制到 `<home>/manifests/<appId>.json`：Host 启动时加载，App 未运行也能列出工具并按名激活。
+//! 给出静态清单时另复制到 `<home>/manifests/<appId>.json`：Host 启动时加载，App 未运行也能列出工具并按名激活
+//! （登记文件的 `manifest` 指向该副本）。
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Context;
-use app_mcp_protocol::naming::{Address, dbus as names};
-use serde::Serialize;
+use app_mcp_protocol::naming::registration::{self, Activation, REGISTRATION_VERSION, Registration};
+use app_mcp_protocol::naming::{Address, pipe as pipe_names};
 use sha2::{Digest, Sha256};
 
 use crate::cli::{AppAction, AppInstallArgs, AppTargetArgs, AppUninstallArgs};
 use crate::config::{AppHome, absolute};
 
-/// App 登记文件格式版本（spec/naming.md 5.3）。
-const REGISTRATION_VERSION: u32 = 1;
-
-/// App 登记文件（spec/naming.md 5.3）。
-#[derive(Debug, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Registration {
-    pub registration_version: u32,
-    pub app_id: String,
-    pub name: String,
-    pub source: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub manifest: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub manifest_sha256: Option<String>,
-    pub executable: PathBuf,
-    pub activation: Activation,
-}
-
-#[derive(Debug, Serialize, PartialEq)]
-pub struct Activation {
-    pub kind: &'static str,
-    pub target: String,
-}
-
 /// 写入（或将删除）的文件位置。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Paths {
-    pub service_file: PathBuf,
+    /// D-Bus 激活文件（仅 Linux）。
+    pub service_file: Option<PathBuf>,
     pub registration_file: PathBuf,
     pub manifest_copy: PathBuf,
 }
 
 impl Paths {
+    /// `data_home` 为数据目录（Linux `$XDG_DATA_HOME`，Windows `%LOCALAPPDATA%`）。
     pub fn new(data_home: &Path, home: &AppHome, app_id: &str) -> Self {
         Self {
-            service_file: data_home.join("dbus-1").join("services").join(names::service_file_name(app_id)),
-            registration_file: data_home.join("app-mcp").join("apps").join(format!("{app_id}.json")),
+            service_file: service_file_path(data_home, app_id),
+            registration_file: registration::apps_dir(data_home).join(registration::file_name(app_id)),
             manifest_copy: home.manifest_dir().join(format!("{app_id}.json")),
         }
     }
+
+    fn all(&self) -> Vec<&PathBuf> {
+        self.service_file.iter().chain([&self.registration_file, &self.manifest_copy]).collect()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn service_file_path(data_home: &Path, app_id: &str) -> Option<PathBuf> {
+    let name = app_mcp_protocol::naming::dbus::service_file_name(app_id);
+    Some(data_home.join("dbus-1").join("services").join(name))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn service_file_path(_data_home: &Path, _app_id: &str) -> Option<PathBuf> {
+    None
+}
+
+/// 本平台的激活方式（spec/naming.md 5.3 `activation`）。
+#[cfg(target_os = "linux")]
+fn activation_for(address: &Address) -> Activation {
+    Activation {
+        kind: registration::kinds::DBUS.to_owned(),
+        target: app_mcp_protocol::naming::dbus::bus_name(address),
+    }
+}
+
+/// Windows：`exec`，`target` 留空 = 运行 `executable`。
+#[cfg(not(target_os = "linux"))]
+fn activation_for(_address: &Address) -> Activation {
+    Activation { kind: registration::kinds::EXEC.to_owned(), target: String::new() }
 }
 
 pub async fn cmd(action: AppAction) -> anyhow::Result<ExitCode> {
     anyhow::ensure!(
-        cfg!(target_os = "linux"),
-        "本平台尚未实现按名寻址的 App 登记（spec/naming.md 4.0：目前只有 Linux D-Bus）"
+        cfg!(any(target_os = "linux", windows)),
+        "本平台尚未实现按名寻址的 App 登记（spec/naming.md 4.0：目前有 Linux D-Bus 与 Windows 命名管道）"
     );
     let (target, reload) = match action {
         AppAction::Install(args) => {
             let paths = install(&args)?;
             println!("已登记 {}：", args.app_id);
-            println!("  激活文件  {}", paths.service_file.display());
+            if let Some(service) = &paths.service_file {
+                println!("  激活文件  {}", service.display());
+            }
             println!("  登记文件  {}", paths.registration_file.display());
             if args.manifest.is_some() {
                 println!("  清单      {}（Host 重启后生效）", paths.manifest_copy.display());
@@ -94,18 +106,32 @@ pub async fn cmd(action: AppAction) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// 数据目录：`--data-home` > `$XDG_DATA_HOME`（绝对路径时）> `~/.local/share`。
+/// 数据目录：`--data-home` > 平台默认（Linux `$XDG_DATA_HOME`（绝对路径时）> `~/.local/share`；Windows `%LOCALAPPDATA%`）。
 fn data_home(target: &AppTargetArgs) -> anyhow::Result<PathBuf> {
     if let Some(d) = &target.data_home {
         return absolute(d);
     }
+    default_data_home()
+}
+
+#[cfg(not(windows))]
+fn default_data_home() -> anyhow::Result<PathBuf> {
     if let Some(d) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|d| d.is_absolute()) {
         return Ok(d);
     }
     Ok(dirs::home_dir().context("无法确定用户主目录；请用 --data-home 指定")?.join(".local").join("share"))
 }
 
-/// 登记：校验参数后写激活文件、登记文件（与清单副本）。返回写入的位置。
+/// Windows：与 Hub（`PipeConnector::default_apps_dir`）读取的是同一目录——`%LOCALAPPDATA%`。
+#[cfg(windows)]
+fn default_data_home() -> anyhow::Result<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|d| d.is_absolute())
+        .context("环境变量 LOCALAPPDATA 未设置；请用 --data-home 指定")
+}
+
+/// 登记：校验参数后写登记文件、（Linux）激活文件与清单副本。返回写入的位置。
 pub fn install(args: &AppInstallArgs) -> anyhow::Result<Paths> {
     let address = Address::new(&args.app_id, None).map_err(|e| anyhow::anyhow!("--app-id 无效：{e}"))?;
     anyhow::ensure!(
@@ -116,7 +142,10 @@ pub fn install(args: &AppInstallArgs) -> anyhow::Result<Paths> {
     let exec = absolute(&args.exec)?;
     let exec = std::fs::canonicalize(&exec).with_context(|| format!("程序 {} 不存在", exec.display()))?;
     anyhow::ensure!(exec.is_file(), "{} 不是文件", exec.display());
-    let exec_text = exec.to_str().with_context(|| format!("程序路径不是 UTF-8：{}", exec.display()))?;
+    // @why Windows 的 canonicalize 返回 `\\?\C:\…`：写成普通形式，与进程映像路径一致（spec/naming.md 4.3 身份核对）。
+    let exec_text = pipe_names::strip_verbatim(
+        exec.to_str().with_context(|| format!("程序路径不是 UTF-8：{}", exec.display()))?,
+    );
 
     let manifest = match &args.manifest {
         Some(m) => {
@@ -140,15 +169,23 @@ pub fn install(args: &AppInstallArgs) -> anyhow::Result<Paths> {
         .clone()
         .or_else(|| manifest.as_ref().map(|(_, n, _)| n.clone()))
         .unwrap_or_else(|| args.app_id.clone());
+    let manifest_copy = match &manifest {
+        Some(_) => Some(
+            paths.manifest_copy.to_str().map(pipe_names::strip_verbatim).with_context(|| {
+                format!("清单副本路径不是 UTF-8：{}", paths.manifest_copy.display())
+            })?,
+        ),
+        None => None,
+    };
     let registration = Registration {
         registration_version: REGISTRATION_VERSION,
         app_id: args.app_id.clone(),
         name,
-        source: "manual",
-        manifest: manifest.as_ref().map(|_| paths.manifest_copy.clone()),
+        source: "manual".to_owned(),
+        manifest: manifest_copy,
         manifest_sha256: manifest.as_ref().map(|(_, _, b)| format!("{:x}", Sha256::digest(b))),
-        executable: exec.clone(),
-        activation: Activation { kind: "dbus", target: names::bus_name(&address) },
+        executable: Some(exec_text.clone()),
+        activation: activation_for(&address),
     };
 
     if let Some((_, _, bytes)) = &manifest {
@@ -157,7 +194,9 @@ pub fn install(args: &AppInstallArgs) -> anyhow::Result<Paths> {
     let mut json = serde_json::to_string_pretty(&registration)?;
     json.push('\n');
     write_file(&paths.registration_file, json.as_bytes())?;
-    write_file(&paths.service_file, names::service_file(&args.app_id, exec_text).as_bytes())?;
+    if let Some(service) = &paths.service_file {
+        write_file(service, app_mcp_protocol::naming::dbus::service_file(&args.app_id, &exec_text).as_bytes())?;
+    }
     Ok(paths)
 }
 
@@ -167,7 +206,7 @@ pub fn uninstall(args: &AppUninstallArgs) -> anyhow::Result<Vec<PathBuf>> {
     let home = AppHome::resolve(args.target.home.home.as_deref())?;
     let paths = Paths::new(&data_home(&args.target)?, &home, &args.app_id);
     let mut removed = Vec::new();
-    for p in [&paths.service_file, &paths.registration_file, &paths.manifest_copy] {
+    for p in paths.all() {
         match std::fs::remove_file(p) {
             Ok(()) => removed.push(p.clone()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -187,6 +226,7 @@ fn write_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 }
 
 /// 请会话总线重新读取激活目录；失败只提示（dbus-daemon 也会经 inotify 发现用户目录中的变化）。
+/// Windows 不需要：Hub 经目录变更通知读到登记文件。
 async fn reload_bus() {
     #[cfg(target_os = "linux")]
     {
@@ -235,32 +275,46 @@ mod tests {
             target: target(&dir),
         };
         let paths = install(&args).unwrap();
-        assert_eq!(paths.service_file, dir.join("data/dbus-1/services/dev.appmcp.App.my_shop.service"));
-        let service = std::fs::read_to_string(&paths.service_file).unwrap();
         let exe = std::fs::canonicalize(&exe).unwrap();
-        assert_eq!(
-            service,
-            format!("[D-BUS Service]\nName=dev.appmcp.App.my_shop\nExec=\"{}\" --app-mcp-activation\n", exe.display())
-        );
+        let exe_text = pipe_names::strip_verbatim(exe.to_str().unwrap());
         let reg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&paths.registration_file).unwrap()).unwrap();
-        assert_eq!(paths.registration_file, dir.join("data/app-mcp/apps/my-shop.json"));
+        assert_eq!(paths.registration_file, dir.join("data").join("app-mcp").join("apps").join("my-shop.json"));
         assert_eq!(reg["registrationVersion"], 1);
         assert_eq!(reg["appId"], "my-shop");
         assert_eq!(reg["name"], "我的商城");
         assert_eq!(reg["source"], "manual");
-        assert_eq!(reg["activation"]["kind"], "dbus");
-        assert_eq!(reg["activation"]["target"], "dev.appmcp.App.my_shop");
-        assert_eq!(reg["executable"], exe.display().to_string());
+        assert_eq!(reg["executable"], exe_text);
         assert_eq!(reg["manifestSha256"].as_str().map(str::len), Some(64));
+        assert_eq!(reg["manifest"].as_str().map(PathBuf::from), Some(paths.manifest_copy.clone()));
         assert!(paths.manifest_copy.is_file());
+        // Hub 读登记文件用的是同一个类型与校验（spec/naming.md 5.3）。
+        let parsed = registration::parse(&std::fs::read_to_string(&paths.registration_file).unwrap(), "my-shop").unwrap();
+        assert_eq!(parsed.executable.as_deref(), Some(exe_text.as_str()));
+        if cfg!(target_os = "linux") {
+            assert_eq!(reg["activation"]["kind"], "dbus");
+            assert_eq!(reg["activation"]["target"], "dev.appmcp.App.my_shop");
+            let service_path = paths.service_file.clone().unwrap();
+            assert_eq!(service_path, dir.join("data/dbus-1/services/dev.appmcp.App.my_shop.service"));
+            let service = std::fs::read_to_string(&service_path).unwrap();
+            assert_eq!(
+                service,
+                format!("[D-BUS Service]\nName=dev.appmcp.App.my_shop\nExec=\"{}\" --app-mcp-activation\n", exe.display())
+            );
+        } else {
+            // Windows：Hub 直接运行 executable（spec/naming.md 4.3 `exec`），没有激活文件；路径不带 `\\?\`。
+            assert_eq!(reg["activation"]["kind"], "exec");
+            assert_eq!(reg["activation"]["target"], "");
+            assert!(paths.service_file.is_none());
+            assert!(!exe_text.starts_with(r"\\?\"), "{exe_text}");
+        }
         // 幂等：再装一次覆盖。
         install(&args).unwrap();
 
         let removed =
             uninstall(&AppUninstallArgs { app_id: "my-shop".into(), target: target(&dir) }).unwrap();
-        assert_eq!(removed.len(), 3);
-        assert!(!paths.service_file.exists() && !paths.registration_file.exists() && !paths.manifest_copy.exists());
+        assert_eq!(removed.len(), paths.all().len());
+        assert!(paths.all().iter().all(|p| !p.exists()));
         let again = uninstall(&AppUninstallArgs { app_id: "my-shop".into(), target: target(&dir) }).unwrap();
         assert!(again.is_empty());
         let _ = std::fs::remove_dir_all(&dir);

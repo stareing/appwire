@@ -368,14 +368,24 @@ async fn register_names(
     }
 }
 
-/// 在 Hub 拨入的通道上完成 WebSocket 握手（SDK 仍是 WebSocket 客户端，spec/naming.md 第 3 节），超时按失败处理。
+/// 通道 → 字节流：Unix 为 socketpair 的一端（转为 tokio 流），Windows 为已连接的命名管道实例（spec/naming.md 4.3）。
 #[cfg(unix)]
+fn channel_io(channel: names::Channel) -> std::io::Result<Box<dyn Io>> {
+    channel.set_nonblocking(true)?;
+    Ok(Box::new(tokio::net::UnixStream::from_std(channel)?))
+}
+
+#[cfg(windows)]
+fn channel_io(channel: names::Channel) -> std::io::Result<Box<dyn Io>> {
+    Ok(Box::new(channel))
+}
+
+/// 在 Hub 拨入的通道上完成 WebSocket 握手（SDK 仍是 WebSocket 客户端，spec/naming.md 第 3 节），超时按失败处理。
+#[cfg(any(unix, windows))]
 fn accept(channel: names::Channel, timeout: Duration) -> ConnectFuture {
     Box::pin(async move {
         let io = async {
-            channel.set_nonblocking(true)?;
-            let stream = tokio::net::UnixStream::from_std(channel)?;
-            let io: Box<dyn Io> = Box::new(stream);
+            let io = channel_io(channel)?;
             tokio_tungstenite::client_async_tls(app_mcp_protocol::endpoint::IPC_WS_URL, io).await.map(|(ws, _)| ws)
         };
         match tokio::time::timeout(timeout, io).await {
@@ -388,7 +398,7 @@ fn accept(channel: names::Channel, timeout: Duration) -> ConnectFuture {
     })
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn accept(channel: names::Channel, _timeout: Duration) -> ConnectFuture {
     match channel {}
 }

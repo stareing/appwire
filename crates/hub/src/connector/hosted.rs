@@ -122,7 +122,7 @@ impl HostedConnector {
 
 /// 宿主回传的错误码字符串 → 本库常量；未知码按"系统拒绝"处理。
 pub fn naming_code(code: &str) -> &'static str {
-    codes::ALL.iter().copied().find(|c| *c == code).unwrap_or(codes::ACTIVATION_DENIED)
+    codes::lookup(code).unwrap_or(codes::ACTIVATION_DENIED)
 }
 
 #[async_trait::async_trait]

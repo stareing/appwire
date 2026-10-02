@@ -326,10 +326,12 @@ typedef struct AmClientOptions {
     int64_t call_dedup_ttl_ms;       /* 同一 callId 首次结果的保留时长；0 = 默认 300000，负数 = 关闭去重 */
     int32_t call_dedup_max_entries;  /* 最多保留的结果数（超出淘汰最早的）；0 = 默认 64，负数 = 关闭去重 */
     /* v17（按名寻址，spec/naming.md）：旧调用方的 struct_size 不含以下字段时取默认值。 */
-    bool register_name;              /* true：start 后在系统名字服务登记（Linux：D-Bus dev.appmcp.App.<appId>），Hub 按名拨入；
+    bool register_name;              /* true：start 后在系统名字服务登记（Linux：D-Bus dev.appmcp.App.<appId>；Windows：命名管道
+                                        \\.\pipe\appmcp-<用户 SID>-<appId>，需 app-mcp-host app install 写登记文件），Hub 按名拨入；
                                         通常与 AM_LIFECYCLE_ON_DEMAND 同用。本平台不支持时经 on_log 报告，其余照常 */
     const char *name_instance;       /* 可为 NULL：登记实例名（[a-z][a-z0-9-]{0,31}，不能是 "default"），另登记
-                                        dev.appmcp.App.<appId>.<instance>；不合法时 am_client_new_ex 返回 AM_ERR_INVALID_CONFIG */
+                                        dev.appmcp.App.<appId>.<instance>（Windows 管道 …-<appId>.<instance>）；不合法时
+                                        am_client_new_ex 返回 AM_ERR_INVALID_CONFIG */
 } AmClientOptions;
 
 typedef struct AmToolSpec {

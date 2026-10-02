@@ -75,16 +75,18 @@ pub struct NativeConfig {
     pub call_dedup: CallDedupPolicy,
     /// 在系统名字服务登记本 App（spec/naming.md，"按名寻址"）：Hub 按名拨号时由本客户端接受通道（App 不必常驻、
     /// 不必主动连接 Hub；进程未运行时由系统激活）。Linux：D-Bus 会话总线名 `dev.appmcp.App.<appId>`（需要激活文件，
-    /// `app-mcp-host app install` 生成）。默认 `false`。
+    /// `app-mcp-host app install` 生成）；Windows：命名管道 `\\.\pipe\appmcp-<用户 SID>-<appId>`（需要 App 登记文件
+    /// `%LOCALAPPDATA%\app-mcp\apps\<appId>.json`，同一命令生成）。默认 `false`。
     ///
     /// 登记在 [`NativeClient::start`] 之后进行、[`NativeClient::stop`] / 客户端被丢弃时注销；登记期间运行时线程保持
     /// 与名字服务的连接（阻塞等待，无定时器）。本平台不支持或登记失败时经 [`ClientListener::on_log`] 报告，其余照常。
     /// 通常与 `lifecycle.mode = OnDemand` 同用：App 不主动连接，只在 Hub 拨入时连接。
     pub register_name: bool,
     /// 登记实例名（spec/naming.md 2.1，`[a-z][a-z0-9-]{0,31}`，不能是 `default`）：`Some` 时另登记实例名字
-    /// （D-Bus `dev.appmcp.App.<appId>.<instance>`），供 `appmcp://<appId>/<instance>` 寻址。默认 `None`。
+    /// （D-Bus `dev.appmcp.App.<appId>.<instance>`、Windows 管道 `…-<appId>.<instance>`），供 `appmcp://<appId>/<instance>`
+    /// 寻址。默认 `None`。
     pub name_instance: Option<String>,
-    /// 名字服务地址（Linux：D-Bus 地址，如 `unix:path=/run/user/1000/bus`）。`None`（默认）按环境：由名字服务激活时用
+    /// 名字服务地址（Linux：D-Bus 地址，如 `unix:path=/run/user/1000/bus`；Windows 不使用）。`None`（默认）按环境：由名字服务激活时用
     /// `DBUS_STARTER_ADDRESS`，否则 `DBUS_SESSION_BUS_ADDRESS`。测试用私有总线时设置。
     pub name_service_address: Option<String>,
 }

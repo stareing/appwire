@@ -166,7 +166,17 @@ fn name_service_connectors(enabled: bool) -> Vec<std::sync::Arc<dyn app_mcp_hub:
     {
         vec![std::sync::Arc::new(app_mcp_hub::connector::DbusConnector::new(None))]
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        match app_mcp_hub::connector::PipeConnector::new(None) {
+            Ok(c) => vec![std::sync::Arc::new(c)],
+            Err(e) => {
+                tracing::warn!("按名寻址不可用：{e}");
+                Vec::new()
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         tracing::warn!("本平台尚未实现按名寻址（spec/naming.md 4.0），忽略 nameService");
         Vec::new()
