@@ -3,7 +3,7 @@
 //! 检查项：Host 运行 / 版本 / 身份、单实例锁、运行时目录权限、本地 IPC 端点（路径、权限、所有者、可连通）、
 //! 监听端口与备选端口（空闲 / 本 Host / 其他 app-mcp / 其他进程及其 pid 与名称）、Windows 排除端口段、防火墙说明、
 //! 令牌与鉴权模式、各 App 实例状态与最近错误、各工具的声明（risk 与 MCP 注解）、资源保护（限流 / 大小上限与拒绝次数）、
-//! 网页 SDK 的拦截上报、Android `adb reverse`。
+//! 网页 SDK 的拦截上报、Android `adb reverse`、按名寻址的名字服务（`naming.*`，见 [`naming`]）。
 //!
 //! 只读：不加锁（锁状态从 `/proc/locks` 或锁文件中的进程号推断）、不修改任何文件。
 
@@ -19,6 +19,9 @@ use serde_json::{Value, json};
 use crate::config::{AppHome, AuthMode, Settings};
 use crate::ports::{self, PortOwner};
 use crate::probe::{self, Probe};
+
+mod command;
+mod naming;
 
 /// 检查结果的级别。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -417,6 +420,9 @@ pub async fn run(home: &AppHome, s: &Settings) -> Report {
         .and_then(|(_, p)| p.parse().ok())
         .unwrap_or(LISTEN_CANDIDATE_PORTS[0]);
     checks.push(adb_check(host_port).await);
+
+    // 12. 按名寻址（spec/naming.md 第 11 节）
+    checks.extend(naming::run(&naming::NamingEnv::from_system()).await);
 
     Report { version: env!("CARGO_PKG_VERSION"), home: home.dir.display().to_string(), checks }
 }
@@ -995,26 +1001,27 @@ pub(crate) fn find_in_path(name: &str) -> Option<std::path::PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// 每条 adb 命令的超时（B-08）。
+const ADB_TIMEOUT: Duration = Duration::from_secs(5);
+
 async fn adb_check(host_port: u16) -> Check {
     const T: &str = "Android adb reverse";
     let Some(adb) = find_in_path("adb") else {
         return Check::new("adb", T, Level::Skip, "PATH 中没有 adb");
     };
     let device_port = LISTEN_CANDIDATE_PORTS[0];
-    let mut cmd = tokio::process::Command::new(&adb);
-    cmd.args(["reverse", "--list"]).stdin(std::process::Stdio::null()).kill_on_drop(true);
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
-    let out = match tokio::time::timeout(Duration::from_secs(5), cmd.output()).await {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => return Check::new("adb", T, Level::Info, format!("运行 {} 失败：{e}", adb.display())),
-        Err(_) => return Check::new("adb", T, Level::Info, "adb reverse --list 5 秒内没有返回（adb 服务未就绪？）"),
+    let out = match command::run_tool(&adb, &["reverse", "--list"], ADB_TIMEOUT).await {
+        Ok(o) => o,
+        Err(e @ command::ToolFailure::Spawn(_)) => {
+            return Check::new("adb", T, Level::Info, format!("{}：{e}", adb.display()));
+        }
+        Err(e) => return Check::new("adb", T, Level::Info, format!("adb reverse --list {e}（adb 服务未就绪？）")),
     };
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let details = json!({ "adb": adb, "output": text, "stderr": String::from_utf8_lossy(&out.stderr) });
+    let text = out.stdout;
+    let details = json!({ "adb": adb, "output": text, "stderr": out.stderr });
     let fix = format!("adb reverse tcp:{device_port} tcp:{host_port}");
-    if !out.status.success() {
-        return Check::new("adb", T, Level::Info, format!("adb reverse --list 失败（没有连接的设备？）：{}", String::from_utf8_lossy(&out.stderr).trim()))
+    if !out.success {
+        return Check::new("adb", T, Level::Info, format!("adb reverse --list 失败（没有连接的设备？）：{}", out.stderr.trim()))
             .hint(format!("连接设备后运行 {fix}"))
             .details(details);
     }

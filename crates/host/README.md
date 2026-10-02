@@ -150,6 +150,13 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 | 资源保护 | 限流与大小上限的当前策略、`outputSchema` 核对方式，以及各 App 启动以来被 `RATE_LIMITED` / `PAYLOAD_TOO_LARGE` 拒绝的次数（有拒绝时为注意）；运行中的 Host 版本较旧时跳过 |
 | SDK 上报 | SDK 在连接恢复后上报的此前问题（如浏览器拦截 `BLOCKED_*`）。被拦截期间页面无法连接 Host，Host 无从得知（spec/protocol.md 10.2） |
 | Android adb reverse | `adb` 在 PATH 中时运行 `adb reverse --list`（5 秒超时），检查设备端 7717 是否转发到本机实际端口 |
+| 名字服务：App 登记文件（`naming.registrations`，桌面） | 登记目录（Linux `$XDG_DATA_HOME` / `$XDG_DATA_DIRS` 下 `app-mcp/apps`，Windows `%LOCALAPPDATA%\app-mcp\apps`，macOS `~/Library/Application Support/app-mcp/apps`）中每个 `<appId>.json`：格式与文件名、`executable` 与清单是否存在、清单摘要、文件权限、激活方式（`dbus` 须有激活文件） |
+| 名字服务：D-Bus（`naming.dbus`，Linux） | 会话总线可达（`ListActivatableNames` / `ListNames`，不触发激活）；`dev.appmcp.App.*.service` 的 `Name` / `Exec` 程序是否存在 / `--app-mcp-activation` / 是否已被总线读到；总线上名字的可激活 / 运行状态 |
+| 名字服务：Android（`naming.android`） | adb 与设备都在时：`dev.appmcp.TOOLS` Service 是否导出 / 启用 / 无权限要求、独立 Hub App（`dev.appmcp.HUB`）是否安装、ROM 识别、系统日志中的绑定拦截（Flyme `ifw permit`）→ `ACTIVATION_BLOCKED` 与放行路径（不修改设置） |
+| 名字服务：Windows 命名管道 / macOS launchd（`naming.pipes` / `naming.launchd`） | 连接器尚未实现，报「跳过：未实现」 |
+
+名字服务检查的细节与人工排查命令（`busctl` / `dbus-monitor`、`adb shell cmd package query-services`、`dumpsys activity services`、管道列表、
+`launchctl print`）见 spec/naming.md 第 11 节。
 
 `app-mcp-host status`：一行摘要，未运行时说明原因（如 `[PORT_BUSY]` 与占用进程），退出码 3。
 
