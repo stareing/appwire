@@ -53,7 +53,7 @@
   清单 `tools[].outputSchema` 同步（`spec/manifest.md`）；`@app-mcp/build` 与 codegen 从返回类型生成。
 - **R3 结论摘要与无返回值**：`ToolsInvokeResult.summary?`（一句面向模型 / 用户的结论，受第 14 项 S4 大小上限）；
   无返回值时 Hub 输出固定文本"已完成"而非 `null`，`structuredContent` 不填。
-- **R4 调用元信息**：MCP 出口 `_meta` 带 `callId`、`instanceId`、`durationMs`、`woke`（本次是否唤醒 App），键名按 U3；同一套键名规则还覆盖已落地的暂定键（7f587d8，前缀 `app-mcp/`，单一定义在 `crates/hub/src/names.rs` 与 `spec/hub-api.md` 3.15，改前缀只改这两处）：请求侧 `app-mcp/timeoutMs`（相对毫秒，Hub 取其与 `response_timeout` 的较小者，只限制等待 App 结果；第 16 项 P6 / 4f c）、`app-mcp/idempotencyKey`（1–256 字符，原样进 `ToolsInvokeParams.idempotencyKey`；第 16 项 N7a / 4f j），结果侧 `app-mcp/status`、`app-mcp/stateResource`（R1）、`app-mcp/routedTo`；R4 新增的 `callId` 等键沿用同一处定义；
+- **R4 调用元信息**：MCP 出口 `_meta` 带 `callId`、`instanceId`、`durationMs`、`woke`（本次是否唤醒 App），键名按 U3（前缀已定为 `dev.appwire/`，第 12 项 S1；下文 `app-mcp/` 为改名前的旧键）；同一套键名规则还覆盖已落地的暂定键（7f587d8，前缀 `app-mcp/`，单一定义在 `crates/hub/src/names.rs` 与 `spec/hub-api.md` 3.15，改前缀只改这两处）：请求侧 `app-mcp/timeoutMs`（相对毫秒，Hub 取其与 `response_timeout` 的较小者，只限制等待 App 结果；第 16 项 P6 / 4f c）、`app-mcp/idempotencyKey`（1–256 字符，原样进 `ToolsInvokeParams.idempotencyKey`；第 16 项 N7a / 4f j），结果侧 `app-mcp/status`、`app-mcp/stateResource`（R1）、`app-mcp/routedTo`；R4 新增的 `callId` 等键沿用同一处定义；
   与 Host / SDK 日志 `cid` 可对照；Hub API `CallOutcome` 补 `duration_ms`、`woke`。
 - **R5 可重试标注**：错误码表加"可重试"列（是 / 否 / 视 `retryAfterMs`），作为唯一定义；SDK 与 Hub 按表填 `data.retryable`。
 - **R6 结构化状态提示**：`stateHints` 在 MCP 出口改为 `resource_link` 内容块（随第 17 项 C1），保留现有文本一个版本后移除（E-06）。

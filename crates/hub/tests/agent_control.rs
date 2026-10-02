@@ -320,11 +320,11 @@ async fn activate_respects_wake_policy_and_unsupported_navigation() {
     hub.shutdown().await;
 }
 
-/// MCP 请求 `_meta`：`app-mcp/idempotencyKey` 原样到达 handler；`app-mcp/timeoutMs` 与配置值取较小者；不合法时不执行。
+/// MCP 请求 `_meta`：`dev.appwire/idempotencyKey` 原样到达 handler；`dev.appwire/timeoutMs` 与配置值取较小者；不合法时不执行。
 #[cfg(feature = "mcp-server")]
 mod mcp {
     use super::*;
-    use app_mcp_hub::names::{META_IDEMPOTENCY_KEY, META_TIMEOUT_MS};
+    use app_mcp_hub::names::{LEGACY_META_IDEMPOTENCY_KEY, META_IDEMPOTENCY_KEY, META_TIMEOUT_MS};
     use rmcp::ServiceExt;
     use rmcp::model::{CallToolRequestParams, CallToolResult, RequestMetaObject};
 
@@ -363,6 +363,13 @@ mod mcp {
         let r = mcp_call(&hub, "shop.cart.add", json!({}), json!({ META_IDEMPOTENCY_KEY: "k-1" })).await;
         assert_ne!(r.is_error, Some(true), "{}", text(&r));
         assert_eq!(structured(&r)["idempotencyKey"], "k-1");
+
+        // 弃用期：旧前缀键仍到达 handler；与新键冲突时不执行
+        let r = mcp_call(&hub, "shop.cart.add", json!({}), json!({ LEGACY_META_IDEMPOTENCY_KEY: "k-old" })).await;
+        assert_eq!(structured(&r)["idempotencyKey"], "k-old", "{}", text(&r));
+        let both = json!({ META_IDEMPOTENCY_KEY: "k-2", LEGACY_META_IDEMPOTENCY_KEY: "k-3" });
+        let r = mcp_call(&hub, "shop.cart.add", json!({}), both).await;
+        assert!(r.is_error == Some(true) && text(&r).contains("INVALID_INPUT"), "{}", text(&r));
 
         // Agent 截止时间 300 ms（配置的 response_timeout 为 35 s）：handler 要 3 s，按 300 ms 结束
         let started = Instant::now();

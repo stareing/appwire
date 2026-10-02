@@ -7,7 +7,7 @@ use std::time::Duration;
 use app_mcp_protocol::{ErrorKind, MAX_IDEMPOTENCY_KEY_LEN, ToolError};
 use serde_json::{Map, Value};
 
-use crate::names::{META_IDEMPOTENCY_KEY, META_TIMEOUT_MS};
+use crate::names::{LEGACY_META_IDEMPOTENCY_KEY, LEGACY_META_TIMEOUT_MS, META_IDEMPOTENCY_KEY, META_TIMEOUT_MS};
 
 /// Agent 给出的调用控制。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -36,19 +36,33 @@ fn invalid_idempotency_key() -> ToolError {
     invalid(format!("幂等键（{META_IDEMPOTENCY_KEY}）必须是 1 到 {MAX_IDEMPOTENCY_KEY_LEN} 个字符的字符串。"))
 }
 
+/// 取新键，弃用期内回退到旧键。
+///
+/// @compat 旧前缀 `app-mcp/`（docs/plans/12-mcp-stateless.md S1）。
+/// @error `INVALID_INPUT`：新旧键同时出现且取值不同。
+fn pick<'a>(meta: &'a Map<String, Value>, key: &str, legacy: &str) -> Result<Option<&'a Value>, ToolError> {
+    match (meta.get(key), meta.get(legacy)) {
+        (Some(new), Some(old)) if new != old => {
+            Err(invalid(format!("_meta「{key}」与旧键「{legacy}」取值不同（{new} / {old}）；只保留「{key}」。")))
+        }
+        (new, old) => Ok(new.or(old)),
+    }
+}
+
 /// 从请求 `_meta` 取出调用控制；键缺省时为 `None`。
 ///
-/// @error `INVALID_INPUT`：`app-mcp/timeoutMs` 不是正整数；`app-mcp/idempotencyKey` 不是 1..=256 个字符的字符串。
+/// @error `INVALID_INPUT`：`dev.appwire/timeoutMs` 不是正整数；`dev.appwire/idempotencyKey` 不是 1..=256 个字符的字符串；
+/// 新旧键取值冲突（见 [`pick`]）。
 #[cfg_attr(not(feature = "mcp-server"), allow(dead_code))]
 pub(crate) fn parse(meta: &Map<String, Value>) -> Result<AgentCallMeta, ToolError> {
-    let timeout = match meta.get(META_TIMEOUT_MS) {
+    let timeout = match pick(meta, META_TIMEOUT_MS, LEGACY_META_TIMEOUT_MS)? {
         None => None,
         Some(v) => match v.as_u64().filter(|ms| *ms > 0) {
             Some(ms) => Some(Duration::from_millis(ms)),
             None => return Err(invalid(format!("_meta「{META_TIMEOUT_MS}」必须是正整数（毫秒），收到 {v}。"))),
         },
     };
-    let idempotency_key = match meta.get(META_IDEMPOTENCY_KEY) {
+    let idempotency_key = match pick(meta, META_IDEMPOTENCY_KEY, LEGACY_META_IDEMPOTENCY_KEY)? {
         None => None,
         Some(Value::String(k)) => {
             check_idempotency_key(k)?;
@@ -101,6 +115,35 @@ mod tests {
         for bad in [json!(""), json!(7), json!(too_long), json!(null)] {
             let e = parse(&meta(json!({ META_IDEMPOTENCY_KEY: bad }))).unwrap_err();
             assert_eq!(e.kind, ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn keys_use_reverse_domain_prefix() {
+        assert_eq!(META_TIMEOUT_MS, "dev.appwire/timeoutMs");
+        assert_eq!(META_IDEMPOTENCY_KEY, "dev.appwire/idempotencyKey");
+    }
+
+    #[test]
+    fn legacy_keys_still_accepted() {
+        let m = parse(&meta(json!({ LEGACY_META_TIMEOUT_MS: 800, LEGACY_META_IDEMPOTENCY_KEY: "old-1" }))).unwrap();
+        assert_eq!(m.timeout, Some(Duration::from_millis(800)));
+        assert_eq!(m.idempotency_key.as_deref(), Some("old-1"));
+        let e = parse(&meta(json!({ LEGACY_META_TIMEOUT_MS: 0 }))).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::InvalidInput, "旧键同样校验");
+    }
+
+    #[test]
+    fn new_and_legacy_keys_conflict() {
+        let same = parse(&meta(json!({ META_TIMEOUT_MS: 500, LEGACY_META_TIMEOUT_MS: 500 }))).unwrap();
+        assert_eq!(same.timeout, Some(Duration::from_millis(500)), "取值相同不算冲突");
+        for m in [
+            json!({ META_TIMEOUT_MS: 500, LEGACY_META_TIMEOUT_MS: 900 }),
+            json!({ META_IDEMPOTENCY_KEY: "a", LEGACY_META_IDEMPOTENCY_KEY: "b" }),
+        ] {
+            let e = parse(&meta(m)).unwrap_err();
+            assert_eq!(e.kind, ErrorKind::InvalidInput);
+            assert!(e.message.contains("旧键"), "{}", e.message);
         }
     }
 

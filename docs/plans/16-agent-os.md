@@ -105,7 +105,7 @@
 - **P5 调用对象与后台作业控制**：每次调用是一个可查询的对象，状态为 `pending / running / completed / failed / cancelled / timeout`（2026-10-02 由 4f b 并入）；调用可转为脱离请求的作业，支持列出 / 取消 / 等待 / 重新挂接；与 O2 共用取消路径，载体对齐 MCP tasks 扩展（第 12 项 M6）；第 19 项 R1 的 `pending` 结果可引用调用对象。
   - **调用状态机**（4f i）：`CREATED → ACTIVATING → RUNNING → 结果`，写入 `spec/protocol.md`；平台相关状态（前台 / 后台 / 挂起）只作诊断字段 `platform_state`（`status` / `doctor`），不进核心状态。
   - **作业状态归属**（4f h）：脱离请求的作业状态由 App 持久化，Hub 只转发作业 ID 与状态查询、不在内存保存作业状态（App 进程被系统回收后状态不丢）；进行中调用的状态（状态机）由 Hub 持有，调用结束即释放。
-- **P6 交互优先 QoS**：调用可带优先级与截止时间；截止时间由 Agent 在 MCP 请求 `_meta` 中以相对毫秒 `app-mcp/timeoutMs` 给出，Hub 取其与 `response_timeout` 的较小者、只限制等待 App 结果（4f c，已实施 7f587d8；键名随第 19 项 R4）；用户在场的交互调用优先于后台作业，冲突时后台排队或让路。
+- **P6 交互优先 QoS**：调用可带优先级与截止时间；截止时间由 Agent 在 MCP 请求 `_meta` 中以相对毫秒 `dev.appwire/timeoutMs` 给出，Hub 取其与 `response_timeout` 的较小者、只限制等待 App 结果（4f c，已实施 7f587d8；键名随第 19 项 R4）；用户在场的交互调用优先于后台作业，冲突时后台排队或让路。
 - **P7 Hub 自身状态作为资源**：已连接 App、任务、句柄、配额余量以只读 MCP 资源暴露（K13），Agent 用 `read` 自查。
 
 N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），否则崩溃的 Agent 会永久锁住 App。
@@ -113,7 +113,7 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
 ### 第一部分：正确性（最先做）
 
 - **N7a 幂等键**：写及以上风险的调用带 `callId`（Hub 生成，重发保持不变），SDK 在有效期内按 `callId` 去重并返回首次结果；先完成 U1 验证。
-  `callId` 只覆盖 Hub ↔ App 一段的重发；Agent 侧的 MCP 重试由 Agent 幂等键补齐（4f j）：MCP `_meta` 的 `app-mcp/idempotencyKey`（1–256 字符）原样传入 `ToolsInvokeParams.idempotencyKey`，handler 上下文可读（已实施 7f587d8），如何去重由 App 决定（键名随第 19 项 R4）。
+  `callId` 只覆盖 Hub ↔ App 一段的重发；Agent 侧的 MCP 重试由 Agent 幂等键补齐（4f j）：MCP `_meta` 的 `dev.appwire/idempotencyKey`（1–256 字符）原样传入 `ToolsInvokeParams.idempotencyKey`，handler 上下文可读（已实施 7f587d8），如何去重由 App 决定（键名 `dev.appwire/` 前缀，第 12 项 S1）。
 - **O2 进度与取消**：协议新增进度消息，Hub 透传为 MCP `notifications/progress`；取消一路传到 App handler（已有取消路径则复用）。
 
 ### 第二部分：数据面与信息流

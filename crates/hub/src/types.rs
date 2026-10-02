@@ -262,7 +262,7 @@ pub struct CallRequest {
     /// 厂商会话 ID：总览的首次附带、`apps.select` 按会话计算；`None` = 默认会话。
     pub session: Option<String>,
     /// Agent 的幂等键：原样转交 App（`ToolsInvokeParams.idempotencyKey`，spec/protocol.md 3.3），1..=256 个字符；
-    /// MCP 出口取自请求 `_meta` 的 `app-mcp/idempotencyKey`（spec/hub-api.md 3.15）。
+    /// MCP 出口取自请求 `_meta` 的 `dev.appwire/idempotencyKey`（spec/hub-api.md 3.15）。
     pub idempotency_key: Option<String>,
 }
 

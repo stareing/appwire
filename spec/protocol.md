@@ -361,7 +361,7 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
   未声明时只有对象结果放入 `structuredContent`（之前的行为）。Host 可按配置核对结果是否符合（默认只记日志，spec/hub-api.md 3.11）。
 - **结果状态 `status`**：handler 正常返回只说明请求被处理。`pending` = 已受理、尚未完成（等待用户在 App 内确认、异步处理），
   附 `stateResource`；`partial` = 只完成一部分，`summary` 说明；`noop` = 没有做任何改动。Host 在 MCP 结果最前面加一句说明
-  （如"已受理，尚未完成……不要当作已完成，也不要重复提交"），并在 `_meta` 写 `app-mcp/status`、`app-mcp/stateResource`（资源 URI）；
+  （如"已受理，尚未完成……不要当作已完成，也不要重复提交"），并在 `_meta` 写 `dev.appwire/status`、`dev.appwire/stateResource`（资源 URI）；
   `done` 时都不加。
 - **摘要 `summary` 与无返回值**：有 `summary` 时作为一段文本放在返回值之前。`data` 为 `null` 且没有 `summary`、状态为 `done` 时，
   Host 对模型输出固定文本"已完成"（不再输出 `null`），且不填 `structuredContent`。`summary` 计入结果大小上限（spec/hub-api.md 3.11）。

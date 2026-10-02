@@ -187,7 +187,7 @@ async fn mcp_egress_shapes_results() {
     let note = t.iter().position(|s| s.contains("尚未完成")).expect("状态说明");
     let summary = t.iter().position(|s| s == "已提交，等待用户在 App 内付款").expect("摘要");
     assert!(note < summary, "{t:?}");
-    assert_eq!(r.meta.as_ref().unwrap().get("app-mcp/status"), Some(&json!("pending")));
+    assert_eq!(r.meta.as_ref().unwrap().get("dev.appwire/status"), Some(&json!("pending")));
     let _ = client.cancel().await;
 }
 

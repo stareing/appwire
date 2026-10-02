@@ -19,7 +19,7 @@
    - `_meta` 只承载**单次请求**的控制信息（截止时间、幂等键、追踪、进度令牌），不承载跨请求状态。
 3. **modern 下 `tools/list` 只能随服务器状态与请求凭据变化，不能随其他请求的副作用变化**（`[S]` SEP-2567）——
    渐进暴露的“展开 / 调用 / `apps.select` 后加入列表”与总览“首次附带”在 modern 下必须取消或改写；`tools/list` 结果另须 `ttlMs` / `cacheScope`（12 迁移计划 m5）。
-4. **`_meta` 键名：建议把 `app-mcp/` 改为 `dev.appmcp/`**（第 4 节）。`app-mcp/` 语法合法、不在保留区，不违反 MUST；但规范 SHOULD 用反向域名，
+4. **`_meta` 键名：`app-mcp/` 改为 `dev.appwire/`**（第 4 节；机主 2026-10-02 选定品牌名前缀，S1 已实施）。`app-mcp/` 语法合法、不在保留区，不违反 MUST；但规范 SHOULD 用反向域名，
    `app-mcp` 是通用词，与他人撞名风险高。`dev.appmcp` 与仓库已有的反向域名标识（Android `dev.appmcp.action.WAKE`、D-Bus `dev.appmcp.App`、
    Kotlin `dev.appmcp.hub`）一致，且第二个标签是 `appmcp` 而非 `mcp`，不触发保留规则。当前无发布版本（`git tag` 为空），改名成本只在 Hub 一处。
    AppWire 的结果状态（`pending` 等）**不能**做成 `resultType` 取值，继续放 `_meta`（第 4.3 节）。
@@ -129,7 +129,7 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 - P1 的“modern 请求在 `_meta` 带任务 ID”（16-agent-os.md U8）**不可依赖**：`_meta` 由客户端程序填写，模型无法写入；通用客户端（Claude Code 等）
   没有理由填厂商键（**推断**，依据 S-F5“第三方扩展用自己的前缀、在扩展文档中定义”——只有接入方主动实现才会带；U2 实测确认）。
 - 建议：**任务 ID 作为显式句柄**，按 SEP-2567 模式经工具结果返回、作为工具参数传回（如 `apps.task.begin` → `taskId`；需要任务作用域的内置工具接受可选 `taskId`）；
-  `_meta` 键 `dev.appmcp/taskId` 只作为**可选**通道，供自己实现客户端的 Agent 宿主（Hub API 厂商、自研 Agent）使用。两者都没有时退化为 `CallerKey`。
+  `_meta` 键 `dev.appwire/taskId` 只作为**可选**通道，供自己实现客户端的 Agent 宿主（Hub API 厂商、自研 Agent）使用。两者都没有时退化为 `CallerKey`。
 - P1 落地后 `SessionState` 迁入任务对象；`CallerKey` 成为“默认任务”。legacy 会话 = 一会话一任务（与 16 P1 一致）。
 - 句柄安全：本机令牌 / IPC 同用户鉴权在前，句柄仍按 S-F7 生成（≥128 bit、限时、数量上限，与第 11 项 LRU·TTL 共用实现）。
 
@@ -167,17 +167,18 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 - **前缀改为 `dev.appmcp/`**。理由：① 满足 SHOULD；② 与仓库已有反向域名标识一致（`spec/manifest.md:116` `dev.appmcp.action.WAKE`、
   `spec/naming.md:146` `dev.appmcp.App`、`spec/hub-api.md:624` `dev.appmcp.hub`），P-04；③ 第二标签 `appmcp` ≠ `mcp`，不保留；
   ④ 键属于协议标识符，按 CLAUDE.md 约定沿用工作名而非品牌名 AppWire。备选 `dev.appwire/`（品牌）或 `io.github.stareing/`（可证明归属）由机主决定（U1）。
+  **机主决定（2026-10-02）：`dev.appwire/`**。下表与后文的键名已按 `dev.appwire/` 更新。
 - 键表（唯一定义仍在 `crates/hub/src/names.rs` 与 `spec/hub-api.md` 3.15，改名只改这两处）：
 
 | 现键 | 新键 | 方向 |
 |---|---|---|
-| `app-mcp/timeoutMs` | `dev.appmcp/timeoutMs` | 请求 |
-| `app-mcp/idempotencyKey` | `dev.appmcp/idempotencyKey` | 请求 |
-| `app-mcp/status` | `dev.appmcp/status` | 结果 |
-| `app-mcp/stateResource` | `dev.appmcp/stateResource` | 结果 |
-| `app-mcp/routedTo` | `dev.appmcp/routedTo` | 结果 |
-| （R4 新增） | `dev.appmcp/callId`、`dev.appmcp/instanceId`、`dev.appmcp/durationMs`、`dev.appmcp/woke` | 结果 |
-| （3.4 可选） | `dev.appmcp/taskId` | 请求 |
+| `app-mcp/timeoutMs` | `dev.appwire/timeoutMs` | 请求 |
+| `app-mcp/idempotencyKey` | `dev.appwire/idempotencyKey` | 请求 |
+| `app-mcp/status` | `dev.appwire/status` | 结果 |
+| `app-mcp/stateResource` | `dev.appwire/stateResource` | 结果 |
+| `app-mcp/routedTo` | `dev.appwire/routedTo` | 结果 |
+| （R4 新增） | `dev.appwire/callId`、`dev.appwire/instanceId`、`dev.appwire/durationMs`、`dev.appwire/woke` | 结果 |
+| （3.4 可选） | `dev.appwire/taskId` | 请求 |
 
 - 兼容（E-06）：无发布版本（`git tag` 为空；键只出现在 `crates/hub` 及其测试），可直接改名。为防止已有本地 Agent 配置依赖旧键，
   请求侧**同时接受**旧键一个小版本（两者都在且值不同 → `INVALID_INPUT`），结果侧只写新键；`spec/hub-api.md` 3.15 写明弃用期。
@@ -188,7 +189,7 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 - `resultType` 是核心结果字段，取值只能是规范定义值或已在能力中声明的扩展值，客户端遇到未知值 MUST 视为无效（S-F2）。
 - 因此 AppWire 的 `status`（`done` / `pending` / `partial` / `noop`）**不得**放入 `resultType`；`pending` 也不等于 `input_required`
   （后者是 MRTR，要求客户端补输入后重发原请求）。结论：`resultType` 一律 `complete`（rmcp 构造器负责，见 12 迁移计划 M8 待验证），
-  状态继续经 `dev.appmcp/status` + 文本说明（R1 已实现文本），两者正交。
+  状态继续经 `dev.appwire/status` + 文本说明（R1 已实现文本），两者正交。
 
 ## 5. 错误码分区影响
 
@@ -207,8 +208,8 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 
 | # | 内容 | 依赖 | 验收 |
 |---|---|---|---|
-| S1 | `_meta` 前缀改 `dev.appmcp/`（4.2），请求侧旧键弃用期内兼容 | U1 机主定前缀 | 单测：新键、旧键、两者冲突、非法值；`spec/hub-api.md` 3.15 键表更新 |
-| S2 | `resultType` 核查与补齐（12 迁移计划 M8 / U7）；R4 结果元信息按新键输出 | S1 | modern 每种结果（工具、空结果、资源、列表）都带 `resultType: complete`；`_meta.dev.appmcp/callId` 与日志 `cid` 可对照 |
+| S1 | `_meta` 前缀改 `dev.appwire/`（4.2），请求侧旧键弃用期内兼容 | U1 机主定前缀 | 单测：新键、旧键、两者冲突、非法值；`spec/hub-api.md` 3.15 键表更新 |
+| S2 | `resultType` 核查与补齐（12 迁移计划 M8 / U7）；R4 结果元信息按新键输出 | S1 | modern 每种结果（工具、空结果、资源、列表）都带 `resultType: complete`；`_meta.dev.appwire/callId` 与日志 `cid` 可对照 |
 | S3 | 错误码：modern 出口码映射；修复上游错误反查缺陷；作废 m10 表述 | — | 回归测试：上游 `-32004` 不再变成 `USER_REJECTED`；modern 资源不存在为 `-32602`、legacy 仍 `-32002` |
 | S4 | `CallerKey` 收敛；`McpSession` 分 legacy / stateless；主体键（HTTP 令牌 / IPC）；stdio modern 同样无状态 | 4e 已完成；与 16 P1 同批设计 | 连续 N 个 modern 请求不新增 / 删除 `SessionState`；legacy 与 modern 并发互不影响；租约在 modern 下按空闲收回 |
 | S5 | modern 列表规则（3.3）与总览改经 discover / `apps.tools`；`ttlMs` / `cacheScope` | S4；与 4c F 合并 | modern 下两次 `tools/list` 之间夹任意 `apps.tools` / 调用 / `apps.select`，结果逐字节相同；`server/discover.instructions` 含 App 简介 |
@@ -227,7 +228,7 @@ S7 后 `e2e/src/mcp-client.ts` 增加 modern 模式，关键用例两代各跑�
 | `spec/hub-api.md` 3.6「多会话」 | 改为“两代分述”：legacy 会话；modern 无会话、`CallerKey` = 主体 |
 | `spec/hub-api.md` 3.5「租约」 | “会话”改为“调用方键”；modern 无会话结束收回 |
 | `spec/hub-api.md` 3.7「渐进暴露」 | 加入 3.3 列表规则（单一定义）；“只向该会话发 list_changed”限定 legacy |
-| `spec/hub-api.md` 3.15 键表 | 前缀改 `dev.appmcp/`、弃用期、R4 新键、可选 `taskId` |
+| `spec/hub-api.md` 3.15 键表 | 前缀改 `dev.appwire/`、弃用期、R4 新键、可选 `taskId` |
 | `spec/hub-api.md` 3.3 `ApprovalRequest` | `session` 含义两代分述；新增可选 `client_name`（仅显示） |
 | `spec/protocol.md` 7.2「首次附带」 | 限定 legacy；modern 经 discover / `apps.tools` / `apps.overview` |
 | `spec/protocol.md` 第 4 节错误码分区 | 补“MCP 出口 modern 码映射”与“上游错误不按数值反查”；引用 S-F3 原文要点 |
@@ -246,7 +247,7 @@ S7 后 `e2e/src/mcp-client.ts` 增加 modern 模式，关键用例两代各跑�
 
 | # | 未知 | 处理 |
 |---|---|---|
-| U1 | 项目是否拥有 `appmcp.dev`（或 `appwire.dev`）域名；机主倾向工作名还是品牌名前缀 | **待确认**（机主）；未确认前 S1 不落地，现有 `app-mcp/` 合规可继续用 |
+| U1 | 项目是否拥有 `appmcp.dev`（或 `appwire.dev`）域名；机主倾向工作名还是品牌名前缀 | **已定**（机主 2026-10-02）：品牌名前缀 `dev.appwire/`；S1 已实施 |
 | U2 | 通用客户端（Claude Code 等）是否透传 / 允许设置厂商 `_meta` 键；工具结果 `_meta` 是否对模型可见 | **验证**：临时 Host（`--home` 临时目录）+ Claude Code 实测，记录请求 `_meta` 全部键；结论只影响“可选通道”是否有用，不影响正确性 |
 | U3 | modern 客户端是否允许调用 `tools/list` 中未列出的工具（决定渐进暴露在 modern 下能否保留“按全名调用”） | **验证**：S5 用 Claude Code 实测；不允许时 modern 默认 `tool_exposure = all`，渐进暴露只在 legacy 生效 |
 | U4 | rmcp 自定义 `_meta` 键在 modern 路径是否原样到达 handler | **推断**可以（S-F10 透明 map）；S1 用 `ClientLifecycleMode::Discover` 的集成测试断言 |

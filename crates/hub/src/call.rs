@@ -1692,7 +1692,7 @@ mod tests {
         assert_eq!(meta.get(mcp_convert::META_ROUTED_TO), Some(&json!("shop.cart.add")));
         assert_eq!(meta.get(mcp_convert::META_STATUS), Some(&json!("pending")));
         let r = inv(Some("shop.cart.add"), Err(ToolError::new(ErrorKind::HandlerError, "x"))).to_mcp().unwrap();
-        assert_eq!(r.meta.unwrap().get("app-mcp/routedTo"), Some(&json!("shop.cart.add")), "错误结果同样标出");
+        assert_eq!(r.meta.unwrap().get("dev.appwire/routedTo"), Some(&json!("shop.cart.add")), "错误结果同样标出");
         assert_eq!(inv(None, Ok(ToolsInvokeResult::default())).to_mcp().unwrap().meta, None);
         let o = inv(Some("shop.cart.add"), Ok(pending)).into_outcome().unwrap();
         assert_eq!(o.routed_to.as_deref(), Some("shop.cart.add"));
@@ -1738,8 +1738,8 @@ mod tests {
         let annotated: Vec<bool> = r.content.iter().map(|c| c.as_text().unwrap().annotations.is_some()).collect();
         assert_eq!(annotated, [false, true, true, false]);
         let meta = r.meta.unwrap();
-        assert_eq!(meta.get("app-mcp/status"), Some(&json!("pending")));
-        assert_eq!(meta.get("app-mcp/stateResource"), Some(&json!("app-mcp://shop/order.state")));
+        assert_eq!(meta.get("dev.appwire/status"), Some(&json!("pending")));
+        assert_eq!(meta.get("dev.appwire/stateResource"), Some(&json!("app-mcp://shop/order.state")));
         assert_eq!(r.structured_content, Some(json!({"orderId": "o1"})));
         // noop 且无返回值：只有状态说明，不出现"已完成"
         let r = success_result(

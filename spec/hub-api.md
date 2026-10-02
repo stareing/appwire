@@ -186,7 +186,7 @@ App 工具与上游工具在路由 / 审批之前先过资源保护（3.11）：
 `outputSchema` = 声明的 schema（根类型非 object 时包装为 `{result}`）；成功结果的内容块依次为：状态说明（`status` 非 `done`）→
 `summary` → 返回值 JSON（无返回值、无摘要且 `done` 时为"已完成"）→ 资源变化提示（`stateHints`），App 的内容标注只加在
 摘要与返回值块上；`structuredContent` 按 `outputSchema` 决定（无返回值时不填）；`status` 非 `done` 时 `_meta` 带
-`app-mcp/status` 与 `app-mcp/stateResource`（全部 `_meta` 键见 3.15 的键表）。
+`dev.appwire/status` 与 `dev.appwire/stateResource`（全部 `_meta` 键见 3.15 的键表）。
 资源列表的 `annotations` 为 App 声明的内容注解。Hub API（`CallOutcome`）给出同样的信息：`result` 为原始 `data`（无返回值为 `null`），
 另有 `status`、`state_resource`、`summary`、`annotations` 字段。
 
@@ -808,7 +808,7 @@ App 决定（拒绝即 `NAVIGATION_DENIED`），Hub 不经 `ApprovalHandler` 另
 - 改调 = 对替代工具执行一次 App 工具调用：策略 `call` 执行点、资源保护（3.11）、唤醒、审批（3.3，按替代工具的定义）都按替代工具执行，
   之后与直接调用它相同（不再改调）。
 - 结果标出改调：Hub API `CallOutcome.routed_to`（`routedTo`，实际调用的工具全名，未改调时不出现）；MCP 结果 `_meta` 的
-  `app-mcp/routedTo`（同值，成功与失败结果都有）。各 Hub 绑定按 JSON 透传 `CallOutcome` 的（hub-c、hub-node、`@app-mcp/hub`）带
+  `dev.appwire/routedTo`（同值，成功与失败结果都有）。各 Hub 绑定按 JSON 透传 `CallOutcome` 的（hub-c、hub-node、`@app-mcp/hub`）带
   `routedTo`；hub-uniffi `CallOutcome.routed_to`（Kotlin / Swift 封装 `CallResult.routedTo`、Python `CallResult.routed_to`），C# `CallOutcome.RoutedTo`。
 - 替代不可用（不存在、不是 app 工具、指向自身、参数不符）时不改调、记 warn 日志，按上面的导航规则处理（在后台时即得到
   `USER_ACTION_REQUIRED` / `foreground`）。实现：`crates/hub/src/navigate.rs`（判定）、`crates/hub/src/call.rs`（改调）。
@@ -824,8 +824,9 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 都是机制：何时导航、预热、释放，截止时间多长，幂等键怎么取，由 Agent 决定；Hub 只执行并保证策略挂点（3.13）、资源保护（3.11）、
 唤醒速率上限（3.5）照常生效。实现：`crates/hub/src/agent_control.rs`（内置工具）、`crates/hub/src/request_meta.rs`（请求 `_meta`）。
 
-**名称表**（本节为唯一定义；代码中只在 `crates/hub/src/names.rs` 定义一次，`app_mcp_hub::names`）。`_meta` 键前缀 `app-mcp/` 暂定：
-第 19 项 R4 核实 MCP `_meta` 命名约定（U3）后可能统一改名，届时只改本表与该文件。
+**名称表**（本节为唯一定义；代码中只在 `crates/hub/src/names.rs` 定义一次，`app_mcp_hub::names`）。`_meta` 键用反向域名前缀 `dev.appwire/`（MCP 规范 SHOULD；docs/plans/12-mcp-stateless.md 第 4 节）。
+**弃用期**：旧前缀 `app-mcp/` 的请求键（`dev.appwire/timeoutMs`、`dev.appwire/idempotencyKey`）在下一个小版本之前仍接受；新旧键同时出现且值不同 →
+`INVALID_INPUT`，值相同按新键处理。结果 `_meta` 只写新键。
 
 | 名称 | 方向 | 含义 |
 |---|---|---|
@@ -833,10 +834,10 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `apps.navigate` | 内置工具 | 显式导航（下文） |
 | `apps.activate` | 内置工具 | 只唤醒不调用（下文） |
 | `apps.release` | 内置工具 | 收回本会话在该 App 上的租约（下文） |
-| `app-mcp/status`、`app-mcp/stateResource` | 结果 `_meta` | 结果状态（spec/protocol.md 3.2，3.2） |
-| `app-mcp/routedTo` | 结果 `_meta` | 改调后台替代时实际调用的工具全名（3.14） |
-| `app-mcp/timeoutMs` | 请求 `_meta`（`tools/call`） | Agent 的截止时间（下文） |
-| `app-mcp/idempotencyKey` | 请求 `_meta`（`tools/call`） | Agent 的幂等键（下文） |
+| `dev.appwire/status`、`dev.appwire/stateResource` | 结果 `_meta` | 结果状态（spec/protocol.md 3.2，3.2） |
+| `dev.appwire/routedTo` | 结果 `_meta` | 改调后台替代时实际调用的工具全名（3.14） |
+| `dev.appwire/timeoutMs` | 请求 `_meta`（`tools/call`） | Agent 的截止时间（下文） |
+| `dev.appwire/idempotencyKey` | 请求 `_meta`（`tools/call`） | Agent 的幂等键（下文） |
 
 **`apps.navigate {appId, page, params?}`**（有 Agent 可见的页面目录时列出，任何时候可调用；注解 `readOnlyHint: false`、
 `idempotentHint: true`，风险 write）：承载显式导航参数；调用不在当前页面的工具时的自动导航（3.14）仍不带参数。
@@ -862,13 +863,13 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 唤醒 / 续租。结果 `{appId, released, message}`（`released` = 发出收回的实例数，没有租约时为 0、不发消息）。Hub API 的会话为
 `CallRequest.session`。
 
-**截止时间 `app-mcp/timeoutMs`**（MCP `tools/call` 请求 `_meta`）：正整数毫秒，含义为"从 Hub 收到请求起还愿意等待多久"。用相对时长
+**截止时间 `dev.appwire/timeoutMs`**（MCP `tools/call` 请求 `_meta`）：正整数毫秒，含义为"从 Hub 收到请求起还愿意等待多久"。用相对时长
 而不是绝对时刻：不依赖 Agent 与 Hub 的时钟一致，与协议 `ToolsInvokeParams.timeoutMs`、Hub API `CallRequest.timeout` 同一语义。
 Hub 以 min(该值, `response_timeout`) 作为本次调用等待 App 结果的上限（等同于 Hub API 的 `CallRequest.timeout`；SDK 侧 `timeoutMs`
 相应为 min(它, `invoke_timeout`)），超时 → `TIMEOUT`。审批、唤醒与导航的等待仍按各自的配置（`ApprovalPolicy.timeout`、`wake_timeout`、
 `navigate_timeout`）。上游 MCP 服务器的调用同样适用。
 
-**幂等键 `app-mcp/idempotencyKey`**（MCP `tools/call` 请求 `_meta`；Hub API `CallRequest.idempotency_key`）：1..=256 个字符的字符串，
+**幂等键 `dev.appwire/idempotencyKey`**（MCP `tools/call` 请求 `_meta`；Hub API `CallRequest.idempotency_key`）：1..=256 个字符的字符串，
 原样进入 `ToolsInvokeParams.idempotencyKey`（App 侧语义与 SDK 去重见 spec/protocol.md 3.3）。改调后台替代（3.14）时随调用转交。
 不转发给上游 MCP 服务器。
 
