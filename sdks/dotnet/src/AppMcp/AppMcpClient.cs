@@ -159,6 +159,35 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
     /// <summary>停止：取消所有调用、断开连接、不再重连。</summary>
     public void Stop() => NativeMethods.Check(NativeMethods.am_client_stop(_handle));
 
+    /// <summary>
+    /// 设置导航回调（Host 的 <c>app/navigate</c>，spec/protocol.md 3.4）；null 清除（之后的导航请求以 NAVIGATION_FAILED 回复）。
+    /// </summary>
+    /// <remarks>
+    /// <para>handler 在 <see cref="Dispatcher"/> 上执行（WPF / WinUI 即 UI 线程）：切换到目标页面，最好等新页面的工具注册之后再返回。
+    /// 正常返回 = 导航完成；抛出 <see cref="NavigationDeniedException"/> = 拒绝（如用户正在输入）；其他异常 = 失败。</para>
+    /// <para>能力在握手时声明：建议在 <see cref="Start"/> 之前设置，连接后才设置的在下次连接时生效。</para>
+    /// </remarks>
+    public void SetNavigationHandler(Func<NavigationRequest, Task>? handler)
+    {
+        if (handler is null)
+        {
+            NativeMethods.Check(NativeMethods.am_client_set_navigation_handler(_handle, 0, 0, 0));
+            return;
+        }
+        var invoker = new NavigationInvoker(handler, Dispatcher);
+        // user_data 的所有权交给库：替换 / 清除 / 释放客户端（及设置失败）时库调用 FreeGCHandle。
+        NativeMethods.Check(NativeMethods.am_client_set_navigation_handler(
+            _handle, Callbacks.NavigatePtr, Callbacks.Alloc(invoker), Callbacks.FreeGCHandlePtr));
+    }
+
+    /// <summary>同步版本的 <see cref="SetNavigationHandler(Func{NavigationRequest, Task}?)"/>（如 WPF 的 <c>Frame.Navigate</c>）。</summary>
+    public void SetNavigationHandler(Action<NavigationRequest>? handler) =>
+        SetNavigationHandler(handler is null ? null : request =>
+        {
+            handler(request);
+            return Task.CompletedTask;
+        });
+
     public void SetVisibility(AppVisibility visibility, bool focused) =>
         NativeMethods.Check(NativeMethods.am_client_set_visibility(_handle, (int)visibility, focused));
 

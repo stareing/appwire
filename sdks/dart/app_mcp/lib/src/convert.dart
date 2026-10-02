@@ -243,3 +243,8 @@ String encodeJsonValue(Object? value, String what) {
   return (kind: ErrorKind.handlerError.wireName, message: error.toString(), detailsJson: null);
 }
 
+
+int surfaceToNative(ToolSurface s) => switch (s) {
+      ToolSurface.app => AmToolSurface.app,
+      ToolSurface.view => AmToolSurface.view,
+    };

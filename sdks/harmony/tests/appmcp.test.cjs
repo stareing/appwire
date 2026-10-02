@@ -344,7 +344,8 @@ test('scope：dispose 后子项变为空操作', () => {
 test('资源读取与变更通知', async () => {
   const { mcp, client } = create();
   const r = mcp.resource('cart', { description: '购物车', read: async () => ({ items: 1 }) });
-  assert.equal(client.resources.get('cart').spec.mimeType, 'application/json');
+  // 未声明 mimeType 时不发送缺省值（Host 按 application/json 处理；toolsHash 输入与其他 SDK 一致）
+  assert.equal(client.resources.get('cart').spec.mimeType, undefined);
   assert.equal(client.resources.get('cart').spec.realtime, undefined);
   mcp.resource('order.status', { description: '订单状态', realtime: true, read: () => 'paid' });
   assert.equal(client.resources.get('order.status').spec.realtime, true);
@@ -461,4 +462,47 @@ test('enabled false：不创建原生客户端', () => {
   mcp.tool('x', { description: 'x', handler: () => 1 }).dispose();
   mcp.hold().release();
   assert.equal(mcp.toolsHash(), '');
+});
+
+test('surface / page 声明；update 以 null 清除', () => {
+  const { mcp, client } = create();
+  mcp.tool('a.plain', { description: 'a', handler: () => 1 });
+  assert.equal(client.tools.get('a.plain').spec.surface, undefined);
+  assert.equal(client.tools.get('a.plain').spec.page, undefined);
+  const t = mcp.tool('cart.checkout', { description: '结算', surface: 'view', page: 'cart', handler: () => 1 });
+  assert.equal(client.tools.get('cart.checkout').spec.surface, 'view');
+  assert.equal(client.tools.get('cart.checkout').spec.page, 'cart');
+  t.update({ description: '结算2' });
+  assert.equal(client.tools.get('cart.checkout').spec.page, 'cart');
+  t.update({ page: null, surface: null });
+  assert.equal(client.tools.get('cart.checkout').spec.page, undefined);
+  assert.equal(client.tools.get('cart.checkout').spec.surface, undefined);
+});
+
+test('onNavigate：完成 / 拒绝 / 失败 / 同步抛出 / 参数', async () => {
+  const seen = [];
+  const { mcp, client } = create({
+    onNavigate: async ({ page, params }) => {
+      seen.push([page, params]);
+      if (page === 'login') throw ToolCallError.navigationDenied('需要先登录');
+      if (page === 'broken') throw new Error('页面加载失败');
+    },
+  });
+  assert.deepEqual(await client.navigate('cart'), { ok: true });
+  assert.deepEqual(await client.navigate('detail', { sku: 'A-42' }), { ok: true });
+  assert.deepEqual(seen, [['cart', undefined], ['detail', { sku: 'A-42' }]]);
+  assert.deepEqual(await client.navigate('login'), { ok: false, kind: 'deny', message: '需要先登录' });
+  assert.deepEqual(await client.navigate('broken'), { ok: false, kind: 'fail', message: '页面加载失败' });
+  assert.deepEqual(await client.navigate('bad', '{x'), { ok: false, kind: 'fail', message: '页面参数不是合法的 JSON' });
+  mcp.setNavigationHandler(() => {
+    throw new Error('同步异常');
+  });
+  assert.deepEqual(await client.navigate('x'), { ok: false, kind: 'fail', message: '同步异常' });
+  mcp.setNavigationHandler(null);
+  assert.equal((await client.navigate('cart')).kind, 'unsupported');
+});
+
+test('未设置导航回调时不声明', () => {
+  const { client } = create();
+  assert.equal(client.navigationHandler, undefined);
 });

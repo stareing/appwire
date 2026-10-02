@@ -6,6 +6,7 @@ import dev.appmcp.ffi.Call
 import dev.appmcp.ffi.CallResult
 import dev.appmcp.ffi.CancelListener
 import dev.appmcp.ffi.ClientListener
+import dev.appmcp.ffi.Navigate
 import dev.appmcp.ffi.Read
 import dev.appmcp.ffi.ResourceReader
 import dev.appmcp.ffi.ResourceSpec
@@ -95,9 +96,17 @@ class ToolContext internal constructor(
 class ToolHandle internal constructor(private val inner: FfiTool, @Volatile private var spec: ToolSpec) {
     val name: String get() = inner.name()
 
-    fun setEnabled(enabled: Boolean) = inner.setEnabled(enabled)
+    fun setEnabled(enabled: Boolean) {
+        synchronized(this) {
+            inner.setEnabled(enabled)
+            // @why update() 整体替换定义，须记住当前启用状态，否则之后的 update 会把它改回去（view 工具随可见性切换）
+            spec = spec.copy(enabled = enabled)
+        }
+    }
 
-    /** 修改定义；为空的参数保持不变。 */
+    /**
+     * 修改定义；为空的参数保持不变（无法清除声明——清除用 `update { annotations = null }`）。
+     */
     fun update(
         description: String? = null,
         inputSchema: JsonObject? = null,
@@ -105,21 +114,38 @@ class ToolHandle internal constructor(private val inner: FfiTool, @Volatile priv
         title: String? = null,
         annotations: ToolAnnotations? = null,
         outputSchema: JsonObject? = null,
-    ) {
-        val next = spec.copy(
-            description = description ?: spec.description,
-            inputSchemaJson = inputSchema?.toString() ?: spec.inputSchemaJson,
-            risk = risk ?: spec.risk,
-            title = title ?: spec.title,
-            annotations = annotations ?: spec.annotations,
-            outputSchemaJson = outputSchema?.toString() ?: spec.outputSchemaJson,
-        )
-        inner.update(next)
-        spec = next
+        surface: ToolSurface? = null,
+        page: String? = null,
+    ) = update {
+        description?.let { this.description = it }
+        inputSchema?.let { this.inputSchema = it }
+        risk?.let { this.risk = it }
+        title?.let { this.title = it }
+        annotations?.let { this.annotations = it }
+        outputSchema?.let { this.outputSchema = it }
+        surface?.let { this.surface = it }
+        page?.let { this.page = it }
+    }
+
+    /**
+     * 按补丁修改定义：赋值过的字段替换，**赋值 null 清除该声明**，未赋值的保持不变（与网页 / Rust SDK 一致）。
+     *
+     * ```kotlin
+     * handle.update { description = "新描述"; annotations = null; outputSchema = null }
+     * ```
+     */
+    fun update(change: ToolUpdate.() -> Unit) {
+        synchronized(this) {
+            val next = ToolUpdate().apply(change).applyTo(spec)
+            inner.update(next)
+            spec = next
+        }
     }
 
     /** 注销工具（幂等）。 */
     fun dispose() = inner.dispose()
+
+    internal fun specForTest(): ToolSpec = spec
 }
 
 /** 已注册的资源。 */
@@ -153,6 +179,9 @@ abstract class AppMcpRegistrar internal constructor() {
      * @param risk 旧写法，优先用 [annotations]。
      * @param annotations 标准 MCP 工具注解，原样转发给 Agent；为空时 Hub 按 [risk] 推导。
      * @param outputSchema 结果的 JSON Schema（MCP `outputSchema`）。
+     * @param surface `VIEW` = 依赖界面（spec/protocol.md 3.4），只在所在界面可见时启用（Android 用
+     *   `dev.appmcp.android.enableWhile` / Compose `ViewToolEffect` 绑定生命周期）；缺省 `APP`。
+     * @param page 所在页面名；Hub 在该工具未注册时据此导航（[AppMcp.setNavigationHandler]）。
      */
     fun tool(
         name: String,
@@ -164,6 +193,8 @@ abstract class AppMcpRegistrar internal constructor() {
         enabled: Boolean = true,
         annotations: ToolAnnotations? = null,
         outputSchema: JsonObject? = null,
+        surface: ToolSurface = ToolSurface.APP,
+        page: String? = null,
         handler: ToolFunction,
     ): ToolHandle {
         val spec = ToolSpec(
@@ -176,6 +207,8 @@ abstract class AppMcpRegistrar internal constructor() {
             enabled = enabled,
             annotations = annotations,
             outputSchemaJson = outputSchema?.toString(),
+            surface = surface.takeIf { it != ToolSurface.APP },
+            page = page,
         )
         val o = owner
         val raw = registerRaw(spec, object : ToolHandler {
@@ -197,9 +230,11 @@ abstract class AppMcpRegistrar internal constructor() {
         enabled: Boolean = true,
         annotations: ToolAnnotations? = null,
         outputSchema: JsonObject? = null,
+        surface: ToolSurface = ToolSurface.APP,
+        page: String? = null,
         noinline handler: suspend (args: A, ctx: ToolContext) -> R,
     ): ToolHandle = typedToolImpl(
-        name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema,
+        name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page,
         serializer<A>(), serializer<R>(), handler,
     )
 
@@ -214,11 +249,13 @@ abstract class AppMcpRegistrar internal constructor() {
         enabled: Boolean,
         annotations: ToolAnnotations?,
         outputSchema: JsonObject?,
+        surface: ToolSurface,
+        page: String?,
         argSerializer: KSerializer<A>,
         resultSerializer: KSerializer<R>,
         handler: suspend (A, ToolContext) -> R,
     ): ToolHandle = tool(
-        name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema,
+        name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page,
     ) { args, ctx ->
         val decoded = try {
             AppMcpJson.decodeFromJsonElement(argSerializer, args)
@@ -360,6 +397,23 @@ class AppMcp private constructor(
 
     fun setVisibility(visibility: Visibility, focused: Boolean = true) = inner.setVisibility(visibility, focused)
 
+    /**
+     * 设置导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）；null 清除（之后的导航请求以 `NAVIGATION_FAILED`
+     * 回复）。回调在 [AppMcpConfig.dispatcher] 上以协程执行（Android 默认主线程），可直接操作界面；
+     * 在 [AppMcpConfig.dispatchTimeoutMillis] 内未开始执行时以失败回复。
+     *
+     * 能力在握手时声明：建议在 [start] 之前设置；连接后才设置的回调在下次连接（回连 / 唤醒）时生效。
+     * 框架适配见 [PageRouter]、`dev.appmcp.compose.navigationRouter`。
+     */
+    fun setNavigationHandler(handler: NavigateFunction?) {
+        val o = this
+        inner.setNavigationHandler(handler?.let { h ->
+            object : dev.appmcp.ffi.NavigationHandler {
+                override fun navigate(request: Navigate) = o.runNavigate(request, h)
+            }
+        })
+    }
+
     /** 挂起直到进入 [status]；超时返回 false。 */
     suspend fun awaitState(status: StateStatus, timeoutMillis: Long = Long.MAX_VALUE): Boolean =
         withTimeoutOrNull(timeoutMillis) { state.first { it.status == status } } != null
@@ -493,6 +547,36 @@ class AppMcp private constructor(
             }
         })
         job.start()
+    }
+
+    /** 在分发线程上调用。 */
+    internal fun runNavigate(request: Navigate, handler: NavigateFunction) {
+        val params = try {
+            request.paramsJson()?.let {
+                AppMcpJson.parseToJsonElement(it) as? JsonObject ?: throw IllegalArgumentException("页面参数必须是 JSON 对象")
+            }
+        } catch (e: Exception) {
+            finishNavigate(request, NavigationResult.Failed("页面参数不合法：${e.message}"))
+            return
+        }
+        launchGuarded(fail = { kind, msg, _ ->
+            val result = if (kind == ErrorKind.NAVIGATION_DENIED) NavigationResult.Denied(msg) else NavigationResult.Failed(msg)
+            finishNavigate(request, result)
+        }) {
+            finishNavigate(request, handler(request.page(), params))
+        }.start()
+    }
+
+    private fun finishNavigate(request: Navigate, result: NavigationResult) {
+        try {
+            when (result) {
+                NavigationResult.Ok -> request.complete()
+                is NavigationResult.Denied -> request.deny(result.message)
+                is NavigationResult.Failed -> request.fail(result.message)
+            }
+        } catch (_: AppMcpException) {
+            // 已完成或连接已断开：回复被丢弃（spec/protocol.md 3.4）。
+        }
     }
 
     /** 在分发线程上调用。 */

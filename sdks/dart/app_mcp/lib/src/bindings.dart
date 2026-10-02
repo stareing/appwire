@@ -160,6 +160,15 @@ final class AmRead extends Opaque {}
 /// v3：阻止自动休眠的持有。
 final class AmHold extends Opaque {}
 
+/// v14：一次导航请求（由 am_navigate_complete / _fail / _deny 消费）。
+final class AmNavigate extends Opaque {}
+
+/// v14：工具对界面的依赖（AmToolSurface）。
+abstract final class AmToolSurface {
+  static const app = 0;
+  static const view = 1;
+}
+
 // ---------------------------------------------------------------------------
 // 回调类型
 // ---------------------------------------------------------------------------
@@ -175,6 +184,8 @@ typedef AmReadFnNative = Void Function(Pointer<Void> userData, Pointer<AmRead> r
 typedef AmCancelFnNative = Void Function(Pointer<Void> userData, Int32 reason);
 // v3：休眠完成且驻留策略允许退出。
 typedef AmIdleExitFnNative = Void Function(Pointer<Void> userData);
+// v14：导航请求；navigate 的所有权转移给回调方。
+typedef AmNavigateFnNative = Void Function(Pointer<Void> userData, Pointer<AmNavigate> navigate);
 
 // ---------------------------------------------------------------------------
 // 结构体
@@ -288,7 +299,7 @@ final class AmToolOptions extends Struct {
   external int struct_size;
   external Pointer<Utf8> annotations_json;
   external Pointer<Utf8> output_schema_json;
-  /// v14：所在页面名（第 4c 项；第二部分接入 SDK API 前恒为 NULL）。
+  /// v14：所在页面名（第 4c 项）；NULL = 未声明。
   external Pointer<Utf8> page;
   /// v14：AmToolSurface（0 = APP，1 = VIEW）。
   @Int32()
@@ -574,6 +585,26 @@ final class AppMcpBindings {
       Int32 Function(Pointer<AmRead>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>),
       int Function(Pointer<AmRead>, Pointer<Utf8>, Pointer<Utf8>,
           Pointer<Utf8>)>('am_read_fail_user_action');
+
+  // v14：导航（spec/protocol.md 3.4）
+  late final am_client_set_navigation_handler = library.lookupFunction<
+      Int32 Function(Pointer<AmClient>, Pointer<NativeFunction<AmNavigateFnNative>>, Pointer<Void>,
+          Pointer<NativeFunction<AmFreeFnNative>>),
+      int Function(Pointer<AmClient>, Pointer<NativeFunction<AmNavigateFnNative>>, Pointer<Void>,
+          Pointer<NativeFunction<AmFreeFnNative>>)>('am_client_set_navigation_handler');
+  late final am_navigate_page = library.lookupFunction<Pointer<Utf8> Function(Pointer<AmNavigate>),
+      Pointer<Utf8> Function(Pointer<AmNavigate>)>('am_navigate_page');
+  late final am_navigate_params_json = library.lookupFunction<
+      Pointer<Utf8> Function(Pointer<AmNavigate>),
+      Pointer<Utf8> Function(Pointer<AmNavigate>)>('am_navigate_params_json');
+  late final am_navigate_complete = library.lookupFunction<Int32 Function(Pointer<AmNavigate>),
+      int Function(Pointer<AmNavigate>)>('am_navigate_complete');
+  late final am_navigate_fail = library.lookupFunction<
+      Int32 Function(Pointer<AmNavigate>, Pointer<Utf8>),
+      int Function(Pointer<AmNavigate>, Pointer<Utf8>)>('am_navigate_fail');
+  late final am_navigate_deny = library.lookupFunction<
+      Int32 Function(Pointer<AmNavigate>, Pointer<Utf8>),
+      int Function(Pointer<AmNavigate>, Pointer<Utf8>)>('am_navigate_deny');
 }
 
 /// 原生库默认文件名。

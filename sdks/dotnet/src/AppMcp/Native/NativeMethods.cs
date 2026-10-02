@@ -112,6 +112,8 @@ internal struct AmToolOptions
     public uint StructSize;
     public nint AnnotationsJson;  // MCP 工具注解 JSON；0 = 未声明
     public nint OutputSchemaJson; // MCP outputSchema；0 = 未声明
+    public nint Page;             // v14：所在页面名；0 = 未声明
+    public int Surface;           // v14：AmToolSurface（0 = APP，1 = VIEW）
 }
 
 /// <summary>v9：am_call_complete_ex 的调用结果。StructSize = sizeof(AmCallResult)。</summary>
@@ -203,6 +205,13 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)] internal static partial AmStatus am_call_fail_user_action(nint call, byte* message, byte* reason, byte* uri);
     [LibraryImport(Lib)] internal static partial AmStatus am_call_hold(nint call, out nint hold);
     [LibraryImport(Lib)] internal static partial AmStatus am_call_progress(nint call, double progress, double total, byte* message);
+
+    [LibraryImport(Lib)] internal static partial AmStatus am_client_set_navigation_handler(ClientSafeHandle client, nint handler, nint userData, nint freeUserData);
+    [LibraryImport(Lib)] internal static partial nint am_navigate_page(nint navigate);
+    [LibraryImport(Lib)] internal static partial nint am_navigate_params_json(nint navigate);
+    [LibraryImport(Lib)] internal static partial AmStatus am_navigate_complete(nint navigate);
+    [LibraryImport(Lib)] internal static partial AmStatus am_navigate_fail(nint navigate, byte* message);
+    [LibraryImport(Lib)] internal static partial AmStatus am_navigate_deny(nint navigate, byte* message);
 
     [LibraryImport(Lib)] internal static partial nint am_read_resource_name(nint read);
     [LibraryImport(Lib)] internal static partial AmStatus am_read_complete(nint read, byte* contentsJson);

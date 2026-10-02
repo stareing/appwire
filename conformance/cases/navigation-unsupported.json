@@ -1,0 +1,18 @@
+{
+  "id": "navigation-unsupported",
+  "title": "没有导航回调：握手不声明能力，app/navigate 以 NAVIGATION_FAILED（unsupported）回复",
+  "spec": ["protocol.md 3.4", "protocol.md 4"],
+  "requires": [],
+  "app": {
+    "tools": [{ "name": "home.ping", "description": "首页工具", "handler": { "return": { "pong": true } } }]
+  },
+  "host": { "ops": [{ "navigate": "cart" }, { "navigate": "cart", "params": { "id": 1 } }, { "invoke": "home.ping" }] },
+  "expect": [
+    { "type": "recv", "method": "app/hello", "params": { "capabilities": { "$absent": true } } },
+    { "type": "navigate", "name": "cart", "error": { "code": -31001,
+        "data": { "kind": "NAVIGATION_FAILED", "reason": "unsupported" } } },
+    { "type": "navigate", "name": "cart", "error": { "code": -31001,
+        "data": { "kind": "NAVIGATION_FAILED", "reason": "unsupported" } } },
+    { "type": "invoke", "name": "home.ping", "result": { "data": { "pong": true } } }
+  ]
+}

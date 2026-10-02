@@ -161,6 +161,39 @@ final class ToolBridge: ToolHandler, @unchecked Sendable {
     }
 }
 
+final class NavigationBridge: NavigationHandler, @unchecked Sendable {
+    let timeout: TimeInterval?
+    let body: NavigateFunction
+
+    init(timeout: TimeInterval?, body: @escaping NavigateFunction) {
+        self.timeout = timeout
+        self.body = body
+    }
+
+    // 在原生分发线程上调用：只做登记，立即返回。
+    func navigate(request: Navigate) {
+        let req = NavigationRequest(page: request.page(), paramsJSON: request.paramsJson())
+        let body = self.body
+        _ = launch(on: .mainActor, timeout: timeout, fail: { kind, message, _ in
+            finishNavigate(request, kind == ErrorKind.navigationDenied ? .denied(message) : .failed(message))
+        }) {
+            finishNavigate(request, try await body(req))
+        }
+    }
+}
+
+private func finishNavigate(_ request: Navigate, _ result: NavigationResult) {
+    do {
+        switch result {
+        case .ok: try request.complete()
+        case let .denied(message): try request.deny(message: message)
+        case let .failed(message): try request.fail(message: message)
+        }
+    } catch {
+        // 已完成或连接已断开：回复被丢弃（spec/protocol.md 3.4）
+    }
+}
+
 final class ReaderBridge: ResourceReader, @unchecked Sendable {
     let target: ExecutionTarget
     let timeout: TimeInterval?
@@ -198,28 +231,50 @@ public final class ToolHandle: @unchecked Sendable {
 
     public var name: String { inner.name() }
 
-    public func setEnabled(_ enabled: Bool) throws { try inner.setEnabled(enabled: enabled) }
+    public func setEnabled(_ enabled: Bool) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try inner.setEnabled(enabled: enabled)
+        // update 整体替换定义：记住启用状态，否则之后的 update 会把它改回去（view 工具随可见性切换）
+        spec.enabled = enabled
+    }
 
-    /// 修改定义；为 `nil` 的参数保持不变。
+    /// 按补丁修改定义：闭包里改动的字段替换，**设为 `nil` 清除该声明**，没改动的保持不变（与网页 / Rust SDK 一致）。
+    ///
+    /// ```swift
+    /// try handle.update { $0.description = "新描述"; $0.annotations = nil; $0.outputSchema = nil }
+    /// ```
+    public func update(_ change: (inout ToolDeclaration) -> Void) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        var decl = ToolDeclaration(spec)
+        change(&decl)
+        let next = decl.applied(to: spec)
+        try inner.update(spec: next)
+        spec = next
+    }
+
+    /// 修改定义；为 `nil` 的参数保持不变（无法清除声明——清除用 `update { $0.annotations = nil }`）。
     public func update(
         description: String? = nil,
         inputSchema: String? = nil,
         risk: Risk? = nil,
         title: String? = nil,
         annotations: ToolAnnotations? = nil,
-        outputSchema: String? = nil
+        outputSchema: String? = nil,
+        surface: ToolSurface? = nil,
+        page: String? = nil
     ) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        var next = spec
-        if let description { next.description = description }
-        if let inputSchema { next.inputSchemaJson = inputSchema }
-        if let risk { next.risk = risk }
-        if let title { next.title = title }
-        if let annotations { next.annotations = annotations }
-        if let outputSchema { next.outputSchemaJson = outputSchema }
-        try inner.update(spec: next)
-        spec = next
+        try update { d in
+            if let description { d.description = description }
+            if let inputSchema { d.inputSchema = inputSchema }
+            if let risk { d.risk = risk }
+            if let title { d.title = title }
+            if let annotations { d.annotations = annotations }
+            if let outputSchema { d.outputSchema = outputSchema }
+            if let surface { d.surface = surface }
+            if let page { d.page = page }
+        }
     }
 
     /// 注销工具（幂等）。
@@ -253,12 +308,14 @@ public class ToolRegistrar: @unchecked Sendable {
     func register(
         _ name: String, _ description: String, _ inputSchema: String?, _ risk: Risk, _ activation: Activation?,
         _ title: String?, _ enabled: Bool, _ annotations: ToolAnnotations?, _ outputSchema: String?,
+        _ surface: ToolSurface, _ page: String?,
         _ target: ExecutionTarget, _ body: @escaping ErasedTool
     ) throws -> ToolHandle {
         let spec = ToolSpec(
             name: name, description: description, inputSchemaJson: inputSchema, risk: risk,
             activation: activation, title: title, enabled: enabled,
-            annotations: annotations, outputSchemaJson: outputSchema
+            annotations: annotations, outputSchemaJson: outputSchema,
+            surface: surface == .app ? nil : surface, page: page
         )
         let raw = try registerRaw(spec, ToolBridge(target: target, timeout: dispatchTimeout, body: body))
         return ToolHandle(inner: raw, spec: spec)
@@ -276,6 +333,8 @@ public class ToolRegistrar: @unchecked Sendable {
     ///
     /// `risk` 为旧写法，优先用 `annotations`（标准 MCP 工具注解，原样转发给 Agent；为空时 Hub 按 `risk` 推导）；
     /// `outputSchema` 为结果的 JSON Schema 文本（MCP `outputSchema`）。返回 `ToolResult` 见下方重载。
+    /// `surface: .view` = 依赖界面（spec/protocol.md 3.4），只在所在界面可见时启用（SwiftUI 用 `.viewTool(handle)`）；
+    /// `page` 为所在页面名，Hub 在该工具未注册时据此导航（`setNavigationHandler`）。
     @discardableResult
     public func tool<Args: Decodable, Output: Encodable>(
         _ name: String,
@@ -287,9 +346,11 @@ public class ToolRegistrar: @unchecked Sendable {
         enabled: Bool = true,
         annotations: ToolAnnotations? = nil,
         outputSchema: String? = nil,
+        surface: ToolSurface = .app,
+        page: String? = nil,
         handler: @escaping @MainActor (Args, ToolContext) async throws -> Output
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             let output = try await handler(args, ctx)
             return plainResult(try encodeJSON(output))
@@ -308,9 +369,11 @@ public class ToolRegistrar: @unchecked Sendable {
         enabled: Bool = true,
         annotations: ToolAnnotations? = nil,
         outputSchema: String? = nil,
+        surface: ToolSurface = .app,
+        page: String? = nil,
         handler: @escaping @MainActor (Args, ToolContext) async throws -> ToolResult<Output>
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return try await handler(args, ctx).ffi()
         }
@@ -328,9 +391,11 @@ public class ToolRegistrar: @unchecked Sendable {
         enabled: Bool = true,
         annotations: ToolAnnotations? = nil,
         outputSchema: String? = nil,
+        surface: ToolSurface = .app,
+        page: String? = nil,
         handler: @escaping @MainActor (Args, ToolContext) async throws -> Void
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             try await handler(args, ctx)
             return plainResult(nil)
@@ -349,9 +414,11 @@ public class ToolRegistrar: @unchecked Sendable {
         enabled: Bool = true,
         annotations: ToolAnnotations? = nil,
         outputSchema: String? = nil,
+        surface: ToolSurface = .app,
+        page: String? = nil,
         handler: @escaping @Sendable (Args, ToolContext) async throws -> Output
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, .background) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, .background) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return plainResult(try encodeJSON(try await handler(args, ctx)))
         }
@@ -369,9 +436,11 @@ public class ToolRegistrar: @unchecked Sendable {
         enabled: Bool = true,
         annotations: ToolAnnotations? = nil,
         outputSchema: String? = nil,
+        surface: ToolSurface = .app,
+        page: String? = nil,
         handler: @escaping @Sendable (Args, ToolContext) async throws -> ToolResult<Output>
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, .background) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, .background) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return try await handler(args, ctx).ffi()
         }
@@ -496,6 +565,16 @@ public final class AppMcpClient: ToolRegistrar, @unchecked Sendable {
 
     public func setVisibility(_ visibility: Visibility, focused: Bool = true) {
         inner.setVisibility(visibility: visibility, focused: focused)
+    }
+
+    /// 设置导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）；`nil` 清除（之后的导航请求以 `NAVIGATION_FAILED`
+    /// 回复）。回调在**主 actor** 上执行，可直接改 `NavigationPath` 等界面状态；抛出的错误按失败回复
+    /// （`ToolCallError` 的类别为 `NAVIGATION_DENIED` 时按拒绝）。
+    ///
+    /// 能力在握手时声明：建议在 `start()` 之前设置；连接后才设置的回调在下次连接（回连 / 唤醒）时生效。
+    /// SwiftUI 的 `NavigationStack` 适配见 `NavigationRouter`。
+    public func setNavigationHandler(_ handler: NavigateFunction?) {
+        inner.setNavigationHandler(handler: handler.map { NavigationBridge(timeout: dispatchTimeout, body: $0) })
     }
 
     // MARK: 生命周期（spec/lifecycle.md 第 8 节）

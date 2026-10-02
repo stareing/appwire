@@ -9,6 +9,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -400,6 +401,48 @@ void test_annotations() {
     EXPECT(status_of([&] { t.update("改"); }) == AM_OK);  // 清除注解与 outputSchema
 }
 
+void test_navigation() {
+    app_mcp::ClientConfig config;
+    config.app_id = "cpp-navigation";
+    config.app_name = "C++ Navigation";
+    config.host_url = "ws://127.0.0.1:1";  // 不会 start，不连接
+    app_mcp::Client client(config);
+    auto handler = [](app_mcp::Call call) { call.complete(); };
+    app_mcp::ToolOptions options;
+    options.surface = app_mcp::Surface::View;
+    options.page = "cart";
+    auto t = client.register_tool("cart.checkout", "结算", handler, options);
+    EXPECT(static_cast<bool>(t));
+    EXPECT(app_mcp::detail::tool_options(options, std::nullopt).surface == AM_SURFACE_VIEW);
+    EXPECT(std::strcmp(app_mcp::detail::tool_options(options, std::nullopt).page, "cart") == 0);
+    EXPECT(app_mcp::detail::tool_options(app_mcp::ToolOptions{}, std::nullopt).page == nullptr);
+    EXPECT(app_mcp::detail::tool_options(app_mcp::ToolOptions{}, std::nullopt).surface == AM_SURFACE_APP);
+    // 声明影响 toolsHash；页面名非法时注册失败。
+    std::string before = client.tools_hash();
+    options.page = "orders";
+    EXPECT(status_of([&] { t.update("结算", options); }) == AM_OK);
+    EXPECT(client.tools_hash() != before);
+    app_mcp::ToolOptions bad = options;
+    bad.page = "bad page!";
+    EXPECT(status_of([&] { client.register_tool("bad.page", "x", handler, bad); }) != AM_OK);
+
+    // 设置 / 替换 / 清除导航回调；替换与清除时库释放旧的 std::function。
+    auto alive = std::make_shared<int>(0);
+    std::weak_ptr<int> watch = alive;
+    client.set_navigation_handler([alive](app_mcp::Navigate nav) { nav.complete(); });
+    alive.reset();
+    EXPECT(!watch.expired());
+    client.set_navigation_handler([](app_mcp::Navigate nav) { nav.deny("忙"); });
+    EXPECT(watch.expired());
+    EXPECT(status_of([&] { client.set_navigation_handler(nullptr); }) == AM_OK);
+
+    // 未持有请求的 Navigate：完成函数抛出 ALREADY_COMPLETED，析构不做任何事。
+    app_mcp::Navigate empty(std::make_shared<app_mcp::detail::Pending<AmNavigate>>(nullptr));
+    EXPECT(!empty.pending());
+    EXPECT(status_of([&] { empty.complete(); }) == AM_ERR_ALREADY_COMPLETED);
+    EXPECT(status_of([&] { empty.deny("x"); }) == AM_ERR_ALREADY_COMPLETED);
+}
+
 }  // namespace
 
 int main() {
@@ -410,6 +453,7 @@ int main() {
         test_power_options();
         test_diagnostics();
         test_annotations();
+        test_navigation();
     } catch (const std::exception& e) {
         ++g_failed;
         std::fprintf(stderr, "FAIL 未捕获的异常：%s\n", e.what());

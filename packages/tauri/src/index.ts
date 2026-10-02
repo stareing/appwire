@@ -25,6 +25,7 @@ import {
   type AppMcp,
   type AppMcpBridge,
   type AppMcpOptions,
+  type RendererOp,
 } from '@app-mcp/web'
 
 export type { AppMcpBridge, HelloReply, MainEvent, OpReply, RendererOp } from '@app-mcp/web'
@@ -66,4 +67,96 @@ export function createTauriAppMcp(options: TauriAppMcpOptions): AppMcp {
     )
   }
   return createBridgeAppMcp(rest, bridge)
+}
+
+// ---------------------------------------------------------------------------
+// 导航（spec/protocol.md 3.4）
+// ---------------------------------------------------------------------------
+//
+// 消息（桥接协议版本 1 内的可选新增，形状与 @app-mcp/electron 的 `NavigationOp` / `NavigateEvent` 相同，Rust 侧实现在
+// crates/tauri-plugin/src/bridge.rs）：页面 → Rust `navigation.set {enabled}`、`navigate.result {navId, ok, kind?, message?}`；
+// Rust → 页面 `navigate {navId, page, params?}`。
+// @compat 唯一定义应并入 @app-mcp/web 的 RendererOp / MainEvent；与 @app-mcp/electron/renderer 的 attachBridgeNavigation
+//   为同一实现的两份副本（两包互不依赖），并入 @app-mcp/web 时一并收拢。
+
+/** 导航请求（与 @app-mcp/web / @app-mcp/node 的 `NavigationRequest` 同形）。 */
+export interface TauriNavigationRequest {
+  page: string
+  params: Record<string, unknown> | undefined
+}
+
+/** 页面的导航回调：切换路由后返回；抛出 `ToolCallError.navigationDenied(...)` 拒绝，其他异常按导航失败回复。 */
+export type TauriNavigationHandler = (request: TauriNavigationRequest) => void | Promise<void>
+
+export interface TauriNavigation {
+  /** Rust 侧接受本页处理导航后兑现；插件未开启 `Builder::page_navigation(true)` 或旧插件时拒绝。 */
+  readonly ready: Promise<void>
+  /** 停止处理导航（通知 Rust 侧，取消订阅）。幂等。 */
+  dispose(): void
+}
+
+type NavigationOp =
+  | { op: 'navigation.set'; enabled: boolean }
+  | { op: 'navigate.result'; navId: number; ok: true }
+  | { op: 'navigate.result'; navId: number; ok: false; kind: 'NAVIGATION_FAILED' | 'NAVIGATION_DENIED'; message: string }
+
+interface NavigateEvent {
+  type: 'navigate'
+  navId: number
+  page: string
+  params?: unknown
+}
+
+/**
+ * 让本页处理 Host 的导航请求（Rust 侧 `Builder::page_navigation(true)`）：插件把 `app/navigate` 转给最近一次开启导航的
+ * WebView，本函数调用 `handler` 并回复结果。
+ *
+ * ```ts
+ * const appMcp = createTauriAppMcp({ appId: 'shop', appName: '示例商城' })
+ * attachTauriNavigation(({ page, params }) => router.push({ name: page, query: params }))
+ * ```
+ *
+ * @error 找不到桥接时抛出；回调抛出 `kind` 为 `NAVIGATION_DENIED` 的错误 → 拒绝，其他 → 失败。
+ */
+export function attachTauriNavigation(handler: TauriNavigationHandler, bridge?: AppMcpBridge): TauriNavigation {
+  const target = bridge ?? getTauriBridge()
+  if (!target) throw new Error('未找到 window.appMcpBridge：请在 Rust 侧注册插件 tauri_plugin_app_mcp')
+  const send = (op: NavigationOp) => target.request(op as unknown as RendererOp)
+  let disposed = false
+  const unsubscribe = target.onMessage((message) => {
+    const event = message as unknown as NavigateEvent
+    if (disposed || event.type !== 'navigate') return
+    const params = isPlainObject(event.params) ? event.params : undefined
+    Promise.resolve()
+      .then(() => handler({ page: event.page, params }))
+      .then(
+        () => send({ op: 'navigate.result', navId: event.navId, ok: true }),
+        (error: unknown) => send({ op: 'navigate.result', navId: event.navId, ok: false, ...navigationFailure(error) }),
+      )
+      .catch(() => {
+        // @why 插件已停止或本页已卸载：Rust 侧的等待随页面卸载失败，这里无需处理
+      })
+  })
+  const ready = send({ op: 'navigation.set', enabled: true }).then((reply) => {
+    if (!reply.ok) throw new Error(reply.message)
+  })
+  return {
+    ready,
+    dispose() {
+      if (disposed) return
+      disposed = true
+      unsubscribe()
+      void send({ op: 'navigation.set', enabled: false }).catch(() => {})
+    },
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function navigationFailure(error: unknown): { kind: 'NAVIGATION_FAILED' | 'NAVIGATION_DENIED'; message: string } {
+  const e = (typeof error === 'object' && error !== null ? error : {}) as { kind?: unknown; message?: unknown }
+  const message = typeof e.message === 'string' && e.message !== '' ? e.message : String(error ?? '导航失败')
+  return { kind: e.kind === 'NAVIGATION_DENIED' ? 'NAVIGATION_DENIED' : 'NAVIGATION_FAILED', message }
 }

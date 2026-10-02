@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use app_mcp_native::{
-    CallDedupPolicy, CallHandle, CallResult, ErrorKind, NativeClient, NativeConfig, ReadHandle, ResourceOptions,
-    ResourceReader, ResourceSpec, ToolHandle, ToolHandler, ToolOptions, ToolSpec,
+    CallDedupPolicy, CallHandle, CallResult, ErrorKind, NativeClient, NativeConfig, NavigateHandle, NavigationHandler,
+    ReadHandle, ResourceOptions, ResourceReader, ResourceSpec, ToolHandle, ToolHandler, ToolOptions, ToolSpec,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -25,7 +25,7 @@ const SDK: &str = "rust";
 /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md。
 const FEATURES: &[&str] = &[
     "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
-    "readFailure",
+    "readFailure", "surface", "navigation",
 ];
 
 fn repo_root() -> PathBuf {
@@ -52,7 +52,8 @@ fn tool_spec(decl: &Value) -> (ToolSpec, ToolOptions) {
     let options = ToolOptions {
         annotations: parse(&decl["annotations"]),
         output_schema_json: (!decl["outputSchema"].is_null()).then(|| decl["outputSchema"].to_string()),
-        ..ToolOptions::default()
+        surface: parse(&decl["surface"]).unwrap_or_default(),
+        page: text(&decl["page"]),
     };
     (spec, options)
 }
@@ -112,6 +113,42 @@ impl App {
             }
             other => panic!("未知的 mutate 操作 {other}"),
         }
+    }
+}
+
+/// `app.navigation`（conformance/README.md 2.4）：按页面名查行为；未列出的页面以失败回复。
+struct CaseNavigation {
+    app: Weak<App>,
+    pages: Value,
+}
+
+impl NavigationHandler for CaseNavigation {
+    fn navigate(&self, request: NavigateHandle) {
+        let page = request.page();
+        let Some(spec) = self.pages.get(&page).cloned() else {
+            let _ = request.fail(&format!("未知页面：{page}"));
+            return;
+        };
+        if let Some(msg) = spec["throw"].as_str() {
+            panic!("{msg}");
+        }
+        let app = self.app.clone();
+        std::thread::spawn(move || {
+            if let (Some(ops), Some(app)) = (spec["mutate"].as_array(), app.upgrade()) {
+                for op in ops {
+                    app.mutate(op);
+                }
+            }
+            let _ = if let Some(msg) = spec["deny"].as_str() {
+                request.deny(msg)
+            } else if let Some(msg) = spec["fail"].as_str() {
+                request.fail(msg)
+            } else if spec["failParams"].as_bool() == Some(true) {
+                request.fail(&request.params_json().unwrap_or_default())
+            } else {
+                request.complete()
+            };
+        });
     }
 }
 
@@ -265,6 +302,10 @@ fn run_case(bin: &Path, path: &Path, report_dir: &Path) -> Value {
             }
             for r in case["app"]["resources"].as_array().into_iter().flatten() {
                 a.register_resource(r);
+            }
+            if case["app"]["navigation"].is_object() {
+                let nav = CaseNavigation { app: Arc::downgrade(&a), pages: case["app"]["navigation"].clone() };
+                a.client.set_navigation_handler(Some(Arc::new(nav)));
             }
             a.client.start();
             app = Some(a);

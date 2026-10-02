@@ -292,6 +292,21 @@ public sealed class ToolOptions
     public ToolActivation? Activation { get; init; }
     public string? Title { get; init; }
     public bool Enabled { get; init; } = true;
+    /// <summary>对界面的依赖（spec/protocol.md 3.4）：<see cref="ToolSurface.View"/> 的工具只在所在界面可见且处于最上层时注册
+    /// （WPF / WinUI 可用 AppMcp.Wpf / AppMcp.WinUI 的可见性绑定）。</summary>
+    public ToolSurface Surface { get; init; } = ToolSurface.App;
+    /// <summary>所在页面名（<c>[a-zA-Z0-9_.-]{1,64}</c>）；为 null 时不声明。Hub 在该工具未注册时据此导航
+    /// （<see cref="AppMcpClient.SetNavigationHandler(Func{NavigationRequest, Task}?)"/>）。</summary>
+    public string? Page { get; init; }
+}
+
+/// <summary>工具对界面的依赖（spec/protocol.md 3.4）。</summary>
+public enum ToolSurface
+{
+    /// <summary>不依赖界面：后台可调、可唤醒（缺省）。</summary>
+    App = 0,
+    /// <summary>依赖界面：只在所在界面可见且处于最上层时注册。</summary>
+    View = 1,
 }
 
 /// <summary>标准 MCP 工具注解（spec/protocol.md 第 3 节）。本库不据此做判断，只原样转发；为 null 的字段不声明。</summary>

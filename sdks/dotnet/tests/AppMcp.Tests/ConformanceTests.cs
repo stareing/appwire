@@ -19,6 +19,7 @@ public class ConformanceTests(ITestOutputHelper output)
     private static readonly HashSet<string> Features =
     [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure",
+        "surface", "navigation",
     ];
 
     private static readonly IReadOnlyDictionary<string, ToolRisk> Risks = new Dictionary<string, ToolRisk>
@@ -113,6 +114,7 @@ public class ConformanceTests(ITestOutputHelper output)
                     app = new CaseApp(Config(line["LISTENING ".Length..].Trim(), Get(Get(kase, "app"), "config")));
                     foreach (var t in Items(Get(Get(kase, "app"), "tools"))) app.RegisterTool(t);
                     foreach (var r in Items(Get(Get(kase, "app"), "resources"))) app.RegisterResource(r);
+                    if (Get(Get(kase, "app"), "navigation").ValueKind == JsonValueKind.Object) app.SetNavigation(Get(Get(kase, "app"), "navigation"));
                     app.Client.Start();
                     continue;
                 }
@@ -200,6 +202,8 @@ public class ConformanceTests(ITestOutputHelper output)
         Enabled = Get(decl, "enabled").ValueKind != JsonValueKind.False,
         Annotations = As<ToolAnnotations>(Get(decl, "annotations")),
         OutputSchemaJson = Raw(Get(decl, "outputSchema")),
+        Surface = Text(Get(decl, "surface")) == "view" ? ToolSurface.View : ToolSurface.App,
+        Page = Text(Get(decl, "page")),
     };
 
     private static string? FindRepoRoot()
@@ -243,6 +247,19 @@ public class ConformanceTests(ITestOutputHelper output)
                 Get(decl, "realtime").ValueKind == JsonValueKind.True,
                 As<ContentAnnotations>(Get(decl, "annotations"))));
         }
+
+        /// <summary>导航行为（conformance/README.md 2.4）。C# 最自然的写法：正常返回 = 完成，抛
+        /// <see cref="NavigationDeniedException"/> = 拒绝，其他异常 = 失败。</summary>
+        public void SetNavigation(JsonElement pages) => Client.SetNavigationHandler(request =>
+        {
+            if (Get(pages, request.Page) is not { ValueKind: JsonValueKind.Object } spec)
+                throw new InvalidOperationException("未知页面：" + request.Page);
+            if (Text(Get(spec, "throw")) is { } crash) throw new InvalidOperationException(crash);
+            foreach (var op in Items(Get(spec, "mutate"))) Mutate(op);
+            if (Text(Get(spec, "deny")) is { } deny) throw new NavigationDeniedException(deny);
+            if (Text(Get(spec, "fail")) is { } fail) throw new InvalidOperationException(fail);
+            if (Get(spec, "failParams").ValueKind == JsonValueKind.True) throw new InvalidOperationException(request.ParamsJson ?? "");
+        });
 
         /// <summary>按 handler 描述执行（顺序：progress → delayMs → mutate → 结果，见 conformance/README.md 2.1）。</summary>
         private async Task<object?> RunHandler(JsonElement spec, int count, JsonElement args, ToolContext ctx)

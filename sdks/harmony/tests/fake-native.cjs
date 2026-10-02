@@ -199,6 +199,31 @@ class FakeNativeClient extends FakeRegistrar {
   setVisibility(visibility, focused) {
     this.calls.push(['setVisibility', visibility, focused]);
   }
+  setNavigationHandler(handler) {
+    this.navigationHandler = handler ?? undefined;
+  }
+  /** 测试用：模拟 Host 的 `app/navigate`；没有回调时同真实原生层以 unsupported 失败。返回 Promise<{ok} | {ok:false, kind, message}>。 */
+  navigate(page, params) {
+    return new Promise((resolve) => {
+      if (!this.navigationHandler) {
+        resolve({ ok: false, kind: 'unsupported', message: `App 不支持由 Agent 导航（页面「${page}」）。` });
+        return;
+      }
+      let done = false;
+      const finish = (outcome) => {
+        if (done) throw Object.assign(new Error('navigation already completed'), { code: 'ALREADY_COMPLETED' });
+        done = true;
+        resolve(outcome);
+      };
+      this.navigationHandler({
+        page,
+        paramsJson: params === undefined ? undefined : typeof params === 'string' ? params : JSON.stringify(params),
+        complete: () => finish({ ok: true }),
+        fail: (message) => finish({ ok: false, kind: 'fail', message }),
+        deny: (message) => finish({ ok: false, kind: 'deny', message }),
+      });
+    });
+  }
   /** 测试用：模拟 Host 调用工具。 */
   invoke(name, args) {
     const call = new FakeCall(name, args === undefined ? '{}' : typeof args === 'string' ? args : JSON.stringify(args));

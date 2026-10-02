@@ -18,7 +18,16 @@ from typing import Any
 
 import pytest
 
-from app_mcp import AppMcp, CallDedup, LifecyclePolicy, ToolCallError, ToolContext, ToolHandle, ToolResult
+from app_mcp import (
+    AppMcp,
+    CallDedup,
+    LifecyclePolicy,
+    NavigationDenied,
+    ToolCallError,
+    ToolContext,
+    ToolHandle,
+    ToolResult,
+)
 
 # @why 复用集成测试的 fake_host 定位 / 构建 fixture（不重复实现）
 from test_integration import fake_host_bin  # noqa: F401
@@ -28,7 +37,19 @@ pytestmark = pytest.mark.integration
 SDK = "python"
 # 本 runner 支持的用例能力（``requires``），见 conformance/README.md 第 4 节。
 FEATURES = frozenset(
-    {"toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure"}
+    {
+        "toolOptions",
+        "mutate",
+        "lifecycle",
+        "wake",
+        "richResult",
+        "userAction",
+        "progress",
+        "resourceOptions",
+        "readFailure",
+        "surface",
+        "navigation",
+    }
 )
 ROOT = Path(__file__).resolve().parents[3]
 CASES_DIR = ROOT / "conformance" / "cases"
@@ -89,6 +110,8 @@ class CaseApp:
             enabled=decl.get("enabled", True),
             annotations=_rename(decl.get("annotations"), _TOOL_ANNOTATION_KEYS),
             output_schema=decl.get("outputSchema"),
+            surface=decl.get("surface"),
+            page=decl.get("page"),
         )
         with self._lock:
             self.tools[decl["name"]] = handle
@@ -132,6 +155,8 @@ class CaseApp:
                 "activation": "activation",
                 "title": "title",
                 "outputSchema": "output_schema",
+                "surface": "surface",
+                "page": "page",
             }
             changes = {keys[k]: v for k, v in op["set"].items() if k in keys}
             if "annotations" in op["set"]:
@@ -145,6 +170,22 @@ class CaseApp:
             handle.set_enabled(kind == "enable")
         else:
             raise ValueError(f"未知的 mutate 操作 {kind}")
+
+    def navigate(self, pages: dict[str, Any], page: str, params: dict[str, Any] | None) -> None:
+        """``app.navigation``（conformance/README.md 2.4）。"""
+        spec = pages.get(page)
+        if spec is None:
+            raise LookupError(f"未知页面：{page}")
+        for op in spec.get("mutate", []):
+            self.mutate(op)
+        if "throw" in spec:
+            raise RuntimeError(spec["throw"])
+        if "deny" in spec:
+            raise NavigationDenied(spec["deny"])
+        if "fail" in spec:
+            raise RuntimeError(spec["fail"])
+        if spec.get("failParams") is True:
+            raise RuntimeError("" if params is None else json.dumps(params, ensure_ascii=False))
 
     def _run_handler(self, spec: dict[str, Any], count: int, ctx: ToolContext) -> Any:
         """顺序：progress → delayMs → mutate → 结果（conformance/README.md 2.1）。"""
@@ -228,6 +269,10 @@ def run_case(fake_host: Path, path: Path) -> dict[str, Any]:
                     app.register_tool(t)
                 for r in case["app"].get("resources", []):
                     app.register_resource(r)
+                pages = case["app"].get("navigation")
+                if pages is not None:
+                    nav_app = app
+                    app.client.set_navigation_handler(lambda page, params: nav_app.navigate(pages, page, params))
                 app.client.start()
                 continue
             try:

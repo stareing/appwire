@@ -29,6 +29,8 @@ val androidSdk = System.getenv("ANDROID_HOME")
 if (androidSdk != null && file(androidSdk).isDirectory) {
     include(":app-mcp-android")
     include(":app-mcp-hub-android")
+    // 可选：Jetpack Compose / Navigation Compose 绑定（view 工具可见性、导航适配；第 4c 项 E）
+    include(":app-mcp-compose")
     // 最小 Android 示例 App（真机验证用）
     include(":sample-android")
 } else {

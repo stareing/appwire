@@ -41,6 +41,8 @@ dependencies {
     api("net.java.dev.jna:jna:5.18.1@aar")
     api("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("androidx.lifecycle:lifecycle-process:2.9.4")
+    // 公开 API（enableWhile）用到 LifecycleOwner / Lifecycle
+    api("androidx.lifecycle:lifecycle-common:2.9.4")
     // 唤醒：WakeReceiver → 加急 WorkManager 任务（WakeWorker）
     api("androidx.work:work-runtime-ktx:2.10.1")
 

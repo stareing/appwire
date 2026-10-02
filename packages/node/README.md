@@ -105,6 +105,10 @@ the process itself).
   logged as a warning).
 - `AppMcp` - `tool`, `resource`, `scope`, `state`, `onStateChange`, `dispose`, plus Node-specific
   `start`, `setVisibility`, `handleWake`, `wake`, `connectNow`, `sleep`, `hold`, `onIdleExit`, `token`.
+- Navigation (spec/protocol.md 3.4): tool options `surface` (`'app'` default / `'view'`: only registered while its screen
+  is visible and topmost) and `page` (the page the tool lives on). `onNavigate: ({ page, params }) => …` (or
+  `appMcp.setNavigationHandler(handler | null)`, set before connecting) lets the Hub switch pages before calling a tool
+  that is not on the current page; throw `ToolCallError.navigationDenied(message)` to refuse, any other error fails it.
 - `ToolCallError(kind, message, details?)` - throw from a handler to return a specific error kind.
 - `ToolCallError.userActionRequired(message, { reason?, uri? })` - the user must act first (login expired, OS permission
   missing, app must be in the foreground, in-app confirmation); the agent receives `USER_ACTION_REQUIRED` and relays `message`.

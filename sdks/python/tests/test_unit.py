@@ -448,3 +448,115 @@ def test_stop_then_register_fails():
     with pytest.raises(app_mcp.AppMcpError.Stopped):
         c.add_tool(lambda: 1, "x")
     c.close()
+
+
+# ---------------------------------------------------------------------------
+# 界面级暴露与导航（spec/protocol.md 3.4）
+# ---------------------------------------------------------------------------
+
+
+class FakeNavigate:
+    def __init__(self, page: str, params: dict | None = None, raw: str | None = None):
+        self._page = page
+        self._params = raw if raw is not None else (None if params is None else json.dumps(params))
+        self.done = threading.Event()
+        self.result = None
+
+    def page(self):
+        return self._page
+
+    def params_json(self):
+        return self._params
+
+    def _finish(self, result):
+        if self.done.is_set():
+            raise ffi.AppMcpError.AlreadyCompleted()
+        self.result = result
+        self.done.set()
+
+    def complete(self):
+        self._finish(("ok",))
+
+    def fail(self, message):
+        self._finish(("fail", message))
+
+    def deny(self, message):
+        self._finish(("deny", message))
+
+    def wait(self):
+        assert self.done.wait(5), "导航未完成"
+        return self.result
+
+
+def _navigate(client, fn, request):
+    from app_mcp._client import _NavigationAdapter
+
+    _NavigationAdapter(client, fn).navigate(request)
+    return request.wait()
+
+
+def test_navigation_outcomes(client):
+    seen = []
+
+    def nav(page, params):
+        seen.append((page, params, threading.current_thread().name))
+        if page == "login":
+            raise app_mcp.NavigationDenied("需要先登录")
+        if page == "broken":
+            raise RuntimeError("页面加载失败")
+
+    assert _navigate(client, nav, FakeNavigate("cart", {"id": 1})) == ("ok",)
+    assert seen[0][:2] == ("cart", {"id": 1})
+    assert seen[0][2].startswith("app-mcp")  # 默认调度器（线程池）上执行
+    assert _navigate(client, nav, FakeNavigate("login")) == ("deny", "需要先登录")
+    assert _navigate(client, nav, FakeNavigate("broken")) == ("fail", "页面加载失败")
+    # ToolCallError 的 NAVIGATION_DENIED 也按拒绝回复
+    def deny_kind(page, params):
+        raise ToolCallError("NAVIGATION_DENIED", "正在编辑")
+
+    assert _navigate(client, deny_kind, FakeNavigate("x")) == ("deny", "正在编辑")
+    # 参数不是对象 / 不是 JSON：不调用回调，直接失败
+    assert _navigate(client, nav, FakeNavigate("cart", raw="[1]"))[0] == "fail"
+    assert _navigate(client, nav, FakeNavigate("cart", raw="{"))[0] == "fail"
+    assert len(seen) == 3
+
+
+def test_navigation_async_and_dispatcher():
+    ran = []
+
+    def dispatch(fn):
+        ran.append("dispatched")
+        fn()
+
+    c = AppMcp(app_id="unit-nav", app_name="Unit", host_url="ws://127.0.0.1:9", dispatcher=dispatch)
+    try:
+        assert _navigate(c, lambda page, params: None, FakeNavigate("cart")) == ("ok",)
+        assert ran == ["dispatched"]
+
+        async def nav(page, params):
+            await asyncio.sleep(0)
+            raise app_mcp.NavigationDenied(f"不能去 {page}")
+
+        assert _navigate(c, nav, FakeNavigate("cart")) == ("deny", "不能去 cart")
+        c.set_navigation_handler(lambda page, params: None)
+
+        @c.on_navigate
+        def handler(page, params):
+            pass
+
+        c.set_navigation_handler(None)
+    finally:
+        c.close()
+
+
+def test_surface_and_page(client):
+    handle = client.add_tool(lambda: None, "v.tool", "依赖界面", surface="view", page="cart")
+    assert (handle._spec.surface, handle._spec.page) == (ffi.ToolSurface.VIEW, "cart")
+    # "app" 是缺省：不声明（不序列化）
+    assert client.add_tool(lambda: None, "a.tool", "缺省", surface="app")._spec.surface is None
+    handle.update(description="新")
+    assert (handle._spec.surface, handle._spec.page) == (ffi.ToolSurface.VIEW, "cart")
+    handle.update(surface=None, page=None)
+    assert (handle._spec.surface, handle._spec.page) == (None, None)
+    with pytest.raises(ValueError):
+        client.add_tool(lambda: None, "bad.tool", "非法", surface="modal")

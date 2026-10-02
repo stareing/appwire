@@ -44,6 +44,23 @@ void main() {
     expect(sizeOf<AmCallResult>(), fake.sizeOf(17));
   });
 
+  test('surface / page 经 AmToolOptions（v14）传入；update 未提供保持、null 清除', () {
+    final t = client.tool('cart.checkout',
+        description: '结算', surface: ToolSurface.view, page: 'cart', handler: (args, ctx) => null);
+    expect(fake.toolView('cart.checkout'), '1|cart');
+    t.update(description: '结算（新）');
+    expect(fake.toolView('cart.checkout'), '1|cart');
+    t.update(page: null);
+    expect(fake.toolView('cart.checkout'), '1|null');
+    t.update(surface: null, page: 'orders');
+    expect(fake.toolView('cart.checkout'), '0|orders');
+    expect(t.spec, isNot(ToolSpec(name: 'cart.checkout', description: '结算（新）')));
+    expect(ToolSpec(name: 'a', description: 'b', page: 'p'), ToolSpec(name: 'a', description: 'b', page: 'p'));
+    expect(ToolSpec(name: 'a', description: 'b').copyWith(surface: ToolSurface.view).surface, ToolSurface.view);
+    client.tool('plain.app', description: '普通', handler: (args, ctx) => null);
+    expect(fake.toolView('plain.app'), '0|null');
+  });
+
   group('工具声明与结构化结果（v9）', () {
     test('注解与 outputSchema 经 am_tool_register_ex 传入；replace 可清除', () {
       final t = client.tool('order.submit',

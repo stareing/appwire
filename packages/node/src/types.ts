@@ -16,6 +16,28 @@ import type { NativeBinding } from './native.js'
 export type Risk = 'read' | 'write' | 'destructive' | 'payment' | 'os-sensitive'
 export type Activation = 'headless' | 'background' | 'foreground'
 export type Visibility = 'visible' | 'hidden' | 'frozen'
+/**
+ * 工具对界面的依赖（spec/protocol.md 3.4）：`app`（缺省）不依赖界面，后台可调、可唤醒；`view` 依赖界面，
+ * 只应在所在界面真正可见且处于最上层时注册（是否注册由 App 决定，SDK 只如实声明）。
+ */
+export type ToolSurface = 'app' | 'view'
+
+/** 导航请求（`app/navigate` 的参数，与 @app-mcp/web 同形）。 */
+export interface NavigationRequest {
+  /** 页面名（清单 `pages[].name` 或工具的 `page`）。 */
+  page: string
+  /** 页面参数（清单 `pages[].params` 描述其 schema）；Host 未给出时为 `undefined`。 */
+  params: Record<string, unknown> | undefined
+}
+
+/**
+ * 导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）：切换到 `request.page`。
+ * 在 Node 事件循环上调用；返回（或返回的 Promise 兑现）即导航完成——最好在新页面的工具注册之后再完成，Host 会等待目标工具出现。
+ *
+ * - 拒绝（如用户正在输入）：抛出 `ToolCallError.navigationDenied(message)` → `NAVIGATION_DENIED`；
+ * - 其他异常（页面不存在、参数不合法等，或 `ToolCallError.navigationFailed`）→ `NAVIGATION_FAILED`（`reason: "error"`）。
+ */
+export type NavigationHandler = (request: NavigationRequest) => void | Promise<void>
 
 /** 协议错误类别，见 spec/protocol.md 第 4 节。 */
 export type ErrorKind =
@@ -307,6 +329,11 @@ export interface NodeAppMcpOptions {
    * 也可以用 {@link AppMcp.onIdleExit} 订阅。
    */
   onIdleExit?: () => void
+  /**
+   * 导航回调（spec/protocol.md 3.4）：设置后握手声明 `capabilities.navigate`，Host 可请求切换页面以调用不在当前页面的工具。
+   * 缺省不支持导航（Host 的导航请求以 `NAVIGATION_FAILED` / `unsupported` 回复）。之后可用 {@link AppMcp.setNavigationHandler} 替换。
+   */
+  onNavigate?: NavigationHandler
   /** 高级：注入原生模块（测试或自定义加载路径）。缺省按平台加载包内的 `.node` 文件。 */
   binding?: NativeBinding
 }
@@ -388,6 +415,10 @@ export interface ToolDefinition<I = unknown, O = unknown> {
   activation?: Activation
   /** 缺省 true。为 false 时工具不对 Host 可见。 */
   enabled?: boolean
+  /** 对界面的依赖，缺省 `'app'`（spec/protocol.md 3.4）。 */
+  surface?: ToolSurface
+  /** 所在页面名（`[a-zA-Z0-9_.-]{1,64}`）；Hub 在该工具未注册时据此先导航（{@link NodeAppMcpOptions.onNavigate}）。 */
+  page?: string
   /** 网页中用于高亮的元素；Node 中忽略（保留字段以便与 @app-mcp/web 共用定义）。 */
   anchor?: unknown
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
@@ -417,7 +448,7 @@ export interface ToolHandle {
   readonly name: string
   /**
    * 更新描述、schema、风险、注解或启用状态；未提供的字段保持不变，显式给出 `undefined` 的字段恢复默认
-   * （`annotations` / `outputSchema` 为清除声明；旧版原生模块不支持清除，保持原声明）。
+   * （`annotations` / `outputSchema` / `page` 为清除声明，`surface` 回到 `'app'`；旧版原生模块不支持清除，保持原声明）。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void
   /** 替换 handler（不产生协议消息）。 */
@@ -431,7 +462,7 @@ export interface ToolHandle {
 
 export interface ResourceDefinition<T = unknown> {
   description: string
-  /** 缺省 'application/json'。 */
+  /** 缺省不声明（Host 按 `application/json` 处理，spec/protocol.md 6）。 */
   mimeType?: string
   /**
    * 需实时推送（spec/lifecycle.md 第 13 节 B3）：被 Host 订阅时保持连接、休眠中变化时回连推送。
@@ -489,6 +520,11 @@ export interface AppMcp extends Registrar {
   start(): void
   /** 报告实例可见性（如 Electron 窗口最小化 / 失焦）。`focused` 默认 true。 */
   setVisibility(visibility: Visibility, focused?: boolean): void
+  /**
+   * 设置 / 替换导航回调（见 {@link NodeAppMcpOptions.onNavigate}）；`null` 清除。能力在握手时声明：连接后才从无到有设置
+   * （或清除）的回调在下次连接时生效，之前到达的导航请求按当时的回调处理。旧版原生模块不支持时记一条警告、无效果。
+   */
+  setNavigationHandler(handler: NavigationHandler | null): void
 
   // ---- 生命周期（spec/lifecycle.md 第 8 节）-------------------------------
 

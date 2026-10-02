@@ -46,8 +46,21 @@ export interface ToolDecl {
   activation?: string
   annotations?: { [key: string]: Json }
   enabled?: boolean
+  surface?: 'app' | 'view'
+  page?: string
   handler?: HandlerSpec
 }
+
+/** 导航行为（conformance/README.md 2.4）。 */
+export interface NavigationSpec {
+  mutate?: MutationOp[]
+  deny?: string
+  fail?: string
+  throw?: string
+  failParams?: boolean
+}
+
+export type NavigationOutcome = { kind: 'ok' } | { kind: 'deny' | 'fail' | 'throw'; message: string }
 
 export interface ReadSpec {
   return?: Json
@@ -82,6 +95,7 @@ export interface ConformanceCase {
     }
     tools?: ToolDecl[]
     resources?: ResourceDecl[]
+    navigation?: { [page: string]: NavigationSpec }
   }
   host: { [key: string]: Json }
 }
@@ -151,6 +165,12 @@ export declare function runCase(options: {
 export declare function verdictOk(outcome: CaseOutcome): boolean
 export declare function describeFailure(outcome: CaseOutcome): string
 export declare function execHandler(spec: HandlerSpec, env: HandlerEnv): Promise<HandlerOutcome>
+export declare function execNavigation(
+  pages: { [page: string]: NavigationSpec },
+  page: string,
+  params: unknown,
+  env: { mutate(op: MutationOp): void },
+): NavigationOutcome
 export declare function createRegistry<H>(ops: RegistryOps<H>): Registry
 export declare function appConfig(testCase: ConformanceCase): {
   lifecycle?: NonNullable<ConformanceCase['app']['config']>['lifecycle']
@@ -171,4 +191,9 @@ export interface JsToolCallErrorClass {
   userActionRequired(message: string, options?: { reason?: string; uri?: string }): Error
 }
 
-export declare function registerJsApp(app: JsRegistrar, testCase: ConformanceCase, ToolCallError: JsToolCallErrorClass): void
+/** `navigate`：用例有 `app.navigation` 时的 JS 导航回调（拒绝 / 失败以 ToolCallError 抛出），否则 undefined。 */
+export declare function registerJsApp(
+  app: JsRegistrar,
+  testCase: ConformanceCase,
+  ToolCallError: JsToolCallErrorClass,
+): { navigate: ((page: string, params: unknown) => Promise<void>) | undefined }

@@ -39,7 +39,7 @@ import 'types.dart';
 
 final class _Runtime {
   _Runtime(this.b) {
-    for (final c in <NativeCallable<Function>>[tool, read, cancel, state, paired, log, free, idleExit]) {
+    for (final c in <NativeCallable<Function>>[tool, read, cancel, state, paired, log, free, idleExit, navigate]) {
       c.keepIsolateAlive = false;
     }
   }
@@ -70,6 +70,8 @@ final class _Runtime {
       NativeCallable<AmFreeFnNative>.listener(_onFree);
   late final NativeCallable<AmIdleExitFnNative> idleExit =
       NativeCallable<AmIdleExitFnNative>.listener(_onIdleExit);
+  late final NativeCallable<AmNavigateFnNative> navigate =
+      NativeCallable<AmNavigateFnNative>.listener(_onNavigate);
 
   /// 持有句柄的终结器：[_Hold] 未显式释放就被回收时调用 `am_hold_release`。
   late final NativeFinalizer holdFinalizer = NativeFinalizer(b.am_hold_release_ptr.cast());
@@ -98,6 +100,16 @@ final class _Runtime {
     } else {
       _withStrings2(ErrorKind.resourceNotFound.wireName, '资源已注销',
           (k, m) => b.am_read_fail(read, k, m));
+    }
+  }
+
+  /// user_data 为客户端自身的 ID（导航回调存在 Dart 侧，不随 user_data 释放）。
+  void _onNavigate(Pointer<Void> userData, Pointer<AmNavigate> navigate) {
+    final target = targets[userData.address];
+    if (target is AppMcp) {
+      target._dispatchNavigate(navigate);
+    } else {
+      using((arena) => b.am_navigate_fail(navigate, '客户端已释放'.toNativeUtf8(allocator: arena)));
     }
   }
 
@@ -308,6 +320,12 @@ final class _PendingRead {
   bool consumed = false;
 }
 
+final class _PendingNavigate {
+  _PendingNavigate(this.ptr);
+  final Pointer<AmNavigate> ptr;
+  bool consumed = false;
+}
+
 // ---------------------------------------------------------------------------
 // 客户端
 // ---------------------------------------------------------------------------
@@ -453,6 +471,8 @@ final class AppMcp {
   final StreamController<void> _idleExit = StreamController<void>.broadcast();
   final Set<_PendingCall> _calls = {};
   final Set<_PendingRead> _reads = {};
+  final Set<_PendingNavigate> _navigations = {};
+  NavigationHandler? _navigationHandler;
 
   /// 该客户端注册过的所有 user_data ID（dispose 时从注册表删除）。
   final Set<int> _ownedIds = {};
@@ -535,6 +555,21 @@ final class AppMcp {
     _rt.check(_b.am_client_stop(_ptr));
   }
 
+  /// 设置导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）；null 清除（之后的导航请求以 `NAVIGATION_FAILED` 回复）。
+  ///
+  /// [handler] 在创建客户端的 isolate（Flutter 主 isolate）上执行：切换到目标页面，最好等新页面的工具注册之后再返回。
+  /// 正常返回 = 完成；抛 [NavigationDeniedError] = 拒绝；其他异常 = 失败。能力在握手时声明：建议在 [start] 之前设置，
+  /// 连接后才设置的在下次连接生效。Flutter 可用 `app_mcp_flutter` 的 `McpNavigator` / go_router 适配。
+  void setNavigationHandler(NavigationHandler? handler) {
+    _ensureAlive();
+    _navigationHandler = handler;
+    _rt.check(_b.am_client_set_navigation_handler(
+        _ptr,
+        handler == null ? nullptr : _rt.navigate.nativeFunction,
+        Pointer<Void>.fromAddress(handler == null ? 0 : _userDataId),
+        nullptr));
+  }
+
   void setVisibility(AppVisibility visibility, {bool focused = true}) {
     _ensureAlive();
     _rt.check(_b.am_client_set_visibility(_ptr, visibilityToNative(visibility), focused));
@@ -597,6 +632,8 @@ final class AppMcp {
     bool enabled = true,
     ToolAnnotations? annotations,
     Map<String, Object?>? outputSchema,
+    ToolSurface surface = ToolSurface.app,
+    String? page,
     required ToolHandler handler,
   }) =>
       _root.tool(name,
@@ -608,6 +645,8 @@ final class AppMcp {
           enabled: enabled,
           annotations: annotations,
           outputSchema: outputSchema,
+          surface: surface,
+          page: page,
           handler: handler);
 
   /// 在根作用域注册资源。见 [McpScope.resource]。
@@ -646,6 +685,12 @@ final class AppMcp {
           ErrorKind.cancelled.wireName, '客户端已释放', (k, m) => _b.am_read_fail(read.ptr, k, m));
     }
     _reads.clear();
+    for (final nav in _navigations.toList()) {
+      if (nav.consumed) continue;
+      nav.consumed = true;
+      using((arena) => _b.am_navigate_fail(nav.ptr, '客户端已释放'.toNativeUtf8(allocator: arena)));
+    }
+    _navigations.clear();
     _root._releaseTree();
     _b.am_client_free(_ptr);
     for (final id in _ownedIds) {
@@ -774,6 +819,41 @@ final class AppMcp {
     _rt.targets.remove(call.cancelId);
   }
 
+  void _dispatchNavigate(Pointer<AmNavigate> ptr) {
+    final nav = _PendingNavigate(ptr);
+    final handler = _navigationHandler;
+    if (_disposed || handler == null) {
+      nav.consumed = true;
+      using((arena) => _b.am_navigate_fail(
+          ptr, (_disposed ? '客户端已释放' : '导航回调已清除').toNativeUtf8(allocator: arena)));
+      return;
+    }
+    // 指针在 navigate 被消费前有效。
+    final pagePtr = _b.am_navigate_page(ptr);
+    final paramsPtr = _b.am_navigate_params_json(ptr);
+    final request = NavigationRequest(
+        pagePtr == nullptr ? '' : pagePtr.toDartString(), paramsPtr == nullptr ? null : paramsPtr.toDartString());
+    _navigations.add(nav);
+    void finish(int Function(Pointer<Utf8>)? f, [String message = '']) {
+      _navigations.remove(nav);
+      if (nav.consumed) return;
+      nav.consumed = true;
+      if (f == null) {
+        _b.am_navigate_complete(ptr);
+      } else {
+        using((arena) => f(message.toNativeUtf8(allocator: arena)));
+      }
+    }
+
+    Future<void>.sync(() => handler(request)).then((_) => finish(null), onError: (Object e) {
+      if (e is NavigationDeniedError) {
+        finish((m) => _b.am_navigate_deny(ptr, m), e.message);
+      } else {
+        finish((m) => _b.am_navigate_fail(ptr, m), failureFromError(e).message);
+      }
+    });
+  }
+
   void _dispatchRead(_ResourceEntry entry, Pointer<AmRead> ptr) {
     final read = _PendingRead(ptr);
     if (_disposed) {
@@ -846,6 +926,8 @@ final class McpScope {
     bool enabled = true,
     ToolAnnotations? annotations,
     Map<String, Object?>? outputSchema,
+    ToolSurface surface = ToolSurface.app,
+    String? page,
     required ToolHandler handler,
   }) =>
       registerTool(
@@ -858,7 +940,9 @@ final class McpScope {
               title: title,
               enabled: enabled,
               annotations: annotations,
-              outputSchema: outputSchema),
+              outputSchema: outputSchema,
+              surface: surface,
+              page: page),
           handler);
 
   /// 用 [ToolSpec] 注册工具。
@@ -1011,8 +1095,8 @@ Pointer<AmToolOptions> _toolOptions(ToolSpec spec, Allocator arena) {
     ..struct_size = sizeOf<AmToolOptions>()
     ..annotations_json = _optStr(encodeToolAnnotations(spec.annotations), arena)
     ..output_schema_json = _optStr(encodeSchema(spec.outputSchema), arena)
-    ..page = nullptr
-    ..surface = 0;
+    ..page = _optStr(spec.page, arena)
+    ..surface = surfaceToNative(spec.surface);
   return o;
 }
 
@@ -1043,8 +1127,8 @@ final class ToolHandle {
   ///
   /// 各参数类型同 [ToolSpec] 对应字段（`description` String、`inputSchema` / `outputSchema`
   /// `Map<String, Object?>`、`risk` [Risk]、`activation` [Activation]、`title` String、`enabled` bool、
-  /// `annotations` [ToolAnnotations]）。null 的含义：`title` / `activation` / `annotations` /
-  /// `outputSchema` 清除声明，`inputSchema` 为无参数，`risk` 恢复 [Risk.write]，`enabled` 恢复 true，
+  /// `annotations` [ToolAnnotations]、`surface` [ToolSurface]、`page` String）。null 的含义：`title` / `activation` / `annotations` /
+  /// `outputSchema` / `page` 清除声明，`surface` 恢复 [ToolSurface.app]，`inputSchema` 为无参数，`risk` 恢复 [Risk.write]，`enabled` 恢复 true，
   /// `description` 保持不变。
   ///
   /// @error 类型不符时抛 [ArgumentError]，不产生协议消息。
@@ -1058,6 +1142,8 @@ final class ToolHandle {
     Object? enabled = _keep,
     Object? annotations = _keep,
     Object? outputSchema = _keep,
+    Object? surface = _keep,
+    Object? page = _keep,
   }) {
     final s = _spec;
     replace(ToolSpec(
@@ -1069,7 +1155,9 @@ final class ToolHandle {
         title: _patch<String?>(title, s.title, 'title'),
         enabled: _patch<bool?>(enabled, s.enabled, 'enabled') ?? true,
         annotations: _patch<ToolAnnotations?>(annotations, s.annotations, 'annotations'),
-        outputSchema: _patch<Map<String, Object?>?>(outputSchema, s.outputSchema, 'outputSchema')));
+        outputSchema: _patch<Map<String, Object?>?>(outputSchema, s.outputSchema, 'outputSchema'),
+        surface: _patch<ToolSurface?>(surface, s.surface, 'surface') ?? ToolSurface.app,
+        page: _patch<String?>(page, s.page, 'page')));
   }
 
   /// [update] 参数缺省标记。
@@ -1096,7 +1184,9 @@ final class ToolHandle {
         title: spec.title,
         enabled: spec.enabled,
         annotations: spec.annotations,
-        outputSchema: spec.outputSchema);
+        outputSchema: spec.outputSchema,
+        surface: spec.surface,
+        page: spec.page);
     if (next == _spec) return;
     final rt = _scope._client._rt;
     using((arena) =>

@@ -13,6 +13,7 @@ internal static unsafe class Callbacks
     internal static nint FreeGCHandlePtr => (nint)(delegate* unmanaged[Cdecl]<nint, void>)&FreeGCHandle;
     internal static nint ToolPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnToolCall;
     internal static nint ReadPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnRead;
+    internal static nint NavigatePtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnNavigate;
     internal static nint CancelPtr => (nint)(delegate* unmanaged[Cdecl]<nint, int, void>)&OnCancel;
     internal static nint StatePtr => (nint)(delegate* unmanaged[Cdecl]<nint, int, ulong, nint, void>)&OnState;
     internal static nint PairedPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnPaired;
@@ -71,6 +72,24 @@ internal static unsafe class Callbacks
         catch (Exception e)
         {
             PendingRead.FailRaw(read, "HANDLER_ERROR", e.Message);
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNavigate(nint userData, nint navigate)
+    {
+        try
+        {
+            if (Target<NavigationInvoker>(userData) is { } invoker)
+            {
+                invoker.Invoke(navigate);
+                return;
+            }
+            PendingNavigate.FailRaw(navigate, "导航回调已释放");
+        }
+        catch (Exception e)
+        {
+            PendingNavigate.FailRaw(navigate, e.Message);
         }
     }
 

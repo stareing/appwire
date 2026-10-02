@@ -4,6 +4,7 @@
 |---|---|
 | `app_mcp/` | Dart SDK：通过 `dart:ffi` 调用 C ABI（`bindings/c/include/app_mcp.h`，`AM_API_VERSION 3`） |
 | `app_mcp_flutter/` | Flutter 适配：`AppMcpScope`、`McpToolGroup`、`McpTool` / `McpResource`、`useMcpTool`、生命周期可见性与回连、`AppMcpWakeChannel` |
+| `app_mcp_go_router/` | go_router 适配：`mcpGoRouterHandler`（导航请求 → 命名路由；依赖 go_router，独立成包） |
 | `app_mcp_flutter/example/` | 示例：购物车（含 Linux 桌面集成测试） |
 
 ```dart
@@ -43,6 +44,24 @@ client.tool('order.submit',
 - `ToolHandle.update`：未提供的参数保持不变，显式传 `null` 清除该声明（`title` / `activation` / `annotations` / `outputSchema`
   删除，`inputSchema` 变为无参数，`risk` 恢复 `Risk.write`，`enabled` 恢复 `true`；`description` 不可清除）。参数类型不符时抛
   `ArgumentError`。`ToolHandle.replace(spec)` 按 `ToolSpec` 整体替换。
+
+## 界面级暴露与导航（spec/protocol.md 3.4）
+
+```dart
+// 依赖界面的工具：只在所在路由是栈顶（未被新页面 / 对话框盖住）时启用
+McpTool(name: 'cart.checkout', description: '结算', surface: ToolSurface.view, page: 'cart', handler: checkout)
+
+// Host 调用其他页面的工具前请求导航：在 start() 之前设置
+client.setNavigationHandler(mcpGoRouterHandler(router));                       // go_router（app_mcp_go_router 包）
+client.setNavigationHandler(mcpNavigatorHandler(navKey, routes: {'cart': '/cart'}));  // Navigator 命名路由
+```
+
+- `surface` / `page`：`McpTool`、`useMcpTool`、`McpScope.tool`、`ToolSpec`、`ToolHandle.update`（`null` 清除）。
+- `setNavigationHandler((request) async {...})`：在主 isolate 上执行，正常返回 = 完成，抛 `NavigationDeniedError` = 拒绝
+  （`NAVIGATION_DENIED`），其他异常 = 失败（`NAVIGATION_FAILED`）；`request.params` 为解码后的参数。传 `null` 清除；能力在握手时声明。
+- view 工具的门控：所在路由是栈顶（`ModalRoute.isCurrentOf`）且祖先 `McpViewGate(active: …)` 都为真。keep-alive 的标签页
+  （`IndexedStack`、`TabBarView`）不改变路由，用 `McpViewGate(active: index == current)` 标出；`McpRouteGate(observer: …)`
+  （`RouteAware`，观察者 `McpRouteObserver` 放进 `navigatorObservers`）在路由被盖住 / 恢复时另外回调 `onChanged`。
 
 ## 生命周期（休眠与唤醒，spec/lifecycle.md）
 
@@ -197,6 +216,7 @@ cd sdks/dart/app_mcp && dart test
 
 # Flutter 适配：单元 / widget 测试
 cd sdks/dart/app_mcp_flutter && flutter test
+cd sdks/dart/app_mcp_go_router && flutter test
 
 # Linux 桌面集成测试（需要 GTK 3、cmake、ninja、clang）
 export NO_PROXY=127.0.0.1,::1,localhost no_proxy=127.0.0.1,::1,localhost   # 有代理时必须设置

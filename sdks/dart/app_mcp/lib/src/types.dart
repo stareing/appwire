@@ -627,6 +627,8 @@ final class ToolSpec {
     this.enabled = true,
     this.annotations,
     this.outputSchema,
+    this.surface = ToolSurface.app,
+    this.page,
   });
 
   /// App 内唯一，`[a-zA-Z0-9_.-]{1,64}`。
@@ -648,6 +650,13 @@ final class ToolSpec {
   /// 结果的 JSON Schema（MCP outputSchema）；为 null 时不声明。
   final Map<String, Object?>? outputSchema;
 
+  /// 对界面的依赖（spec/protocol.md 3.4）：[ToolSurface.view] 的工具只在所在界面可见且处于最上层时注册 / 启用
+  /// （Flutter 可用 `app_mcp_flutter` 的 `McpTool` + `McpRouteObserver` 按路由门控）。
+  final ToolSurface surface;
+
+  /// 所在页面名（`[a-zA-Z0-9_.-]{1,64}`）；为 null 时不声明。Hub 在该工具未注册时据此导航（[AppMcp.setNavigationHandler]）。
+  final String? page;
+
   ToolSpec copyWith({
     String? description,
     Map<String, Object?>? inputSchema,
@@ -657,6 +666,8 @@ final class ToolSpec {
     bool? enabled,
     ToolAnnotations? annotations,
     Map<String, Object?>? outputSchema,
+    ToolSurface? surface,
+    String? page,
   }) =>
       ToolSpec(
         name: name,
@@ -668,6 +679,8 @@ final class ToolSpec {
         enabled: enabled ?? this.enabled,
         annotations: annotations ?? this.annotations,
         outputSchema: outputSchema ?? this.outputSchema,
+        surface: surface ?? this.surface,
+        page: page ?? this.page,
       );
 
   @override
@@ -680,12 +693,14 @@ final class ToolSpec {
       other.title == title &&
       other.enabled == enabled &&
       other.annotations == annotations &&
+      other.surface == surface &&
+      other.page == page &&
       _schemaText(other.inputSchema) == _schemaText(inputSchema) &&
       _schemaText(other.outputSchema) == _schemaText(outputSchema);
 
   @override
   int get hashCode => Object.hash(name, description, risk, activation, title, enabled, annotations,
-      _schemaText(inputSchema), _schemaText(outputSchema));
+      _schemaText(inputSchema), _schemaText(outputSchema), surface, page);
 
   static String? _schemaText(Map<String, Object?>? schema) =>
       schema == null ? null : jsonEncode(schema);
@@ -723,3 +738,42 @@ final class ResourceSpec {
   /// 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；null 表示不声明。
   final ContentAnnotations? annotations;
 }
+
+/// 工具对界面的依赖（spec/protocol.md 3.4）。
+enum ToolSurface {
+  /// 不依赖界面：后台可调、可唤醒（缺省）。
+  app,
+
+  /// 依赖界面：只在所在界面可见且处于最上层时注册。
+  view,
+}
+
+/// 一次导航请求（Host 的 `app/navigate`，spec/protocol.md 3.4）。
+final class NavigationRequest {
+  const NavigationRequest(this.page, this.paramsJson);
+
+  /// 目标页面名（清单 `pages[].name` 或工具的 [ToolSpec.page]）。
+  final String page;
+
+  /// 页面参数 JSON 文本；Host 没有给出时为 null。
+  final String? paramsJson;
+
+  /// 页面参数（解码后的 JSON）；Host 没有给出时为 null。
+  Object? get params => paramsJson == null ? null : jsonDecode(paramsJson!);
+
+  @override
+  String toString() => 'NavigationRequest($page, $paramsJson)';
+}
+
+/// 在导航回调中抛出：拒绝本次导航（`NAVIGATION_DENIED`，如用户正在输入、页面需要登录）。[message] 面向模型 / 用户。
+final class NavigationDeniedError implements Exception {
+  const NavigationDeniedError(this.message);
+  final String message;
+
+  @override
+  String toString() => 'NavigationDeniedError: $message';
+}
+
+/// 导航回调（[AppMcp.setNavigationHandler]）：切换到 [NavigationRequest.page] 后返回（最好在新页面的工具注册之后）。
+/// 抛 [NavigationDeniedError] = 拒绝；其他异常 = 失败（`NAVIGATION_FAILED`）。
+typedef NavigationHandler = FutureOr<void> Function(NavigationRequest request);

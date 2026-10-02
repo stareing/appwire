@@ -51,10 +51,11 @@ use tauri::{AppHandle, Manager, RunEvent, Runtime, Webview, WindowEvent};
 pub use app_mcp_native::{
     Activation, AppOverview, Audience, CallHandle, CallResult, CancelListener, CancelReason,
     ClientKind, ClientListener, ContentAnnotations, ErrorKind, HeartbeatMode, HoldHandle,
-    LifecycleMode, LifecyclePolicy, LogLevel, NativeClient, NativeConfig, NativeError, ReadHandle,
+    LifecycleMode, LifecyclePolicy, LogLevel, NativeClient, NativeConfig, NativeError, NavigateHandle, NavigationHandler,
+    ReadHandle,
     Residency, ResourceHandle, ResourceOptions, ResourceReader, ResourceSpec, ResultStatus, Risk,
     ScopeHandle, SleepReason, StateInfo, StateStatus, ToolAnnotations, ToolHandle, ToolHandler,
-    ToolOptions, ToolSpec, Visibility, WakeDescriptor, WakeKind, WakeReason,
+    ToolOptions, ToolSpec, ToolSurface, Visibility, WakeDescriptor, WakeKind, WakeReason,
 };
 pub use bridge::BRIDGE_VERSION;
 
@@ -85,6 +86,7 @@ pub struct Builder {
     quit_on_idle_exit: bool,
     wake_from_args: bool,
     auto_start: bool,
+    page_navigation: bool,
 }
 
 impl Builder {
@@ -99,6 +101,7 @@ impl Builder {
             quit_on_idle_exit: true,
             wake_from_args: true,
             auto_start: true,
+            page_navigation: false,
         }
     }
 
@@ -145,6 +148,14 @@ impl Builder {
         self
     }
 
+    /// 把 Host 的导航请求（spec/protocol.md 3.4）转给页面，默认 `false`。开启后客户端握手声明 `capabilities.navigate`，
+    /// 请求交给最近一次开启导航的页面（`@app-mcp/tauri` 的 `attachTauriNavigation`）；没有这样的页面时导航失败。
+    /// 为 `false` 时 App 可自行在 [`AppMcp::client`] 上 `set_navigation_handler`（如切换窗口），页面开启导航收到错误。
+    pub fn page_navigation(mut self, enable: bool) -> Self {
+        self.page_navigation = enable;
+        self
+    }
+
     pub fn build<R: Runtime>(self) -> TauriPlugin<R> {
         let inject = self.inject_bridge;
         let mut builder = tauri::plugin::Builder::<R>::new(PLUGIN_NAME)
@@ -159,7 +170,7 @@ impl Builder {
                 if payload.event() == PageLoadEvent::Started
                     && let Some(app_mcp) = webview.app_mcp()
                 {
-                    app_mcp.bridge.sessions().end(webview.label());
+                    app_mcp.bridge.sessions().end_page(webview.label());
                 }
             })
             .on_window_ready(|window| {
@@ -201,6 +212,9 @@ impl Builder {
             track_visibility: self.track_visibility,
             last_visibility: Mutex::new(None),
         };
+        if self.page_navigation {
+            app_mcp.bridge.enable_page_navigation();
+        }
         if self.wake_from_args {
             app_mcp.handle_wake_args(std::env::args().skip(1));
         }

@@ -108,6 +108,7 @@ let _ = call.complete_with(CallResult { status: ResultStatus::Noop, summary: Som
 | `quit_on_idle_exit(bool)` | `true` | 休眠且 `residency` 允许退出时 `AppHandle::exit(0)` |
 | `wake_from_args(bool)` | `true` | 启动参数交给 `handle_wake`（冷启动唤醒） |
 | `auto_start(bool)` | `true` | 初始化后 `start()` |
+| `page_navigation(bool)` | `false` | 握手声明导航能力，把 Host 的 `app/navigate` 转给最近一次开启导航的页面（`@app-mcp/tauri` 的 `attachTauriNavigation`）；关闭时 App 可自行 `client().set_navigation_handler(...)`（spec/protocol.md 3.4） |
 
 ## 生命周期（spec/lifecycle.md）
 

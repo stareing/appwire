@@ -13,6 +13,11 @@
 //! 连接 ID（spec/protocol.md 10.3）随 `hello` 回复与 `state` 事件的可选字段 `connectionId` 送到页面（协议版本不变，
 //! 见 electron-bridge.ts 的 `@compat`）。
 //!
+//! 导航（第 4c 项，spec/protocol.md 3.4，[`Bridge::enable_page_navigation`]）：页面 `navigation.set {enabled}` 声明本页处理导航
+//! （最近一次开启的 WebView 为目标），Host 的 `app/navigate` 以事件 `navigate {navId, page, params?}` 送到该页，页面以
+//! `navigate.result {navId, ok, kind?, message?}` 回复。消息形状与 `@app-mcp/electron`（packages/electron/src/protocol.ts
+//! `NavigationOp`）相同，协议版本不变。
+//!
 //! 本模块与 Tauri 无关（只依赖 [`PageSink`]），便于不启动 WebView 测试。
 
 use std::collections::HashMap;
@@ -21,7 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use app_mcp_native::{
     Activation, CallHandle, CallResult, CancelListener, CancelReason, ContentAnnotations,
-    ErrorKind, HoldHandle, NativeClient, NativeError, ReadHandle, ResourceHandle, ResourceOptions,
+    ErrorKind, HoldHandle, NativeClient, NativeError, NavigateHandle, NavigationHandler, ReadHandle, ResourceHandle, ResourceOptions,
     ResourceReader, ResourceSpec, ResultStatus, Risk, ScopeHandle, StateInfo, StateStatus,
     ToolAnnotations, ToolHandle, ToolHandler, ToolOptions, ToolSpec, ToolSurface,
 };
@@ -185,6 +190,20 @@ enum PageOp {
     Release {
         #[serde(rename = "holdId")]
         hold_id: u64,
+    },
+    /// 本页开启 / 关闭导航处理（[`Bridge::enable_page_navigation`]）。
+    #[serde(rename = "navigation.set")]
+    NavigationSet { enabled: bool },
+    /// 页面对一次 `navigate` 事件的回复：`ok: false` 时 `kind` 为 `NAVIGATION_DENIED` 则拒绝，其他按失败。
+    #[serde(rename = "navigate.result")]
+    NavigateResult {
+        #[serde(rename = "navId")]
+        nav_id: u64,
+        ok: bool,
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        message: Option<String>,
     },
 }
 
@@ -448,6 +467,14 @@ impl Bridge {
         &self.sessions
     }
 
+    /// 把 Host 的导航请求转给页面：在客户端上设置导航回调（握手声明 `capabilities.navigate`，应在 `start` 之前调用），
+    /// 之后页面才能 `navigation.set`。没有页面开启导航时，导航以失败回复。
+    pub(crate) fn enable_page_navigation(&self) {
+        self.sessions.navigation_enabled.store(true, std::sync::atomic::Ordering::SeqCst);
+        let handler = PageNavigation { sessions: Arc::downgrade(&self.sessions) };
+        self.client.set_navigation_handler(Some(Arc::new(handler)));
+    }
+
     /// 处理页面发来的一条操作。`sink` 只在需要为该 WebView 新建会话时调用。
     pub(crate) fn handle(
         &self,
@@ -467,6 +494,8 @@ impl Bridge {
         };
         match op {
             PageOp::Hello => {
+                // @why 不清除导航目标：页面 SDK 的 hello 经异步队列发送，可能晚于本页的 navigation.set；
+                //   页面卸载由 reset / 页面开始加载 / 窗口销毁处理（Sessions::end_page）。
                 self.sessions.end(label);
                 let mut hello = json!({
                     "instanceId": self.client.instance_id(),
@@ -478,9 +507,17 @@ impl Bridge {
                 reply_ok(Some(hello))
             }
             PageOp::Reset => {
-                self.sessions.end(label);
+                self.sessions.end_page(label);
                 reply_ok(None)
             }
+            PageOp::NavigateResult { nav_id, ok, kind, message } => {
+                self.sessions.finish_navigation(nav_id, ok, kind.as_deref(), message.as_deref());
+                reply_ok(None)
+            }
+            PageOp::NavigationSet { enabled } => match self.sessions.set_navigation_target(label, window, enabled, sink) {
+                Ok(()) => reply_ok(None),
+                Err(e) => reply_err(e.code, e.message),
+            },
             op => {
                 let session = match self.sessions.get_or_create(label, || {
                     Session::new(
@@ -511,10 +548,37 @@ impl Drop for Bridge {
     }
 }
 
+/// 处理导航的页面（[`Sessions::set_navigation_target`]）与等待其回复的导航。
+#[derive(Default)]
+struct NavigationState {
+    /// 最近一次开启导航的 WebView。
+    /// @invariant 跨 `hello` 保留，页面卸载（[`Sessions::end_page`]）、窗口销毁或事件无法送达时清除。
+    target: Option<NavTarget>,
+    /// navId → (送往的 WebView, 导航请求)。
+    pending: HashMap<u64, (PageRef, NavigateHandle)>,
+    next_id: u64,
+}
+
+/// WebView 的 label 与所在窗口的 label。
+#[derive(Clone)]
+struct PageRef {
+    label: String,
+    window: String,
+}
+
+#[derive(Clone)]
+struct NavTarget {
+    page: PageRef,
+    sink: Arc<dyn PageSink>,
+}
+
 /// 全部 WebView 会话（按 label）。
 #[derive(Default)]
 pub(crate) struct Sessions {
     map: Mutex<HashMap<String, Arc<Session>>>,
+    navigation: Mutex<NavigationState>,
+    /// [`Bridge::enable_page_navigation`] 已调用。
+    navigation_enabled: std::sync::atomic::AtomicBool,
     /// 广播状态时读取连接 ID 用。
     /// @why 状态回调（`PluginListener`）在客户端创建之前就要构造，`StateInfo` 不带连接 ID，只能回头问客户端；
     /// 客户端持有监听器、监听器持有本结构，因此这里是一个引用环，由 [`Bridge`] 的 `Drop` 断开。
@@ -569,6 +633,12 @@ impl Sessions {
         }
     }
 
+    /// 页面卸载（`reset`、页面开始加载）：注销登记，并结束该页的导航处理（进行中的导航失败）。
+    pub(crate) fn end_page(&self, label: &str) {
+        self.end(label);
+        self.end_navigation(|p| p.label == label);
+    }
+
     /// 注销该窗口内全部 WebView 的登记（窗口销毁）。
     pub(crate) fn end_window(&self, window: &str) {
         let removed: Vec<Arc<Session>> = {
@@ -586,6 +656,7 @@ impl Sessions {
         for session in removed {
             session.dispose();
         }
+        self.end_navigation(|p| p.window == window);
     }
 
     /// 注销全部登记。
@@ -593,6 +664,90 @@ impl Sessions {
         let removed: Vec<Arc<Session>> = lock(&self.map).drain().map(|(_, s)| s).collect();
         for session in removed {
             session.dispose();
+        }
+        self.end_navigation(|_| true);
+    }
+
+    /// 开启 / 关闭本页的导航处理。
+    ///
+    /// @error 未调用 [`Bridge::enable_page_navigation`] 时开启返回 `NAVIGATION_DISABLED`。
+    fn set_navigation_target(
+        &self,
+        label: &str,
+        window: &str,
+        enabled: bool,
+        sink: impl FnOnce() -> Arc<dyn PageSink>,
+    ) -> Result<(), OpError> {
+        if !enabled {
+            let mut nav = lock(&self.navigation);
+            if nav.target.as_ref().is_some_and(|t| t.page.label == label) {
+                nav.target = None;
+            }
+            return Ok(());
+        }
+        if !self.navigation_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(op_error(
+                "NAVIGATION_DISABLED",
+                "插件未开启页面导航：Builder::page_navigation(true)",
+            ));
+        }
+        let page = PageRef { label: label.to_owned(), window: window.to_owned() };
+        lock(&self.navigation).target = Some(NavTarget { page, sink: sink() });
+        Ok(())
+    }
+
+    /// Host 请求导航：送到目标页面，等待 `navigate.result`。在原生分发线程上调用。
+    fn forward_navigation(&self, request: NavigateHandle) {
+        let (target, nav_id) = {
+            let mut nav = lock(&self.navigation);
+            let Some(target) = nav.target.clone() else {
+                drop(nav);
+                let _ = request.fail(&format!(
+                    "没有页面处理导航（页面「{}」）：页面尚未加载或未开启导航",
+                    request.page()
+                ));
+                return;
+            };
+            nav.next_id += 1;
+            let nav_id = nav.next_id;
+            nav.pending.insert(nav_id, (target.page.clone(), request.clone()));
+            (target, nav_id)
+        };
+        let mut event = json!({ "type": "navigate", "navId": nav_id, "page": request.page() });
+        if let Some(params) = request.params_json().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+            event["params"] = params;
+        }
+        if !target.sink.deliver(&event) {
+            // 页面已不可达：结束其导航处理（含本次）。
+            self.end_navigation(|p| p.label == target.page.label);
+        }
+    }
+
+    /// 页面回复一次导航；未知或已结束的 navId 忽略。
+    fn finish_navigation(&self, nav_id: u64, ok: bool, kind: Option<&str>, message: Option<&str>) {
+        let Some((_, request)) = lock(&self.navigation).pending.remove(&nav_id) else {
+            return;
+        };
+        let message = message.unwrap_or("页面导航失败");
+        let _ = match (ok, kind) {
+            (true, _) => request.complete(),
+            (false, Some("NAVIGATION_DENIED")) => request.deny(message),
+            (false, _) => request.fail(message),
+        };
+    }
+
+    /// 结束满足条件的 WebView 的导航处理：清除目标，进行中的导航以失败回复。
+    fn end_navigation(&self, matches: impl Fn(&PageRef) -> bool) {
+        let failed: Vec<NavigateHandle> = {
+            let mut nav = lock(&self.navigation);
+            if nav.target.as_ref().is_some_and(|t| matches(&t.page)) {
+                nav.target = None;
+            }
+            let ids: Vec<u64> = nav.pending.iter().filter(|(_, (p, _))| matches(p)).map(|(id, _)| *id).collect();
+            ids.iter().filter_map(|id| nav.pending.remove(id)).map(|(_, r)| r).collect()
+        };
+        for request in failed {
+            let _ = request.fail("页面已关闭或刷新，导航未完成");
         }
     }
 
@@ -606,6 +761,7 @@ impl Sessions {
         };
         session.dispose();
         drop(removed);
+        self.end_navigation(|p| p.label == session.label);
     }
 
     /// 把连接状态转发给全部页面。
@@ -681,7 +837,8 @@ impl Session {
         op: PageOp,
     ) -> Result<Option<Value>, OpError> {
         match op {
-            PageOp::Hello | PageOp::Reset => Ok(None),
+            // 由 Bridge::handle 处理，不经会话
+            PageOp::Hello | PageOp::Reset | PageOp::NavigationSet { .. } | PageOp::NavigateResult { .. } => Ok(None),
             PageOp::ToolRegister {
                 id,
                 scope_id,
@@ -998,6 +1155,22 @@ impl ResourceReader for PageResource {
             Some(session) => session.forward_read(self.resource_id, read),
             None => {
                 let _ = read.fail(ErrorKind::AppDisconnected, "页面已关闭");
+            }
+        }
+    }
+}
+
+/// Host 的导航请求 → [`Sessions::forward_navigation`]。
+struct PageNavigation {
+    sessions: Weak<Sessions>,
+}
+
+impl NavigationHandler for PageNavigation {
+    fn navigate(&self, request: NavigateHandle) {
+        match self.sessions.upgrade() {
+            Some(sessions) => sessions.forward_navigation(request),
+            None => {
+                let _ = request.fail("App 正在退出");
             }
         }
     }

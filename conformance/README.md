@@ -44,7 +44,8 @@ runner（各语言）                         fake_host --case <用例> --sdk <�
       "maxConcurrentCalls": 1
     },
     "tools": [ <工具声明> ],
-    "resources": [ <资源声明> ]
+    "resources": [ <资源声明> ],
+    "navigation": { "<页面>": <导航行为> }   // 可选：给出时设置导航回调（2.4），缺省不设置
   },
   "host": {
     "toolInfo": false, "trace": true,   // trace 缺省开启
@@ -62,8 +63,8 @@ App 固定为 `appId: "conf"`、`appName: "Conformance"`；runner 连接 fake_ho
 
 ### 2.1 工具声明
 
-`name`、`description`（必填）；`inputSchema`、`risk`、`activation`、`title`、`annotations`、`outputSchema`、`enabled`（缺省 true）
-按协议同名字段原样传给 SDK 的注册 API。未给出的字段不传（SDK 用自己的缺省值）。`handler` 描述 handler 的行为：
+`name`、`description`（必填）；`inputSchema`、`risk`、`activation`、`title`、`annotations`、`outputSchema`、`surface`、`page`、
+`enabled`（缺省 true）按协议同名字段原样传给 SDK 的注册 API。未给出的字段不传（SDK 用自己的缺省值）。`handler` 描述 handler 的行为：
 
 | 键 | 含义 |
 |---|---|
@@ -99,23 +100,38 @@ App 固定为 `appId: "conf"`、`appName: "Conformance"`；runner 连接 fake_ho
 
 runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整体更新；补丁型 API 直接传 `null`）。
 
-### 2.4 Host 操作（`host.ops`）
+### 2.4 导航行为（`app.navigation`）
+
+给出 `app.navigation` 时，runner 用该 SDK 最自然的 API 设置导航回调（spec/protocol.md 3.4，回调在封装层约定的线程上执行）；
+没有该键时**不设置**。回调按 `page` 查表，未列出的页面以"失败"（`NAVIGATION_FAILED`）完成，消息含页面名。每个页面的行为：
+
+| 键 | 含义 |
+|---|---|
+| `mutate: [<变更>]` | 先修改注册表（2.3，如注册新页面的工具），再按下列结果完成 |
+| `deny: "消息"` | 拒绝（`NAVIGATION_DENIED`） |
+| `fail: "消息"` | 失败（`NAVIGATION_FAILED`） |
+| `throw: "消息"` | 以该语言最普通的方式在回调里出错（抛异常 / panic），期望封装层转为 `NAVIGATION_FAILED` |
+| `failParams: true` | 失败，消息为收到的页面参数（JSON 文本，可被重新序列化；没有参数时为空） |
+| 都没有 | 完成（`{ok: true}`） |
+
+### 2.5 Host 操作（`host.ops`）
 
 | 操作 | 含义 |
 |---|---|
 | `{invoke, args?, callId?, timeoutMs?, cancelAfterMs?}` | 发 `tools/invoke`，等结果（`cancelAfterMs` 到期仍未完成则发 `tools/cancel`） |
 | `{read}` | 发 `resources/read` |
+| `{navigate, params?}` | 发 `app/navigate {page, params?}`，等回复 |
 | `{catalog: settleMs}` | 继续处理消息 settleMs 后打印 Host 当前目录与按 8.4 计算的 `toolsHash` |
 | `{delay: ms}` | 继续处理消息 ms 后执行下一步 |
 | `{awaitSleep: true}` | 等 SDK 发 `app/sleep` 并接受 |
 | `{wake: true}` | 紧跟 `awaitSleep`：打印 `{"type":"wake","arg"}`，runner 调 `handleWake(arg)`，Host 等回连 |
 
-### 2.5 fake_host 打印的行（模式匹配的对象）
+### 2.6 fake_host 打印的行（模式匹配的对象）
 
-`{"type":"tools",…}`（每次 `app/ready`）、`invoke` / `read`（`result` 或 `error`）、`progress`、`sleep`、`wake`、`hello`
+`{"type":"tools",…}`（每次 `app/ready`）、`invoke` / `read` / `navigate`（`name`，`result` 或 `error`）、`progress`、`sleep`、`wake`、`hello`
 （回连）、`catalog`、`cancel`、`recv`（`--trace`：`{"type":"recv","method","params"}`，不含 `ping`）。
 
-### 2.6 模式
+### 2.7 模式
 
 - 对象：模式中的每个键都要匹配（实际对象可以多出键）；数组：长度相同、逐个匹配；数字按数值比较（`1` 等于 `1.0`）。
 - 操作符（单键对象）：`{"$absent": true}`（该键不存在）、`{"$any": true}`、`{"$type": "string"|"number"|…}`、
@@ -145,6 +161,8 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `readFailure` | 资源读取失败带 details / `USER_ACTION_REQUIRED` |
 | `lifecycle` | `idle` 模式与毫秒级空闲时长 |
 | `wake` | `handleWake(arg)` |
+| `surface` | 工具 `surface` / `page` |
+| `navigation` | 设置导航回调（2.4） |
 
 ## 5. 各 SDK 的 runner
 
@@ -159,6 +177,6 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | Node | `packages/node/src/conformance.test.ts` | `pnpm --filter @app-mcp/node test` |
 | Web（WASM，Node 上运行） | `packages/web/test/conformance.test.ts`（唤醒经页面地址 `#app-mcp-wake=`） | `pnpm --filter @app-mcp/web test` |
 | 鸿蒙 ArkTS | `sdks/harmony/tests/conformance.test.cjs`（ArkTS 封装 + Node 版原生模块，不含真机运行时） | `node sdks/harmony/tests/run.cjs` |
-| Swift | 未实现（本机无 Swift 工具链） | — |
+| Swift | `sdks/swift/Tests/AppMcpTests/ConformanceTests.swift` | `swift test --filter ConformanceTests`（`PATH=~/.local/swift/usr/bin:$PATH`） |
 
 汇总：`node conformance/matrix.mjs`。各 runner 都支持 `APP_MCP_CONFORMANCE_CASES=id1,id2` 与 `APP_MCP_FAKE_HOST`。

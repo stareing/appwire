@@ -1,6 +1,7 @@
 package dev.appmcp
 
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.delay
@@ -30,13 +31,10 @@ class ConformanceTest {
     private companion object {
         const val SDK = "kotlin"
 
-        /**
-         * 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。
-         * @why 不含 `mutate`：[ToolHandle.update] 的 null 参数表示"保持不变"，无法按用例要求清除
-         *   annotations / outputSchema 等声明（SDK 缺少该 API）。
-         */
+        /** 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。 */
         val FEATURES = setOf(
-            "toolOptions", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure",
+            "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
+            "readFailure", "surface", "navigation",
         )
         val VERDICT_OK = setOf("pass", "xfail", "xpass", "skip")
         val repoRoot: File = FakeHostSupport.repoRoot.canonicalFile
@@ -96,9 +94,59 @@ class ConformanceTest {
     private fun startApp(addr: String, case: JsonObject): AppMcp {
         val app = case.obj("app")
         val client = AppMcp.create(config(addr, app?.obj("config")))
-        app?.get("tools")?.jsonArray.orEmpty().forEach { registerTool(client, it.jsonObject) }
+        val tools = ConcurrentHashMap<String, ToolHandle>()
+        app?.get("tools")?.jsonArray.orEmpty().forEach { registerTool(client, tools, it.jsonObject) }
         app?.get("resources")?.jsonArray.orEmpty().forEach { registerResource(client, it.jsonObject) }
+        app?.obj("navigation")?.let { pages -> client.setNavigationHandler { page, params -> navigate(client, tools, pages, page, params) } }
         return client.start()
+    }
+
+    /** `app.navigation`（conformance/README.md 2.4）。 */
+    private fun navigate(
+        client: AppMcp,
+        tools: MutableMap<String, ToolHandle>,
+        pages: JsonObject,
+        page: String,
+        params: JsonObject?,
+    ): NavigationResult {
+        val spec = pages.obj(page) ?: return NavigationResult.Failed("未知页面：$page")
+        spec["mutate"]?.jsonArray.orEmpty().forEach { mutate(client, tools, it.jsonObject) }
+        spec.str("throw")?.let { error(it) }
+        spec.str("deny")?.let { return NavigationResult.Denied(it) }
+        spec.str("fail")?.let { return NavigationResult.Failed(it) }
+        if (spec.bool("failParams") == true) return NavigationResult.Failed(params?.toString().orEmpty())
+        return NavigationResult.Ok
+    }
+
+    /** handler 的 `mutate`（conformance/README.md 2.3）：update 用补丁 API，null 清除。 */
+    private fun mutate(client: AppMcp, tools: MutableMap<String, ToolHandle>, op: JsonObject) {
+        val name = op.str("name").orEmpty()
+        when (op.str("op")) {
+            "register" -> registerTool(client, tools, op.obj("tool")!!)
+            "update" -> tools.getValue(name).update {
+                op.obj("set").orEmpty().forEach { (key, v) -> setField(this, key, v) }
+            }
+            "remove" -> tools.remove(name)?.dispose()
+            "enable" -> tools.getValue(name).setEnabled(true)
+            "disable" -> tools.getValue(name).setEnabled(false)
+            else -> error("未知的 mutate 操作 ${op.str("op")}")
+        }
+    }
+
+    private fun setField(u: ToolUpdate, key: String, v: kotlinx.serialization.json.JsonElement) {
+        val str = (v as? JsonPrimitive)?.contentOrNull
+        when (key) {
+            "description" -> u.description = str!!
+            "inputSchema" -> u.inputSchema = v as? JsonObject
+            "risk" -> u.risk = str?.let(::risk) ?: Risk.WRITE
+            "title" -> u.title = str
+            "annotations" -> u.annotations = (v as? JsonObject)?.let(::toolAnnotations)
+            "outputSchema" -> u.outputSchema = v as? JsonObject
+            "activation" -> u.activation = str?.let { Activation.valueOf(it.uppercase()) }
+            "surface" -> u.surface = str?.let(::surface) ?: ToolSurface.APP
+            "page" -> u.page = str
+            else -> error("未知的工具字段 $key")
+        }
     }
 
     private fun config(addr: String, c: JsonObject?): AppMcpConfig {
@@ -129,10 +177,10 @@ class ConformanceTest {
         )
     }
 
-    private fun registerTool(client: AppMcp, decl: JsonObject) {
+    private fun registerTool(client: AppMcp, tools: MutableMap<String, ToolHandle>, decl: JsonObject) {
         val handler = decl.obj("handler") ?: JsonObject(emptyMap())
         val runs = AtomicLong(0)
-        client.tool(
+        tools[decl.str("name")!!] = client.tool(
             name = decl.str("name")!!,
             description = decl.str("description")!!,
             inputSchema = decl.obj("inputSchema"),
@@ -142,15 +190,25 @@ class ConformanceTest {
             enabled = decl["enabled"]?.jsonPrimitive?.booleanOrNull ?: true,
             annotations = decl.obj("annotations")?.let(::toolAnnotations),
             outputSchema = decl.obj("outputSchema"),
-        ) { args, ctx -> runHandler(handler, runs.incrementAndGet(), args, ctx) }
+            surface = decl.str("surface")?.let(::surface) ?: ToolSurface.APP,
+            page = decl.str("page"),
+        ) { args, ctx -> runHandler(client, tools, handler, runs.incrementAndGet(), args, ctx) }
     }
 
-    /** 顺序：progress → delayMs → 结果（conformance/README.md 2.1；mutate 不支持，见 [FEATURES]）。 */
-    private suspend fun runHandler(spec: JsonObject, count: Long, args: JsonObject, ctx: ToolContext): Any? {
+    /** 顺序：progress → delayMs → mutate → 结果（conformance/README.md 2.1）。 */
+    private suspend fun runHandler(
+        client: AppMcp,
+        tools: MutableMap<String, ToolHandle>,
+        spec: JsonObject,
+        count: Long,
+        args: JsonObject,
+        ctx: ToolContext,
+    ): Any? {
         spec["progress"]?.jsonArray.orEmpty().map { it.jsonObject }.forEach {
             ctx.progress(it.double("progress") ?: 0.0, it.double("total"), it.str("message"))
         }
         spec.long("delayMs")?.let { delay(it) } // 取消 / 超时时协程被取消
+        spec["mutate"]?.jsonArray.orEmpty().forEach { mutate(client, tools, it.jsonObject) }
         spec.str("throw")?.let { error(it) }
         spec.obj("userAction")?.let { throw ToolCallException.userActionRequired(it.str("message")!!, it.str("reason"), it.str("uri")) }
         spec.obj("result")?.let { r ->
@@ -208,6 +266,7 @@ class ConformanceTest {
     private fun enumName(value: String) = value.uppercase().replace('-', '_')
     private fun risk(value: String) = Risk.valueOf(enumName(value))
     private fun lifecycleMode(value: String) = LifecycleMode.valueOf(enumName(value))
+    private fun surface(value: String) = ToolSurface.valueOf(enumName(value))
 
     private fun JsonObject.obj(key: String): JsonObject? = (this[key] as? JsonObject)
     private fun JsonObject.prim(key: String): JsonPrimitive? = (this[key] as? JsonPrimitive)?.takeIf { it !is JsonNull }

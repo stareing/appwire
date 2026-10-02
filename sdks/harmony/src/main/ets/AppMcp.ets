@@ -10,13 +10,13 @@
 
 import type {
   Call, CallResultInit, ClientConfig, ClientEvent, ContentAnnotationsInit, Hold, JsStateInfo, LifecycleInit,
-  NativeClient, Read, Resource, ResourceSpecInit, Scope as NativeScope, Tool, ToolAnnotationsInit, ToolSpecInit,
+  NativeClient, Navigate, Read, Resource, ResourceSpecInit, Scope as NativeScope, Tool, ToolAnnotationsInit, ToolSpecInit,
 } from 'libapp_mcp_harmony.so';
 import { Failure, ToolCallError, nativeErrorCode, toFailure } from './Errors';
 import {
   Activation, AppMcpOptions, CancelReason, ConnectionState, ConnectionStatus, ContentAnnotations, HoldHandle,
-  LifecycleOptions, Logger, Registrar, ResourceDefinition, ResourceHandle, Risk, Scope, ToolAnnotations, ToolChanges,
-  ToolContext, ToolDefinition, ToolHandle, ToolResult, Visibility, WakeReason,
+  LifecycleOptions, Logger, NavigationHandler, NavigationRequest, Registrar, ResourceDefinition, ResourceHandle, Risk, Scope, ToolAnnotations,
+  ToolChanges, ToolContext, ToolDefinition, ToolHandle, ToolResult, ToolSurface, Visibility, WakeReason,
 } from './Types';
 
 /** 原生客户端工厂：`(config, listener) => new native.NativeClient(config, listener)`。 */
@@ -302,6 +302,8 @@ class ToolEntry<I, O> implements ToolHandle, Child {
       spec.annotations = toolAnnotationsInit(d.annotations);
     }
     spec.outputSchemaJson = d.outputSchema;
+    spec.surface = d.surface;
+    spec.page = d.page;
     return spec;
   }
 
@@ -319,6 +321,8 @@ class ToolEntry<I, O> implements ToolHandle, Child {
       outputSchema: patchField<string>(changes.outputSchema, d.outputSchema),
       activation: patchField<Activation>(changes.activation, d.activation),
       enabled: patchField<boolean>(changes.enabled, d.enabled),
+      surface: patchField<ToolSurface>(changes.surface, d.surface),
+      page: patchField<string>(changes.page, d.page),
       handler: d.handler,
     };
     this.def = next;
@@ -456,7 +460,8 @@ class ResourceEntry<T> implements ResourceHandle, Child {
     const spec: ResourceSpecInit = {
       name: name,
       description: definition.description,
-      mimeType: definition.mimeType ?? 'application/json',
+      // 未声明时不发送（toolsHash 输入与其他 SDK 一致；Host 按 application/json 处理）
+      mimeType: definition.mimeType,
       realtime: definition.realtime,
     };
     if (definition.annotations !== undefined) {
@@ -660,6 +665,9 @@ export class AppMcp extends RegistrarBase {
     }
     this.client = factory(config, (event: ClientEvent): void => this.onEvent(event));
     this.currentState = mapState(this.client.state, Date.now());
+    if (options.onNavigate !== undefined) {
+      this.setNavigationHandler(options.onNavigate);
+    }
     if (options.autoStart !== false) {
       this.start();
     }
@@ -707,6 +715,62 @@ export class AppMcp extends RegistrarBase {
     if (client !== null) {
       client.setVisibility(visibility, focused);
     }
+  }
+
+  /**
+   * 设置 / 替换导航回调（见 `AppMcpOptions.onNavigate`）；null 清除。能力在握手时声明：连接后才从无到有设置（或清除）
+   * 的回调在下次连接时生效。
+   */
+  setNavigationHandler(handler: NavigationHandler | null): void {
+    const client = this.live();
+    if (client === null) {
+      return;
+    }
+    if (handler === null) {
+      client.setNavigationHandler(null);
+      return;
+    }
+    client.setNavigationHandler((navigate: Navigate): void => this.onNavigate(handler, navigate));
+  }
+
+  /** 执行导航回调并提交结果：正常返回 → 完成；`NAVIGATION_DENIED` → 拒绝；其他异常 → 失败。 */
+  private onNavigate(handler: NavigationHandler, navigate: Navigate): void {
+    const page = navigate.page;
+    const submit = (action: () => void): void => {
+      try {
+        action();
+      } catch (error) {
+        if (nativeErrorCode(error as Object) !== 'ALREADY_COMPLETED') {
+          this.logger.error(`[app-mcp] 提交导航（页面 ${page}）的结果失败：${errorText(error as Object)}`);
+        }
+      }
+    };
+    let params: Record<string, Object> | undefined = undefined;
+    const text = navigate.paramsJson;
+    if (text !== undefined && text !== null) {
+      try {
+        params = JSON.parse(text) as Record<string, Object>;
+      } catch (error) {
+        submit(() => navigate.fail('页面参数不是合法的 JSON'));
+        return;
+      }
+    }
+    const onError = (error: Object | null | undefined): void => {
+      const failure: Failure = toFailure(error);
+      submit(() => failure.kind === 'NAVIGATION_DENIED' ? navigate.deny(failure.message) : navigate.fail(failure.message));
+    };
+    let pending: void | Promise<void>;
+    try {
+      const request: NavigationRequest = { page: page, params: params };
+      pending = handler(request);
+    } catch (error) {
+      onError(error as Object);
+      return;
+    }
+    Promise.resolve(pending).then(
+      (): void => submit(() => navigate.complete()),
+      (error: Object): void => onError(error),
+    );
   }
 
   // ---- 生命周期（spec/lifecycle.md 第 8 节）------------------------------

@@ -74,7 +74,10 @@ descriptor, as in the `attachLifecycle` example in `main.ts`.
 ## API
 
 - `@app-mcp/electron/main`
-  - `attachAppMcp({ appMcp, ipcMain, webContents?, logger? })` - bridges renderer registrations; returns `{ sessionCount, dispose() }`.
+  - `attachAppMcp({ appMcp, ipcMain, webContents?, logger?, navigation? })` - bridges renderer registrations; returns
+    `{ sessionCount, dispose() }`. `navigation: true` declares navigation support and forwards the Hub's page navigation
+    requests to the renderer that called `attachBridgeNavigation` most recently (without it, the main process may call
+    `appMcp.setNavigationHandler` itself, e.g. to switch windows). Renderer tool `surface` / `page` are forwarded.
   - `attachLifecycle({ appMcp, app, argv?, window?, quitOnIdleExit?, onWake? })` - wires `second-instance`,
     `open-url`, window visibility and idle exit to the client lifecycle; returns an unsubscribe function.
 - `@app-mcp/electron/preload`
@@ -83,6 +86,8 @@ descriptor, as in the `attachLifecycle` example in `main.ts`.
 - `@app-mcp/electron/renderer`
   - `createRendererAppMcp(options)` - an `AppMcp` (same interface as `@app-mcp/web`); throws if no bridge is found.
   - `getAppMcpBridge(key?)`, `createIpcTransport(key?)`.
+  - `attachBridgeNavigation(bridge, ({ page, params }) => …)` - handle navigation requests in this page (switch the route,
+    then return; throw `ToolCallError` with kind `NAVIGATION_DENIED` to refuse); returns `{ ready, dispose() }`.
 
 See the [AppWire README](https://github.com/stareing/appwire#readme) for how the local Hub and MCP clients fit together.
 

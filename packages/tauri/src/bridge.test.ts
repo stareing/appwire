@@ -4,8 +4,16 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { BRIDGE_VERSION, findElectronBridge, type AppMcpBridge, type MainEvent, type RendererOp } from '@app-mcp/web'
-import { createTauriAppMcp, getTauriBridge, isTauri, TAURI_DISPATCH_FN, TAURI_OP_COMMAND, ToolCallError } from './index'
-import { BRIDGE_SCRIPT, createFakeTauri } from './fake-tauri'
+import {
+  attachTauriNavigation,
+  createTauriAppMcp,
+  getTauriBridge,
+  isTauri,
+  TAURI_DISPATCH_FN,
+  TAURI_OP_COMMAND,
+  ToolCallError,
+} from './index'
+import { BRIDGE_SCRIPT, createFakeTauri, defaultReply } from './fake-tauri'
 
 const quiet = { debug() {}, warn: vi.fn(), error: vi.fn() }
 
@@ -220,5 +228,47 @@ describe('createTauriAppMcp', () => {
     const disabled = createTauriAppMcp({ appId: 'shop', appName: '示例商城', enabled: false })
     expect(disabled.state).toEqual({ status: 'disabled' })
     disabled.tool('x.y', { description: 'x', handler: () => 1 }).dispose()
+  })
+})
+
+describe('导航（spec/protocol.md 3.4）', () => {
+  it('开启导航、执行回调并回复结果', async () => {
+    const fake = createFakeTauri()
+    const seen: unknown[] = []
+    const nav = attachTauriNavigation(async (request) => {
+      seen.push(request)
+      if (request.page === 'login') throw new ToolCallError('NAVIGATION_DENIED', '需要先登录')
+      if (request.page === 'broken') throw new Error('页面加载失败')
+    }, bridgeOf(fake.window))
+    await nav.ready
+    expect(fake.ops).toContainEqual({ op: 'navigation.set', enabled: true })
+
+    fake.emit({ type: 'navigate', navId: 1, page: 'cart', params: { sku: 'A-42' } } as never)
+    expect(await fake.waitFor((op) => op.op === ('navigate.result' as never))).toEqual({ op: 'navigate.result', navId: 1, ok: true })
+    expect(seen).toEqual([{ page: 'cart', params: { sku: 'A-42' } }])
+    fake.emit({ type: 'navigate', navId: 2, page: 'login' } as never)
+    expect(await fake.waitFor((op) => (op as { navId?: number }).navId === 2)).toEqual({
+      op: 'navigate.result', navId: 2, ok: false, kind: 'NAVIGATION_DENIED', message: '需要先登录',
+    })
+    fake.emit({ type: 'navigate', navId: 3, page: 'broken', params: [1] } as never)
+    expect(await fake.waitFor((op) => (op as { navId?: number }).navId === 3)).toEqual({
+      op: 'navigate.result', navId: 3, ok: false, kind: 'NAVIGATION_FAILED', message: '页面加载失败',
+    })
+    expect(seen[2]).toEqual({ page: 'broken', params: undefined })
+
+    nav.dispose()
+    nav.dispose()
+    await fake.waitFor((op) => op.op === ('navigation.set' as never) && (op as { enabled?: boolean }).enabled === false)
+    fake.emit({ type: 'navigate', navId: 4, page: 'cart' } as never)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(fake.ops.some((op) => (op as { navId?: number }).navId === 4)).toBe(false)
+  })
+
+  it('Rust 侧未开启导航时 ready 拒绝；找不到桥接时抛错', async () => {
+    const fake = createFakeTauri()
+    fake.reply = (op) =>
+      op.op === ('navigation.set' as never) ? { ok: false, code: 'NAVIGATION_DISABLED', message: '插件未开启页面导航' } : defaultReply(op)
+    await expect(attachTauriNavigation(() => {}, bridgeOf(fake.window)).ready).rejects.toThrow('插件未开启页面导航')
+    expect(() => attachTauriNavigation(() => {})).toThrow('未找到 window.appMcpBridge')
   })
 })

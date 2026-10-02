@@ -129,6 +129,8 @@ public sealed class ToolScope : IDisposable
         StructSize = (uint)sizeof(AmToolOptions),
         AnnotationsJson = strings.Add(AnnotationsJson.Serialize(options.Annotations)),
         OutputSchemaJson = strings.Add(options.OutputSchemaJson),
+        Page = strings.Add(options.Page),
+        Surface = (int)options.Surface,
     };
 
     /// <summary>注册资源。reader 返回的对象序列化为资源内容。</summary>

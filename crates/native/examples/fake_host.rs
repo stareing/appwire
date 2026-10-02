@@ -36,6 +36,8 @@
 //! - `--catalog <settleMs>`：继续处理消息 settleMs 后打印
 //!   `{"type":"catalog","tools":{<名称>:ToolInfo},"resources":{<名称>:ResourceInfo},"toolsHash"}`（`toolsHash` 由 Host 按 8.4 计算）。
 //! - `--delay <ms>`：继续处理消息 ms 后再执行下一步。
+//! - `--navigate <page>`（可跟 `--nav-params '<json>'`）：发送 `app/navigate`（spec/protocol.md 3.4），打印
+//!   `{"type":"navigate","name":<page>,"result"|"error"}`。
 //! - `--trace`：SDK 发来的每个请求与通知（`ping` 除外）打印为 `{"type":"recv","method","params"}`；
 //!   发出 `tools/cancel` 时打印 `{"type":"cancel","callId"}`。
 //! - `--case <用例.json>`：从用例的 `host` 部分取参数（命令行上的其他参数追加在后），结束时按用例的期望核对，
@@ -75,6 +77,8 @@ enum Op {
     Catalog { settle_ms: u64 },
     /// 继续处理消息 `ms` 后再执行下一步（`--delay`）。
     Delay { ms: u64 },
+    /// 发送 `app/navigate`（`--navigate`，可跟 `--nav-params`）。
+    Navigate { page: String, params: Option<Value> },
 }
 
 /// `--invoke` 的修饰参数。
@@ -170,6 +174,16 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
                 settle_ms: parse_u64("--catalog", &value("--catalog")?)?,
             }),
             "--delay" => opts.ops.push(Op::Delay { ms: parse_u64("--delay", &value("--delay")?)? }),
+            "--navigate" => opts.ops.push(Op::Navigate { page: value("--navigate")?, params: None }),
+            "--nav-params" => {
+                let text = value("--nav-params")?;
+                let parsed: Value =
+                    serde_json::from_str(&text).map_err(|e| format!("--nav-params 不是合法 JSON：{e}"))?;
+                match opts.ops.last_mut() {
+                    Some(Op::Navigate { params, .. }) => *params = Some(parsed),
+                    _ => return Err("--nav-params 必须紧跟在 --navigate <page> 之后".to_owned()),
+                }
+            }
             "--trace" => opts.trace = true,
             "--case" => opts.case = Some(PathBuf::from(value("--case")?)),
             "--sdk" => opts.sdk = Some(value("--sdk")?),
@@ -586,6 +600,13 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                 }
                 Some(Op::Catalog { settle_ms }) => timer = Some((after(settle_ms), Timer::Catalog)),
                 Some(Op::Delay { ms }) => timer = Some((after(ms), Timer::Delay)),
+                Some(Op::Navigate { page, params }) => {
+                    let id = next_id(host);
+                    let params = proto::NavigateParams { page: page.clone(), params };
+                    let msg = Message::request(id.clone(), method::NAVIGATE, to_value(&params));
+                    send(&mut ws, &msg).await?;
+                    pending = Some((id, "navigate", page));
+                }
                 Some(Op::Read { name }) => {
                     let id = next_id(host);
                     let params = ResourcesReadParams { name: name.clone() };
@@ -947,6 +968,15 @@ mod tests {
             ]
         );
         assert!(parse_args(args(&["--call-id", "x"])).is_err());
+        let o = parse_args(args(&["--navigate", "cart", "--nav-params", r#"{"id":1}"#, "--navigate", "x"])).unwrap();
+        assert_eq!(
+            o.ops,
+            vec![
+                Op::Navigate { page: "cart".into(), params: Some(json!({"id": 1})) },
+                Op::Navigate { page: "x".into(), params: None },
+            ]
+        );
+        assert!(parse_args(args(&["--nav-params", "{}"])).is_err());
         assert!(parse_args(args(&["--read", "r", "--cancel-after-ms", "5"])).is_err());
     }
 

@@ -46,7 +46,8 @@ namespace fs = std::filesystem;
 
 /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。
 const std::vector<std::string> kFeatures = {"toolOptions", "mutate",      "lifecycle",       "wake",       "richResult",
-                                            "userAction",  "progress",    "resourceOptions", "readFailure"};
+                                            "userAction",  "progress",    "resourceOptions", "readFailure",
+                                            "surface",     "navigation"};
 
 // ---------------------------------------------------------------------------
 // 用例字段 → SDK 枚举（协议同名字符串，spec/protocol.md 第 3 节）
@@ -83,6 +84,8 @@ AmLifecycleMode parse_mode(const Json& v) {
     auto it = table.find(v.str_or("persistent"));
     return it == table.end() ? AM_LIFECYCLE_PERSISTENT : it->second;
 }
+
+AmToolSurface parse_surface(const Json& v) { return v.str_or("app") == "view" ? AM_SURFACE_VIEW : AM_SURFACE_APP; }
 
 std::optional<std::string> json_text(const Json& v) {
     if (v.is_null()) return std::nullopt;
@@ -128,6 +131,8 @@ public:
     virtual void register_resource(const Json& decl) = 0;
     virtual void start() = 0;
     virtual void handle_wake(const std::string& arg) = 0;
+    /// 设置导航回调（conformance/README.md 2.4）；pages 为用例的 app.navigation。
+    virtual void set_navigation(const Json& pages) = 0;
     /// 停止客户端并等待 handler 线程结束。
     virtual void stop() = 0;
 
@@ -264,6 +269,8 @@ app_mcp::ToolOptions cpp_tool_options(const Json& decl) {
     o.enabled = decl["enabled"].boolean().value_or(true);
     o.annotations = tool_annotations(decl["annotations"]);
     o.output_schema_json = json_text(decl["outputSchema"]);
+    o.surface = parse_surface(decl["surface"]) == AM_SURFACE_VIEW ? app_mcp::Surface::View : app_mcp::Surface::App;
+    o.page = decl["page"].str();
     return o;
 }
 
@@ -372,6 +379,27 @@ public:
 
     void start() override { client_.start(); }
     void handle_wake(const std::string& arg) override { client_.handle_wake(arg); }
+    /// C++ 最自然的写法：出错抛异常（封装转为 NAVIGATION_FAILED），拒绝调用 Navigate::deny。
+    void set_navigation(const Json& pages) override {
+        client_.set_navigation_handler([this, pages](app_mcp::Navigate nav) {
+            const Json* spec = pages.find(nav.page());
+            if (!spec) {
+                nav.fail("未知页面：" + nav.page());
+                return;
+            }
+            if (auto msg = (*spec)["throw"].str()) throw std::runtime_error(*msg);
+            for (const auto& op : (*spec)["mutate"].items()) mutate(op);
+            if (auto msg = (*spec)["deny"].str()) {
+                nav.deny(*msg);
+            } else if (auto msg = (*spec)["fail"].str()) {
+                nav.fail(*msg);
+            } else if ((*spec)["failParams"].boolean() == true) {
+                nav.fail(nav.params_json().value_or(""));
+            } else {
+                nav.complete();
+            }
+        });
+    }
     void stop() override {
         try {
             client_.stop();
@@ -435,7 +463,7 @@ void check_c(AmStatus s, const char* what) {
 /// 工具声明 → AmToolSpec + AmToolOptions；指针借用 decl 派生的字符串（由 holder 保持存活）。
 struct CToolDecl {
     std::string name, description;
-    std::optional<std::string> input_schema, title, annotations, output_schema;
+    std::optional<std::string> input_schema, title, annotations, output_schema, page;
     AmToolSpec spec{};
     AmToolOptions options{};
 
@@ -445,7 +473,8 @@ struct CToolDecl {
           input_schema(json_text(decl["inputSchema"])),
           title(decl["title"].str()),
           annotations(json_text(decl["annotations"])),
-          output_schema(json_text(decl["outputSchema"])) {
+          output_schema(json_text(decl["outputSchema"])),
+          page(decl["page"].str()) {
         spec.name = name.c_str();
         spec.description = description.c_str();
         spec.input_schema_json = input_schema ? input_schema->c_str() : nullptr;
@@ -456,6 +485,8 @@ struct CToolDecl {
         options.struct_size = sizeof(AmToolOptions);
         options.annotations_json = annotations ? annotations->c_str() : nullptr;
         options.output_schema_json = output_schema ? output_schema->c_str() : nullptr;
+        options.page = page ? page->c_str() : nullptr;
+        options.surface = parse_surface(decl["surface"]);
     }
     CToolDecl(const CToolDecl&) = delete;
     CToolDecl& operator=(const CToolDecl&) = delete;
@@ -534,6 +565,11 @@ struct CResourceContext {
     Json spec;
 };
 
+struct CNavigationContext {
+    CApp* app;
+    Json pages;
+};
+
 class CApp final : public App {
 public:
     CApp(const std::string& url, const Json& c) {
@@ -601,6 +637,12 @@ public:
     }
 
     void start() override { check_c(am_client_start(client_), "am_client_start"); }
+    void set_navigation(const Json& pages) override {
+        auto* ctx = new CNavigationContext{this, pages};
+        check_c(am_client_set_navigation_handler(client_, &CApp::on_navigate, ctx,
+                                                 [](void* p) { delete static_cast<CNavigationContext*>(p); }),
+                "am_client_set_navigation_handler");
+    }
     void handle_wake(const std::string& arg) override { am_client_handle_wake(client_, arg.c_str()); }
     void stop() override {
         am_client_stop(client_);
@@ -638,6 +680,37 @@ private:
         } catch (const std::exception& e) {
             // 就地执行时 runner 自身出错（如 mutate 失败）：按 handler 错误结束，便于在报告中看到原因。
             am_call_fail(call, "HANDLER_ERROR", e.what());
+        }
+    }
+
+    /// C 最自然的写法：am_navigate_complete / am_navigate_fail / am_navigate_deny；C 没有异常，`throw` 即 am_navigate_fail。
+    static void on_navigate(void* ud, AmNavigate* nav) {
+        auto* ctx = static_cast<CNavigationContext*>(ud);
+        const std::string page = am_navigate_page(nav);
+        const Json* spec = ctx->pages.find(page);
+        if (!spec) {
+            am_navigate_fail(nav, ("未知页面：" + page).c_str());
+            return;
+        }
+        if (auto msg = (*spec)["throw"].str()) {
+            am_navigate_fail(nav, msg->c_str());
+            return;
+        }
+        try {
+            for (const auto& op : (*spec)["mutate"].items()) ctx->app->mutate(op);
+        } catch (const std::exception& e) {
+            am_navigate_fail(nav, e.what());
+            return;
+        }
+        if (auto msg = (*spec)["deny"].str()) {
+            am_navigate_deny(nav, msg->c_str());
+        } else if (auto msg = (*spec)["fail"].str()) {
+            am_navigate_fail(nav, msg->c_str());
+        } else if ((*spec)["failParams"].boolean() == true) {
+            const char* params = am_navigate_params_json(nav);
+            am_navigate_fail(nav, params ? params : "");
+        } else {
+            am_navigate_complete(nav);
         }
     }
 
@@ -736,6 +809,7 @@ Outcome run_case(const std::string& sdk, const std::string& fake_host, const fs:
                 app = make_app(sdk, line.substr(10), kase["app"]["config"]);
                 for (const auto& t : kase["app"]["tools"].items()) app->register_tool(t);
                 for (const auto& r : kase["app"]["resources"].items()) app->register_resource(r);
+                if (kase["app"]["navigation"].is_object()) app->set_navigation(kase["app"]["navigation"]);
                 app->start();
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "[%s] 创建 / 注册失败：%s\n", sdk.c_str(), e.what());

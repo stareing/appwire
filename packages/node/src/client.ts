@@ -10,6 +10,7 @@ import {
   type NativeClientConfig,
   type NativeClient,
   type NativeClientEvent,
+  type NativeNavigate,
   type NativeRead,
   type NativeRegistrar,
   type NativeResource,
@@ -26,6 +27,7 @@ import type {
   HoldHandle,
   LazyToolDefinition,
   Logger,
+  NavigationHandler,
   NodeAppMcpOptions,
   ResourceDefinition,
   ResourceHandle,
@@ -199,6 +201,8 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
     if (d.title !== undefined) spec.title = d.title
     if (d.annotations !== undefined) spec.annotations = { ...d.annotations }
     if (this.resolved?.outputSchemaJson !== undefined) spec.outputSchemaJson = this.resolved.outputSchemaJson
+    if (d.surface !== undefined) spec.surface = d.surface
+    if (d.page !== undefined) spec.page = d.page
     return spec
   }
 
@@ -404,7 +408,8 @@ class ResourceEntry implements ResourceHandle, Child {
       {
         name,
         description: definition.description,
-        mimeType: definition.mimeType ?? 'application/json',
+        // @compat 未声明时不发送（spec/protocol.md 8.4 的 toolsHash 输入与其他 SDK 一致；Host 按 application/json 处理）
+        ...(definition.mimeType !== undefined && { mimeType: definition.mimeType }),
         ...(definition.realtime && { realtime: true }),
         ...(definition.annotations !== undefined && { annotations: { ...definition.annotations } }),
       },
@@ -577,6 +582,7 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
     }
     this.client = new binding.NativeClient(config, (event) => this.onEvent(event))
     this.currentState = mapState(this.client.state)
+    if (options.onNavigate) this.setNavigationHandler(options.onNavigate)
     if (options.autoStart !== false) this.start()
   }
 
@@ -610,6 +616,48 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
   setVisibility(visibility: Visibility, focused = true): void {
     if (!this.client || this.disposed) return
     this.client.setVisibility(visibility, focused)
+  }
+
+  setNavigationHandler(handler: NavigationHandler | null): void {
+    const client = this.lifecycleClient()
+    if (!client) return
+    if (!client.setNavigationHandler) {
+      if (handler) this.logger.warn('[app-mcp] 原生模块版本过旧，不支持导航回调（spec/protocol.md 3.4）')
+      return
+    }
+    client.setNavigationHandler(handler ? (navigate) => this.onNavigate(handler, navigate) : null)
+  }
+
+  /**
+   * 执行导航回调并提交结果：正常返回 → 完成；`NAVIGATION_DENIED` 类别的 ToolCallError → 拒绝；其他异常 → 失败。
+   * @error 参数 JSON 无法解析时以失败完成（不调用回调）。
+   */
+  private onNavigate(handler: NavigationHandler, navigate: NativeNavigate): void {
+    const submit = (action: () => void) => {
+      try {
+        action()
+      } catch (error) {
+        if (nativeErrorCode(error) !== 'ALREADY_COMPLETED') {
+          this.logger.error(`[app-mcp] 提交导航（页面 ${navigate.page}）的结果失败`, error)
+        }
+      }
+    }
+    let params: Record<string, unknown> | undefined
+    try {
+      params = navigate.paramsJson != null ? (JSON.parse(navigate.paramsJson) as Record<string, unknown>) : undefined
+    } catch {
+      submit(() => navigate.fail('页面参数不是合法的 JSON'))
+      return
+    }
+    Promise.resolve()
+      .then(() => handler({ page: navigate.page, params }))
+      .then(
+        () => submit(() => navigate.complete()),
+        (error: unknown) => {
+          const { kind, message } = toFailure(error)
+          submit(() => (kind === 'NAVIGATION_DENIED' ? navigate.deny(message) : navigate.fail(message)))
+        },
+      )
   }
 
   // ---- 生命周期 ----------------------------------------------------------

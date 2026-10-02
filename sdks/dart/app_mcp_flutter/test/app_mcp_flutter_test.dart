@@ -1,4 +1,5 @@
 // 需要 Flutter SDK（flutter test）。McpTool 测试使用 app_mcp 的假原生库（需要 cc）。
+import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -260,4 +261,119 @@ void main() {
     await tester.pumpWidget(app(null));
     expect(toolOptions('order.submit'), 'null|{"type":"object"}');
   }, skip: path == null);
+
+  testWidgets('view 工具（v14）：路由栈顶时启用，被新页面 / 对话框盖住时禁用；McpViewGate 显式门控；声明 surface / page', (tester) async {
+    final lib = DynamicLibrary.open(path!);
+    final enabled = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>('fake_tool_enabled');
+    final view = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>), Pointer<Utf8> Function(Pointer<Utf8>)>(
+        'fake_tool_view');
+    final stringFree =
+        lib.lookupFunction<Void Function(Pointer<Utf8>), void Function(Pointer<Utf8>)>('am_string_free');
+    int on(String name) => using((a) => enabled(name.toNativeUtf8(allocator: a)));
+    String? viewOf(String name) {
+      final p = using((a) => view(name.toNativeUtf8(allocator: a)));
+      if (p == nullptr) return null;
+      final s = p.toDartString();
+      stringFree(p);
+      return s;
+    }
+
+    final client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path);
+    addTearDown(client.dispose);
+    final navigatorKey = GlobalKey<NavigatorState>();
+    final observer = McpRouteObserver();
+    final gateChanges = <bool>[];
+    var tabActive = true;
+    late StateSetter setTab;
+
+    Widget cartPage() => StatefulBuilder(builder: (context, setState) {
+          setTab = setState;
+          return Column(children: [
+            McpTool(
+                name: 'cart.checkout',
+                description: '结算',
+                surface: ToolSurface.view,
+                page: 'cart',
+                handler: (a, c) => null),
+            McpTool(name: 'cart.count', description: '件数（不依赖界面）', handler: (a, c) => 1),
+            McpViewGate(
+                active: tabActive,
+                child: McpTool(
+                    name: 'cart.tab', description: '标签页内', surface: ToolSurface.view, handler: (a, c) => null)),
+            McpRouteGate(
+                observer: observer,
+                onChanged: gateChanges.add,
+                child: McpTool(
+                    name: 'cart.routeAware', description: 'RouteAware', surface: ToolSurface.view, handler: (a, c) => null)),
+          ]);
+        });
+
+    await tester.pumpWidget(AppMcpScope(
+      client: client,
+      trackLifecycle: false,
+      child: Directionality(
+        textDirection: TextDirection.ltr,
+        child: Navigator(
+          key: navigatorKey,
+          observers: [observer],
+          onGenerateRoute: (settings) => PageRouteBuilder<void>(
+              settings: settings,
+              pageBuilder: (context, a, b) => settings.name == '/orders' ? const SizedBox() : cartPage()),
+        ),
+      ),
+    ));
+    expect((on('cart.checkout'), on('cart.count'), on('cart.tab'), on('cart.routeAware')), (1, 1, 1, 1));
+    expect(viewOf('cart.checkout'), '1|cart');
+    expect(viewOf('cart.count'), '0|null');
+
+    // 推入新页面：下层 view 工具禁用，app 工具不受影响。
+    unawaited(navigatorKey.currentState!.pushNamed('/orders'));
+    await tester.pumpAndSettle();
+    expect((on('cart.checkout'), on('cart.count'), on('cart.tab'), on('cart.routeAware')), (0, 1, 0, 0));
+
+    navigatorKey.currentState!.pop();
+    await tester.pumpAndSettle();
+    expect((on('cart.checkout'), on('cart.tab'), on('cart.routeAware')), (1, 1, 1));
+    expect(gateChanges, [false, true]);
+
+    // keep-alive 标签页：显式门控。
+    setTab(() => tabActive = false);
+    await tester.pump();
+    expect((on('cart.checkout'), on('cart.tab')), (1, 0));
+    setTab(() => tabActive = true);
+    await tester.pump();
+    expect(on('cart.tab'), 1);
+  }, skip: path == null);
+
+  testWidgets('mcpNavigatorHandler / mcpLocationHandler：页面名 → 路由，未知页面失败', (tester) async {
+    final navigatorKey = GlobalKey<NavigatorState>();
+    final pushed = <(String?, Object?)>[];
+    await tester.pumpWidget(Directionality(
+      textDirection: TextDirection.ltr,
+      child: Navigator(
+        key: navigatorKey,
+        onGenerateRoute: (settings) {
+          pushed.add((settings.name, settings.arguments));
+          return PageRouteBuilder<void>(settings: settings, pageBuilder: (c, a, b) => const SizedBox());
+        },
+      ),
+    ));
+    pushed.clear();
+    final handler = mcpNavigatorHandler(navigatorKey, routes: {'orders.detail': '/order'});
+    final done = Future.sync(() => handler(const NavigationRequest('orders.detail', '{"id":"o1"}')));
+    await tester.pump();
+    await done;
+    expect(pushed.single.$1, '/order');
+    expect(pushed.single.$2, {'id': 'o1'});
+    await expectLater(Future.sync(() => handler(const NavigationRequest('nowhere', null))), throwsStateError);
+
+    final locations = <String>[];
+    final byLocation = mcpLocationHandler(
+        go: locations.add, location: (r) => r.page == 'cart' ? '/cart?from=${r.params}' : null);
+    final went = Future.sync(() => byLocation(const NavigationRequest('cart', null)));
+    await tester.pump();
+    await went;
+    expect(locations, ['/cart?from=null']);
+    await expectLater(Future.sync(() => byLocation(const NavigationRequest('x', null))), throwsStateError);
+  });
 }

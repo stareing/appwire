@@ -19,6 +19,7 @@ const SDK = 'harmony';
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
+  'surface', 'navigation',
 ];
 
 const build = process.env.APP_MCP_HARMONY_BUILD;
@@ -49,6 +50,8 @@ function toolFields(decl) {
     outputSchema: jsonText(decl.outputSchema),
     activation: decl.activation,
     enabled: decl.enabled,
+    surface: decl.surface,
+    page: decl.page,
   });
 }
 
@@ -126,6 +129,16 @@ function startApp(support, native, testCase, url) {
     app.resource(r.name, {
       ...defined({ description: r.description, mimeType: r.mimeType, realtime: r.realtime, annotations: r.annotations }),
       read: () => readResource(r.read),
+    });
+  }
+  const pages = testCase.app.navigation;
+  if (pages) {
+    // 导航行为表（conformance/README.md 2.4）→ ArkTS 写法：拒绝抛 navigationDenied、失败抛 NAVIGATION_FAILED、throw 抛普通 Error
+    app.setNavigationHandler(async ({ page, params }) => {
+      const outcome = support.execNavigation(pages, page, params, { mutate: (op) => registry.mutate(op) });
+      if (outcome.kind === 'throw') throw new Error(outcome.message);
+      if (outcome.kind === 'deny') throw ToolCallError.navigationDenied(outcome.message);
+      if (outcome.kind === 'fail') throw ToolCallError.navigationFailed(outcome.message);
     });
   }
   app.start();

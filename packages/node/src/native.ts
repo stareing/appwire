@@ -88,6 +88,10 @@ export interface NativeToolSpec {
   annotations?: NativeToolAnnotations
   /** 结果的 JSON Schema 文本（旧版原生模块忽略）。 */
   outputSchemaJson?: string
+  /** `'app'`（缺省）/ `'view'`：对界面的依赖（spec/protocol.md 3.4；旧版原生模块忽略）。 */
+  surface?: string
+  /** 所在页面名（旧版原生模块忽略）。 */
+  page?: string
 }
 
 export interface NativeToolAnnotations {
@@ -152,6 +156,18 @@ export interface NativeRead {
   failWithDetails?(kind: string, message: string, detailsJson?: string | null): void
 }
 
+/** 一次导航请求（Host 的 `app/navigate`，spec/protocol.md 3.4）。完成只能一次，重复完成抛出 `ALREADY_COMPLETED`。 */
+export interface NativeNavigate {
+  readonly page: string
+  /** 页面参数 JSON 文本；Host 没有给出时为 `undefined` / `null`。 */
+  readonly paramsJson?: string | null
+  complete(): void
+  /** 导航失败（`NAVIGATION_FAILED`，`reason: "error"`）。 */
+  fail(message: string): void
+  /** 拒绝导航（`NAVIGATION_DENIED`，`reason: "app"`）。 */
+  deny(message: string): void
+}
+
 export interface NativeTool {
   readonly name: string
   /** 整体替换定义；已声明的 `annotations` / `outputSchemaJson` 保持不变（忽略参数中的这两项）。 */
@@ -187,6 +203,8 @@ export interface NativeClient extends NativeRegistrar {
   start(): void
   stop(): void
   setVisibility(visibility: string, focused: boolean): void
+  /** 设置导航回调；`null` 清除。握手时声明能力，应在 `start()` 之前设置。旧版原生模块没有此方法。 */
+  setNavigationHandler?(handler: ((navigate: NativeNavigate) => void) | null): void
   // ---- 生命周期（旧版原生模块没有这些方法）----
   handleWake?(args: string): boolean
   wake?(reason?: string | null): boolean

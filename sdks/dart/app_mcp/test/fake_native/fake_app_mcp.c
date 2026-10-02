@@ -78,6 +78,8 @@ typedef struct ToolRec {
     int freed;
     char *annotations;   /* v9 */
     char *output_schema; /* v9 */
+    char *page;          /* v14 */
+    int surface;         /* v14 */
 } ToolRec;
 
 typedef struct ResRec {
@@ -624,8 +626,13 @@ static AmStatus check_tool_options(const AmToolOptions *o) {
 static void apply_tool_options(ToolRec *t, const AmToolOptions *o) {
     free(t->annotations);
     free(t->output_schema);
+    free(t->page);
     t->annotations = o ? dup_str(o->annotations_json) : NULL;
     t->output_schema = o ? dup_str(o->output_schema_json) : NULL;
+    /* v14：按 struct_size 读取（旧调用方不含 page / surface）。 */
+    int v14 = o && o->struct_size >= offsetof(AmToolOptions, surface) + sizeof o->surface;
+    t->page = v14 ? dup_str(o->page) : NULL;
+    t->surface = v14 ? o->surface : AM_SURFACE_APP;
 }
 AmStatus am_tool_register_ex(AmScope *scope, const AmToolSpec *spec, const AmToolOptions *options,
                              AmToolFn handler, void *user_data, AmFreeFn free_user_data, AmTool **out) {
@@ -1100,6 +1107,17 @@ char *fake_tool_options(const char *name) {
     size_t cap = strlen(a) + strlen(o) + 2;
     char *buf = malloc(cap);
     snprintf(buf, cap, "%s|%s", a, o);
+    return buf;
+}
+
+/* v14：工具当前的 surface 与页面，"<0|1>|<page 或 null>"（需 am_string_free）。 */
+char *fake_tool_view(const char *name) {
+    ToolRec *t = find_tool(g_client, name);
+    if (!t) return NULL;
+    const char *p = t->page ? t->page : "null";
+    size_t cap = strlen(p) + 16;
+    char *buf = malloc(cap);
+    snprintf(buf, cap, "%d|%s", t->surface, p);
     return buf;
 }
 

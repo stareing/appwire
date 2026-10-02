@@ -12,6 +12,7 @@ import type {
   NativeClientConfig,
   NativeClientEvent,
   NativeHold,
+  NativeNavigate,
   NativeRead,
   NativeRegistrar,
   NativeResource,
@@ -49,6 +50,9 @@ interface ResourceRecord {
 }
 
 /** {@link FakeNativeClient.progressReports} 的一条。 */
+/** {@link FakeNativeClient.navigate} 的结果。 */
+export type NavigateOutcome = { ok: true } | { ok: false; kind: 'fail' | 'deny' | 'unsupported'; message: string }
+
 export interface FakeProgress {
   callId: string
   progress: number
@@ -346,6 +350,40 @@ export class FakeNativeClient extends FakeRegistrarBase implements NativeClient 
 
   setVisibility(visibility: string, focused: boolean): void {
     this.visibility = [visibility, focused]
+  }
+
+  /** 当前导航回调（`setNavigationHandler`）；`undefined` = 未设置 / 已清除。 */
+  navigationHandler: ((navigate: NativeNavigate) => void) | undefined
+
+  setNavigationHandler(handler: ((navigate: NativeNavigate) => void) | null): void {
+    this.navigationHandler = handler ?? undefined
+  }
+
+  /**
+   * 模拟 Host 的 `app/navigate`：没有回调时同真实原生层以 `unsupported` 失败。
+   * @output `{ ok: true }` / `{ ok: false, kind: 'fail' | 'deny' | 'unsupported', message }`。
+   */
+  navigate(page: string, params?: unknown): Promise<NavigateOutcome> {
+    return new Promise((resolve) => {
+      const handler = this.navigationHandler
+      if (!handler) {
+        resolve({ ok: false, kind: 'unsupported', message: `App 不支持由 Agent 导航（页面「${page}」）。` })
+        return
+      }
+      let done = false
+      const finish = (outcome: NavigateOutcome) => {
+        if (done) throw new NativeErrorWithCode('ALREADY_COMPLETED', 'navigation already completed')
+        done = true
+        resolve(outcome)
+      }
+      handler({
+        page,
+        paramsJson: params === undefined ? null : JSON.stringify(params),
+        complete: () => finish({ ok: true }),
+        fail: (message) => finish({ ok: false, kind: 'fail', message }),
+        deny: (message) => finish({ ok: false, kind: 'deny', message }),
+      })
+    })
   }
 
   handleWake(args: string): boolean {

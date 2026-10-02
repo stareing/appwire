@@ -19,7 +19,7 @@ const _sdk = 'dart';
 /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。
 const _features = {
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', //
-  'readFailure',
+  'readFailure', 'surface', 'navigation',
 };
 
 final String _repoRoot = Directory('${Directory.current.path}/../../..').absolute.path;
@@ -117,6 +117,8 @@ final class _CaseApp {
         enabled: decl['enabled'] as bool? ?? true,
         annotations: _toolAnnotations(decl['annotations']),
         outputSchema: _map(decl['outputSchema']),
+        surface: decl['surface'] == 'view' ? ToolSurface.view : ToolSurface.app,
+        page: decl['page'] as String?,
         handler: (args, ctx) => _runHandler(spec, ++runs, args, ctx));
   }
 
@@ -128,6 +130,22 @@ final class _CaseApp {
         realtime: decl['realtime'] as bool? ?? false,
         annotations: _contentAnnotations(decl['annotations']),
         read: () => _read(spec));
+  }
+
+  /// 导航行为（conformance/README.md 2.4）。Dart 最自然的写法：正常返回 = 完成，抛 [NavigationDeniedError] = 拒绝，
+  /// 其他异常 = 失败。
+  void setNavigation(Map<String, Object?> pages) {
+    client.setNavigationHandler((request) {
+      final spec = _map(pages[request.page]);
+      if (spec == null) throw StateError('未知页面：${request.page}');
+      if (spec['throw'] case final String message) throw Exception(message);
+      for (final op in (spec['mutate'] as List?) ?? const []) {
+        _mutate(_map(op)!);
+      }
+      if (spec['deny'] case final String message) throw NavigationDeniedError(message);
+      if (spec['fail'] case final String message) throw StateError(message);
+      if (spec['failParams'] == true) throw StateError(request.paramsJson ?? '');
+    });
   }
 
   /// 按 handler 描述执行（顺序：progress → delayMs → mutate → 结果，见 conformance/README.md 2.1）。
@@ -185,6 +203,7 @@ final class _CaseApp {
         'activation' => _activation(v),
         'annotations' => _toolAnnotations(v),
         'inputSchema' || 'outputSchema' => _map(v),
+        'surface' => v == null ? null : (v == 'view' ? ToolSurface.view : ToolSurface.app),
         _ => v,
       };
 
@@ -257,6 +276,7 @@ Future<Map<String, Object?>> _runCase(File path, String reportDir) async {
         for (final r in (app['resources'] as List?) ?? const []) {
           a.registerResource(_map(r)!);
         }
+        if (_map(app['navigation']) case final pages?) a.setNavigation(pages);
         a.client.start();
         continue;
       }

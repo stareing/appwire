@@ -141,6 +141,22 @@ export async function execHandler(spec, env) {
 }
 
 /**
+ * 按导航行为表执行（conformance/README.md 2.4）：先 `mutate`，再给出结果。未列出的页面以失败完成。
+ * @input pages 用例 `app.navigation`；env.mutate 由 SDK 映射。
+ * @output `{kind:'ok'}` / `{kind:'deny'|'fail'|'throw', message}`，由 runner 映射为该语言的写法。
+ */
+export function execNavigation(pages, page, params, env) {
+  const spec = Object.prototype.hasOwnProperty.call(pages, page) ? pages[page] : undefined;
+  if (!spec) return { kind: 'fail', message: `未知页面：${page}` };
+  if (typeof spec.throw === 'string') return { kind: 'throw', message: spec.throw };
+  for (const op of spec.mutate ?? []) env.mutate(op);
+  if (typeof spec.deny === 'string') return { kind: 'deny', message: spec.deny };
+  if (typeof spec.fail === 'string') return { kind: 'fail', message: spec.fail };
+  if (spec.failParams === true) return { kind: 'fail', message: params === undefined ? '' : JSON.stringify(params) };
+  return { kind: 'ok' };
+}
+
+/**
  * 注册表（handler 的 `mutate`，conformance/README.md 2.3）：记录每个工具的句柄与当前声明。
  * @input ops.register(decl) → 句柄；ops.update(handle, nextDecl, set)；ops.remove(handle)；ops.setEnabled(handle, on)。
  */
@@ -209,6 +225,8 @@ function jsToolFields(decl) {
     outputSchema: decl.outputSchema,
     activation: decl.activation,
     enabled: decl.enabled,
+    surface: decl.surface,
+    page: decl.page,
   });
 }
 
@@ -242,6 +260,8 @@ async function jsRead(spec, ToolCallError) {
  * 按用例 `app` 部分在 JS SDK 实例上注册工具与资源（conformance/README.md 2.1–2.3）。
  * @input app `@app-mcp/node` / `@app-mcp/web` 的实例；ToolCallError 该包导出的错误类。
  * @why update 为补丁型 API：`set` 中为 null 的字段以显式 undefined 清除（两包的 `ToolHandle.update` 约定）。
+ * @output `{ navigate }`：用例有 `app.navigation` 时为 JS 写法的导航回调 `(page, params) => Promise<void>`
+ *   （拒绝抛 `NAVIGATION_DENIED` 的 ToolCallError、失败抛 `NAVIGATION_FAILED`、`throw` 抛普通 Error），由 runner 交给 SDK；否则 undefined。
  */
 export function registerJsApp(app, testCase, ToolCallError) {
   const registry = createRegistry({
@@ -280,4 +300,13 @@ export function registerJsApp(app, testCase, ToolCallError) {
       read: () => jsRead(r.read, ToolCallError),
     });
   }
+  const pages = testCase.app.navigation;
+  if (typeof pages !== 'object' || pages === null) return { navigate: undefined };
+  const navigate = async (page, params) => {
+    const outcome = execNavigation(pages, page, params, { mutate: (op) => registry.mutate(op) });
+    if (outcome.kind === 'throw') throw new Error(outcome.message);
+    if (outcome.kind === 'deny') throw new ToolCallError('NAVIGATION_DENIED', outcome.message);
+    if (outcome.kind === 'fail') throw new ToolCallError('NAVIGATION_FAILED', outcome.message);
+  };
+  return { navigate };
 }

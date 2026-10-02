@@ -54,6 +54,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 RiskLike = Union[str, ffi.Risk]
 ActivationLike = Union[str, ffi.Activation]
+SurfaceLike = Union[str, ffi.ToolSurface]
 ToolAnnotationsLike = Union[ffi.ToolAnnotations, Mapping[str, Any]]
 ContentAnnotationsLike = Union[ffi.ContentAnnotations, Mapping[str, Any]]
 ResultStatusLike = Union[str, ffi.ResultStatus]
@@ -119,6 +120,10 @@ _RESULT_STATUSES = {
     "pending": ffi.ResultStatus.PENDING,
     "partial": ffi.ResultStatus.PARTIAL,
     "noop": ffi.ResultStatus.NOOP,
+}
+_SURFACES = {
+    "app": ffi.ToolSurface.APP,
+    "view": ffi.ToolSurface.VIEW,
 }
 _AUDIENCES = {
     "user": ffi.Audience.USER,
@@ -206,6 +211,12 @@ def _schema_json(schema: dict[str, Any] | str | None) -> str | None:
     if schema is None:
         return None
     return json.dumps(json.loads(schema) if isinstance(schema, str) else schema)
+
+
+def _surface(value: SurfaceLike | None) -> ffi.ToolSurface | None:
+    """``"app"`` / ``None`` → ``None``（缺省，不序列化）；``"view"`` → ``VIEW``。"""
+    surface = None if value is None else _enum_arg(value, _SURFACES, "surface")
+    return None if surface == ffi.ToolSurface.APP else surface
 
 
 def _activation(value: ActivationLike | None) -> ffi.Activation | None:
@@ -442,6 +453,8 @@ class _CancelListener(ffi.CancelListener):
 
 
 def _error_of(exc: BaseException) -> tuple[str, str, Any]:
+    if isinstance(exc, NavigationDenied):
+        return "NAVIGATION_DENIED", exc.message, None
     if isinstance(exc, ToolCallError):
         return exc.kind, exc.message, exc.details
     if isinstance(exc, ValueError) and getattr(exc, "_app_mcp_invalid_input", False):
@@ -579,6 +592,74 @@ class _ResourceAdapter(ffi.ResourceReader):
         )
 
 
+class NavigationDenied(Exception):
+    """导航回调抛出此异常拒绝本次导航（``NAVIGATION_DENIED``，spec/protocol.md 3.4），如用户正在输入、页面需要登录。
+
+    ``message`` 面向模型 / 用户。其他异常按导航失败（``NAVIGATION_FAILED``）回复。
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+NavigateFunction = Callable[[str, "dict[str, Any] | None"], Any]
+
+
+def _finish_navigate(request: ffi.Navigate, deny: str | None = None, fail: str | None = None) -> None:
+    try:
+        if deny is not None:
+            request.deny(deny)
+        elif fail is not None:
+            request.fail(fail)
+        else:
+            request.complete()
+    except ffi.AppMcpError:
+        pass  # 已完成或连接已断开：回复被丢弃（spec/protocol.md 3.4）
+
+
+def _fail_navigate(request: ffi.Navigate, kind: str, message: str, _details: Any = None) -> None:
+    if kind == "NAVIGATION_DENIED":
+        _finish_navigate(request, deny=message)
+    else:
+        _finish_navigate(request, fail=message)
+
+
+class _NavigationAdapter(ffi.NavigationHandler):
+    def __init__(self, owner: AppMcp, fn: NavigateFunction) -> None:
+        self._owner = owner
+        self._fn = fn
+        self._is_async = inspect.iscoroutinefunction(fn)
+
+    def navigate(self, request: ffi.Navigate) -> None:  # 分发线程
+        try:
+            raw = request.params_json()
+            params = None if raw is None else json.loads(raw)
+            if params is not None and not isinstance(params, dict):
+                raise ValueError("页面参数必须是 JSON 对象")
+        except ValueError as e:
+            _finish_navigate(request, fail=f"页面参数不合法：{e}")
+            return
+        page, fn = request.page(), self._fn
+        if self._is_async:
+
+            async def call() -> Any:
+                return await fn(page, params)
+
+        else:
+
+            def call() -> Any:
+                return fn(page, params)
+
+        self._owner._execute(
+            _Registration(self._owner, call, None),
+            dict,
+            lambda _result: _finish_navigate(request),
+            lambda k, m, d=None: _fail_navigate(request, k, m, d),
+            None,
+        )
+
+
 class _ClientListener(ffi.ClientListener):
     def __init__(self, owner: AppMcp) -> None:
         self._owner = owner
@@ -638,11 +719,13 @@ class ToolHandle:
         title: str | None | _Unset = _UNSET,
         annotations: ToolAnnotationsLike | None | _Unset = _UNSET,
         output_schema: dict[str, Any] | str | None | _Unset = _UNSET,
+        surface: SurfaceLike | None | _Unset = _UNSET,
+        page: str | None | _Unset = _UNSET,
     ) -> None:
         """修改定义：未给出的字段保持不变；显式传 ``None`` 清除该声明（恢复注册时的缺省）。
 
-        ``input_schema=None`` 为无参数，``risk=None`` 为缺省风险，``title`` / ``activation`` /
-        ``annotations`` / ``output_schema`` 为 ``None`` 时清除声明。``description`` 不可清除。
+        ``input_schema=None`` 为无参数，``risk=None`` 为缺省风险，``surface=None`` 为 ``"app"``，``title`` /
+        ``activation`` / ``annotations`` / ``output_schema`` / ``page`` 为 ``None`` 时清除声明。``description`` 不可清除。
         """
         s = self._spec
         spec = _replace_spec(
@@ -654,6 +737,8 @@ class ToolHandle:
             title=s.title if title is _UNSET else title,
             annotations=s.annotations if annotations is _UNSET else _tool_annotations(annotations),
             output_schema_json=s.output_schema_json if output_schema is _UNSET else _schema_json(output_schema),
+            surface=s.surface if surface is _UNSET else _surface(surface),
+            page=s.page if page is _UNSET else page,
         )
         self._inner.update(spec)
         self._spec = spec
@@ -674,6 +759,8 @@ def _replace_spec(spec: ffi.ToolSpec, **changes: Any) -> ffi.ToolSpec:
         "enabled": spec.enabled,
         "annotations": spec.annotations,
         "output_schema_json": spec.output_schema_json,
+        "surface": spec.surface,
+        "page": spec.page,
     }
     fields.update(changes)
     return ffi.ToolSpec(**fields)
@@ -720,12 +807,18 @@ class _Registrar:
         enabled: bool = True,
         annotations: ToolAnnotationsLike | None = None,
         output_schema: dict[str, Any] | str | None = None,
+        surface: SurfaceLike | None = None,
+        page: str | None = None,
     ) -> ToolHandle:
         """注册函数为工具，返回句柄。``input_schema`` 缺省时从函数签名生成。
 
         ``risk`` 为旧写法，优先用 ``annotations``：标准 MCP 工具注解（``{"read_only_hint": True}`` 或
         ``ToolAnnotations``），原样转发给 Agent；为空时 Hub 按 ``risk`` 推导。``output_schema`` 为结果的
         JSON Schema（字典或 JSON 文本，MCP ``outputSchema``）。
+
+        ``surface``：``"app"``（缺省，不依赖界面）/ ``"view"``（只在所在界面可见且在最上层时启用，spec/protocol.md 3.4；
+        Qt 可用 :func:`app_mcp.qt.bind_view_tool` 按 show / hide 切换）；``page``：所在页面名，Hub 在该工具未注册时
+        据此导航（:meth:`AppMcp.set_navigation_handler`）。
         """
         binder = ArgumentBinder(fn, ToolContext)
         if input_schema is None:
@@ -742,6 +835,8 @@ class _Registrar:
             enabled=enabled,
             annotations=_tool_annotations(annotations),
             output_schema_json=_schema_json(output_schema),
+            surface=_surface(surface),
+            page=page,
         )
         adapter = _ToolAdapter(_Registration(self._owner, fn, binder))
         return ToolHandle(self._raw().register_tool(spec, adapter), spec)
@@ -758,6 +853,8 @@ class _Registrar:
         enabled: bool = True,
         annotations: ToolAnnotationsLike | None = None,
         output_schema: dict[str, Any] | str | None = None,
+        surface: SurfaceLike | None = None,
+        page: str | None = None,
     ) -> Callable[[F], F]:
         """装饰器形式的 :meth:`add_tool`。返回原函数；句柄可用 ``client.tools[name]`` 取得。"""
 
@@ -773,6 +870,8 @@ class _Registrar:
                 enabled=enabled,
                 annotations=annotations,
                 output_schema=output_schema,
+                surface=surface,
+                page=page,
             )
             self._owner.tools[handle.name] = handle
             return fn
@@ -1050,6 +1149,23 @@ class AppMcp(_Registrar):
         """阻塞直到进入指定状态，返回是否在超时前达到。"""
         with self._state_cond:
             return self._state_cond.wait_for(lambda: self._inner.state().status == status, timeout)
+
+    def set_navigation_handler(self, fn: NavigateFunction | None) -> None:
+        """设置导航回调（Host 的 ``app/navigate``，spec/protocol.md 3.4）；``None`` 清除（之后的导航请求以
+        ``NAVIGATION_FAILED`` 回复）。
+
+        ``fn(page, params)`` 切换到页面后正常返回即完成；抛 :class:`NavigationDenied` 拒绝；其他异常按失败回复。
+        同步函数经 ``dispatcher`` 执行（传 :func:`~app_mcp.qt_dispatcher` / :func:`~app_mcp.tk_dispatcher` 即在 UI 线程），
+        ``async`` 函数在事件循环上执行；``dispatch_timeout`` 内未开始执行时以失败回复。
+
+        能力在握手时声明：建议在 :meth:`start` 之前设置；连接后才设置的回调在下次连接（回连 / 唤醒）时生效。
+        """
+        self._inner.set_navigation_handler(None if fn is None else _NavigationAdapter(self, fn))
+
+    def on_navigate(self, fn: F) -> F:
+        """装饰器形式的 :meth:`set_navigation_handler`。"""
+        self.set_navigation_handler(fn)
+        return fn
 
     def set_visibility(self, visibility: str | ffi.Visibility, focused: bool = True) -> None:
         if isinstance(visibility, str):

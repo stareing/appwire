@@ -93,6 +93,10 @@ export interface ToolSpecInit {
   annotations?: ToolAnnotationsInit;
   /** 结果的 JSON Schema 文本（MCP `outputSchema`）。 */
   outputSchemaJson?: string;
+  /** 'app'（缺省）| 'view'：对界面的依赖（spec/protocol.md 3.4）。 */
+  surface?: string;
+  /** 所在页面名；Hub 在该工具未注册时据此导航。 */
+  page?: string;
 }
 
 export interface ToolAnnotationsInit {
@@ -159,6 +163,18 @@ export class Read {
   failWithDetails(kind: string, message: string, detailsJson?: string | null): void;
 }
 
+/** 一次导航请求（Host 的 `app/navigate`，spec/protocol.md 3.4）。完成只能一次，重复完成抛出 `ALREADY_COMPLETED`。 */
+export class Navigate {
+  readonly page: string;
+  /** 页面参数 JSON 文本；Host 没有给出时为 undefined。 */
+  readonly paramsJson?: string;
+  complete(): void;
+  /** 导航失败（`NAVIGATION_FAILED`）。 */
+  fail(message: string): void;
+  /** 拒绝导航（`NAVIGATION_DENIED`）。 */
+  deny(message: string): void;
+}
+
 export class Tool {
   readonly name: string;
   /** 整体替换定义；已声明的 `annotations` / `outputSchemaJson` 保持不变。 */
@@ -198,6 +214,8 @@ export class NativeClient {
   toolsHash(): string;
   runtimeActive(): boolean;
   setVisibility(visibility: string, focused: boolean): void;
+  /** 设置导航回调（spec/protocol.md 3.4）；null 清除。握手时声明能力，应在 `start()` 之前设置。 */
+  setNavigationHandler(handler: ((navigate: Navigate) => void) | null): void;
   registerTool(spec: ToolSpecInit, handler: (call: Call) => void): Tool;
   registerResource(spec: ResourceSpecInit, reader: (read: Read) => void): Resource;
   createScope(name: string): Scope;

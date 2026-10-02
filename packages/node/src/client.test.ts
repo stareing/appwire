@@ -409,7 +409,10 @@ describe('资源与 scope', () => {
   it('读取资源并支持 setReader / notifyChanged', async () => {
     const { app, native } = setup()
     const r = app.resource('cart', { description: '购物车', read: () => ({ items: 2 }) })
-    expect(native.resources.get('cart')?.spec).toEqual({ name: 'cart', description: '购物车', mimeType: 'application/json' })
+    // 未声明 mimeType 时不发送缺省值（Host 按 application/json 处理；toolsHash 输入与其他 SDK 一致）
+    expect(native.resources.get('cart')?.spec).toEqual({ name: 'cart', description: '购物车' })
+    app.resource('notes', { description: '笔记', mimeType: 'text/markdown', read: () => '# hi' })
+    expect(native.resources.get('notes')?.spec.mimeType).toBe('text/markdown')
     expect(await native.read('cart')).toMatchObject({ ok: true, data: { items: 2 } })
     r.setReader(async () => 'text')
     expect(await native.read('cart')).toMatchObject({ ok: true, data: 'text' })
@@ -751,5 +754,68 @@ describe('惰性 handler', () => {
     handle.setHandler(() => 'direct')
     expect(await native.call('lazy')).toMatchObject({ ok: true, data: 'direct' })
     expect(load).not.toHaveBeenCalled()
+  })
+})
+
+describe('surface / page 与导航（spec/protocol.md 3.4）', () => {
+  it('工具声明 surface / page；update 显式 undefined 清除', () => {
+    const { app, native } = setup()
+    const plain = app.tool('a.plain', { description: 'a', handler: () => 1 })
+    expect(native.tools.get('a.plain')?.spec).not.toHaveProperty('surface')
+    expect(native.tools.get('a.plain')?.spec).not.toHaveProperty('page')
+    const t = app.tool('cart.checkout', { description: '结算', surface: 'view', page: 'cart', handler: () => 1 })
+    expect(native.tools.get('cart.checkout')?.spec).toMatchObject({ surface: 'view', page: 'cart' })
+    t.update({ description: '结算2' })
+    expect(native.tools.get('cart.checkout')?.spec).toMatchObject({ description: '结算2', surface: 'view', page: 'cart' })
+    t.update({ page: undefined, surface: undefined })
+    expect(native.tools.get('cart.checkout')?.spec).not.toHaveProperty('page')
+    expect(native.tools.get('cart.checkout')?.spec).not.toHaveProperty('surface')
+    plain.dispose()
+  })
+
+  it('onNavigate：完成 / 拒绝 / 失败 / 参数解析', async () => {
+    const seen: Array<[string, unknown]> = []
+    const { app, native } = setup({
+      onNavigate: async ({ page, params }) => {
+        seen.push([page, params])
+        if (page === 'login') throw ToolCallError.navigationDenied('需要先登录')
+        if (page === 'broken') throw new Error('页面加载失败')
+        if (page === 'kind') throw ToolCallError.navigationFailed('明确失败')
+      },
+    })
+    expect(native.navigationHandler).toBeDefined()
+    expect(await native.navigate('cart')).toEqual({ ok: true })
+    expect(await native.navigate('detail', { sku: 'A-42' })).toEqual({ ok: true })
+    expect(seen).toEqual([['cart', undefined], ['detail', { sku: 'A-42' }]])
+    expect(await native.navigate('login')).toEqual({ ok: false, kind: 'deny', message: '需要先登录' })
+    expect(await native.navigate('broken')).toEqual({ ok: false, kind: 'fail', message: '页面加载失败' })
+    expect(await native.navigate('kind')).toEqual({ ok: false, kind: 'fail', message: '明确失败' })
+    app.setNavigationHandler(null)
+    expect(native.navigationHandler).toBeUndefined()
+    expect(await native.navigate('cart')).toMatchObject({ ok: false, kind: 'unsupported' })
+  })
+
+  it('未设置时不声明；旧版原生模块没有 setNavigationHandler 时警告', () => {
+    const { app, native, logger } = setup()
+    expect(native.navigationHandler).toBeUndefined()
+    ;(native as { setNavigationHandler?: unknown }).setNavigationHandler = undefined
+    app.setNavigationHandler(() => {})
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('不支持导航回调'))
+  })
+
+  it('参数不是合法 JSON 时失败、不调用回调', async () => {
+    const handler = vi.fn()
+    const { native } = setup({ onNavigate: handler })
+    const outcome = await new Promise((resolve) => {
+      native.navigationHandler!({
+        page: 'x',
+        paramsJson: '{bad',
+        complete: () => resolve('ok'),
+        fail: (m) => resolve(`fail:${m}`),
+        deny: (m) => resolve(`deny:${m}`),
+      })
+    })
+    expect(outcome).toBe('fail:页面参数不是合法的 JSON')
+    expect(handler).not.toHaveBeenCalled()
   })
 })

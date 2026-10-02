@@ -13,6 +13,11 @@
 export type Risk = 'read' | 'write' | 'destructive' | 'payment' | 'os-sensitive';
 export type Activation = 'headless' | 'background' | 'foreground';
 export type Visibility = 'visible' | 'hidden' | 'frozen';
+/**
+ * 工具对界面的依赖（spec/protocol.md 3.4）：`app`（缺省）不依赖界面，后台可调、可唤醒；`view` 依赖界面，
+ * 只应在所在页面真正可见且处于最上层时注册（如在页面的 `onPageShow` 注册、`onPageHide` 注销）。
+ */
+export type ToolSurface = 'app' | 'view';
 
 /** 协议错误类别，见 spec/protocol.md 第 4 节。 */
 export type ErrorKind =
@@ -219,13 +224,32 @@ export interface ToolDefinition<I, O> {
   activation?: Activation;
   /** 缺省 true。 */
   enabled?: boolean;
+  /** 对界面的依赖，缺省 `app`（spec/protocol.md 3.4）。 */
+  surface?: ToolSurface;
+  /** 所在页面名（`[a-zA-Z0-9_.-]{1,64}`）；Hub 在该工具未注册时据此先导航（{@link AppMcpOptions.onNavigate}）。 */
+  page?: string;
   handler: ToolHandler<I, O>;
 }
 
+/** 导航请求（`app/navigate` 的参数，与 @app-mcp/node / web 同形）。 */
+export interface NavigationRequest {
+  /** 页面名（清单 `pages[].name` 或工具的 `page`）。 */
+  page: string;
+  /** 页面参数（JSON 对象）；Host 没有给出时为 undefined。 */
+  params?: Record<string, Object>;
+}
+
+/**
+ * 导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）：切换到 `request.page`（如 `router.pushUrl` / `NavPathStack.pushPath`）。
+ * 在创建客户端的 ArkTS 线程（UIAbility 中即主线程）上调用；返回（或 Promise 兑现）即导航完成——最好在新页面的工具注册之后。
+ * 拒绝（如用户正在输入）：抛出 `ToolCallError.navigationDenied(message)`；其他异常（含 `navigationFailed`）→ `NAVIGATION_FAILED`。
+ */
+export type NavigationHandler = (request: NavigationRequest) => void | Promise<void>;
+
 /**
  * `ToolHandle.update` 的变更：未提供（或 `undefined`）的字段保持不变；显式给出 `null` 清除该声明
- * （`title` / `annotations` / `outputSchema` / `activation` 删除，`inputSchema` 变为无参数，`risk` 恢复 `write`，
- * `enabled` 恢复 true）。`description` 不可清除，`null` 时保持不变。
+ * （`title` / `annotations` / `outputSchema` / `activation` / `page` 删除，`inputSchema` 变为无参数，`risk` 恢复 `write`，
+ * `enabled` 恢复 true，`surface` 恢复 `app`）。`description` 不可清除，`null` 时保持不变。
  */
 export interface ToolChanges {
   description?: string | null;
@@ -236,6 +260,8 @@ export interface ToolChanges {
   outputSchema?: string | null;
   activation?: Activation | null;
   enabled?: boolean | null;
+  surface?: ToolSurface | null;
+  page?: string | null;
 }
 
 export interface ToolHandle {
@@ -246,7 +272,7 @@ export interface ToolHandle {
 
 export interface ResourceDefinition<T> {
   description: string;
-  /** 缺省 `application/json`。 */
+  /** 缺省不声明（Host 按 `application/json` 处理）。 */
   mimeType?: string;
   /** 模型在等待其变化：被订阅时保持连接、休眠中变化时回连推送（spec/lifecycle.md 第 13 节 B3）。缺省 false。 */
   realtime?: boolean;
@@ -309,4 +335,9 @@ export interface AppMcpOptions {
   callDedup?: CallDedupOptions;
   /** 已休眠且 `lifecycle.residency` 允许退出进程时调用；SDK 不会自行退出（可在此 `terminateSelf()`）。 */
   onIdleExit?: () => void;
+  /**
+   * 导航回调（spec/protocol.md 3.4）：设置后握手声明 `capabilities.navigate`。缺省不支持导航（Host 的导航请求以
+   * `NAVIGATION_FAILED` / `unsupported` 回复）。之后可用 `AppMcp.setNavigationHandler` 替换。
+   */
+  onNavigate?: NavigationHandler;
 }

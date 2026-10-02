@@ -6,7 +6,13 @@ import { FakeNativeClient, fakeBinding } from '../../node/src/testing/fake-nativ
 import { attachAppMcp, ToolCallError as MainToolCallError, type IpcMainInvokeEventLike, type IpcMainLike, type WebContentsLike } from './main.js'
 import { exposeAppMcpBridge, type IpcRendererLike } from './preload.js'
 import { CHANNEL_OP } from './protocol.js'
-import { createRendererAppMcp, getAppMcpBridge, ToolCallError as RendererToolCallError } from './renderer.js'
+import {
+  attachBridgeNavigation,
+  createRendererAppMcp,
+  getAppMcpBridge,
+  ToolCallError as RendererToolCallError,
+  type AppMcpBridge,
+} from './renderer.js'
 
 // ---------------------------------------------------------------------------
 // 假 Electron：ipcMain / webContents / ipcRenderer（消息经 structuredClone，模拟进程边界）
@@ -602,3 +608,82 @@ describe('preload', () => {
     expect(native.tools.has('t')).toBe(false)
   })
 })
+
+describe('导航（spec/protocol.md 3.4）', () => {
+  function setupNav(navigation = true) {
+    const ipcMain = new FakeIpcMain()
+    const appMcp: NodeAppMcp = createAppMcp({ appId: 'shop', appName: 'Shop', clientKind: 'hybrid', binding: fakeBinding, keepAlive: false })
+    const native = FakeNativeClient.last as FakeNativeClient
+    const logger = { warn: vi.fn(), error: vi.fn() }
+    const attachment = attachAppMcp({ appMcp, ipcMain, logger, navigation })
+    cleanups.push(() => {
+      attachment.dispose()
+      appMcp.dispose()
+    })
+    return { ipcMain, native, attachment }
+  }
+
+  it('navigation: true 时接入即声明；转给开启导航的页面并回传结果', async () => {
+    const { ipcMain, native } = setupNav()
+    expect(native.navigationHandler).toBeDefined()
+    // 没有页面开启导航：失败
+    expect(await native.navigate('cart')).toMatchObject({ ok: false, kind: 'fail', message: expect.stringContaining('没有页面处理导航') })
+
+    const wc = new FakeWebContents(1)
+    const { page } = setupPage(ipcMain, wc)
+    page.tool('cart.view', { description: '看购物车', handler: () => 1 })
+    const seen: unknown[] = []
+    const nav = attachBridgeNavigation(getBridge(ipcMain, wc), async (request) => {
+      seen.push(request)
+      if (request.page === 'login') throw new RendererToolCallError('NAVIGATION_DENIED', '需要先登录')
+      if (request.page === 'broken') throw new Error('页面加载失败')
+    })
+    await nav.ready
+    expect(await native.navigate('cart', { sku: 'A-42' })).toEqual({ ok: true })
+    expect(seen).toEqual([{ page: 'cart', params: { sku: 'A-42' } }])
+    expect(await native.navigate('login')).toEqual({ ok: false, kind: 'deny', message: '需要先登录' })
+    expect(await native.navigate('broken')).toEqual({ ok: false, kind: 'fail', message: '页面加载失败' })
+
+    nav.dispose()
+    await flush()
+    expect(await native.navigate('cart')).toMatchObject({ ok: false, kind: 'fail' })
+  })
+
+  it('页面关闭时进行中的导航失败', async () => {
+    const { ipcMain, native } = setupNav()
+    const wc = new FakeWebContents(2)
+    setupPage(ipcMain, wc)
+    const nav = attachBridgeNavigation(getBridge(ipcMain, wc), () => new Promise(() => {}))
+    await nav.ready
+    const pending = native.navigate('cart')
+    await flush()
+    wc.destroy()
+    expect(await pending).toMatchObject({ ok: false, kind: 'fail', message: expect.stringContaining('页面已关闭') })
+  })
+
+  it('未开启 navigation 时不声明，页面开启被拒绝', async () => {
+    const { ipcMain, native } = setupNav(false)
+    expect(native.navigationHandler).toBeUndefined()
+    const wc = new FakeWebContents(3)
+    setupPage(ipcMain, wc)
+    const nav = attachBridgeNavigation(getBridge(ipcMain, wc), () => {})
+    await expect(nav.ready).rejects.toThrow('navigation: true')
+  })
+
+  it('页面工具的 surface / page 转到主进程（update 缺省清除）', async () => {
+    const { ipcMain, native } = setupNav()
+    const wc = new FakeWebContents(4)
+    const bridge = getBridge(ipcMain, wc)
+    const spec = { description: '结算', surface: 'view', page: 'cart' }
+    await bridge.request({ op: 'tool.register', id: 1, name: 'cart.checkout', spec } as never)
+    expect(native.tools.get('cart.checkout')?.spec).toMatchObject({ surface: 'view', page: 'cart' })
+    await bridge.request({ op: 'tool.update', id: 1, spec: { description: '结算' } } as never)
+    expect(native.tools.get('cart.checkout')?.spec).not.toHaveProperty('page')
+  })
+})
+
+function getBridge(ipcMain: FakeIpcMain, wc: FakeWebContents) {
+  const target: Record<string, unknown> = {}
+  exposeAppMcpBridge(null, fakeIpcRenderer(ipcMain, wc), { target, resetOnPageHide: false })
+  return target.appMcpBridge as AppMcpBridge
+}

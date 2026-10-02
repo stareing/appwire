@@ -554,4 +554,66 @@ void main() {
     expect(hashWith(annotated), hashWith(annotated));
     await Future<void>.delayed(const Duration(milliseconds: 50));
   }, skip: nativePath == null ? '找不到原生库' : false);
+
+  test('导航（v14）：回调在本 isolate 上执行；完成 / 拒绝 / 失败到达 Host；view 工具声明 surface / page', () async {
+    final host = await FakeHost.start([
+      '--tool-info',
+      '--navigate', 'cart', '--nav-params', '{"id":7}',
+      '--navigate', 'login',
+      '--navigate', 'crash',
+      '--catalog', '0',
+      '--timeout-ms', '15000',
+    ]);
+    final client = AppMcp(appId: 'dart-nav', appName: 'Dart 导航', hostUrl: 'ws://${host.addr}', libraryPath: nativePath);
+    final requests = <NavigationRequest>[];
+    client.tool('cart.checkout',
+        description: '结算', surface: ToolSurface.view, page: 'cart', handler: (args, ctx) => null);
+    client.setNavigationHandler((request) async {
+      requests.add(request);
+      await Future<void>.delayed(Duration.zero);
+      if (request.page == 'login') throw const NavigationDeniedError('需要先登录');
+      if (request.page == 'crash') throw StateError('页面崩溃');
+    });
+    client.start();
+    final tools = await host.nextJson();
+    expect(tools['type'], 'tools');
+    final cart = await host.nextJson();
+    expect(cart, containsPair('result', {'ok': true}));
+    final login = await host.nextJson();
+    expect(login['error']['code'], -31002);
+    expect(login['error']['message'], contains('需要先登录'));
+    expect(login['error']['data'], {'kind': 'NAVIGATION_DENIED', 'reason': 'app'});
+    final crash = await host.nextJson();
+    expect(crash['error']['code'], -31001);
+    expect(crash['error']['message'], contains('页面崩溃'));
+    final catalog = await host.nextJson();
+    expect(catalog['tools']['cart.checkout'], allOf(containsPair('surface', 'view'), containsPair('page', 'cart')));
+    expect(requests.map((r) => r.page), ['cart', 'login', 'crash']);
+    expect(requests.first.params, {'id': 7});
+    expect(requests[1].params, isNull);
+    await host.process.exitCode;
+    client.dispose();
+  }, skip: skip, timeout: const Timeout(Duration(seconds: 60)));
+
+  test('真实原生库：surface / page 进入工具声明（摘要变化、update 可清除）；导航回调可设置与清除', () async {
+    final c = AppMcp(appId: 'dart-v14', appName: 'v14', hostUrl: 'ws://127.0.0.1:9', libraryPath: nativePath);
+    final t = c.tool('cart.checkout', description: '结算', handler: (args, ctx) => null);
+    final plain = c.toolsHash;
+    t.update(surface: ToolSurface.view, page: 'cart');
+    expect(t.spec.surface, ToolSurface.view);
+    expect(t.spec.page, 'cart');
+    final view = c.toolsHash;
+    expect(view, isNot(plain));
+    t.update(description: '结算');
+    expect(c.toolsHash, view, reason: '未提供的字段保持不变');
+    t.update(surface: null, page: null);
+    expect(c.toolsHash, plain, reason: '显式 null 清除');
+    expect(() => c.tool('bad', description: 'x', page: 'bad page!', handler: (a, x) => null),
+        throwsA(isA<AppMcpException>()));
+    expect(() => t.update(surface: 'view'), throwsArgumentError);
+    c.setNavigationHandler((_) {});
+    c.setNavigationHandler(null);
+    c.dispose();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }, skip: nativePath == null ? '找不到原生库' : false);
 }

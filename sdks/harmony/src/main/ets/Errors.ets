@@ -44,6 +44,18 @@ export class ToolCallError extends Error {
     }
     return new ToolCallError('USER_ACTION_REQUIRED', message, empty ? undefined : details);
   }
+
+  /** `NAVIGATION_DENIED`：导航回调拒绝本次导航（如用户正在编辑），`message` 面向模型 / 用户。 */
+  static navigationDenied(message: string): ToolCallError {
+    const details: Record<string, Object> = { 'reason': 'app' };
+    return new ToolCallError('NAVIGATION_DENIED', message, details);
+  }
+
+  /** `NAVIGATION_FAILED`：导航回调无法完成导航（页面不存在、参数不合法等）。 */
+  static navigationFailed(message: string): ToolCallError {
+    const details: Record<string, Object> = { 'reason': 'error' };
+    return new ToolCallError('NAVIGATION_FAILED', message, details);
+  }
 }
 
 /** handler 失败的归一化结果。 */

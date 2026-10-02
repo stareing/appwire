@@ -28,6 +28,7 @@ const SDK = 'node'
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
+  'surface', 'navigation',
 ]
 
 const pkgDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -46,7 +47,8 @@ function startApp(binding: NativeBinding, testCase: ConformanceCase, url: string
     logger: silentLogger,
     ...appConfig(testCase),
   })
-  registerJsApp(app, testCase, ToolCallError)
+  const { navigate } = registerJsApp(app, testCase, ToolCallError)
+  if (navigate) app.setNavigationHandler(({ page, params }) => navigate(page, params))
   app.start()
   return { handleWake: (arg) => void app.handleWake(arg), stop: () => app.dispose() }
 }

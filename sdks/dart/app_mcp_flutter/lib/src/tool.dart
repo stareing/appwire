@@ -4,6 +4,7 @@ import 'package:app_mcp/app_mcp.dart';
 import 'package:flutter/widgets.dart';
 
 import 'scope.dart';
+import 'view.dart';
 
 void _report(Object e, StackTrace st, String what) {
   FlutterError.reportError(FlutterErrorDetails(
@@ -16,6 +17,9 @@ void _report(Object e, StackTrace st, String what) {
 /// - 总是用新的 [handler] 替换旧的（handler 通常是捕获了最新状态的闭包），不产生协议消息；
 /// - 定义（描述、schema、风险等）变化时调用 [ToolHandle.replace]，相同则什么也不做；
 /// - 只有 [name] 变化或所在作用域变化时才注销并重新注册。
+///
+/// [surface] 为 [ToolSurface.view] 时只在所在界面可见且处于最上层时启用（[McpViewGate.isActive]：最近的
+/// [McpViewGate] / [McpRouteGate]，否则所在路由是否为栈顶），否则禁用；[page] 声明所在页面，Hub 据此导航。
 ///
 /// ```dart
 /// McpTool(
@@ -38,6 +42,8 @@ class McpTool extends StatefulWidget {
     this.enabled = true,
     this.annotations,
     this.outputSchema,
+    this.surface = ToolSurface.app,
+    this.page,
     required this.handler,
     this.child,
   });
@@ -57,6 +63,12 @@ class McpTool extends StatefulWidget {
 
   /// 结果的 JSON Schema（MCP outputSchema）；为 null 时不声明。
   final Map<String, Object?>? outputSchema;
+
+  /// 对界面的依赖（spec/protocol.md 3.4）。
+  final ToolSurface surface;
+
+  /// 所在页面名；为 null 时不声明。
+  final String? page;
   final ToolHandler handler;
   final Widget? child;
 
@@ -70,6 +82,8 @@ class McpTool extends StatefulWidget {
         enabled: enabled,
         annotations: annotations,
         outputSchema: outputSchema,
+        surface: surface,
+        page: page,
       );
 
   @override
@@ -80,6 +94,14 @@ class _McpToolState extends State<McpTool> {
   McpScope? _scope;
   ToolHandle? _handle;
 
+  /// view 工具所在界面是否可见且处于最上层（app 工具恒为 true）。
+  bool _viewActive = true;
+
+  ToolSpec get _effectiveSpec {
+    final spec = widget.spec;
+    return _viewActive ? spec : spec.copyWith(enabled: false);
+  }
+
   // handler 通过这一层转发，保证在途调用也用最新的闭包。
   Future<Object?> _invoke(Map<String, dynamic> args, ToolContext ctx) async =>
       widget.handler(args, ctx);
@@ -87,26 +109,41 @@ class _McpToolState extends State<McpTool> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final active = widget.surface == ToolSurface.app || McpViewGate.isActive(context);
     final scope = AppMcpScope.scopeOf(context);
     if (!identical(scope, _scope)) {
       _handle?.dispose();
       _scope = scope;
+      _viewActive = active;
       _register();
+      return;
+    }
+    if (active != _viewActive) {
+      _viewActive = active;
+      _sync();
     }
   }
 
   @override
   void didUpdateWidget(McpTool oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.surface != widget.surface) {
+      _viewActive = widget.surface == ToolSurface.app || McpViewGate.isActive(context);
+    }
     if (oldWidget.name != widget.name) {
       _handle?.dispose();
       _register();
       return;
     }
+    _sync();
+  }
+
+  /// 按当前定义与界面状态更新（相同则无协议消息）。
+  void _sync() {
     final handle = _handle;
     if (handle == null || handle.isDisposed) return;
     try {
-      handle.replace(widget.spec);
+      handle.replace(_effectiveSpec);
     } on AppMcpException catch (e, st) {
       _report(e, st, '更新工具 ${widget.name} 时');
     }
@@ -117,7 +154,7 @@ class _McpToolState extends State<McpTool> {
     final scope = _scope;
     if (scope == null || scope.isDisposed) return;
     try {
-      _handle = scope.registerTool(widget.spec, _invoke);
+      _handle = scope.registerTool(_effectiveSpec, _invoke);
     } on AppMcpException catch (e, st) {
       _report(e, st, '注册工具 ${widget.name} 时');
     }
@@ -265,9 +302,13 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
     bool enabled = true,
     ToolAnnotations? annotations,
     Map<String, Object?>? outputSchema,
+    ToolSurface surface = ToolSurface.app,
+    String? page,
     required ToolHandler handler,
   }) {
     final scope = AppMcpScope.scopeOf(context);
+    // view 工具按所在界面门控（同 [McpTool]）；build 中依赖门控 / 路由，状态变化时会重新 build。
+    final active = surface == ToolSurface.app || McpViewGate.isActive(context);
     if (!identical(scope, _mcpScope)) {
       for (final h in _mcpTools.values) {
         h.dispose();
@@ -283,9 +324,11 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
         risk: risk,
         activation: activation,
         title: title,
-        enabled: enabled,
+        enabled: enabled && active,
         annotations: annotations,
-        outputSchema: outputSchema);
+        outputSchema: outputSchema,
+        surface: surface,
+        page: page);
     final existing = _mcpTools[name];
     try {
       if (existing != null && !existing.isDisposed) {

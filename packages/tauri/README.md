@@ -64,6 +64,8 @@ Identity and connection are owned by the Rust side: `appId`, `appName` and `host
 - `createTauriAppMcp(options)` - returns an `AppMcp` (same interface as `@app-mcp/web`); accepts an explicit `bridge`.
 - `isTauri(target?)` - whether the page runs in a Tauri v2 webview.
 - `getTauriBridge(target?)` - the injected bridge, or `undefined` if missing or incompatible.
+- `attachTauriNavigation(({ page, params }) => …, bridge?)` - handle the Hub's page navigation requests in this page
+  (requires `Builder::page_navigation(true)` on the Rust side); returns `{ ready, dispose() }`.
 - `TAURI_OP_COMMAND` (`'plugin:app-mcp|op'`), `TAURI_DISPATCH_FN`, `BRIDGE_VERSION` - protocol constants.
 - Types: `TauriAppMcpOptions`, `AppMcpBridge`, `HelloReply`, `MainEvent`, `OpReply`, `RendererOp`.
 

@@ -214,6 +214,11 @@ final class FakeNative {
   /// v9：`<annotations 或 null>|<outputSchema 或 null>`；工具不存在时为 null。
   String? toolOptions(String name) => _take(using((a) => _toolOptions(name.toNativeUtf8(allocator: a))));
 
+  /// v14：`"<surface>|<page 或 null>"`。
+  late final _toolView = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
+      Pointer<Utf8> Function(Pointer<Utf8>)>('fake_tool_view');
+  String? toolView(String name) => _take(using((a) => _toolView(name.toNativeUtf8(allocator: a))));
+
   String? toolDescription(String name) {
     final p = using((a) => _toolDescription(name.toNativeUtf8(allocator: a)));
     if (p == nullptr) return null;

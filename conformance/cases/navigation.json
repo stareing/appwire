@@ -1,0 +1,52 @@
+{
+  "id": "navigation",
+  "title": "app/navigate：握手声明能力；回调完成 / 拒绝 / 失败 / 抛异常 / 未知页面 / 参数传递 / 非法页面名",
+  "spec": ["protocol.md 3.4", "protocol.md 4"],
+  "requires": ["navigation", "surface", "mutate"],
+  "app": {
+    "tools": [{ "name": "home.ping", "description": "首页工具", "handler": { "return": { "pong": true } } }],
+    "navigation": {
+      "cart": { "mutate": [{ "op": "register", "tool": {
+          "name": "cart.checkout", "description": "结算", "surface": "view", "page": "cart",
+          "handler": { "return": { "paid": true } } } }] },
+      "login": { "deny": "需要先登录" },
+      "broken": { "fail": "页面加载失败" },
+      "crash": { "throw": "导航回调异常" },
+      "detail": { "failParams": true }
+    }
+  },
+  "host": { "ops": [
+    { "navigate": "cart" },
+    { "catalog": 200 },
+    { "invoke": "cart.checkout" },
+    { "navigate": "login" },
+    { "navigate": "broken" },
+    { "navigate": "crash" },
+    { "navigate": "nowhere" },
+    { "navigate": "detail", "params": { "sku": "A-42" } },
+    { "navigate": "bad page!" }
+  ] },
+  "expect": [
+    { "type": "recv", "method": "app/hello", "params": { "capabilities": { "navigate": true } } },
+    { "type": "tools", "tools": ["home.ping"] },
+    { "type": "navigate", "name": "cart", "result": { "ok": true } },
+    { "type": "catalog", "tools": {
+        "home.ping": { "$any": true },
+        "cart.checkout": { "surface": "view", "page": "cart" } } },
+    { "type": "invoke", "name": "cart.checkout", "result": { "data": { "paid": true } } },
+    { "type": "navigate", "name": "login", "error": { "code": -31002, "message": { "$contains": "需要先登录" },
+        "data": { "kind": "NAVIGATION_DENIED", "reason": "app" } } },
+    { "type": "navigate", "name": "broken", "error": { "code": -31001, "message": { "$contains": "页面加载失败" },
+        "data": { "kind": "NAVIGATION_FAILED", "reason": "error" } } },
+    { "type": "navigate", "name": "crash", "error": { "code": -31001,
+        "data": { "kind": "NAVIGATION_FAILED", "reason": "error" } } },
+    { "type": "navigate", "name": "nowhere", "error": { "code": -31001,
+        "data": { "kind": "NAVIGATION_FAILED", "reason": "error" } } },
+    { "type": "navigate", "name": "detail", "error": { "code": -31001, "message": { "$contains": "A-42" },
+        "data": { "kind": "NAVIGATION_FAILED", "reason": "error" } } },
+    { "type": "navigate", "name": "bad page!", "error": { "code": -32602 } }
+  ],
+  "contains": [
+    { "type": "recv", "method": "tools/changed" }
+  ]
+}

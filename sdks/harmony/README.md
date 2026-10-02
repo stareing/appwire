@@ -99,6 +99,13 @@ mcp.tool<OrderParams, Object | null>('order.submit', {
   `outputSchema` / `activation` 删除，`inputSchema` 变为无参数，`risk` 恢复 `write`，`enabled` 恢复 true；`description`
   不可清除）；给出值则整体替换该字段。
 
+### 页面与导航（spec/protocol.md 3.4）
+
+- 工具可声明 `surface`（`'app'` 缺省；`'view'` 依赖界面，应在页面 `onPageShow` 注册、`onPageHide` 注销）与 `page`（所在页面名）。
+- `onNavigate: (request) => { router.pushUrl(...) }`（或 `mcp.setNavigationHandler(handler | null)`，在连接前设置）：Hub 调用不在当前
+  页面的工具时先请求切换页面；回调在创建客户端的 ArkTS 线程上执行，返回（或 Promise 兑现）即完成，抛出
+  `ToolCallError.navigationDenied(message)` 拒绝，其他异常按失败回复。
+
 ### 线程
 
 原生运行时在自己的线程上连接 Host，回调经 Node-API 线程安全函数投递到**创建 `AppMcp` 的 ArkTS 线程**的事件循环。

@@ -1,0 +1,21 @@
+{
+  "id": "tool-surface-page",
+  "title": "工具 surface / page 声明原样到达 Host；缺省（app、无页面）时不序列化",
+  "spec": ["protocol.md 3.4"],
+  "requires": ["surface"],
+  "app": {
+    "tools": [
+      { "name": "s.app", "description": "缺省 surface", "handler": { "return": {} } },
+      { "name": "s.appPage", "description": "app 工具也可声明页面", "surface": "app", "page": "orders", "handler": { "return": {} } },
+      { "name": "s.view", "description": "依赖界面", "surface": "view", "page": "cart", "handler": { "return": { "view": true } } }
+    ]
+  },
+  "host": { "ops": [{ "catalog": 0 }, { "invoke": "s.view" }] },
+  "expect": [
+    { "type": "catalog", "tools": {
+        "s.app": { "surface": { "$absent": true }, "page": { "$absent": true } },
+        "s.appPage": { "surface": { "$absent": true }, "page": "orders" },
+        "s.view": { "surface": "view", "page": "cart" } } },
+    { "type": "invoke", "name": "s.view", "result": { "data": { "view": true } } }
+  ]
+}

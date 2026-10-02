@@ -99,6 +99,13 @@ fn op_args(op: &Value) -> Result<Vec<String>, String> {
         }
         return Ok(a);
     }
+    if let Some(page) = obj.get("navigate") {
+        let mut a = vec!["--navigate".to_owned(), s(page)?];
+        if let Some(params) = obj.get("params") {
+            a.extend(["--nav-params".to_owned(), params.to_string()]);
+        }
+        return Ok(a);
+    }
     if let Some(name) = obj.get("read") {
         return Ok(vec!["--read".to_owned(), s(name)?]);
     }

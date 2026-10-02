@@ -52,6 +52,22 @@ export class ToolCallError extends Error {
   static userActionRequired(message: string, options: UserActionRequiredOptions = {}): ToolCallError {
     return new ToolCallError('USER_ACTION_REQUIRED', message, userActionDetails(options))
   }
+
+  /**
+   * `NAVIGATION_DENIED`：导航回调拒绝本次导航（如用户正在编辑、页面需要登录），`message` 面向模型 / 用户。
+   *
+   * ```ts
+   * onNavigate: ({ page }) => { if (editor.dirty) throw ToolCallError.navigationDenied('正在编辑草稿，请先保存') }
+   * ```
+   */
+  static navigationDenied(message: string): ToolCallError {
+    return new ToolCallError('NAVIGATION_DENIED', message, { reason: 'app' })
+  }
+
+  /** `NAVIGATION_FAILED`：导航回调无法完成导航（页面不存在、参数不合法等）。 */
+  static navigationFailed(message: string): ToolCallError {
+    return new ToolCallError('NAVIGATION_FAILED', message, { reason: 'error' })
+  }
 }
 
 /** `{ reason?, uri? }` → 错误详情（省略缺省字段；为空时返回 undefined）。 */

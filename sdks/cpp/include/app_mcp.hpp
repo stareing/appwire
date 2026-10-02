@@ -25,6 +25,13 @@
 //   ToolOptions::risk 为旧写法，优先用 annotations（同时声明时注解中的字段优先）。
 // - Call::complete(const CallResult&)：业务状态（done / pending / partial / noop）、state_resource、summary、内容注解。
 // - ResourceOptions::annotations（资源内容的标注，app_mcp.h v13）；ClientConfig::call_dedup（调用去重，v13）。
+//
+// 界面级暴露与导航（spec/protocol.md 3.4，app_mcp.h v14）：
+// - ToolOptions::surface（Surface::App 缺省 / Surface::View 依赖界面）与 ToolOptions::page（所在页面）。
+//   view 工具只在所在界面可见且处于最上层时注册（或 set_enabled(true)）；何时可见由 App / UI 框架决定。
+// - Client::set_navigation_handler(handler)：Host 的 app/navigate 交给 handler(Navigate)，在分发线程上调用；
+//   handler 把 Navigate 移动到 UI 线程，切换页面（新页面的工具注册之后）再 complete()，不愿切换时 deny(message)，
+//   出错时 fail(message)。handler 抛出 NavigationDenied → 拒绝，其他异常 → 失败。能力在握手时声明，start() 之前设置。
 #ifndef APP_MCP_HPP
 #define APP_MCP_HPP
 
@@ -85,6 +92,12 @@ inline constexpr const char* permission = "permission";  ///< 系统权限未授
 inline constexpr const char* foreground = "foreground";  ///< 需要把 App 切到前台
 inline constexpr const char* confirm = "confirm";        ///< 需要用户在 App 内确认
 }  // namespace user_action_reason
+
+/// 导航回调中抛出：拒绝本次导航（NAVIGATION_DENIED，如用户正在输入）；message 面向模型 / 用户。
+class NavigationDenied : public std::runtime_error {
+public:
+    explicit NavigationDenied(const std::string& message) : std::runtime_error(message) {}
+};
 
 /// handler 中抛出，以 USER_ACTION_REQUIRED 失败（app_mcp.h v11；reader 中抛出同样带 reason / uri，v12）：需要用户本人操作后才能继续。
 /// message 面向用户；reason（见 user_action_reason）与 uri（App 内入口，如深链接）可选，缺省时不出现在错误的 data 中。
@@ -161,6 +174,14 @@ using SleepReason = AmSleepReason;
 /// 调用结果的业务状态（AM_RESULT_DONE / PENDING / PARTIAL / NOOP）。
 using ResultStatus = AmResultStatus;
 
+/// 工具对界面的依赖（spec/protocol.md 3.4）。
+enum class Surface {
+    /// 不依赖界面：后台可调、可唤醒（缺省）。
+    App = AM_SURFACE_APP,
+    /// 依赖界面：只在所在界面可见且处于最上层时注册。
+    View = AM_SURFACE_VIEW,
+};
+
 /// 本实例的唤醒描述（spec/lifecycle.md 第 5 节），随 app/sleep 上报。
 struct WakeDescriptor {
     WakeKind kind = AM_WAKE_NONE;
@@ -223,6 +244,10 @@ struct ToolOptions {
     std::optional<ToolAnnotations> annotations;
     /// 结果的 JSON Schema 文本（MCP outputSchema）；为空表示不声明。
     std::optional<std::string> output_schema_json;
+    /// 对界面的依赖（app_mcp.h v14）。
+    Surface surface = Surface::App;
+    /// 所在页面名 [a-zA-Z0-9_.-]{1,64}；为空表示不声明。Hub 在该工具未注册时据此导航（v14）。
+    std::optional<std::string> page;
 };
 
 /// 内容面向谁（MCP 内容注解 audience）。
@@ -445,6 +470,8 @@ inline AmToolOptions tool_options(const ToolOptions& options, const std::optiona
     o.struct_size = sizeof(AmToolOptions);
     o.annotations_json = c_str_or_null(annotations_json);
     o.output_schema_json = c_str_or_null(options.output_schema_json);
+    o.page = c_str_or_null(options.page);
+    o.surface = static_cast<int>(options.surface);
     return o;
 }
 
@@ -729,8 +756,65 @@ private:
     std::string resource_name_;
 };
 
+/// 一次导航请求（Host 的 app/navigate，spec/protocol.md 3.4）。只能移动；必须 complete / fail / deny 一次，
+/// 否则析构时以 NAVIGATION_FAILED 失败。完成函数可在任意线程调用。
+class Navigate {
+public:
+    explicit Navigate(std::shared_ptr<detail::Pending<AmNavigate>> state) : state_(std::move(state)) {
+        if (AmNavigate* n = state_->raw.load()) {
+            page_ = am_navigate_page(n);
+            if (const char* p = am_navigate_params_json(n)) params_json_ = p;
+        }
+    }
+    Navigate(Navigate&&) noexcept = default;
+    Navigate& operator=(Navigate&& other) noexcept {
+        if (this != &other) {
+            finish_abandoned();
+            state_ = std::move(other.state_);
+            page_ = std::move(other.page_);
+            params_json_ = std::move(other.params_json_);
+        }
+        return *this;
+    }
+    Navigate(const Navigate&) = delete;
+    Navigate& operator=(const Navigate&) = delete;
+    ~Navigate() { finish_abandoned(); }
+
+    /// 目标页面名。
+    const std::string& page() const noexcept { return page_; }
+    /// 页面参数 JSON 文本；Host 没有给出时为 nullopt。
+    const std::optional<std::string>& params_json() const noexcept { return params_json_; }
+    bool pending() const noexcept { return state_ && state_->raw.load() != nullptr; }
+    explicit operator bool() const noexcept { return pending(); }
+
+    /// 导航完成（最好在新页面的工具注册之后）。
+    void complete() { detail::check(am_navigate_complete(take())); }
+    /// 导航失败（NAVIGATION_FAILED）：页面不存在、参数不合法等。
+    void fail(const std::string& message) { detail::check(am_navigate_fail(take(), message.c_str())); }
+    /// 拒绝导航（NAVIGATION_DENIED）：如用户正在输入。message 面向模型 / 用户。
+    void deny(const std::string& message) { detail::check(am_navigate_deny(take(), message.c_str())); }
+
+private:
+    AmNavigate* take() {
+        AmNavigate* n = state_ ? state_->take() : nullptr;
+        if (!n) throw Error(AM_ERR_ALREADY_COMPLETED, "导航已完成");
+        return n;
+    }
+
+    void finish_abandoned() noexcept {
+        if (!state_) return;
+        if (state_->dispatching.load() && std::uncaught_exceptions() > 0) return;
+        if (AmNavigate* n = state_->take()) am_navigate_fail(n, "导航回调未完成导航");
+    }
+
+    std::shared_ptr<detail::Pending<AmNavigate>> state_;
+    std::string page_;
+    std::optional<std::string> params_json_;
+};
+
 using ToolHandler = std::function<void(Call)>;
 using ResourceReader = std::function<void(Read)>;
+using NavigationHandler = std::function<void(Navigate)>;
 
 namespace detail {
 
@@ -776,6 +860,21 @@ inline void read_trampoline(void* ud, AmRead* raw) {
     auto state = std::make_shared<Pending<AmRead>>(raw);
     static const FailOps<AmRead> ops{am_read_fail, am_read_fail_with_details, am_read_fail_user_action};
     run_with_failure(state, ops, [&] { (*static_cast<ResourceReader*>(ud))(Read(state)); });
+}
+
+/// 运行导航回调；抛出 NavigationDenied → 拒绝，其他异常 → 失败（未完成时）。
+inline void navigate_trampoline(void* ud, AmNavigate* raw) {
+    auto state = std::make_shared<Pending<AmNavigate>>(raw);
+    try {
+        (*static_cast<NavigationHandler*>(ud))(Navigate(state));
+    } catch (const NavigationDenied& e) {
+        if (AmNavigate* n = state->take()) am_navigate_deny(n, e.what());
+    } catch (const std::exception& e) {
+        if (AmNavigate* n = state->take()) am_navigate_fail(n, e.what());
+    } catch (...) {
+        if (AmNavigate* n = state->take()) am_navigate_fail(n, "导航回调抛出了未知异常");
+    }
+    state->dispatching.store(false);
 }
 
 }  // namespace detail
@@ -1020,6 +1119,20 @@ public:
     void stop() { detail::check(am_client_stop(h_)); }
     void set_visibility(Visibility visibility, bool focused) {
         detail::check(am_client_set_visibility(h_, visibility, focused));
+    }
+
+    /// 设置导航回调（spec/protocol.md 3.4）；传空的 std::function 清除（之后的导航请求以 NAVIGATION_FAILED 回复）。
+    /// 能力在握手时声明：建议在 start() 之前设置，连接后才设置的在下次连接时生效。handler 在分发线程上调用。
+    void set_navigation_handler(NavigationHandler handler) {
+        if (!handler) {
+            detail::check(am_client_set_navigation_handler(h_, nullptr, nullptr, nullptr));
+            return;
+        }
+        // 所有权交给库：替换 / 清除 / 释放客户端时库调用 delete_fn。
+        auto* holder = new NavigationHandler(std::move(handler));
+        AmStatus s = am_client_set_navigation_handler(h_, &detail::navigate_trampoline, holder,
+                                                      &detail::delete_fn<NavigationHandler>);
+        detail::check(s);
     }
 
     StateInfo state() const {

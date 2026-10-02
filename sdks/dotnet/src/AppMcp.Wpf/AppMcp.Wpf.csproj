@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WPF 绑定（第 4c 项 E）：view 工具随控件可见性 / 窗口激活启用、Frame 导航适配。
+    只能在 Windows 上构建（net9.0-windows + UseWPF）；不在 AppMcp.sln 中，避免在 Linux / WSL 上构建解决方案失败。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>AppMcp.Wpf</RootNamespace>
+    <AssemblyName>AppMcp.Wpf</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Description>AppWire WPF bindings: enable view-surface MCP tools while their element is visible and its window is active; Frame navigation adapter</Description>
+    <PackageTags>mcp;model-context-protocol;ai-agent;wpf;appwire</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../AppMcp/AppMcp.csproj" />
+  </ItemGroup>
+
+</Project>

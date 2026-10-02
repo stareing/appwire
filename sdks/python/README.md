@@ -73,6 +73,16 @@ def submit() -> ToolResult:
   default. Tune or disable it with `AppMcp(..., call_dedup=CallDedup(ttl=60, max_entries=16))` /
   `call_dedup=CallDedup.OFF`; each hit is logged as a warning.
 
+### View tools and navigation (optional, `spec/protocol.md` §3.4)
+
+- `add_tool(..., surface="view", page="cart")` declares a tool that only makes sense while its screen is visible;
+  `page` tells the Hub where the tool lives. With Qt, `app_mcp.qt.bind_view_tool(widget, handle)` enables the tool
+  while `widget` is shown, disables it when hidden and disposes it when the widget is destroyed (PySide6 or PyQt6).
+- `app.set_navigation_handler(fn)` (or `@app.on_navigate`) lets the Hub open a page before calling a tool on it:
+  `fn(page, params)` switches the UI and returns; raise `NavigationDenied("Finish the draft first")` to refuse, any
+  other exception fails the navigation. Sync handlers run through `dispatcher` (use `qt_dispatcher()` /
+  `tk_dispatcher(root)` for the UI thread). Set it before `start()`: the capability is announced in the handshake.
+
 ## Lifecycle and power
 
 By default a client stays connected (`persistent`). Desktop apps on Linux that export the D-Bus

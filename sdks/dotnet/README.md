@@ -58,6 +58,28 @@ client.RegisterTool("order.submit", "提交订单",
 - `ToolRegistration.Update(description, options)` 整体替换：`options` 中为 `null` 的 `Annotations` / `OutputSchemaJson` 表示清除该声明。
 - `ToolErrorKind.RateLimited` / `PayloadTooLarge` 由 Hub 产生（限流 / 超过大小上限），handler 不会收到，也不必抛出。
 
+## 界面级暴露与导航（spec/protocol.md 3.4）
+
+```csharp
+// 依赖界面的工具：声明 Surface = View 与所在页面，只在页面可见且窗口激活时启用
+var checkout = client.RegisterTool("cart.checkout", "结算", Checkout,
+    new ToolOptions { Surface = ToolSurface.View, Page = "cart" });
+_binding = AppMcp.Wpf.WpfViewTools.Bind(cartPage, checkout);   // WinUI：AppMcp.WinUI.WinUIViewTools.Bind(page, window, checkout)
+
+// Host 调用其他页面的工具前会请求导航：在 Start() 之前设置
+client.SetNavigationHandler(AppMcp.Wpf.WpfNavigation.ForFrame(MainFrame, new Dictionary<string, Func<NavigationRequest, object>>
+{
+    ["cart"] = _ => new CartPage(client),
+}));
+client.Start();
+```
+
+- `SetNavigationHandler(Func<NavigationRequest, Task>)`：handler 在 `Dispatcher`（UI 线程）上执行；正常返回 = 导航完成，
+  抛 `NavigationDeniedException` = 拒绝（`NAVIGATION_DENIED`，如用户正在输入），其他异常 = 失败（`NAVIGATION_FAILED`）。
+  传 `null` 清除；能力在握手时声明，连接后才设置的在下次连接生效。
+- `ViewToolGate`：与框架无关的门控（可见 且 最上层 → 启用，否则禁用），可绑定到任意界面事件。
+- `AppMcp.Wpf`（`net9.0-windows`，WPF）与 `AppMcp.WinUI`（WindowsAppSDK）为独立项目，只能在 Windows 上构建，不在 `AppMcp.sln` 中。
+
 ## Hub SDK（Agent 端）：`AppMcp.Hub`
 
 `src/AppMcp.Hub` 是 `bindings/hub-c`（`app_mcp_hub.h`）的 P/Invoke 封装，供助手厂商在自己的进程里嵌入 Hub：

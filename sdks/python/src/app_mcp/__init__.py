@@ -24,6 +24,7 @@ if TYPE_CHECKING:  # pragma: no cover
         CallDedup,
         Dispatcher,
         Hold,
+        NavigationDenied,
         ResourceHandle,
         Scope,
         ToolCallError,
@@ -46,6 +47,7 @@ if TYPE_CHECKING:  # pragma: no cover
     StateInfo = ffi.StateInfo
     StateStatus = ffi.StateStatus
     WakeReason = ffi.WakeReason
+    ToolSurface = ffi.ToolSurface
     SleepReason = ffi.SleepReason
 
 # 名称 → (模块, 属性)
@@ -58,6 +60,7 @@ _LAZY: dict[str, tuple[str, str]] = {
             "CallDedup",
             "Dispatcher",
             "Hold",
+            "NavigationDenied",
             "ResourceHandle",
             "Scope",
             "ToolCallError",
@@ -84,6 +87,7 @@ _LAZY: dict[str, tuple[str, str]] = {
             "StateStatus",
             "WakeReason",
             "SleepReason",
+            "ToolSurface",
         )
     },
     "ffi": (".app_mcp_uniffi", ""),
@@ -118,6 +122,7 @@ __all__ = [
     "Dispatcher",
     "Hold",
     "LifecyclePolicy",
+    "NavigationDenied",
     "ResourceHandle",
     "ResultStatus",
     "Risk",
@@ -130,6 +135,7 @@ __all__ = [
     "ToolAnnotations",
     "ToolHandle",
     "ToolResult",
+    "ToolSurface",
     "UserActionReason",
     "Visibility",
     "WakeDescriptor",

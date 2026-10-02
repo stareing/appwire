@@ -26,13 +26,16 @@ import {
   CHANNEL_OP,
   type HelloReply,
   type MainEvent,
+  type NavigateEvent,
+  type NavigationOp,
+  type NavigationToolFields,
   type OpReply,
   type Outcome,
   type RendererOp,
   type ToolSpecMessage,
 } from './protocol.js'
 
-export type { HelloReply, MainEvent, OpReply, RendererOp } from './protocol.js'
+export type { HelloReply, MainEvent, NavigateEvent, NavigationOp, OpReply, RendererOp } from './protocol.js'
 /** 主进程 handler 抛出以指定错误类别（如 `ToolCallError.userActionRequired(...)`）。 */
 export { ToolCallError }
 export type { UserActionReason, UserActionRequiredOptions } from '@app-mcp/node'
@@ -62,7 +65,7 @@ export interface IpcMainLike {
  * 生命周期方法可选：缺少时页面的 `wake()` / `sleep()` / `hold()` / `connectNow()` 为空操作。
  */
 export type MainAppMcp = Pick<AppMcp, 'scope' | 'instanceId' | 'state' | 'onStateChange'> &
-  Partial<Pick<AppMcp, 'wake' | 'sleep' | 'hold' | 'connectNow' | 'connectionId'>>
+  Partial<Pick<AppMcp, 'wake' | 'sleep' | 'hold' | 'connectNow' | 'connectionId' | 'setNavigationHandler'>>
 
 export interface AttachOptions {
   appMcp: MainAppMcp
@@ -70,6 +73,12 @@ export interface AttachOptions {
   /** 只接受这些 webContents 的登记（或由函数判断）。缺省接受全部。 */
   webContents?: WebContentsLike | WebContentsLike[] | ((webContents: WebContentsLike) => boolean)
   logger?: Pick<Logger, 'warn' | 'error'>
+  /**
+   * 把 Host 的导航请求（spec/protocol.md 3.4）转给页面：接入时在 `appMcp` 上设置导航回调（握手声明 `capabilities.navigate`），
+   * 请求交给最近一次开启导航的页面（页面侧 `attachBridgeNavigation`）；没有这样的页面时导航失败。默认 false：
+   * 不设置（主进程可自行 `appMcp.setNavigationHandler`，如切换窗口），页面开启导航时收到错误。
+   */
+  navigation?: boolean
 }
 
 export interface AppMcpAttachment {
@@ -95,9 +104,15 @@ class RendererSession {
   private readonly reads = new Map<number, Pending<unknown>>()
   /** 页面持有的 hold（页面分配的 holdId → 主进程句柄），会话结束时全部释放。 */
   private readonly holds = new Map<number, HoldHandle>()
+  /** 等待页面回复的导航（navId → Promise 的 resolve / reject）。 */
+  private readonly navigations = new Map<number, Pending<void>>()
   private nextReadId = 1
+  private nextNavId = 1
   private disposed = false
-  private readonly onGone = () => this.owner.endSession(this)
+  private readonly onGone = () => {
+    this.owner.clearNavigationTarget(this.sender)
+    this.owner.endSession(this)
+  }
 
   constructor(
     readonly sender: WebContentsLike,
@@ -125,8 +140,19 @@ class RendererSession {
     return scope
   }
 
-  handle(op: RendererOp): unknown {
+  handle(op: RendererOp | NavigationOp): unknown {
     switch (op.op) {
+      case 'navigation.set':
+        this.owner.setNavigationTarget(this, op.enabled === true)
+        return undefined
+      case 'navigate.result': {
+        const pending = this.navigations.get(op.navId)
+        if (!pending) return undefined
+        this.navigations.delete(op.navId)
+        if (op.ok) pending.resolve()
+        else pending.reject(new ToolCallError(op.kind === 'NAVIGATION_DENIED' ? 'NAVIGATION_DENIED' : 'NAVIGATION_FAILED', String(op.message ?? '页面导航失败')))
+        return undefined
+      }
       case 'tool.register': {
         requireId(op.id)
         const handle = this.registrar(op.scopeId).tool(op.name, {
@@ -243,6 +269,21 @@ class RendererSession {
     })
   }
 
+  /** Host 请求导航：转给页面执行，等 `navigate.result`。页面拒绝时以 `NAVIGATION_DENIED` 的 ToolCallError 拒绝。 */
+  forwardNavigate(page: string, params: unknown): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (this.disposed) {
+        reject(new Error('页面已关闭'))
+        return
+      }
+      const navId = this.nextNavId++
+      this.navigations.set(navId, { resolve, reject })
+      const event: NavigateEvent = { type: 'navigate', navId, page, ...(params !== undefined && { params }) }
+      // @compat MainEvent 的唯一定义在 @app-mcp/web，尚未包含 navigate（见 protocol.ts NavigationOp）
+      this.send(event as unknown as MainEvent)
+    })
+  }
+
   private forwardRead(resourceId: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (this.disposed) {
@@ -263,6 +304,8 @@ class RendererSession {
     const gone = new ToolCallError('APP_DISCONNECTED', '页面已关闭或刷新')
     for (const p of this.calls.values()) p.reject(gone)
     for (const p of this.reads.values()) p.reject(gone)
+    for (const p of this.navigations.values()) p.reject(new Error('页面已关闭或刷新，导航未完成'))
+    this.navigations.clear()
     this.calls.clear()
     this.progress.clear()
     this.reads.clear()
@@ -294,6 +337,8 @@ function toolDefinition(spec: ToolSpecMessage) {
     // 显式写出（可能为 undefined）：页面每次发送完整定义，update 时缺省表示清除之前的声明。
     annotations: spec.annotations,
     outputSchema: spec.outputSchema,
+    surface: (spec as NavigationToolFields).surface,
+    page: (spec as NavigationToolFields).page,
   }
 }
 
@@ -321,12 +366,58 @@ class Attachment implements AppMcpAttachment {
   private readonly sessions = new Map<number, RendererSession>()
   private readonly unsubscribe: () => void
   private disposed = false
+  /**
+   * 处理导航的页面（最近一次开启的 webContents）。
+   * @invariant 按 webContents 记录、跨 `hello` 保留：页面 SDK 的 `hello` 经异步队列发送，可能晚于本页的 `navigation.set`；
+   *   页面卸载（`reset`）、webContents 销毁 / 崩溃或页面关闭导航时清除。
+   */
+  private navigationTarget: WebContentsLike | undefined
   readonly logger: Pick<Logger, 'warn' | 'error'>
 
   constructor(private readonly options: AttachOptions) {
     this.logger = options.logger ?? console
     options.ipcMain.handle(CHANNEL_OP, (event, op: unknown) => this.onOp(event.sender, op))
     this.unsubscribe = options.appMcp.onStateChange((state) => this.broadcast(state))
+    if (options.navigation) {
+      if (options.appMcp.setNavigationHandler) {
+        options.appMcp.setNavigationHandler(({ page, params }) => this.forwardNavigate(page, params))
+      } else {
+        this.logger.warn('[app-mcp] appMcp 不支持导航回调（@app-mcp/node 版本过旧），navigation 选项无效')
+      }
+    }
+  }
+
+  /** 页面开启 / 关闭导航。@error 接入时未开启 `navigation` 时抛出（`code` 为 `NAVIGATION_DISABLED`）。 */
+  setNavigationTarget(session: RendererSession, enabled: boolean): void {
+    if (enabled) {
+      if (!this.options.navigation) {
+        throw Object.assign(new Error('主进程未开启导航转发：attachAppMcp({ navigation: true })'), { code: 'NAVIGATION_DISABLED' })
+      }
+      this.navigationTarget = session.sender
+    } else {
+      this.clearNavigationTarget(session.sender)
+    }
+  }
+
+  clearNavigationTarget(sender: WebContentsLike): void {
+    if (this.navigationTarget?.id === sender.id) this.navigationTarget = undefined
+  }
+
+  private forwardNavigate(page: string, params: unknown): Promise<void> {
+    const target = this.navigationTarget
+    if (!target || target.isDestroyed?.()) {
+      return Promise.reject(new Error(`没有页面处理导航（页面「${page}」）：页面尚未加载或未开启导航`))
+    }
+    return this.sessionFor(target).forwardNavigate(page, params)
+  }
+
+  private sessionFor(sender: WebContentsLike): RendererSession {
+    let session = this.sessions.get(sender.id)
+    if (!session) {
+      session = new RendererSession(sender, this, this.options.appMcp)
+      this.sessions.set(sender.id, session)
+    }
+    return session
   }
 
   get sessionCount(): number {
@@ -362,12 +453,15 @@ class Attachment implements AppMcpAttachment {
     if (typeof raw !== 'object' || raw === null || typeof (raw as { op?: unknown }).op !== 'string') {
       return { ok: false, code: 'INVALID_OP', message: '非法的消息' }
     }
-    const op = raw as RendererOp
+    const op = raw as RendererOp | NavigationOp
     try {
       const existing = this.sessions.get(sender.id)
       if (op.op === 'hello' || op.op === 'reset') {
         if (existing) this.endSession(existing)
-        if (op.op === 'reset') return { ok: true }
+        if (op.op === 'reset') {
+          this.clearNavigationTarget(sender)
+          return { ok: true }
+        }
         const reply: HelloReply = {
           instanceId: this.options.appMcp.instanceId,
           state: this.options.appMcp.state,
@@ -375,12 +469,7 @@ class Attachment implements AppMcpAttachment {
         }
         return { ok: true, value: reply }
       }
-      let session = existing
-      if (!session) {
-        session = new RendererSession(sender, this, this.options.appMcp)
-        this.sessions.set(sender.id, session)
-      }
-      return { ok: true, value: session.handle(op) }
+      return { ok: true, value: this.sessionFor(sender).handle(op) }
     } catch (error) {
       const code = (error as { code?: unknown } | null)?.code
       return {
@@ -396,6 +485,8 @@ class Attachment implements AppMcpAttachment {
     this.disposed = true
     this.options.ipcMain.removeHandler(CHANNEL_OP)
     this.unsubscribe()
+    this.navigationTarget = undefined
+    if (this.options.navigation) this.options.appMcp.setNavigationHandler?.(null)
     for (const session of [...this.sessions.values()]) this.endSession(session)
   }
 }
