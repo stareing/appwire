@@ -315,12 +315,13 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - Z 覆盖面：Z1 未改造 App 导入器（URI、D-Bus、`.desktop`、Jump List、`.sdef`）；Z2 OS 层 L2 / L3（仅原生桌面，Windows UIA 优先，macOS AX、Linux AT-SPI；默认关闭；只经无障碍接口动作，不截图、不按坐标；先调研是否已有成熟方案）；Z3 浏览器扩展（随 4d）
    - R 远程：R1 远程 / 跨设备 Agent，先出设计文档，默认关闭
 16. [ ] Agent OS：数据、权限、事件、事务与协同（2026-10-02 加入）——计划见 `docs/plans/16-agent-os.md`（四象限；按操作系统子系统对照找差距）
+   - 第零部分（进程模型，2026-10-02 补充；与第 12 项双版本改造同期）：P1 Agent 任务对象（统一持有句柄 / 锁 / 租约 / 订阅 / 配额，过期回收，取代按 MCP 会话保存的状态）；P2 策略挂点（已决定实施：`hide` 全局隐藏、`deny` 可按 Agent 拒绝，规则在 `<home>/policy.json`，新错误类别 `POLICY_DENIED`；含第 18 项 L5）；P3 按 Agent 记账与配额；P4 持久信箱；P5 后台作业控制；P6 交互优先 QoS；P7 Hub 状态作为只读资源；N6 锁改租约。内核范围见 `CLAUDE.md`「微内核范围」
    - 第一部分（正确性，随第 14 项第二部分）：N7a 写调用幂等键 `callId`（先验证断线 / 唤醒后是否重发）；O2 进度通知与取消透传到 App handler
    - 第一部分结果（2026-10-02）：U1 结论——Hub 与各 SDK 都不会自行重发 `tools/invoke`（Hub `invoke_routed` 只发一次，断线返回 `APP_DISCONNECTED`"结果未知"；核心 `teardown` 取消进行中、丢弃排队；驱动层无缓冲重发），重复执行只来自调用方在结果丢失后重试（复现测试 `u1_same_call_id_after_reconnect_runs_once` 在旧代码上执行两次）。N7a：复用已有 `ToolsInvokeParams.callId`，核心 `CallDedupPolicy`（缺省 5 分钟 / 64 条，`OFF` 关闭）按 callId 去重：已开始的调用重复到达时挂到进行中的调用或回放首次结果，断线中断的回放 `CANCELLED {interrupted: true}`；表跨重连 / 休眠保留、进程退出即失（spec/protocol.md 3.3、spec/lifecycle.md 14）。Hub API `CallRequest.call_id` 与格式分发的 `tool_call.id` 重试因此受保护；MCP Agent 的重试每次是新 callId，仍不去重（需 Agent 提供幂等键，未做）。O2：新通知 `tools/progress {callId, progress, total?, message?}`，各语言 `ctx.progress(...)`（C ABI 头文件 v10 `am_call_progress`，API 版本不变）；Hub 对带 `progressToken` 的 MCP 请求经 rmcp `notify_progress` 转发，合并间隔 `progress_interval` 250 ms、丢弃不递增值、message 截 200 字、只接受所属连接的进度（`crates/hub/src/progress.rs`）；取消沿用 rmcp → `tools/cancel` → handler 路径并补端到端测试。验证：cargo test 631 / clippy 0；pnpm -r test / typecheck 全过；Kotlin 16、Swift 24 + 7、Python 53、.NET 51、Dart 74、Flutter 10、ctest 7、Harmony 22（.so 重编 arm64 / x86_64）；WASM gzip 103.2 → 105.6 KB。遗留：去重仅核心 / native / web 可配置（C、uniffi、Node 用缺省）；status / doctor 无去重命中计数；hub-c / hub-uniffi / hub-node 未暴露进度、上游 MCP 进度不转发；Claude Code 是否显示进度未实测；Android jniLibs 待统一重编
    - P2 结果（2026-10-02，与第 18 项 L2 同批）：错误 `POLICY_DENIED` -32018（`data {ruleId, hook, appId, tool}`，只给规则标识）、`USER_ACTION_REQUIRED` -32019（面向用户的 message + 可选 `reason` / `uri`），定义在 spec/protocol.md 第 4 节。Hub `policy.rs`：挂点 list / call / wake 已接入，handle 只定义类型（用到即校验失败）；规则按 App、工具（末尾 `*`）与已声明注解匹配，未声明的提示不匹配；`hide` 全局（列表 / 总览 / 资源中消失，调用返回不存在），`deny` 返回 POLICY_DENIED；无规则时行为不变；`ApprovalHandler` 保留、在规则之后执行；按 Agent 匹配等 P1。Host `<home>/policy.json`（启动时文件不合法则拒绝启动，避免静默全放行）、`app-mcp-host policy show|validate|reload|hide|deny [--wake]|remove`（CLI 读文件后经 `POST /policy` 交给运行中的 Host，Hub 自身不读文件；重载失败保留旧规则）、doctor「策略规则」；hub-c 头文件 v10 / hub-uniffi / hub-node 与各语言 Hub 封装暴露。L2：各语言 SDK 构造（Rust `fail_user_action`、C ABI v11 `am_call_fail_user_action`、C++ / C# / Dart 异常类型、其余为工具错误工厂）；App 错误回复一并计入结果大小上限；Electron / Tauri 桥接原先丢弃错误 details，已改为透传。验证：cargo test 655 / clippy 0；pnpm -r test / typecheck 全过；Kotlin 17 + 8、Swift 25 + 8、Python 55、.NET 54 + 17、Dart 76、Flutter 10、ctest 7、Harmony 22。遗留：Android jniLibs 需重编；唤醒挂点只有 Rust Hub 测试；C ABI / C++ / C# / Dart / Tauri 的资源读取抛 USER_ACTION_REQUIRED 时丢失 reason / uri（`am_read_fail` 无 details 参数）；App 总览文本中仍可能提到被隐藏的工具；Claude Code 是否向用户展示错误文本未实测（第 18 项 U1）
    - 第二部分（4c 之后）：N1 数据句柄（App 间传数据不经模型，TTL / 大小上限）；N2 信息流控制（私密标签 → 外发工具拦截并确认）
-   - 第三部分（4d 之后）：N5 按 Agent 的身份与授权范围（App、风险上限、有效期、可撤销）；N6 人机 / 多 Agent 并发仲裁（`busy()` / 对象锁、公平排队）
-   - 第四部分（与第 15 项穿插）：N3 事件与触发器；N4 标准意图（5 个动词试点）；O1 `apps.search` 工具检索；O3 只读结果缓存；O4 schema 演进；O5 冷启动预算与预热
+   - 第三部分（4d 之后）：N5 Agent 身份（记在 P1 任务对象上，只用于句柄绑定、记账与调用日志；授权不归本库，见第 14 项）；N6 人机 / 多 Agent 并发仲裁（`busy()` / 对象锁、公平排队）
+   - 第四部分（与第 15 项穿插）：N3 事件与触发器；N4 标准意图（5 个动词试点）；O1 `apps.search` 工具检索；O3 只读结果缓存；O4 schema 演进；~~O5 冷启动预算与预热~~（已删除，改为 4f 的 `apps.activate` / `apps.release`）
    - 第五部分（最后）：N7b 预演与跨 App 补偿；N8 App 界面嵌入 Agent（先核实 MCP Apps）；N9 跨设备接力（依赖第 15 项 R1）；N10 本地小模型辅助
 17. [ ] 通用内容与文件：多媒体结果、数据句柄、文件选择与逐级退让（2026-10-02 加入）——计划见 `docs/plans/17-content-files.md`（第 16 项 N1 由本项实现）
    - 现状：App 工具结果只有 JSON（Hub 序列化为一段文本），资源读取不支持二进制；MCP / rmcp 侧 image / audio / resource_link 已就绪
@@ -329,6 +330,15 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - 第三部分（选择即授权）：F1 `files.pick` / `files.save` 系统对话框；F2 `share.send` 与分享目标；F3 剪贴板（`os-sensitive`）
    - 第四部分（逐级退让）：R1 SDK 语义工具 → 系统意图 → SDK 进程内控件兜底（4c-H）→ 进程外无障碍树（第 15 项 Z2），`apps.list` 标注等级；截图 + 视觉 / 坐标点击不做（2026-10-02 决定）
    - 待验证：Claude Code 是否渲染图片 / 音频内容块；单帧上限；Android `grantUriPermission` 有效期；iOS、Flatpak 交付形态
+18. [ ] 用户闭环：看得见、改得回、卡住时知道找谁、需求能回流（2026-10-02 加入）——计划见 `docs/plans/18-user-loop.md`
+   - [x] L1 修正对外承诺（824204b）：README（及 10 种语言、`llms.txt`）中"Hub 审批"相关表述与第 14 项职责划分对齐（最先做）
+   - [x] L2 `USER_ACTION_REQUIRED` 错误类别（-32019，fe622b9；登录过期、权限未授予、需切前台、需在 App 内确认），附面向用户的说明
+   - L3 缺失能力信号：基于第 11 项调用日志统计不存在的工具、校验失败率、撤销次数，经 `doctor` / DevTools 给开发者，只在本地
+   - [x] L4（824204b）理念补第 9 条原则"看得见、改得回"（与 L1 同批）；L5 用户级暴露开关（已决定，由第 16 项 P2 实现；本项只负责托盘入口）
+19. [ ] 结果契约：调用成功的完整标识与返回信息（2026-10-02 加入）——计划见 `docs/plans/19-result-contract.md`
+   - 现状：成败二分清楚，但"成功"仅表示 handler 正常返回；无输出 schema；无返回值时模型看到 `null`；MCP 出口不带 callId / 实例 / 耗时；无统一"可重试"
+   - R1 结果状态 `done / pending / partial / noop`；R2 `outputSchema`；R3 `summary` 与无返回值缺省文本——已并入第 14 项同一批协议升级（由实施第 14 项的会话完成，2026-10-02 确认）；错误码 -32016 / -32017 归第 14 项，-32018 `POLICY_DENIED`、-32019 `USER_ACTION_REQUIRED` 预留
+   - R4 MCP `_meta` 调用元信息（先核实 2026-07-28 键名约定）；R5 错误码表"可重试"列；R6 `stateHints` 改 `resource_link`（随第 17 项 C1）
 
 ## 进行中（子代理）
 

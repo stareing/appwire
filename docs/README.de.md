@@ -41,7 +41,7 @@ kein Screen Scraping, kein Computer Use, keine Browser-Automatisierung.
 ## Inhalt
 
 [Schnellstart](#schnellstart) · [Kurzer Überblick](#ein-kurzer-überblick) · [Installation](#installation) · [Ausprobieren](#ausprobieren) ·
-[Plattformen](#plattformen-und-pakete) · [So funktioniert es](#so-funktioniert-es) ·
+[Plattformen](#plattformen-und-pakete) · [So funktioniert es](#so-funktioniert-es) · [Zuständigkeit](#zuständigkeit) ·
 [Vergleich](#appwire-im-vergleich) · [Philosophie](#philosophie) · [FAQ](#faq) ·
 [Dokumentation](#dokumentation)
 
@@ -201,6 +201,10 @@ flowchart TD
   seine eigene Bestätigungsoberfläche anbinden). `app-mcp-host` ist sein Kommandozeilen-Frontend.
 - **Statische Manifeste** (`app-mcp.json`) erlauben dem Hub, die Tools einer App aufzulisten und sie aufzuwecken,
   auch wenn die App gerade nicht läuft.
+
+## Zuständigkeit
+
+AppWire ist der Kanal zwischen KI-Agenten und Apps: Es liefert Mechanismus, keine Richtlinien. Es macht aus dem, was eine App deklariert – Tools, Ein- und Ausgabeschemas, MCP-Tool-Annotationen, Inhaltsannotationen und Ergebnisstatus –, Tools, die jeder Agent aufrufen kann, und reicht diese Deklarationen unverändert weiter; es findet Apps, leitet jeden Aufruf an die richtige Instanz und weckt schlafende Apps bei Bedarf; es hält den Kanal korrekt durch Abbruch, Timeouts, klassifizierte Fehler und Ergebnisse, die sagen, ob eine Aktion erledigt oder noch ausstehend ist; es schützt Apps und Gerät mit Begrenzungen für Aufrufrate, Weckvorgänge und Datengröße; und es setzt die Ausblende- und Ablehnungsregeln durch, die der Nutzer oder ein Hersteller schreibt, ohne eigene Bewertung. Ob ein Aufruf ausgeführt wird oder der Nutzer gefragt werden soll, entscheidet nicht AppWire, sondern der Agent; die endgültige Bestätigung eines riskanten Schritts wie einer Zahlung erfolgt in der App, in ihrer eigenen Oberfläche; Modellauswahl, Prompt-Orchestrierung, Agentengedächtnis und das Auslesen des Bildschirms liegen außerhalb seiner Zuständigkeit.
 
 ## AppWire im Vergleich
 

@@ -41,7 +41,7 @@ cada app. Nada de screen scraping, computer use ou automação de navegador.
 ## Sumário
 
 [Início rápido](#início-rápido) · [Exemplos rápidos](#exemplos-rápidos) · [Instalação](#instalação) · [Experimente](#experimente) ·
-[Plataformas](#plataformas-e-pacotes) · [Como funciona](#como-funciona) ·
+[Plataformas](#plataformas-e-pacotes) · [Como funciona](#como-funciona) · [Escopo](#escopo) ·
 [Comparação](#comparação-com-outras-abordagens) · [Filosofia](#filosofia) · [FAQ](#perguntas-frequentes) ·
 [Documentação](#documentação)
 
@@ -200,6 +200,10 @@ flowchart TD
   `ApprovalHandler`). O `app-mcp-host` é a sua interface de linha de comando.
 - **Manifestos estáticos** (`app-mcp.json`) permitem que o Hub liste as ferramentas de um app e o desperte
   mesmo quando o app não está em execução.
+
+## Escopo
+
+O AppWire é o canal entre agentes de IA e apps: fornece mecanismo, não política. Ele transforma o que um app declara — ferramentas, schemas de entrada e saída, anotações de ferramentas MCP, anotações de conteúdo e status do resultado — em ferramentas que qualquer agente pode chamar, repassando essas declarações sem alteração; descobre apps, roteia cada chamada para a instância certa e acorda sob demanda os apps que estão dormindo; mantém o canal correto com cancelamento, tempos limite, erros classificados e resultados que dizem se uma ação foi concluída ou ainda está pendente; protege os apps e o dispositivo com limites de frequência, de despertares e de tamanho; e aplica as regras de ocultar e negar escritas pelo usuário ou por um fornecedor, sem nenhum julgamento próprio. Ele não decide se uma chamada deve ser executada nem se o usuário deve ser consultado — isso cabe ao agente; a confirmação final de uma etapa de alto risco, como um pagamento, cabe ao app, na sua própria interface; e escolher modelos, orquestrar prompts, manter a memória do agente e ler a tela estão fora do seu escopo.
 
 ## Comparação com outras abordagens
 

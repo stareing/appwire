@@ -41,7 +41,7 @@ d'écran, pas de computer use, pas d'automatisation de navigateur.
 ## Sommaire
 
 [Démarrage rapide](#démarrage-rapide) · [Aperçu rapide](#aperçu-rapide) · [Installation](#installation) · [Essayer](#essayer) ·
-[Plateformes](#plateformes-et-paquets) · [Fonctionnement](#fonctionnement) ·
+[Plateformes](#plateformes-et-paquets) · [Fonctionnement](#fonctionnement) · [Périmètre](#périmètre) ·
 [Comparaison](#appwire-face-aux-autres-approches) · [Philosophie](#philosophie) · [FAQ](#faq) ·
 [Documentation](#documentation)
 
@@ -202,6 +202,10 @@ flowchart TD
   callback facultatif `ApprovalHandler`). `app-mcp-host` en est l'interface en ligne de commande.
 - **Les manifestes statiques** (`app-mcp.json`) permettent au Hub de lister les outils d'une application et de
   la réveiller même lorsqu'elle n'est pas lancée.
+
+## Périmètre
+
+AppWire est le canal entre les agents d'IA et les applications : il fournit un mécanisme, pas une politique. Il transforme ce qu'une application déclare — outils, schémas d'entrée et de sortie, annotations d'outils MCP, annotations de contenu et statut du résultat — en outils que n'importe quel agent peut appeler, en transmettant ces déclarations sans les modifier ; il découvre les applications, achemine chaque appel vers la bonne instance et réveille à la demande les applications en veille ; il garantit la justesse du canal grâce à l'annulation, aux délais d'expiration, à des erreurs classées et à des résultats qui indiquent si une action est terminée ou encore en attente ; il protège les applications et l'appareil par des limites de fréquence, de réveils et de taille ; et il applique les règles de masquage et de refus écrites par l'utilisateur ou un éditeur, sans aucun jugement propre. Il ne décide pas si un appel doit s'exécuter ni s'il faut demander à l'utilisateur : c'est le rôle de l'agent ; la confirmation finale d'une étape à haut risque, comme un paiement, revient à l'application, dans sa propre interface ; et le choix des modèles, l'orchestration des prompts, la mémoire de l'agent et la lecture de l'écran sont hors de son périmètre.
 
 ## AppWire face aux autres approches
 

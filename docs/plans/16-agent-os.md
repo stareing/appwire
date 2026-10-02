@@ -3,22 +3,26 @@
 > 状态：计划（2026-10-02）。把 AppWire 视为 Agent 的"系统调用层"（模型 = 用户态程序，App 工具 = 系统调用，Hub = 内核），
 > 按操作系统子系统找差距。行为契约分别落在 `spec/protocol.md`、`spec/hub-api.md`、`spec/manifest.md`；本文件只负责分析与任务拆分，
 > 实施结果写入 `TASKS.md` 第 16 项。与第 13–15 项已规划内容不重复。
+> 2026-10-02 补充：新增第零部分"进程模型"（P1–P6）；内核范围（做什么、不做什么）以 `CLAUDE.md`「微内核范围」为准，本文件只引用。
 
 ## 0. 子系统对照
 
 | 子系统 | 已有 / 已规划 | 本项补的 |
 |---|---|---|
-| 进程管理 | 生命周期、休眠唤醒、4e 功耗、4d 连接即唤醒 | O5 冷启动预算与预测预热 |
+| 进程管理（App 侧） | 生命周期、休眠唤醒、4e 功耗（B2 自适应租约为可替换的缺省策略）、4d 连接即唤醒 | Agent 显式 `apps.activate` / `apps.release`（4f a，替代原 O5 预测预热） |
+| 进程管理（Agent 侧） | 无：身份、句柄、租约、订阅各自挂在 MCP 会话上 | P1 Agent 任务对象；P5 调用对象、状态查询与后台作业控制 |
+| 资源记账（cgroups） | 按 App / 工具限流（第 14 项 S3）、按 App 唤醒上限 | P3 按 Agent 记账与配额 |
 | 进程间通信 | IPC / WebSocket、按名寻址（4d） | N1 数据句柄（App 间传数据不经模型） |
 | 命名与发现 | 4d 多来源发现 | N4 标准意图（按动作找 App） |
 | 权限 | 确认与授权归 Agent / App（第 14 项第 1 节）；本库只如实传递声明、限流 | N5 Agent 身份（只用于句柄绑定与调用日志）；N2 句柄访问范围 |
-| 调度 | 按实例路由、`apps.select` | N6 多 Agent / 人机并发仲裁 |
-| 中断与事件 | 资源订阅 | N3 事件与触发器 |
+| 调度 | 按实例路由、`apps.select` | N6 多 Agent / 人机并发仲裁；P6 交互优先的 QoS 与 Agent 截止时间 |
+| 中断与事件 | 资源订阅 | N3 事件与触发器；P4 持久信箱 |
+| 安全执行点 | 仅嵌入式 Hub 有 `ApprovalHandler`；常驻 Host 无 | P2 策略挂点（2026-10-02 决定实施，含第 18 项 L5） |
 | 事务 | 无 | N7 预演、幂等键、跨 App 补偿 |
 | 上下文（内存） | 渐进暴露、4c 界面级暴露 | O1 工具检索与排序；O3 只读结果缓存 |
 | 驱动 | 第 15 项导入器、OS 层 | — |
 | 包管理 | 第 13 项分发 | O4 工具 schema 演进与弃用 |
-| 可观测 | doctor / status、第 11 项 tracing | 端到端链路（Agent 一轮 → 调用 → App handler）并入第 11 项 |
+| 可观测 | doctor / status、第 11 项 tracing | 端到端链路（Agent 一轮 → 调用 → App handler）并入第 11 项；P7 Hub 自身状态作为资源（/proc） |
 
 ## 1. 已知的已知（代码可证的事实）
 
@@ -32,6 +36,11 @@
 | K6 | codegen 已把工具映射到 App Intents / AppFunctions / Windows App Actions / 鸿蒙意图 | `crates/codegen/src/targets` |
 | K7 | 渐进暴露按 App 分层（`apps.*` + `apps.tools(appId)`） | `TASKS.md` 第 2 项；`spec/hub-api.md` 3.7 |
 | K8 | rmcp 3.5.0 已支持 MCP 进度通知与 elicitation（服务端 `Peer`） | `~/.cargo/registry/.../rmcp-3.5.0/src/service/server.rs`：`notify_progress`（914 行）、`elicit`（1144 行） |
+| K9 | 会话状态 `SessionState { selected, delivered, leases, exposed }` 按 MCP 会话保存，会话 `Drop` 时清理 | `crates/hub/src/hub.rs:214-223`；`docs/plans/12-mcp-2026-07-28.md` L3 / L5 |
+| K10 | MCP 2026-07-28 删除协议级会话（SEP-2567），跨调用状态改用服务器签发的显式句柄 | `docs/plans/12-mcp-2026-07-28.md` M1、F1 |
+| K11 | `ApprovalHandler` 只在 Hub SDK 配置中（`crates/hub/src/types.rs:532`），`crates/host` 未使用 | `grep approval crates/host/src` 无结果 |
+| K12 | 唤醒上限只按 App 计（`HubConfig::wake_rate_limit`，默认每 App 每分钟） | `crates/hub/src/hub.rs:144, 166` |
+| K13 | MCP 资源列表只含 App 资源与上游资源，无 Hub 自身状态 | `crates/hub/src/mcp.rs:122-152` `list_resources` |
 
 ## 2. 已知的未知
 
@@ -44,6 +53,11 @@
 | U5 | 本地向量检索的体积与依赖（移动端 `mobile` 精简包能否承受） | **保守**：默认关键词 + 使用统计排序；向量检索为可选特性（cargo feature），默认关闭 |
 | U6 | 信息流控制的标签传播粒度（整次结果 vs 字段级）与误伤率 | **保守**：先做结果级标签 + 只拦"私密 → 外发"一类；记录拦截次数后再细化 |
 | U7 | 人机并发的"用户正在操作"信号来源（各 UI 框架焦点 / 编辑状态） | SDK 侧显式 API（`busy()` / 对象锁），不自动推断 |
+| U8 | 任务 ID 在 modern 请求中的载体（`_meta` 字段名）与 Agent 是否会回传 | **核实** MCP 2026-07-28 规范 `_meta` 约定与第 12 项第 3 节设计；Agent 不回传时退化为"每请求一个短命任务" |
+| U9 | 任务对象的租约时长与心跳来源（Agent 无显式心跳时以请求流活跃为准） | **保守**：复用 4e 自适应租约的"请求流空闲"判定（`spec/hub-api.md:370`），默认值可配置 |
+| U10 | 持久信箱在 Agent 侧的取件方式（下次请求附带 / `subscriptions/listen` / 专用资源） | **验证** Claude Code 对资源更新通知与 `subscriptions/listen` 的支持后定 |
+| U11 | P2 策略挂点是否与第 14 项职责划分冲突 | **已决定（2026-10-02）**：实施。挂点只提供执行位置，规则由用户 / 厂商写，默认无规则、行为与现状一致；本库不内置任何判断，与第 14 项不冲突 |
+| U12 | 规则文件格式与热加载（文件监视 vs `reload` 命令）及与 `config.json` 的关系 | **已实施（fe622b9）**：独立 `<home>/policy.json`；启动时不合法 → Host 拒绝启动（无旧规则可保留，静默全放行违背用户意图）；`reload` 时不合法 → 保留旧规则并报错；`doctor` 检查 |
 
 ## 3. 未知的已知（可复用）
 
@@ -63,9 +77,43 @@
 
 ## 5. 方案与任务
 
+### 第零部分：进程模型（地基；与第 12 项双版本改造同期）
+
+- **P1 Agent 任务对象**：Hub 签发任务 ID，寿命由租约维持（U9），不依赖传输连接；名下持有句柄（N1 / 第 17 项）、对象锁（N6）、唤醒租约（4e）、
+  订阅、配额计数（P3）与调用日志归属（第 11 项）；过期由 Hub 统一回收。legacy MCP 会话 = 一会话一任务；modern 无状态请求在 `_meta` 带任务 ID（U8）。
+  N5 Agent 身份记在任务对象上，不另立。`SessionState`（K9）迁入任务对象。
+- **P2 策略挂点（2026-10-02 决定实施；第 18 项 L5 暴露开关由此实现）**：类比 LSM，本库只提供执行点，不内置任何判断；无规则时行为与现状完全一致。
+  - **执行点**：列出（`tools/list`、`apps.*`）、调用、唤醒、句柄访问（句柄挂点只定义类型，规则用到即校验失败，待第 17 项句柄落地）。
+  - **两种动作**：`hide`（不出现在任何列表中，调用按 `TOOL_NOT_FOUND`）与 `deny`（可见但调用被拒）。
+    `hide` **只能全局生效、不能按 Agent 区分**：MCP 2026-07-28 要求列表不得按连接变化（第 12 项 M1）；按 Agent 区分的规则只能用 `deny`。
+  - **匹配条件**：App、工具名（支持 `*` 后缀通配）、Agent 身份（P1 / N5）、App 声明的 MCP 注解（如 `destructiveHint`）。
+    按注解匹配是**用户写的规则引用 App 的声明**，本库不推断风险、不改写声明；工具未声明的提示**不匹配**（不按 MCP 缺省值推断）。
+    按 Agent 匹配等 P1，当前未实施。
+  - **规则来源**：Hub 本身不读文件，规则一律经 `set_policy` 设置。常驻 Host 由 `<home>/policy.json` 提供（U12）：
+    `app-mcp-host policy show / validate / reload / hide / deny [--wake] / remove`，`reload` 由命令行读文件后 `POST /policy` 交给运行中的 Host（鉴权同 `/status`）；托盘 X3 为后续入口。
+    嵌入式 Hub 由厂商调用 `set_policy`，现有 `ApprovalHandler`（K11）保留为调用执行点上的回调形态（E-06）。
+    Host 不支持外部程序回调（避免执行任意进程），需要时由厂商嵌入 Hub 实现。
+  - **拒绝结果**：新错误类别 `POLICY_DENIED`（-32018；附命中规则的标识，不附规则内容），定义在 `spec/protocol.md` 第 4 节；与 `USER_REJECTED`（用户当场拒绝）区分。
+    MCP 错误文本保持 `KIND: message`，规则标识等只放在 `structuredContent.error.details`。
+  - **可观测**：`doctor` 列出生效规则与每条的命中次数；命中计数在 `reload` 时清零，`hide` 过滤列表不计命中；命中记入第 11 项调用日志。
+  - **已知局限**：Hub 不改写 App 总览文本，被隐藏的工具仍可能在总览中被提到（调用仍按 `TOOL_NOT_FOUND`）。
+  - **后续执行点**：4e B2 自适应租约定位为可替换的缺省策略（`--fixed-lease` 可关；Agent 显式 `apps.release` 优先），后续可经本挂点替换（4f）。
+  - **实施（fe622b9，2026-10-02）**：按 App / 工具 / 注解匹配、`hide` / `deny` 已完成；按 Agent 匹配待 P1。
+- **P3 按 Agent 记账与配额**：调用次数、唤醒次数、传输字节按任务对象 / Agent 身份累计，可配置上限，超限返回 `RATE_LIMITED`（与第 14 项 S3 同一错误码）；
+  `status` / `doctor` 能回答"谁唤醒了这个 App 多少次"。
+- **P4 持久信箱**：N3 事件到达而无存活任务时进入信箱（TTL、条数上限），下次接触时投递（U10）。
+- **P5 调用对象与后台作业控制**：每次调用是一个可查询的对象，状态为 `pending / running / completed / failed / cancelled / timeout`（2026-10-02 由 4f b 并入）；调用可转为脱离请求的作业，支持列出 / 取消 / 等待 / 重新挂接；与 O2 共用取消路径，载体对齐 MCP tasks 扩展（第 12 项 M6）；第 19 项 R1 的 `pending` 结果可引用调用对象。
+  - **调用状态机**（4f i）：`CREATED → ACTIVATING → RUNNING → 结果`，写入 `spec/protocol.md`；平台相关状态（前台 / 后台 / 挂起）只作诊断字段 `platform_state`（`status` / `doctor`），不进核心状态。
+  - **作业状态归属**（4f h）：脱离请求的作业状态由 App 持久化，Hub 只转发作业 ID 与状态查询、不在内存保存作业状态（App 进程被系统回收后状态不丢）；进行中调用的状态（状态机）由 Hub 持有，调用结束即释放。
+- **P6 交互优先 QoS**：调用可带优先级与截止时间；截止时间由 Agent 在 MCP 请求 `_meta` 中以相对毫秒 `app-mcp/timeoutMs` 给出，Hub 取其与 `response_timeout` 的较小者、只限制等待 App 结果（4f c，已实施 7f587d8；键名随第 19 项 R4）；用户在场的交互调用优先于后台作业，冲突时后台排队或让路。
+- **P7 Hub 自身状态作为资源**：已连接 App、任务、句柄、配额余量以只读 MCP 资源暴露（K13），Agent 用 `read` 自查。
+
+N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），否则崩溃的 Agent 会永久锁住 App。
+
 ### 第一部分：正确性（最先做）
 
 - **N7a 幂等键**：写及以上风险的调用带 `callId`（Hub 生成，重发保持不变），SDK 在有效期内按 `callId` 去重并返回首次结果；先完成 U1 验证。
+  `callId` 只覆盖 Hub ↔ App 一段的重发；Agent 侧的 MCP 重试由 Agent 幂等键补齐（4f j）：MCP `_meta` 的 `app-mcp/idempotencyKey`（1–256 字符）原样传入 `ToolsInvokeParams.idempotencyKey`，handler 上下文可读（已实施 7f587d8），如何去重由 App 决定（键名随第 19 项 R4）。
 - **O2 进度与取消**：协议新增进度消息，Hub 透传为 MCP `notifications/progress`；取消一路传到 App handler（已有取消路径则复用）。
 
 ### 第二部分：数据面与信息流
@@ -76,8 +124,9 @@
 
 ### 第三部分：多 Agent 与协同
 
-- **N5 Agent 身份**：Agent 首次连接时登记身份（`clientInfo` + 本机令牌 / 进程信息），用于句柄绑定与调用日志；授权由 Agent 自身配置负责，本库不做。
+- **N5 Agent 身份**：Agent 首次连接时登记身份（`clientInfo` + 本机令牌 / 进程信息），记在 P1 任务对象上，用于句柄绑定、P3 记账与调用日志；授权由 Agent 自身配置负责，本库不做。
 - **N6 并发仲裁**：SDK 提供 `busy()` / 对象锁；Hub 对写调用排队或返回明确错误；多会话对同一 App 公平排队。
+  工具可声明 `concurrency: N` / `exclusive`（同一资源互斥），SDK 按声明排队，队列上限可配置，满时返回明确错误（4f k，由 4f 实施）。
 
 ### 第四部分：场景扩展
 
@@ -87,17 +136,18 @@
 - **O1 工具检索**：`apps.search(query)`，按关键词、最近使用、成功率、当前可见界面（4c）排序；可选本地向量索引（U5）。
 - **O3 只读结果缓存**：`read` 工具与资源按 App 声明的 TTL / 版本号缓存，命中时不唤醒 App。
 - **O4 schema 演进**：字段弃用标记、兼容规则与 Agent 侧缓存失效策略，写入 `spec/manifest.md`。
-- **O5 冷启动预算**：App 声明唤醒耗时，Hub 返回预计等待并决定预热。
+- ~~O5 冷启动预算与预测预热~~：**已删除（2026-10-02，机主同意，见 `TASKS.md` 4f）**——预测预热属于策略（`CLAUDE.md`「微内核范围」）；改为 Agent 显式调用的内置工具 `apps.activate(appId)`（只唤醒不调用）/ `apps.release(appId)`（收回本会话在该 App 的租约），由 4f 实施。
 
 ### 第五部分：依赖外部规范 / 远程（最后）
 
 - **N7b 预演与跨 App 补偿**：工具可选 `preview`（返回将执行的操作，供 Agent 展示）；多步操作失败时按 `undo` 逆序补偿（依赖第 15 项 X2）。
 - **N8 App 界面嵌入 Agent**：U3 确认后再定。
 - **N9 跨设备接力**：依赖第 15 项 R1 远程鉴权设计。
-- **N10 本地小模型辅助**：工具排序、参数提示、敏感信息识别；可选、默认关闭。
+- **N10 本地小模型辅助**：工具排序、参数提示、敏感信息识别；可选、默认关闭。按 `CLAUDE.md`「微内核范围」属于用户态服务，实施前重新评估是否留在本库。
 
 ## 6. 顺序与验收
 
+0. 第零部分：P1 与第 12 项双版本改造同期（两者都重写会话状态）；P3、N6 健壮锁随 P1；P2 在 P1 之后（按 Agent 匹配依赖任务对象，按 App / 工具 / 注解的规则可先行）；P4 随 N3；P5 随 O2；P6、P7 在第四部分之前。
 1. 第一部分（N7a、O2）与第 14 项同期完成。
 2. 第二部分（N1 → N2）在 4c 之后；第三部分（N5、N6）在 4d 之后（Agent 身份与按名寻址共用身份模型）。
 3. 第四部分与第 15 项穿插；第五部分最后。
@@ -106,5 +156,7 @@
 - 断线重连后重复的写调用只执行一次（回归测试复现 U1 场景）。
 - 长任务在 Claude Code 中显示进度，取消后 App handler 收到取消。
 - "把截图发给联系人"全程图片不进入模型上下文；句柄被其他会话或未声明的 App 使用时被拒绝。
-- 两个 Agent 只能看到各自被授权的 App；用户编辑中的对象不被 Agent 覆盖。
+- 用户编辑中的对象不被 Agent 覆盖；持锁 Agent 崩溃后锁在租约到期时释放。
+- 经 P2 规则：全局 `hide` 的 App / 工具不出现在任何 Agent 的列表中；按 Agent 的 `deny` 规则使该 Agent 调用返回 `POLICY_DENIED`，其他 Agent 不受影响；无规则时全部现有测试不变。
+- 任务对象过期后其句柄、锁、租约、订阅全部回收（回归测试）；`doctor` 按 Agent 显示唤醒与调用计数。
 - 事件触发器、标准意图、工具检索各有端到端示例。

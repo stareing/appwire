@@ -42,7 +42,7 @@ ogni app, niente screen scraping, niente computer use, niente automazione del br
 ## Indice
 
 [Avvio rapido](#avvio-rapido) · [Esempi rapidi](#esempi-rapidi) · [Installazione](#installazione) · [Provalo](#provalo) ·
-[Piattaforme](#piattaforme-e-pacchetti) · [Come funziona](#come-funziona) ·
+[Piattaforme](#piattaforme-e-pacchetti) · [Come funziona](#come-funziona) · [Ambito](#ambito) ·
 [Confronto](#appwire-a-confronto) · [Filosofia](#filosofia) · [FAQ](#domande-frequenti) ·
 [Documentazione](#documentazione)
 
@@ -204,6 +204,10 @@ flowchart TD
   callback facoltativa `ApprovalHandler`). `app-mcp-host` è il suo front-end a riga di comando.
 - **I manifest statici** (`app-mcp.json`) permettono all'Hub di elencare gli strumenti di un'app e di
   risvegliarla anche quando l'app non è in esecuzione.
+
+## Ambito
+
+AppWire è il canale tra gli agenti di IA e le app: fornisce meccanismo, non politiche. Trasforma ciò che un'app dichiara — strumenti, schemi di input e output, annotazioni degli strumenti MCP, annotazioni dei contenuti e stato del risultato — in strumenti che qualsiasi agente può chiamare, inoltrando queste dichiarazioni senza modificarle; individua le app, instrada ogni chiamata all'istanza giusta e risveglia su richiesta le app inattive; mantiene corretto il canale con annullamento, timeout, errori classificati e risultati che indicano se un'azione è completata o ancora in sospeso; protegge le app e il dispositivo con limiti di frequenza, di risvegli e di dimensione; e applica le regole di nascondere e negare scritte dall'utente o da un fornitore, senza alcun giudizio proprio. Non decide se una chiamata debba essere eseguita né se chiedere all'utente: è compito dell'agente; la conferma finale di un passaggio ad alto rischio, come un pagamento, spetta all'app, nella sua interfaccia; e la scelta dei modelli, l'orchestrazione dei prompt, la memoria dell'agente e la lettura dello schermo sono fuori dal suo ambito.
 
 ## AppWire a confronto
 

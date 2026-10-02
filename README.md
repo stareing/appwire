@@ -39,7 +39,7 @@ and any MCP client can call it. No screen scraping, no computer use, no browser 
 ## Contents
 
 [Quick start](#quick-start) · [Quick look](#a-quick-look) · [Install](#install) · [Try it](#try-it) ·
-[Platforms](#platforms-and-packages) · [How it works](#how-it-works) ·
+[Platforms](#platforms-and-packages) · [How it works](#how-it-works) · [Scope](#scope) ·
 [Comparison](#how-appwire-compares) · [Philosophy](#philosophy) · [FAQ](#faq) ·
 [Docs](#documentation)
 
@@ -200,6 +200,10 @@ flowchart TD
   callback). `app-mcp-host` is its command-line front end.
 - **Static manifests** (`app-mcp.json`) let the Hub list an app's tools and wake it even when the app
   is not running.
+
+## Scope
+
+AppWire is the channel between AI agents and apps: it provides mechanism, not policy. It turns what an app declares — tools, input and output schemas, MCP tool annotations, content annotations and result status — into tools any agent can call, passing those declarations through unchanged; it discovers apps, routes each call to the right instance and wakes sleeping apps on demand; it keeps the channel correct with cancellation, timeouts, classified errors and results that say whether an action is done or still pending; it protects apps and the device with rate, wake and size limits; and it enforces the hide and deny rules that the user or a vendor writes, with no built-in judgement of its own. It does not decide whether a call should run or whether to ask the user — that is the agent's job; the final confirmation of a high-risk step such as a payment belongs to the app, in its own UI; and choosing models, orchestrating prompts, keeping agent memory and reading the screen are outside its scope.
 
 ## How AppWire compares
 
