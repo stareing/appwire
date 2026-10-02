@@ -117,6 +117,11 @@ const addr = await hub.serveHttp('127.0.0.1:0')      // 额外监听器（/app�
 // 或在 Hub.start 时设 mcpHttp: true，在 listen 上直接提供 /mcp
 ```
 
+不经 `initialize`、每请求自带协议 `_meta` 的无会话 MCP 请求（spec/hub-api.md 3.6 / 3.7）另有配置：`taskIdleTtlMs`（其 Agent 任务的空闲回收，
+默认 600000）、`statelessToolExposure`（默认 `'all'`）、`principalSelectTtlMs`（主体级 `apps.select` 的有效期，默认 60000）、
+`statelessListTtlMs`（列表结果的 `ttlMs`，默认 5000）。`hub.status().tasks` 列出各调用方的 Agent 任务；MCP 出口发起的审批另带
+`principal` 与 `clientName`（客户端自报，仅供显示，不得据此授权）。
+
 ## 资源保护与结果校验（spec/hub-api.md 3.11）
 
 Hub 对 App 与上游工具的调用限流、限制数据大小，超出时调用以明确错误结束（不静默丢弃、不截断）：

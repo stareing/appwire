@@ -233,6 +233,8 @@ fn end_to_end() {
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].tool, "notes.clear");
         assert_eq!(seen[0].risk, Risk::Destructive);
+        // principal / client_name 只在 MCP 出口发起的审批中出现
+        assert_eq!((seen[0].principal.as_deref(), seen[0].client_name.as_deref()), (None, None));
     }
 
     // 句柄未完成即释放 → 视为拒绝
@@ -558,6 +560,14 @@ fn status_reports_instances_connection_ids_and_shutdown() {
     let apps = hub.apps();
     let notes = apps.iter().find(|a| a.app_id == "notes").expect("notes");
     assert_eq!(notes.instances[0].connection_id.as_deref(), Some(app_cid.as_str()));
+    // Hub API 会话的 Agent 任务（spec/hub-api.md 3.6）
+    assert_eq!(hub.status().expect("status").tasks, Some(vec![]), "调用前没有任务");
+    let out = wait(hub.call_tool(CallRequest { session: Some("s1".into()), ..req("notes.notes.add", json!({"text": "x"})) }));
+    assert!(out.expect("调用").error.is_none());
+    let tasks = hub.status().expect("status").tasks.expect("tasks");
+    let task = tasks.iter().find(|t| t.caller == "api:s1").expect("api:s1 任务");
+    assert_eq!((task.kind, task.inflight), (CallerKind::Api, 0));
+    assert!(task.id.starts_with("task-"), "{}", task.id);
     app.stop();
     hub.shutdown();
     assert_eq!(hub.status().unwrap_err(), HubError::Shutdown);

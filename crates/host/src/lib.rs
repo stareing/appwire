@@ -162,6 +162,10 @@ fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
         progress_interval: Duration::from_millis(s.progress_interval_ms),
         connectors: name_service_connectors(s.name_service),
         channel_grace: Duration::from_millis(s.channel_grace_ms),
+        task_idle_ttl: Duration::from_millis(s.task_idle_ttl_ms),
+        stateless_tool_exposure: s.stateless_tool_exposure,
+        principal_select_ttl: Duration::from_millis(s.principal_select_ttl_ms),
+        stateless_list_ttl: Duration::from_millis(s.stateless_list_ttl_ms),
         ..defaults
     }
 }
@@ -574,11 +578,11 @@ async fn status_line(home: &Option<std::path::PathBuf>) -> anyhow::Result<ExitCo
                     };
                     let errors = st.apps.iter().filter(|a| a.last_error.is_some()).count();
                     format!(
-                        "App 在线 {}、休眠 {}、唤醒中 {}，MCP 会话 {}{}",
+                        "App 在线 {}、休眠 {}、唤醒中 {}，{}{}",
                         n(app_mcp_hub::AppState::Connected),
                         n(app_mcp_hub::AppState::Dormant),
                         n(app_mcp_hub::AppState::Waking),
-                        st.mcp_sessions,
+                        doctor::callers_text(&st),
                         if errors > 0 { format!("，{errors} 个 App 有最近错误（app-mcp-host doctor 查看）") } else { String::new() }
                     )
                 }
@@ -848,4 +852,25 @@ async fn uninstall_cmd(args: UninstallArgs) -> anyhow::Result<ExitCode> {
     let report = setup::uninstall(&opts, &setup::ops::SystemHost, &setup::ops::SystemRunner::default(), &agent_env(&home)?).await?;
     print_report(args.json, &report, || report.render())?;
     Ok(if report.ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hub_config_carries_stateless_settings() {
+        let home = AppHome { dir: std::env::temp_dir().join(format!("app-mcp-hubcfg-{}", std::process::id())) };
+        let file: FileConfig = serde_json::from_str(
+            r#"{"lifecycle":{"taskIdleTtlMs":1234,"principalSelectTtlMs":0},
+                "tools":{"statelessExposure":"progressive","statelessListTtlMs":750}}"#,
+        )
+        .unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home).unwrap();
+        let c = hub_config(&s, &home);
+        assert_eq!(c.task_idle_ttl, Duration::from_millis(1234));
+        assert_eq!(c.principal_select_ttl, Duration::ZERO);
+        assert_eq!(c.stateless_tool_exposure, app_mcp_hub::ToolExposure::Progressive);
+        assert_eq!(c.stateless_list_ttl, Duration::from_millis(750));
+    }
 }

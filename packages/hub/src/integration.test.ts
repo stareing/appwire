@@ -27,6 +27,7 @@ import {
   type HubEvent,
   type HubStartOptions,
   type PairingRequest,
+  type ToolExposure,
   type WakeRequest,
 } from './index.js'
 import { nativeFileName } from './native.js'
@@ -353,6 +354,9 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
       session: 'conv-9',
       callId: rejected.callId,
     })
+    // principal / clientName 只在 MCP 出口发起的审批中出现
+    expect(asked[0]).not.toHaveProperty('principal')
+    expect(asked[0]).not.toHaveProperty('clientName')
 
     answer = 'yes'
     const approved = await hub.callTool({ name: 'shop.order.pay' })
@@ -475,6 +479,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
       auth: { tokenConfigured: false, tokenRequiredWithoutOrigin: false },
       apps: [],
       reports: [],
+      tasks: [],
     })
     expect(before.pid).toBe(process.pid)
     expect(before.startedAtMs).toBeGreaterThan(0)
@@ -489,6 +494,31 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(inst.state).toBe('connected')
     expect(inst.connectionId).toMatch(/^[0-9a-f]+-\d+$/)
     expect(hub.apps().find((a) => a.appId === 'shop')?.instances[0]?.connectionId).toBe(inst.connectionId)
+
+    // Hub API 会话的 Agent 任务（spec/hub-api.md 3.6）
+    await hub.callTool({ name: 'shop.cart.add', arguments: { sku: 'x', qty: 1 }, session: 'conv-1' })
+    const task = hub.status().tasks?.find((t) => t.caller === 'api:conv-1')
+    expect(task).toMatchObject({ kind: 'api', inflight: 0, selections: [] })
+    expect(task?.id).toMatch(/^task-[0-9a-f]+$/)
+  })
+
+  it('无会话 MCP 请求的配置：合法取值透传，非法取值启动失败', async () => {
+    const { hub } = await startHub({
+      taskIdleTtlMs: 0,
+      statelessToolExposure: 'progressive',
+      principalSelectTtlMs: 1500,
+      statelessListTtlMs: 750,
+    })
+    expect(hub.status().tasks).toEqual([])
+    const bad = [
+      { taskIdleTtlMs: -1 },
+      { principalSelectTtlMs: 1.5 },
+      { statelessListTtlMs: -5 },
+      { statelessToolExposure: 'some' as unknown as ToolExposure },
+    ]
+    for (const options of bad) {
+      await expect(Hub.start({ listen: null, ipcEndpoint: null, ...options })).rejects.toBeInstanceOf(HubError)
+    }
   })
 
   it('stateDir：启动时读回休眠记录目录，问题文件记入 status().dormantStore.issues', async () => {

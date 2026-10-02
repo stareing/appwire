@@ -83,6 +83,9 @@ def test_end_to_end_async() -> None:
                 assert isinstance(r, CallResult) and r.ok, r
                 assert r.unwrap() == {"saved": "买牛奶"}
                 assert r.overview is not None and "测试笔记" in r.overview.summary
+                # Hub API 调用方的 Agent 任务（spec/hub-api.md 3.6）
+                task = next(t for t in hub.status().tasks or [] if t.caller == "api")
+                assert task.kind == hub_mod.CallerKind.API and task.id.startswith("task-")
 
                 # export_tools + dispatch（Anthropic 格式）
                 exported = hub.export_tools("anthropic", apps=["notes"])
@@ -106,6 +109,8 @@ def test_end_to_end_async() -> None:
                 req, loop = approvals[0]
                 assert req.app_id == "notes" and req.risk == hub_mod.Risk.DESTRUCTIVE
                 assert loop is asyncio.get_running_loop()
+                # principal / client_name 只在 MCP 出口发起的审批中出现
+                assert req.principal is None and req.client_name is None
 
                 # dispatch 被拒绝时回填 is_error
                 reply = await hub.dispatch(
@@ -262,6 +267,23 @@ def test_progressive_exposure() -> None:
             assert len(names) == len(builtins) + 2
         finally:
             app.stop()
+
+
+def test_stateless_config() -> None:
+    """spec/hub-api.md 3.6 / 3.7：无会话 MCP 请求的配置可设置；启动时没有 Agent 任务。"""
+    from app_mcp.hub import ToolExposure
+
+    with Hub(
+        enable_listen=False,
+        enable_ipc=False,
+        task_idle_ttl_ms=0,
+        stateless_tool_exposure=ToolExposure.PROGRESSIVE,
+        principal_select_ttl_ms=1500,
+        stateless_list_ttl_ms=750,
+    ) as hub:
+        assert hub.status().tasks == []
+    with pytest.raises(ValueError):
+        Hub(enable_listen=False, enable_ipc=False, task_idle_ttl_ms=-1)
 
 
 def json_text(content: object) -> str:

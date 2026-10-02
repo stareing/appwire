@@ -468,6 +468,13 @@ fn app_round_trip_events_approval_and_shutdown() {
     assert_eq!(o["stateHints"], json!(["notes.list"]));
     assert_eq!(o["instanceId"], "n1");
     assert_eq!(o["overview"]["appId"], "notes");
+    // v15：Hub API 会话的 Agent 任务出现在 status 中
+    // SAFETY: 有效参数。
+    let st = query_json(|o| unsafe { am_hub_status_json(hub, o) });
+    let task = st["tasks"].as_array().and_then(|t| t.iter().find(|t| t["caller"] == "api:s1")).cloned();
+    let task = task.unwrap_or_else(|| panic!("缺少 api:s1 任务：{st}"));
+    assert_eq!(task["kind"], "api");
+    assert!(task["id"].as_str().is_some_and(|id| id.starts_with("task-")), "{task}");
     // 参数不合法
     call(hub, json!({"name":"notes.add","arguments":{},"session":"s1"}), &tx);
     assert_eq!(recv(&rx)["result"]["error"]["kind"], "INVALID_INPUT");
@@ -478,6 +485,8 @@ fn app_round_trip_events_approval_and_shutdown() {
     let req = parse(&req);
     assert_eq!(req["tool"], "delete");
     assert_eq!(req["risk"], "destructive");
+    // v15：经 am_hub_call 发起的审批不带 principal / clientName
+    assert!(req.get("principal").is_none() && req.get("clientName").is_none(), "{req}");
     // SAFETY: 回调交出的句柄。
     assert_eq!(unsafe { am_hub_approval_complete(h as *mut AmHubApproval, false) }, AmHubStatus::Ok);
     assert_eq!(recv(&rx)["result"]["error"]["kind"], "USER_REJECTED");

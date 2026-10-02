@@ -63,6 +63,12 @@ public typealias DiagnosticReport = AppMcpHubBindings.DiagnosticReport
 /// 休眠记录持久化状态（`HubStatus.dormantStore`，配置了 `HubConfig.stateDir` 时）。
 public typealias DormantStoreStatus = AppMcpHubBindings.DormantStoreStatus
 public typealias StoreIssue = AppMcpHubBindings.StoreIssue
+/// Agent 任务（`HubStatus.tasks`，spec/hub-api.md 3.6）：调用方的跨请求状态。
+public typealias AgentTaskStatus = AppMcpHubBindings.AgentTaskStatus
+/// 调用方的种类：legacy MCP 会话 / 无会话 MCP 请求的主体 / Hub API 会话。
+public typealias CallerKind = AppMcpHubBindings.CallerKind
+public typealias TaskSelectionStatus = AppMcpHubBindings.TaskSelectionStatus
+public typealias TaskLeaseStatus = AppMcpHubBindings.TaskLeaseStatus
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。
 public typealias LimitsConfig = AppMcpHubBindings.LimitsConfig

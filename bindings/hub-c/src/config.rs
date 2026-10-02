@@ -70,6 +70,14 @@ pub(crate) struct ConfigJson {
     /// 渐进暴露（spec/hub-api.md 3.7）。
     pub tool_exposure: Option<ToolExposure>,
     pub tool_exposure_threshold: Option<usize>,
+    /// v15：无会话 MCP 请求的 Agent 任务空闲回收时长（spec/hub-api.md 3.6），缺省 600000；0 不因空闲回收。
+    pub task_idle_ttl_ms: Option<u64>,
+    /// v15：无会话 MCP 请求的工具暴露方式（spec/hub-api.md 3.7「无会话请求的列表与总览」），缺省 `"all"`。
+    pub stateless_tool_exposure: Option<ToolExposure>,
+    /// v15：主体级 `apps.select` 的空闲有效期（spec/hub-api.md 3.6），缺省 60000；0 不单独过期。
+    pub principal_select_ttl_ms: Option<u64>,
+    /// v15：无会话请求列表结果的 `ttlMs`（spec/hub-api.md 3.7），缺省 5000。
+    pub stateless_list_ttl_ms: Option<u64>,
     pub upstreams: BTreeMap<String, UpstreamConfig>,
     pub approval: ApprovalPolicy,
     pub worker_threads: Option<usize>,
@@ -111,6 +119,10 @@ impl Default for ConfigJson {
             waker: None,
             tool_exposure: None,
             tool_exposure_threshold: None,
+            task_idle_ttl_ms: None,
+            stateless_tool_exposure: None,
+            principal_select_ttl_ms: None,
+            stateless_list_ttl_ms: None,
             upstreams: BTreeMap::new(),
             approval: ApprovalPolicy::default(),
             worker_threads: None,
@@ -217,6 +229,13 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     if let Some(v) = c.tool_exposure_threshold {
         hub.tool_exposure_threshold = v;
     }
+    // 无会话 MCP 请求（spec/hub-api.md 3.6 / 3.7）。
+    set_ms(&mut hub.task_idle_ttl, c.task_idle_ttl_ms);
+    set_ms(&mut hub.principal_select_ttl, c.principal_select_ttl_ms);
+    set_ms(&mut hub.stateless_list_ttl, c.stateless_list_ttl_ms);
+    if let Some(v) = c.stateless_tool_exposure {
+        hub.stateless_tool_exposure = v;
+    }
 
     // 目录与文件：失败的清单由 Hub 记录日志后跳过（与 app-mcp-host 一致）。
     hub.manifests = load_manifests(&c.manifest_files, c.manifest_dir.as_deref(), false);
@@ -298,6 +317,30 @@ mod tests {
         assert_eq!(p.hub.navigate_timeout, Duration::from_millis(1234));
         let e = parse(Some(r#"{"navigateTimeoutMs": "5s"}"#)).err().map(|e| e.status);
         assert_eq!(e, Some(AmHubStatus::InvalidJson), "非整数报错");
+    }
+
+    #[test]
+    fn stateless_fields() {
+        let d = HubConfig::default();
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert_eq!(
+            (p.hub.task_idle_ttl, p.hub.stateless_tool_exposure, p.hub.principal_select_ttl, p.hub.stateless_list_ttl),
+            (d.task_idle_ttl, d.stateless_tool_exposure, d.principal_select_ttl, d.stateless_list_ttl)
+        );
+        let p = parse(Some(
+            r#"{"taskIdleTtlMs": 0, "statelessToolExposure": "progressive", "principalSelectTtlMs": 1500,
+                "statelessListTtlMs": 750}"#,
+        ))
+        .map_err(|e| e.message)
+        .expect("解析");
+        assert_eq!(p.hub.task_idle_ttl, Duration::ZERO);
+        assert_eq!(p.hub.stateless_tool_exposure, ToolExposure::Progressive);
+        assert_eq!(p.hub.principal_select_ttl, Duration::from_millis(1500));
+        assert_eq!(p.hub.stateless_list_ttl, Duration::from_millis(750));
+        let e = parse(Some(r#"{"statelessToolExposure": "some"}"#)).err().map(|e| e.status);
+        assert_eq!(e, Some(AmHubStatus::InvalidJson), "非法取值报错");
+        let e = parse(Some(r#"{"taskIdleTtlMs": -1}"#)).err().map(|e| e.status);
+        assert_eq!(e, Some(AmHubStatus::InvalidJson), "负数报错");
     }
 
     #[test]

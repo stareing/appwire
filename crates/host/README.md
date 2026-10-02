@@ -237,6 +237,12 @@ spec/protocol.md 1.9）。缺省仍为登录自启：`status` / `doctor` / 安�
 Host 随即只向该 MCP 会话发 `notifications/tools/list_changed`。未列出的工具按全名仍可直接调用。`auto` 在 App 与上游工具总数
 超过 `tools.threshold`（默认 40）时渐进，否则全部列出（与旧行为相同）。
 
+无会话 MCP 请求（不经 `initialize`、每请求自带协议 `_meta`，spec/hub-api.md 3.6 / 3.7）另有：`tools.statelessExposure`
+（`--stateless-tool-exposure`，默认 `"all"`；渐进时列表只含内置工具与全局选定实例的 App，不随调用变化）、`tools.statelessListTtlMs`
+（列表结果所带缓存提示 `ttlMs`，默认 5000）、`lifecycle.taskIdleTtlMs`（`--task-idle-ttl-ms`，其 Agent 任务在请求流空闲多久后回收，
+默认 600000，0 = 不回收）、`lifecycle.principalSelectTtlMs`（`--principal-select-ttl-ms`，主体级 `apps.select` 的空闲有效期，
+默认 60000，0 = 不单独过期）。`app-mcp-host status` 的一行摘要与 doctor「App 实例」检查显示 Agent 任务数。
+
 `limits`（资源保护，spec/hub-api.md 3.11）：保护 App 与设备，超出时返回明确错误，不静默丢弃、不截断（错误码见 spec/protocol.md 第 4 节）。
 上表中的值即默认值，缺省字段取默认，`0` 表示不限；未知字段报错，`*PerMinute > 0` 而对应 `*Burst = 0` 时配置无效、启动失败。
 
@@ -267,6 +273,7 @@ App 声明的工具注解与结果契约（`annotations`、`outputSchema`、结�
 `--manifest <file>`（可重复）、`--manifest-dir <dir>`（可重复）、`--allow-origin <pattern>`（可重复）、
 `--upstream <name>=<命令行>`（可重复）、`--lease-ms`、`--wake-timeout-ms`、`--wake-from-launch`、
 `--waker system|none|'{"exec":[...]}'`、`--tool-exposure auto|progressive|all`、`--tool-exposure-threshold <N>`、
+`--stateless-tool-exposure auto|progressive|all`、`--task-idle-ttl-ms`、`--principal-select-ttl-ms`、
 `--tool-rate-limit` / `--tool-rate-burst` / `--app-rate-limit` / `--app-rate-burst` / `--max-arguments-bytes` / `--max-result-bytes` /
 `--max-resource-bytes <N>`、`--output-validation off|log|reject`、`--log-level`、
 `--no-log-file`、`--config <file>`、`--home <dir>`。`app-mcp-host token` 打印令牌（`--regenerate` 重新生成）。

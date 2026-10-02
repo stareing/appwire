@@ -102,6 +102,10 @@ class HubIntegrationTest {
             val r = hub.callTool("notes.add", buildJsonObject { put("text", "买牛奶") }, timeout = 5.seconds)
             assertEquals(null, r.error)
             assertEquals("买牛奶", (r.getOrThrow() as JsonObject)["saved"]!!.jsonPrimitive.content)
+            // Hub API 调用方的 Agent 任务（spec/hub-api.md 3.6）
+            val task: AgentTaskStatus = assertNotNull(hub.status().tasks?.firstOrNull { it.caller == "api" })
+            assertEquals(CallerKind.API, task.kind)
+            assertTrue(task.id.startsWith("task-"), task.id)
 
             // exportTools + dispatch（OpenAI Chat）
             val exported = hub.exportTools(ToolFormat.OPEN_AI_CHAT, ToolFilter(apps = listOf("notes")))
@@ -130,6 +134,9 @@ class HubIntegrationTest {
             assertEquals(1, approvals.size)
             assertEquals("notes", approvals[0].appId)
             assertEquals(Risk.DESTRUCTIVE, approvals[0].risk)
+            // principal / clientName 只在 MCP 出口发起的审批中出现
+            assertEquals(null, approvals[0].principal)
+            assertEquals(null, approvals[0].clientName)
             // 低于阈值的 write 工具不询问
             assertTrue(approvals.none { it.tool.endsWith("add") })
 
@@ -304,6 +311,21 @@ class HubIntegrationTest {
             hub.tools(ToolFilter(session = "c1")).map { it.name },
         )
         hub.close()
+    }
+
+    /** spec/hub-api.md 3.6 / 3.7：无会话 MCP 请求的配置可设置；启动时没有 Agent 任务。 */
+    @Test
+    fun statelessConfig() {
+        val config = HubConfig(
+            enableListen = false,
+            enableIpc = false,
+            taskIdleTtlMs = 0uL,
+            statelessToolExposure = ToolExposure.PROGRESSIVE,
+            principalSelectTtlMs = 1500uL,
+            statelessListTtlMs = 750uL,
+        )
+        assertEquals(ToolExposure.PROGRESSIVE, config.statelessToolExposure)
+        Hub.start(config).use { hub -> assertEquals(emptyList<AgentTaskStatus>(), hub.status().tasks) }
     }
 
     /** spec/hub-api.md 3.14 / 3.15：HubTool.surface / page、callTool(idempotencyKey) 原样转交、routedTo、navigateTimeoutMs。 */

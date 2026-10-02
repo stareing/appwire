@@ -312,6 +312,19 @@ public sealed class HubOptions
     /// <summary>Auto 的阈值：App 与上游工具总数超过此值时渐进暴露（默认 40）。</summary>
     public int? ToolExposureThreshold { get; set; }
 
+    // ---- 无会话 MCP 请求（spec/hub-api.md 3.6 / 3.7）----
+
+    /// <summary>无会话调用方（principal:&lt;主体&gt;）的 Agent 任务在请求流空闲多久后回收（收回租约、清除选择），默认 10 分钟；
+    /// <see cref="TimeSpan.Zero"/> 不因空闲回收。</summary>
+    public TimeSpan? TaskIdleTtl { get; set; }
+    /// <summary>无会话请求的工具暴露方式（默认 <see cref="AppMcp.Hub.ToolExposure.All"/>）；渐进时列表只含内置工具与全局选定实例的 App，
+    /// 不随调用变化。</summary>
+    public ToolExposure? StatelessToolExposure { get; set; }
+    /// <summary>无会话请求的主体级 apps.select 选择的空闲有效期（默认 60 秒）；<see cref="TimeSpan.Zero"/> 不单独过期。</summary>
+    public TimeSpan? PrincipalSelectTtl { get; set; }
+    /// <summary>无会话请求的列表结果所带缓存提示 ttlMs（默认 5 秒）。</summary>
+    public TimeSpan? StatelessListTtl { get; set; }
+
     /// <summary>上游 MCP 服务器（名称 → 启动方式）。</summary>
     public IDictionary<string, UpstreamOptions> Upstreams { get; } = new Dictionary<string, UpstreamOptions>();
 
@@ -386,6 +399,10 @@ public sealed class HubOptions
             if (tt < 0) throw new ArgumentOutOfRangeException(nameof(ToolExposureThreshold), "阈值不能为负数");
             o["toolExposureThreshold"] = tt;
         }
+        AddMs(o, "taskIdleTtlMs", TaskIdleTtl);
+        if (StatelessToolExposure is { } ste) o["statelessToolExposure"] = ste.ToString().ToLowerInvariant();
+        AddMs(o, "principalSelectTtlMs", PrincipalSelectTtl);
+        AddMs(o, "statelessListTtlMs", StatelessListTtl);
         if (Upstreams.Count > 0)
         {
             var ups = new JsonObject();
@@ -742,7 +759,35 @@ public sealed record HubStatusInfo(
     public HubPolicyStatusInfo? Policy { get; init; }
     /// <summary>休眠记录持久化状态；未配置 <see cref="HubOptions.StateDir"/> 或旧 Hub 时为 null。</summary>
     public DormantStoreStatusInfo? DormantStore { get; init; }
+    /// <summary>Agent 任务（调用方的跨请求状态，spec/hub-api.md 3.6），按 Caller 排序；旧 Hub 为 null。</summary>
+    public IReadOnlyList<AgentTaskStatusInfo>? Tasks { get; init; }
 }
+
+/// <summary>
+/// 一个 Agent 任务（AgentTaskStatus）。Id：Hub 签发的 "task-&lt;128 位十六进制&gt;"；Caller：调用方键 "mcp:&lt;n&gt;" /
+/// "principal:&lt;主体&gt;" / "api" / "api:&lt;session&gt;"；Kind：mcpSession / principal / api；Selections：未过期的 apps.select 选择；
+/// Leases：本任务发出、尚未到期且实例仍连接的租约；Inflight：进行中的请求数。
+/// </summary>
+public sealed record AgentTaskStatusInfo(
+    string Id,
+    string Caller,
+    string Kind,
+    IReadOnlyList<TaskSelectionStatusInfo> Selections,
+    IReadOnlyList<TaskLeaseStatusInfo> Leases,
+    uint Inflight)
+{
+    /// <summary>距最近一次请求活动的毫秒数；没有活动记录时为 null。</summary>
+    public ulong? IdleMs { get; init; }
+}
+
+/// <summary>一项 apps.select 选择；ExpiresInMs：距失效的毫秒数（主体级选择），不单独过期时为 null。</summary>
+public sealed record TaskSelectionStatusInfo(string AppId, string InstanceId)
+{
+    public ulong? ExpiresInMs { get; init; }
+}
+
+/// <summary>一项租约：实例的连接 ID 与距到期的毫秒数。</summary>
+public sealed record TaskLeaseStatusInfo(string ConnectionId, ulong ExpiresInMs);
 
 /// <summary>
 /// 休眠记录持久化状态（DormantStoreStatus）。Dir：&lt;StateDir&gt;/dormant；LoadedInstances / ExpiredInstances：启动时读回 / 因过期丢弃的实例数；
@@ -978,6 +1023,10 @@ public sealed record ApprovalRequest(
 {
     /// <summary>与 <see cref="HubToolInfo.Annotations"/> 相同；旧 Hub 为 null。</summary>
     public HubToolAnnotations? Annotations { get; init; }
+    /// <summary>MCP 出口：发起调用的认证主体（取自传输层凭据，现在恒为 "local"）；经 Hub API 发起时为 null。</summary>
+    public string? Principal { get; init; }
+    /// <summary>MCP 出口：客户端自报的 clientInfo.name；经 Hub API 发起时为 null。自报、不可信，仅供显示，不得据此做授权决定。</summary>
+    public string? ClientName { get; init; }
 }
 
 /// <summary>App 配对请求（PairingRequest）。</summary>

@@ -610,6 +610,12 @@ fn auth_check(home: &AppHome, s: &Settings) -> Check {
     }
 }
 
+/// 调用方计数（`status` 一行摘要与 doctor 共用）：MCP 会话数，以及 Agent 任务数（spec/hub-api.md 3.6；旧 Host 不报告时省略）。
+pub(crate) fn callers_text(st: &HubStatus) -> String {
+    let tasks = st.tasks.as_ref().map(|t| format!("、Agent 任务 {} 个", t.len())).unwrap_or_default();
+    format!("MCP 会话 {} 个{tasks}", st.mcp_sessions)
+}
+
 fn apps_check(status: Option<&Result<HubStatus, String>>) -> Check {
     const T: &str = "App 实例";
     let st = match status {
@@ -622,7 +628,7 @@ fn apps_check(status: Option<&Result<HubStatus, String>>) -> Check {
     };
     let details = serde_json::to_value(&st.apps).unwrap_or(Value::Null);
     if st.apps.is_empty() {
-        return Check::new("apps", T, Level::Info, format!("没有已知 App（MCP 会话 {} 个）", st.mcp_sessions))
+        return Check::new("apps", T, Level::Info, format!("没有已知 App（{}）", callers_text(st)))
             .hint("启动接入了 SDK 的 App，或用 --manifest 加载静态清单")
             .details(details);
     }
@@ -648,7 +654,7 @@ fn apps_check(status: Option<&Result<HubStatus, String>>) -> Check {
             errors.push(format!("{}：[{}] {}", a.app_id, e.code.as_deref().unwrap_or("-"), e.message));
         }
     }
-    let summary = format!("{}；MCP 会话 {} 个", lines.join("；"), st.mcp_sessions);
+    let summary = format!("{}；{}", lines.join("；"), callers_text(st));
     if errors.is_empty() {
         Check::new("apps", T, Level::Ok, summary).details(details)
     } else {
@@ -1095,6 +1101,25 @@ mod tests {
             "outputValidation": "log"
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn callers_text_counts_tasks() {
+        let mut st = status_with_tools(0);
+        assert_eq!(callers_text(&st), "MCP 会话 0 个", "旧 Host 不报告任务时省略");
+        st.mcp_sessions = 1;
+        st.tasks = Some(
+            serde_json::from_value(json!([
+                {"id": "task-1", "caller": "mcp:1", "kind": "mcpSession", "selections": [], "leases": [], "inflight": 0},
+                {"id": "task-2", "caller": "principal:local", "kind": "principal",
+                 "selections": [{"appId": "shop", "instanceId": "a", "expiresInMs": 1000}],
+                 "leases": [{"connectionId": "c1", "expiresInMs": 500}], "inflight": 1, "idleMs": 3}
+            ]))
+            .unwrap(),
+        );
+        assert_eq!(callers_text(&st), "MCP 会话 1 个、Agent 任务 2 个");
+        let c = apps_check(Some(&Ok(st)));
+        assert!(c.summary.contains("Agent 任务 2 个"), "{}", c.summary);
     }
 
     #[test]

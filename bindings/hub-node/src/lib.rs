@@ -174,6 +174,14 @@ struct ConfigJson {
     /// 渐进暴露（spec/hub-api.md 3.7）。
     tool_exposure: Option<ToolExposure>,
     tool_exposure_threshold: Option<usize>,
+    /// 无会话 MCP 请求的 Agent 任务空闲回收时长（spec/hub-api.md 3.6），缺省 600000；0 不因空闲回收。
+    task_idle_ttl_ms: Option<u64>,
+    /// 无会话 MCP 请求的工具暴露方式（spec/hub-api.md 3.7「无会话请求的列表与总览」），缺省 `"all"`。
+    stateless_tool_exposure: Option<ToolExposure>,
+    /// 主体级 `apps.select` 的空闲有效期（spec/hub-api.md 3.6），缺省 60000；0 不单独过期。
+    principal_select_ttl_ms: Option<u64>,
+    /// 无会话请求列表结果的 `ttlMs`（spec/hub-api.md 3.7），缺省 5000。
+    stateless_list_ttl_ms: Option<u64>,
     upstreams: BTreeMap<String, UpstreamConfig>,
     approval: ApprovalPolicy,
 }
@@ -277,6 +285,18 @@ impl ConfigJson {
         }
         if let Some(v) = self.tool_exposure_threshold {
             c.tool_exposure_threshold = v;
+        }
+        if let Some(v) = self.task_idle_ttl_ms {
+            c.task_idle_ttl = ms(v);
+        }
+        if let Some(v) = self.stateless_tool_exposure {
+            c.stateless_tool_exposure = v;
+        }
+        if let Some(v) = self.principal_select_ttl_ms {
+            c.principal_select_ttl = ms(v);
+        }
+        if let Some(v) = self.stateless_list_ttl_ms {
+            c.stateless_list_ttl = ms(v);
         }
         c.upstreams = self.upstreams;
         c.approval = self.approval;

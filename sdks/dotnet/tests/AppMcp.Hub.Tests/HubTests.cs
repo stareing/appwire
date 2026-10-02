@@ -193,6 +193,53 @@ public class HubBasicTests
     }
 
     [Fact]
+    public void StatelessConfigSerializesAndStarts()
+    {
+        var options = new HubOptions
+        {
+            DisableIpc = true,
+            DisableListen = true,
+            Dispatcher = null,
+            TaskIdleTtl = TimeSpan.Zero,
+            StatelessToolExposure = ToolExposure.Progressive,
+            PrincipalSelectTtl = TimeSpan.FromMilliseconds(1500),
+            StatelessListTtl = TimeSpan.FromMilliseconds(750),
+        };
+        var json = JsonNode.Parse(options.ToConfigJson())!.AsObject();
+        Assert.Equal(0, (long?)json["taskIdleTtlMs"]);
+        Assert.Equal("progressive", (string?)json["statelessToolExposure"]);
+        Assert.Equal(1500, (long?)json["principalSelectTtlMs"]);
+        Assert.Equal(750, (long?)json["statelessListTtlMs"]);
+        var defaults = JsonNode.Parse(new HubOptions().ToConfigJson())!.AsObject();
+        Assert.False(defaults.ContainsKey("taskIdleTtlMs") || defaults.ContainsKey("statelessToolExposure")
+            || defaults.ContainsKey("principalSelectTtlMs") || defaults.ContainsKey("statelessListTtlMs"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new HubOptions { TaskIdleTtl = TimeSpan.FromSeconds(-1) }.ToConfigJson());
+        using var hub = AppMcpHub.Start(options);
+        Assert.Empty(hub.Status().Tasks!);
+    }
+
+    [Fact]
+    public void StatusParsesAgentTasksAndApprovalPrincipal()
+    {
+        var status = JsonSerializer.Deserialize<HubStatusInfo>("""
+            {"service":"app-mcp","version":"0","pid":1,"startedAtMs":0,"mcpHttp":true,
+             "auth":{"tokenConfigured":false,"tokenRequiredWithoutOrigin":false},"mcpSessions":1,"apps":[],"reports":[],
+             "tasks":[{"id":"task-1","caller":"principal:local","kind":"principal",
+                       "selections":[{"appId":"shop","instanceId":"a","expiresInMs":900}],
+                       "leases":[{"connectionId":"c-1","expiresInMs":500}],"inflight":2,"idleMs":3}]}
+            """, AppMcpHub.WireOptions)!;
+        var task = Assert.Single(status.Tasks!);
+        Assert.Equal(("task-1", "principal:local", "principal", 2U, (ulong?)3), (task.Id, task.Caller, task.Kind, task.Inflight, task.IdleMs));
+        Assert.Equal(new TaskSelectionStatusInfo("shop", "a") { ExpiresInMs = 900 }, Assert.Single(task.Selections));
+        Assert.Equal(new TaskLeaseStatusInfo("c-1", 500), Assert.Single(task.Leases));
+        var approval = JsonSerializer.Deserialize<ApprovalRequest>("""
+            {"callId":"c","appId":"a","appName":"A","tool":"t","title":null,"description":"d","risk":"write","arguments":{},
+             "session":"principal:local","principal":"local","clientName":"claude-code"}
+            """, AppMcpHub.WireOptions)!;
+        Assert.Equal(("local", "claude-code"), (approval.Principal, approval.ClientName));
+    }
+
+    [Fact]
     public void LimitsAndOutputValidationConfig()
     {
         var json = JsonNode.Parse(new HubOptions
@@ -303,6 +350,8 @@ public class HubBasicTests
         Assert.Equal(20U, status.Lease.Window);
         Assert.Empty(status.Lease.Pairs);
         Assert.Null(status.DormantStore);
+        Assert.NotNull(status.Tasks);
+        Assert.Empty(status.Tasks!);
         Assert.Equal("app-mcp", hub.GetStatus().GetProperty("service").GetString());
 
         // 内置工具 apps.list 等
@@ -441,6 +490,10 @@ public class HubIntegrationTests
         Assert.Equal("n1", ok.InstanceId);
         Assert.Equal("notes", ok.Overview?.GetProperty("appId").GetString());
         Assert.NotNull(hub.GetOverview("notes"));
+        // Hub API 会话的 Agent 任务（spec/hub-api.md 3.6）
+        var task = Assert.Single(hub.Status().Tasks!, t => t.Caller == "api:s1");
+        Assert.Equal("api", task.Kind);
+        Assert.StartsWith("task-", task.Id);
 
         // 参数不合法
         var bad = await hub.CallAsync("notes.add", new { });
@@ -453,6 +506,9 @@ public class HubIntegrationTests
         Assert.Equal("delete", req.Tool);
         Assert.Equal("destructive", req.Risk);
         Assert.Equal("notes", req.AppId);
+        // Principal / ClientName 只在 MCP 出口发起的审批中出现
+        Assert.Null(req.Principal);
+        Assert.Null(req.ClientName);
         Assert.All(approvalThreads, id => Assert.Equal(ui.ThreadId, id));
 
         decisions.Enqueue(true);

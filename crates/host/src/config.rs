@@ -157,6 +157,12 @@ pub struct LifecycleSection {
     /// 只在监听套接字由 systemd / launchd 交来时生效（否则退出后没有谁再启动 Host）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_exit_ms: Option<u64>,
+    /// 无会话 MCP 请求的 Agent 任务在请求流空闲多久后回收（毫秒，spec/hub-api.md 3.6），默认 600000；0 = 不因空闲回收。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_idle_ttl_ms: Option<u64>,
+    /// 无会话请求的主体级 `apps.select` 选择的空闲有效期（毫秒，spec/hub-api.md 3.6），默认 60000；0 = 不单独过期。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub principal_select_ttl_ms: Option<u64>,
 }
 
 /// 工具列表（spec/hub-api.md 3.7）。
@@ -175,6 +181,12 @@ pub struct ToolsSection {
     /// 调用进度转发给 Agent 的最小间隔（毫秒，spec/hub-api.md 3.12），默认 250；0 = 不合并。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress_interval_ms: Option<u64>,
+    /// 无会话 MCP 请求的工具暴露方式（spec/hub-api.md 3.7「无会话请求的列表与总览」）：`"all"`（默认）/ `"progressive"` / `"auto"`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stateless_exposure: Option<ToolExposure>,
+    /// 无会话请求列表结果的缓存提示 `ttlMs`（毫秒，spec/hub-api.md 3.7），默认 5000。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stateless_list_ttl_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,6 +305,9 @@ pub struct Overrides {
     pub name_service: Option<bool>,
     pub channel_grace_ms: Option<u64>,
     pub idle_exit_ms: Option<u64>,
+    pub task_idle_ttl_ms: Option<u64>,
+    pub principal_select_ttl_ms: Option<u64>,
+    pub stateless_tool_exposure: Option<ToolExposure>,
 }
 
 impl FileConfig {
@@ -328,6 +343,9 @@ impl FileConfig {
         set(&mut self.lifecycle.name_service, &o.name_service);
         set(&mut self.lifecycle.channel_grace_ms, &o.channel_grace_ms);
         set(&mut self.lifecycle.idle_exit_ms, &o.idle_exit_ms);
+        set(&mut self.lifecycle.task_idle_ttl_ms, &o.task_idle_ttl_ms);
+        set(&mut self.lifecycle.principal_select_ttl_ms, &o.principal_select_ttl_ms);
+        set(&mut self.tools.stateless_exposure, &o.stateless_tool_exposure);
         set(&mut self.tools.exposure, &o.tool_exposure);
         set(&mut self.tools.threshold, &o.tool_exposure_threshold);
         set(&mut self.tools.output_validation, &o.output_validation);
@@ -394,11 +412,17 @@ pub struct Settings {
     pub channel_grace_ms: u64,
     /// 按需启动时的空闲退出时间（毫秒）；0 = 不退出。
     pub idle_exit_ms: u64,
+    /// 无会话 Agent 任务的空闲回收时长（毫秒）；0 = 不回收。
+    pub task_idle_ttl_ms: u64,
+    /// 主体级 `apps.select` 的空闲有效期（毫秒）；0 = 不单独过期。
+    pub principal_select_ttl_ms: u64,
     pub tool_exposure: ToolExposure,
     pub tool_exposure_threshold: usize,
     pub limits: LimitPolicy,
     pub output_validation: OutputValidation,
     pub progress_interval_ms: u64,
+    pub stateless_tool_exposure: ToolExposure,
+    pub stateless_list_ttl_ms: u64,
     pub log_level: String,
     pub log_file: bool,
     pub log_max_bytes: u64,
@@ -494,6 +518,14 @@ impl Settings {
                 .channel_grace_ms
                 .unwrap_or(app_mcp_hub::DEFAULT_CHANNEL_GRACE.as_millis() as u64),
             idle_exit_ms: c.lifecycle.idle_exit_ms.unwrap_or(crate::activation::DEFAULT_IDLE_EXIT_MS),
+            task_idle_ttl_ms: c
+                .lifecycle
+                .task_idle_ttl_ms
+                .unwrap_or(app_mcp_hub::DEFAULT_TASK_IDLE_TTL.as_millis() as u64),
+            principal_select_ttl_ms: c
+                .lifecycle
+                .principal_select_ttl_ms
+                .unwrap_or(app_mcp_hub::DEFAULT_PRINCIPAL_SELECT_TTL.as_millis() as u64),
             tool_exposure: c.tools.exposure.unwrap_or_default(),
             tool_exposure_threshold: c
                 .tools
@@ -505,6 +537,14 @@ impl Settings {
                 .tools
                 .progress_interval_ms
                 .unwrap_or(app_mcp_hub::DEFAULT_PROGRESS_INTERVAL.as_millis() as u64),
+            stateless_tool_exposure: c
+                .tools
+                .stateless_exposure
+                .unwrap_or_else(|| app_mcp_hub::HubConfig::default().stateless_tool_exposure),
+            stateless_list_ttl_ms: c
+                .tools
+                .stateless_list_ttl_ms
+                .unwrap_or(app_mcp_hub::DEFAULT_STATELESS_LIST_TTL.as_millis() as u64),
             log_level: c.log.level.unwrap_or_else(|| "info".to_owned()),
             log_file: c.log.file.unwrap_or(true),
             log_max_bytes: c.log.max_bytes.unwrap_or(5 * 1024 * 1024),
@@ -538,6 +578,52 @@ mod tests {
         let s = Settings::resolve(&file, &Overrides::default(), &home()).unwrap();
         assert!(s.name_service);
         assert_eq!(s.channel_grace_ms, 2000);
+    }
+
+    #[test]
+    fn stateless_settings_from_file_and_cli() {
+        let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home()).unwrap();
+        let hub = app_mcp_hub::HubConfig::default();
+        assert_eq!(
+            (s.task_idle_ttl_ms, s.principal_select_ttl_ms, s.stateless_tool_exposure, s.stateless_list_ttl_ms),
+            (
+                hub.task_idle_ttl.as_millis() as u64,
+                hub.principal_select_ttl.as_millis() as u64,
+                hub.stateless_tool_exposure,
+                hub.stateless_list_ttl.as_millis() as u64
+            ),
+            "默认值与 HubConfig 一致"
+        );
+        let file: FileConfig = serde_json::from_str(
+            r#"{"lifecycle":{"taskIdleTtlMs":0,"principalSelectTtlMs":1500},
+                "tools":{"statelessExposure":"progressive","statelessListTtlMs":0}}"#,
+        )
+        .unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home()).unwrap();
+        assert_eq!(
+            (s.task_idle_ttl_ms, s.principal_select_ttl_ms, s.stateless_tool_exposure, s.stateless_list_ttl_ms),
+            (0, 1500, ToolExposure::Progressive, 0)
+        );
+        // 命令行覆盖；service install 持久化为配置文件的键
+        let o = Overrides {
+            task_idle_ttl_ms: Some(2000),
+            principal_select_ttl_ms: Some(0),
+            stateless_tool_exposure: Some(ToolExposure::Auto),
+            ..Default::default()
+        };
+        let s = Settings::resolve(&file, &o, &home()).unwrap();
+        assert_eq!(
+            (s.task_idle_ttl_ms, s.principal_select_ttl_ms, s.stateless_tool_exposure, s.stateless_list_ttl_ms),
+            (2000, 0, ToolExposure::Auto, 0)
+        );
+        let mut f = FileConfig::default();
+        f.apply(&o).unwrap();
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["lifecycle"], serde_json::json!({"taskIdleTtlMs": 2000, "principalSelectTtlMs": 0}));
+        assert_eq!(v["tools"], serde_json::json!({"statelessExposure": "auto"}));
+        // 类型不对：明确报错
+        assert!(serde_json::from_str::<FileConfig>(r#"{"tools":{"statelessExposure":"some"}}"#).is_err());
+        assert!(serde_json::from_str::<FileConfig>(r#"{"lifecycle":{"taskIdleTtlMs":-1}}"#).is_err());
     }
 
     #[test]

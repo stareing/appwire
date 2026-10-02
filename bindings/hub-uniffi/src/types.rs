@@ -495,6 +495,20 @@ pub struct HubConfig {
     /// `AppMcpHub::start_with_name_service` 的名字服务生效。
     #[uniffi(default = None)]
     pub channel_grace_ms: Option<u64>,
+    // ---- 无会话 MCP 请求（spec/hub-api.md 3.6 / 3.7）----
+    /// 无会话调用方（`principal:<主体>`）的 Agent 任务在请求流空闲多久后回收（收回租约、清除选择），默认 10 分钟；
+    /// `0` 不因空闲回收。
+    #[uniffi(default = None)]
+    pub task_idle_ttl_ms: Option<u64>,
+    /// 无会话请求的工具暴露方式（默认 `All`）；渐进时列表只含内置工具与全局选定实例的 App，不随调用变化。
+    #[uniffi(default = None)]
+    pub stateless_tool_exposure: Option<ToolExposure>,
+    /// 无会话请求的主体级 `apps.select` 选择的空闲有效期（默认 60 s）；`0` 不单独过期。
+    #[uniffi(default = None)]
+    pub principal_select_ttl_ms: Option<u64>,
+    /// 无会话请求的列表结果所带缓存提示 `ttlMs`（默认 5 s）。
+    #[uniffi(default = None)]
+    pub stateless_list_ttl_ms: Option<u64>,
 }
 
 impl Default for HubConfig {
@@ -538,6 +552,10 @@ impl Default for HubConfig {
             tool_exposure: None,
             tool_exposure_threshold: None,
             channel_grace_ms: None,
+            task_idle_ttl_ms: None,
+            stateless_tool_exposure: None,
+            principal_select_ttl_ms: None,
+            stateless_list_ttl_ms: None,
         }
     }
 }
@@ -898,6 +916,12 @@ impl HubConfig {
             c.tool_exposure_threshold = v as usize;
         }
         set(&mut c.channel_grace, self.channel_grace_ms);
+        set(&mut c.task_idle_ttl, self.task_idle_ttl_ms);
+        set(&mut c.principal_select_ttl, self.principal_select_ttl_ms);
+        set(&mut c.stateless_list_ttl, self.stateless_list_ttl_ms);
+        if let Some(v) = self.stateless_tool_exposure {
+            c.stateless_tool_exposure = v.into();
+        }
         Ok(c)
     }
 }
@@ -1287,6 +1311,90 @@ pub struct HubStatus {
     /// 休眠记录持久化状态；未配置 `state_dir` 或旧 Host 时为空。
     #[uniffi(default = None)]
     pub dormant_store: Option<DormantStoreStatus>,
+    /// Agent 任务（调用方的跨请求状态，spec/hub-api.md 3.6），按调用方键排序；旧 Host 为空。
+    #[uniffi(default = None)]
+    pub tasks: Option<Vec<AgentTaskStatus>>,
+}
+
+/// 调用方的种类（spec/hub-api.md 3.6）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum CallerKind {
+    /// legacy MCP 会话（`mcp:<n>`）。
+    McpSession,
+    /// 无会话 MCP 请求的主体（`principal:<主体>`）。
+    Principal,
+    /// Hub API 会话（`api` / `api:<session>`）。
+    Api,
+}
+
+impl From<hub::CallerKind> for CallerKind {
+    fn from(k: hub::CallerKind) -> Self {
+        match k {
+            hub::CallerKind::McpSession => CallerKind::McpSession,
+            hub::CallerKind::Principal => CallerKind::Principal,
+            hub::CallerKind::Api => CallerKind::Api,
+        }
+    }
+}
+
+/// 一个 Agent 任务（`HubStatus.tasks`）。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AgentTaskStatus {
+    /// Hub 签发的任务 ID（`task-<128 位十六进制>`）。
+    pub id: String,
+    /// 调用方键：`mcp:<n>` / `principal:<主体>` / `api` / `api:<session>`。
+    pub caller: String,
+    pub kind: CallerKind,
+    /// 未过期的 `apps.select` 选择，按 appId 排序。
+    pub selections: Vec<TaskSelectionStatus>,
+    /// 本任务发出、尚未到期且实例仍连接的租约，按连接 ID 排序。
+    pub leases: Vec<TaskLeaseStatus>,
+    /// 进行中的请求数。
+    pub inflight: u32,
+    /// 距最近一次请求活动的毫秒数；没有活动记录时为空。
+    #[uniffi(default = None)]
+    pub idle_ms: Option<u64>,
+}
+
+/// `AgentTaskStatus.selections` 的一项。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TaskSelectionStatus {
+    pub app_id: String,
+    pub instance_id: String,
+    /// 距失效的毫秒数（主体级选择，`HubConfig.principal_select_ttl_ms`）；不单独过期时为空。
+    #[uniffi(default = None)]
+    pub expires_in_ms: Option<u64>,
+}
+
+/// `AgentTaskStatus.leases` 的一项。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TaskLeaseStatus {
+    /// 实例的连接 ID（与 `InstanceInfo.connection_id` 相同）。
+    pub connection_id: String,
+    /// 距到期的毫秒数。
+    pub expires_in_ms: u64,
+}
+
+impl From<hub::AgentTaskStatus> for AgentTaskStatus {
+    fn from(t: hub::AgentTaskStatus) -> Self {
+        AgentTaskStatus {
+            id: t.id,
+            caller: t.caller,
+            kind: t.kind.into(),
+            selections: t
+                .selections
+                .into_iter()
+                .map(|s| TaskSelectionStatus { app_id: s.app_id, instance_id: s.instance_id, expires_in_ms: s.expires_in_ms })
+                .collect(),
+            leases: t
+                .leases
+                .into_iter()
+                .map(|l| TaskLeaseStatus { connection_id: l.connection_id, expires_in_ms: l.expires_in_ms })
+                .collect(),
+            inflight: t.inflight,
+            idle_ms: t.idle_ms,
+        }
+    }
 }
 
 /// 休眠记录持久化状态（`HubStatus.dormant_store`，配置了 `HubConfig.state_dir` 时）。
@@ -1403,6 +1511,7 @@ impl From<hub::HubStatus> for HubStatus {
             output_validation: s.output_validation.map(Into::into),
             policy: s.policy.map(Into::into),
             dormant_store: s.dormant_store.map(Into::into),
+            tasks: s.tasks.map(|t| t.into_iter().map(Into::into).collect()),
         }
     }
 }
@@ -1880,6 +1989,13 @@ pub struct ApprovalRequest {
     pub session: Option<String>,
     /// 工具的 MCP 注解（与 `HubTool.annotations` 相同），供厂商按声明决定是否确认。
     pub annotations: ToolAnnotations,
+    /// MCP 出口：发起调用的认证主体（取自传输层凭据，现在恒为 `local`）；经 `call_tool` 发起时为空。
+    #[uniffi(default = None)]
+    pub principal: Option<String>,
+    /// MCP 出口：客户端自报的 `clientInfo.name`；经 `call_tool` 发起时为空。
+    /// 自报、不可信，**仅供显示**，不得据此做授权决定。
+    #[uniffi(default = None)]
+    pub client_name: Option<String>,
 }
 
 impl From<hub::ApprovalRequest> for ApprovalRequest {
@@ -1895,6 +2011,8 @@ impl From<hub::ApprovalRequest> for ApprovalRequest {
             arguments_json: r.arguments.to_string(),
             session: r.session,
             annotations: r.annotations.into(),
+            principal: r.principal,
+            client_name: r.client_name,
         }
     }
 }
@@ -1980,6 +2098,10 @@ mod tests {
         assert_eq!(c.ipc_endpoint, d.ipc_endpoint);
         assert_eq!(c.response_timeout, d.response_timeout);
         assert_eq!(c.navigate_timeout, hub::DEFAULT_NAVIGATE_TIMEOUT);
+        assert_eq!(
+            (c.task_idle_ttl, c.stateless_tool_exposure, c.principal_select_ttl, c.stateless_list_ttl),
+            (d.task_idle_ttl, d.stateless_tool_exposure, d.principal_select_ttl, d.stateless_list_ttl)
+        );
         assert_eq!(c.approval, d.approval);
         assert!(c.manifests.is_empty() && c.upstreams.is_empty());
     }
@@ -1995,6 +2117,10 @@ mod tests {
             approval_timeout_ms: Some(500),
             response_timeout_ms: Some(1234),
             navigate_timeout_ms: Some(800),
+            task_idle_ttl_ms: Some(0),
+            stateless_tool_exposure: Some(ToolExposure::Progressive),
+            principal_select_ttl_ms: Some(1500),
+            stateless_list_ttl_ms: Some(750),
             upstreams: vec![UpstreamSpec {
                 name: "fs".into(),
                 command: "npx".into(),
@@ -2015,6 +2141,10 @@ mod tests {
         assert_eq!(c.approval.timeout, Some(Duration::from_millis(500)));
         assert_eq!(c.response_timeout, Duration::from_millis(1234));
         assert_eq!(c.navigate_timeout, Duration::from_millis(800));
+        assert_eq!(c.task_idle_ttl, Duration::ZERO);
+        assert_eq!(c.stateless_tool_exposure, hub::ToolExposure::Progressive);
+        assert_eq!(c.principal_select_ttl, Duration::from_millis(1500));
+        assert_eq!(c.stateless_list_ttl, Duration::from_millis(750));
         assert_eq!(c.upstreams["fs"].env["A"], "1");
         assert_eq!(c.manifests[0].app_id, "shop");
 
@@ -2375,7 +2505,15 @@ mod tests {
             "reports": [{"appId": "a", "instanceId": "i1", "connectionId": "abc123-1",
                          "code": "BLOCKED_MIXED_CONTENT", "message": "m", "count": 1, "receivedAtMs": 12}],
             "dormantStore": {"dir": "/s/dormant", "loadedInstances": 3, "expiredInstances": 1, "writes": 4,
-                             "issues": [{"file": "x.json", "reason": "损坏"}], "lastError": "磁盘满"}
+                             "issues": [{"file": "x.json", "reason": "损坏"}], "lastError": "磁盘满"},
+            "tasks": [
+                {"id": "task-1", "caller": "mcp:1", "kind": "mcpSession", "selections": [], "leases": [], "inflight": 0},
+                {"id": "task-2", "caller": "principal:local", "kind": "principal",
+                 "selections": [{"appId": "a", "instanceId": "i1", "expiresInMs": 900}],
+                 "leases": [{"connectionId": "abc123-1", "expiresInMs": 500}], "inflight": 2, "idleMs": 3},
+                {"id": "task-3", "caller": "api", "kind": "api",
+                 "selections": [{"appId": "a", "instanceId": "i2"}], "leases": [], "inflight": 0}
+            ]
         }))
         .unwrap();
         let s = HubStatus::from(st);
@@ -2429,9 +2567,43 @@ mod tests {
                 last_error: Some("磁盘满".into()),
             })
         );
+        let tasks = s.tasks.expect("tasks");
+        assert_eq!(
+            tasks.iter().map(|t| (t.id.as_str(), t.caller.as_str(), t.kind)).collect::<Vec<_>>(),
+            vec![("task-1", "mcp:1", CallerKind::McpSession), ("task-2", "principal:local", CallerKind::Principal), ("task-3", "api", CallerKind::Api)]
+        );
+        assert_eq!((tasks[0].inflight, tasks[0].idle_ms), (0, None));
+        assert_eq!(
+            tasks[1],
+            AgentTaskStatus {
+                id: "task-2".into(),
+                caller: "principal:local".into(),
+                kind: CallerKind::Principal,
+                selections: vec![TaskSelectionStatus { app_id: "a".into(), instance_id: "i1".into(), expires_in_ms: Some(900) }],
+                leases: vec![TaskLeaseStatus { connection_id: "abc123-1".into(), expires_in_ms: 500 }],
+                inflight: 2,
+                idle_ms: Some(3),
+            }
+        );
+        assert_eq!(tasks[2].selections[0].expires_in_ms, None);
         assert_eq!(InstanceState::from(hub::InstanceState::Dormant), InstanceState::Dormant);
         assert_eq!(AppState::from(hub::AppState::Waking), AppState::Waking);
         assert_eq!(AppState::from(hub::AppState::Connected), AppState::Connected);
+    }
+
+    #[test]
+    fn approval_request_carries_principal_and_client_name() {
+        let base = serde_json::json!({
+            "callId": "c", "appId": "a", "appName": "A", "tool": "t", "title": null, "description": "d",
+            "risk": "write", "arguments": {}, "session": "principal:local"
+        });
+        let mut mcp = base.clone();
+        mcp["principal"] = "local".into();
+        mcp["clientName"] = "claude-code".into();
+        let r = ApprovalRequest::from(serde_json::from_value::<hub::ApprovalRequest>(mcp).unwrap());
+        assert_eq!((r.principal.as_deref(), r.client_name.as_deref()), (Some("local"), Some("claude-code")));
+        let r = ApprovalRequest::from(serde_json::from_value::<hub::ApprovalRequest>(base).unwrap());
+        assert_eq!((r.principal, r.client_name), (None, None));
     }
 
     #[test]

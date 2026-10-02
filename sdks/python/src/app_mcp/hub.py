@@ -96,6 +96,12 @@ DiagnosticReport = ffi.DiagnosticReport
 #: 休眠记录持久化状态（``HubStatus.dormant_store``，配置了 ``HubConfig.state_dir`` 时）。
 DormantStoreStatus = ffi.DormantStoreStatus
 StoreIssue = ffi.StoreIssue
+#: Agent 任务（``HubStatus.tasks``，spec/hub-api.md 3.6）：调用方的跨请求状态。
+AgentTaskStatus = ffi.AgentTaskStatus
+#: 调用方的种类：``CallerKind.MCP_SESSION``（legacy MCP 会话）/ ``PRINCIPAL``（无会话 MCP 请求的主体）/ ``API``（Hub API 会话）。
+CallerKind = ffi.CallerKind
+TaskSelectionStatus = ffi.TaskSelectionStatus
+TaskLeaseStatus = ffi.TaskLeaseStatus
 # 资源保护与工具声明（spec/hub-api.md 3.11）。
 #: 限流与大小上限（``HubConfig.limits``；``HubStatus.limits`` 为全部字段给出的生效值）。为空的字段取默认值。
 LimitsConfig = ffi.LimitsConfig
@@ -153,6 +159,7 @@ _ANNOTATION_KEYS = {
 Dispatcher = Callable[[Callable[[], None]], None]
 
 __all__ = [
+    "AgentTaskStatus",
     "AnnotationMatch",
     "Activation",
     "AppInfo",
@@ -165,6 +172,7 @@ __all__ = [
     "AuthStatus",
     "Availability",
     "CallResult",
+    "CallerKind",
     "ContentAnnotations",
     "DiagnosticReport",
     "DormantStoreStatus",
@@ -195,6 +203,8 @@ __all__ = [
     "ResultStatus",
     "Risk",
     "StoreIssue",
+    "TaskLeaseStatus",
+    "TaskSelectionStatus",
     "ToolAnnotations",
     "ToolDeclaration",
     "ToolError",

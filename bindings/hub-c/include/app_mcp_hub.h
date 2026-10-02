@@ -85,6 +85,10 @@
  * - v14（调用元信息，docs/plans/19-result-contract.md R4）：只做新增，AM_HUB_API_VERSION 仍为 3。
  *   · JSON 中新增：CallOutcome.durationMs（Hub 收到调用到得出结果的毫秒数）、CallOutcome.woke（本次 App 工具调用是否
  *     经历了唤醒；内置 / 上游工具恒为 false）。
+ * - v15（无会话 MCP 请求与 Agent 任务，spec/hub-api.md 3.3 / 3.6 / 3.7 / 3.9）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 taskIdleTtlMs、statelessToolExposure、principalSelectTtlMs、statelessListTtlMs。
+ *   · JSON 中新增：ApprovalRequest.principal / clientName（只在 MCP 出口发起的审批中出现）；
+ *     HubStatus.tasks（Agent 任务数组）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -152,7 +156,9 @@ typedef void (*AmHubResultFn)(void *user_data, char *result_json);
 typedef void (*AmHubEventFn)(void *user_data, char *event_json);
 
 /* 调用审批。request_json 为 ApprovalRequest（callId、appId、appName、tool、title、description、risk、
- * arguments、session；v9 起另有 annotations：与 HubTool.annotations 相同）。approval 的所有权转移给回调方，必须最终调用 am_hub_approval_complete 恰好一次
+ * arguments、session；v9 起另有 annotations：与 HubTool.annotations 相同；v15 起 MCP 出口发起的审批另有 principal：
+ * 认证主体（取自传输层凭据，现在恒为 "local"）与 clientName：客户端自报的 clientInfo.name，不可信、仅供显示，不得据此授权；
+ * 经 am_hub_call 发起的审批不含这两个字段；session 在 MCP 出口为调用方键 mcp:<n> / principal:<主体>）。approval 的所有权转移给回调方，必须最终调用 am_hub_approval_complete 恰好一次
  * （可在任意线程、回调返回之后）。超时（approval.timeout / responseTimeout）或调用被取消后完成返回
  * AM_HUB_ERR_ALREADY_COMPLETED。 */
 typedef void (*AmHubApprovalFn)(void *user_data, char *request_json, AmHubApproval *approval);
@@ -240,6 +246,13 @@ void am_hub_string_free(char *s);
  *   —— v3 渐进暴露（spec/hub-api.md 3.7）——
  *   toolExposure         "auto"（默认，App 工具总数超过阈值时渐进）/ "progressive" / "all"
  *   toolExposureThreshold  auto 的阈值，默认 40
+ *   —— v15 无会话 MCP 请求（spec/hub-api.md 3.6 / 3.7）——
+ *   taskIdleTtlMs        无会话调用方（principal:<主体>）的 Agent 任务在请求流空闲多久后回收（收回其租约、清除选择），
+ *                        默认 600000；0 不因空闲回收
+ *   statelessToolExposure  无会话请求的工具暴露方式："all"（默认）/ "progressive" / "auto"（阈值同 toolExposureThreshold）；
+ *                        渐进时列表只含内置工具与全局选定实例的 App，不随调用变化
+ *   principalSelectTtlMs 无会话请求的主体级 apps.select 选择的空闲有效期，默认 60000；0 不单独过期
+ *   statelessListTtlMs   无会话请求的列表结果所带缓存提示 ttlMs，默认 5000
  *   workerThreads        tokio 工作线程数（默认 2）
  * 未知字段报 AM_HUB_ERR_INVALID_JSON。清单无效报 AM_HUB_ERR_INVALID_CONFIG；地址无法绑定报 AM_HUB_ERR_IO。 */
 AmHubStatus am_hub_start(const char *config_json, AmHub **out_hub);
@@ -293,7 +306,11 @@ AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **ou
  *   loadedAtMs, lastError?: {message, atMs}（最近一次 am_hub_set_policy 失败，之后成功时清除）}
  * v12 起另有 dormantStore（配置了 stateDir 时）：{dir（<stateDir>/dormant）, loadedInstances（启动时读回的实例数）,
  *   expiredInstances（启动时因过期丢弃的实例数）, writes（启动以来成功写入 / 删除文件的次数）,
- *   issues: [{file, reason}]（启动时跳过的文件：损坏、版本未知、超出上限）, lastError?（最近一次写入失败）} */
+ *   issues: [{file, reason}]（启动时跳过的文件：损坏、版本未知、超出上限）, lastError?（最近一次写入失败）}
+ * v15 起另有 tasks：Agent 任务（spec/hub-api.md 3.6），按 caller 排序：[{id（"task-<128 位十六进制>"）,
+ *   caller（调用方键 "mcp:<n>" | "principal:<主体>" | "api" | "api:<session>"）, kind（"mcpSession" | "principal" | "api"）,
+ *   selections: [{appId, instanceId, expiresInMs?（主体级选择距失效的毫秒数）}], leases: [{connectionId, expiresInMs}],
+ *   inflight（进行中的请求数）, idleMs?（距最近一次请求活动的毫秒数）}] */
 AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------

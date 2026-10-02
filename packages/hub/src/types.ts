@@ -288,6 +288,15 @@ export interface HubConfig {
   toolExposure?: ToolExposure
   /** `auto` 的阈值，缺省 40。 */
   toolExposureThreshold?: number
+  // ---- 无会话 MCP 请求（spec/hub-api.md 3.6 / 3.7）----
+  /** 无会话调用方（`principal:<主体>`）的 Agent 任务在请求流空闲多久后回收（收回租约、清除选择），缺省 600000；0 不因空闲回收。 */
+  taskIdleTtlMs?: number
+  /** 无会话请求的工具暴露方式，缺省 `all`；渐进时列表只含内置工具与全局选定实例的 App，不随调用变化。 */
+  statelessToolExposure?: ToolExposure
+  /** 无会话请求的主体级 `apps.select` 选择的空闲有效期，缺省 60000；0 不单独过期。 */
+  principalSelectTtlMs?: number
+  /** 无会话请求的列表结果所带缓存提示 `ttlMs`，缺省 5000。 */
+  statelessListTtlMs?: number
   /** 上游 MCP 服务器：名称（appId 规则）→ 启动方式。 */
   upstreams?: Record<string, UpstreamConfig>
   approval?: ApprovalPolicy
@@ -641,6 +650,42 @@ export interface HubStatus {
   policy?: PolicyStatus
   /** 休眠记录持久化状态；未配置 `stateDir` 或旧 Hub 时缺省。 */
   dormantStore?: DormantStoreStatus
+  /** Agent 任务（调用方的跨请求状态，spec/hub-api.md 3.6），按 `caller` 排序；旧 Hub 缺省。 */
+  tasks?: AgentTaskStatus[]
+}
+
+/** 调用方的种类：legacy MCP 会话 / 无会话 MCP 请求的主体 / Hub API 会话。 */
+export type CallerKind = 'mcpSession' | 'principal' | 'api'
+
+/** 一个 Agent 任务（{@link HubStatus.tasks}）。 */
+export interface AgentTaskStatus {
+  /** Hub 签发的任务 ID（`task-<128 位十六进制>`）。 */
+  id: string
+  /** 调用方键：`mcp:<n>` / `principal:<主体>` / `api` / `api:<session>`。 */
+  caller: string
+  kind: CallerKind
+  /** 未过期的 `apps.select` 选择，按 appId 排序。 */
+  selections: TaskSelectionStatus[]
+  /** 本任务发出、尚未到期且实例仍连接的租约，按连接 ID 排序。 */
+  leases: TaskLeaseStatus[]
+  /** 进行中的请求数。 */
+  inflight: number
+  /** 距最近一次请求活动的毫秒数；没有活动记录时缺省。 */
+  idleMs?: number
+}
+
+export interface TaskSelectionStatus {
+  appId: string
+  instanceId: string
+  /** 距失效的毫秒数（主体级选择，`principalSelectTtlMs`）；不单独过期时缺省。 */
+  expiresInMs?: number
+}
+
+export interface TaskLeaseStatus {
+  /** 实例的连接 ID（与 {@link InstanceInfo.connectionId} 相同）。 */
+  connectionId: string
+  /** 距到期的毫秒数。 */
+  expiresInMs: number
 }
 
 /** 休眠记录持久化状态（`HubConfig.stateDir`）。 */
@@ -717,7 +762,15 @@ export interface ApprovalRequest {
   /** 工具的 MCP 注解（与 {@link HubTool.annotations} 相同）。 */
   annotations: ToolAnnotations
   arguments: unknown
+  /** Hub API 为 `CallRequest.session` 原样；MCP 出口为调用方键（`mcp:<n>` / `principal:<主体>`）。 */
   session: string | null
+  /** MCP 出口：发起调用的认证主体（取自传输层凭据，现在恒为 `local`）；经 `callTool` 发起时缺省。 */
+  principal?: string
+  /**
+   * MCP 出口：客户端自报的 `clientInfo.name`；经 `callTool` 发起时缺省。
+   * 自报、不可信，**仅供显示**，不得据此做授权决定。
+   */
+  clientName?: string
 }
 
 export interface PairingRequest {

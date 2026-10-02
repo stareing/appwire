@@ -100,6 +100,10 @@ final class HubIntegrationTests: XCTestCase {
         let r = try await hub.callTool("notes.add", arguments: NoteArgs(text: "买牛奶"), timeout: 5)
         XCTAssertNil(r.error)
         XCTAssertEqual(try r.decode(Saved.self), Saved(saved: "买牛奶"))
+        // Hub API 调用方的 Agent 任务（spec/hub-api.md 3.6）
+        let task: AgentTaskStatus = try XCTUnwrap(try hub.status().tasks?.first { $0.caller == "api" })
+        XCTAssertEqual(task.kind, CallerKind.api)
+        XCTAssertTrue(task.id.hasPrefix("task-"), task.id)
 
         // exportTools + dispatch（OpenAI Responses）
         let exported = hub.exportTools(.openAiResponses, filter: ToolFilter(apps: ["notes"]))
@@ -122,6 +126,9 @@ final class HubIntegrationTests: XCTestCase {
         XCTAssertEqual(seen.count, 1)
         XCTAssertEqual(seen.first?.appId, "notes")
         XCTAssertEqual(seen.first?.risk, .destructive)
+        // principal / clientName 只在 MCP 出口发起的审批中出现
+        XCTAssertNil(seen.first?.principal ?? nil)
+        XCTAssertNil(seen.first?.clientName ?? nil)
 
         // @MainActor handler（UI 确认）→ 同意 → 成功；抛出错误 → 拒绝
         hub.setApprovalHandler { @MainActor _ in
@@ -426,6 +433,18 @@ final class HubIntegrationTests: XCTestCase {
         let ok = try await hub.callTool("notes.add")
         XCTAssertNil(ok.error)
         XCTAssertNil(try hub.policy().lastError)
+    }
+
+    /// spec/hub-api.md 3.6 / 3.7：无会话 MCP 请求的配置可设置；启动时没有 Agent 任务。
+    func testStatelessConfig() throws {
+        let config = HubConfig(
+            enableListen: false, enableIpc: false, taskIdleTtlMs: 0, statelessToolExposure: .progressive,
+            principalSelectTtlMs: 1500, statelessListTtlMs: 750
+        )
+        XCTAssertEqual(config.statelessToolExposure, .progressive)
+        let hub = try Hub(config: config)
+        XCTAssertEqual(try hub.status().tasks, [])
+        hub.close()
     }
 
     func testProgressiveExposureConfig() throws {

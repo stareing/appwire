@@ -122,6 +122,7 @@ async fn doctor_and_status_with_running_host() {
     };
     assert_eq!(line.trim().lines().count(), 1, "{line}");
     assert!(line.contains(&format!("pid {}", reg.identity.pid)), "{line}");
+    assert!(line.contains("Agent 任务 0 个"), "{line}");
 
     let (code, report) = doctor_json(&home.0);
     assert_eq!(check(&report, "host")["status"], "ok", "{report:#}");

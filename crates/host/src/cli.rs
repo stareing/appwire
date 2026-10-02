@@ -382,6 +382,19 @@ pub struct HubArgs {
     #[arg(long, value_name = "MS")]
     pub channel_grace_ms: Option<u64>,
 
+    /// 无会话 MCP 请求的工具暴露方式（spec/hub-api.md 3.7「无会话请求的列表与总览」）：all（默认，全部列出）/
+    /// progressive / auto（列表只含 apps.* 与全局选定实例的 App，不随调用变化；其余按全名调用）。
+    #[arg(long, value_name = "auto|progressive|all", value_parser = parse_exposure)]
+    pub stateless_tool_exposure: Option<ToolExposure>,
+
+    /// 无会话 MCP 请求的 Agent 任务在请求流空闲多久后回收（毫秒，spec/hub-api.md 3.6），默认 600000；0 不因空闲回收。
+    #[arg(long, value_name = "MS")]
+    pub task_idle_ttl_ms: Option<u64>,
+
+    /// 无会话请求的主体级 apps.select 选择的空闲有效期（毫秒，spec/hub-api.md 3.6），默认 60000；0 不单独过期。
+    #[arg(long, value_name = "MS")]
+    pub principal_select_ttl_ms: Option<u64>,
+
     /// 日志级别（trace / debug / info / warn / error），默认 info。设置 RUST_LOG 时以 RUST_LOG 为准。
     #[arg(long, value_name = "LEVEL")]
     pub log_level: Option<String>,
@@ -440,6 +453,9 @@ impl HubArgs {
             log_level: self.log_level.clone(),
             name_service: self.name_service.then_some(true),
             channel_grace_ms: self.channel_grace_ms,
+            stateless_tool_exposure: self.stateless_tool_exposure,
+            task_idle_ttl_ms: self.task_idle_ttl_ms,
+            principal_select_ttl_ms: self.principal_select_ttl_ms,
             ..Default::default()
         })
     }
@@ -596,6 +612,29 @@ mod tests {
         let o = s.hub.overrides().unwrap();
         assert_eq!(o.tool_exposure, Some(ToolExposure::Auto));
         assert_eq!(o.tool_exposure_threshold, Some(5));
+        assert_eq!(o.stateless_tool_exposure, None);
+    }
+
+    #[test]
+    fn parses_stateless_settings() {
+        let cli = Cli::try_parse_from([
+            "app-mcp-host",
+            "serve",
+            "--stateless-tool-exposure",
+            "progressive",
+            "--task-idle-ttl-ms",
+            "0",
+            "--principal-select-ttl-ms",
+            "1500",
+        ])
+        .unwrap();
+        let Some(Command::Serve(s)) = cli.command else {
+            panic!()
+        };
+        let o = s.hub.overrides().unwrap();
+        assert_eq!(o.stateless_tool_exposure, Some(ToolExposure::Progressive));
+        assert_eq!((o.task_idle_ttl_ms, o.principal_select_ttl_ms), (Some(0), Some(1500)));
+        assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--stateless-tool-exposure", "some"]).is_err());
     }
 
     #[test]
