@@ -39,7 +39,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
-use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 
 use crate::app_server::Peer;
 use crate::hub::HubShared;
@@ -407,7 +407,7 @@ impl Router {
         tokio::spawn(async move {
             match on_upgrade.await {
                 Ok(upgraded) => {
-                    let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
+                    let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(app_ws_config())).await;
                     crate::app_server::handle_websocket(shared, ws, origin, peer).await;
                 }
                 Err(e) => tracing::debug!(%peer, "WebSocket 升级失败：{e}"),
@@ -449,6 +449,7 @@ impl Router {
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
+                    disable_nagle(&stream, addr);
                     tokio::spawn(self.clone().serve_connection(stream, Peer::Tcp(addr)));
                 }
                 Err(e) => {
@@ -476,6 +477,26 @@ impl Router {
     }
 }
 
+/// App 连接（TCP 与本地 IPC 共用）的 WebSocket 读缓冲初始容量。
+///
+/// @why tungstenite 缺省 128 KiB 且每条连接预先分配（第 4f 项 d 测得每条 App 连接约 135 KB）；App 消息多为数百字节，
+/// 大消息按帧头中的长度临时扩容（不受此值限制，上限仍是消息 / 帧大小上限），所以取 8 KiB。
+pub(crate) const APP_WS_READ_BUFFER: usize = 8 * 1024;
+
+fn app_ws_config() -> WebSocketConfig {
+    WebSocketConfig::default().read_buffer_size(APP_WS_READ_BUFFER)
+}
+
+/// 关闭 Nagle 算法。
+///
+/// @why 请求 / 响应式的小消息（JSON-RPC、SSE 分块）在 Nagle + 对端延迟确认下每次多等约 40 ms
+/// （第 4f 项 d 测得每次小调用 46–53 ms，设置后 0.7 ms）。失败只影响延迟，记 debug 日志后继续。
+fn disable_nagle(stream: &tokio::net::TcpStream, addr: std::net::SocketAddr) {
+    if let Err(e) = stream.set_nodelay(true) {
+        tracing::debug!(%addr, "设置 TCP_NODELAY 失败：{e}");
+    }
+}
+
 /// 是否为 WebSocket 升级请求（`Connection: upgrade` + `Upgrade: websocket`，大小写不敏感）。
 fn is_websocket_upgrade<B>(req: &http::Request<B>) -> bool {
     let has_token = |name: http::header::HeaderName, token: &str| {
@@ -490,6 +511,26 @@ fn is_websocket_upgrade<B>(req: &http::Request<B>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn accepted_tcp_disables_nagle() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (stream, peer) = listener.accept().await.unwrap();
+        assert!(!stream.nodelay().unwrap(), "前提：新接受的套接字缺省开着 Nagle");
+        disable_nagle(&stream, peer);
+        assert!(stream.nodelay().unwrap());
+    }
+
+    #[test]
+    fn app_ws_buffer_is_small_but_message_limits_unchanged() {
+        let c = app_ws_config();
+        let d = WebSocketConfig::default();
+        assert_eq!(c.read_buffer_size, APP_WS_READ_BUFFER);
+        assert!(c.read_buffer_size < d.read_buffer_size);
+        assert_eq!((c.max_message_size, c.max_frame_size), (d.max_message_size, d.max_frame_size));
+    }
 
     fn headers(auth: Option<&str>) -> http::HeaderMap {
         let mut h = http::HeaderMap::new();

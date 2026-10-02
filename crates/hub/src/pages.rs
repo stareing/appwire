@@ -5,9 +5,10 @@
 
 use std::collections::BTreeMap;
 
-use app_mcp_manifest::Manifest;
-use app_mcp_protocol::{ToolInfo, is_valid_name};
+use app_mcp_protocol::is_valid_name;
 use serde_json::Value;
+
+use crate::tool_def::{SharedTool, StaticManifest};
 
 /// 每个 App 从 SDK 上报中记下的页面数上限（spec/hub-api.md 3.11 的资源保护同类：防止失控的 App 撑大 Hub 内存）。
 pub const MAX_LEARNED_PAGES: usize = 64;
@@ -15,16 +16,17 @@ pub const MAX_LEARNED_PAGES: usize = 64;
 pub const MAX_LEARNED_PAGE_TOOLS: usize = 128;
 
 /// SDK 上报过的页面工具（`ToolInfo.page` 非空）。工具从实例注销后仍保留，Hub 据此在工具不在当前页面时导航。
+/// 与实例共享同一份定义（[`SharedTool`]）。
 ///
 /// @invariant 同一工具名只出现在一个页面中（工具名在 App 内唯一；上报的页面变化时移到新页面）。
 #[derive(Debug, Default)]
 pub(crate) struct LearnedPages {
-    pages: BTreeMap<String, BTreeMap<String, ToolInfo>>,
+    pages: BTreeMap<String, BTreeMap<String, SharedTool>>,
 }
 
 impl LearnedPages {
     /// 记下带 `page` 的工具（运行时定义覆盖之前记下的）；超出上限的忽略并记 warn 日志。返回目录是否变化。
-    pub fn learn<'a>(&mut self, app_id: &str, tools: impl IntoIterator<Item = &'a ToolInfo>) -> bool {
+    pub fn learn<'a>(&mut self, app_id: &str, tools: impl IntoIterator<Item = &'a SharedTool>) -> bool {
         let mut changed = false;
         for t in tools {
             let Some(page) = t.page.as_deref().filter(|p| is_valid_name(p)) else {
@@ -69,7 +71,7 @@ pub struct PageEntry {
     /// 清单中声明了该页面（否则只来自工具上的 `page` 字段）。
     pub declared: bool,
     /// 页面上的工具：清单定义，运行时上报的同名定义优先。
-    pub tools: BTreeMap<String, ToolInfo>,
+    pub tools: BTreeMap<String, SharedTool>,
 }
 
 impl PageEntry {
@@ -89,15 +91,11 @@ impl PageEntry {
 
 /// 合成某个 App 的页面目录：清单 `pages`（含其 `tools`）→ 清单顶层带 `page` 的工具 → SDK 上报的页面工具（覆盖同名）。
 /// 按页面名排序。
-pub(crate) fn catalog(manifest: Option<&Manifest>, learned: &LearnedPages) -> Vec<PageEntry> {
+pub(crate) fn catalog(manifest: Option<&StaticManifest>, learned: &LearnedPages) -> Vec<PageEntry> {
     let mut pages: BTreeMap<String, PageEntry> = BTreeMap::new();
     if let Some(m) = manifest {
-        for p in &m.pages {
-            let tools = p
-                .tools
-                .iter()
-                .map(|t| (t.name.clone(), ToolInfo { page: Some(p.name.clone()), ..t.clone() }))
-                .collect();
+        for (p, page_tools) in m.pages() {
+            let tools = page_tools.iter().map(|t| (t.name.clone(), t.clone())).collect();
             pages.insert(
                 p.name.clone(),
                 PageEntry {
@@ -112,7 +110,7 @@ pub(crate) fn catalog(manifest: Option<&Manifest>, learned: &LearnedPages) -> Ve
                 },
             );
         }
-        for t in &m.tools {
+        for t in m.tools() {
             if let Some(page) = t.page.as_deref().filter(|p| is_valid_name(p)) {
                 pages.entry(page.to_owned()).or_insert_with(|| PageEntry::undeclared(page)).tools.insert(t.name.clone(), t.clone());
             }
@@ -132,25 +130,32 @@ pub(crate) fn catalog(manifest: Option<&Manifest>, learned: &LearnedPages) -> Ve
 }
 
 /// 页面目录中声明了 `tool` 的页面与该工具的定义。
-pub(crate) fn find_tool<'a>(pages: &'a [PageEntry], tool: &str) -> Option<(&'a PageEntry, &'a ToolInfo)> {
+pub(crate) fn find_tool<'a>(pages: &'a [PageEntry], tool: &str) -> Option<(&'a PageEntry, &'a SharedTool)> {
     pages.iter().find_map(|p| p.tools.get(tool).map(|t| (p, t)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool_def::ToolDef;
+    use app_mcp_protocol::ToolInfo;
     use serde_json::json;
+    use std::sync::Arc;
 
-    fn tool(name: &str, page: Option<&str>) -> ToolInfo {
-        let mut t: ToolInfo =
-            serde_json::from_value(json!({"name": name, "description": "d", "inputSchema": {"type": "object"}}))
-                .expect("tool");
-        t.page = page.map(str::to_owned);
-        t
+    fn tool(name: &str, page: Option<&str>) -> SharedTool {
+        tool_described(name, page, "d")
     }
 
-    fn manifest() -> Manifest {
-        app_mcp_manifest::parse(
+    fn tool_described(name: &str, page: Option<&str>, description: &str) -> SharedTool {
+        let mut t: ToolInfo =
+            serde_json::from_value(json!({"name": name, "description": description, "inputSchema": {"type": "object"}}))
+                .expect("tool");
+        t.page = page.map(str::to_owned);
+        Arc::new(ToolDef::from_info(t))
+    }
+
+    fn manifest() -> StaticManifest {
+        StaticManifest::new(app_mcp_manifest::parse(
             &json!({
                 "manifestVersion": 1, "appId": "shop", "name": "商城",
                 "tools": [
@@ -168,14 +173,13 @@ mod tests {
             })
             .to_string(),
         )
-        .expect("manifest")
+        .expect("manifest"))
     }
 
     #[test]
     fn catalog_merges_manifest_and_learned() {
         let mut learned = LearnedPages::default();
-        let mut checkout = tool("cart.checkout", Some("cart"));
-        checkout.description = "运行时结算".into();
+        let checkout = tool_described("cart.checkout", Some("cart"), "运行时结算");
         assert!(learned.learn("shop", [&checkout, &tool("orders.cancel", Some("orders")), &tool("plain", None)]));
         assert!(!learned.learn("shop", [&checkout]), "相同定义不算变化");
         let pages = catalog(Some(&manifest()), &learned);
@@ -210,11 +214,11 @@ mod tests {
         assert!(find_tool(&pages, "cart.checkout").is_some_and(|(p, _)| p.name == "checkout"));
 
         let mut learned = LearnedPages::default();
-        let many: Vec<ToolInfo> = (0..MAX_LEARNED_PAGES + 3).map(|i| tool(&format!("t{i}"), Some(&format!("p{i}")))).collect();
+        let many: Vec<SharedTool> = (0..MAX_LEARNED_PAGES + 3).map(|i| tool(&format!("t{i}"), Some(&format!("p{i}")))).collect();
         learned.learn("a", many.iter());
         assert_eq!(catalog(None, &learned).len(), MAX_LEARNED_PAGES);
         let mut learned = LearnedPages::default();
-        let many: Vec<ToolInfo> = (0..MAX_LEARNED_PAGE_TOOLS + 3).map(|i| tool(&format!("t{i}"), Some("p"))).collect();
+        let many: Vec<SharedTool> = (0..MAX_LEARNED_PAGE_TOOLS + 3).map(|i| tool(&format!("t{i}"), Some("p"))).collect();
         learned.learn("a", many.iter());
         assert_eq!(catalog(None, &learned)[0].tools.len(), MAX_LEARNED_PAGE_TOOLS);
         // 非法页面名忽略

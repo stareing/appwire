@@ -8,11 +8,13 @@ use rmcp::model::{
     CallToolRequestParams, CallToolResult, ReadResourceRequestParams, ResourceContents,
 };
 use rmcp::service::RunningService;
-use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
+
+#[path = "support/mcp_http.rs"]
+mod mcp_http;
 
 const T: Duration = Duration::from_secs(10);
 const UPSTREAM_BIN: &str = env!("CARGO_BIN_EXE_app-mcp-test-upstream");
@@ -54,8 +56,7 @@ async fn duplex_client(host: &Host) -> Client {
 }
 
 async fn http_client(addr: std::net::SocketAddr) -> Client {
-    let transport = StreamableHttpClientTransport::from_uri(format!("http://{addr}/mcp"));
-    ().serve(transport).await.expect("http mcp initialize")
+    ().serve(mcp_http::transport(format!("http://{addr}/mcp"), None)).await.expect("http mcp initialize")
 }
 
 async fn tool_names(client: &Client) -> Vec<String> {

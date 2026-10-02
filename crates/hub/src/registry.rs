@@ -18,6 +18,7 @@ use crate::connection::Connection;
 use crate::overview::{AppSummary, Overview, OverviewSource};
 use crate::pages::{self, LearnedPages, PageEntry};
 use crate::routing::{self, Candidate};
+use crate::tool_def::{SharedTool, StaticManifest, ToolDef};
 use crate::types::{AppInfo, AppKind, InstanceInfo};
 
 /// 握手成功后登记的新实例。
@@ -61,7 +62,7 @@ pub struct Instance {
     pub connected_seq: u64,
     pub last_active_at: Option<SystemTime>,
     pub last_active_seq: Option<u64>,
-    pub tools: BTreeMap<String, ToolInfo>,
+    pub tools: BTreeMap<String, SharedTool>,
     pub resources: BTreeMap<String, ResourceInfo>,
     /// Host 已向该实例订阅的资源名。
     pub subscriptions: HashSet<String>,
@@ -94,7 +95,8 @@ pub struct DormantInstance {
     pub url: Option<String>,
     pub overview: Option<AppOverview>,
     pub visibility: Option<Visibility>,
-    pub tools: BTreeMap<String, ToolInfo>,
+    /// 与休眠前的实例共享同一份定义。
+    pub tools: BTreeMap<String, SharedTool>,
     pub resources: BTreeMap<String, ResourceInfo>,
     /// 本 Hub 发给 SDK 的恢复令牌（一次性）。
     pub resume_token: String,
@@ -114,7 +116,7 @@ impl DormantInstance {
     pub fn snapshot_hash(&self) -> String {
         app_mcp_protocol::tools_hash(
             &ToolsSyncParams {
-                tools: self.tools.values().cloned().collect(),
+                tools: self.tools.values().map(|t| t.to_info()).collect(),
             },
             &ResourcesSyncParams {
                 resources: self.resources.values().cloned().collect(),
@@ -137,7 +139,7 @@ pub struct WakePlan {
     /// 休眠实例上报的唤醒描述（`None` 时由调用方按清单解析）。
     pub descriptor: Option<WakeDescriptor>,
     /// 快照（或清单）中的定义，用于唤醒前的 schema 校验与审批。
-    pub tool: Option<ToolInfo>,
+    pub tool: Option<SharedTool>,
 }
 
 /// [`Registry::wake_target_presence`] 的结果。
@@ -153,7 +155,7 @@ pub(crate) enum WakeTargetPresence {
 
 #[derive(Debug, Default)]
 struct AppEntry {
-    manifest: Option<Manifest>,
+    manifest: Option<StaticManifest>,
     /// 按连接顺序排列。
     instances: Vec<Instance>,
     /// 按休眠顺序排列。
@@ -166,7 +168,7 @@ impl AppEntry {
     fn display_name(&self) -> Option<&str> {
         self.manifest
             .as_ref()
-            .map(|m| m.name.as_str())
+            .map(|m| m.meta().name.as_str())
             .or_else(|| self.instances.last().map(|i| i.app_name.as_str()))
             .or_else(|| self.dormant.last().map(|i| i.app_name.as_str()))
     }
@@ -206,7 +208,7 @@ pub use crate::types::Availability;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListedTool {
     pub app_id: String,
-    pub info: ToolInfo,
+    pub info: SharedTool,
     pub availability: Availability,
 }
 
@@ -222,7 +224,7 @@ pub struct ListedResource {
 pub struct ToolTarget {
     pub instance_id: String,
     pub conn: Arc<Connection>,
-    pub tool: ToolInfo,
+    pub tool: SharedTool,
 }
 
 /// 资源读取的目标。
@@ -262,8 +264,8 @@ fn visibility_str(v: Option<Visibility>) -> Value {
     }
 }
 
-/// 过滤 SDK 发来的非法工具条目。
-fn sanitize_tools(app_id: &str, tools: Vec<ToolInfo>) -> Vec<ToolInfo> {
+/// 过滤 SDK 发来的非法工具条目，合法的转为共享的紧凑定义。
+fn sanitize_tools(app_id: &str, tools: Vec<ToolInfo>) -> Vec<SharedTool> {
     tools
         .into_iter()
         .filter(|t| {
@@ -274,6 +276,7 @@ fn sanitize_tools(app_id: &str, tools: Vec<ToolInfo>) -> Vec<ToolInfo> {
             }
             ok
         })
+        .map(|t| Arc::new(ToolDef::from_info(t)))
         .collect()
 }
 
@@ -295,13 +298,18 @@ impl Registry {
         Self::default()
     }
 
-    /// 登记静态清单；同一 appId 已有清单时替换并返回旧清单。
-    pub fn set_manifest(&mut self, manifest: Manifest) -> Option<Manifest> {
-        let entry = self.apps.entry(manifest.app_id.clone()).or_default();
-        entry.manifest.replace(manifest)
+    /// 登记静态清单（工具转为紧凑定义，清单只保存这一份）；同一 appId 已有清单时替换，返回是否替换了旧清单。
+    pub fn set_manifest(&mut self, manifest: Manifest) -> bool {
+        self.set_static_manifest(StaticManifest::new(manifest))
     }
 
-    pub fn manifest(&self, app_id: &str) -> Option<&Manifest> {
+    /// 登记已转换的静态清单；同一 appId 已有清单时替换，返回是否替换了旧清单。
+    pub fn set_static_manifest(&mut self, manifest: StaticManifest) -> bool {
+        let entry = self.apps.entry(manifest.meta().app_id.clone()).or_default();
+        entry.manifest.replace(manifest).is_some()
+    }
+
+    pub fn manifest(&self, app_id: &str) -> Option<&StaticManifest> {
         self.apps.get(app_id)?.manifest.as_ref()
     }
 
@@ -525,7 +533,7 @@ impl Registry {
         })
     }
 
-    fn plan_for(&self, app_id: &str, d: &DormantInstance, tool: Option<ToolInfo>) -> WakePlan {
+    fn plan_for(&self, app_id: &str, d: &DormantInstance, tool: Option<SharedTool>) -> WakePlan {
         WakePlan {
             app_id: app_id.to_owned(),
             instance_id: Some(d.instance_id.clone()),
@@ -573,7 +581,7 @@ impl Registry {
         let Some(inst) = self.instance_mut(app_id, conn_id) else {
             return false;
         };
-        let new: BTreeMap<String, ToolInfo> =
+        let new: BTreeMap<String, SharedTool> =
             tools.into_iter().map(|t| (t.name.clone(), t)).collect();
         let changed = inst.tools != new;
         inst.tools = new;
@@ -700,8 +708,7 @@ impl Registry {
     }
 
     pub(crate) fn disconnected_error(&self, app_id: &str) -> ToolError {
-        let manifest = self.manifest(app_id);
-        let url = manifest.and_then(Manifest::web_url);
+        let url = self.manifest(app_id).and_then(|m| m.meta().web_url());
         let label = self.app_label(app_id);
         let message = match url {
             Some(url) => {
@@ -721,7 +728,7 @@ impl Registry {
     // ------------------------------------------------------------------
 
     /// 记下 SDK 上报的页面工具。
-    fn learn_pages<'a>(&mut self, app_id: &str, tools: impl IntoIterator<Item = &'a ToolInfo>) {
+    fn learn_pages<'a>(&mut self, app_id: &str, tools: impl IntoIterator<Item = &'a SharedTool>) {
         if let Some(entry) = self.apps.get_mut(app_id) {
             entry.learned_pages.learn(app_id, tools);
         }
@@ -777,7 +784,7 @@ impl Registry {
     }
 
     /// App 的某个工具的已知定义：已连接实例注册的（按路由优先级）→ 休眠实例快照 → 清单。不含页面目录。
-    pub fn app_tool(&self, app_id: &str, name: &str) -> Option<ToolInfo> {
+    pub fn app_tool(&self, app_id: &str, name: &str) -> Option<SharedTool> {
         let entry = self.apps.get(app_id)?;
         let registered = entry.ordered(None, |i| i.tools.contains_key(name)).into_iter().next().and_then(|i| i.tools.get(name));
         let dormant =
@@ -910,19 +917,35 @@ impl Registry {
     /// 再加上未注册的静态工具（标记为 [`Availability::NotRegistered`]）。
     /// 未连接的 App：静态工具（[`Availability::Disconnected`]）。
     pub fn tools(&self) -> Vec<ListedTool> {
+        self.tools_of(|_| true)
+    }
+
+    /// [`Self::tools`] 中 `app` 为真的 App 的部分（先按 App 过滤再取定义，定义经 `Arc` 共享，不深拷贝）。
+    pub fn tools_of(&self, app: impl Fn(&str) -> bool) -> Vec<ListedTool> {
         let mut out = Vec::new();
-        for (app_id, entry) in &self.apps {
+        self.visit_tools(app, |app_id, info, availability| {
+            out.push(ListedTool { app_id: app_id.to_owned(), info: info.clone(), availability });
+        });
+        out
+    }
+
+    /// [`Self::tools`] 的条数（不复制任何定义）。
+    pub fn tool_count(&self) -> usize {
+        let mut n = 0;
+        self.visit_tools(|_| true, |_, _, _| n += 1);
+        n
+    }
+
+    /// 按 [`Self::tools`] 的规则逐个访问工具（`app` 为真的 App）。
+    pub fn visit_tools(&self, app: impl Fn(&str) -> bool, mut f: impl FnMut(&str, &SharedTool, Availability)) {
+        for (app_id, entry) in self.apps.iter().filter(|(id, _)| app(id)) {
             let mut seen: HashSet<&str> = HashSet::new();
             if !entry.instances.is_empty() {
                 // `view` 工具只列首选实例（焦点 / 最近活跃）当前界面上的（spec/hub-api.md 3.14 L1）。
                 for (rank, inst) in entry.ordered(None, |_| true).into_iter().enumerate() {
                     for (name, info) in &inst.tools {
                         if (rank == 0 || info.surface.is_app()) && seen.insert(name) {
-                            out.push(ListedTool {
-                                app_id: app_id.clone(),
-                                info: info.clone(),
-                                availability: Availability::Available,
-                            });
+                            f(app_id, info, Availability::Available);
                         }
                     }
                 }
@@ -930,11 +953,7 @@ impl Registry {
             for d in entry.dormant_ordered(None, |_| true) {
                 for (name, info) in d.tools.iter().filter(|(_, t)| t.surface.is_app()) {
                     if seen.insert(name) {
-                        out.push(ListedTool {
-                            app_id: app_id.clone(),
-                            info: info.clone(),
-                            availability: Availability::Dormant,
-                        });
+                        f(app_id, info, Availability::Dormant);
                     }
                 }
             }
@@ -944,18 +963,11 @@ impl Registry {
                 } else {
                     Availability::NotRegistered
                 };
-                for t in &m.tools {
-                    if !seen.contains(t.name.as_str()) {
-                        out.push(ListedTool {
-                            app_id: app_id.clone(),
-                            info: t.clone(),
-                            availability,
-                        });
-                    }
+                for t in m.tools().iter().filter(|t| !seen.contains(t.name.as_str())) {
+                    f(app_id, t, availability);
                 }
             }
         }
-        out
     }
 
     /// MCP 资源列表：已连接 App 的资源并集；未连接 App 的静态资源（`available = false`）。
@@ -989,7 +1001,7 @@ impl Registry {
             if entry.instances.is_empty()
                 && let Some(m) = &entry.manifest
             {
-                for r in m.resources.iter().filter(|r| !seen.contains(r.name.as_str())) {
+                for r in m.meta().resources.iter().filter(|r| !seen.contains(r.name.as_str())) {
                     out.push(ListedResource {
                         app_id: app_id.clone(),
                         info: r.clone(),
@@ -1109,7 +1121,7 @@ impl Registry {
                 .find_map(|d| Overview::new(app_id, name, d.overview.as_ref()?, OverviewSource::Runtime))
         };
         runtime.or_else(dormant).or_else(|| {
-            let m = entry.manifest.as_ref()?;
+            let m = entry.manifest.as_ref()?.meta();
             Overview::new(app_id, name, m.overview.as_ref()?, OverviewSource::Manifest)
         })
     }
@@ -1184,7 +1196,7 @@ impl Registry {
                     "appId": app_id,
                     "kind": "app",
                     "name": entry.display_name().unwrap_or(app_id),
-                    "description": m.and_then(|m| m.description.clone()),
+                    "description": m.and_then(|m| m.meta().description.clone()),
                     "summary": self.overview(app_id).map(|o| o.summary),
                     "connected": !entry.instances.is_empty(),
                     "dormant": entry.instances.is_empty() && !entry.dormant.is_empty(),
@@ -1192,9 +1204,9 @@ impl Registry {
                     "dormantInstances": dormant,
                     "selectedInstanceId": sel,
                     "defaultInstanceId": default_target,
-                    "staticToolCount": m.map(|m| m.tools.len()).unwrap_or(0),
+                    "staticToolCount": m.map(|m| m.tools().len()).unwrap_or(0),
                     "pageCount": pages::catalog(m, &entry.learned_pages).len(),
-                    "launchUrl": m.and_then(Manifest::web_url),
+                    "launchUrl": m.and_then(|m| m.meta().web_url()),
                 })
             })
             .collect();
@@ -1404,7 +1416,7 @@ mod tests {
         reg.sync_tools("app", a.id, vec![tool("x")]);
         assert!(reg.change_tools("app", a.id, vec![tool("y")], vec!["x".into()]));
         assert!(!reg.change_tools("app", a.id, vec![], vec!["zzz".into()]));
-        let names: Vec<_> = reg.tools().into_iter().map(|t| t.info.name).collect();
+        let names: Vec<_> = reg.tools().into_iter().map(|t| t.info.name.clone()).collect();
         assert_eq!(names, vec!["y"]);
     }
 
@@ -1451,7 +1463,7 @@ mod tests {
         reg.sync_tools("app", a.id, vec![tool("bg"), view("a.view", "pa")]);
         reg.sync_tools("app", b.id, vec![view("b.view", "pb")]);
         reg.set_visibility("app", b.id, Visibility::Visible, true);
-        let names = |reg: &Registry| reg.tools().into_iter().map(|t| t.info.name).collect::<Vec<_>>();
+        let names = |reg: &Registry| reg.tools().into_iter().map(|t| t.info.name.clone()).collect::<Vec<_>>();
         // b 聚焦：只列 b 的 view 工具，a 的 app 工具照常
         assert_eq!(names(&reg), ["b.view", "bg"]);
         reg.set_visibility("app", a.id, Visibility::Visible, true);
@@ -1626,7 +1638,7 @@ mod tests {
         let d = reg.dormant("shop", "a").unwrap();
         assert_eq!(d.snapshot_hash(), hash);
         // 工具仍列出，标记 Dormant；未注册的静态工具仍为 Disconnected
-        let listed: Vec<_> = reg.tools().into_iter().map(|t| (t.info.name, t.availability)).collect();
+        let listed: Vec<_> = reg.tools().into_iter().map(|t| (t.info.name.clone(), t.availability)).collect();
         assert_eq!(
             listed,
             vec![
@@ -1693,5 +1705,37 @@ mod tests {
         reg.clear_dormant("shop");
         assert!(!reg.instance_known("shop", "a"));
         assert!(!reg.instance_known("other", "a"));
+    }
+
+    /// 回归（第 4f 项 d）：同一工具定义在实例、休眠快照、页面目录与列表之间共享（`Arc`），列出 / 计数不深拷贝。
+    #[test]
+    fn tool_definitions_are_shared_not_copied() {
+        let mut reg = Registry::new();
+        reg.set_manifest(manifest());
+        let (a, _) = add(&mut reg, "shop", "a", 1);
+        let mut page_tool = tool("orders.view");
+        page_tool.page = Some("orders".into());
+        reg.sync_tools("shop", a.id, vec![tool("orders.search"), page_tool]);
+        let live = reg.instance("shop", "a").unwrap().tools["orders.view"].clone();
+        let catalog = reg.pages("shop");
+        let (_, in_catalog) = pages::find_tool(&catalog, "orders.view").unwrap();
+        assert!(Arc::ptr_eq(&live, in_catalog), "页面目录与实例共享定义");
+        let listed = reg.tools();
+        let listed_view = listed.iter().find(|t| t.info.name == "orders.view").unwrap();
+        assert!(Arc::ptr_eq(&live, &listed_view.info), "列表不复制定义");
+        assert_eq!(reg.tool_count(), listed.len());
+        assert_eq!(reg.tools_of(|app| app == "other").len(), 0);
+        assert_eq!(reg.tools_of(|app| app == "shop").len(), listed.len());
+
+        reg.make_dormant("shop", a.id, "rt".into(), String::new(), None);
+        let snap = reg.dormant("shop", "a").unwrap();
+        assert!(Arc::ptr_eq(&live, &snap.tools["orders.view"]), "休眠快照沿用同一份定义");
+        let (b, _) = add(&mut reg, "shop", "a", 2);
+        let snap = reg.take_dormant("shop", "a").unwrap();
+        reg.restore_snapshot("shop", b.id, &snap);
+        assert!(Arc::ptr_eq(&live, &reg.instance("shop", "a").unwrap().tools["orders.view"]), "快速恢复不复制定义");
+        // 静态清单的工具也只有一份：列表与路由取到的是同一个。
+        let static_listed = reg.tools().into_iter().find(|t| t.info.name == "cart.add").unwrap();
+        assert!(Arc::ptr_eq(&static_listed.info, reg.manifest("shop").unwrap().tool("cart.add").unwrap()));
     }
 }

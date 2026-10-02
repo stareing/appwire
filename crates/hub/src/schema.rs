@@ -24,6 +24,22 @@ pub fn check(_schema: &Value, _args: &Value) -> SchemaCheck {
     SchemaCheck::Unchecked
 }
 
+/// 本构建未包含参数校验：一律 [`SchemaCheck::Unchecked`]（不解析 schema 文本）。
+#[cfg(not(feature = "schema-validation"))]
+pub fn check_json(_schema: &str, _args: &Value) -> SchemaCheck {
+    SchemaCheck::Unchecked
+}
+
+/// 用 JSON 文本形式的 `schema` 校验 `args`（Hub 以文本保存 schema，见 [`crate::tool_def`]）；文本不是合法 JSON 时为
+/// [`SchemaCheck::BadSchema`]。
+#[cfg(feature = "schema-validation")]
+pub fn check_json(schema: &str, args: &Value) -> SchemaCheck {
+    match serde_json::from_str::<Value>(schema) {
+        Ok(s) => check(&s, args),
+        Err(e) => SchemaCheck::BadSchema(e.to_string()),
+    }
+}
+
 /// 用 `schema` 校验 `args`。
 #[cfg(feature = "schema-validation")]
 pub fn check(schema: &Value, args: &Value) -> SchemaCheck {
@@ -69,6 +85,7 @@ mod unchecked_tests {
             check(&json!({"type": "string"}), &json!(1)),
             SchemaCheck::Unchecked
         );
+        assert_eq!(check_json(r#"{"type":"string"}"#, &json!(1)), SchemaCheck::Unchecked);
     }
 }
 
@@ -111,6 +128,14 @@ mod tests {
             check(&schema(), &json!({"keyword": "x", "extra": 1})),
             SchemaCheck::Invalid(_)
         ));
+    }
+
+    #[test]
+    fn json_text_schema() {
+        let text = serde_json::to_string(&schema()).unwrap();
+        assert_eq!(check_json(&text, &json!({"keyword": "x"})), SchemaCheck::Valid);
+        assert!(matches!(check_json(&text, &json!({})), SchemaCheck::Invalid(_)));
+        assert!(matches!(check_json("{not json", &json!({})), SchemaCheck::BadSchema(_)));
     }
 
     #[test]

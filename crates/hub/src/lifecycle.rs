@@ -120,7 +120,7 @@ impl HubShared {
         }
         self.registry()
             .manifest(&plan.app_id)
-            .and_then(|m| wake::manifest_descriptor(m, Platform::current(), self.config.wake_from_launch))
+            .and_then(|m| wake::manifest_descriptor(m.meta(), Platform::current(), self.config.wake_from_launch))
     }
 
     /// 执行唤醒并等待回连，返回就绪实例的 ID。

@@ -39,6 +39,7 @@ use crate::policy::{PolicyConfig, PolicyHook, PolicyState, PolicyStatus};
 #[cfg(feature = "mcp-server")]
 use crate::overview::AppSummary;
 use crate::overview::{Overview, OverviewSource};
+use crate::tool_def::StaticManifest;
 use crate::registry::Registry;
 use crate::types::{
     AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy, AuthStatus,
@@ -322,12 +323,21 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl HubShared {
-    fn new(config: HubConfig, waker: Option<Arc<dyn Waker>>) -> Self {
+    fn new(mut config: HubConfig, waker: Option<Arc<dyn Waker>>) -> Self {
         let mut registry = Registry::new();
-        for m in &config.manifests {
-            if registry.set_manifest(m.clone()).is_some() {
-                tracing::warn!(app_id = %m.app_id, "同一 appId 的清单出现多次，后加载的覆盖先加载的");
+        // @invariant 清单只在注册表中保存一份：移出配置，`config.manifests` 之后为空（启动后不再读取）。
+        let manifests = std::mem::take(&mut config.manifests);
+        if !manifests.is_empty() {
+            // 先全部复制为紧凑形式、再一起释放解析形式，然后把空闲内存还给操作系统（见 StaticManifest::copy_of）。
+            let compact: Vec<StaticManifest> = manifests.iter().map(StaticManifest::copy_of).collect();
+            drop(manifests);
+            for m in compact {
+                let app_id = m.meta().app_id.clone();
+                if registry.set_static_manifest(m) {
+                    tracing::warn!(%app_id, "同一 appId 的清单出现多次，后加载的覆盖先加载的");
+                }
             }
+            crate::heap::release_free_memory();
         }
         let mut upstreams = BTreeMap::new();
         for (name, up) in &config.upstreams {
@@ -692,12 +702,27 @@ impl HubShared {
     // ------------------------------------------------------------------
 
     /// App 与上游工具（不含内置工具）的总数。
+    ///
+    /// 只数不复制（第 4f 项 d：每次 `tools/list` 都会调用，之前经 [`Registry::tools`] 深拷贝全部定义）。
     fn tool_count(&self) -> usize {
-        if self.policy().has_hide() {
-            return self.visible_tools(false).iter().filter(|(_, builtin)| !builtin).count();
+        let policy = self.policy();
+        if !policy.has_hide() {
+            let apps = self.registry().tool_count();
+            return apps + lock(&self.upstreams).values().map(|s| s.tools.len()).sum::<usize>();
         }
-        let apps = self.registry().tools().len();
-        apps + lock(&self.upstreams).values().map(|s| s.tools.len()).sum::<usize>()
+        let mut n = 0;
+        self.registry().visit_tools(
+            |_| true,
+            |app_id, t, _| n += usize::from(policy.tool_hidden(app_id, &t.name, Some(&t.effective_annotations())).is_none()),
+        );
+        for (name, st) in lock(&self.upstreams).iter() {
+            n += st
+                .tools
+                .iter()
+                .filter(|t| policy.tool_hidden(name, &t.name, Some(&call::upstream_annotations(t))).is_none())
+                .count();
+        }
+        n
     }
 
     /// 当前是否按渐进暴露列出工具。
@@ -757,17 +782,14 @@ impl HubShared {
         let listed = |app_id: &str| exposed.as_ref().is_none_or(|e| e.contains(app_id));
         let policy = self.policy();
         let mut tools = call::builtin_tools(exposed.is_some(), self.has_pages());
-        tools.extend(
-            self.registry()
-                .tools()
-                .iter()
-                .filter(|t| listed(&t.app_id))
-                .filter(|t| policy.tool_hidden(&t.app_id, &t.info.name, Some(&t.info.effective_annotations())).is_none())
-                .map(|t| call::to_mcp_tool(&t.app_id, &t.info, t.availability)),
-        );
+        self.registry().visit_tools(listed, |app_id, t, availability| {
+            if policy.tool_hidden(app_id, &t.name, Some(&t.effective_annotations())).is_none() {
+                tools.push(call::to_mcp_tool(app_id, t, availability));
+            }
+        });
         let ups = lock(&self.upstreams);
         for (name, st) in ups.iter().filter(|(name, _)| listed(name)) {
-            for t in st.tools.iter().filter(|t| policy.tool_hidden(name, &t.name, Some(&call::upstream_hub_tool(name, t).annotations)).is_none()) {
+            for t in st.tools.iter().filter(|t| policy.tool_hidden(name, &t.name, Some(&call::upstream_annotations(t))).is_none()) {
                 let mut t = t.clone();
                 t.name = format!("{name}.{}", t.name).into();
                 tools.push(t);
@@ -778,9 +800,9 @@ impl HubShared {
 
     /// `apps.tools` 的结果：某个 App（或上游）的全部工具定义。
     pub(crate) fn app_tools(&self, app_id: &str) -> Vec<HubTool> {
-        self.visible_tools(false)
+        self.visible_tools(false, |a| a == app_id)
             .into_iter()
-            .filter(|(t, builtin)| !builtin && t.app_id == app_id)
+            .filter(|(_, builtin)| !builtin)
             .map(|(t, _)| t)
             .collect()
     }
@@ -851,9 +873,9 @@ impl HubShared {
                 .map(|t| call::upstream_hub_tool(app_id, t).annotations);
         }
         let reg = self.registry();
-        reg.tools()
+        reg.tools_of(|a| a == app_id)
             .into_iter()
-            .find(|t| t.app_id == app_id && t.info.name == tool)
+            .find(|t| t.info.name == tool)
             .map(|t| t.info.effective_annotations())
             // 页面目录中的工具（不在当前页面）：规则同样按其声明的注解匹配（spec/hub-api.md 3.14）。
             .or_else(|| {
@@ -1213,7 +1235,7 @@ impl HubShared {
             let static_count = self
                 .registry()
                 .manifest(&app_id)
-                .map_or(0, |m| m.tools.iter().filter(|t| visible(&app_id, &t.name)).count());
+                .map_or(0, |m| m.tools().iter().filter(|t| visible(&app_id, &t.name)).count());
             app["staticToolCount"] = json!(static_count);
             app["pageCount"] = json!(self.page_catalog(&app_id).len());
         }
@@ -1365,19 +1387,17 @@ impl HubShared {
 
     /// 全部工具：`(工具, 是否内置)`，顺序为内置、App（按 appId）、上游。
     /// `with_apps_tools`：内置工具是否包含 `apps.tools`（渐进暴露生效时才列出）。
-    pub(crate) fn all_tools(&self, with_apps_tools: bool, with_apps_page: bool) -> Vec<(HubTool, bool)> {
+    /// `app`：只取 appId（或上游名）满足条件的 App / 上游工具（先过滤再构造，构造会解析 schema）；内置工具总是包含。
+    pub(crate) fn all_tools(&self, with_apps_tools: bool, with_apps_page: bool, app: impl Fn(&str) -> bool) -> Vec<(HubTool, bool)> {
         let mut out: Vec<(HubTool, bool)> = call::builtin_hub_tools(with_apps_tools, with_apps_page)
             .into_iter()
             .map(|t| (t, true))
             .collect();
-        out.extend(
-            self.registry()
-                .tools()
-                .into_iter()
-                .map(|t| (call::app_hub_tool(&t.app_id, t.info, t.availability), false)),
-        );
+        self.registry().visit_tools(&app, |app_id, t, availability| {
+            out.push((call::app_hub_tool(app_id, t, availability), false));
+        });
         let ups = lock(&self.upstreams);
-        for (name, st) in ups.iter() {
+        for (name, st) in ups.iter().filter(|(name, _)| app(name)) {
             for t in &st.tools {
                 out.push((call::upstream_hub_tool(name, t), false));
             }
@@ -1386,20 +1406,30 @@ impl HubShared {
     }
 
     /// [`Self::all_tools`] 去掉被 `hide` 规则隐藏的 App 工具与上游工具（Agent 可见的列表）。
-    pub(crate) fn visible_tools(&self, with_apps_tools: bool) -> Vec<(HubTool, bool)> {
+    pub(crate) fn visible_tools(&self, with_apps_tools: bool, app: impl Fn(&str) -> bool) -> Vec<(HubTool, bool)> {
         let policy = self.policy();
-        let mut tools = self.all_tools(with_apps_tools, self.has_pages());
+        let mut tools = self.all_tools(with_apps_tools, self.has_pages(), app);
         if policy.has_hide() {
             tools.retain(|(t, builtin)| *builtin || policy.tool_hidden(&t.app_id, &t.tool, Some(&t.annotations)).is_none());
         }
         tools
     }
 
+    /// 全部工具的全名（顺序同 [`Self::all_tools`]，只取名称，不构造定义）。
+    fn all_tool_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = call::builtin_hub_tools(true, true).into_iter().map(|t| t.name).collect();
+        self.registry().visit_tools(|_| true, |app_id, t, _| out.push(format!("{app_id}.{}", t.name)));
+        for (name, st) in lock(&self.upstreams).iter() {
+            out.extend(st.tools.iter().map(|t| format!("{name}.{}", t.name)));
+        }
+        out
+    }
+
     /// 按当前全部工具计算导出名，并并入历史映射。
     pub(crate) fn name_codec(&self) -> NameCodec {
         // 导出名按全部工具（含 apps.tools）计算，与渐进暴露无关，保证名称稳定。
-        let tools = self.all_tools(true, true);
-        let codec = NameCodec::new(tools.iter().map(|(t, _)| t.name.as_str()));
+        let names = self.all_tool_names();
+        let codec = NameCodec::new(names.iter().map(String::as_str));
         lock(&self.export_names).extend(codec.pairs().map(|(full, export)| (export.to_owned(), full.to_owned())));
         codec
     }
@@ -1700,8 +1730,11 @@ impl Hub {
         let exposed = self.shared.exposed_apps(&api_session_key(filter.session.as_deref()));
         let progressive = exposed.is_some();
         let exposed = exposed.filter(|_| filter.apps.is_none());
+        let wanted = |app: &str| {
+            filter.apps.as_ref().is_none_or(|a| a.iter().any(|x| x == app)) && exposed.as_ref().is_none_or(|e| e.contains(app))
+        };
         self.shared
-            .visible_tools(progressive)
+            .visible_tools(progressive, wanted)
             .into_iter()
             .filter(|(t, builtin)| filter.accepts(t, *builtin))
             .filter(|(t, builtin)| *builtin || exposed.as_ref().is_none_or(|e| e.contains(&t.app_id)))
@@ -2089,9 +2122,11 @@ mod tests {
             None,
         );
         assert_eq!(
-            shared.registry().manifest("a").map(|m| m.name.clone()),
+            shared.registry().manifest("a").map(|m| m.meta().name.clone()),
             Some("A2".into())
         );
+        // 回归（第 4f 项 d）：清单只在注册表中保存一份，不在配置中另留一份。
+        assert!(shared.config.manifests.is_empty());
         assert!(load_manifests(&[], Some(&dir.join("missing")), false).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use app_mcp_protocol::{
-    Activation, ErrorKind, Risk, ToolError, ToolInfo, ToolsCancelParams, ToolsInvokeParams,
+    Activation, ErrorKind, Risk, ToolError, ToolsCancelParams, ToolsInvokeParams,
     ToolsInvokeResult, ToolsProgressParams, method,
 };
 use rmcp::model::{
@@ -32,6 +32,7 @@ use crate::mcp_convert::{self, OutputShape};
 use crate::navigate::{self, PageTool};
 use crate::overview::Overview;
 use crate::schema::{self, SchemaCheck};
+use crate::tool_def::ToolDef;
 use crate::types::{
     ApprovalRequest, Availability, CallOutcome, CallRequest, HubError, HubTool, ResourceContent, ToolDeclaration,
 };
@@ -521,21 +522,21 @@ impl HubShared {
     }
 
     /// 结果到达后的处理：大小上限 → 解析 → 按 [`OutputValidation`] 核对 `outputSchema`。
-    fn accept_result(&self, app_id: &str, tool: &str, info: &ToolInfo, v: Value) -> Result<ToolsInvokeResult, ToolError> {
+    fn accept_result(&self, app_id: &str, tool: &str, info: &ToolDef, v: Value) -> Result<ToolsInvokeResult, ToolError> {
         let size = serde_json::to_vec(&v).map_or(0, |b| b.len());
         self.guard_payload(app_id, Payload::Result, size, &format!("工具「{app_id}.{tool}」"))?;
         let r = match serde_json::from_value::<ToolsInvokeResult>(v.clone()) {
             Ok(r) => r,
             Err(_) => ToolsInvokeResult { data: v, ..ToolsInvokeResult::default() },
         };
-        let (Some(schema), false) = (&info.output_schema, r.data.is_null()) else {
-            return Ok(r);
-        };
         let mode = self.config.output_validation;
-        if mode == OutputValidation::Off {
+        if mode == OutputValidation::Off || r.data.is_null() {
             return Ok(r);
         }
-        let msg = match schema::check(schema, &r.data) {
+        let Some(schema) = info.output_schema() else {
+            return Ok(r);
+        };
+        let msg = match schema::check(&schema, &r.data) {
             SchemaCheck::Invalid(msg) => msg,
             SchemaCheck::BadSchema(e) => {
                 tracing::warn!(app_id, tool, error = %e, "工具的 outputSchema 无法编译，跳过结果校验");
@@ -603,7 +604,7 @@ impl HubShared {
                 return (Err(e), plan.instance_id.clone());
             }
             if let Some(tool) = &plan.tool {
-                if let SchemaCheck::Invalid(msg) = schema::check(&tool.input_schema, &arguments) {
+                if let SchemaCheck::Invalid(msg) = schema::check_json(tool.input_schema_json(), &arguments) {
                     return (
                         Err(ToolError::new(
                             ErrorKind::InvalidInput,
@@ -612,7 +613,7 @@ impl HubShared {
                         plan.instance_id.clone(),
                     );
                 }
-                let hub_tool = app_hub_tool(app_id, tool.clone(), Availability::Dormant);
+                let hub_tool = app_hub_tool(app_id, tool, Availability::Dormant);
                 let req = self.approval_request(call_id, &hub_tool, &arguments, ctx);
                 if let Err(e) = self.approve(req, cancel.as_mut()).await {
                     return (Err(e), plan.instance_id.clone());
@@ -660,8 +661,8 @@ impl HubShared {
             );
         }
         let instance = Some(target.instance_id.clone());
-        *output_shape = OutputShape::of(target.tool.output_schema.as_ref());
-        match schema::check(&target.tool.input_schema, &arguments) {
+        *output_shape = OutputShape::of(target.tool.output_schema().as_ref());
+        match schema::check_json(target.tool.input_schema_json(), &arguments) {
             SchemaCheck::Valid => {}
             SchemaCheck::Invalid(msg) => {
                 return (
@@ -679,7 +680,7 @@ impl HubShared {
         }
 
         if !approved {
-            let hub_tool = app_hub_tool(app_id, target.tool.clone(), Availability::Available);
+            let hub_tool = app_hub_tool(app_id, &target.tool, Availability::Available);
             let req = self.approval_request(call_id, &hub_tool, &arguments, ctx);
             if let Err(e) = self.approve(req, cancel.as_mut()).await {
                 return (Err(e), instance);
@@ -793,13 +794,13 @@ impl HubShared {
             return Err(HubShared::not_navigable(app_id, tool_name, &target.page));
         }
         if !approved {
-            if let SchemaCheck::Invalid(msg) = schema::check(&target.tool.input_schema, arguments) {
+            if let SchemaCheck::Invalid(msg) = schema::check_json(target.tool.input_schema_json(), arguments) {
                 return Err(ToolError::new(
                     ErrorKind::InvalidInput,
                     format!("参数不符合工具「{app_id}.{tool_name}」的 inputSchema：{msg}"),
                 ));
             }
-            let hub_tool = app_hub_tool(app_id, target.tool.clone(), Availability::NotRegistered);
+            let hub_tool = app_hub_tool(app_id, &target.tool, Availability::NotRegistered);
             let req = self.approval_request(call_id, &hub_tool, arguments, ctx);
             self.approve(req, cancel.as_mut()).await?;
         }
@@ -854,7 +855,7 @@ impl HubShared {
             .map(|t| {
                 let availability =
                     if reg.tool_registered(app_id, &t.name) { Availability::Available } else { Availability::NotRegistered };
-                app_hub_tool(app_id, t.clone(), availability)
+                app_hub_tool(app_id, t, availability)
             })
             .collect();
         drop(reg);
@@ -1334,30 +1335,31 @@ pub(crate) fn builtin_hub_tools(with_apps_tools: bool, with_apps_page: bool) -> 
         .collect()
 }
 
-pub(crate) fn app_hub_tool(app_id: &str, info: ToolInfo, availability: Availability) -> HubTool {
+/// App 工具的 Hub API 形式（解析 schema 文本，只在需要完整定义时构造）。
+pub(crate) fn app_hub_tool(app_id: &str, info: &ToolDef, availability: Availability) -> HubTool {
     HubTool {
         annotations: info.effective_annotations(),
         name: format!("{app_id}.{}", info.name),
         app_id: app_id.to_owned(),
-        tool: info.name,
-        title: info.title,
-        description: info.description,
-        input_schema: info.input_schema,
+        tool: info.name.clone(),
+        title: info.title.clone(),
+        description: info.description.clone(),
+        input_schema: info.input_schema(),
         risk: info.risk,
-        activation: info.activation.unwrap_or_default(),
+        activation: info.activation_or_default(),
         availability,
-        output_schema: info.output_schema,
+        output_schema: info.output_schema(),
     }
 }
 
 /// App 工具的声明（`/status` 的 `tools`，docs/plans/14-safety.md S5）。
-pub(crate) fn tool_declaration(info: &ToolInfo) -> ToolDeclaration {
+pub(crate) fn tool_declaration(info: &ToolDef) -> ToolDeclaration {
     ToolDeclaration {
         name: info.name.clone(),
         risk: info.risk,
         annotations: info.annotations.clone(),
         effective: info.effective_annotations(),
-        output_schema: info.output_schema.is_some(),
+        output_schema: info.has_output_schema(),
     }
 }
 
@@ -1382,6 +1384,11 @@ pub(crate) fn upstream_risk(t: &Tool) -> Risk {
     }
 }
 
+/// 上游工具的注解（原样转换，缺省为空）。
+pub(crate) fn upstream_annotations(t: &Tool) -> crate::ToolAnnotations {
+    t.annotations.as_ref().map(mcp_convert::from_mcp_tool_annotations).unwrap_or_default()
+}
+
 pub(crate) fn upstream_hub_tool(name: &str, t: &Tool) -> HubTool {
     HubTool {
         name: format!("{name}.{}", t.name),
@@ -1396,22 +1403,19 @@ pub(crate) fn upstream_hub_tool(name: &str, t: &Tool) -> HubTool {
         risk: upstream_risk(t),
         activation: Activation::Headless,
         availability: Availability::Available,
-        annotations: t.annotations.as_ref().map(mcp_convert::from_mcp_tool_annotations).unwrap_or_default(),
+        annotations: upstream_annotations(t),
         output_schema: t.output_schema.as_ref().map(|s| Value::Object((**s).clone())),
     }
 }
 
 /// App 工具的 MCP 形式。
 #[cfg(feature = "mcp-server")]
-pub(crate) fn to_mcp_tool(app_id: &str, info: &ToolInfo, availability: Availability) -> Tool {
-    let schema = match &info.input_schema {
-        Value::Object(m) => m.clone(),
-        _ => {
-            let mut m = Map::new();
-            m.insert("type".into(), json!("object"));
-            m
-        }
-    };
+pub(crate) fn to_mcp_tool(app_id: &str, info: &ToolDef, availability: Availability) -> Tool {
+    let schema = info.input_schema_object().unwrap_or_else(|| {
+        let mut m = Map::new();
+        m.insert("type".into(), json!("object"));
+        m
+    });
     let description = match availability {
         Availability::NotRegistered => format!("{UNAVAILABLE_PREFIX}{}", info.description),
         Availability::Available | Availability::Disconnected | Availability::Dormant => {
@@ -1423,8 +1427,8 @@ pub(crate) fn to_mcp_tool(app_id: &str, info: &ToolInfo, availability: Availabil
     if let Some(title) = &info.title {
         tool = tool.with_title(title.clone());
     }
-    if let Some(output) = &info.output_schema {
-        tool = tool.with_raw_output_schema(Arc::new(mcp_convert::mcp_output_schema(output)));
+    if let Some(output) = info.output_schema() {
+        tool = tool.with_raw_output_schema(Arc::new(mcp_convert::mcp_output_schema(&output)));
     }
     tool
 }
@@ -1706,10 +1710,12 @@ mod tests {
     #[cfg(feature = "mcp-server")]
     #[test]
     fn tool_conversion() {
+        use app_mcp_protocol::ToolInfo;
         let info: ToolInfo = serde_json::from_value(json!({
             "name": "orders.search", "description": "搜索", "inputSchema": {"type": "object"}, "risk": "read", "title": "搜"
         }))
         .unwrap();
+        let info = ToolDef::from_info(info);
         let t = to_mcp_tool("shop", &info, Availability::NotRegistered);
         assert_eq!(t.name, "shop.orders.search");
         assert_eq!(t.description.as_deref(), Some("[当前不可用] 搜索"));
@@ -1723,6 +1729,7 @@ mod tests {
             "outputSchema": {"type": "array"}
         }))
         .unwrap();
+        let declared = ToolDef::from_info(declared);
         let t = to_mcp_tool("shop", &declared, Availability::Available);
         assert_eq!(
             serde_json::to_value(t.annotations.unwrap()).unwrap(),
@@ -1735,10 +1742,10 @@ mod tests {
         let d = tool_declaration(&declared);
         assert_eq!((d.risk, d.output_schema, d.effective.destructive_hint), (Risk::Destructive, true, Some(true)));
         assert_eq!(d.annotations.unwrap().destructive_hint, None, "声明原样");
-        let hd = app_hub_tool("shop", declared, Availability::Available);
+        let hd = app_hub_tool("shop", &declared, Availability::Available);
         assert_eq!(hd.annotations.idempotent_hint, Some(true));
         assert_eq!(hd.output_schema, Some(json!({"type": "array"})));
-        let h = app_hub_tool("shop", info, Availability::Available);
+        let h = app_hub_tool("shop", &info, Availability::Available);
         assert_eq!(h.name, "shop.orders.search");
         assert_eq!(h.tool, "orders.search");
         assert_eq!(h.activation, Activation::Foreground);

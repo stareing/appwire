@@ -7,13 +7,14 @@
 use std::sync::Arc;
 
 use app_mcp_protocol::{
-    ErrorKind, NavigateParams, NavigateResult, RpcError, ToolError, ToolInfo, method, navigation_reason, user_action_reason,
+    ErrorKind, NavigateParams, NavigateResult, RpcError, ToolError, method, navigation_reason, user_action_reason,
 };
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
 use crate::call::CancelFut;
 use crate::hub::HubShared;
+use crate::tool_def::SharedTool;
 use crate::pages;
 use crate::schema::{self, SchemaCheck};
 
@@ -23,7 +24,7 @@ pub(crate) struct PageTool {
     pub page: String,
     pub navigable: bool,
     /// 目录中的定义（唤醒 / 导航前的 schema 校验与审批用）。
-    pub tool: ToolInfo,
+    pub tool: SharedTool,
 }
 
 fn with_page(e: ToolError, app_id: &str, page: &str) -> ToolError {
@@ -51,14 +52,14 @@ impl HubShared {
     /// 可用（同一 App 中已知、`surface` 为 app、`args` 符合其 inputSchema）时返回该工具名；声明不可用时记 warn 日志并返回 `None`。
     pub(crate) fn background_alternative(&self, app_id: &str, tool: &str, args: &Value) -> Option<String> {
         let view = self.page_of_tool(app_id, tool)?.tool;
-        let alt = view.background_tool.filter(|_| !view.surface.is_app())?;
+        let alt = view.background_tool.clone().filter(|_| !view.surface.is_app())?;
         let problem = if alt == tool {
             Some("指向自身".to_owned())
         } else {
             match self.registry().app_tool(app_id, &alt) {
                 None => Some("App 中没有该工具".to_owned()),
                 Some(def) if !def.surface.is_app() => Some("不是 app 工具".to_owned()),
-                Some(def) => match schema::check(&def.input_schema, args) {
+                Some(def) => match schema::check_json(def.input_schema_json(), args) {
                     SchemaCheck::Invalid(msg) => Some(format!("参数不符合其 inputSchema：{msg}")),
                     _ => None,
                 },

@@ -22,9 +22,31 @@ use app_mcp_native::{AppOverview, CallHandle, NativeClient, NativeConfig, ToolHa
 use app_mcp_protocol::registry::{EndpointRegistry, REGISTRY_FILE, RUN_DIR};
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
-use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
+
+/// 回归（第 4f 项 d）：Host 接受的 TCP 连接关闭 Nagle。之前 MCP（HTTP）与 App（WebSocket）都走 TCP 时，
+/// 每次小调用因 Nagle + 延迟确认多等约 40 ms（20 次约 1 s）；关闭后整批远低于此。上限取宽（500 ms）避免偶发抖动误报。
+#[tokio::test(flavor = "multi_thread")]
+async fn small_calls_over_tcp_are_not_delayed() {
+    let home = TempHome::new("nodelay");
+    let serve = start_serve(&home, &[]).await;
+    let app = calc_app(&format!("ws://{}/app", serve.addr));
+    let client = mcp(serve.addr, None).await;
+    wait_tool(&client, "calc.math.add").await;
+    add(&client, 0, 0).await; // 预热（首次附带总览）
+    let started = Instant::now();
+    for i in 0..20 {
+        let r = add(&client, i, 1).await;
+        assert_eq!(r.structured_content.as_ref().unwrap()["sum"], i + 1);
+    }
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_millis(500), "20 次小调用耗时 {elapsed:?}");
+    app.stop();
+}
+
+#[path = "support/mcp_http.rs"]
+mod mcp_http;
 
 const BIN: &str = env!("CARGO_BIN_EXE_app-mcp-host");
 const T: Duration = Duration::from_secs(15);
@@ -203,12 +225,7 @@ fn calc_app(endpoint: &str) -> NativeClient {
 type Client = RunningService<RoleClient, ()>;
 
 async fn mcp(addr: SocketAddr, token: Option<&str>) -> Client {
-    use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-    let mut cfg = StreamableHttpClientTransportConfig::with_uri(format!("http://{addr}/mcp"));
-    if let Some(t) = token {
-        cfg = cfg.auth_header(t.to_owned());
-    }
-    ().serve(StreamableHttpClientTransport::from_config(cfg))
+    ().serve(mcp_http::transport(format!("http://{addr}/mcp"), token))
         .await
         .expect("MCP initialize")
 }

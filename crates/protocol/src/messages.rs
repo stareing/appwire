@@ -514,17 +514,7 @@ impl ToolSurface {
 impl ToolInfo {
     /// Agent 看到的注解：声明的字段原样保留，缺少的字段按 `risk` 推导（[`Risk::annotations`]）。
     pub fn effective_annotations(&self) -> ToolAnnotations {
-        let base = self.risk.annotations();
-        match &self.annotations {
-            None => base,
-            Some(a) => ToolAnnotations {
-                title: a.title.clone(),
-                read_only_hint: a.read_only_hint.or(base.read_only_hint),
-                destructive_hint: a.destructive_hint.or(base.destructive_hint),
-                idempotent_hint: a.idempotent_hint.or(base.idempotent_hint),
-                open_world_hint: a.open_world_hint.or(base.open_world_hint),
-            },
-        }
+        ToolAnnotations::effective(self.risk, self.annotations.as_ref())
     }
 }
 
@@ -548,6 +538,24 @@ pub struct ToolAnnotations {
     /// 会与外部世界交互（网络、第三方、其他用户可见）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_world_hint: Option<bool>,
+}
+
+impl ToolAnnotations {
+    /// Agent 看到的注解：`declared` 中声明的字段原样保留，缺少的字段按 `risk` 推导（[`Risk::annotations`]）。
+    /// [`ToolInfo::effective_annotations`] 与只保存元数据的工具定义（如 Hub 内部）共用这一定义。
+    pub fn effective(risk: Risk, declared: Option<&ToolAnnotations>) -> ToolAnnotations {
+        let base = risk.annotations();
+        match declared {
+            None => base,
+            Some(a) => ToolAnnotations {
+                title: a.title.clone(),
+                read_only_hint: a.read_only_hint.or(base.read_only_hint),
+                destructive_hint: a.destructive_hint.or(base.destructive_hint),
+                idempotent_hint: a.idempotent_hint.or(base.idempotent_hint),
+                open_world_hint: a.open_world_hint.or(base.open_world_hint),
+            },
+        }
+    }
 }
 
 impl Risk {
