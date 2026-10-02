@@ -7,7 +7,7 @@ use app_mcp_native as native;
 use futures::executor::block_on as wait;
 use serde_json::{Value, json};
 
-use super::*;
+use super::{callbacks::Once, *};
 
 struct AddNote;
 

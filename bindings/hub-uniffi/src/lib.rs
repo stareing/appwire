@@ -21,231 +21,32 @@
 //!
 //! 外部同步回调抛出的未预期异常在 uniffi 里会变成 panic；适配器用 `catch_unwind` 兜底。
 
+mod callbacks;
+mod free_functions;
 pub mod naming;
 pub mod types;
 
 use std::future::Future;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use app_mcp_hub as hub;
 use tokio::runtime::{Handle, Runtime};
-use tokio::sync::oneshot;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 
+pub use callbacks::{
+    ApprovalHandler, ApprovalResponder, HubEventListener, HubWaker, PairingHandler, PairingResponder, ProgressListener,
+    WakeResponder,
+};
+pub use free_functions::{HubFeatures, hub_features, init_logging, parse_tool_format};
 pub use naming::{DialOutcome, HubNameService, NamedApp};
 pub use types::*;
 
+use callbacks::{ApprovalAdapter, PairingAdapter, WakerAdapter, guarded};
+
 uniffi::setup_scaffolding!();
-
-// ---------------------------------------------------------------------------
-// 回调接口（由外部语言实现）
-// ---------------------------------------------------------------------------
-
-/// Hub 事件监听。在专用分发线程上同步调用，必须尽快返回（需要时自行切换线程）。
-#[uniffi::export(foreign)]
-pub trait HubEventListener: Send + Sync {
-    fn on_event(&self, event: HubEvent);
-    /// 监听方处理过慢，跳过了 `skipped` 个事件；应重新拉取 `apps()` / `tools()`。
-    fn on_lagged(&self, skipped: u64);
-}
-
-/// 调用进度接收方（[`AppMcpHub::call_tool_with_progress`]）。在专用阻塞线程上按顺序同步调用，必须尽快返回；
-/// 同一次调用的全部进度回调都在该调用的结果返回之前完成。
-#[uniffi::export(foreign)]
-pub trait ProgressListener: Send + Sync {
-    fn on_progress(&self, update: ProgressUpdate);
-}
-
-/// 厂商 UI 接管调用确认。
-///
-/// 同步回调：实现应尽快返回（不要在回调线程上等待用户），在任意线程、任意时刻调用
-/// `responder.complete(approved)` 给出结果。`complete(false)`、回调抛出异常、`responder` 未完成即被释放
-/// → 调用以 `USER_REJECTED` 结束；超时（`HubConfig.approval_timeout_ms`）同样视为拒绝。
-#[uniffi::export(foreign)]
-pub trait ApprovalHandler: Send + Sync {
-    fn on_request(&self, request: ApprovalRequest, responder: Arc<ApprovalResponder>);
-}
-
-/// 厂商 UI 接管 App 配对。约定同 [`ApprovalHandler`]：`responder.complete(approved)`，
-/// 未完成即释放 / 异常 / 超时 → 拒绝配对。
-#[uniffi::export(foreign)]
-pub trait PairingHandler: Send + Sync {
-    fn on_request(&self, request: PairingRequest, responder: Arc<PairingResponder>);
-}
-
-/// 自定义唤醒（spec/hub-api.md 3.5）。同步回调，尽快返回；发出激活后调用 `responder.succeed()`
-/// （Hub 随后等待 App 回连，`HubConfig.wake_timeout_ms`），失败时 `responder.fail(kind, reason)`
-/// 以该错误类别结束调用。回调抛出异常、`responder` 未完成即被释放 → `LAUNCH_FAILED`。
-#[uniffi::export(foreign)]
-pub trait HubWaker: Send + Sync {
-    fn wake(&self, request: WakeRequest, responder: Arc<WakeResponder>);
-}
-
-/// 一次性结果通道：只有第一次 `complete` 生效；未完成即释放时接收方得到 `Err`。
-struct Once<T>(Mutex<Option<oneshot::Sender<T>>>);
-
-impl<T> Once<T> {
-    fn new() -> (Self, oneshot::Receiver<T>) {
-        let (tx, rx) = oneshot::channel();
-        (Self(Mutex::new(Some(tx))), rx)
-    }
-
-    fn complete(&self, value: T) -> bool {
-        lock(&self.0).take().is_some_and(|tx| tx.send(value).is_ok())
-    }
-}
-
-/// [`ApprovalHandler`] 的结果句柄。可在任意线程调用，可在回调返回后调用；只有第一次调用生效。
-#[derive(uniffi::Object)]
-pub struct ApprovalResponder(Once<bool>);
-
-#[uniffi::export]
-impl ApprovalResponder {
-    /// 给出审批结果。返回本次是否生效（已完成、Hub 已不再等待时为 `false`）。
-    pub fn complete(&self, approved: bool) -> bool {
-        self.0.complete(approved)
-    }
-}
-
-/// [`PairingHandler`] 的结果句柄。约定同 [`ApprovalResponder`]。
-#[derive(uniffi::Object)]
-pub struct PairingResponder(Once<bool>);
-
-#[uniffi::export]
-impl PairingResponder {
-    /// 给出配对结果。返回本次是否生效。
-    pub fn complete(&self, approved: bool) -> bool {
-        self.0.complete(approved)
-    }
-}
-
-/// [`HubWaker`] 的结果句柄。可在任意线程调用，可在回调返回后调用；只有第一次调用生效。
-#[derive(uniffi::Object)]
-pub struct WakeResponder(Once<Result<(), hub::HubError>>);
-
-#[uniffi::export]
-impl WakeResponder {
-    /// 已发出激活，Hub 等待 App 回连。返回本次是否生效。
-    pub fn succeed(&self) -> bool {
-        self.0.complete(Ok(()))
-    }
-
-    /// 唤醒失败：`kind` 为协议错误类别（如 `"APP_NOT_INSTALLED"`；不认识的类别按 `LAUNCH_FAILED`）。
-    /// 返回本次是否生效。
-    pub fn fail(&self, kind: String, reason: String) -> bool {
-        self.0.complete(Err(wake_error(&kind, reason)))
-    }
-}
-
-/// 在阻塞线程上调用外部同步回调（外部实现即使阻塞也不占用运行时工作线程），吞掉 panic。
-async fn call_foreign(what: &'static str, f: impl FnOnce() + Send + 'static) {
-    let ok = tokio::task::spawn_blocking(move || guarded(f)).await.unwrap_or(false);
-    if !ok {
-        tracing::warn!("{what}回调抛出异常");
-    }
-}
-
-struct ApprovalAdapter(Arc<dyn ApprovalHandler>);
-
-#[async_trait::async_trait]
-impl hub::ApprovalHandler for ApprovalAdapter {
-    async fn approve(&self, req: hub::ApprovalRequest) -> bool {
-        let (once, rx) = Once::new();
-        let (handler, request) = (self.0.clone(), ApprovalRequest::from(req));
-        call_foreign("审批", move || handler.on_request(request, Arc::new(ApprovalResponder(once)))).await;
-        // 回调异常 / 句柄未完成即释放：发送端被丢弃，视为拒绝。
-        rx.await.unwrap_or(false)
-    }
-}
-
-struct PairingAdapter(Arc<dyn PairingHandler>);
-
-#[async_trait::async_trait]
-impl hub::PairingHandler for PairingAdapter {
-    async fn pair(&self, req: hub::PairingRequest) -> bool {
-        let (once, rx) = Once::new();
-        let (handler, request) = (self.0.clone(), PairingRequest::from(req));
-        call_foreign("配对", move || handler.on_request(request, Arc::new(PairingResponder(once)))).await;
-        rx.await.unwrap_or(false)
-    }
-}
-
-struct WakerAdapter(Arc<dyn HubWaker>);
-
-#[async_trait::async_trait]
-impl hub::Waker for WakerAdapter {
-    async fn wake(&self, req: hub::WakeRequest) -> Result<(), hub::HubError> {
-        let (once, rx) = Once::new();
-        let (waker, request) = (self.0.clone(), WakeRequest::from(req));
-        call_foreign("唤醒", move || waker.wake(request, Arc::new(WakeResponder(once)))).await;
-        rx.await.unwrap_or_else(|_| {
-            Err(hub::HubError::new(
-                hub::ErrorKind::LaunchFailed,
-                "唤醒回调没有给出结果（WakeResponder 未完成即被释放，或回调抛出异常）。",
-            ))
-        })
-    }
-}
-
-/// 执行外部同步回调，吞掉 panic。返回是否正常结束。
-fn guarded(f: impl FnOnce()) -> bool {
-    catch_unwind(AssertUnwindSafe(f)).is_ok()
-}
-
-// ---------------------------------------------------------------------------
-// 顶层函数
-// ---------------------------------------------------------------------------
-
-/// 解析格式名：`mcp`、`openai-chat`（或 `openai`）、`openai-responses`、`anthropic`、`gemini`，
-/// 不区分大小写，`-` / `_` 可省略。
-#[uniffi::export]
-pub fn parse_tool_format(name: String) -> Result<ToolFormat, HubError> {
-    name.parse::<hub::ToolFormat>()
-        .map(Into::into)
-        .map_err(|detail| HubError::InvalidConfig { detail })
-}
-
-/// 本原生库编译进的可选能力（cargo features，spec/hub-api.md 3.10）。各组合的 uniffi 接口相同，宿主据此在启动前检查，
-/// 而不是等到用到时才得到 `Unsupported`（如独立 Hub App 需要 `mcp_server`）。
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
-pub struct HubFeatures {
-    /// MCP 出口（`serve_http`、`mcp_http`、`serve_mcp_fd`），cargo feature `mcp-server`。
-    pub mcp_server: bool,
-    /// 上游聚合（`upstreams`），cargo feature `upstream`。
-    pub upstream: bool,
-    /// 调用前按 inputSchema 校验参数，cargo feature `schema-validation`。
-    pub schema_validation: bool,
-}
-
-/// 本原生库的能力组合（[`HubFeatures`]）。
-#[uniffi::export]
-pub fn hub_features() -> HubFeatures {
-    HubFeatures {
-        mcp_server: hub::features::MCP_SERVER,
-        upstream: hub::features::UPSTREAM,
-        schema_validation: hub::features::SCHEMA_VALIDATION,
-    }
-}
-
-/// 把 Hub 日志（tracing）输出到 stderr。`filter` 同 `RUST_LOG` 语法，为空时读 `RUST_LOG`，
-/// 再为空时为 `info`。只有第一次调用生效；返回是否本次完成了初始化。
-#[uniffi::export]
-pub fn init_logging(filter: Option<String>) -> bool {
-    use tracing_subscriber::EnvFilter;
-    let filter = match filter {
-        Some(f) => EnvFilter::try_new(f).unwrap_or_else(|_| EnvFilter::new("info")),
-        None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-    };
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init()
-        .is_ok()
-}
 
 // ---------------------------------------------------------------------------
 // AppMcpHub

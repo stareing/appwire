@@ -1,13 +1,5 @@
 {
-  "bindings/c/src/lib.rs": 1731,
-  "bindings/c/src/tests.rs": 1587,
-  "bindings/hub-c/src/lib.rs": 1112,
-  "bindings/hub-c/src/tests.rs": 1323,
-  "bindings/hub-uniffi/src/lib.rs": 801,
   "bindings/hub-uniffi/src/tests.rs": 1209,
-  "bindings/hub-uniffi/src/types.rs": 2695,
-  "bindings/node/src/lib.rs": 1132,
-  "bindings/uniffi/src/lib.rs": 2013,
   "bindings/wasm/src/convert.rs": 1447,
   "crates/codegen/src/schema.rs": 959,
   "crates/codegen/src/targets/harmony.rs": 853,
