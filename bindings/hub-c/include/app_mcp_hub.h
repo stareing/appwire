@@ -92,6 +92,8 @@
  * - v16（MCP 2026-07-28 与 subscriptions/listen，spec/hub-api.md 3.6「协议版本」「通知」）：只做新增，AM_HUB_API_VERSION 仍为 3。
  *   · am_hub_start 配置新增可选字段 mcpProtocolMode、maxListenStreams、maxListenResources。
  *   · JSON 中新增：HubStatus.mcpListenStreams（进行中的 subscriptions/listen 流数）。
+ * - v17（任务句柄，spec/hub-api.md 3.6「任务句柄」）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 maxTaskHandles。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -261,6 +263,9 @@ void am_hub_string_free(char *s);
  *                        "legacyOnly"（回退开关：只声明到 2025-11-25，subscriptions/listen 不可用）
  *   maxListenStreams     每个主体同时打开的 subscriptions/listen 流数上限，默认 16；0 不提供 listen
  *   maxListenResources   一个 listen 流接受的资源 URI 数上限，默认 256
+ *   —— v17 任务句柄（spec/hub-api.md 3.6「任务句柄」）——
+ *   maxTaskHandles       每个主体同时存在的任务句柄数上限，默认 32（超出时 apps.task.begin 报 RATE_LIMITED）；
+ *                        0 不提供任务句柄（apps.task.* 不列出，taskId 一律无效）
  *   workerThreads        tokio 工作线程数（默认 2）
  * 未知字段报 AM_HUB_ERR_INVALID_JSON。清单无效报 AM_HUB_ERR_INVALID_CONFIG；地址无法绑定报 AM_HUB_ERR_IO。 */
 AmHubStatus am_hub_start(const char *config_json, AmHub **out_hub);

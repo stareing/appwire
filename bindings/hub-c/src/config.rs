@@ -84,6 +84,8 @@ pub(crate) struct ConfigJson {
     pub max_listen_streams: Option<usize>,
     /// v16：一个 listen 流接受的资源 URI 数上限，缺省 256。
     pub max_listen_resources: Option<usize>,
+    /// v17：每个主体同时存在的任务句柄数上限（spec/hub-api.md 3.6「任务句柄」），缺省 32；0 不提供任务句柄。
+    pub max_task_handles: Option<usize>,
     pub upstreams: BTreeMap<String, UpstreamConfig>,
     pub approval: ApprovalPolicy,
     pub worker_threads: Option<usize>,
@@ -132,6 +134,7 @@ impl Default for ConfigJson {
             mcp_protocol_mode: None,
             max_listen_streams: None,
             max_listen_resources: None,
+            max_task_handles: None,
             upstreams: BTreeMap::new(),
             approval: ApprovalPolicy::default(),
             worker_threads: None,
@@ -254,6 +257,9 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     }
     if let Some(v) = c.max_listen_resources {
         hub.max_listen_resources = v;
+    }
+    if let Some(v) = c.max_task_handles {
+        hub.max_task_handles = v;
     }
 
     // 目录与文件：失败的清单由 Hub 记录日志后跳过（与 app-mcp-host 一致）。
@@ -378,6 +384,20 @@ mod tests {
             (McpProtocolMode::LegacyOnly, 0, 8)
         );
         for bad in [r#"{"mcpProtocolMode": "modern"}"#, r#"{"maxListenStreams": -1}"#, r#"{"maxListenResources": 1.5}"#] {
+            let e = parse(Some(bad)).err().map(|e| e.status);
+            assert_eq!(e, Some(AmHubStatus::InvalidJson), "{bad}");
+        }
+    }
+
+    #[test]
+    fn max_task_handles_field() {
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert_eq!(p.hub.max_task_handles, HubConfig::default().max_task_handles);
+        let p = parse(Some(r#"{"maxTaskHandles": 0}"#)).map_err(|e| e.message).expect("解析");
+        assert_eq!(p.hub.max_task_handles, 0);
+        let p = parse(Some(r#"{"maxTaskHandles": 5}"#)).map_err(|e| e.message).expect("解析");
+        assert_eq!(p.hub.max_task_handles, 5);
+        for bad in [r#"{"maxTaskHandles": -1}"#, r#"{"maxTaskHandles": 1.5}"#, r#"{"maxTaskHandles": "8"}"#] {
             let e = parse(Some(bad)).err().map(|e| e.status);
             assert_eq!(e, Some(AmHubStatus::InvalidJson), "{bad}");
         }

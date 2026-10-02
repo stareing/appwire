@@ -458,6 +458,18 @@ final class HubIntegrationTests: XCTestCase {
         hub.close()
     }
 
+    /// spec/hub-api.md 3.6「任务句柄」：每主体任务句柄上限可设置（0 关闭），缺省为空即取 Hub 默认。
+    func testMaxTaskHandlesConfig() throws {
+        XCTAssertNil(HubConfig().maxTaskHandles)
+        for n: UInt32 in [0, 5] {
+            let config = HubConfig(enableListen: false, enableIpc: false, maxTaskHandles: n)
+            XCTAssertEqual(config.maxTaskHandles, n)
+            let hub = try Hub(config: config)
+            XCTAssertEqual(try hub.status().mcpSessions, 0)
+            hub.close()
+        }
+    }
+
     func testProgressiveExposureConfig() throws {
         let hub = try Hub(config: HubConfig(
             enableListen: false, enableIpc: false, waker: .exec(argv: ["true"]), toolExposure: .progressive, toolExposureThreshold: 5

@@ -188,6 +188,8 @@ struct ConfigJson {
     max_listen_streams: Option<usize>,
     /// 一个 listen 流接受的资源 URI 数上限，缺省 256。
     max_listen_resources: Option<usize>,
+    /// 每个主体同时存在的任务句柄数上限（spec/hub-api.md 3.6「任务句柄」），缺省 32；0 不提供任务句柄。
+    max_task_handles: Option<usize>,
     upstreams: BTreeMap<String, UpstreamConfig>,
     approval: ApprovalPolicy,
 }
@@ -312,6 +314,9 @@ impl ConfigJson {
         }
         if let Some(v) = self.max_listen_resources {
             c.max_listen_resources = v;
+        }
+        if let Some(v) = self.max_task_handles {
+            c.max_task_handles = v;
         }
         c.upstreams = self.upstreams;
         c.approval = self.approval;

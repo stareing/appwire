@@ -169,6 +169,7 @@ fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
         mcp_protocol_mode: s.mcp_protocol_mode,
         max_listen_streams: s.max_listen_streams,
         max_listen_resources: s.max_listen_resources,
+        max_task_handles: s.max_task_handles,
         ..defaults
     }
 }
@@ -895,5 +896,15 @@ mod tests {
         let c = hub_config(&s, &home);
         assert_eq!(c.mcp_protocol_mode, app_mcp_hub::McpProtocolMode::LegacyOnly);
         assert_eq!((c.max_listen_streams, c.max_listen_resources), (3, 7));
+    }
+
+    #[test]
+    fn hub_config_carries_max_task_handles() {
+        let home = AppHome { dir: std::env::temp_dir().join(format!("app-mcp-hubcfg-handles-{}", std::process::id())) };
+        let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home).unwrap();
+        assert_eq!(hub_config(&s, &home).max_task_handles, HubConfig::default().max_task_handles);
+        let file: FileConfig = serde_json::from_str(r#"{"mcp":{"maxTaskHandles":0}}"#).unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home).unwrap();
+        assert_eq!(hub_config(&s, &home).max_task_handles, 0);
     }
 }

@@ -251,6 +251,18 @@ public class HubBasicTests
     }
 
     [Fact]
+    public void MaxTaskHandlesSerializesAndStarts()
+    {
+        var json = JsonNode.Parse(new HubOptions { MaxTaskHandles = 0 }.ToConfigJson())!.AsObject();
+        Assert.Equal(0, (int?)json["maxTaskHandles"]);
+        Assert.Equal(5, (int?)JsonNode.Parse(new HubOptions { MaxTaskHandles = 5 }.ToConfigJson())!["maxTaskHandles"]);
+        Assert.False(JsonNode.Parse(new HubOptions().ToConfigJson())!.AsObject().ContainsKey("maxTaskHandles"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new HubOptions { MaxTaskHandles = -1 }.ToConfigJson());
+        using var hub = AppMcpHub.Start(new HubOptions { DisableIpc = true, DisableListen = true, Dispatcher = null, MaxTaskHandles = 0 });
+        Assert.Equal(0, hub.Status().McpSessions);
+    }
+
+    [Fact]
     public void StatusParsesAgentTasksAndApprovalPrincipal()
     {
         var status = JsonSerializer.Deserialize<HubStatusInfo>("""

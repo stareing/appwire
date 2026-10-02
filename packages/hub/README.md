@@ -125,6 +125,8 @@ const addr = await hub.serveHttp('127.0.0.1:0')      // 额外监听器（/app�
 MCP 出口的协议版本与通知（spec/hub-api.md 3.6）：`mcpProtocolMode`（`'auto'` 默认，可协商 2026-07-28；`'legacyOnly'` 为回退开关，
 只声明到 2025-11-25）、`maxListenStreams`（每个主体的 `subscriptions/listen` 流数上限，默认 16，0 不提供 listen）、
 `maxListenResources`（一个 listen 流接受的资源 URI 数上限，默认 256）。`hub.status().mcpListenStreams` 为当前 listen 流数。
+任务句柄（spec/hub-api.md 3.6「任务句柄」）：`maxTaskHandles`（每个主体同时存在的任务句柄数上限，默认 32，超出时 `apps.task.begin`
+报 `RATE_LIMITED`；0 不提供任务句柄，`apps.task.*` 不列出）。
 
 ## 资源保护与结果校验（spec/hub-api.md 3.11）
 

@@ -537,6 +537,10 @@ pub struct HubConfig {
     /// 一个 listen 流接受的资源 URI 数上限（默认 256）。
     #[uniffi(default = None)]
     pub max_listen_resources: Option<u32>,
+    // ---- 任务句柄（spec/hub-api.md 3.6「任务句柄」）----
+    /// 每个主体同时存在的任务句柄数上限（默认 32，超出时 `apps.task.begin` 报 `RATE_LIMITED`）；`0` 不提供任务句柄。
+    #[uniffi(default = None)]
+    pub max_task_handles: Option<u32>,
 }
 
 impl Default for HubConfig {
@@ -587,6 +591,7 @@ impl Default for HubConfig {
             mcp_protocol_mode: None,
             max_listen_streams: None,
             max_listen_resources: None,
+            max_task_handles: None,
         }
     }
 }
@@ -961,6 +966,9 @@ impl HubConfig {
         }
         if let Some(v) = self.max_listen_resources {
             c.max_listen_resources = v as usize;
+        }
+        if let Some(v) = self.max_task_handles {
+            c.max_task_handles = v as usize;
         }
         Ok(c)
     }
@@ -2150,6 +2158,7 @@ mod tests {
             (c.mcp_protocol_mode, c.max_listen_streams, c.max_listen_resources),
             (d.mcp_protocol_mode, d.max_listen_streams, d.max_listen_resources)
         );
+        assert_eq!(c.max_task_handles, d.max_task_handles);
         assert_eq!(c.approval, d.approval);
         assert!(c.manifests.is_empty() && c.upstreams.is_empty());
     }
@@ -2172,6 +2181,7 @@ mod tests {
             mcp_protocol_mode: Some(McpProtocolMode::LegacyOnly),
             max_listen_streams: Some(0),
             max_listen_resources: Some(8),
+            max_task_handles: Some(0),
             upstreams: vec![UpstreamSpec {
                 name: "fs".into(),
                 command: "npx".into(),
@@ -2198,6 +2208,7 @@ mod tests {
         assert_eq!(c.stateless_list_ttl, Duration::from_millis(750));
         assert_eq!(c.mcp_protocol_mode, hub::McpProtocolMode::LegacyOnly);
         assert_eq!((c.max_listen_streams, c.max_listen_resources), (0, 8));
+        assert_eq!(c.max_task_handles, 0);
         assert_eq!(c.upstreams["fs"].env["A"], "1");
         assert_eq!(c.manifests[0].app_id, "shop");
 

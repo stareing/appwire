@@ -343,6 +343,11 @@ public sealed class HubOptions
     /// <summary>一个 listen 流接受的资源 URI 数上限（默认 256）。</summary>
     public int? MaxListenResources { get; set; }
 
+    // ---- 任务句柄（spec/hub-api.md 3.6「任务句柄」）----
+
+    /// <summary>每个主体同时存在的任务句柄数上限（默认 32，超出时 apps.task.begin 报 RATE_LIMITED）；0 不提供任务句柄。</summary>
+    public int? MaxTaskHandles { get; set; }
+
     /// <summary>上游 MCP 服务器（名称 → 启动方式）。</summary>
     public IDictionary<string, UpstreamOptions> Upstreams { get; } = new Dictionary<string, UpstreamOptions>();
 
@@ -432,6 +437,7 @@ public sealed class HubOptions
         }
         AddCount(o, "maxListenStreams", MaxListenStreams, nameof(MaxListenStreams));
         AddCount(o, "maxListenResources", MaxListenResources, nameof(MaxListenResources));
+        AddCount(o, "maxTaskHandles", MaxTaskHandles, nameof(MaxTaskHandles));
         if (Upstreams.Count > 0)
         {
             var ups = new JsonObject();

@@ -408,7 +408,7 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
   T-10：去掉调用方替换、去掉上限核对，对应测试分别失败（1 / 2 个），恢复后通过。
 - 未做 / 未知：Claude Code 是否会把 `taskId` 当作普通参数稳定回传未实测（U2 仍未验证 `_meta` 透传）；通用客户端的 App 工具调用无法按
   任务路由（App 工具 schema 由 App 定义，只能经 `_meta`，3.4 已预见）——对 Claude Code 等通用客户端，句柄目前只隔离内置工具上的选择与
-  租约；`max_task_handles` 未接入 `app-mcp-host` 配置与各绑定；N5（按 Agent 细分主体）、P2 按 Agent 匹配、P3 记账、N6 锁、第 17 项
+  租约；N5（按 Agent 细分主体）、P2 按 Agent 匹配、P3 记账、N6 锁、第 17 项
   句柄归属仍挂在任务对象上待做。
 
 顺序：S3（独立缺陷修复，可立即做）→ S1 → S2 → S4 → S5、S6（可并行）→ S7 → S8（随第 16 项 P1）。

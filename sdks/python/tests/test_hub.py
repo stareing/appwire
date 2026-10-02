@@ -304,6 +304,17 @@ def test_mcp_listen_config() -> None:
         Hub(enable_listen=False, enable_ipc=False, max_listen_resources=2**32)
 
 
+def test_max_task_handles_config() -> None:
+    """spec/hub-api.md 3.6「任务句柄」：每主体任务句柄上限可设置（0 关闭）；越界报错。"""
+    for n in (0, 5):
+        with Hub(enable_listen=False, enable_ipc=False, max_task_handles=n) as hub:
+            assert hub.status().mcp_sessions == 0
+    with pytest.raises(ValueError):
+        Hub(enable_listen=False, enable_ipc=False, max_task_handles=-1)
+    with pytest.raises(ValueError):
+        Hub(enable_listen=False, enable_ipc=False, max_task_handles=2**32)
+
+
 def json_text(content: object) -> str:
     """Anthropic tool_result.content 可能是字符串或 [{type: text, text}]。"""
     if isinstance(content, str):

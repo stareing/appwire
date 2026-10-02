@@ -404,6 +404,10 @@ pub struct HubArgs {
     #[arg(long, value_name = "N")]
     pub max_listen_streams: Option<usize>,
 
+    /// 每个主体同时存在的任务句柄数上限（spec/hub-api.md 3.6「任务句柄」），默认 32；0 不提供任务句柄（apps.task.* 不列出）。
+    #[arg(long, value_name = "N")]
+    pub max_task_handles: Option<usize>,
+
     /// 日志级别（trace / debug / info / warn / error），默认 info。设置 RUST_LOG 时以 RUST_LOG 为准。
     #[arg(long, value_name = "LEVEL")]
     pub log_level: Option<String>,
@@ -467,6 +471,7 @@ impl HubArgs {
             principal_select_ttl_ms: self.principal_select_ttl_ms,
             mcp_protocol_mode: self.mcp_protocol_mode,
             max_listen_streams: self.max_listen_streams,
+            max_task_handles: self.max_task_handles,
             ..Default::default()
         })
     }
@@ -678,6 +683,22 @@ mod tests {
         assert_eq!((o.mcp_protocol_mode, o.max_listen_streams), (None, None));
         assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--max-listen-streams", "-1"]).is_err());
         assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--mcp-protocol-mode", "modern"]).is_err());
+    }
+
+    #[test]
+    fn parses_max_task_handles() {
+        let cli = Cli::try_parse_from(["app-mcp-host", "serve", "--max-task-handles", "0"]).unwrap();
+        let Some(Command::Serve(s)) = cli.command else {
+            panic!()
+        };
+        assert_eq!(s.hub.overrides().unwrap().max_task_handles, Some(0));
+        let cli = Cli::try_parse_from(["app-mcp-host", "serve"]).unwrap();
+        let Some(Command::Serve(s)) = cli.command else {
+            panic!()
+        };
+        assert_eq!(s.hub.overrides().unwrap().max_task_handles, None);
+        assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--max-task-handles", "-1"]).is_err());
+        assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--max-task-handles", "many"]).is_err());
     }
 
     #[test]

@@ -310,6 +310,11 @@ export interface HubConfig {
   maxListenStreams?: number
   /** 一个 listen 流接受的资源 URI 数上限，缺省 256。 */
   maxListenResources?: number
+  /**
+   * 每个主体同时存在的任务句柄数上限（spec/hub-api.md 3.6「任务句柄」），缺省 32，超出时 `apps.task.begin` 报 `RATE_LIMITED`；
+   * 0 不提供任务句柄（`apps.task.*` 不列出，`taskId` 一律无效）。
+   */
+  maxTaskHandles?: number
   /** 上游 MCP 服务器：名称（appId 规则）→ 启动方式。 */
   upstreams?: Record<string, UpstreamConfig>
   approval?: ApprovalPolicy

@@ -386,7 +386,9 @@ pub struct Health {                          // serde camelCase
   - **列表**：`apps.task.begin` / `apps.task.end` 与上述工具 inputSchema 中的可选 `taskId` 只出现在无会话请求的 `tools/list`（且
     `max_task_handles > 0`）；legacy 会话、`Hub::tools` / `export_tools` 的内置工具定义与之前逐字节相同。
   - **`/status`**：句柄任务出现在 `tasks`，`caller` 为 `principal:<主体>/<任务 ID>`、`kind` 为 `principal`（`CallerKind` 不新增变体）。
-  - `HubConfig.max_task_handles` 暂未经 `app-mcp-host` 配置与各语言绑定暴露（取默认值）。
+  - **配置入口**（`max_task_handles`，缺省取 Hub 默认值 32；`0` 关闭句柄）：`app-mcp-host` 配置文件 `mcp.maxTaskHandles`、命令行
+    `--max-task-handles <N>`；hub-c（头文件 v17）/ hub-node / `@app-mcp/hub` JSON `maxTaskHandles`；hub-uniffi `HubConfig.max_task_handles: u32?`
+    （Kotlin / Swift / Python 直接使用生成的 `HubConfig`）；C# `HubOptions.MaxTaskHandles`（`int?`，负数抛 `ArgumentOutOfRangeException`）。
 - 校验顺序（`/mcp`、`/healthz`）：`Origin`（与 App 连接相同的允许列表，不通过 403）→ 路径 → 令牌（仅 `/mcp`）。
   令牌规则：`Authorization: Bearer <令牌>`；带 `Origin` 的请求必须携带；不带 `Origin` 的请求在
   `require_token_without_origin` 时必须携带；携带了错误令牌一律 401（带 `WWW-Authenticate: Bearer`）；空令牌视为未携带。常量时间比较。

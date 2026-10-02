@@ -342,6 +342,17 @@ class HubIntegrationTest {
         Hub.start(config).use { hub -> assertEquals(0uL, hub.status().mcpListenStreams) }
     }
 
+    /** spec/hub-api.md 3.6「任务句柄」：每主体任务句柄上限可设置（0 关闭），缺省为空即取 Hub 默认。 */
+    @Test
+    fun maxTaskHandlesConfig() {
+        assertEquals(null, HubConfig().maxTaskHandles)
+        for (n in listOf(0u, 5u)) {
+            val config = HubConfig(enableListen = false, enableIpc = false, maxTaskHandles = n)
+            assertEquals(n, config.maxTaskHandles)
+            Hub.start(config).use { hub -> assertEquals(0uL, hub.status().mcpSessions) }
+        }
+    }
+
     /** spec/hub-api.md 3.14 / 3.15：HubTool.surface / page、callTool(idempotencyKey) 原样转交、routedTo、navigateTimeoutMs。 */
     @Test
     fun surfacePageAndIdempotencyKey() = runBlocking {

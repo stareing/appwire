@@ -536,6 +536,52 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     }
   })
 
+  it('任务句柄上限：0 时无会话列表不含 apps.task.*，非法取值启动失败', async () => {
+    // 无会话（MCP 2026-07-28）列表：缺省列出 apps.task.*，0 时不列出（spec/hub-api.md 3.6「任务句柄」）
+    const modernToolNames = async (hub: Hub): Promise<string[]> => {
+      const res = await fetch(`http://${hub.listenAddr}/mcp`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          'mcp-protocol-version': '2026-07-28',
+          'mcp-method': 'tools/list',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/list',
+          params: {
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientCapabilities': {},
+              'io.modelcontextprotocol/clientInfo': { name: 'hub-test', version: '0' },
+            },
+          },
+        }),
+      })
+      const text = await res.text()
+      expect(res.status, text).toBe(200)
+      const json = text.trimStart().startsWith('{')
+        ? text
+        : text.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).find((d) => d.includes('"id":1'))
+      const msg = JSON.parse(json ?? '{}') as { result?: { tools: Array<{ name: string }> } }
+      expect(msg.result, text).toBeDefined()
+      return msg.result!.tools.map((t) => t.name)
+    }
+    const { hub: defaults } = await startHub({ mcpHttp: true })
+    expect(await modernToolNames(defaults)).toContain('apps.task.begin')
+    const { hub: disabled } = await startHub({ mcpHttp: true, maxTaskHandles: 0 })
+    const names = await modernToolNames(disabled)
+    expect(names).toContain('apps.list')
+    expect(names).not.toContain('apps.task.begin')
+    expect(names).not.toContain('apps.task.end')
+    await startHub({ maxTaskHandles: 5 })
+    for (const maxTaskHandles of [-1, 1.5, '8' as unknown as number]) {
+      await expect(Hub.start({ listen: null, ipcEndpoint: null, maxTaskHandles })).rejects.toBeInstanceOf(HubError)
+    }
+  })
+
   it('stateDir：启动时读回休眠记录目录，问题文件记入 status().dormantStore.issues', async () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'app-mcp-hub-ts-state-'))
     try {

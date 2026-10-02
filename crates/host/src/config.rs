@@ -203,6 +203,9 @@ pub struct McpSection {
     /// 一个 listen 流接受的资源 URI 数上限，默认 256。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_listen_resources: Option<usize>,
+    /// 每个主体同时存在的任务句柄数上限（spec/hub-api.md 3.6「任务句柄」），默认 32；0 = 不提供任务句柄。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_task_handles: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,6 +331,7 @@ pub struct Overrides {
     pub stateless_tool_exposure: Option<ToolExposure>,
     pub mcp_protocol_mode: Option<McpProtocolMode>,
     pub max_listen_streams: Option<usize>,
+    pub max_task_handles: Option<usize>,
 }
 
 impl FileConfig {
@@ -368,6 +372,7 @@ impl FileConfig {
         set(&mut self.tools.stateless_exposure, &o.stateless_tool_exposure);
         set(&mut self.mcp.protocol_mode, &o.mcp_protocol_mode);
         set(&mut self.mcp.max_listen_streams, &o.max_listen_streams);
+        set(&mut self.mcp.max_task_handles, &o.max_task_handles);
         set(&mut self.tools.exposure, &o.tool_exposure);
         set(&mut self.tools.threshold, &o.tool_exposure_threshold);
         set(&mut self.tools.output_validation, &o.output_validation);
@@ -449,6 +454,8 @@ pub struct Settings {
     /// 每个主体的 `subscriptions/listen` 流数上限；0 = 不提供 listen。
     pub max_listen_streams: usize,
     pub max_listen_resources: usize,
+    /// 每个主体的任务句柄数上限；0 = 不提供任务句柄。
+    pub max_task_handles: usize,
     pub log_level: String,
     pub log_file: bool,
     pub log_max_bytes: u64,
@@ -574,6 +581,7 @@ impl Settings {
             mcp_protocol_mode: c.mcp.protocol_mode.unwrap_or_default(),
             max_listen_streams: c.mcp.max_listen_streams.unwrap_or(app_mcp_hub::DEFAULT_MAX_LISTEN_STREAMS),
             max_listen_resources: c.mcp.max_listen_resources.unwrap_or(app_mcp_hub::DEFAULT_MAX_LISTEN_RESOURCES),
+            max_task_handles: c.mcp.max_task_handles.unwrap_or(app_mcp_hub::DEFAULT_MAX_TASK_HANDLES),
             log_level: c.log.level.unwrap_or_else(|| "info".to_owned()),
             log_file: c.log.file.unwrap_or(true),
             log_max_bytes: c.log.max_bytes.unwrap_or(5 * 1024 * 1024),
@@ -653,6 +661,27 @@ mod tests {
         // 类型不对：明确报错
         assert!(serde_json::from_str::<FileConfig>(r#"{"tools":{"statelessExposure":"some"}}"#).is_err());
         assert!(serde_json::from_str::<FileConfig>(r#"{"lifecycle":{"taskIdleTtlMs":-1}}"#).is_err());
+    }
+
+    #[test]
+    fn max_task_handles_from_file_and_cli() {
+        let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home()).unwrap();
+        assert_eq!(s.max_task_handles, app_mcp_hub::HubConfig::default().max_task_handles, "默认值与 HubConfig 一致");
+        let file: FileConfig = serde_json::from_str(r#"{"mcp":{"maxTaskHandles":0}}"#).unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home()).unwrap();
+        assert_eq!(s.max_task_handles, 0);
+        // 命令行覆盖；service install 持久化为配置文件的键
+        let o = Overrides { max_task_handles: Some(5), ..Default::default() };
+        let s = Settings::resolve(&file, &o, &home()).unwrap();
+        assert_eq!(s.max_task_handles, 5);
+        let mut f = FileConfig::default();
+        f.apply(&o).unwrap();
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["mcp"], serde_json::json!({"maxTaskHandles": 5}));
+        // 类型不对：明确报错
+        assert!(serde_json::from_str::<FileConfig>(r#"{"mcp":{"maxTaskHandles":-1}}"#).is_err());
+        assert!(serde_json::from_str::<FileConfig>(r#"{"mcp":{"maxTaskHandles":1.5}}"#).is_err());
+        assert!(serde_json::from_str::<FileConfig>(r#"{"mcp":{"maxTaskHandles":"8"}}"#).is_err());
     }
 
     #[test]
