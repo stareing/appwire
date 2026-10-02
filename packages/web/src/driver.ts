@@ -15,6 +15,7 @@ import type {
   CoreConfig,
   CoreEvent,
   CoreLoader,
+  CoreNavigateOutcome,
   CoreOutcome,
   CoreState,
   CoreToolDef,
@@ -44,16 +45,21 @@ import type {
   JsonSchema,
   LazyToolDefinition,
   Logger,
+  NavigationHandler,
+  NavigationOptions,
   OutputDefinition,
   OutputSchema,
   ResourceDefinition,
   ResourceHandle,
   Scope,
+  ScopeOptions,
   ToolDefinition,
   ToolHandle,
   ToolHandler,
   ToolHandlerLoader,
 } from './types'
+import { navigationParams, runNavigation } from './navigation'
+import { checkPageName, type ScopeChain, ViewDeclaration } from './view'
 import { type VisibilitySnapshot, type VisibilityWatcher, watchVisibility } from './visibility'
 
 export const SDK_VERSION = '0.1.0'
@@ -170,12 +176,15 @@ const CANCEL_KIND: Record<CancelReason, [ErrorKind, string]> = {
   stopped: ['CANCELLED', 'SDK 已停止'],
 }
 
+
 // ---------------------------------------------------------------------------
 // 内部记录
 // ---------------------------------------------------------------------------
 
 interface ScopeRec {
   name: string
+  /** 其下工具的缺省界面声明（{@link ScopeOptions}）。 */
+  options: ScopeOptions | undefined
   parent: ScopeRec | undefined
   coreId: number | undefined
   disposed: boolean
@@ -200,6 +209,10 @@ interface ToolRec {
   scope: ScopeRec | undefined
   coreId: number | undefined
   disposed: boolean
+  /** 界面声明与可见性门控（注册时创建；注册被忽略的记录为 undefined）。 */
+  decl: ViewDeclaration | undefined
+  /** 最近一次告诉核心的启用状态。 */
+  coreEnabled: boolean
 }
 
 interface ResourceRec {
@@ -242,6 +255,13 @@ export class AppMcpDriver implements AppMcp {
   private ws: WebSocketLike | null = null
   private timer: ReturnType<typeof setTimeout> | undefined
   private readonly visibility: VisibilityWatcher
+  /** 页面文档（`view` 工具门控与层栈）；没有时（非浏览器环境）不做门控。 */
+  private readonly doc: Document | undefined
+  /** 导航回调（spec/protocol.md 3.4）。 */
+  private navHandler: NavigationHandler | null = null
+  private navOptions: NavigationOptions = {}
+  /** 最近一次握手时是否声明了导航能力。 */
+  private navDeclared = false
 
   private readonly toolNames = new Map<string, ToolRec>()
   private readonly resourceNames = new Map<string, ResourceRec>()
@@ -304,6 +324,7 @@ export class AppMcpDriver implements AppMcp {
     const win = deps.window ?? (typeof window === 'undefined' ? undefined : window)
     const doc = deps.document ?? (typeof document === 'undefined' ? undefined : document)
     this.win = win
+    this.doc = doc
     this.mode = options.lifecycle?.mode ?? 'persistent'
     this.visibility = watchVisibility((s) => this.onVisibility(s), win, doc)
     this.lastVisibility = this.visibility.current().visibility
@@ -371,8 +392,19 @@ export class AppMcpDriver implements AppMcp {
     return this.registerResource(name, definition, undefined)
   }
 
-  scope(name: string): Scope {
-    return this.createScope(name, undefined)
+  scope(name: string, options?: ScopeOptions): Scope {
+    return this.createScope(name, undefined, options)
+  }
+
+  setNavigationHandler(handler: NavigationHandler | null, options: NavigationOptions = {}): void {
+    if (this.disposed) return
+    this.navHandler = handler
+    this.navOptions = options
+    if (!this.core) return
+    if (handler && !this.navDeclared && this.currentState.status === 'connected') {
+      this.log.warn(`${this.tag} 导航回调在连接建立后才设置：本次连接未声明导航能力，下次连接时生效`)
+    }
+    this.input((c) => c.setNavigation(handler !== null))
   }
 
   wake(): void {
@@ -477,6 +509,12 @@ export class AppMcpDriver implements AppMcp {
       return
     }
     this.core = core
+    try {
+      // 核心缺省不声明导航能力；加载前设置了导航回调时在首次握手前打开
+      if (this.navHandler) core.setNavigation(true)
+    } catch (e) {
+      this.log.error(`${this.tag} 设置导航能力失败`, e)
+    }
     const vis = this.visibility.current()
     try {
       core.setVisibility(vis.visibility, vis.focused, this.now())
@@ -670,6 +708,7 @@ export class AppMcpDriver implements AppMcp {
         break
       case 'stateChanged':
         if (ev.state.status === 'host-mismatch' && this.skipMismatchedCandidate(ev.state.reason)) break
+        if (ev.state.status === 'handshaking') this.navDeclared = this.navHandler !== null
         if (ev.state.status === 'connected') {
           this.mismatched = 0
           const cid = this.connectionId
@@ -685,6 +724,9 @@ export class AppMcpDriver implements AppMcp {
         break
       case 'idleExit':
         // Web 没有进程驻留概念，忽略
+        break
+      case 'navigate':
+        this.navigate(ev.navigate, ev.page, ev.params)
         break
       default:
         this.log.debug(`${this.tag} 未知事件`, ev)
@@ -1082,6 +1124,20 @@ export class AppMcpDriver implements AppMcp {
     this.input((core) => core.reportProgress(callId, progress, total, message, this.now()), true)
   }
 
+  // ---- 导航 -----------------------------------------------------------
+
+  /** Host 的 `app/navigate`（spec/protocol.md 3.4）：按 {@link runNavigation} 执行，结果交给核心回复。 */
+  private navigate(id: number, page: string, params: unknown): void {
+    const request = { page, params: navigationParams(params) }
+    void runNavigation(this.navHandler, request, this.navOptions, { doc: this.doc, win: this.win }).then((result) => {
+      if (this.disposed) return
+      const outcome: CoreNavigateOutcome = result.ok
+        ? {}
+        : { error: { kind: result.kind, message: result.message, details: result.details } }
+      this.input((c) => c.completeNavigate(id, outcome), true)
+    })
+  }
+
   // ---- 调用 -----------------------------------------------------------
 
   private invoke(callId: string, toolId: number, name: string, args: unknown): void {
@@ -1152,10 +1208,11 @@ export class AppMcpDriver implements AppMcp {
   private toolView(rec: ToolRec): ToolView {
     if (!rec.view) {
       let seq = 0
+      const driver = this
       rec.view = {
         name: rec.name,
         get definition() {
-          return rec.info
+          return driver.effectiveEnabled(rec) ? rec.info : { ...rec.info, enabled: false }
         },
         call: (input, signal) => this.runTool(rec, input, `local-${rec.name}-${++seq}`, signal),
       }
@@ -1204,7 +1261,7 @@ export class AppMcpDriver implements AppMcp {
   private registerTool(name: string, def: AnyDef, scope: ScopeRec | undefined): ToolHandle {
     if (!NAME_RE.test(name)) throw new Error(`无效的工具名 ${JSON.stringify(name)}：应匹配 [a-zA-Z0-9_.-]{1,64}`)
     checkHandlerOrLoad(name, def)
-    const { handler: _handler, load: _load, anchor: _anchor, ...info } = def
+    const { handler: _handler, load: _load, anchor: _anchor, visibility: _visibility, ...info } = def
     const rec: ToolRec = {
       name,
       info,
@@ -1217,6 +1274,8 @@ export class AppMcpDriver implements AppMcp {
       scope,
       coreId: undefined,
       disposed: false,
+      decl: undefined,
+      coreEnabled: true,
     }
     const handle = this.toolHandle(rec)
     if (!this.assertUsable('工具', name) || scope?.disposed) {
@@ -1232,6 +1291,9 @@ export class AppMcpDriver implements AppMcp {
       }
     }
     if (this.toolNames.has(name)) throw new Error(`工具 ${JSON.stringify(name)} 已注册`)
+    const decl = new ViewDeclaration(name, def, scopeChain(scope), this.doc, () => this.pushEnabled(rec))
+    rec.decl = decl
+    rec.info = withView(rec.info, decl)
     this.toolNames.set(name, rec)
     ;(scope ? scope.tools : this.rootTools).add(rec)
     this.emitHub({ type: 'register', tool: this.toolView(rec) })
@@ -1245,7 +1307,10 @@ export class AppMcpDriver implements AppMcp {
       if (def.annotations !== undefined) coreDef.annotations = def.annotations
       if (outputSchema !== undefined) coreDef.outputSchema = outputSchema
       if (def.activation !== undefined) coreDef.activation = def.activation
-      if (def.enabled !== undefined) coreDef.enabled = def.enabled
+      if (decl.surface === 'view') coreDef.surface = 'view'
+      if (decl.page !== undefined) coreDef.page = decl.page
+      rec.coreEnabled = this.effectiveEnabled(rec)
+      if (!rec.coreEnabled || def.enabled !== undefined) coreDef.enabled = rec.coreEnabled
       if (scope) {
         if (scope.coreId === undefined) throw new Error(`scope ${scope.name} 未创建，无法注册工具 ${name}`)
         coreDef.scope = scope.coreId
@@ -1300,20 +1365,23 @@ export class AppMcpDriver implements AppMcp {
             ? (x) => (changes.input as { parse(x: unknown): unknown }).parse(x)
             : undefined
         }
-        if ('anchor' in changes) rec.anchor = changes.anchor
+        const update: CoreToolUpdate = {}
+        const decl = rec.decl
+        const viewChange = decl?.apply(changes)
+        if (decl && viewChange?.surface) update.surface = decl.surface
+        if (decl && viewChange?.page) update.page = decl.page ?? null
         const info: Record<string, unknown> = { ...rec.info }
         for (const [k, v] of Object.entries(changes)) {
-          if (k === 'anchor' || k === 'handler' || k === 'load') continue
+          if (k === 'anchor' || k === 'handler' || k === 'load' || k === 'visibility') continue
           if (k === 'description' && v === undefined) continue
           if (v === undefined) delete info[k]
           else info[k] = v
         }
-        rec.info = info as ToolInfo
+        rec.info = decl ? withView(info as ToolInfo, decl) : (info as ToolInfo)
         this.emitHub({ type: 'update', tool: this.toolView(rec) })
-        const update: CoreToolUpdate = {}
+        if (viewChange?.enabled) this.pushEnabled(rec)
         if (changes.description !== undefined) update.description = changes.description
         if ('risk' in changes) update.risk = changes.risk ?? 'write'
-        if ('enabled' in changes) update.enabled = changes.enabled ?? true
         if ('title' in changes) update.title = changes.title ?? null
         if ('activation' in changes) update.activation = changes.activation ?? null
         if ('annotations' in changes) update.annotations = changes.annotations ?? null
@@ -1355,9 +1423,30 @@ export class AppMcpDriver implements AppMcp {
     }
   }
 
+  // ---- view 工具（spec/protocol.md 3.4）---------------------------------
+
+  /** 对 Host 可见 = App 启用 且（有门控时）门控为真。 */
+  private effectiveEnabled(rec: ToolRec): boolean {
+    return rec.decl?.enabled ?? true
+  }
+
+  /** 生效的启用状态变化时告诉核心（核心据此发 `tools/changed`）。 */
+  private pushEnabled(rec: ToolRec): void {
+    if (rec.disposed) return
+    this.emitHub({ type: 'update', tool: this.toolView(rec) })
+    this.enqueue((core) => {
+      if (rec.disposed || rec.coreId === undefined) return
+      const enabled = this.effectiveEnabled(rec)
+      if (enabled === rec.coreEnabled) return
+      rec.coreEnabled = enabled
+      core.updateTool(rec.coreId, { enabled })
+    })
+  }
+
   /** JS 侧注销（不操作核心）。 */
   private forgetTool(rec: ToolRec): void {
     rec.disposed = true
+    rec.decl?.dispose()
     ;(rec.scope ? rec.scope.tools : this.rootTools).delete(rec)
     if (this.toolNames.get(rec.name) === rec) {
       this.toolNames.delete(rec.name)
@@ -1410,7 +1499,7 @@ export class AppMcpDriver implements AppMcp {
         rec.coreId = core.registerResource({
           name,
           description: def.description,
-          mimeType: def.mimeType ?? 'application/json',
+          ...(def.mimeType !== undefined && { mimeType: def.mimeType }),
           ...(def.realtime && { realtime: true }),
           ...(def.annotations !== undefined && { annotations: toJsonValue(def.annotations) as ContentAnnotations }),
           ...(scope && { scope: scope.coreId }),
@@ -1423,9 +1512,11 @@ export class AppMcpDriver implements AppMcp {
     return handle
   }
 
-  private createScope(name: string, parent: ScopeRec | undefined): Scope {
+  private createScope(name: string, parent: ScopeRec | undefined, options?: ScopeOptions): Scope {
+    if (options?.page !== undefined) checkPageName(`scope ${name}`, options.page)
     const rec: ScopeRec = {
       name,
+      options: options === undefined ? undefined : { ...options },
       parent,
       coreId: undefined,
       disposed: false,
@@ -1437,7 +1528,7 @@ export class AppMcpDriver implements AppMcp {
       name,
       tool: (toolName, definition) => this.registerTool(toolName, definition as AnyDef, rec),
       resource: (resName, definition) => this.registerResource(resName, definition, rec),
-      scope: (childName) => this.createScope(childName, rec),
+      scope: (childName, childOptions) => this.createScope(childName, rec, childOptions),
       dispose: () => {
         if (rec.disposed) return
         this.forgetScope(rec)
@@ -1483,6 +1574,21 @@ type AnyDef = ToolDefinition<any, any> | LazyToolDefinition<any, any>
 interface ToolSchemas {
   inputSchema: JsonSchema
   outputSchema: OutputSchema | undefined
+}
+
+/** scope 链（自近到远）上的界面声明。 */
+function scopeChain(scope: ScopeRec | undefined): ScopeChain {
+  return function* () {
+    for (let s = scope; s; s = s.parent) yield s.options
+  }
+}
+
+/** 定义快照中的 surface / page 取生效值（含继承）。 */
+function withView(info: ToolInfo, rec: Pick<ViewDeclaration, 'surface' | 'page'>): ToolInfo {
+  const next: ToolInfo = { ...info, surface: rec.surface }
+  if (rec.page !== undefined) next.page = rec.page
+  else delete next.page
+  return next
 }
 
 function isPromise<T>(v: T | Promise<T> | undefined): v is Promise<T> {

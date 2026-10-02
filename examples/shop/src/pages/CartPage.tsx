@@ -1,7 +1,7 @@
-import { useHold, useResource, useTool } from '@app-mcp/react'
+import { ToolScope, useHold, useResource, useTool } from '@app-mcp/react'
 import { ToolCallError } from '@app-mcp/web'
-import { useState } from 'react'
-import { z } from 'zod'
+import { useRef, useState } from 'react'
+import { cartAdd, cartCheckout, cartRemoveItem } from '../mcp/cart-tools'
 import {
   ADDRESSES,
   addToCart,
@@ -17,7 +17,22 @@ import { useStore } from '../store/create-store'
 const HINTS = ['cart.state']
 const yuan = (n: number) => `¥${n.toFixed(2)}`
 
+/**
+ * 购物车页：工具是 surface view 的页面工具（定义在 src/mcp/cart-tools.ts，与清单的页面目录共用），
+ * 在其他页面调用时 Host 先导航到本页。
+ */
 export function CartPage() {
+  const ref = useRef<HTMLDivElement>(null)
+  return (
+    <div ref={ref}>
+      <ToolScope name="cart" page="cart" anchor={ref}>
+        <CartView />
+      </ToolScope>
+    </div>
+  )
+}
+
+function CartView() {
   const items = useStore(cartStore)
   const lastOrder = useStore(lastOrderStore)
   // 购物车非空时保持连接（模型可能继续结算）；只在 idle / on-demand 模式下有效果
@@ -34,14 +49,8 @@ export function CartPage() {
     deps: [items],
   })
 
-  useTool('cart.add', {
-    title: '加入购物车',
-    description: '把商品加入购物车（同一商品合并数量），返回更新后的购物车摘要',
-    input: z.object({
-      productId: z.string().describe('商品 ID，来自 catalog.search'),
-      qty: z.number().int().min(1).max(99).default(1).describe('数量'),
-    }),
-    risk: 'write',
+  useTool(cartAdd.name, {
+    ...cartAdd,
     handler: ({ productId, qty }) => {
       if (!findProduct(productId)) {
         throw new ToolCallError('INVALID_INPUT', `商品不存在：${productId}。请先用 catalog.search 查询商品 ID`)
@@ -51,11 +60,8 @@ export function CartPage() {
     },
   })
 
-  useTool('cart.removeItem', {
-    title: '移除购物车条目',
-    description: '从购物车移除一个条目，返回更新后的购物车摘要',
-    input: z.object({ itemId: z.string().describe('条目 ID，来自 cart.state') }),
-    risk: 'write',
+  useTool(cartRemoveItem.name, {
+    ...cartRemoveItem,
     handler: ({ itemId }) => {
       const removed = removeFromCart(itemId)
       if (!removed) throw new ToolCallError('INVALID_INPUT', `购物车中没有条目 ${itemId}。请先读取 cart.state`)
@@ -64,14 +70,8 @@ export function CartPage() {
   })
 
   // 购物车为空时禁用：工具从列表中移除，模型不会尝试结算。
-  useTool('cart.checkout', {
-    title: '结算',
-    description: '结算当前购物车并下单（支付操作），返回订单号、金额与收货地址',
-    input: z.object({
-      addressId: z.enum(ADDRESSES.map((a) => a.id) as [string, ...string[]]).describe('收货地址 ID，来自 cart.state'),
-    }),
-    risk: 'payment',
-    activation: 'foreground',
+  useTool(cartCheckout.name, {
+    ...cartCheckout,
     enabled: items.length > 0,
     handler: async ({ addressId }) => ({ data: await checkout(addressId), stateHints: HINTS }),
   })

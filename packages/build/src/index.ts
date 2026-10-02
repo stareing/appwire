@@ -10,7 +10,9 @@
 export {
   appMcp,
   appMcp as default,
+  loadPages,
   loadStaticTools,
+  mergePages,
   resolveOverview,
   type AnnotationsOption,
   type AppMcpPluginOptions,
@@ -18,14 +20,18 @@ export {
 } from './plugin'
 export {
   defineOverview,
+  definePage,
+  definePages,
   defineStaticTool,
   defineStaticTools,
   OVERVIEW_BODY_MAX,
   OVERVIEW_SECTIONS,
   OVERVIEW_SUMMARY_MAX,
   validateOverview,
+  type PageDefinition,
   type StaticToolDefinition,
 } from './define'
+export type { RouterKind, RouteScanOption } from './routes'
 export {
   APP_ID_PATTERN,
   appIdPrefixMessage,
@@ -43,6 +49,7 @@ export {
   type LaunchEntry,
   type ManifestInfo,
   type ManifestLaunch,
+  type ManifestPage,
   type ManifestResource,
   type ManifestTool,
   type ManifestWake,

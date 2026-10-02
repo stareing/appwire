@@ -405,6 +405,15 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
   `AmNavigate`、`AmToolOptions.page` / `surface`；uniffi `AppMcpClient.set_navigation_handler`、`NavigationHandler`、`Navigate`、
   `ToolSpec.surface` / `page`；Node 原生模块 `setNavigationHandler`、`Navigate`、`ToolSpecInit.surface` / `page`；WASM
   `setNavigation`、`navigate` 事件、`completeNavigate`、工具定义 `surface` / `page`。
+- 网页封装层（`@app-mcp/web`，第 4c 项 D；Electron / Tauri 页面侧的桥接实现相同）：
+  - 入口：`ToolDefinition.surface` / `page` / `visibility`、`scope(name, { anchor, layer, page, surface, visibility })`（其下工具
+    未声明时继承，最近的 scope 优先）、`createViewLayer(name)`、`AppMcp.setNavigationHandler(handler, options)`；`@app-mcp/react`
+    的 `<ToolScope anchor page surface>`、`<ToolLayer>`、`useRouterNavigation`；Vue Router 适配 `@app-mcp/web/vue-router`。
+  - `view` 工具的门控（`visibility: 'always'` 关闭）：页面可见（`visibilityState`）、不在已打开的界面层之下、锚点已挂载且未被
+    `hidden` / `inert` / 打开的模态 `<dialog>` 遮挡、已渲染、在视口内；不满足时以 `enabled: false` 同步（对 Host 即注销）。
+    界面层内的工具不继承层外 scope 的 `page`（层只在打开时存在，不作为导航目标）。
+  - 导航：回调完成后等界面稳定（两帧，上限可配，默认 500 ms）并重新评估门控再回复；有打开的界面层时缺省以
+    `NAVIGATION_DENIED`（`app`）拒绝、不调用回调（`whileLayerOpen: 'allow'` 关闭）。
 
 ## 4. 错误
 

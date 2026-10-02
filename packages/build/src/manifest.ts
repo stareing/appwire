@@ -3,8 +3,8 @@
  */
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import type { Activation, AppOverview, Risk, ToolAnnotations } from '@app-mcp/web'
-import type { StaticToolDefinition } from './define'
+import type { Activation, AppOverview, Risk, ToolAnnotations, ToolSurface } from '@app-mcp/web'
+import type { PageDefinition, StaticToolDefinition } from './define'
 import { validateOverview } from './overview'
 
 // ---------------------------------------------------------------------------
@@ -57,6 +57,22 @@ export interface ManifestTool {
   annotations?: ToolAnnotations
   /** 结果的 JSON Schema（MCP `outputSchema`，根类型不限于 object）。 */
   outputSchema?: Record<string, unknown>
+  /** 对界面的依赖（spec/protocol.md 3.4），缺省 `app`。 */
+  surface?: ToolSurface
+  /** 所在页面名。 */
+  page?: string
+}
+
+/** 清单 `pages` 条目（spec/manifest.md 2.3）。 */
+export interface ManifestPage {
+  name: string
+  title?: string
+  description?: string
+  route?: string
+  params?: Record<string, unknown>
+  tools?: ManifestTool[]
+  navigable?: boolean
+  activation?: Activation
 }
 
 /** 协议中的 ResourceInfo。 */
@@ -79,6 +95,8 @@ export interface AppMcpManifest {
   wake?: ManifestWake
   tools?: ManifestTool[]
   resources?: ManifestResource[]
+  /** 页面目录（spec/manifest.md 2.3）。 */
+  pages?: ManifestPage[]
 }
 
 /**
@@ -116,6 +134,7 @@ export const NAME_PATTERN = /^[a-zA-Z0-9_.-]{1,64}$/
 export const RESERVED_APP_IDS = ['apps', 'os', 'ax', 'host'] as const
 const RISKS: readonly string[] = ['read', 'write', 'destructive', 'payment', 'os-sensitive']
 const ACTIVATIONS: readonly string[] = ['headless', 'background', 'foreground']
+const SURFACES: readonly string[] = ['app', 'view']
 /** 工具注解的字段 → 取值类型。 */
 const TOOL_ANNOTATION_FIELDS: Readonly<Record<keyof ToolAnnotations, 'string' | 'boolean'>> = {
   title: 'string',
@@ -286,33 +305,14 @@ export function validateManifest(manifest: AppMcpManifest): ValidationResult {
   }
 
   const toolNames = new Set<string>()
+  const appId = typeof manifest.appId === 'string' ? manifest.appId : ''
   for (const [i, tool] of (manifest.tools ?? []).entries()) {
-    const label = `tools[${i}]${typeof tool.name === 'string' ? `（${tool.name}）` : ''}`
-    if (typeof tool.name !== 'string' || !NAME_PATTERN.test(tool.name)) {
-      errors.push(`${label} 名称不合法，应满足 [a-zA-Z0-9_.-]{1,64}`)
-    } else if (toolNames.has(tool.name)) {
-      errors.push(`${label} 名称重复`)
-    } else {
-      toolNames.add(tool.name)
-      const prefix = typeof manifest.appId === 'string' ? appIdPrefixMessage(tool.name, manifest.appId) : null
-      if (prefix) warnings.push(`${label} ${prefix}`)
-    }
-    if (typeof tool.description !== 'string' || tool.description.trim() === '') {
-      errors.push(`${label} description 不能为空`)
-    }
-    const schema = tool.inputSchema as unknown
-    if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) {
-      errors.push(`${label} inputSchema 必须是对象`)
-    } else if ((schema as { type?: unknown }).type !== 'object') {
-      errors.push(`${label} inputSchema.type 必须为 "object"`)
-    }
-    if (tool.risk !== undefined && !RISKS.includes(tool.risk)) errors.push(`${label} risk "${tool.risk}" 不合法`)
-    if (tool.activation !== undefined && !ACTIVATIONS.includes(tool.activation)) {
-      errors.push(`${label} activation "${tool.activation}" 不合法`)
-    }
-    if (tool.annotations !== undefined) checkToolAnnotations(tool.annotations, label, errors, warnings)
-    if (tool.outputSchema !== undefined && !isJsonObject(tool.outputSchema)) {
-      errors.push(`${label} outputSchema 必须是对象`)
+    checkTool(tool, `tools[${i}]`, appId, toolNames, errors, warnings)
+  }
+  const pageNames = checkPages(manifest.pages, appId, toolNames, errors, warnings)
+  for (const [i, tool] of (manifest.tools ?? []).entries()) {
+    if (typeof tool.page === 'string' && !pageNames.has(tool.page)) {
+      warnings.push(`tools[${i}]（${tool.name}）的 page "${tool.page}" 没有在 pages 中声明`)
     }
   }
 
@@ -332,6 +332,109 @@ export function validateManifest(manifest: AppMcpManifest): ValidationResult {
   }
 
   return { errors, warnings }
+}
+
+/**
+ * 单个工具（顶层或页面内）的规则：名称、唯一性（`toolNames` 跨顶层与页面共享）、appId 前缀、description、inputSchema、
+ * risk / activation / surface / page、annotations、outputSchema。
+ */
+function checkTool(
+  tool: ManifestTool,
+  where: string,
+  appId: string,
+  toolNames: Set<string>,
+  errors: string[],
+  warnings: string[],
+): void {
+  const label = `${where}${typeof tool?.name === 'string' ? `（${tool.name}）` : ''}`
+  if (!isJsonObject(tool)) {
+    errors.push(`${where} 必须是对象`)
+    return
+  }
+  if (typeof tool.name !== 'string' || !NAME_PATTERN.test(tool.name)) {
+    errors.push(`${label} 名称不合法，应满足 [a-zA-Z0-9_.-]{1,64}`)
+  } else if (toolNames.has(tool.name)) {
+    errors.push(`${label} 名称重复（工具名在顶层 tools 与所有 pages[].tools 之间唯一）`)
+  } else {
+    toolNames.add(tool.name)
+    const prefix = appIdPrefixMessage(tool.name, appId)
+    if (prefix) warnings.push(`${label} ${prefix}`)
+  }
+  if (typeof tool.description !== 'string' || tool.description.trim() === '') {
+    errors.push(`${label} description 不能为空`)
+  }
+  const schema = tool.inputSchema as unknown
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) {
+    errors.push(`${label} inputSchema 必须是对象`)
+  } else if ((schema as { type?: unknown }).type !== 'object') {
+    errors.push(`${label} inputSchema.type 必须为 "object"`)
+  }
+  if (tool.risk !== undefined && !RISKS.includes(tool.risk)) errors.push(`${label} risk "${tool.risk}" 不合法`)
+  if (tool.activation !== undefined && !ACTIVATIONS.includes(tool.activation)) {
+    errors.push(`${label} activation "${tool.activation}" 不合法`)
+  }
+  if (tool.surface !== undefined && !SURFACES.includes(tool.surface)) {
+    errors.push(`${label} surface "${String(tool.surface)}" 不合法，应为 app 或 view`)
+  }
+  if (tool.page !== undefined && (typeof tool.page !== 'string' || !NAME_PATTERN.test(tool.page))) {
+    errors.push(`${label} page 不合法，应满足 [a-zA-Z0-9_.-]{1,64}`)
+  }
+  if (tool.annotations !== undefined) checkToolAnnotations(tool.annotations, label, errors, warnings)
+  if (tool.outputSchema !== undefined && !isJsonObject(tool.outputSchema)) {
+    errors.push(`${label} outputSchema 必须是对象`)
+  }
+}
+
+/** `pages` 的规则（spec/manifest.md 第 3 节），返回已声明的页面名。 */
+function checkPages(
+  pages: unknown,
+  appId: string,
+  toolNames: Set<string>,
+  errors: string[],
+  warnings: string[],
+): Set<string> {
+  const names = new Set<string>()
+  if (pages === undefined) return names
+  if (!Array.isArray(pages)) {
+    errors.push('pages 必须是数组')
+    return names
+  }
+  for (const [i, page] of (pages as unknown[]).entries()) {
+    if (!isJsonObject(page)) {
+      errors.push(`pages[${i}] 必须是对象`)
+      continue
+    }
+    const p = page as unknown as ManifestPage
+    const label = `pages[${i}]${typeof p.name === 'string' ? `（${p.name}）` : ''}`
+    if (typeof p.name !== 'string' || !NAME_PATTERN.test(p.name)) {
+      errors.push(`${label} 页面名不合法，应满足 [a-zA-Z0-9_.-]{1,64}`)
+    } else if (names.has(p.name)) {
+      errors.push(`${label} 页面名重复`)
+    } else {
+      names.add(p.name)
+    }
+    if (p.description !== undefined && (typeof p.description !== 'string' || p.description.trim() === '')) {
+      errors.push(`${label} description 不能为空字符串`)
+    }
+    if (p.params !== undefined && (!isJsonObject(p.params) || p.params.type !== 'object')) {
+      errors.push(`${label} params 必须是 type 为 "object" 的 JSON Schema`)
+    }
+    if (p.navigable !== undefined && typeof p.navigable !== 'boolean') errors.push(`${label} navigable 必须是布尔值`)
+    if (p.activation !== undefined && !ACTIVATIONS.includes(p.activation)) {
+      errors.push(`${label} activation "${String(p.activation)}" 不合法`)
+    }
+    if (p.tools !== undefined && !Array.isArray(p.tools)) {
+      errors.push(`${label} tools 必须是数组`)
+      continue
+    }
+    for (const [j, tool] of (p.tools ?? []).entries()) {
+      checkTool(tool, `${label}.tools[${j}]`, appId, toolNames, errors, warnings)
+      if (isJsonObject(tool) && tool.page !== undefined && tool.page !== p.name) {
+        errors.push(`${label}.tools[${j}]（${String(tool.name)}）的 page "${String(tool.page)}" 必须等于所在页面名`)
+      }
+    }
+  }
+  return names
 }
 
 /** 清单校验失败。 */
@@ -457,39 +560,18 @@ export function generateManifest(
   info: ManifestInfo,
   tools: readonly StaticToolDefinition<any>[] = [],
   options: GenerateOptions = {},
+  pages: readonly PageDefinition[] = [],
 ): AppMcpManifest {
   const errors: string[] = []
   const manifestTools: ManifestTool[] = []
   for (const [i, tool] of tools.entries()) {
-    if (tool === null || typeof tool !== 'object') {
-      errors.push(`静态工具 [${i}] 不是对象`)
-      continue
-    }
-    let inputSchema: Record<string, unknown>
-    let outputSchema: Record<string, unknown> | undefined
-    try {
-      inputSchema = toInputSchema(tool.input, options.root)
-    } catch (err) {
-      errors.push(`tools[${i}]（${String(tool.name)}）的 input 无法转换为 JSON Schema：${(err as Error).message}`)
-      continue
-    }
-    try {
-      outputSchema = tool.outputSchema === undefined ? undefined : toOutputSchema(tool.outputSchema, options.root)
-    } catch (err) {
-      errors.push(`tools[${i}]（${String(tool.name)}）的 outputSchema 无法转换为 JSON Schema：${(err as Error).message}`)
-      continue
-    }
-    const entry: ManifestTool = {
-      name: tool.name,
-      description: tool.description,
-      inputSchema: inputSchema as ManifestTool['inputSchema'],
-    }
-    if (tool.title !== undefined) entry.title = tool.title
-    if (tool.risk !== undefined) entry.risk = tool.risk
-    if (tool.activation !== undefined) entry.activation = tool.activation
-    if (tool.annotations !== undefined) entry.annotations = { ...tool.annotations }
-    if (outputSchema !== undefined) entry.outputSchema = outputSchema
-    manifestTools.push(entry)
+    const entry = toManifestTool(tool, `tools[${i}]`, options.root, errors)
+    if (entry) manifestTools.push(entry)
+  }
+  const manifestPages: ManifestPage[] = []
+  for (const [i, page] of pages.entries()) {
+    const entry = toManifestPage(page, `pages[${i}]`, options.root, errors)
+    if (entry) manifestPages.push(entry)
   }
 
   const manifest: AppMcpManifest = { manifestVersion: 1, appId: info.appId, name: info.name }
@@ -509,8 +591,82 @@ export function generateManifest(
   if (info.resources && info.resources.length > 0) {
     manifest.resources = info.resources.map((r) => ({ ...r }))
   }
+  if (manifestPages.length > 0) manifest.pages = manifestPages
 
   errors.push(...validateManifest(manifest).errors)
   if (errors.length > 0) throw new ManifestError(errors)
   return manifest
+}
+
+/** 工具定义 → 清单条目（转换 input / outputSchema）；无法转换时记录错误并返回 undefined。 */
+function toManifestTool(
+  tool: StaticToolDefinition<any>,
+  where: string,
+  root: string | undefined,
+  errors: string[],
+): ManifestTool | undefined {
+  if (tool === null || typeof tool !== 'object') {
+    errors.push(`${where} 不是对象`)
+    return undefined
+  }
+  let inputSchema: Record<string, unknown>
+  let outputSchema: Record<string, unknown> | undefined
+  try {
+    inputSchema = toInputSchema(tool.input, root)
+  } catch (err) {
+    errors.push(`${where}（${String(tool.name)}）的 input 无法转换为 JSON Schema：${(err as Error).message}`)
+    return undefined
+  }
+  try {
+    outputSchema = tool.outputSchema === undefined ? undefined : toOutputSchema(tool.outputSchema, root)
+  } catch (err) {
+    errors.push(`${where}（${String(tool.name)}）的 outputSchema 无法转换为 JSON Schema：${(err as Error).message}`)
+    return undefined
+  }
+  const entry: ManifestTool = {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: inputSchema as ManifestTool['inputSchema'],
+  }
+  if (tool.title !== undefined) entry.title = tool.title
+  if (tool.risk !== undefined) entry.risk = tool.risk
+  if (tool.activation !== undefined) entry.activation = tool.activation
+  if (tool.annotations !== undefined) entry.annotations = { ...tool.annotations }
+  if (outputSchema !== undefined) entry.outputSchema = outputSchema
+  if (tool.surface !== undefined && tool.surface !== 'app') entry.surface = tool.surface
+  if (tool.page !== undefined) entry.page = tool.page
+  return entry
+}
+
+/** 页面定义 → 清单条目（转换 params 与页面内工具）。 */
+function toManifestPage(
+  page: PageDefinition,
+  where: string,
+  root: string | undefined,
+  errors: string[],
+): ManifestPage | undefined {
+  if (page === null || typeof page !== 'object') {
+    errors.push(`${where} 不是对象`)
+    return undefined
+  }
+  const entry: ManifestPage = { name: page.name }
+  if (page.title !== undefined) entry.title = page.title
+  if (page.description !== undefined) entry.description = page.description
+  if (page.route !== undefined) entry.route = page.route
+  if (page.params !== undefined) {
+    try {
+      entry.params = toInputSchema(page.params, root)
+    } catch (err) {
+      errors.push(`${where}（${String(page.name)}）的 params 无法转换为 JSON Schema：${(err as Error).message}`)
+    }
+  }
+  const tools: ManifestTool[] = []
+  for (const [j, tool] of (page.tools ?? []).entries()) {
+    const converted = toManifestTool(tool, `${where}.tools[${j}]`, root, errors)
+    if (converted) tools.push(converted)
+  }
+  if (tools.length > 0) entry.tools = tools
+  if (page.navigable !== undefined) entry.navigable = page.navigable
+  if (page.activation !== undefined) entry.activation = page.activation
+  return entry
 }

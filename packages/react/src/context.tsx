@@ -1,7 +1,8 @@
 import { createContext, useContext, type ReactNode } from 'react'
 import type { AppMcp, Registrar } from '@app-mcp/web'
 
-const AppMcpContext = createContext<AppMcp | null>(null)
+/** Provider 提供的 AppMcp 实例（没有 Provider 时为 null）。 */
+export const AppMcpContext = createContext<AppMcp | null>(null)
 
 /** 当前生效的注册入口：最近的 `<ToolScope>`，或者 Provider 提供的 AppMcp 实例。 */
 export const RegistrarContext = createContext<Registrar | null>(null)

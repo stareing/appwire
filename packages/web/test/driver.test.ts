@@ -91,7 +91,6 @@ describe('注册缓存与回放', () => {
       'registerTool',
       'registerTool',
       'registerResource',
-      'updateTool',
       'start',
     ])
     const scopeId = 1
@@ -101,14 +100,20 @@ describe('注册缓存与回放', () => {
       description: '添加待办',
       inputSchema: { type: 'object', properties: {} },
     })
-    expect(h.core.callsOf('registerTool')[1]?.[0]).toMatchObject({ name: 'cart.clear', risk: 'destructive', scope: scopeId })
+    // 加载前的 update({ enabled: false }) 在注册时已生效（注册时取当前的启用状态，不再另发更新）
+    expect(h.core.callsOf('registerTool')[1]?.[0]).toMatchObject({
+      name: 'cart.clear',
+      risk: 'destructive',
+      scope: scopeId,
+      enabled: false,
+    })
+    // 未声明 mimeType 时不发送缺省值（Host 按 application/json 处理；toolsHash 与 spec/protocol.md 8.4 固定向量一致）
     expect(h.core.callsOf('registerResource')[0]?.[0]).toEqual({
       name: 'cart.state',
       description: '购物车',
-      mimeType: 'application/json',
       scope: scopeId,
     })
-    expect(h.core.callsOf('updateTool')[0]).toEqual([3, { enabled: false }])
+    expect(h.core.callsOf('updateTool')).toEqual([])
   })
 
   it('加载后的注册立即执行，handle 行为一致', async () => {

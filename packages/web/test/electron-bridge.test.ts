@@ -9,7 +9,7 @@ import {
   type OpReply,
   type RendererOp,
 } from '../src/electron-bridge'
-import { createAppMcp, ToolCallError } from '../src/index'
+import { attachBridgeNavigation, createAppMcp, createViewLayer, ToolCallError } from '../src/index'
 import { silentLogger } from './fakes'
 
 const settle = async () => {
@@ -432,5 +432,85 @@ describe('生命周期（桥接模式）', () => {
     app.connectNow()
     app.hold().release()
     app.dispose()
+  })
+})
+
+describe('界面级暴露与导航（spec/protocol.md 3.4）', () => {
+  it('scope 的 page / surface 由页面侧解析后随定义发送；层打开时 view 工具以 enabled:false 更新', async () => {
+    const fake = fakeBridge()
+    const app = createBridgeAppMcp({ appId: 'shop', appName: 'Shop', logger: silentLogger() }, fake.bridge)
+    const page = app.scope('cart', { page: 'cart', surface: 'view' })
+    page.tool('cart.add', { description: '加入', handler: () => 1 })
+    app.tool('plain', { description: '普通', handler: () => 1 })
+    await settle()
+    const registered = fake.ops.filter((o) => o.op === 'tool.register') as Extract<RendererOp, { op: 'tool.register' }>[]
+    expect(registered.find((o) => o.name === 'cart.add')?.spec).toMatchObject({ surface: 'view', page: 'cart', enabled: true })
+    expect(registered.find((o) => o.name === 'plain')?.spec).not.toHaveProperty('surface')
+    expect(registered.find((o) => o.name === 'plain')?.spec).not.toHaveProperty('enabled')
+
+    const layer = createViewLayer('dialog')
+    layer.open()
+    await settle()
+    const updates = fake.ops.filter((o) => o.op === 'tool.update') as Extract<RendererOp, { op: 'tool.update' }>[]
+    expect(updates.at(-1)?.spec).toMatchObject({ surface: 'view', page: 'cart', enabled: false })
+    layer.close()
+    await settle()
+    expect((fake.ops.at(-1) as Extract<RendererOp, { op: 'tool.update' }>).spec).toMatchObject({ enabled: true })
+    app.dispose()
+  })
+
+  it('setNavigationHandler：开启导航、执行回调并以 navigate.result 回复；清除时关闭', async () => {
+    const fake = fakeBridge()
+    const app = createBridgeAppMcp({ appId: 'shop', appName: 'Shop', logger: silentLogger() }, fake.bridge)
+    const seen: unknown[] = []
+    app.setNavigationHandler?.(
+      ({ page, params }) => {
+        seen.push({ page, params })
+        if (page === 'login') throw ToolCallError.navigationDenied('需要先登录')
+        if (page === 'broken') throw new Error('页面加载失败')
+      },
+      { settleMs: 5 },
+    )
+    await settle()
+    expect(fake.ops).toContainEqual({ op: 'navigation.set', enabled: true })
+    fake.emit({ type: 'navigate', navId: 1, page: 'cart', params: { sku: 'A-42' } })
+    fake.emit({ type: 'navigate', navId: 2, page: 'login' })
+    fake.emit({ type: 'navigate', navId: 3, page: 'broken', params: [1] })
+    await vi.waitFor(() => expect(fake.ops.filter((o) => o.op === 'navigate.result')).toHaveLength(3))
+    const results = fake.ops.filter((o) => o.op === 'navigate.result')
+    expect(results).toContainEqual({ op: 'navigate.result', navId: 1, ok: true })
+    expect(results).toContainEqual({ op: 'navigate.result', navId: 2, ok: false, kind: 'NAVIGATION_DENIED', message: '需要先登录' })
+    expect(results).toContainEqual({ op: 'navigate.result', navId: 3, ok: false, kind: 'NAVIGATION_FAILED', message: '页面加载失败' })
+    expect(seen).toContainEqual({ page: 'broken', params: undefined })
+
+    app.setNavigationHandler?.(null)
+    await settle()
+    expect(fake.ops.at(-1)).toEqual({ op: 'navigation.set', enabled: false })
+    app.dispose()
+  })
+
+  it('主进程未开启导航转发：记录警告', async () => {
+    const fake = fakeBridge((op) => (op.op === 'navigation.set' ? { ok: false, message: '主进程未开启导航转发' } : { ok: true }))
+    const logger = silentLogger()
+    const app = createBridgeAppMcp({ appId: 'shop', appName: 'Shop', logger }, fake.bridge)
+    app.setNavigationHandler?.(() => {})
+    await settle()
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('主进程未开启导航转发'))
+    app.dispose()
+  })
+
+  it('attachBridgeNavigation：没有实例时直接接入；dispose 后不再回复', async () => {
+    const fake = fakeBridge()
+    const nav = attachBridgeNavigation(fake.bridge, () => {}, { settleMs: 5 })
+    await nav.ready
+    nav.dispose()
+    nav.dispose()
+    fake.emit({ type: 'navigate', navId: 9, page: 'cart' })
+    await settle()
+    expect(fake.ops.filter((o) => o.op === 'navigate.result')).toEqual([])
+    expect(fake.ops.filter((o) => o.op === 'navigation.set')).toEqual([
+      { op: 'navigation.set', enabled: true },
+      { op: 'navigation.set', enabled: false },
+    ])
   })
 })

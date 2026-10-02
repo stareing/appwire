@@ -7,7 +7,7 @@
  *   `toolparamdescription`），同时出现时以标准属性为准。
  */
 
-import type { Activation, ErrorKind, OutputSchema, Risk, ToolAnnotations } from '@app-mcp/web'
+import type { Activation, ErrorKind, OutputSchema, Risk, ToolAnnotations, ToolSurface } from '@app-mcp/web'
 
 export const ATTR = {
   tool: 'data-mcp-tool',
@@ -32,6 +32,10 @@ export const ATTR = {
   idempotent: 'data-mcp-idempotent',
   openWorld: 'data-mcp-open-world',
   outputSchema: 'data-mcp-output-schema',
+  /** 对界面的依赖（spec/protocol.md 3.4）：缺省 `view`（元素工具依赖界面），`app` 关闭 SDK 的可见性门控。 */
+  surface: 'data-mcp-surface',
+  /** 所在页面名（页面目录的键），写在元素或任一祖先上。 */
+  page: 'data-mcp-page',
   /** 调用进行中时加在表单上（对应标准的 `:tool-form-active`），不在观察列表中。 */
   active: 'data-mcp-active',
 } as const
@@ -66,6 +70,8 @@ export const OBSERVED_ATTRIBUTES: string[] = [
   ATTR.idempotent,
   ATTR.openWorld,
   ATTR.outputSchema,
+  ATTR.surface,
+  ATTR.page,
   WEBMCP.toolname,
   WEBMCP.tooldescription,
   WEBMCP.toolparamdescription,
@@ -119,6 +125,10 @@ const ERROR_KINDS: readonly ErrorKind[] = [
 
 export function isRisk(v: string): v is Risk {
   return (RISKS as readonly string[]).includes(v)
+}
+
+export function isSurface(v: string): v is ToolSurface {
+  return v === 'app' || v === 'view'
 }
 
 export function isActivation(v: string): v is Activation {

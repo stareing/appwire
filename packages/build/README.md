@@ -93,14 +93,40 @@ registerAnnotated(appMcp)
 Static tools are defined once with `defineStaticTool` from `@app-mcp/build/define` (safe to import in the
 browser) and reused at runtime to register the matching handler, keeping manifest and runtime in sync.
 
+### Pages (page directory)
+
+The manifest's `pages` ([`spec/manifest.md` §2.3](https://github.com/stareing/appwire/blob/main/spec/manifest.md)) tells
+the Hub which pages the app has, which tools live on each, and lets it navigate there when an agent calls a tool on
+another page. Two sources, merged by page name (explicit wins; a missing `route` is taken from the scan):
+
+```ts
+appMcp({
+  // scan route tables: React Router routes with an `id` / Vue Router routes with a `name` are pages
+  routes: { file: 'src/routes.tsx', router: 'react-router' },
+  // explicit definitions for pages the scan cannot determine statically
+  pages: './src/mcp/pages.ts', // export default definePages([{ name: 'cart', tools: [...] }])
+})
+```
+
+Scan rules (static only, no guessing): the route table is an array literal of route objects; a page's name, `path` and
+the page description (`handle: { mcp: { title, description, navigable, activation, params } }` in React Router,
+`meta: { mcp: {...} }` in Vue Router) must be literals. The page component (`element: <X />`, `Component`, `lazy` /
+`component`, `() => import('./x')`) must come from a relative module; only that module is scanned (not the child
+components it imports: a dialog's tools exist only while it is open and are not navigation targets). Its
+`useTool('name', { ... })` / `<x>.tool('name', { ... })` calls become page tools; name, `description`, `title`, `risk`,
+`activation`, `surface`, `page`, `annotations`, `input` and `outputSchema` must be literals (`input` as a JSON Schema
+literal; zod schemas are runtime values). Anything else is a build error with its location, asking for an explicit
+`definePage()`; explicitly declared pages are not scanned.
+
 ## API
 
 - `appMcp(options)` (also the default export) - the Vite plugin. Options: `appId`, `name`, `version`,
-  `description`, `overview`, `launch`, `wake`, `resources`, `staticTools`, `annotations`, `outFile`, `writeTo`.
+  `description`, `overview`, `launch`, `wake`, `resources`, `staticTools`, `annotations`, `pages`, `routes`,
+  `outFile`, `writeTo`. `routes` is `{ file, router: 'react-router' | 'vue-router' }` or an array of them.
   `annotations` is `true` or `{ include, exclude, tsconfig, outputSchema }`.
-- `@app-mcp/build/define` - `defineStaticTool`, `defineStaticTools`, `defineOverview`, `validateOverview`
+- `@app-mcp/build/define` - `defineStaticTool`, `defineStaticTools`, `definePage`, `definePages`, `defineOverview`, `validateOverview`
   (no Node or Vite dependencies).
-- `generateManifest`, `validateManifest`, `toInputSchema`, `toOutputSchema`, `normalizeWake`, `ManifestError` - manifest helpers.
+- `generateManifest(info, tools, options, pages)`, `validateManifest`, `loadPages`, `mergePages`, `toInputSchema`, `toOutputSchema`, `normalizeWake`, `ManifestError` - manifest helpers.
 - `@app-mcp/build/annotations` - `scanAnnotations`, `createAnnotationScanner`, `generateAnnotatedModule`.
 - `@app-mcp/build/client` - types for `virtual:app-mcp/annotated` (`registerAnnotated`, `annotatedTools`).
 

@@ -15,8 +15,8 @@
 //!
 //! 导航（第 4c 项，spec/protocol.md 3.4，[`Bridge::enable_page_navigation`]）：页面 `navigation.set {enabled}` 声明本页处理导航
 //! （最近一次开启的 WebView 为目标），Host 的 `app/navigate` 以事件 `navigate {navId, page, params?}` 送到该页，页面以
-//! `navigate.result {navId, ok, kind?, message?}` 回复。消息形状与 `@app-mcp/electron`（packages/electron/src/protocol.ts
-//! `NavigationOp`）相同，协议版本不变。
+//! `navigate.result {navId, ok, kind?, message?}` 回复。消息类型定义在 `@app-mcp/web`（packages/web/src/electron-bridge.ts
+//! `NavigationOp` / `NavigateEvent`），协议版本不变；页面侧由桥接客户端的 `setNavigationHandler` / `attachBridgeNavigation` 处理。
 //!
 //! 本模块与 Tauri 无关（只依赖 [`PageSink`]），便于不启动 WebView 测试。
 

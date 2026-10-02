@@ -19,6 +19,10 @@
     "./webmcp": {
       "types": "./src/webmcp/index.ts",
       "import": "./src/webmcp/index.ts"
+    },
+    "./vue-router": {
+      "types": "./src/router/vue-router.ts",
+      "import": "./src/router/vue-router.ts"
     }
   },
   "publishConfig": {
@@ -32,6 +36,10 @@
       "./webmcp": {
         "types": "./dist/webmcp/index.d.ts",
         "import": "./dist/webmcp/index.js"
+      },
+      "./vue-router": {
+        "types": "./dist/router/vue-router.d.ts",
+        "import": "./dist/router/vue-router.js"
       }
     }
   },

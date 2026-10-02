@@ -3,10 +3,10 @@
   "appId": "shop",
   "name": "示例商城",
   "version": "0.1.0",
-  "description": "app-mcp 演示页面：待办与购物车",
+  "description": "app-mcp 演示页面：待办、商品、购物车与订单",
   "overview": {
     "summary": "演示用购物商城：管理待办、搜索商品、操作购物车并结算",
-    "body": "## 适用场景\n- 演示 app-mcp：让模型像用户一样操作网页中的待办与购物车。\n\n## 能力范围\n- 待办（「待办」页签）：新增、勾选/取消勾选、删除；资源 `todos.list` 给出全部待办。\n- 商品：`catalog.search` 按名称或分类搜索，任何页签下都可用。\n- 店铺：`info` 营业信息、`deliveryEstimate` 配送时效估算，任何页签下都可用。\n- 购物车（「购物车」页签）：加入商品、移除条目、结算；资源 `cart.state` 给出条目、总价与可用收货地址。\n\n## 典型流程\n- 添加待办：`todos.add` → 需要时 `todos.toggle`。\n- 购物：`catalog.search` → `cart.add({ productId, qty })`。\n- 删除最贵的商品：读取 `cart.state` → `cart.removeItem({ itemId })`。\n- 结算：读取 `cart.state` 取得 `addressId` → `cart.checkout`。\n\n## 前置条件\n- 待办与购物车工具只在对应页签打开时出现；不可用时请提示用户切换页签。\n- 购物车为空时不能结算（`cart.checkout` 不可用）。\n\n## 不支持的操作\n- 退款、修改订单、修改收货地址、登录与账户管理。\n\n## 风险说明\n- `cart.checkout` 是支付操作，执行前应向用户确认商品、金额与地址。\n- `todos.remove` 会永久删除待办。",
+    "body": "## 适用场景\n- 演示 app-mcp：让模型像用户一样操作网页中的待办、商品、购物车与订单。\n\n## 能力范围\n- 待办（「待办」页签）：新增、勾选/取消勾选、删除；资源 `todos.list` 给出全部待办。\n- 商品：`catalog.search` 按名称或分类搜索，任何页签下都可用。\n- 店铺：`info` 营业信息、`deliveryEstimate` 配送时效估算，任何页签下都可用。\n- 商品页：`products.filter` 筛选、`products.open` 打开详情；详情对话框打开时只有 `productDialog.*` 可用。\n- 购物车页：加入商品、移除条目、结算；资源 `cart.state` 给出条目、总价与可用收货地址。\n- 订单页：`orders.list` 列出已下的订单。\n\n## 典型流程\n- 添加待办：`todos.add` → 需要时 `todos.toggle`。\n- 购物：`catalog.search` → `cart.add({ productId, qty })`。\n- 删除最贵的商品：读取 `cart.state` → `cart.removeItem({ itemId })`。\n- 结算：读取 `cart.state` 取得 `addressId` → `cart.checkout`。\n\n## 前置条件\n- 商品、购物车、订单页的工具不在当前页面时也可直接调用，App 会先切换到该页面（可用 `apps.page` 查看页面工具）；对话框打开时不切换。\n- 待办工具只在「待办」页签打开时出现。\n- 购物车为空时不能结算（`cart.checkout` 不可用）。\n\n## 不支持的操作\n- 退款、修改订单、修改收货地址、登录与账户管理。\n\n## 风险说明\n- `cart.checkout` 是支付操作，执行前应向用户确认商品、金额与地址。\n- `todos.remove` 会永久删除待办。",
     "locale": "zh-CN"
   },
   "launch": {
@@ -51,7 +51,31 @@
         "properties": {}
       },
       "risk": "read",
-      "activation": "headless"
+      "activation": "headless",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "hours": {
+            "type": "string",
+            "description": "营业时间，如 \"09:00-22:00\"。"
+          },
+          "open": {
+            "type": "boolean"
+          },
+          "hotline": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "hours",
+          "open",
+          "hotline"
+        ]
+      }
     },
     {
       "name": "deliveryEstimate",
@@ -73,7 +97,173 @@
         ]
       },
       "risk": "read",
-      "activation": "headless"
+      "activation": "headless",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "days": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "city",
+          "days"
+        ]
+      }
+    }
+  ],
+  "pages": [
+    {
+      "name": "products",
+      "title": "商品列表",
+      "description": "浏览与筛选商品，打开商品详情后可从详情加入购物车",
+      "route": "/products",
+      "tools": [
+        {
+          "name": "products.filter",
+          "description": "在商品列表页按关键词（商品名或分类）筛选，与页面搜索框相同；返回筛选后的商品",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "keyword": {
+                "type": "string",
+                "description": "商品名或分类；空字符串显示全部"
+              }
+            },
+            "required": [
+              "keyword"
+            ]
+          },
+          "title": "筛选商品",
+          "annotations": {
+            "readOnlyHint": false,
+            "idempotentHint": true
+          },
+          "surface": "view"
+        },
+        {
+          "name": "products.open",
+          "description": "打开商品详情对话框；打开后可用 productDialog.addToCart 加入购物车、productDialog.close 关闭",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "productId": {
+                "type": "string",
+                "description": "商品 ID，来自 catalog.search 或 products.filter"
+              }
+            },
+            "required": [
+              "productId"
+            ]
+          },
+          "title": "打开商品详情",
+          "surface": "view"
+        }
+      ]
+    },
+    {
+      "name": "cart",
+      "title": "购物车",
+      "description": "查看购物车、移除条目、结算",
+      "route": "/cart",
+      "tools": [
+        {
+          "name": "cart.add",
+          "description": "把商品加入购物车（同一商品合并数量），返回更新后的购物车摘要",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "productId": {
+                "type": "string",
+                "description": "商品 ID，来自 catalog.search"
+              },
+              "qty": {
+                "default": 1,
+                "description": "数量",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 99
+              }
+            },
+            "required": [
+              "productId"
+            ]
+          },
+          "title": "加入购物车",
+          "risk": "write",
+          "surface": "view"
+        },
+        {
+          "name": "cart.removeItem",
+          "description": "从购物车移除一个条目，返回更新后的购物车摘要",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "itemId": {
+                "type": "string",
+                "description": "条目 ID，来自 cart.state"
+              }
+            },
+            "required": [
+              "itemId"
+            ]
+          },
+          "title": "移除购物车条目",
+          "risk": "write",
+          "surface": "view"
+        },
+        {
+          "name": "cart.checkout",
+          "description": "结算当前购物车并下单（支付操作），返回订单号、金额与收货地址",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "addressId": {
+                "type": "string",
+                "enum": [
+                  "home",
+                  "office"
+                ],
+                "description": "收货地址 ID，来自 cart.state"
+              }
+            },
+            "required": [
+              "addressId"
+            ]
+          },
+          "title": "结算",
+          "risk": "payment",
+          "activation": "foreground",
+          "surface": "view"
+        }
+      ]
+    },
+    {
+      "name": "orders",
+      "title": "订单",
+      "description": "本次会话中已下的订单",
+      "route": "/orders",
+      "tools": [
+        {
+          "name": "orders.list",
+          "description": "列出本次会话中已下的订单（订单号、件数、金额、收货地址）",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          },
+          "title": "订单列表",
+          "annotations": {
+            "readOnlyHint": true
+          },
+          "surface": "view"
+        }
+      ]
     }
   ]
 }

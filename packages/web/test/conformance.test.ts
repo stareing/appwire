@@ -35,6 +35,7 @@ const SDK = 'web'
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
+  'surface', 'navigation',
 ]
 const PAGE_URL = 'http://localhost:5173/conformance'
 const WAKE_PREFIX = 'app-mcp-wake:'
@@ -70,7 +71,9 @@ function startApp(loadCore: () => Promise<CoreFactory>, testCase: ConformanceCas
     { appId: 'conf', appName: 'Conformance', hostUrl: url, sharedConnection: false, logger: silentLogger, ...appConfig(testCase) },
     { loadCore, window: page as unknown as Window },
   )
-  registerJsApp(app, testCase, ToolCallError)
+  const { navigate } = registerJsApp(app, testCase, ToolCallError)
+  // 导航回调在 start 之前设置（核心加载时打开导航能力，首次握手即声明）
+  if (navigate) app.setNavigationHandler?.(({ page, params }) => navigate(page, params))
   return { handleWake: (arg) => page.navigateToWake(arg), stop: () => app.dispose() }
 }
 

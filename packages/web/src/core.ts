@@ -6,7 +6,19 @@
  */
 
 import type { NormalizedResult } from './result'
-import type { Activation, AppOverview, CallDedupOptions, ContentAnnotations, ErrorKind, JsonSchema, OutputSchema, Risk, ToolAnnotations, Visibility } from './types'
+import type {
+  Activation,
+  AppOverview,
+  CallDedupOptions,
+  ContentAnnotations,
+  ErrorKind,
+  JsonSchema,
+  OutputSchema,
+  Risk,
+  ToolAnnotations,
+  ToolSurface,
+  Visibility,
+} from './types'
 
 export interface CoreConfig {
   appId: string
@@ -69,9 +81,12 @@ export interface CoreToolDef {
   outputSchema?: OutputSchema
   enabled?: boolean
   scope?: number
+  /** 缺省 `app`（spec/protocol.md 3.4）。 */
+  surface?: ToolSurface
+  page?: string
 }
 
-/** 部分更新；缺省字段不变，`activation` / `title` / `annotations` / `outputSchema` 为 null 表示清除。 */
+/** 部分更新；缺省字段不变，`activation` / `title` / `annotations` / `outputSchema` / `page` 为 null 表示清除。 */
 export interface CoreToolUpdate {
   description?: string
   inputSchema?: JsonSchema
@@ -81,6 +96,8 @@ export interface CoreToolUpdate {
   enabled?: boolean
   annotations?: ToolAnnotations | null
   outputSchema?: OutputSchema | null
+  surface?: ToolSurface
+  page?: string | null
 }
 
 export interface CoreResourceDef {
@@ -100,6 +117,9 @@ export interface CoreToolError {
 
 /** handler / 资源读取结果（成功结果的可选字段见 bindings/wasm/src/convert.rs `JsCallOutcome`）。 */
 export type CoreOutcome = NormalizedResult | { error: CoreToolError }
+
+/** 导航结果：`{}` 完成，或 `NAVIGATION_FAILED` / `NAVIGATION_DENIED` 错误（spec/protocol.md 3.4）。 */
+export type CoreNavigateOutcome = Record<string, never> | { error: CoreToolError }
 
 /** 核心连接状态（`retryAt` 为核心时钟，即 `performance.now()` 毫秒）。 */
 export type CoreState =
@@ -129,6 +149,8 @@ export type CoreEvent =
   | { type: 'warning'; message: string }
   /** residency 允许时休眠完成后产生；Web 忽略。 */
   | { type: 'idleExit' }
+  /** Host 请求导航（`app/navigate`，仅在 `setNavigation(true)` 时产生）；`params` 缺省为 null。 */
+  | { type: 'navigate'; navigate: number; page: string; params: unknown }
 
 export interface CoreClient {
   state(): CoreState
@@ -154,6 +176,10 @@ export interface CoreClient {
   handleTimeout(now: number): void
   completeCall(callId: string, outcome: CoreOutcome, now: number): void
   completeRead(read: number, outcome: CoreOutcome): void
+  /** 导航完成；连接已断开（请求已丢弃）时抛错。 */
+  completeNavigate(navigate: number, outcome: CoreNavigateOutcome): void
+  /** 是否处理 `app/navigate`（握手时声明 `capabilities.navigate`；连接后修改在下次连接生效）。 */
+  setNavigation(enabled: boolean): void
   pollEvent(): CoreEvent | undefined
   pollTimeout(): number | undefined
   // ---- 生命周期（spec/lifecycle.md）----

@@ -149,7 +149,7 @@ impl Builder {
     }
 
     /// 把 Host 的导航请求（spec/protocol.md 3.4）转给页面，默认 `false`。开启后客户端握手声明 `capabilities.navigate`，
-    /// 请求交给最近一次开启导航的页面（`@app-mcp/tauri` 的 `attachTauriNavigation`）；没有这样的页面时导航失败。
+    /// 请求交给最近一次开启导航的页面（页面 `appMcp.setNavigationHandler`，或 `@app-mcp/tauri` 的 `attachTauriNavigation`）；没有这样的页面时导航失败。
     /// 为 `false` 时 App 可自行在 [`AppMcp::client`] 上 `set_navigation_handler`（如切换窗口），页面开启导航收到错误。
     pub fn page_navigation(mut self, enable: bool) -> Self {
         self.page_navigation = enable;

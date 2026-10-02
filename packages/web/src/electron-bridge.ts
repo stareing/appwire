@@ -13,10 +13,12 @@
  * `instanceId`、`state` 与 `connectionId` 取自主进程客户端（首次 hello 完成前 `instanceId` 为空字符串）。
  */
 
+import { attachBridgeNavigation, type BridgeNavigation } from './bridge-navigation'
 import { checkHandlerOrLoad, loadHandler, type LazySlot } from './lazy'
 import { noopHold } from './noop'
 import { normalizeToolResult, toJsonValue, type NormalizedResult } from './result'
 import { describeParseError, isZodLike, toJsonSchema, toOutputSchema } from './schema'
+import { checkPageName, type ScopeChain, ViewDeclaration } from './view'
 import type {
   Activation,
   AppMcp,
@@ -28,16 +30,20 @@ import type {
   JsonSchema,
   LazyToolDefinition,
   Logger,
+  NavigationHandler,
+  NavigationOptions,
   OutputSchema,
   ResourceDefinition,
   ResourceHandle,
   Risk,
   Scope,
+  ScopeOptions,
   ToolAnnotations,
   ToolDefinition,
   ToolHandle,
   ToolHandler,
   ToolHandlerLoader,
+  ToolSurface,
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -46,7 +52,8 @@ import type {
 //
 // @compat 版本 1 内只做可选字段的新增，旧页面忽略、新页面缺省为 undefined，因此不升版本
 // （升版本会让 findElectronBridge 拒绝新旧混用）。已有新增：`HelloReply.connectionId`、`state` 事件的 `connectionId`、
-// `ToolSpecMessage.annotations` / `outputSchema`、成功 `Outcome` 的 `status` / `stateResource` / `summary` / `annotations`、
+// `ToolSpecMessage.annotations` / `outputSchema` / `surface` / `page`、导航消息（`navigation.set`、`navigate`、
+// `navigate.result`，见 {@link NavigationOp}；旧主进程对未知 op 回复错误，页面据此得知不支持）、成功 `Outcome` 的 `status` / `stateResource` / `summary` / `annotations`、
 // 失败 `Outcome` 的 `details`。
 
 /** preload 默认把桥接对象暴露为 `window.appMcpBridge`。 */
@@ -64,6 +71,13 @@ export interface ToolSpecMessage {
   outputSchema?: OutputSchema
   activation?: Activation
   enabled?: boolean
+  /**
+   * 对界面的依赖（spec/protocol.md 3.4）；缺省 `app`。`view` 工具的可见性门控在页面侧完成，结果体现在 `enabled` 中
+   * （门控变化时页面发 `tool.update`）。`tool.update` 时缺省表示清除。
+   */
+  surface?: ToolSurface
+  /** 所在页面名（spec/protocol.md 3.4）。 */
+  page?: string
 }
 
 /**
@@ -109,6 +123,24 @@ export type RendererOp =
   /** 持有（阻止自动休眠），`holdId` 由页面分配；页面刷新、卸载或 webContents 销毁时主进程释放该页全部持有。 */
   | { op: 'lifecycle.hold'; holdId: number }
   | { op: 'lifecycle.release'; holdId: number }
+  | NavigationOp
+
+/**
+ * 导航（spec/protocol.md 3.4）：页面 → 主进程 / Rust 侧。`navigation.set`：本页处理（`enabled: true`）/ 不再处理导航，
+ * 对方以最近一次开启的页面为目标，未开启导航转发时回复错误；`navigate.result`：回复一次 {@link NavigateEvent}。
+ */
+export type NavigationOp =
+  | { op: 'navigation.set'; enabled: boolean }
+  | { op: 'navigate.result'; navId: number; ok: true }
+  | { op: 'navigate.result'; navId: number; ok: false; kind: 'NAVIGATION_FAILED' | 'NAVIGATION_DENIED'; message: string }
+
+/** 主进程 / Rust 侧请求页面导航（Host 的 `app/navigate`）。`params` 缺省 = Host 没有给出参数。 */
+export interface NavigateEvent {
+  type: 'navigate'
+  navId: number
+  page: string
+  params?: unknown
+}
 
 export interface HelloReply {
   instanceId: string
@@ -125,6 +157,7 @@ export type MainEvent =
   | { type: 'read'; readId: number; resourceId: number }
   /** `connectionId`：该状态下主进程客户端的连接 ID；未连接或旧主进程时缺省。 */
   | { type: 'state'; state: ConnectionState; connectionId?: string }
+  | NavigateEvent
 
 /** preload 暴露给页面的最小桥接对象。 */
 export interface AppMcpBridge {
@@ -237,6 +270,20 @@ interface Detachable {
 interface Owner {
   readonly scopeId: number | undefined
   readonly children: Set<Detachable>
+  /** scope 的界面声明（{@link ScopeOptions}）与上层；实例本身两者都为 undefined。 */
+  readonly viewOptions: ScopeOptions | undefined
+  readonly parentOwner: Owner | undefined
+}
+
+/** 所在 scope 链（自近到远）上的界面声明。 */
+function ownerChain(owner: Owner): ScopeChain {
+  return function* () {
+    for (let o: Owner | undefined = owner; o; o = o.parentOwner) yield o.viewOptions
+  }
+}
+
+function pageDocument(): Document | undefined {
+  return typeof document === 'undefined' ? undefined : document
 }
 
 class Client {
@@ -407,6 +454,8 @@ class ToolEntry implements ToolHandle, Detachable, LazySlot {
   schema: ResolvedInput['schema']
   parse: ResolvedInput['parse']
   outputSchema: OutputSchema | undefined
+  /** 界面声明与可见性门控（只在有桥接时创建）。 */
+  private decl: ViewDeclaration | undefined
   private disposed = false
 
   constructor(
@@ -423,6 +472,8 @@ class ToolEntry implements ToolHandle, Detachable, LazySlot {
     if (!client.bridge) return
     // 定义不合法时同步抛出（与驱动层一致）；需要加载 zod 时异步解析。
     checkHandlerOrLoad(name, definition)
+    // 门控变化：重新发送定义（`enabled` 为生效值）
+    this.decl = new ViewDeclaration(name, definition, ownerChain(owner), pageDocument(), () => this.resend())
     const resolved = resolveInput(definition.input)
     const output = resolveOutput(definition.outputSchema)
     client.tools.set(this.id, this)
@@ -447,13 +498,21 @@ class ToolEntry implements ToolHandle, Detachable, LazySlot {
       ...(d.annotations !== undefined && { annotations: d.annotations }),
       ...(this.outputSchema !== undefined && { outputSchema: this.outputSchema }),
       ...(d.activation !== undefined && { activation: d.activation }),
-      ...(d.enabled !== undefined && { enabled: d.enabled }),
+      ...((d.enabled !== undefined || this.decl?.gated) && { enabled: this.decl?.enabled ?? d.enabled }),
+      ...(this.decl?.surface === 'view' && { surface: 'view' as const }),
+      ...(this.decl?.page !== undefined && { page: this.decl.page }),
     }
+  }
+
+  private resend(): void {
+    if (this.disposed) return
+    this.client.enqueue(() => (this.disposed ? null : { op: 'tool.update', id: this.id, spec: this.spec() }))
   }
 
   update(changes: Parameters<ToolHandle['update']>[0]): void {
     if (this.disposed) return
     const { handler: _h, load: _l, ...meta } = changes as Record<string, unknown>
+    this.decl?.apply(changes)
     this.def = { ...this.def, ...meta }
     const resolved = 'input' in changes ? resolveInput(changes.input) : undefined
     const output = 'outputSchema' in changes ? resolveOutput(changes.outputSchema) : undefined
@@ -483,6 +542,7 @@ class ToolEntry implements ToolHandle, Detachable, LazySlot {
 
   detach(): void {
     this.disposed = true
+    this.decl?.dispose()
     this.client.tools.delete(this.id)
   }
 }
@@ -543,6 +603,8 @@ function scopeField(owner: Owner): { scopeId?: number } {
 abstract class RegistrarBase implements Owner {
   readonly children = new Set<Detachable>()
   abstract readonly scopeId: number | undefined
+  abstract readonly viewOptions: ScopeOptions | undefined
+  abstract readonly parentOwner: Owner | undefined
   protected abstract isActive(): boolean
 
   protected constructor(protected readonly client: Client) {}
@@ -560,8 +622,9 @@ abstract class RegistrarBase implements Owner {
     return new ResourceEntry(this.target, this, name, definition, definition.read)
   }
 
-  scope(name: string): Scope {
-    const scope = new ScopeEntry(this.target, this, name)
+  scope(name: string, options?: ScopeOptions): Scope {
+    if (options?.page !== undefined) checkPageName(`scope ${name}`, options.page)
+    const scope = new ScopeEntry(this.target, this, name, options)
     if (this.isActive() && this.client.bridge) this.children.add(scope)
     return scope
   }
@@ -574,16 +637,23 @@ abstract class RegistrarBase implements Owner {
 
 class ScopeEntry extends RegistrarBase implements Scope, Detachable {
   readonly scopeId: number
+  readonly viewOptions: ScopeOptions | undefined
   private disposed = false
 
   constructor(
     client: Client,
     private readonly owner: Owner,
     readonly name: string,
+    options: ScopeOptions | undefined,
   ) {
     super(client)
+    this.viewOptions = options === undefined ? undefined : { ...options }
     this.scopeId = client.id()
     client.enqueue(() => ({ op: 'scope.create', id: this.scopeId, ...scopeField(owner), name }))
+  }
+
+  get parentOwner(): Owner {
+    return this.owner
   }
 
   protected isActive(): boolean {
@@ -605,6 +675,10 @@ class ScopeEntry extends RegistrarBase implements Scope, Detachable {
 
 class BridgeAppMcp extends RegistrarBase implements AppMcp {
   readonly scopeId = undefined
+  readonly viewOptions = undefined
+  readonly parentOwner = undefined
+  /** 当前的导航接入（`setNavigationHandler`）。 */
+  private navigation: BridgeNavigation | undefined
   readonly options: Readonly<AppMcpOptions>
   instanceId = ''
   private currentConnectionId: string | undefined
@@ -659,6 +733,24 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
     return this.disposed ? noopHold() : this.client.hold()
   }
 
+  /**
+   * 导航回调（spec/protocol.md 3.4）：经桥接请主进程 / Rust 侧把 Host 的导航请求转给本页（对方需开启导航转发，
+   * 如 `attachAppMcp({ navigation: true })` / `Builder::page_navigation(true)`；未开启时记录警告）。
+   */
+  setNavigationHandler(handler: NavigationHandler | null, options: NavigationOptions = {}): void {
+    this.navigation?.dispose()
+    this.navigation = undefined
+    const bridge = this.client.bridge
+    if (!handler || !bridge || this.disposed) return
+    const navigation = attachBridgeNavigation(bridge, handler, options)
+    this.navigation = navigation
+    navigation.ready.catch((error: unknown) => {
+      if (this.navigation === navigation) {
+        this.client.logger.warn(`[app-mcp] 主进程未接受本页处理导航：${error instanceof Error ? error.message : String(error)}`)
+      }
+    })
+  }
+
   private lifecycle(op: 'lifecycle.wake' | 'lifecycle.sleep' | 'lifecycle.connectNow'): void {
     if (this.disposed) return
     void this.client.enqueue(() => ({ op }))
@@ -705,6 +797,8 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.navigation?.dispose()
+    this.navigation = undefined
     this.detachChildren()
     for (const controller of this.client.calls.values()) controller.abort(callError('CANCELLED', 'SDK 已停止'))
     this.client.calls.clear()

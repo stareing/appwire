@@ -38,5 +38,6 @@ export function createDisabledAppMcp(options: AppMcpOptions): AppMcp {
     sleep: noop,
     connectNow: noop,
     hold: noopHold,
+    setNavigationHandler: noop,
   }
 }

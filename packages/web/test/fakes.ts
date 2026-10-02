@@ -5,6 +5,7 @@ import type {
   CoreClient,
   CoreConfig,
   CoreEvent,
+  CoreNavigateOutcome,
   CoreOutcome,
   CoreResourceDef,
   CoreState,
@@ -122,6 +123,12 @@ export class FakeCore implements CoreClient {
   }
   completeRead(read: number, outcome: CoreOutcome): void {
     this.rec('completeRead', read, outcome)
+  }
+  completeNavigate(navigate: number, outcome: CoreNavigateOutcome): void {
+    this.rec('completeNavigate', navigate, outcome)
+  }
+  setNavigation(enabled: boolean): void {
+    this.rec('setNavigation', enabled)
   }
   pollEvent(): CoreEvent | undefined {
     return this.events.shift()

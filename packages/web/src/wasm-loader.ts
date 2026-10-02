@@ -15,6 +15,7 @@ import type {
   CoreConfig,
   CoreEvent,
   CoreFactory,
+  CoreNavigateOutcome,
   CoreOutcome,
   CoreResourceDef,
   CoreState,
@@ -53,6 +54,8 @@ export interface RawWasmClient {
   handleTimeout(now: number): void
   completeCall(callId: string, outcomeJson: string, now: number): void
   completeRead(read: number, outcomeJson: string): void
+  completeNavigate(navigate: number, outcomeJson: string): void
+  setNavigation(enabled: boolean): void
   pollEvent(): string | undefined
   pollTimeout(): number | undefined
   handleWake(args: string, now: number): boolean
@@ -145,6 +148,12 @@ class WasmCore implements CoreClient {
   }
   completeRead(read: number, outcome: CoreOutcome): void {
     this.raw.completeRead(read, JSON.stringify(outcome))
+  }
+  completeNavigate(navigate: number, outcome: CoreNavigateOutcome): void {
+    this.raw.completeNavigate(navigate, JSON.stringify(outcome))
+  }
+  setNavigation(enabled: boolean): void {
+    this.raw.setNavigation(enabled)
   }
   pollEvent(): CoreEvent | undefined {
     const json = this.raw.pollEvent()

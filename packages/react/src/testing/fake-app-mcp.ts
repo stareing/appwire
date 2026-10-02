@@ -10,7 +10,10 @@ import type {
   ResourceDefinition,
   ResourceHandle,
   LazyToolDefinition,
+  NavigationHandler,
+  NavigationOptions,
   Scope,
+  ScopeOptions,
   ToolDefinition,
   ToolHandle,
 } from '@app-mcp/web'
@@ -53,6 +56,7 @@ class FakeScope implements Scope {
     private readonly app: FakeAppMcp,
     readonly name: string,
     readonly parent: FakeScope | null,
+    readonly options: ScopeOptions | undefined,
   ) {}
 
   tool<I, O>(name: string, definition: AnyDef<I, O>): ToolHandle {
@@ -63,8 +67,8 @@ class FakeScope implements Scope {
     return this.app.registerResource(name, definition, this)
   }
 
-  scope(name: string): Scope {
-    return this.app.createScope(name, this)
+  scope(name: string, options?: ScopeOptions): Scope {
+    return this.app.createScope(name, this, options)
   }
 
   dispose(): void {
@@ -138,8 +142,23 @@ export class FakeAppMcp implements AppMcp {
     return this.registerResource(name, definition, null)
   }
 
-  scope(name: string): Scope {
-    return this.createScope(name, null)
+  scope(name: string, options?: ScopeOptions): Scope {
+    return this.createScope(name, null, options)
+  }
+
+  /** 当前的导航回调（`setNavigationHandler`）。 */
+  navigationHandler: NavigationHandler | null = null
+  navigationOptions: NavigationOptions | undefined
+
+  setNavigationHandler(handler: NavigationHandler | null, options?: NavigationOptions): void {
+    this.navigationHandler = handler
+    this.navigationOptions = options
+  }
+
+  /** 模拟 Host 的 `app/navigate`：没有回调时抛错。 */
+  async navigate(page: string, params?: Record<string, unknown>): Promise<void> {
+    if (!this.navigationHandler) throw new Error('没有导航回调')
+    await this.navigationHandler({ page, params })
   }
 
   dispose(): void {
@@ -160,6 +179,21 @@ export class FakeAppMcp implements AppMcp {
 
   getTool(name: string): AnyDef | undefined {
     return this.toolEntries.get(name)?.definition
+  }
+
+  /**
+   * 工具所在 scope 链上的界面声明（最近的 scope 优先），与 `@app-mcp/web` 的继承规则一致；工具不存在时为 undefined。
+   */
+  getScopeOptions(name: string): ScopeOptions | undefined {
+    const entry = this.toolEntries.get(name)
+    if (!entry) return undefined
+    const merged: ScopeOptions = {}
+    for (let s = entry.scope; s; s = s.parent) {
+      for (const [k, v] of Object.entries(s.options ?? {})) {
+        if (v !== undefined && !(k in merged)) (merged as Record<string, unknown>)[k] = v
+      }
+    }
+    return merged
   }
 
   getToolScope(name: string): string | null | undefined {
@@ -256,9 +290,9 @@ export class FakeAppMcp implements AppMcp {
     this.events.push({ type: 'resource.dispose', name: entry.name })
   }
 
-  createScope(name: string, parent: FakeScope | null): Scope {
+  createScope(name: string, parent: FakeScope | null, options?: ScopeOptions): Scope {
     if (parent?.disposed) throw new Error(`scope 已注销：${parent.name}`)
-    const scope = new FakeScope(this, name, parent)
+    const scope = new FakeScope(this, name, parent, options)
     parent?.children.add(scope)
     this.liveScopes++
     const originalDispose = scope.dispose.bind(scope)

@@ -409,3 +409,25 @@ describe('resultEnvelope', () => {
     })
   })
 })
+
+describe('界面声明（spec/protocol.md 3.4）', () => {
+  it('元素工具缺省 surface view；data-mcp-page 取元素或最近祖先；data-mcp-surface="app" 关闭门控', async () => {
+    document.body.innerHTML = `
+      <section data-mcp-page="cart">
+        <button data-mcp-tool="cart.clear" data-mcp-desc="清空">清空</button>
+        <button data-mcp-tool="cart.sync" data-mcp-desc="同步" data-mcp-surface="app">同步</button>
+      </section>
+      <button data-mcp-tool="free" data-mcp-desc="自由" data-mcp-surface="bogus">自由</button>`
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    detach = attachDom(app, { settleMs: 0 })
+    expect(app.tools.get('cart.clear')!.def).toMatchObject({ surface: 'view', page: 'cart' })
+    expect(app.tools.get('cart.sync')!.def).toMatchObject({ surface: 'app', page: 'cart' })
+    expect(app.tools.get('free')!.def).toMatchObject({ surface: 'view' })
+    expect(app.tools.get('free')!.def.page).toBeUndefined()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('data-mcp-surface'))
+
+    document.querySelector('section')!.setAttribute('data-mcp-page', 'checkout')
+    await settle()
+    expect(app.tools.get('cart.clear')!.current).toMatchObject({ page: 'checkout' })
+  })
+})

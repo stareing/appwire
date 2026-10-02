@@ -20,8 +20,9 @@ import type {
   ToolDefinition,
   ToolAnnotations,
   ToolHandle,
+  ToolSurface,
 } from '@app-mcp/web'
-import { ToolCallError } from '@app-mcp/web'
+import { refreshViewTools, ToolCallError } from '@app-mcp/web'
 import {
   ANNOTATION_ATTRS,
   ATTR,
@@ -30,6 +31,7 @@ import {
   WEBMCP,
   attr,
   isActivation,
+  isSurface,
   isForm,
   isRisk,
   isStandardForm,
@@ -43,6 +45,9 @@ import { invoke } from './invoke'
 import { toToolResult } from './result'
 import { disabledReason } from './state'
 import { truncate, visibleText } from './text'
+
+/** 页面名规则（与工具名相同，spec/protocol.md 3.4）。 */
+const PAGE_NAME_RE = /^[a-zA-Z0-9_.-]{1,64}$/
 
 export interface AttachDomOptions {
   /** 观察范围，默认 `document.body`。 */
@@ -96,6 +101,8 @@ interface ToolDef {
   outputSchema: OutputSchema | undefined
   enabled: boolean
   input: JsonSchema
+  surface: ToolSurface
+  page: string | undefined
 }
 
 interface ToolSpec {
@@ -334,6 +341,8 @@ class DomBinding {
       }
     }
     this.toolOrder = order
+    // 条目（锚点）可能变化：立即重新评估 view 工具的可见性门控
+    refreshViewTools(this.root.ownerDocument ?? undefined)
   }
 
   private computeSpec(name: string, els: Element[]): ToolSpec | undefined {
@@ -437,6 +446,8 @@ class DomBinding {
         outputSchema: this.outputSchemaOf(rep, name),
         enabled,
         input,
+        surface: this.surfaceOf(rep, name),
+        page: this.pageOf(rep, name),
       },
       inputJson: JSON.stringify(input),
     }
@@ -455,6 +466,23 @@ class DomBinding {
         )
     }
     return Object.keys(annotations).length > 0 ? annotations : undefined
+  }
+
+  /** data-mcp-surface：缺省 `view`（元素工具依赖界面，SDK 按可见性 / 层级门控）；无效值警告并按缺省。 */
+  private surfaceOf(el: Element, name: string): ToolSurface {
+    const value = attr(el, ATTR.surface)
+    if (value === undefined) return 'view'
+    if (isSurface(value)) return value
+    this.warnOnce(`surface:${name}`, `[app-mcp/dom] 工具 ${name}：无效的 ${ATTR.surface}=${JSON.stringify(value)}，按 view 处理`)
+    return 'view'
+  }
+
+  /** data-mcp-page：元素或最近祖先上的页面名；名称不合法时警告并忽略。 */
+  private pageOf(el: Element, name: string): string | undefined {
+    const value = el.closest(`[${ATTR.page}]`)?.getAttribute(ATTR.page) ?? undefined
+    if (value === undefined || PAGE_NAME_RE.test(value)) return value
+    this.warnOnce(`page:${name}`, `[app-mcp/dom] 工具 ${name}：无效的 ${ATTR.page}=${JSON.stringify(value)}，已忽略`)
+    return undefined
   }
 
   /** 结果 schema：data-mcp-output-schema（JSON 对象）。 */
@@ -506,7 +534,9 @@ class DomBinding {
       description: d.description,
       input: d.input,
       enabled: d.enabled,
-      anchor: () => this.anchorOf(spec.name),
+      surface: d.surface,
+      // 注册返回前（门控首次求值时）记录尚未写入：用本次的 spec
+      anchor: () => this.anchorOf(spec.name, spec),
       handler: (input, ctx) => this.call(spec.name, input, ctx),
     }
     if (d.title !== undefined) definition.title = d.title
@@ -514,6 +544,7 @@ class DomBinding {
     if (d.activation !== undefined) definition.activation = d.activation
     if (d.annotations !== undefined) definition.annotations = d.annotations
     if (d.outputSchema !== undefined) definition.outputSchema = d.outputSchema
+    if (d.page !== undefined) definition.page = d.page
     let handle: ToolHandle
     try {
       handle = registrar.tool(spec.name, definition)
@@ -544,6 +575,8 @@ class DomBinding {
     if (!sameJson(d.annotations, a.annotations)) changes.annotations = d.annotations
     if (!sameJson(d.outputSchema, a.outputSchema)) changes.outputSchema = d.outputSchema
     if (d.enabled !== a.enabled) changes.enabled = d.enabled
+    if (d.surface !== a.surface) changes.surface = d.surface
+    if (d.page !== a.page) changes.page = d.page
     if (spec.inputJson !== rec.appliedInput) changes.input = d.input
     if (Object.keys(changes).length === 0) return
     rec.applied = d
@@ -551,8 +584,8 @@ class DomBinding {
     rec.handle.update(changes)
   }
 
-  private anchorOf(name: string): Element | null {
-    const spec = this.tools.get(name)?.spec
+  private anchorOf(name: string, fallback?: ToolSpec): Element | null {
+    const spec = this.tools.get(name)?.spec ?? fallback
     if (!spec) return null
     return (spec.entries.find((e) => !e.reason) ?? spec.entries[0])?.el ?? null
   }

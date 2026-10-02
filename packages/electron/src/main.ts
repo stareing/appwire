@@ -27,8 +27,6 @@ import {
   type HelloReply,
   type MainEvent,
   type NavigateEvent,
-  type NavigationOp,
-  type NavigationToolFields,
   type OpReply,
   type Outcome,
   type RendererOp,
@@ -140,7 +138,7 @@ class RendererSession {
     return scope
   }
 
-  handle(op: RendererOp | NavigationOp): unknown {
+  handle(op: RendererOp): unknown {
     switch (op.op) {
       case 'navigation.set':
         this.owner.setNavigationTarget(this, op.enabled === true)
@@ -279,8 +277,7 @@ class RendererSession {
       const navId = this.nextNavId++
       this.navigations.set(navId, { resolve, reject })
       const event: NavigateEvent = { type: 'navigate', navId, page, ...(params !== undefined && { params }) }
-      // @compat MainEvent 的唯一定义在 @app-mcp/web，尚未包含 navigate（见 protocol.ts NavigationOp）
-      this.send(event as unknown as MainEvent)
+      this.send(event)
     })
   }
 
@@ -337,8 +334,8 @@ function toolDefinition(spec: ToolSpecMessage) {
     // 显式写出（可能为 undefined）：页面每次发送完整定义，update 时缺省表示清除之前的声明。
     annotations: spec.annotations,
     outputSchema: spec.outputSchema,
-    surface: (spec as NavigationToolFields).surface,
-    page: (spec as NavigationToolFields).page,
+    surface: spec.surface,
+    page: spec.page,
   }
 }
 
@@ -453,7 +450,7 @@ class Attachment implements AppMcpAttachment {
     if (typeof raw !== 'object' || raw === null || typeof (raw as { op?: unknown }).op !== 'string') {
       return { ok: false, code: 'INVALID_OP', message: '非法的消息' }
     }
-    const op = raw as RendererOp | NavigationOp
+    const op = raw as RendererOp
     try {
       const existing = this.sessions.get(sender.id)
       if (op.op === 'hello' || op.op === 'reset') {

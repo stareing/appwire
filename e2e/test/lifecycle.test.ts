@@ -1,6 +1,7 @@
 /**
  * 生命周期（spec/lifecycle.md）：shop 以 `VITE_APP_MCP_LIFECYCLE=idle`（短空闲时间）启动 →
- * 空闲休眠 → Host 显示 dormant、工具仍列出 → 调用触发唤醒 → 快速恢复后结果正确 → 再次休眠。
+ * 空闲休眠 → Host 显示 dormant、工具仍列出 → 调用触发唤醒 → 快速恢复后结果正确 → 再次休眠；
+ * 调用其他页面的工具时唤醒后先导航（第 4c 项，spec/hub-api.md 3.14）。
  *
  * 唤醒方式：Host 配置 `--waker {"exec": [node, src/record-wake.mjs, 日志]}`，唤醒程序只记录 WakeRequest；
  * 测试读到请求后按 web-url 唤醒的约定把 `#app-mcp-wake=<令牌>` 交给页面（新开，或设置到已打开页面的
@@ -117,6 +118,21 @@ describe('生命周期：idle 休眠与调用唤醒', () => {
     const result = ok(await call)
     expect(JSON.stringify(result)).toContain('耳机')
     await waitDormant()
+  })
+
+  it('休眠中调用其他页面的工具（页面目录）：唤醒 → 导航到该页面 → 等工具注册后派发', async () => {
+    expect(await page.eval<string>('location.pathname')).toBe('/')
+    const before = host.wakeRequests().length
+    const call = mcp().callTool('shop.orders.list', {}, 40_000)
+    const req = await waitFor(() => host.wakeRequests()[before], 'Host 执行 web-url 唤醒', 20_000, 50)
+    await page.eval(`location.hash = ${JSON.stringify(`#app-mcp-wake=${req.token}`)}`)
+    expect(ok(await call)).toEqual({ orders: [] })
+    expect(await page.eval<string>('location.pathname')).toBe('/orders')
+    // 休眠快照中的 view 工具不在 tools/list（spec/hub-api.md 3.14 L1），页面目录仍可经 apps.page 查到
+    await waitDormant()
+    expect(await mcp().toolNames()).not.toContain('shop.orders.list')
+    const orders = data(await mcp().callTool('apps.page', { appId: 'shop', page: 'orders' }))
+    expect(orders.tools.map((t: { name: string }) => t.name)).toEqual(['shop.orders.list'])
   })
 
   it('页面重新可见时自行回连（不经 Host 唤醒）', async () => {

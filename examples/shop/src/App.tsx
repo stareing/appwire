@@ -1,25 +1,29 @@
-import { ToolScope, useConnectionState, useTool, type ConnectionState } from '@app-mcp/react'
-import { useState } from 'react'
+import { useConnectionState, useRouterNavigation, useTool, type ConnectionState } from '@app-mcp/react'
+import { useRef } from 'react'
 import { catalogSearch } from './mcp/static-tools'
-import { CartPage } from './pages/CartPage'
-import { TodoPage } from './pages/TodoPage'
+import { navigate, Routes, usePathname } from './router'
+import { routes } from './routes'
 
-type Tab = 'todos' | 'cart'
-
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'todos', label: '待办' },
-  { id: 'cart', label: '购物车' },
+const TABS: { path: string; label: string }[] = [
+  { path: '/', label: '待办' },
+  { path: '/products', label: '商品' },
+  { path: '/cart', label: '购物车' },
+  { path: '/orders', label: '订单' },
 ]
 
 export function App() {
-  const [tab, setTab] = useState<Tab>('todos')
+  const pathname = usePathname()
+  const visited = useRef(new Set<string>())
 
-  // 静态工具：定义来自 static-tools.ts（与清单一致），在根组件注册，任何页签下都可用。
+  // 静态工具：定义来自 static-tools.ts（与清单一致），在根组件注册，任何页面下都可用。
   // handler 惰性加载：首次调用时才加载 ./mcp/catalog-search（冷启动唤醒只初始化被调用的模块）。
   useTool(catalogSearch.name, {
     ...catalogSearch,
     load: () => import('./mcp/catalog-search'),
   })
+
+  // Host 调用不在当前页面的工具时（页面目录见清单 pages）请求导航：页面名 → 路由表中的 path。
+  useRouterNavigation({ navigate, pages: routes })
 
   return (
     <div className="app">
@@ -30,27 +34,19 @@ export function App() {
       <nav className="tabs" role="tablist">
         {TABS.map((t) => (
           <button
-            key={t.id}
+            key={t.path}
             role="tab"
-            aria-selected={tab === t.id}
-            className={tab === t.id ? 'tab active' : 'tab'}
-            onClick={() => setTab(t.id)}
+            aria-selected={pathname === t.path}
+            className={pathname === t.path ? 'tab active' : 'tab'}
+            onClick={() => navigate(t.path)}
           >
             {t.label}
           </button>
         ))}
       </nav>
       <main className="page">
-        {/* 切换页签时页面组件卸载，其 scope 下的工具与资源随之注销 */}
-        {tab === 'todos' ? (
-          <ToolScope name="todos">
-            <TodoPage />
-          </ToolScope>
-        ) : (
-          <ToolScope name="cart">
-            <CartPage />
-          </ToolScope>
-        )}
+        {/* 离开页面时组件卸载，其工具与资源随之注销；商品页 keep-alive（隐藏），工具随可见性暂停 */}
+        <Routes routes={routes} visited={visited.current} />
       </main>
     </div>
   )

@@ -13,6 +13,18 @@ export type Risk = 'read' | 'write' | 'destructive' | 'payment' | 'os-sensitive'
 export type Activation = 'headless' | 'background' | 'foreground'
 export type Visibility = 'visible' | 'hidden' | 'frozen'
 
+/**
+ * 工具对界面的依赖（spec/protocol.md 3.4）：`app`（缺省）不依赖界面，后台可调、可唤醒；`view` 依赖界面，
+ * 只在所在界面真正可见且处于最上层时启用（见 {@link ToolDefinition.visibility}）。
+ */
+export type ToolSurface = 'app' | 'view'
+
+/**
+ * `view` 工具的可见性门控：`auto`（缺省）按锚点是否渲染、是否在视口内、页面是否可见、是否被 `inert` / 模态对话框 /
+ * 上层 {@link ViewLayer} 遮挡决定启用；`always` 关闭门控（挂载即启用）。对 `app` 工具无效。
+ */
+export type ViewVisibility = 'auto' | 'always'
+
 /** 协议错误类别，见 spec/protocol.md 第 4 节。 */
 export type ErrorKind =
   | 'TOOL_NOT_FOUND'
@@ -352,8 +364,17 @@ export interface ToolDefinition<I = unknown, O = unknown> {
   activation?: Activation
   /** 缺省 true。为 false 时工具不对 Host 可见。 */
   enabled?: boolean
-  /** 可选：关联的 DOM 元素，用于高亮（M2）。 */
+  /**
+   * 关联的 DOM 元素（或返回它的函数）：`view` 工具按它判断是否可见；缺省继承所在 scope 的 `anchor`
+   * （{@link ScopeOptions}）。给出了锚点但当前解析为 `null` 时视为不可见。
+   */
   anchor?: Element | (() => Element | null)
+  /** 对界面的依赖，缺省继承所在 scope 的 `surface`，再缺省 `app`（spec/protocol.md 3.4）。 */
+  surface?: ToolSurface
+  /** 所在页面名（`[a-zA-Z0-9_.-]{1,64}`，与清单 `pages[].name` 同一命名空间），缺省继承所在 scope 的 `page`。 */
+  page?: string
+  /** `view` 工具的可见性门控，缺省继承所在 scope，再缺省 `auto`。 */
+  visibility?: ViewVisibility
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
   /** 与 `handler` 二选一：只声明元数据、首次调用时加载 handler，见 {@link LazyToolDefinition}。 */
   load?: undefined
@@ -380,8 +401,9 @@ export type AnyToolDefinition<I = unknown, O = unknown> = ToolDefinition<I, O> |
 export interface ToolHandle {
   readonly name: string
   /**
-   * 更新描述、schema、风险、注解或启用状态；未提供的字段保持不变，显式给出 `undefined` 的字段恢复默认
-   * （`annotations` / `outputSchema` 为清除声明）。
+   * 更新描述、schema、风险、注解、启用状态或界面声明（`surface` / `page` / `visibility` / `anchor`）；未提供的字段保持不变，
+   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` 为清除声明，`surface` / `page` / `visibility` 恢复为继承值）。
+   * `enabled` 是 App 的意愿：`view` 工具还要满足可见性门控才对 Host 可见。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void
   /** 替换 handler（不产生协议消息，供框架适配在每次渲染时刷新闭包）。 */
@@ -424,6 +446,19 @@ export class ToolCallError extends Error {
   static userActionRequired(message: string, options: UserActionRequiredOptions = {}): ToolCallError {
     return new ToolCallError('USER_ACTION_REQUIRED', message, userActionDetails(options))
   }
+
+  /**
+   * 导航回调拒绝本次导航（`NAVIGATION_DENIED`，`reason: "app"`，spec/protocol.md 3.4）：用户正在输入、页面需要登录等。
+   * `message` 面向模型 / 用户；Hub 不会重试。
+   */
+  static navigationDenied(message: string): ToolCallError {
+    return new ToolCallError('NAVIGATION_DENIED', message, { reason: 'app' })
+  }
+
+  /** 导航回调无法完成导航（`NAVIGATION_FAILED`，`reason: "error"`）：页面不存在、参数不合法等。 */
+  static navigationFailed(message: string): ToolCallError {
+    return new ToolCallError('NAVIGATION_FAILED', message, { reason: 'error' })
+  }
 }
 
 /** `{ reason?, uri? }` → 错误详情（省略缺省字段；为空时返回 undefined）。 */
@@ -440,7 +475,7 @@ function userActionDetails(options: UserActionRequiredOptions): Record<string, u
 
 export interface ResourceDefinition<T = unknown> {
   description: string
-  /** 缺省 'application/json'。 */
+  /** 内容类型。缺省不声明（Host 按 `application/json` 处理，spec/protocol.md 3）。 */
   mimeType?: string
   /**
    * 需实时推送（spec/lifecycle.md 第 13 节 B3）：被 Host 订阅时保持连接、休眠中变化时回连推送。
@@ -465,11 +500,47 @@ export interface ResourceHandle {
 // Scope 与实例
 // ---------------------------------------------------------------------------
 
+/**
+ * 界面层（对话框、抽屉、模态框），见 {@link createViewLayer}。打开的层按打开顺序叠放：只有最上层中的 `view` 工具启用，
+ * 下层的暂停（对 Host 表现为禁用，经 `tools/changed` 同步）；没有打开的层时基础层（不属于任何层的工具）在最上层。
+ */
+export interface ViewLayer {
+  readonly name: string
+  /** 是否已打开（在层栈中）。 */
+  readonly isOpen: boolean
+  /** 是否为最上层（已打开且其上没有其他层）。 */
+  readonly isTop: boolean
+  /** 压入层栈（已打开时无效果）。 */
+  open(): void
+  /** 移出层栈（未打开时无效果）。 */
+  close(): void
+}
+
+/**
+ * scope 的界面声明：其下工具（含子 scope）未自行声明时继承这些值，最近的 scope 优先。
+ * `layer` 只能由 scope 给出：工具属于最近的声明了 `layer` 的 scope 所在的层。
+ */
+export interface ScopeOptions {
+  /** 缺省锚点（如页面根元素）。 */
+  anchor?: Element | (() => Element | null)
+  /** 所属界面层；层未打开时其中的 `view` 工具不启用。 */
+  layer?: ViewLayer
+  /**
+   * 缺省页面名。声明了 `layer` 的 scope 截断继承：层内工具不继承层外的 `page`（层只在打开时存在，导航过去也不会出现，
+   * 不应进入页面目录）；需要时在层的 scope 或工具上显式声明。
+   */
+  page?: string
+  /** 缺省 surface。 */
+  surface?: ToolSurface
+  /** 缺省可见性门控。 */
+  visibility?: ViewVisibility
+}
+
 export interface Registrar {
   tool<I = unknown, O = unknown>(name: string, definition: ToolDefinition<I, O> | LazyToolDefinition<I, O>): ToolHandle
   resource<T = unknown>(name: string, definition: ResourceDefinition<T>): ResourceHandle
-  /** 创建子 scope。 */
-  scope(name: string): Scope
+  /** 创建子 scope；`options` 给出其下工具的缺省界面声明（锚点、层、页面等）。 */
+  scope(name: string, options?: ScopeOptions): Scope
 }
 
 export interface Scope extends Registrar {
@@ -502,4 +573,37 @@ export interface AppMcp extends Registrar {
   hold(): HoldHandle
   /** `on-demand` 模式下主动连接（其他模式等同于 `wake()`）。 */
   connectNow(): void
+
+  // ---- 导航（spec/protocol.md 3.4）-----------------------------------------
+
+  /**
+   * 设置（`null` 清除）导航回调：Host 调用不在当前页面的工具时请求 App 切换到该页面（`app/navigate`）。
+   * 回调切换界面后返回（可返回 Promise）；SDK 再等界面稳定（新页面的工具注册）后回复 Host。
+   * 抛出 {@link ToolCallError.navigationDenied} 拒绝、其他错误按导航失败回复。
+   *
+   * 能力在握手时声明：请在应用启动时设置（路由适配在根组件挂载时设置即可，早于连接建立）；连接建立后才设置的回调
+   * 在下次连接时生效。桥接实现（Electron / Tauri 页面侧）可能不提供本方法。
+   */
+  setNavigationHandler?(handler: NavigationHandler | null, options?: NavigationOptions): void
+}
+
+/** 导航请求（`app/navigate` 的参数）。 */
+export interface NavigationRequest {
+  /** 页面名（清单 `pages[].name`）。 */
+  page: string
+  /** 导航参数（清单 `pages[].params` 描述其 schema）；Host 未给出时为 `undefined`。 */
+  params: Record<string, unknown> | undefined
+}
+
+/** 导航回调：切换到 `request.page`，完成后返回。 */
+export type NavigationHandler = (request: NavigationRequest) => void | Promise<void>
+
+export interface NavigationOptions {
+  /**
+   * 界面上有打开的 {@link ViewLayer}（对话框等）时的处理：`deny`（缺省）以 `NAVIGATION_DENIED` 拒绝，不调用回调
+   * （用户正在与弹层交互，不替用户关闭）；`allow` 照常调用回调。
+   */
+  whileLayerOpen?: 'deny' | 'allow'
+  /** 回调完成后等待界面稳定的上限（毫秒，等待新页面的 `view` 工具注册），默认 500。 */
+  settleMs?: number
 }

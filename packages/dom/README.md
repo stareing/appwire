@@ -45,6 +45,8 @@ detach() // 断开观察并注销全部由 DOM 声明的工具、资源与 scope
 | `data-mcp-hints="a,b"` | 调用成功后作为 `stateHints` 返回（提示模型哪些资源可能已变化）。 |
 | `data-mcp-summary="已清空购物车"` | 调用成功后作为结果的 `summary` 返回（一句结论）；页面给出的结构化结果自带 `summary` 时以页面为准。 |
 | `data-mcp-key` / `data-mcp-label` | 集合条目，见下文。 |
+| `data-mcp-surface` | 对界面的依赖（spec/protocol.md 3.4）：缺省 `view`——元素工具只在真正可见且处于最上层时启用（除本包的禁用 / 隐藏判断外，SDK 还按视口、页面可见性、`inert`、打开的模态 `<dialog>` 与 `@app-mcp/web` 的界面层 `createViewLayer` 门控）；`app` 关闭 SDK 门控（本包的禁用 / 隐藏判断照常）。 |
+| `data-mcp-page="页面名"` | 所在页面（页面目录的键，与清单 `pages[].name` 一致），写在元素或任一祖先上；Host 调用不在当前页面的工具时据此请求导航（App 需设置导航回调，见 @app-mcp/web）。 |
 
 ### 工具注解与结果 schema
 

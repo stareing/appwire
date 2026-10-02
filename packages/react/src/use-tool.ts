@@ -14,6 +14,9 @@ interface MetaSnapshot {
   risk: ToolDefinition['risk']
   activation: ToolDefinition['activation']
   enabled: boolean
+  surface: ToolDefinition['surface']
+  page: ToolDefinition['page']
+  visibility: ToolDefinition['visibility']
   /** 按内容比较的字段：原值与比较键（{@link schemaKey}）。 */
   structured: Record<StructuredKey, { value: unknown; key: string | null }>
 }
@@ -26,7 +29,7 @@ interface Registration {
   hasAnchor: boolean
 }
 
-const SCALAR_KEYS = ['description', 'title', 'risk', 'activation', 'enabled'] as const
+const SCALAR_KEYS = ['description', 'title', 'risk', 'activation', 'enabled', 'surface', 'page', 'visibility'] as const
 /** 常写成内联字面量（每次渲染引用都变）的字段：先比较引用，再比较内容。 */
 const STRUCTURED_KEYS = ['input', 'outputSchema', 'annotations'] as const
 type StructuredKey = (typeof STRUCTURED_KEYS)[number]
@@ -44,6 +47,9 @@ function snapshot(def: AnyDef, prev?: MetaSnapshot): MetaSnapshot {
     risk: def.risk,
     activation: def.activation,
     enabled: def.enabled ?? true,
+    surface: def.surface,
+    page: def.page,
+    visibility: def.visibility,
     structured,
   }
 }
@@ -77,8 +83,11 @@ function diff(prev: MetaSnapshot, next: MetaSnapshot, def: AnyDef): ToolChanges 
  * - `handler` 每次渲染后通过 `setHandler` 刷新，始终使用最新闭包，不重新注册。
  * - 也可以给出惰性加载器 `load`（与 `handler` 二选一，见 `LazyToolDefinition`）：首次调用时加载并缓存；
  *   `load` 的引用变化不会重新加载。
- * - `description` / `title` / `input` / `outputSchema` / `risk` / `annotations` / `activation` / `enabled` 变化时调用
- *   `update`，只传变化的字段（`input` / `outputSchema` / `annotations` 先比较引用，再比较转换后的 JSON 内容）。
+ * - `description` / `title` / `input` / `outputSchema` / `risk` / `annotations` / `activation` / `enabled` /
+ *   `surface` / `page` / `visibility` 变化时调用 `update`，只传变化的字段（`input` / `outputSchema` / `annotations`
+ *   先比较引用，再比较转换后的 JSON 内容）。
+ * - `surface: 'view'` 的工具由 `@app-mcp/web` 按可见性门控（锚点 `anchor`，缺省继承 `<ToolScope anchor>`；
+ *   `<ToolLayer>` 打开时下层暂停）；`visibility: 'always'` 关闭门控。
  * - 不触发任何额外渲染：注册信息保存在 ref 中。
  * - 没有 `<AppMcpProvider>` 时为空操作。
  *

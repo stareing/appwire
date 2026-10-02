@@ -16,13 +16,7 @@
  */
 
 import { createBridgeAppMcp, type AppMcp, type AppMcpOptions } from '@app-mcp/web'
-import {
-  DEFAULT_BRIDGE_KEY,
-  type AppMcpBridge,
-  type NavigateEvent,
-  type NavigationOp,
-  type RendererOp,
-} from './protocol.js'
+import { DEFAULT_BRIDGE_KEY, type AppMcpBridge } from './protocol.js'
 
 export type { AppMcpBridge, MainEvent, NavigateEvent, NavigationOp, RendererOp } from './protocol.js'
 /** 页面 handler 抛出以指定错误类别（如 `ToolCallError.userActionRequired(...)`），类别与详情经 IPC 原样送到主进程。 */
@@ -62,75 +56,14 @@ export function createRendererAppMcp(options: RendererAppMcpOptions): AppMcp {
 // ---------------------------------------------------------------------------
 // 导航（spec/protocol.md 3.4）
 // ---------------------------------------------------------------------------
+//
+// 页面处理 Host 的导航请求（主进程需 `attachAppMcp({ navigation: true })`）：通常直接用 `appMcp.setNavigationHandler(...)`
+// （或 @app-mcp/react 的 `useRouterNavigation`）；没有 AppMcp 实例时用 `attachBridgeNavigation(bridge, handler)`。
+// 实现与消息类型在 @app-mcp/web（桥接客户端），这里只重新导出。
 
-/** 导航请求（与 @app-mcp/web / @app-mcp/node 的 `NavigationRequest` 同形）。 */
-export interface BridgeNavigationRequest {
-  page: string
-  params: Record<string, unknown> | undefined
-}
-
-/** 页面的导航回调：切换路由后返回；抛出 `ToolCallError.navigationDenied(...)` 拒绝，其他异常按导航失败回复。 */
-export type BridgeNavigationHandler = (request: BridgeNavigationRequest) => void | Promise<void>
-
-export interface BridgeNavigation {
-  /** 主进程接受本页处理导航后兑现；主进程未开启导航转发（`attachAppMcp({ navigation: true })`）或旧主进程时拒绝。 */
-  readonly ready: Promise<void>
-  /** 停止处理导航（通知主进程，取消订阅）。幂等。 */
-  dispose(): void
-}
-
-/**
- * 让本页处理 Host 的导航请求（主进程需 `attachAppMcp({ navigation: true })`）：主进程把 `app/navigate` 转给最近一次
- * 开启导航的页面，本函数调用 `handler` 并回复结果。在 `createRendererAppMcp` / `createAppMcp` 之后调用（页面的 `hello`
- * 会重置本页登记）。
- *
- * ```ts
- * const appMcp = createRendererAppMcp({ appId: 'shop', appName: '示例商城' })
- * attachBridgeNavigation(getAppMcpBridge()!, ({ page, params }) => router.push({ name: page, query: params }))
- * ```
- *
- * @why 页面侧 SDK（@app-mcp/web 的桥接实现）尚未提供 `setNavigationHandler` 时的显式入口；消息形状见 protocol.ts `NavigationOp`。
- * @error 回调抛出 `kind` 为 `NAVIGATION_DENIED` 的错误 → 拒绝；其他 → 失败（消息为异常的 `message`）。
- */
-export function attachBridgeNavigation(bridge: AppMcpBridge, handler: BridgeNavigationHandler): BridgeNavigation {
-  // @compat RendererOp / MainEvent 的唯一定义在 @app-mcp/web，尚未包含导航消息
-  const send = (op: NavigationOp) => bridge.request(op as unknown as RendererOp)
-  let disposed = false
-  const unsubscribe = bridge.onMessage((message) => {
-    const event = message as unknown as NavigateEvent
-    if (disposed || event.type !== 'navigate') return
-    const params = isPlainObject(event.params) ? event.params : undefined
-    Promise.resolve()
-      .then(() => handler({ page: event.page, params }))
-      .then(
-        () => send({ op: 'navigate.result', navId: event.navId, ok: true }),
-        (error: unknown) => send({ op: 'navigate.result', navId: event.navId, ok: false, ...navigationFailure(error) }),
-      )
-      .catch(() => {
-        // @why 主进程已关闭或本页会话已注销：主进程侧的等待会随会话结束失败，这里无需处理
-      })
-  })
-  const ready = send({ op: 'navigation.set', enabled: true }).then((reply) => {
-    if (!reply.ok) throw new Error(reply.message)
-  })
-  return {
-    ready,
-    dispose() {
-      if (disposed) return
-      disposed = true
-      unsubscribe()
-      void send({ op: 'navigation.set', enabled: false }).catch(() => {})
-    },
-  }
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** 回调抛出的值 → 回复的类别与消息（按结构识别 ToolCallError 的 `kind`）。 */
-function navigationFailure(error: unknown): { kind: 'NAVIGATION_FAILED' | 'NAVIGATION_DENIED'; message: string } {
-  const e = (typeof error === 'object' && error !== null ? error : {}) as { kind?: unknown; message?: unknown }
-  const message = typeof e.message === 'string' && e.message !== '' ? e.message : String(error ?? '导航失败')
-  return { kind: e.kind === 'NAVIGATION_DENIED' ? 'NAVIGATION_DENIED' : 'NAVIGATION_FAILED', message }
-}
+export {
+  attachBridgeNavigation,
+  type BridgeNavigation,
+  type NavigationHandler as BridgeNavigationHandler,
+  type NavigationRequest as BridgeNavigationRequest,
+} from '@app-mcp/web'

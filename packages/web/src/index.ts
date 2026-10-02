@@ -19,6 +19,11 @@ import { loadWasmCore } from './wasm-loader'
 export * from './types'
 export { DEFAULT_HOST_URL, DEFAULT_HOST_URLS, SDK_VERSION } from './driver'
 export { isToolResultEnvelope } from './result'
+export { attachBridgeNavigation, type BridgeNavigation } from './bridge-navigation'
+// 界面级暴露（spec/protocol.md 3.4）：层栈与 view 工具门控
+export { createViewLayer, openViewLayers, refreshViewTools } from './view'
+// 路由适配共用（React Router 适配在 @app-mcp/react，Vue Router 适配在 @app-mcp/web/vue-router）
+export { guardDenial, pagePath, routePages, type GuardResult, type RouteLike } from './router'
 export {
   BRIDGE_VERSION,
   createBridgeAppMcp,
@@ -27,6 +32,8 @@ export {
   type AppMcpBridge,
   type HelloReply,
   type MainEvent,
+  type NavigateEvent,
+  type NavigationOp,
   type OpReply,
   type Outcome,
   type RendererOp,

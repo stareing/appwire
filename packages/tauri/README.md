@@ -61,13 +61,16 @@ Identity and connection are owned by the Rust side: `appId`, `appName` and `host
 
 ## API
 
-- `createTauriAppMcp(options)` - returns an `AppMcp` (same interface as `@app-mcp/web`); accepts an explicit `bridge`.
+- `createTauriAppMcp(options)` - returns an `AppMcp` (same interface as `@app-mcp/web`, including `setNavigationHandler`
+  and `view` tool visibility gating in the page); accepts an explicit `bridge`.
 - `isTauri(target?)` - whether the page runs in a Tauri v2 webview.
 - `getTauriBridge(target?)` - the injected bridge, or `undefined` if missing or incompatible.
 - `attachTauriNavigation(({ page, params }) => …, bridge?)` - handle the Hub's page navigation requests in this page
-  (requires `Builder::page_navigation(true)` on the Rust side); returns `{ ready, dispose() }`.
+  without an `AppMcp` instance (requires `Builder::page_navigation(true)` on the Rust side); returns `{ ready, dispose() }`.
+  Usually `appMcp.setNavigationHandler(...)` (or `useRouterNavigation` from `@app-mcp/react`) is enough; both use
+  `attachBridgeNavigation` from `@app-mcp/web`.
 - `TAURI_OP_COMMAND` (`'plugin:app-mcp|op'`), `TAURI_DISPATCH_FN`, `BRIDGE_VERSION` - protocol constants.
-- Types: `TauriAppMcpOptions`, `AppMcpBridge`, `HelloReply`, `MainEvent`, `OpReply`, `RendererOp`.
+- Types: `TauriAppMcpOptions`, `AppMcpBridge`, `HelloReply`, `MainEvent`, `OpReply`, `RendererOp`, `NavigationOp`, `NavigateEvent`.
 
 See the [AppWire README](https://github.com/stareing/appwire#readme) for how the local Hub and MCP clients fit together.
 

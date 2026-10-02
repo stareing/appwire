@@ -9,6 +9,9 @@
  * 启用 `annotations` 时，还会用 TypeScript 编译器 API 扫描带 `@mcp` JSDoc 标签的导出函数（见 annotations.ts），
  * 把它们合并进清单，并提供虚拟模块 `virtual:app-mcp/annotated`（`registerAnnotated(registrar)`）。
  *
+ * 页面目录（清单 `pages`，第 4c 项 C）：`routes` 选项扫描路由表模块（见 routes.ts，需要 typescript），`pages` 选项加载
+ * 显式页面定义模块（`definePages`）；同名页面以显式定义为准，扫描无法静态确定的页面报错并要求显式声明。
+ *
  * 静态工具模块用 Vite 的 `runnerImport` 加载（Vite 6.1+，在独立的 module runner 环境中
  * 转换并执行 TS 源文件，返回模块及其依赖文件列表）；裸模块导入（如 zod）由 Node 直接加载。
  */
@@ -18,7 +21,8 @@ import { dirname, isAbsolute, resolve } from 'node:path'
 import { normalizePath, runnerImport, type Plugin, type ResolvedConfig, type ViteDevServer } from 'vite'
 import type { AppOverview } from '@app-mcp/web'
 import type { AnnotatedTool, AnnotationScanner, AnnotationScanResult } from './annotations'
-import type { StaticToolDefinition } from './define'
+import type { PageDefinition, StaticToolDefinition } from './define'
+import type { RouteScanOption, RouteScanResult } from './routes'
 import { generateManifest, validateManifest, type AppMcpManifest, type ManifestInfo } from './manifest'
 
 /** 总览：直接给出，或者从 Markdown 文件（相对 Vite root）读取 `body`。 */
@@ -39,6 +43,16 @@ export interface AppMcpPluginOptions extends Omit<ManifestInfo, 'overview'> {
    * `true` 使用默认范围 `src/**\/*.{ts,tsx,mts,cts}`（排除测试文件）。
    */
   annotations?: boolean | AnnotationsOption
+  /**
+   * 显式页面定义模块路径（相对 Vite root），默认导出页面定义数组（见 `definePages`）。用于路由扫描无法静态确定的页面
+   * （工具输入是 zod schema 等），或补充 / 覆盖扫描结果（同名页面以本模块为准；未写 `route` 时取扫描到的路由）。
+   */
+  pages?: string
+  /**
+   * 路由表模块（相对 Vite root）与路由库：扫描其中的路由表生成页面目录（React Router 带 `id` 的路由、Vue Router 带 `name`
+   * 的路由是页面，页面组件模块中的 `useTool` 是页面工具）。规则见 `@app-mcp/build` README；需要项目中可解析 `typescript`。
+   */
+  routes?: RouteScanOption | RouteScanOption[]
 }
 
 export interface AnnotationsOption {
@@ -86,6 +100,41 @@ export async function loadStaticTools(
   }
 }
 
+/** 加载显式页面定义模块，返回页面定义与依赖文件。 */
+export async function loadPages(file: string, root: string): Promise<{ pages: PageDefinition[]; dependencies: string[] }> {
+  const { module, dependencies } = await runnerImport<{ default?: unknown }>(file, {
+    root,
+    logLevel: 'error',
+    configFile: false,
+  })
+  const pages = module.default
+  if (!Array.isArray(pages)) {
+    throw new Error(`页面定义模块 ${file} 必须默认导出页面定义数组（可使用 definePages）`)
+  }
+  return {
+    pages: pages as PageDefinition[],
+    dependencies: dependencies.filter((d): d is string => typeof d === 'string').map((d) => normalizePath(d)),
+  }
+}
+
+/**
+ * 合并扫描得到的页面与显式页面：同名以显式定义为准（未写 `route` 时补上扫描到的路由），其余按扫描顺序在前、显式在后。
+ */
+export function mergePages(scanned: readonly PageDefinition[], explicit: readonly PageDefinition[]): PageDefinition[] {
+  const byName = new Map(explicit.map((p) => [p?.name, p]))
+  const merged: PageDefinition[] = []
+  for (const page of scanned) {
+    const own = byName.get(page.name)
+    if (!own) {
+      merged.push(page)
+      continue
+    }
+    byName.delete(page.name)
+    merged.push(own.route === undefined && page.route !== undefined ? { ...own, route: page.route } : own)
+  }
+  return [...merged, ...byName.values()]
+}
+
 /** 解析总览选项；`file` 形式读取 Markdown 作为 body。返回总览与需要监听的文件。 */
 export async function resolveOverview(
   option: OverviewOption,
@@ -111,6 +160,10 @@ export function appMcp(options: AppMcpPluginOptions): Plugin {
 
   let config: ResolvedConfig
   let staticToolsFile: string | null = null
+  let pagesFile: string | null = null
+  const routeOptions: RouteScanOption[] =
+    options.routes === undefined ? [] : Array.isArray(options.routes) ? options.routes : [options.routes]
+  let routesModule: Promise<typeof import('./routes')> | null = null
   /** 静态工具模块及其依赖、总览文件（规范化的绝对路径）。 */
   let watched = new Set<string>()
   let current: Promise<Generated> | null = null
@@ -129,6 +182,39 @@ export function appMcp(options: AppMcpPluginOptions): Plugin {
       throw new Error(`启用 annotations 需要安装 typescript：${(err as Error).message}`)
     })
     return annotationsModule
+  }
+
+  function loadRoutesModule(): Promise<typeof import('./routes')> {
+    routesModule ??= import('./routes').catch((err: unknown) => {
+      routesModule = null
+      throw new Error(`启用 routes 需要安装 typescript：${(err as Error).message}`)
+    })
+    return routesModule
+  }
+
+  /** 页面目录：显式页面模块 + 路由扫描（显式声明的页面不扫描组件）。返回页面与需要监听的文件。 */
+  async function resolvePages(): Promise<{ pages: PageDefinition[]; files: string[] }> {
+    const files: string[] = []
+    let explicit: PageDefinition[] = []
+    if (pagesFile) {
+      files.push(normalizePath(pagesFile))
+      const loaded = await loadPages(pagesFile, config.root)
+      explicit = loaded.pages
+      files.push(...loaded.dependencies)
+    }
+    let scanned: RouteScanResult = { pages: [], errors: [], dependencies: [] }
+    if (routeOptions.length > 0) {
+      const mod = await loadRoutesModule()
+      scanned = mod.scanRoutes({
+        root: config.root,
+        routes: routeOptions,
+        skip: new Set(explicit.map((p) => p?.name)),
+      })
+      // 路由表与页面组件模块：变化时重新扫描（dev）
+      files.push(...scanned.dependencies.map((d) => normalizePath(d)))
+      if (scanned.errors.length > 0) throw new Error(scanned.errors.join('\n'))
+    }
+    return { pages: mergePages(scanned.pages.map((p) => p.page), explicit), files }
   }
 
   /** 扫描注释工具（结果缓存到下次相关文件变化）；警告在每次扫描后输出一次。 */
@@ -168,6 +254,7 @@ export function appMcp(options: AppMcpPluginOptions): Plugin {
   async function generate(): Promise<Generated> {
     const nextWatched = new Set<string>()
     let tools: StaticToolDefinition<any>[] = []
+    let pages: PageDefinition[] = []
     let overview: AppOverview | undefined
     try {
       if (options.overview) {
@@ -193,13 +280,27 @@ export function appMcp(options: AppMcpPluginOptions): Plugin {
         }
         tools = [...tools, ...scan.tools.map(toStaticTool)]
       }
+      if (pagesFile || routeOptions.length > 0) {
+        const resolved = await resolvePages()
+        pages = resolved.pages
+        for (const file of resolved.files) nextWatched.add(file)
+      }
     } finally {
       // 即使加载失败也监听这些文件，修复后可以自动恢复。
       watched = new Set([...watched, ...nextWatched])
     }
     watched = nextWatched
-    const { staticTools: _s, outFile: _o, writeTo: _w, overview: _ov, annotations: _a, ...info } = options
-    const manifest = generateManifest({ ...info, overview }, tools, { root: config.root })
+    const {
+      staticTools: _s,
+      outFile: _o,
+      writeTo: _w,
+      overview: _ov,
+      annotations: _a,
+      pages: _p,
+      routes: _r,
+      ...info
+    } = options
+    const manifest = generateManifest({ ...info, overview }, tools, { root: config.root }, pages)
     for (const warning of validateManifest(manifest).warnings) {
       config.logger.warn(`[app-mcp] ${warning}`)
     }
@@ -252,6 +353,7 @@ export function appMcp(options: AppMcpPluginOptions): Plugin {
 
     configResolved(resolved) {
       config = resolved
+      if (options.pages) pagesFile = isAbsolute(options.pages) ? options.pages : resolve(config.root, options.pages)
       if (options.staticTools) {
         staticToolsFile = isAbsolute(options.staticTools)
           ? options.staticTools

@@ -1,5 +1,8 @@
+import { type Address, ADDRESSES } from './addresses'
 import { findProduct } from './catalog'
 import { createStore } from './create-store'
+
+export { ADDRESSES, type Address }
 
 export interface CartItem {
   itemId: string
@@ -9,11 +12,6 @@ export interface CartItem {
   qty: number
 }
 
-export interface Address {
-  id: string
-  label: string
-}
-
 export interface Order {
   orderId: string
   total: number
@@ -21,13 +19,10 @@ export interface Order {
   address: Address
 }
 
-export const ADDRESSES: readonly Address[] = [
-  { id: 'home', label: '家 · 北京市朝阳区幸福路 1 号' },
-  { id: 'office', label: '公司 · 北京市海淀区中关村大街 27 号' },
-]
-
 export const cartStore = createStore<CartItem[]>([])
 export const lastOrderStore = createStore<Order | null>(null)
+/** 本次会话的全部订单（订单页）。 */
+export const ordersStore = createStore<readonly Order[]>([])
 
 let nextItemId = 1
 let nextOrderId = 1024
@@ -79,5 +74,6 @@ export async function checkout(addressId: string): Promise<Order> {
   }
   cartStore.set([])
   lastOrderStore.set(order)
+  ordersStore.set([...ordersStore.get(), order])
   return order
 }

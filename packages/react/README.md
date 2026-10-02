@@ -73,7 +73,7 @@ function CartTab({ items }: { items: CartItem[] }) {
 ```
 
 Handlers always see the latest closure; changes to `description`, `title`, `input`, `outputSchema`, `risk`,
-`annotations`, `activation` or `enabled` are sent to the Hub as updates without re-registering (`input`,
+`annotations`, `activation`, `enabled`, `surface`, `page` or `visibility` are sent to the Hub as updates without re-registering (`input`,
 `outputSchema` and `annotations` written inline are compared by content, not by reference). Without a provider
 the hooks are no-ops. A tool can also be loaded lazily: pass `load: () => import('./checkout')` instead of `handler`.
 
@@ -91,12 +91,60 @@ the hooks are no-ops. A tool can also be loaded lazily: pass `load: () => import
   of these with a valid value; any other value is returned as `data` as a whole. Returning nothing (`undefined` /
   `null`, no `summary`) makes the Hub give the model the fixed text "已完成" ("done").
 
+### View tools, layers and navigation
+
+Tools can declare whether they depend on the UI ([`spec/protocol.md` §3.4](https://github.com/stareing/appwire/blob/main/spec/protocol.md)):
+`surface: 'view'` tools are exposed only while their part of the UI is really visible and on top; `page` names the page
+they live on, so the Hub can navigate there when an agent calls a tool from another page.
+
+```tsx
+function CartPage() {
+  const ref = useRef<HTMLDivElement>(null)
+  return (
+    <div ref={ref}>
+      {/* tools below default to page "cart", surface "view", anchored at the page root */}
+      <ToolScope name="cart" page="cart" surface="view" anchor={ref}>
+        <CartView />
+        {confirming && (
+          <ToolLayer name="Confirm checkout">   {/* lower-layer view tools pause while it is open */}
+            <ConfirmDialog />
+          </ToolLayer>
+        )}
+      </ToolScope>
+    </div>
+  )
+}
+
+function Root() {
+  // React Router: page name -> path from the route table (routes with an `id` are pages)
+  useRouterNavigation({ navigate: useNavigate(), pages: routes })
+  return <Outlet />
+}
+```
+
+- Visibility gating (done by `@app-mcp/web`): the anchor is mounted, rendered (`checkVisibility`), in the viewport
+  (`IntersectionObserver`), not `hidden` / `inert` / behind an open modal `<dialog>`, the document is visible
+  (`visibilityState`), and no `<ToolLayer>` is open above it. A gated tool appears to the Hub as disabled; opt out with
+  `visibility: 'always'`. This covers keep-alive routes and hidden tab panels that stay mounted.
+- `<ToolLayer name open? anchor? surface?>` pushes a layer while mounted and `open` (default `true`); tools inside default to
+  `surface: 'view'` and do not inherit the outer `page` (a dialog is not a navigation target). While a layer is open, the
+  Hub's navigation requests are refused with `NAVIGATION_DENIED` (the user is interacting with it).
+- `useRouterNavigation({ navigate, pages, guard?, whileLayerOpen?, settleMs? })` works with React Router's `useNavigate()`
+  or any `navigate(path)` function; `pages` is `{ name: '/orders/:id' }` or a route table. Params fill the path, the rest
+  becomes the query string. Unknown pages and missing params fail with `NAVIGATION_FAILED`; `guard` returning `false` or
+  a message refuses. `useNavigationHandler(handler, options?)` is the generic form. Mount it in the root component so the
+  capability is declared at handshake.
+
 ## API
 
 - `AppMcpProvider` (`value: AppMcp`) - provides the instance created with `@app-mcp/web`.
 - `useTool(name, definition)` - registers a tool while mounted; returns the `ToolHandle` (or `null` on the first render).
 - `useResource(name, { description, read, mimeType?, deps? })` - exposes UI state as an MCP resource.
-- `ToolScope` (`name`) - lifecycle boundary; unmounting removes all tools and resources registered below it.
+- `ToolScope` (`name`, `anchor?`, `page?`, `surface?`, `visibility?`) - lifecycle boundary; unmounting removes all tools
+  and resources registered below it. The optional props are defaults for the tools below it.
+- `ToolLayer` (`name`, `open?`, `anchor?`, `surface?`) - a dialog / drawer / modal layer; lower-layer `view` tools pause
+  while it is open.
+- `useRouterNavigation(options)` / `useNavigationHandler(handler, options?)` - handle the Hub's page navigation requests.
 - `useHold(active = true)` - prevents automatic sleep while mounted (`lifecycle.mode` `idle` / `on-demand`).
 - `useConnectionState()` - subscribes to the Hub connection state (re-renders on change).
 - `useAppMcp()` - returns the provided `AppMcp` instance.

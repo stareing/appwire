@@ -95,6 +95,43 @@ const appMcp = createAppMcp({
 - 其他：`appMcp.sleep()` 主动休眠（不看空闲条件）；`connectNow()` 在 `on-demand` 模式下主动连接。
   Electron 桥接模式下这些方法为空操作（生命周期由主进程的 `@app-mcp/node` 负责），状态照常透传。
 
+## 界面级暴露与页面导航
+
+工具可声明对界面的依赖（spec/protocol.md 3.4）：`surface: 'app'`（缺省）不依赖界面，后台可调、可唤醒；`surface: 'view'`
+依赖界面，只在**真正可见且处于最上层**时对 Host 可见。`page` 声明工具所在页面（与清单 `pages[].name` 同名）：Host 调用不在
+当前页面的工具时先请 App 导航到该页面，等工具注册后再派发。
+
+```ts
+const page = appMcp.scope('cart', { page: 'cart', surface: 'view', anchor: () => document.querySelector('#cart') })
+page.tool('cart.checkout', { description: '结算', handler: checkout })   // 继承 page / surface / anchor
+
+const dialog = createViewLayer('结算确认')          // 对话框 / 抽屉 / 模态框
+dialog.open()                                       // 下层 view 工具暂停（tools/changed），层内工具启用
+appMcp.scope('confirm', { layer: dialog }).tool('checkout.confirm', { description: '确认', surface: 'view', handler })
+dialog.close()
+
+appMcp.setNavigationHandler(async ({ page, params }) => router.push(pagePath(routes[page], params)))
+```
+
+- **可见性门控**（`view` 工具，`visibility: 'always'` 关闭）：页面可见（`document.visibilityState`）、处于最上层（不在已打开的
+  `ViewLayer` 之下）、锚点（`anchor`，缺省继承 scope）已挂载且未被 `hidden` / `inert` / 打开的模态 `<dialog>` 遮挡、
+  已渲染（`checkVisibility`）、在视口内。变化经 `IntersectionObserver`、属性变化与 `visibilitychange` 触发；不满足时工具对 Host
+  表现为禁用（`enabled: false`），`enabled` 仍是 App 自己的意愿，两者同时满足才可见。界面以其他方式变化后可调用
+  `refreshViewTools()`。
+- **scope 的界面声明**（`appMcp.scope(name, { anchor, layer, page, surface, visibility })`）：其下工具未自行声明时继承，最近的
+  scope 优先；层内工具不继承层外的 `page`（层只在打开时存在，不作为导航目标）。
+- **导航回调**（`setNavigationHandler(handler, { whileLayerOpen?, settleMs? })`）：在启动时设置（握手时声明
+  `capabilities.navigate`，连接后才设置的在下次连接生效）。回调切换界面后返回，SDK 再等界面稳定（两帧，上限 `settleMs`，默认
+  500 ms）并重新评估门控后回复 Host。`ToolCallError.navigationDenied(msg)` 拒绝（`NAVIGATION_DENIED`）、
+  `ToolCallError.navigationFailed(msg)` 或其他异常为失败（`NAVIGATION_FAILED`）；有打开的 `ViewLayer` 时缺省拒绝（用户正在与
+  弹层交互，`whileLayerOpen: 'allow'` 改为照常调用）。
+- **路由适配**：React Router 见 `@app-mcp/react` 的 `useRouterNavigation`；Vue Router 用子路径 `@app-mcp/web/vue-router`
+  （`bindVueRouter(appMcp, router, { pages?, guard? })`，页面名缺省即路由 `name`，路由守卫拒绝 → `NAVIGATION_DENIED`）。
+  框架无关的 `pagePath(pattern, params)`（填入 `:id` 等路由参数，其余作为查询串）与 `routePages(routes)`（带 `id` 的路由 →
+  `{ 页面名: 路由模式 }`）供自写适配使用。
+- Electron / Tauri 页面侧（桥接模式）同样支持门控与 `setNavigationHandler`（主进程 / Rust 侧需开启导航转发）；
+  没有 AppMcp 实例时用 `attachBridgeNavigation(bridge, handler)`。
+
 ## 运行环境
 
 - **复制标签页**：instanceId 存在 `sessionStorage`，复制标签页会复制它。SDK 启动时按 appId 用

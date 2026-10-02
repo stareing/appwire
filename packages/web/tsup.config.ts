@@ -16,7 +16,12 @@ const workerUrlPlugin = {
 }
 
 export default defineConfig({
-  entry: { index: 'src/index.ts', 'webmcp/index': 'src/webmcp/index.ts', 'mux-worker': 'src/mux-worker.ts' },
+  entry: {
+    index: 'src/index.ts',
+    'webmcp/index': 'src/webmcp/index.ts',
+    'router/vue-router': 'src/router/vue-router.ts',
+    'mux-worker': 'src/mux-worker.ts',
+  },
   esbuildPlugins: [workerUrlPlugin],
   format: ['esm'],
   dts: true,
