@@ -184,3 +184,21 @@
 | 已声明 | `data-mcp-tool` / `toolname` | `McpDeclared(tool: …)` 写入语义 identifier `mcp:<工具名>`：标在该节点上，或（落在外层非控件节点时）其子树中唯一的控件上 | `WpfViewTools.Bind(控件, 工具)` 绑定的控件 |
 | 可见窗口 | 页面打开即可（`surface: "app"`） | `AppLifecycleState` 为 resumed / inactive | 任一窗口 `IsVisible` 且未最小化 |
 | 按键 | 合成 keydown / keyup | Tab：`FocusNode.nextFocus`；Escape：`DismissIntent`；Enter：焦点文本框的输入动作，否则激活 | `InputManager.ProcessInput` 按下 / 抬起；Enter / Escape 未处理时交给默认 / 取消按钮（`AccessKeyManager`）；Tab：`MoveFocus` |
+
+### 8.3 平台映射：Android View / Compose / WinUI 3
+
+| | Android View（`AndroidUiFallback`） | Compose（同上 + `ComposeUiExpander`） | WinUI 3（`WinUIUiFallback`） |
+|---|---|---|---|
+| 控件树 | `WindowInspector.getGlobalWindowViews()`（API 29+；24–28 读 `WindowManagerGlobal.mViews`）+ View 树；分类用 View 类型与 `AccessibilityNodeInfo` | View 树中的 `AndroidComposeView`（`ViewRootForTest`）展开为 `SemanticsOwner.rootSemanticsNode`（合并后的语义树） | `Enable` / `AddWindow` 传入的窗口：`Window.Content` 的 `AutomationPeer.GetChildren()`，加 `VisualTreeHelper.GetOpenPopupsForXamlRoot` 的弹出层 |
+| 窗口 / 模态 | Activity 主窗口为 `window`，其余为 `dialog`；最上层的主窗口、对话框或触摸模态弹出层（无 `FLAG_NOT_TOUCH_MODAL` / `FLAG_NOT_FOCUSABLE`）遮挡其下全部窗口 | 同左（Compose `Dialog` 是独立窗口） | 窗口内容为 `window`；`ContentDialog` 与轻触即关（`IsLightDismissEnabled`）的弹出层为 `dialog` 并遮挡窗口内容 |
+| 引用 | 弱引用 View；RecyclerView / AdapterView 下的 View 按指纹核对（复用后作废） | 弱引用 `LayoutInfo` + `semanticsId`（Lazy 列表复用节点时 id 变化）；节点重建按指纹唯一匹配沿用 | `WeakReference<AutomationPeer>` |
+| 可见 | `isShown`、`alpha > 0`、`getGlobalVisibleRect` 非空（被裁剪 / 滚出视口为不可见） | 非 `HideFromAccessibility` / `InvisibleToUser`、已放置、`boundsInRoot`（已按祖先裁剪）非空 | `!IsOffscreen()` |
+| 启用 | `isEnabled` | 无 `Disabled` | `IsEnabled()` |
+| 点击 | `performClick`（不可点击时无障碍 `ACTION_CLICK` / `EXPAND` / `COLLAPSE`） | 语义动作 `OnClick`（否则 `Expand` / `Collapse`） | `Invoke` / `Toggle` / `SelectionItem.Select` / `ExpandCollapse` |
+| 填写 | 文本：无障碍 `ACTION_SET_TEXT`（触发 TextWatcher）；复选 / 开关 / 单选：按状态 `performClick`；`Spinner`：按选项文本 `setSelection`；`SeekBar`：无障碍 `SET_PROGRESS`（回调 `fromUser = true`） | 文本：先 `RequestFocus`，再 `SetText`；复选 / 开关 / 单选：`OnClick`；滑块：`SetProgress`；下拉框不支持（先 click 展开再 click 选项） | `Value.SetValue`（文本框再 `UpdateSource()`）、`Toggle`、`SelectionItem`、`ComboBox.SelectedIndex`（按选项文本）、`RangeValue.SetValue` |
+| 滚动 | 最近的可滚动 ViewGroup `scrollBy` 一页（`AbsListView.scrollListBy`）；到可见：`requestRectangleOnScreen` | 最近的带 `ScrollBy` 与滚动范围的节点滚动一页；到可见：按节点未裁剪位置与视口差值 `ScrollBy`。动画滚动由引擎等到相邻两次快照不再变化（最多 10 轮） | `Scroll` 模式（沿可视树找最近的可滚动元素）/ `ScrollItem.ScrollIntoView` / `StartBringIntoView` |
+| 已声明 | `View.declareMcpTools(工具名)` | `Modifier.mcpDeclared(工具名)`（语义键；标在外层非控件节点时给子树中唯一的控件） | `WinUIViewTools.Bind(控件, 窗口, 工具)` 绑定的控件 |
+| 可见窗口 | 进程生命周期（`ProcessLifecycleOwner`）至少 STARTED | 同左 | 任一传入窗口 `Visible` 且未最小化 |
+| 按键 | KeyEvent 按下 / 抬起交给窗口根 View（Compose 在按键分发中处理 Tab / Enter）；Tab 未处理时 `FocusFinder`；文本框 Enter：`onEditorAction`（IME 动作）；Escape 未处理时对话框按返回键取消（主窗口不按返回键） | 文本框 Enter：`OnImeAction`；其余同左 | 不能合成键盘输入，按语义执行：Tab：`FocusManager.TryMoveFocus`；Enter / Space：激活焦点控件，文本框中的 Enter 交给打开的 `ContentDialog` 的默认按钮；Escape：`ContentDialog` 的关闭按钮（没有时 `Hide()`）或关闭轻触即关的弹出层 |
+| 密码类 | `inputType` 为密码变体或 `PasswordTransformationMethod` | `Password` 语义 | `PasswordBox`（`IsPassword()`） |
+| 必填 | 不支持（View 没有对应属性） | 不支持（语义树没有对应属性） | `IsRequiredForForm()` |

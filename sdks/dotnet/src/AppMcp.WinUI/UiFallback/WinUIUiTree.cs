@@ -1,30 +1,34 @@
-using System.Windows;
-using System.Windows.Automation;
-using System.Windows.Automation.Peers;
-using System.Windows.Automation.Provider;
-using System.Windows.Controls;
-using System.Windows.Interop;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
+using Microsoft.UI.Xaml.Automation.Provider;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Media;
 using AppMcp.UiFallback;
 
-namespace AppMcp.Wpf.UiFallback;
+namespace AppMcp.WinUI.UiFallback;
 
-// 从 WPF AutomationPeer 树收集兜底大纲条目（spec/ui-fallback.md 第 4–6 节、8.2 WPF 列）。只能在 UI 线程上调用。
+// 从 WinUI 3 AutomationPeer 树收集兜底大纲条目（spec/ui-fallback.md 第 4–6 节、8.2 WinUI 列）。只能在 UI 线程上调用。
 
-/// <summary>WPF 控件节点的便捷访问。</summary>
-internal static class WpfUiNodeExtensions
+/// <summary>WinUI 控件节点的便捷访问。</summary>
+internal static class WinUIUiNodeExtensions
 {
-    public static UIElement? Owner(this UiNode<AutomationPeer> n) => (n.Node as UIElementAutomationPeer)?.Owner;
+    public static UIElement? Owner(this AutomationPeer peer) => (peer as FrameworkElementAutomationPeer)?.Owner;
+    public static UIElement? Owner(this UiNode<AutomationPeer> n) => n.Node.Owner();
     public static T? Pattern<T>(this UiNode<AutomationPeer> n, PatternInterface p) where T : class => n.Node.GetPattern(p) as T;
 }
 
-internal static class WpfUiTree
+/// <summary>一个顶层界面：窗口内容，或其上打开的弹出层（ContentDialog、浮出控件）。</summary>
+internal sealed record WinUIUiRoot(AutomationPeer Peer, string Role, string Name, XamlRoot XamlRoot, Popup? Popup);
+
+internal static class WinUIUiTree
 {
     private readonly record struct Info(UiEntryKind Kind, string Role, int? Level = null);
 
     /// <summary>不再遍历子节点的控件（内部是文本宿主与滚动条，不是独立可操作控件）。</summary>
     private static readonly HashSet<string> LeafRoles = ["textbox", "slider", "spinbutton"];
 
-    /// <summary>控件类型 → 角色（顺序无关；模式相关的判定见 <see cref="Classify"/>）。</summary>
     private static readonly Dictionary<AutomationControlType, string> ItemRoles = new()
     {
         [AutomationControlType.Button] = "button",
@@ -57,7 +61,8 @@ internal static class WpfUiTree
     private static Info? Classify(AutomationPeer p)
     {
         var type = p.GetAutomationControlType();
-        // 可展开的分组（Expander）作为按钮列出，展开 / 收起即点击。
+        // 开关（ToggleSwitch）的控件类型是 Button 但带 Toggle 模式。
+        if (p.Owner() is ToggleSwitch) return new(UiEntryKind.Item, "switch");
         if (type == AutomationControlType.Group && p.GetPattern(PatternInterface.ExpandCollapse) is not null) return new(UiEntryKind.Item, "button");
         if (ItemRoles.TryGetValue(type, out var role)) return new(UiEntryKind.Item, role);
         if (ContainerRoles.TryGetValue(type, out var container)) return new(UiEntryKind.Container, container);
@@ -82,8 +87,12 @@ internal static class WpfUiTree
         return UiOutlineFormat.Truncate(name, role is "status" or "alert" ? UiOutlineFormat.StatusNameMax : UiOutlineFormat.NameMax);
     }
 
-    /// <summary>密码类控件（PasswordBox 等）：值只给掩码，拒绝填写与按键。</summary>
-    public static bool IsSecure(AutomationPeer p) => p.IsPassword();
+    /// <summary>密码类控件（PasswordBox）：值只给掩码，拒绝填写与按键。</summary>
+    public static bool IsSecure(AutomationPeer p) => p.IsPassword() || p.Owner() is PasswordBox;
+
+    /// <summary>密码类控件是否非空。</summary>
+    /// <remarks>@security 只判断是否为空，值本身与长度都不输出；WinUI 没有 SecurePassword，读取后不保留引用。</remarks>
+    public static bool SecureHasValue(AutomationPeer p) => p.Owner() is PasswordBox box && box.Password.Length > 0;
 
     private static string? ValueOf(AutomationPeer p, string role, bool secure)
     {
@@ -98,26 +107,19 @@ internal static class WpfUiTree
         return collapsed.Length == 0 ? null : UiOutlineFormat.Truncate(collapsed, UiOutlineFormat.ValueMax);
     }
 
-    /// <summary>密码类控件是否非空。</summary>
-    /// <remarks>@security 只判断是否为空，值本身与长度都不输出；用 SecurePassword（不产生明文字符串副本）并立即释放。</remarks>
-    public static bool SecureHasValue(AutomationPeer p)
+    /// <summary>选项的显示文本：ComboBoxItem 的内容，否则对象的字符串形式。</summary>
+    public static string OptionText(object? item) => item switch
     {
-        if ((p as UIElementAutomationPeer)?.Owner is not PasswordBox box) return false;
-        using var secret = box.SecurePassword;
-        return secret.Length > 0;
-    }
+        ContentControl { Content: { } content } => content.ToString() ?? "",
+        null => "",
+        _ => item.ToString() ?? "",
+    };
 
     private static string? ComboValue(AutomationPeer p)
     {
         if (p.GetPattern(PatternInterface.Value) is IValueProvider v && !string.IsNullOrEmpty(v.Value)) return v.Value;
-        if (p.GetPattern(PatternInterface.Selection) is not ISelectionProvider s) return null;
-        var names = s.GetSelection()?.Select(NameOfProvider).Where(n => n.Length > 0).ToList();
-        return names is { Count: > 0 } ? string.Join('、', names) : null;
+        return p.Owner() is ComboBox { SelectedItem: { } item } ? OptionText(item) : null;
     }
-
-    /// <summary>选中项的名称（IRawElementProviderSimple → 属性 Name）。</summary>
-    private static string NameOfProvider(IRawElementProviderSimple provider) =>
-        provider.GetPropertyValue(AutomationElementIdentifiers.NameProperty.Id) as string ?? "";
 
     private static List<string> StatesOf(AutomationPeer p, string role)
     {
@@ -149,39 +151,43 @@ internal static class WpfUiTree
             }
         }
         if (role == "textbox" && p.GetPattern(PatternInterface.Value) is IValueProvider { IsReadOnly: true }) states.Add("readonly");
-        if ((p as UIElementAutomationPeer)?.Owner is DependencyObject d && System.Windows.Controls.Validation.GetHasError(d)) states.Add("invalid");
         if (p.HasKeyboardFocus()) states.Add("focused");
         return states;
     }
 
-    /// <summary>窗口可被操作：可见、未最小化、未被模态对话框禁用。</summary>
-    public static bool WindowUsable(Window w)
+    /// <summary>
+    /// 窗口当前可操作的顶层界面（按 Z 序，最上层在后）：窗口内容与打开的弹出层；
+    /// ContentDialog 与轻触即关的弹出层遮挡窗口内容（spec/ui-fallback.md 4.4 被模态层遮挡）。
+    /// </summary>
+    public static List<WinUIUiRoot> Roots(Window window)
     {
-        if (!w.IsVisible || w.WindowState == WindowState.Minimized) return false;
-        var hwnd = new WindowInteropHelper(w).Handle;
-        return hwnd == IntPtr.Zero || Win32.IsWindowEnabled(hwnd);
-    }
-
-    /// <summary>应用当前可见的窗口（UI 线程）。</summary>
-    public static IEnumerable<Window> UsableWindows()
-    {
-        var app = Application.Current;
-        if (app is null) yield break;
-        foreach (Window w in app.Windows)
+        if (window.Content is not UIElement content || content.XamlRoot is not { } xamlRoot) return [];
+        var roots = new List<WinUIUiRoot>();
+        if (PeerOf(content) is { } main) roots.Add(new WinUIUiRoot(main, "window", window.Title ?? "", xamlRoot, null));
+        foreach (var popup in VisualTreeHelper.GetOpenPopupsForXamlRoot(xamlRoot))
         {
-            if (WindowUsable(w)) yield return w;
+            if (popup.Child is not UIElement child || PeerOf(child) is not { } peer) continue;
+            var covering = child is ContentDialog || popup.IsLightDismissEnabled;
+            if (covering) roots.Clear();
+            var name = child is ContentDialog { Title: { } title } ? title.ToString() ?? "" : peer.GetName();
+            roots.Add(new WinUIUiRoot(peer, "dialog", name, xamlRoot, popup));
         }
+        return roots;
     }
 
-    /// <summary>引用的控件仍在界面上（已加载、所在窗口未关闭），但可能不可见。</summary>
-    public static bool IsAlive(AutomationPeer peer) => peer switch
+    public static AutomationPeer? PeerOf(UIElement element) =>
+        FrameworkElementAutomationPeer.FromElement(element) ?? FrameworkElementAutomationPeer.CreatePeerForElement(element);
+
+    /// <summary>引用的控件仍在界面上（已加载、挂在某个 XamlRoot 上），但可能不可见。</summary>
+    public static bool IsAlive(AutomationPeer peer) => peer.Owner() switch
     {
-        UIElementAutomationPeer { Owner: FrameworkElement fe } => fe.IsLoaded && PresentationSource.FromVisual(fe) is not null,
+        FrameworkElement fe => fe.IsLoaded && fe.XamlRoot is not null,
         _ => true,
     };
 
-    /// <summary>收集 <paramref name="start"/>（缺省为全部可见窗口）下可见的条目，并为控件与分组分配引用。</summary>
-    public static UiSnapshot<AutomationPeer> Collect(UiRefRegistry<AutomationPeer> refs, Func<UIElement, string?> declaredOf, AutomationPeer? start = null)
+    /// <summary>收集 <paramref name="roots"/>（或 <paramref name="start"/> 子树）下可见的条目，并为控件与分组分配引用。</summary>
+    public static UiSnapshot<AutomationPeer> Collect(
+        UiRefRegistry<AutomationPeer> refs, Func<UIElement, string?> declaredOf, IEnumerable<WinUIUiRoot> roots, AutomationPeer? start = null)
     {
         var tree = new UiTreeBuilder<AutomationPeer>();
 
@@ -214,31 +220,20 @@ internal static class WpfUiTree
         }
         else
         {
-            foreach (var w in UsableWindows())
+            foreach (var root in roots)
             {
-                var peer = UIElementAutomationPeer.CreatePeerForElement(w);
-                if (peer is null) continue;
-                var role = w.Owner is not null || ComponentDispatcher.IsThreadModal ? "dialog" : "window";
-                tree.BeginContainer(peer, role, UiOutlineFormat.Truncate(UiOutlineFormat.Collapse(w.Title), UiOutlineFormat.NameMax));
-                foreach (var c in peer.GetChildren() ?? []) Walk(c);
+                tree.BeginContainer(root.Peer, root.Role, UiOutlineFormat.Truncate(UiOutlineFormat.Collapse(root.Name), UiOutlineFormat.NameMax));
+                foreach (var c in root.Peer.GetChildren() ?? []) Walk(c);
                 tree.EndContainer();
             }
         }
 
         return tree.Build(refs, (peer, role, secure, kind) =>
         {
-            var declared = (peer as UIElementAutomationPeer)?.Owner is { } owner ? declaredOf(owner) : null;
+            var declared = peer.Owner() is { } owner ? declaredOf(owner) : null;
             return kind == UiEntryKind.Item
                 ? new UiEntryDetails(ValueOf(peer, role, secure), StatesOf(peer, role), peer.IsRequiredForForm(), declared)
                 : new UiEntryDetails(null, [], false, declared);
         });
     }
-}
-
-internal static partial class Win32
-{
-    /// <summary>窗口是否接受输入（模态对话框打开时，同线程的其他顶层窗口被禁用）。</summary>
-    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
-    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-    public static partial bool IsWindowEnabled(IntPtr hwnd);
 }

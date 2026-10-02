@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Windows;
 using AppMcp.UiFallback;
 
@@ -73,7 +72,7 @@ public sealed class WpfUiFallback : IDisposable
         var fallback = new WpfUiFallback(scope, options);
         try
         {
-            fallback.Register(options.Prefix);
+            fallback.Register();
             WindowTracker.Changed += fallback.Recompute;
             fallback.Recompute();
             return fallback;
@@ -98,63 +97,21 @@ public sealed class WpfUiFallback : IDisposable
         if (!visible) Inspector.Clear();
     }
 
-    private Func<JsonElement, ToolContext, Task<object?>> OnUi(Func<JsonElement, Task<object?>> run) => async (args, _) =>
+    /// <summary>切到 UI 线程（<c>Application.Current.Dispatcher</c>）并核对启用后执行。</summary>
+    private async Task<object?> OnUi(Func<Task<object?>> run)
     {
         var dispatcher = Application.Current?.Dispatcher ?? throw new ToolCallException(ToolErrorKind.ToolDisabled, "WPF 应用尚未启动或已退出");
-        if (dispatcher.CheckAccess()) return await Guarded(run, args);
-        return await dispatcher.InvokeAsync(() => Guarded(run, args)).Task.Unwrap();
-    };
+        if (dispatcher.CheckAccess()) return await Guarded(run);
+        return await dispatcher.InvokeAsync(() => Guarded(run)).Task.Unwrap();
+    }
 
-    private Task<object?> Guarded(Func<JsonElement, Task<object?>> run, JsonElement args)
+    private Task<object?> Guarded(Func<Task<object?>> run)
     {
         if (!Enabled) throw new ToolCallException(ToolErrorKind.ToolDisabled, "应用当前没有可见窗口，兜底工具不可用");
-        return run(args);
+        return run();
     }
 
-    private static Task<object?> Done(object result) => Task.FromResult<object?>(result);
-
-    private void Register(string prefix)
-    {
-        ToolRegistration Add(string name, string title, string description, string schema, bool readOnly, Func<JsonElement, Task<object?>> run) =>
-            _scope.RegisterTool($"{prefix}.{name}", description, OnUi(run), new ToolOptions
-            {
-                Title = title,
-                InputSchemaJson = schema,
-                Risk = readOnly ? ToolRisk.Read : ToolRisk.Write,
-                Annotations = new ToolAnnotations { Title = title, ReadOnlyHint = readOnly },
-                Surface = ToolSurface.View,
-                Enabled = false,
-            });
-
-        var ui = Inspector;
-        _tools.Add(Add("outline", "界面控件大纲",
-            "兜底能力：列出当前窗口可见的可交互控件（按钮、输入框、复选框等），每行一个，带引用 eN，按窗口 / 对话框 / 分组归类。" +
-            "应用已有对应的业务工具或标注 [已声明：…] 时请优先使用那些工具。引用用于 click / fill / press / scroll / read。",
-            UiFallbackInput.Schemas.Outline(ui.MaxItems), readOnly: true,
-            a => Done(ui.Outline(UiFallbackInput.String(a, "query"), UiFallbackInput.Ref(a, "within", required: false), UiFallbackInput.Int(a, "limit")))));
-        _tools.Add(Add("click", "点击控件",
-            $"兜底能力：激活 {prefix}.outline 中的控件（点击按钮、切换复选框、选中选项、展开 / 收起），返回界面变化摘要。",
-            UiFallbackInput.Schemas.Ref, readOnly: false,
-            async a => await ui.Click(UiFallbackInput.Ref(a, "ref")!)));
-        _tools.Add(Add("fill", "填写控件",
-            "兜底能力：填写文本框（会写回数据绑定）；复选框 / 单选框传 true / false；下拉框传选项文本；滑块传数字。密码类控件不支持。返回界面变化摘要。",
-            UiFallbackInput.Schemas.Fill, readOnly: false,
-            async a => await ui.Fill(UiFallbackInput.Ref(a, "ref")!, UiFallbackInput.Value(a))));
-        _tools.Add(Add("press", "按键",
-            "兜底能力：按键（ref 缺省为当前焦点控件）：Enter（激活 / 默认按钮）、Escape（取消按钮 / 关闭）、Tab / Shift+Tab（移动焦点）、Space（激活）。" +
-            "输入文本请用 fill。返回界面变化摘要。",
-            UiFallbackInput.Schemas.Press, readOnly: false,
-            async a => await ui.Press(UiFallbackInput.Ref(a, "ref", required: false),
-                UiFallbackInput.String(a, "key") ?? throw UiFallbackInput.Invalid("缺少参数 key"))));
-        _tools.Add(Add("scroll", "滚动",
-            "兜底能力：无 direction 时把控件滚动到可见；direction 为 up / down / left / right 时滚动该控件所在的滚动区一页（down = 向下翻看更多内容）。返回界面变化摘要。",
-            UiFallbackInput.Schemas.Scroll, readOnly: false,
-            async a => await ui.Scroll(UiFallbackInput.Ref(a, "ref")!, UiFallbackInput.String(a, "direction"))));
-        _tools.Add(Add("read", "读取控件文本",
-            $"兜底能力：读取控件的可见文本（折叠空白，默认最多 {UiOutlineFormat.ReadDefault} 字）；ref 缺省为全部窗口。",
-            UiFallbackInput.Schemas.Read, readOnly: true,
-            a => Done(ui.Read(UiFallbackInput.Ref(a, "ref", required: false), UiFallbackInput.Int(a, "maxChars")))));
-    }
+    private void Register() => _tools.AddRange(UiFallbackTools.Register(_scope, Inspector, OnUi));
 
     /// <summary>注销全部兜底工具（幂等）。</summary>
     public void Dispose()

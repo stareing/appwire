@@ -85,7 +85,7 @@ client.Start();
   `UserActionRequiredException(message, UserActionReason.Foreground, uri)`。
 - `AppMcp.Wpf`（`net9.0-windows`，WPF）与 `AppMcp.WinUI`（WindowsAppSDK）为独立项目，只能在 Windows 上构建，不在 `AppMcp.sln` 中。
 
-## 进程内控件兜底（WPF，spec/ui-fallback.md）
+## 进程内控件兜底（WPF / WinUI 3，spec/ui-fallback.md）
 
 没有声明工具的窗口，可显式开启兜底工具 `ui.outline` / `click` / `fill` / `press` / `scroll` / `read`：模型拿到"短引用 + 角色 + 名称 +
 状态"的控件大纲，动作经 AutomationPeer 直接作用于控件（Invoke / Toggle / SelectionItem / ExpandCollapse / Value / RangeValue / Scroll），
@@ -102,8 +102,14 @@ _fallback = AppMcp.Wpf.UiFallback.WpfUiFallback.Enable(client);   // 在 UI 线�
   按钮 Invoke 是异步投递的，执行后先让出调度器到空闲再取变化摘要。文本框写入后调用 `UpdateSource()`（默认 LostFocus 绑定也写回）。
 - `PasswordBox`：大纲与 `read` 只显示 `••••`（不泄露长度），拒绝 `fill` 与按键。
 - 经 `WpfViewTools.Bind(控件, 工具)` 绑定了工具的控件在大纲中标出 `[已声明：…]`，提示模型优先调用该工具。
-- 选项：`WpfUiFallbackOptions { Prefix = "ui", MaxItems = 60, SettleDelay = 50 ms }`。WinUI 3 尚未提供。
-- 测试：`tests/AppMcp.Wpf.Tests`（真实 WPF 窗口，只能在 Windows 上运行，不在 `AppMcp.sln` 中）。
+- 选项：`WpfUiFallbackOptions { Prefix = "ui", MaxItems = 60, SettleDelay = 50 ms }`。
+- WinUI 3：`AppMcp.WinUI.UiFallback.WinUIUiFallback.Enable(client, mainWindow)`（WinUI 3 不能枚举窗口，其他窗口用 `AddWindow`
+  加入）；`ContentDialog` 与轻触即关的浮出层遮挡窗口内容；按键按语义执行（Tab 走 `FocusManager`，Enter / Space 激活焦点控件，
+  Escape 关闭对话框 / 浮出层）；已声明标注来自 `WinUIViewTools.Bind`。平台映射见 spec/ui-fallback.md 8.3。
+- 引用、核对、变化摘要、工具注册等与框架无关的部分在 `AppMcp/UiFallback/`（`UiInspectorCore`、`UiTreeBuilder`、`UiFallbackTools`），
+  WPF / WinUI 只实现控件树遍历与动作。
+- 测试：共用部分在 `tests/AppMcp.Tests`（`UiOutlineFormatTests`、`UiFallbackCoreTests`，任意平台）；`tests/AppMcp.Wpf.Tests`（真实 WPF 窗口，
+  只能在 Windows 上运行，不在 `AppMcp.sln` 中）。WinUI 部分暂无窗口测试（需要打包的 WinUI 测试宿主），只在 Windows 上编译验证。
 
 ## Hub SDK（Agent 端）：`AppMcp.Hub`
 

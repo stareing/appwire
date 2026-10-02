@@ -43,6 +43,7 @@ import dev.appmcp.Risk
 import dev.appmcp.ToolCallException
 import dev.appmcp.compose.navigationRouter
 import dev.appmcp.compose.rememberViewTool
+import dev.appmcp.compose.uifallback.mcpDeclared
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -118,7 +119,7 @@ private fun CounterScreen(app: SampleApp, nav: NavHostController) {
     }
     Screen("计数页") {
         Label("计数：$count")
-        SampleButton("+1") { app.counter.value += 1 }
+        SampleButton("+1", Modifier.fillMaxWidth().mcpDeclared("counter.increment")) { app.counter.value += 1 }
         SampleButton("去笔记页 →") { nav.navigate(PAGE_NOTES) { launchSingleTop = true } }
     }
 }
@@ -157,7 +158,7 @@ private fun NotesScreen(
                 textStyle = TextStyle(fontSize = 18.sp),
                 modifier = Modifier.weight(1f).border(1.dp, Color.Gray).padding(8.dp),
             )
-            SampleButton("添加", Modifier) {
+            SampleButton("添加", Modifier.mcpDeclared("notes.add")) {
                 if (draft.value.isNotBlank()) app.notes.value += draft.value
                 draft.value = ""
             }
@@ -180,8 +181,8 @@ private fun NotesScreen(
             }
             Column(Modifier.background(Color.White).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Label("清空全部 ${notes.size} 条笔记？")
-                SampleButton("确认") { app.notes.value = emptyList(); confirming = false }
-                SampleButton("取消") { confirming = false }
+                SampleButton("确认", Modifier.fillMaxWidth().mcpDeclared("notes.clear.confirm")) { app.notes.value = emptyList(); confirming = false }
+                SampleButton("取消", Modifier.fillMaxWidth().mcpDeclared("notes.clear.cancel")) { confirming = false }
             }
         }
     }

@@ -120,6 +120,15 @@ internal static partial class UiOutlineFormat
         return info.SubstringByTextElements(0, Math.Max(0, max - 1)).TrimEnd() + "…";
     }
 
+    /// <summary><c>read</c> 的文本：折叠空白、相邻重复只保留一次（按钮名称与其内部文本相同）、截断到 max 字。</summary>
+    public static UiReadResult ReadText(IEnumerable<string?> parts, string? reference, int max)
+    {
+        var texts = parts.Select(Collapse).Where(s => s.Length > 0).ToList();
+        var full = string.Join(' ', texts.Where((s, i) => i == 0 || s != texts[i - 1]));
+        var truncated = new System.Globalization.StringInfo(full).LengthInTextElements > max;
+        return new UiReadResult(reference ?? "root", truncated ? Truncate(full, max) : full, truncated);
+    }
+
     private static string GroupLabel(UiEntry e) => e.Kind == UiEntryKind.Heading ? e.Name : e.Described;
 
     private static string Haystack(UiEntry e, IReadOnlyList<UiEntry> entries)

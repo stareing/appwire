@@ -5,6 +5,8 @@
 // --es token <t>` 唤醒。另带进程内 Hub 自检（HubSelfTest，`--ez hubSelfTest true` 启动）。
 // Compose 导航示例（NavActivity，第 4c 项）：counter / notes 两个页面的 view 工具、Navigation Compose 导航回调、
 // 一个确认弹窗（打开时压制下层工具）。
+// 可调试构建另开启进程内控件兜底（ui.outline / click / fill / press / scroll / read，第 4c 项 H），Compose 按钮用
+// Modifier.mcpDeclared 标出已声明的工具。
 //
 // 发布形态：release 开启 R8（minify + 资源压缩），规则全部来自依赖（jar 的 META-INF/proguard、AAR 的 consumer 规则）；
 // 按 ABI 拆 APK（arm64-v8a、armeabi-v7a、x86_64、x86 + universal），App Bundle 按 ABI 拆分发。

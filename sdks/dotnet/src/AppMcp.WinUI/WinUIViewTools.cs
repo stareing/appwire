@@ -18,8 +18,16 @@ public static class WinUIViewTools
         ArgumentNullException.ThrowIfNull(element);
         var gate = new ViewToolGate(IsShown(element), active: true);
         foreach (var t in tools) gate.Add(t);
-        return new ElementBinding(element, window, gate);
+        var names = tools.Select(t => t.Name).ToList();
+        Declared.Declare(element, names);
+        return new ElementBinding(element, window, gate, names);
     }
+
+    /// <summary>控件 → 绑定到它的工具名：控件兜底（<see cref="UiFallback.WinUIUiFallback"/>）据此在大纲中标出 <c>[已声明：…]</c>。</summary>
+    private static readonly AppMcp.UiFallback.UiDeclaredTools Declared = new();
+
+    /// <summary>绑定到该控件的工具名（多个以 ", " 连接）；没有时为 null。</summary>
+    internal static string? DeclaredTools(UIElement element) => Declared.Of(element);
 
     private static bool IsShown(FrameworkElement e) => e.IsLoaded && e.Visibility == Visibility.Visible;
 
@@ -29,12 +37,14 @@ public static class WinUIViewTools
         private readonly Window? _window;
         private readonly ViewToolGate _gate;
         private readonly long _visibilityToken;
+        private readonly IReadOnlyCollection<string> _declared;
 
-        public ElementBinding(FrameworkElement element, Window? window, ViewToolGate gate)
+        public ElementBinding(FrameworkElement element, Window? window, ViewToolGate gate, IReadOnlyCollection<string> declared)
         {
             _element = element;
             _window = window;
             _gate = gate;
+            _declared = declared;
             element.Loaded += OnLoadedChanged;
             element.Unloaded += OnLoadedChanged;
             _visibilityToken = element.RegisterPropertyChangedCallback(UIElement.VisibilityProperty, (_, _) => Refresh());
@@ -52,6 +62,7 @@ public static class WinUIViewTools
             _element.Unloaded -= OnLoadedChanged;
             _element.UnregisterPropertyChangedCallback(UIElement.VisibilityProperty, _visibilityToken);
             if (_window is not null) _window.Activated -= OnActivated;
+            Declared.Undeclare(_element, _declared);
             _gate.Dispose();
         }
     }

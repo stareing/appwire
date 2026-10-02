@@ -23,31 +23,15 @@ public static class WpfViewTools
         ArgumentNullException.ThrowIfNull(element);
         var gate = new ViewToolGate(element.IsVisible, Window.GetWindow(element)?.IsActive ?? true);
         foreach (var t in tools) gate.Add(t);
-        Declare(element, tools.Select(t => t.Name));
+        Declared.Declare(element, tools.Select(t => t.Name));
         return new ElementBinding(element, gate, tools.Select(t => t.Name).ToList());
     }
 
     /// <summary>控件 → 绑定到它的工具名：控件兜底（<see cref="UiFallback.WpfUiFallback"/>）据此在大纲中标出 <c>[已声明：…]</c>。</summary>
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<FrameworkElement, List<string>> Declared = new();
-
-    private static void Declare(FrameworkElement element, IEnumerable<string> names)
-    {
-        var list = Declared.GetOrCreateValue(element);
-        lock (list) list.AddRange(names.Where(n => !list.Contains(n)));
-    }
-
-    private static void Undeclare(FrameworkElement element, IReadOnlyCollection<string> names)
-    {
-        if (!Declared.TryGetValue(element, out var list)) return;
-        lock (list) list.RemoveAll(names.Contains);
-    }
+    private static readonly AppMcp.UiFallback.UiDeclaredTools Declared = new();
 
     /// <summary>绑定到该控件的工具名（多个以 ", " 连接）；没有时为 null。</summary>
-    internal static string? DeclaredTools(UIElement element)
-    {
-        if (element is not FrameworkElement fe || !Declared.TryGetValue(fe, out var list)) return null;
-        lock (list) return list.Count == 0 ? null : string.Join(", ", list);
-    }
+    internal static string? DeclaredTools(UIElement element) => element is FrameworkElement fe ? Declared.Of(fe) : null;
 
     /// <summary>同 <see cref="Bind(FrameworkElement, ToolRegistration[])"/>，门控由调用方提供（可再 <see cref="ViewToolGate.Add(Action{bool})"/>）。</summary>
     public static IDisposable Bind(FrameworkElement element, ViewToolGate gate)
@@ -115,7 +99,7 @@ public static class WpfViewTools
             _element.Loaded -= OnLoaded;
             _element.Unloaded -= OnUnloaded;
             Attach(null);
-            Undeclare(_element, _declared);
+            Declared.Undeclare(_element, _declared);
             _gate.Dispose();
         }
     }

@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    WinUI 3 绑定（第 4c 项 E）：view 工具随控件加载 / Visibility / 窗口激活启用、Frame 导航适配。
+    WinUI 3 绑定（第 4c 项 E）：view 工具随控件加载 / Visibility / 窗口激活启用、Frame 导航适配；
+    控件兜底（第 4c 项 H，UiFallback/）：经 AutomationPeer 的 ui.outline / click / fill / press / scroll / read。
     只能在 Windows 上构建（需要 Microsoft.WindowsAppSDK）；不在 AppMcp.sln 中。
   -->
   <PropertyGroup>
@@ -17,7 +18,7 @@
     <AssemblyName>AppMcp.WinUI</AssemblyName>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
-    <Description>AppWire WinUI 3 bindings: enable view-surface MCP tools while their element is loaded, visible and its window is active; Frame navigation adapter</Description>
+    <Description>AppWire WinUI 3 bindings: enable view-surface MCP tools while their element is loaded, visible and its window is active; Frame navigation adapter; opt-in in-process control fallback (ui.outline / click / fill) via AutomationPeer</Description>
     <PackageTags>mcp;model-context-protocol;ai-agent;winui;appwire</PackageTags>
   </PropertyGroup>
 

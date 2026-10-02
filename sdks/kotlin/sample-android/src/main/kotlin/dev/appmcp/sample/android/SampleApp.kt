@@ -1,6 +1,7 @@
 package dev.appmcp.sample.android
 
 import android.app.Application
+import android.content.pm.ApplicationInfo
 import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
@@ -18,6 +19,9 @@ import dev.appmcp.ToolResult
 import dev.appmcp.UserActionReason
 import dev.appmcp.android.AppMcpAndroid
 import dev.appmcp.android.AppMcpProvider
+import dev.appmcp.android.uifallback.AndroidUiFallback
+import dev.appmcp.android.uifallback.UiFallbackOptions
+import dev.appmcp.compose.uifallback.ComposeUiExpander
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -63,6 +67,9 @@ class SampleApp : Application(), AppMcpProvider {
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     val mcp: AppMcp by lazy { createClient() }
+
+    /** 控件兜底（ui.outline / click / fill …）；release 构建为 null。随进程存在，不关闭。 */
+    private var uiFallback: AndroidUiFallback? = null
 
     override fun appMcp(): AppMcp = mcp
 
@@ -178,6 +185,10 @@ class SampleApp : Application(), AppMcpProvider {
                 put("value", counter.value)
                 put("device", android.os.Build.MODEL)
             }
+        }
+        // 进程内控件兜底（第 4c 项 H，spec/ui-fallback.md）：只在可调试构建开启；Compose 界面经 ComposeUiExpander 读语义树。
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            uiFallback = AndroidUiFallback.enable(c, UiFallbackOptions(expanders = listOf(ComposeUiExpander)))
         }
         c.start()
         Log.i(TAG, "started instanceId=${c.instanceId} toolsHash=${c.toolsHash}")

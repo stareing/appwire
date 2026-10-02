@@ -74,6 +74,29 @@ internal static class UiFallbackInput
         };
     }
 
+    private static readonly Dictionary<string, UiKey> Keys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Enter"] = UiKey.Enter, ["Return"] = UiKey.Enter, ["Escape"] = UiKey.Escape, ["Esc"] = UiKey.Escape,
+        ["Tab"] = UiKey.Tab, ["Shift+Tab"] = UiKey.ShiftTab, [" "] = UiKey.Space, ["Space"] = UiKey.Space,
+    };
+
+    /// <summary><c>press</c> 的 key（spec/ui-fallback.md 2.1）；不支持时 INVALID_INPUT 并列出支持的键。</summary>
+    public static UiKey Key(string key) =>
+        Keys.TryGetValue(key.Length == 1 ? key : key.Trim(), out var k)
+            ? k
+            : throw Invalid($"不支持的按键「{key}」；支持 Enter、Escape、Tab、Shift+Tab、Space");
+
+    private static readonly Dictionary<string, UiScrollDirection> Directions = new()
+    {
+        ["up"] = UiScrollDirection.Up, ["down"] = UiScrollDirection.Down, ["left"] = UiScrollDirection.Left, ["right"] = UiScrollDirection.Right,
+    };
+
+    /// <summary><c>scroll</c> 的 direction；null 表示滚动到可见。</summary>
+    public static UiScrollDirection? Direction(string? direction) =>
+        direction is null ? null
+        : Directions.TryGetValue(direction, out var d) ? d
+        : throw Invalid("direction 应为 up / down / left / right");
+
     /// <summary>输入 schema（spec/ui-fallback.md 第 2 节）。</summary>
     public static class Schemas
     {
