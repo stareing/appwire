@@ -217,6 +217,17 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
    - 决定（机主同意）：G1 后台被唤醒的连接（握手时不可见且 `sleepOnBackground`）只认自适应租约，收回默认值租约，合并窗口后即休眠；G11 休眠实例记录（工具快照、唤醒描述、toolsHash）持久化到 `<home>`，保留 24 小时（spec/lifecycle.md 第 9 节），Host 重启后读回并可唤醒
    - 其余缺口：G2 Flyme 冻结 / 杀进程后广播被拦（随 4d bindService；短期 doctor / 错误信息给设置指引）；G3 已连接但被冻结的实例调用要等满 30 s（先真机测疑似冻结判定）；G4 租约挂在 MCP 会话上（随第 16 项 P1 与第 12 项）；G5 `hold()` 对 Hub 不可见（经 `app/diagnostic` 上报持有原因，只观测）；G6 后台作业持有语义（随第 16 项 P5）；G7 Doze 下经 adb reverse 超时（随 4d 重测）；G9 网页 URL 唤醒新开标签页、原标签页一直休眠；G12 Windows IDLE 优先级 + 满载时唤醒转发超时（doctor / 错误信息提示）
    - Dormant-first 对照补齐（2026-10-02，机主同意）：a 新增内置工具 `apps.activate(appId)`（只唤醒不调用）/ `apps.release(appId)`（收回本会话在该 App 的租约），由 Agent 决定何时用，替代第 16 项 O5 预测预热（O5 删除）；b 调用对象与状态查询（pending / running / completed / failed / cancelled / timeout）并入第 16 项 P5；c MCP 请求 `_meta` 携带 Agent 截止时间，Hub 取其与配置值的较小者（键名随第 19 项 R4）；d Hub 常驻内存随已登记 App 数的增长——先测量（0 / 10 / 100 / 1000 个清单 App 的空闲 RSS、单次调用增量），再决定 schema 懒加载 / 磁盘缓存；B2 自适应租约定位为可替换的缺省策略（`--fixed-lease` 可关，文档写明是策略，后续可经第 16 项 P2 挂点替换；Agent 显式 `apps.release` 优先）。不采纳：分级释放内存（App 策略，已有 residency / onIdleExit 挂点）、按调用限制 CPU / 内存（进程内无法可靠强制）、零拷贝流式（随第 17 项句柄实测后再定）
+   - 平台原生与"召之即来"对照补齐（2026-10-02，机主同意，以下均为机制，策略仍归 Agent / App）：
+     - e 核实 iOS：第三方 Agent App 能否调用其他 App 的 App Intents（推断只能由系统入口执行），结论写入 spec/naming.md 4.5；codegen 可选输出 App Intent Extension（App 不运行也能执行）
+     - f Host 按需启动：Linux systemd 用户 socket 激活、macOS launchd `Sockets`，首个 MCP 连接时由系统拉起、空闲退出；Windows 无对等机制，保持登录自启，以常驻内存测量结果约束（随 4d）
+     - g 桌面无界面激活：工具调用不带出界面——Windows 打包 App 走 App Service（4d U-07），未打包约定无界面启动参数（只起 SDK 与 app 工具），macOS / Linux 激活不建窗口（随 4d）
+     - h 第 16 项 P5 作业状态由 App 持久化，Hub 只转发作业 ID 与状态查询，不在内存保存作业状态（进程被系统回收不丢状态）
+     - i 调用状态机（CREATED → ACTIVATING → RUNNING → 结果）写入 spec，平台相关状态（前台 / 后台 / 挂起）只作诊断 `platform_state`（status / doctor），不进核心状态；与 b 合并
+     - j Agent 幂等键：MCP `_meta` 的 `idempotencyKey` 原样进入调用参数，handler 上下文可读，App 决定用法；SDK 去重可按此键（补 53c5a02 已知缺口：MCP 重试是新 callId）；键名随第 19 项 R4
+     - k 按工具声明并发与顺序：`concurrency: N` / `exclusive`（同一资源互斥），SDK 按声明排队，队列上限可配置，满时返回明确错误；本库不推断
+     - l 生命周期指标基准（并入第 10 项）：冷 / 热唤醒延迟、P50 / P95 调用延迟、取消延迟、释放延迟（结果后回到可回收态）、空闲 Provider 常驻内存、单次调用峰值内存、结果复制字节、单次调用 CPU 与唤醒次数、被杀后恢复率、重复副作用率；桌面自动跑，Android 随真机批次
+     - m 提前完成惰性 handler（spec/lifecycle.md 10.2：原生工厂闭包、`@app-mcp/node` 的 `load`），与 g 同批
+     - 不采纳：能力票据（工具名 + toolsHash 已等效，且给无状态 MCP 增加状态）、每次调用独立凭证（4d 已用系统身份校验调用方，唤醒令牌一次性）
 4d. [ ] 按名寻址 + 系统代理 + 连接即唤醒：原生 App 源头去端口（2026-10-01 加入；4c 完成后做）
    - 原则：地址是 App 身份（`appmcp://<appId>[/<instance>]`），由各平台系统名字服务解析，不用数字端口；方向反转为 Hub 拨 App（App 在系统登记名字，不常驻重连 Hub，Hub 启动顺序无关、多个 Hub 可共存）；连接即唤醒（系统按需激活拉起进程），传输与唤醒合一。协议（JSON-RPC 消息）与 sans-IO 核心不变，只换"找到对方"这一层
    - [x] A 设计 `spec/naming.md`（权威）：地址格式；各平台名字映射；发现（枚举）；连接方向与角色（Hub 为连接发起方，核心仍是同一状态机：握手方向不变——连接建立后 SDK 先发 `app/hello`）；实例寻址（多窗口 / 多进程实例各自登记）；鉴权（系统身份：D-Bus 调用方 uid / Binder `getCallingUid` + 签名权限 / 管道 DACL / XPC 审计令牌）；与旧"App 拨 Hub"（IPC / WebSocket）并存与协商（App 可同时登记名字并在有 Hub 时直连，避免双连接的规则）；生命周期映射（休眠 = 关闭连接、名字保留；唤醒 = Hub 连接触发系统激活；`wakeToken` / WakeDescriptor 降为不支持激活平台的后备）
