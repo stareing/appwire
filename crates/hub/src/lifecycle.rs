@@ -14,6 +14,7 @@ use crate::connection::Connection;
 use crate::dormant_store::{DormantStore, DormantStoreStatus};
 use crate::hub::{HubShared, lock};
 use crate::registry::{WakePlan, WakeTargetPresence};
+use crate::task::{CallerKey, TaskLifetime};
 use crate::types::{AwakeReason, HubEvent};
 use crate::wake::{self, Platform, WakeDescriptor, WakeRequest};
 
@@ -129,7 +130,7 @@ impl HubShared {
 
     /// 某连接上全部会话租约中最晚的有效截止（按名拨入的通道据此决定关闭时刻，spec/naming.md 7.2）。
     pub(crate) fn lease_expiry(&self, conn_id: u64) -> Option<Instant> {
-        self.session_state().values().filter_map(|s| s.leases.get(&conn_id)).filter_map(LeaseEntry::expires).max()
+        self.agent_tasks().values().filter_map(|s| s.leases.get(&conn_id)).filter_map(LeaseEntry::expires).max()
     }
 
     /// 是否配置了唤醒器（`waker: none` 时为 `false`）。
@@ -353,7 +354,7 @@ impl HubShared {
 
     /// 持有未到期租约（任一会话）的连接 ID。
     pub(crate) fn leased_connections(&self, now: Instant) -> std::collections::HashSet<u64> {
-        self.session_state()
+        self.agent_tasks()
             .values()
             .flat_map(|s| s.leases.iter())
             .filter(|(_, l)| l.expires().is_some_and(|e| e > now))
@@ -393,29 +394,28 @@ impl HubShared {
     // ------------------------------------------------------------------
 
     /// 会话对某 App 的一次工具调用开始：记录距该（会话, App）上一次租约的间隔。
-    pub(crate) fn lease_call_started(&self, session_key: &str, app_id: &str) {
-        lock(&self.leases).call_started(session_key, app_id, &self.config.lease, Instant::now());
+    pub(crate) fn lease_call_started(&self, caller: &CallerKey, app_id: &str) {
+        lock(&self.leases).call_started(caller.as_str(), app_id, &self.config.lease, Instant::now());
     }
 
     /// 会话的一个请求（MCP 请求 / API 调用、资源读取）开始；返回的守卫在请求结束时记录活动（空闲收回据此计时）。
-    pub(crate) fn session_request(self: &Arc<Self>, session_key: &str) -> SessionRequest {
-        lock(&self.leases).request_started(session_key, Instant::now());
+    pub(crate) fn session_request(self: &Arc<Self>, caller: &CallerKey) -> SessionRequest {
+        lock(&self.leases).request_started(caller.as_str(), Instant::now());
         self.lease_changed.notify_one();
-        SessionRequest { shared: self.clone(), key: session_key.to_owned() }
+        SessionRequest { shared: self.clone(), key: caller.as_str().to_owned() }
     }
 
     /// 调用某实例完成后按（会话, App）的调用间隔决定租约，发送 `app/lease { ttlMs }` 并记在会话上。
-    pub(crate) fn grant_lease(&self, session_key: &str, app_id: &str, conn: &Arc<Connection>) {
+    pub(crate) fn grant_lease(&self, caller: &CallerKey, app_id: &str, conn: &Arc<Connection>) {
         if self.config.lease_ttl.is_zero() {
             return;
         }
         let now = Instant::now();
-        let g = lock(&self.leases).grant(session_key, app_id, &self.config.lease, self.config.lease_ttl, now);
-        tracing::debug!(cid = %conn.cid, app_id, session = session_key, ttl_ms = g.ttl.as_millis() as u64, adaptive = g.adaptive, "发出租约");
+        let g = lock(&self.leases).grant(caller.as_str(), app_id, &self.config.lease, self.config.lease_ttl, now);
+        tracing::debug!(cid = %conn.cid, app_id, session = %caller, ttl_ms = g.ttl.as_millis() as u64, adaptive = g.adaptive, "发出租约");
         send_lease(conn, g.ttl, g.adaptive);
-        self.session_state()
-            .entry(session_key.to_owned())
-            .or_default()
+        self.agent_tasks()
+            .entry(caller)
             .leases
             .entry(conn.id)
             .or_insert_with(|| LeaseEntry::new(conn))
@@ -425,32 +425,32 @@ impl HubShared {
         }
     }
 
-    /// 会话结束：收回其全部租约并移除其调用间隔统计。
-    pub(crate) fn release_leases(&self, session_key: &str) {
-        let n = self.revoke_leases(session_key, Revoke::All);
+    /// 会话 / 任务结束：收回其全部租约并移除其调用间隔统计。
+    pub(crate) fn release_leases(&self, caller: &CallerKey) {
+        let n = self.revoke_leases(caller, Revoke::All);
         let mut book = lock(&self.leases);
         book.count_revoked(false, n);
-        book.forget_session(session_key);
+        book.forget_session(caller.as_str());
     }
 
     /// 收回会话的租约：向实例发送 `ttlMs: 0`（SDK 只能整体取消），随后补发仍应保留的剩余时长——其他会话对同一实例的
     /// 未到期租约，以及 [`Revoke::DefaultOnly`] 时本会话的自适应部分。返回实际发出收回（实例仍在连接）的个数。
     /// `DefaultOnly` 时默认值部分不决定有效截止的连接只清除记录、不发消息。
-    fn revoke_leases(&self, session_key: &str, scope: Revoke) -> u64 {
-        self.revoke_leases_where(session_key, scope, |_| true)
+    fn revoke_leases(&self, caller: &CallerKey, scope: Revoke) -> u64 {
+        self.revoke_leases_where(caller, scope, |_| true)
     }
 
     /// `apps.release`（spec/hub-api.md 3.5「显式释放」）：收回会话在 `conn_ids` 这些连接上的全部租约，其他会话的未到期租约
     /// 随后补发。返回实际发出收回的个数。
-    pub(crate) fn release_leases_on(&self, session_key: &str, conn_ids: &std::collections::HashSet<u64>) -> u64 {
-        self.revoke_leases_where(session_key, Revoke::All, |id| conn_ids.contains(&id))
+    pub(crate) fn release_leases_on(&self, caller: &CallerKey, conn_ids: &std::collections::HashSet<u64>) -> u64 {
+        self.revoke_leases_where(caller, Revoke::All, |id| conn_ids.contains(&id))
     }
 
     /// [`HubShared::revoke_leases`]，只作用于 `include` 选中的连接。
-    fn revoke_leases_where(&self, session_key: &str, scope: Revoke, include: impl Fn(u64) -> bool) -> u64 {
-        let mut states = self.session_state();
+    fn revoke_leases_where(&self, caller: &CallerKey, scope: Revoke, include: impl Fn(u64) -> bool) -> u64 {
+        let mut states = self.agent_tasks();
         let now = Instant::now();
-        let Some(mine) = states.get_mut(session_key).map(|s| {
+        let Some(mine) = states.get_mut(caller).map(|s| {
             let ids: Vec<u64> = s.leases.keys().copied().filter(|id| include(*id)).collect();
             let mut out = Vec::new();
             for id in ids {
@@ -479,7 +479,7 @@ impl HubShared {
             // @why 按种类分别补发：SDK 分别记两种租约，后台连接只认自适应租约（spec/lifecycle.md 第 13 节 B4）。
             let others: Vec<&LeaseEntry> = states
                 .iter()
-                .filter(|(k, _)| k.as_str() != session_key)
+                .filter(|(k, _)| *k != caller)
                 .filter_map(|(_, s)| s.leases.get(&conn_id))
                 .collect();
             let default = others.iter().filter_map(|l| l.default_until).max().filter(|e| *e > now);
@@ -497,10 +497,12 @@ impl HubShared {
     }
 
     /// 请求流空闲收回（spec/lifecycle.md 第 13 节 B2）：会话没有进行中的请求、距最近活动达到 `lease.idle_revoke` 时，
-    /// 收回其以默认值发出、仍未到期的租约。没有待收回的会话时不设定时器。
+    /// 收回其以默认值发出、仍未到期的租约。同一循环回收空闲的 Agent 任务（[`HubShared::expire_idle_tasks`]）。
+    /// 没有待收回的会话、没有按空闲回收的任务时不设定时器。
     pub(crate) async fn lease_idle_loop(self: Arc<Self>) {
         loop {
-            let next = lock(&self.leases).next_idle_deadline(&self.config.lease);
+            let lease_next = lock(&self.leases).next_idle_deadline(&self.config.lease);
+            let next = lease_next.into_iter().chain(self.next_task_expiry()).min();
             match next {
                 Some(at) => {
                     tokio::select! {
@@ -513,14 +515,67 @@ impl HubShared {
                     continue;
                 }
             }
-            let idle = lock(&self.leases).take_idle_sessions(&self.config.lease, Instant::now());
+            let now = Instant::now();
+            let idle = lock(&self.leases).take_idle_sessions(&self.config.lease, now);
             for key in idle {
-                let n = self.revoke_leases(&key, Revoke::DefaultOnly);
+                let Some(caller) = self.agent_tasks().caller_key(&key) else {
+                    // 没有任务 = 没有记下的租约，无需收回。
+                    continue;
+                };
+                let n = self.revoke_leases(&caller, Revoke::DefaultOnly);
                 if n > 0 {
                     tracing::debug!(session = %key, revoked = n, "会话请求流空闲，收回默认租约");
                 }
                 lock(&self.leases).count_revoked(true, n);
             }
+            self.expire_idle_tasks(now);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Agent 任务的空闲回收（docs/plans/16-agent-os.md P1 / U9）
+    // ------------------------------------------------------------------
+
+    /// 按空闲回收的任务（[`TaskLifetime::UntilIdle`]）各自的到期时刻：请求流空闲（复用租约的请求活动记录）达
+    /// `task_idle_ttl`。有进行中请求的任务没有到期时刻（请求结束时会唤醒循环重新计算）；活动记录已被淘汰的任务立即到期。
+    fn task_expiries(&self, now: Instant) -> Vec<(CallerKey, Instant)> {
+        let ttl = self.config.task_idle_ttl;
+        if ttl.is_zero() {
+            return Vec::new();
+        }
+        let keys = self.agent_tasks().idle_lifetime_keys();
+        let book = lock(&self.leases);
+        keys.into_iter()
+            .filter_map(|k| {
+                let at = match book.activity(k.as_str()) {
+                    Some((0, last)) => last + ttl,
+                    Some(_) => return None,
+                    None => now,
+                };
+                Some((k, at))
+            })
+            .collect()
+    }
+
+    /// 最早的任务到期时刻；没有按空闲回收的任务时为 `None`（不设定时器）。
+    fn next_task_expiry(&self) -> Option<Instant> {
+        self.task_expiries(Instant::now()).into_iter().map(|(_, at)| at).min()
+    }
+
+    /// 回收已空闲到期的任务：收回其仍未到期的租约（已到期的记录直接丢弃，不再发 `ttlMs: 0`），清除其状态与租约统计。
+    ///
+    /// @invariant 只回收 [`TaskLifetime::UntilIdle`] 的任务；legacy MCP 会话与 Hub API 会话的任务只随其结束信号回收。
+    pub(crate) fn expire_idle_tasks(&self, now: Instant) {
+        for (key, at) in self.task_expiries(now) {
+            if at > now {
+                continue;
+            }
+            debug_assert_eq!(key.lifetime(), TaskLifetime::UntilIdle);
+            if let Some(task) = self.agent_tasks().get_mut(&key) {
+                task.prune_expired_leases(now);
+            }
+            tracing::debug!(caller = %key, "Agent 任务请求流空闲，回收");
+            self.end_task(&key);
         }
     }
 

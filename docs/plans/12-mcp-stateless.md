@@ -1,6 +1,6 @@
 # 12 MCP 无状态协议：会话状态迁移、`_meta` 键名与错误码分区（方案）
 
-> 状态：方案（2026-10-02），只写文档、未改代码。
+> 状态：方案（2026-10-02）；S1、S3、S4 已实施，S2 部分完成（见第 6 节各记录）。
 > 与 `docs/plans/12-mcp-2026-07-28.md`（下称「12 迁移计划」）的分工：变更全表（M1–M9、m1–m10）、rmcp 能力核查、传输与版本路由
 > 以 12 迁移计划为准，本文件不重复定义；本文件只负责**依赖 MCP 会话的行为如何迁移**、`_meta` 键名、错误码分区三件事。
 > 本文件第 3 节与 12 迁移计划 3.2 表不一致处（见 3.6），以本文件为准，建议主会话在 12 迁移计划 3.2 / m10 加指向本文件的说明。
@@ -211,7 +211,7 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 | S1 | `_meta` 前缀改 `dev.appwire/`（4.2），请求侧旧键弃用期内兼容 | U1 机主定前缀 | 单测：新键、旧键、两者冲突、非法值；`spec/hub-api.md` 3.15 键表更新 |
 | S2 | `resultType` 核查与补齐（12 迁移计划 M8 / U7）；R4 结果元信息按新键输出 | S1 | modern 每种结果（工具、空结果、资源、列表）都带 `resultType: complete`；`_meta.dev.appwire/callId` 与日志 `cid` 可对照。**部分完成（2026-10-02）**，见下方 S2 记录 |
 | S3 | 错误码：modern 出口码映射；修复上游错误反查缺陷；作废 m10 表述 | — | 回归测试：上游 `-32004` 不再变成 `USER_REJECTED`；modern 资源不存在为 `-32602`、legacy 仍 `-32002` |
-| S4 | `CallerKey` 收敛；`McpSession` 分 legacy / stateless；主体键（HTTP 令牌 / IPC）；stdio modern 同样无状态 | 4e 已完成；与 16 P1 同批设计 | 连续 N 个 modern 请求不新增 / 删除 `SessionState`；legacy 与 modern 并发互不影响；租约在 modern 下按空闲收回 |
+| S4 | `CallerKey` 收敛；`McpSession` 分 legacy / stateless；主体键（HTTP 令牌 / IPC）；stdio modern 同样无状态 | 4e 已完成；与 16 P1 同批设计 | 连续 N 个 modern 请求不新增 / 删除 `SessionState`；legacy 与 modern 并发互不影响；租约在 modern 下按空闲收回。**已完成（2026-10-02，与 16 P1 最小任务对象同批）**，见下方 S4 记录 |
 | S5 | modern 列表规则（3.3）与总览改经 discover / `apps.tools`；`ttlMs` / `cacheScope` | S4；与 4c F 合并 | modern 下两次 `tools/list` 之间夹任意 `apps.tools` / 调用 / `apps.select`，结果逐字节相同；`server/discover.instructions` 含 App 简介 |
 | S6 | `apps.select` 主体级语义与 TTL；审批 `principal` 与 `client_name`；`/status` 新字段 | S4 | modern `apps.select` 后路由命中所选实例、列表不变；TTL 到期后回到默认路由 |
 | S7 | `subscriptions/listen`（12 迁移计划 M4）+ 默认放开 2026-07-28 | S1–S6 | Claude Code 2.1.281 实测：Host 日志无 `Mcp-Session-Id`、调用成功、App 上下线后列表刷新；回退开关恢复 legacy |
@@ -233,6 +233,37 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
   （`#[serde(deny_unknown_fields)]`，`src/model.rs:77`，经 `ServerResult::empty`），不带 `resultType`；2026-07-28 要求"每个结果"都带时
   这些回复缺该字段。Hub 的 `subscribe` / `unsubscribe` 返回 `()`，无法在 Hub 侧补齐。处理：S7 放开 modern 前核实规范对空结果的要求，
   并检查届时的 rmcp 版本（升级 rmcp 不在本项范围）；在此之前 modern 不会被协商，不影响现有客户端。
+
+**S4 记录（2026-10-02，与第 16 项 P1 同批）**
+
+- 实现：`crates/hub/src/task.rs` 定义 `CallerKey`（`mcp:<n>` / `principal:<主体>` / `api[:<s>]`，带寿命 `UntilEnd` / `UntilIdle`）、
+  `Principal`（现只有 `Local`）、`AgentTask`（原 `SessionState` 的四项状态 + Hub 签发的 `task-<128 位十六进制>` ID）与 `TaskTable`；
+  `HubShared.session_state` → `agent_tasks`，`CallCtx.session_key: String` → `caller: CallerKey`，`api_session_key` 删除，租约、选择、
+  总览附带、渐进暴露全部按 `CallerKey` 取任务。`LeaseBook` 仍按字符串键（纯状态模块不变，键取 `CallerKey::as_str`）。
+- 判定（与 3.1 的差异，**以此为准**）：不用 `protocol_version().has_initialize()`——rmcp 的 `server/discover` 生命周期可以选
+  2025-11-25（有握手的版本）而不握手，此时 `protocol_version()` 为 2025-11-25 但 rmcp 按无状态处理（`[R] handler/server.rs:57-97`
+  `requires_request_metadata` / `uses_legacy_lifecycle`）。改为：本处理器**处理过 `initialize`**（覆盖 `ServerHandler::initialize`，
+  按 rmcp 文档的方式先 `set_peer_info` 再 `negotiate_initialize`）且请求 `_meta` 未声明 2026-07-28 及以后版本 → legacy；否则无会话。
+  不在 `on_initialized` 判定：rmcp 不等 `notifications/initialized` 就处理后续请求，HTTP 上两者无先后保证。
+- 无会话处理器：不登记 peer、不建会话状态、Drop 无副作用；`apps.select` / `apps.tools` 不发 `list_changed`（无 peer）；审批
+  `ApprovalRequest.session = "principal:local"`。stdio / `serve_mcp_stream` 上不握手的客户端同样走主体键（3.6 差异表"stdio modern"）。
+- 主体：HTTP 令牌、IPC 同用户、stdio 父进程现在都映射为 `principal:local`（`Principal::Local` 的 @why）；没有把主体塞进 HTTP 请求扩展
+  的管道——只有一个取值时无法测试，留给 N5（按 Agent 发令牌时在 `http_server` 核对令牌处得出主体，`McpSession::caller` 读取）。
+- 任务回收：`HubConfig.task_idle_ttl`（默认 10 分钟，`0` = 不回收），复用 `LeaseBook` 的请求流活动（新增 `LeaseBook::activity`），
+  在既有 `lease_idle_loop` 中计算到期，无按空闲回收的任务时不设定时器；回收时先丢弃已到期的租约记录（不再发 `ttlMs: 0`），再按
+  "任务结束"收回其余租约、删除统计（计入 `revoked_session_end`）。
+- 外部行为：默认配置下 legacy 客户端（`initialize`）完全不变（全部既有测试与 e2e 不改即通过）；唯一变化是不握手的
+  `server/discover` 客户端（以 ≤ 2025-11-25 版本经 stdio / 流）从"每连接一个会话"变为共用主体任务——这正是 S4 的要求。
+  `/status`、`HubStatus` 不变（`LeasePairStatus.session` 可出现 `principal:local`）。
+- 测试（`crates/hub/src/mcp.rs` `tests`，rmcp 客户端 `ClientLifecycleMode::Discover` 走真实线路，同时回答 U4 的前半：无会话请求经
+  rmcp 原样到达 handler）：`stateless_requests_share_one_principal_task`（同一连接与每请求一个新处理器，共 13 个请求，任务数与任务 ID
+  不变、Drop 无副作用、租约统计键为 `principal:local`）、`legacy_and_stateless_do_not_affect_each_other`（并发调用；选择与
+  `apps.release` 互不影响；legacy 断开只结束自己的任务）、`stateless_leases_and_task_reclaimed_by_idle`（默认租约按 `idle_revoke` 收回、
+  主体任务按 `task_idle_ttl` 回收、legacy 任务保留、回收后新任务无旧选择）；`task.rs` 单测。T-10：临时把 Drop 改为无条件清理、
+  把 `caller()` 改为总是 legacy、去掉 `expire_idle_tasks` 调用，三组测试分别失败。
+- 未做（留给后续项，范围不变）：S5 modern 列表规则（现在无会话请求的 `tools/list` 仍按主体任务的渐进暴露记录变化，违反 S-F7，S5 改）、
+  总览首次附带按主体去重（S5 改经 discover / `apps.tools`）；S6 `apps.select` 主体级 TTL（现在随任务空闲回收一起失效）、审批
+  `client_name`、`/status` 新字段；S7 放开 2026-07-28 与 `subscriptions/listen`；S8 任务句柄（`AgentTask.id` 已就绪）。
 
 顺序：S3（独立缺陷修复，可立即做）→ S1 → S2 → S4 → S5、S6（可并行）→ S7 → S8（随第 16 项 P1）。
 总验收：`cargo test -p app-mcp-hub -p app-mcp-host`、`cargo clippy --workspace --all-targets` 0 警告；默认配置（S7 前）e2e 不变；
@@ -267,7 +298,7 @@ S7 后 `e2e/src/mcp-client.ts` 增加 modern 模式，关键用例两代各跑�
 | U1 | 项目是否拥有 `appmcp.dev`（或 `appwire.dev`）域名；机主倾向工作名还是品牌名前缀 | **已定**（机主 2026-10-02）：品牌名前缀 `dev.appwire/`；S1 已实施 |
 | U2 | 通用客户端（Claude Code 等）是否透传 / 允许设置厂商 `_meta` 键；工具结果 `_meta` 是否对模型可见 | **验证**：临时 Host（`--home` 临时目录）+ Claude Code 实测，记录请求 `_meta` 全部键；结论只影响“可选通道”是否有用，不影响正确性 |
 | U3 | modern 客户端是否允许调用 `tools/list` 中未列出的工具（决定渐进暴露在 modern 下能否保留“按全名调用”） | **验证**：S5 用 Claude Code 实测；不允许时 modern 默认 `tool_exposure = all`，渐进暴露只在 legacy 生效 |
-| U4 | rmcp 自定义 `_meta` 键在 modern 路径是否原样到达 handler | **推断**可以（S-F10 透明 map）；S1 用 `ClientLifecycleMode::Discover` 的集成测试断言 |
+| U4 | rmcp 自定义 `_meta` 键在 modern 路径是否原样到达 handler | **推断**可以（S-F10 透明 map）；S1 用 `ClientLifecycleMode::Discover` 的集成测试断言。S4 已验证无会话请求经 Discover 生命周期到达 handler（`mcp.rs` 测试），自定义键尚未单独断言 |
 | U5 | -32001…-32015 是否早于 2026-07-28 分配（git 历史从 2026-10-01 起，无法判定） | 不影响结论：modern 出口不再发这些码（第 5 节） |
 | U6 | 主体级 `apps.select` 的空闲 TTL 默认值 | **保守**：与 `idle_revoke` 同量级、可配置；S6 观察后定 |
 | U7 | 规范本身后续是否给“本地错误”“需用户操作”分配标准码 | 跟踪 changelog；有标准码时在 MCP 出口映射，AppWire 协议不变 |
@@ -280,5 +311,5 @@ S7 后 `e2e/src/mcp-client.ts` 增加 modern 模式，关键用例两代各跑�
 | R2 | modern 取消渐进暴露的动态列表后工具数过多 | 全局选择与策略 `hide` 仍可裁剪；`ttlMs` 让客户端缓存；U3 实测后再定默认 |
 | R3 | 改 `_meta` 前缀破坏已有 Agent 配置 | 请求侧旧键弃用期兼容；冲突显式失败 |
 | R4 | 修复上游错误反查后，依赖旧（错误）分类的调用方行为改变 | 原码保留在 `details.upstreamCode`；在报告与 spec 中写明 |
-| R5 | `CallerKey` 收敛与 4c、16 P1 同时改 `hub.rs` 冲突 | S4 与 16 P1 同批由一个会话做；S3 / S1 先行且只改小范围文件 |
+| R5 | `CallerKey` 收敛与 4c、16 P1 同时改 `hub.rs` 冲突 | S4 与 16 P1 同批由一个会话做；S3 / S1 先行且只改小范围文件。**已按此执行（2026-10-02）** |
 | R6 | 规范与 rmcp 后续小版本调整 dual-era 细节 | 回退开关；`cargo update` 后跑 S4–S7 的协议测试 |

@@ -42,6 +42,7 @@ pub mod registry;
 mod request_meta;
 pub mod routing;
 pub mod schema;
+mod task;
 pub mod tool_def;
 pub mod types;
 pub mod upstream;
@@ -63,7 +64,7 @@ pub use policy::{
 };
 pub use connector::{BlockedTarget, ConnectorError, Connector, DialedChannel, DiscoveredName, NameEvent};
 pub use hub::{
-    DEFAULT_CHANNEL_GRACE, DEFAULT_NAVIGATE_TIMEOUT, DEFAULT_PROGRESS_INTERVAL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
+    DEFAULT_CHANNEL_GRACE, DEFAULT_NAVIGATE_TIMEOUT, DEFAULT_PROGRESS_INTERVAL, DEFAULT_TASK_IDLE_TTL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
     load_manifests, parse_resource_uri, resource_uri,
 };
 #[cfg(feature = "mcp-server")]

@@ -36,7 +36,7 @@
 | K6 | codegen 已把工具映射到 App Intents / AppFunctions / Windows App Actions / 鸿蒙意图 | `crates/codegen/src/targets` |
 | K7 | 渐进暴露按 App 分层（`apps.*` + `apps.tools(appId)`） | `TASKS.md` 第 2 项；`spec/hub-api.md` 3.7 |
 | K8 | rmcp 3.5.0 已支持 MCP 进度通知与 elicitation（服务端 `Peer`） | `~/.cargo/registry/.../rmcp-3.5.0/src/service/server.rs`：`notify_progress`（914 行）、`elicit`（1144 行） |
-| K9 | 会话状态 `SessionState { selected, delivered, leases, exposed }` 按 MCP 会话保存，会话 `Drop` 时清理 | `crates/hub/src/hub.rs:214-223`；`docs/plans/12-mcp-2026-07-28.md` L3 / L5 |
+| K9 | 会话状态 `SessionState { selected, delivered, leases, exposed }` 按 MCP 会话保存，会话 `Drop` 时清理。**2026-10-02 起**迁入 `AgentTask`（P1），按调用方键保存 | `crates/hub/src/task.rs`；`docs/plans/12-mcp-2026-07-28.md` L3 / L5 |
 | K10 | MCP 2026-07-28 删除协议级会话（SEP-2567），跨调用状态改用服务器签发的显式句柄 | `docs/plans/12-mcp-2026-07-28.md` M1、F1 |
 | K11 | `ApprovalHandler` 只在 Hub SDK 配置中（`crates/hub/src/types.rs:532`），`crates/host` 未使用 | `grep approval crates/host/src` 无结果 |
 | K12 | 唤醒上限只按 App 计（`HubConfig::wake_rate_limit`，默认每 App 每分钟） | `crates/hub/src/hub.rs:144, 166` |
@@ -53,8 +53,8 @@
 | U5 | 本地向量检索的体积与依赖（移动端 `mobile` 精简包能否承受） | **保守**：默认关键词 + 使用统计排序；向量检索为可选特性（cargo feature），默认关闭 |
 | U6 | 信息流控制的标签传播粒度（整次结果 vs 字段级）与误伤率 | **保守**：先做结果级标签 + 只拦"私密 → 外发"一类；记录拦截次数后再细化 |
 | U7 | 人机并发的"用户正在操作"信号来源（各 UI 框架焦点 / 编辑状态） | SDK 侧显式 API（`busy()` / 对象锁），不自动推断 |
-| U8 | 任务 ID 在 modern 请求中的载体（`_meta` 字段名）与 Agent 是否会回传 | **核实** MCP 2026-07-28 规范 `_meta` 约定与第 12 项第 3 节设计；Agent 不回传时退化为"每请求一个短命任务" |
-| U9 | 任务对象的租约时长与心跳来源（Agent 无显式心跳时以请求流活跃为准） | **保守**：复用 4e 自适应租约的"请求流空闲"判定（`spec/hub-api.md:370`），默认值可配置 |
+| U8 | 任务 ID 在 modern 请求中的载体（`_meta` 字段名）与 Agent 是否会回传 | **核实** MCP 2026-07-28 规范 `_meta` 约定与第 12 项第 3 节设计；Agent 不回传时退化为"每请求一个短命任务" 。**更新（2026-10-02）**：按第 12 项 3.4，任务 ID 以工具参数句柄为主、`_meta` 为可选通道（S8）；都没有时退化为调用方键的默认任务（`principal:<主体>`，已实施），而不是每请求一个任务 |
+| U9 | 任务对象的租约时长与心跳来源（Agent 无显式心跳时以请求流活跃为准） | **保守**：复用 4e 自适应租约的"请求流空闲"判定（`spec/hub-api.md:370`），默认值可配置。**已按此实施**：`HubConfig.task_idle_ttl`（默认 10 分钟，`0` 关闭），只作用于无会话调用方的任务 |
 | U10 | 持久信箱在 Agent 侧的取件方式（下次请求附带 / `subscriptions/listen` / 专用资源） | **验证** Claude Code 对资源更新通知与 `subscriptions/listen` 的支持后定 |
 | U11 | P2 策略挂点是否与第 14 项职责划分冲突 | **已决定（2026-10-02）**：实施。挂点只提供执行位置，规则由用户 / 厂商写，默认无规则、行为与现状一致；本库不内置任何判断，与第 14 项不冲突 |
 | U12 | 规则文件格式与热加载（文件监视 vs `reload` 命令）及与 `config.json` 的关系 | **已实施（fe622b9）**：独立 `<home>/policy.json`；启动时不合法 → Host 拒绝启动（无旧规则可保留，静默全放行违背用户意图）；`reload` 时不合法 → 保留旧规则并报错；`doctor` 检查 |
@@ -82,6 +82,12 @@
 - **P1 Agent 任务对象**：Hub 签发任务 ID，寿命由租约维持（U9），不依赖传输连接；名下持有句柄（N1 / 第 17 项）、对象锁（N6）、唤醒租约（4e）、
   订阅、配额计数（P3）与调用日志归属（第 11 项）；过期由 Hub 统一回收。legacy MCP 会话 = 一会话一任务；modern 无状态请求在 `_meta` 带任务 ID（U8）。
   N5 Agent 身份记在任务对象上，不另立。`SessionState`（K9）迁入任务对象。
+  - **最小任务对象已实施（2026-10-02，与第 12 项 S4 同批）**：`crates/hub/src/task.rs` `AgentTask`（Hub 签发 `task-<128 位十六进制>` ID；
+    名下 `apps.select` 选择、已附带总览、租约、渐进暴露）按调用方键寻址：legacy MCP 会话 / Hub API 会话一会话一任务（随结束信号回收），
+    无会话 MCP 请求按主体一任务（`principal:local`），寿命按请求流空闲（U9：复用租约的请求活动记录，`HubConfig.task_idle_ttl` 默认 10 分钟），
+    回收时收回其租约。契约见 `spec/hub-api.md` 3.6「调用方与 Agent 任务」。
+  - 未实施（挂点已留在 `AgentTask` 上）：任务 ID 对外（第 12 项 S8 句柄 / 可选 `_meta`）、N5 身份、P2 按 Agent 匹配、P3 记账、N6 锁、
+    第 17 项句柄与订阅归属。
 - **P2 策略挂点（2026-10-02 决定实施；第 18 项 L5 暴露开关由此实现）**：类比 LSM，本库只提供执行点，不内置任何判断；无规则时行为与现状完全一致。
   - **执行点**：列出（`tools/list`、`apps.*`）、调用、唤醒、句柄访问（句柄挂点只定义类型，规则用到即校验失败，待第 17 项句柄落地）。
   - **两种动作**：`hide`（不出现在任何列表中，调用按 `TOOL_NOT_FOUND`）与 `deny`（可见但调用被拒）。

@@ -116,7 +116,7 @@ impl HubShared {
         }
         self.check_app_call_policy(app_id)?;
         self.guard_call(app_id, TOOL_APPS_NAVIGATE, args)?;
-        let selected = self.selected_for(&ctx.session_key, app_id);
+        let selected = self.selected_for(&ctx.caller, app_id);
         let woken = self.wake_app_if_disconnected(app_id, selected.as_deref(), None, cancel.as_mut()).await?;
         let prefer = woken.as_deref().or(selected.as_deref());
         let instance_id = self.navigate_to_page(app_id, &page_name, params, prefer, cancel).await?;
@@ -141,7 +141,7 @@ impl HubShared {
         cancel: CancelFut<'_>,
     ) -> Result<CallToolResult, ToolError> {
         self.control_target(app_id)?;
-        let selected = self.selected_for(&ctx.session_key, app_id);
+        let selected = self.selected_for(&ctx.caller, app_id);
         let woken = self.wake_app_if_disconnected(app_id, selected.as_deref(), None, cancel).await?;
         let prefer = woken.as_deref().or(selected.as_deref());
         let target = self.registry().preferred_instance(app_id, prefer);
@@ -149,7 +149,7 @@ impl HubShared {
             // 唤醒后实例尚未就绪即断开等边界情况：如实报告。
             return Err(self.registry().disconnected_error(app_id));
         };
-        self.grant_lease(&ctx.session_key, app_id, &conn);
+        self.grant_lease(&ctx.caller, app_id, &conn);
         let woke = woken.is_some();
         Ok(json_result(json!({
             "appId": app_id,
@@ -169,7 +169,7 @@ impl HubShared {
     fn builtin_release(&self, ctx: &CallCtx, app_id: &str) -> Result<CallToolResult, ToolError> {
         self.control_target(app_id)?;
         let conns = self.registry().connection_ids(app_id);
-        let released = self.release_leases_on(&ctx.session_key, &conns);
+        let released = self.release_leases_on(&ctx.caller, &conns);
         Ok(json_result(json!({
             "appId": app_id,
             "released": released,

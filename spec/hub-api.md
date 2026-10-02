@@ -206,6 +206,7 @@ pub struct ApprovalRequest { pub call_id: String, pub app_id: String, pub app_na
     pub tool: String, pub title: Option<String>, pub description: String,
     pub risk: Risk, pub arguments: Value, pub session: Option<String>,
     pub annotations: ToolAnnotations }      // 与 HubTool.annotations 相同，供厂商按声明决定是否确认
+// session：Hub API 为 CallRequest.session 原样；MCP 出口为调用方键（legacy `mcp:<n>`，无会话请求 `principal:<主体>`，3.6）
 
 #[async_trait]
 pub trait PairingHandler: Send + Sync {
@@ -293,6 +294,24 @@ pub struct Health {                          // serde camelCase
 - **多会话**：每个 `Mcp-Session-Id` 对应一个独立的 `McpSession`（会话键 `mcp:<n>`）：`apps.select` 选择、
   “已附带总览版本”、资源订阅按会话保存；App 连接、注册表、上游在所有会话间共享。会话结束（DELETE 或断开）时清理其状态。
   服务器主动通知（`tools/list_changed` 等）经各会话的 GET SSE 流发送。
+- **调用方与 Agent 任务**（第 12 项 S4、第 16 项 P1；`crates/hub/src/task.rs`）：调用方的跨请求状态（`apps.select` 选择、已附带总览、
+  租约、渐进暴露已列出的 App）记在该调用方的 **Agent 任务**上，任务按**调用方键**寻址，不挂在传输会话上。每个调用方键至多一个任务，
+  任务 ID 为 Hub 签发的 `task-<128 位随机数十六进制>`（当前只在内部与 debug 日志中使用；第 12 项 S8 作为显式句柄对外）。
+
+  | 调用方 | 调用方键 | 任务寿命 |
+  |---|---|---|
+  | legacy MCP：处理过 `initialize` 的连接（stdio / `serve_mcp_stream` 的一条流，HTTP 的一个 `Mcp-Session-Id`），请求未在 `_meta` 声明 2026-07-28 及以后的版本 | `mcp:<n>` | 会话结束（行为与之前相同） |
+  | 无会话 MCP 请求：不经 `initialize`、每请求自带协议 `_meta`（rmcp `server/discover` 生命周期），HTTP、IPC、stdio 一律如此 | `principal:<主体>` | 请求流空闲达 `task_idle_ttl` 后回收 |
+  | Hub API（`CallRequest.session`、`ToolFilter.session`、`dispatch_in_session`） | `api` / `api:<session>` | `reset_session` |
+
+  主体只取自传输层凭据，不取自 `clientInfo`：TCP 上的本机令牌（及允许不带令牌的回环请求）、IPC 的同一用户、stdio 的父进程现在都是
+  `principal:local`（第 16 项 N5 按 Agent 发令牌后细分）。因此**所有无会话请求共用一个任务**（一个 Agent 的 `apps.select` /
+  `apps.release` 影响另一个，docs/plans/12-mcp-stateless.md R1）。无会话请求不登记 peer、不发 `list_changed`、处理器析构无副作用
+  （rmcp 无状态 HTTP 路径每请求构造一次处理器）。Hub 现在只协商到 2025-11-25，无会话请求只能以该版本及以前的版本经
+  `server/discover` 到达；其列表规则（3.7）与订阅仍同 legacy，分别由 S5、S7 改写。
+  `HubConfig.task_idle_ttl: Duration`（默认 `DEFAULT_TASK_IDLE_TTL` = 10 分钟，`0` = 不因空闲回收）：无会话调用方没有进行中的请求、
+  距最近一次请求活动（与 3.5 租约的请求流空闲判定共用一份记录）达此时长时，回收其任务——收回仍未到期的租约（`ttlMs: 0`，其他调用方的
+  未到期租约随后补发；已到期的不再发消息）、删除其租约统计与状态。没有按空闲回收的任务时 Hub 不设定时器。
 - 校验顺序（`/mcp`、`/healthz`）：`Origin`（与 App 连接相同的允许列表，不通过 403）→ 路径 → 令牌（仅 `/mcp`）。
   令牌规则：`Authorization: Bearer <令牌>`；带 `Origin` 的请求必须携带；不带 `Origin` 的请求在
   `require_token_without_origin` 时必须携带；携带了错误令牌一律 401（带 `WWW-Authenticate: Bearer`）；空令牌视为未携带。常量时间比较。
@@ -404,7 +423,8 @@ impl Hub { pub fn set_waker(&self, w: Arc<dyn Waker>); }
 
 **租约**：MCP 会话或 API 会话每次调用某实例（请求已送达）完成后，Hub 发送 `app/lease { ttlMs }`
 （`0` 关闭租约：`HubConfig.lease_ttl = 0`）。MCP 会话关闭、`Hub::reset_session` 时向该会话租约过的实例发送
-`ttlMs: 0`；若其他会话对同一实例仍有未到期租约，随后补发剩余时长。
+`ttlMs: 0`；若其他会话对同一实例仍有未到期租约，随后补发剩余时长。本节的"会话"指调用方（3.6「调用方与 Agent 任务」）：
+无会话 MCP 请求的租约按 `principal:<主体>` 发放与统计，没有"会话结束"，只按到期、请求流空闲、`apps.release` 与任务空闲回收（`task_idle_ttl`）收回。
 
 **自适应租约**（4e B2，spec/lifecycle.md 第 13 节；`HubConfig.lease: LeasePolicy`，默认开启）：
 
@@ -491,7 +511,7 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
   本会话调用过 `apps.tools` 的 App ∪ 本会话调用过其工具的 App（含上游；无论结果成功与否）∪ 本会话 `apps.select` 选定实例的 App ∪
   `Hub::select_instance` 全局选定实例的 App。
 - **未生效时**：列表与之前完全相同（不含 `apps.tools`）；已列出的 App 仍照常记录，切换为生效时沿用。
-- **会话**：MCP 出口为 `mcp:<n>`；Hub API 由 `ToolFilter.session`（列表 / 导出）与 `CallRequest.session` /
+- **会话**：MCP 出口为 `mcp:<n>`（无会话请求为 `principal:<主体>`，3.6；其 modern 列表规则由第 12 项 S5 改写）；Hub API 由 `ToolFilter.session`（列表 / 导出）与 `CallRequest.session` /
   `dispatch_in_session` 的 `session`（调用）决定，二者用同一 ID 即对应同一会话。`reset_session` / MCP 会话结束时清除。
 - **`ToolFilter.apps` 显式给出时**不受渐进暴露影响（列出这些 App 的全部工具），供厂商 UI 使用。
 - **`apps.tools`**（`{appId}`，只读）：返回 `{appId, tools: HubTool[], message}`（`HubTool` 为 3.1 的 camelCase 形态，

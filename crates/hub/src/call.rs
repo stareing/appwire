@@ -34,6 +34,7 @@ use crate::navigate::{self, PageTool};
 use crate::overview::Overview;
 use crate::registry::WakeTargetPresence;
 use crate::schema::{self, SchemaCheck};
+use crate::task::CallerKey;
 use crate::tool_def::ToolDef;
 use crate::types::{
     ApprovalRequest, Availability, CallOutcome, CallRequest, HubError, HubTool, ResourceContent, ToolDeclaration,
@@ -54,14 +55,14 @@ pub const UNAVAILABLE_PREFIX: &str = "[当前不可用] ";
 pub(crate) struct CallCtx {
     pub name: String,
     pub arguments: Value,
-    /// 会话键（总览附带、`apps.select` 按它计算）。
-    pub session_key: String,
+    /// 调用方键：总览附带、`apps.select`、租约、渐进暴露都记在该调用方的 Agent 任务上（[`crate::task`]）。
+    pub caller: CallerKey,
     /// 厂商会话 ID（原样放进 [`ApprovalRequest::session`]）。
     pub session: Option<String>,
     pub instance_id: Option<String>,
     pub timeout: Option<Duration>,
     pub call_id: Option<String>,
-    /// 发起调用的 MCP 会话（渐进暴露展开新 App 时只通知该会话）；Hub API 为 `None`。
+    /// 发起调用的 legacy MCP 会话（渐进暴露展开新 App 时只通知该会话）；Hub API 与无会话的 MCP 请求为 `None`。
     pub mcp_session: Option<u64>,
     /// 调用方要接收进度时的出口（MCP 请求带 `progressToken`，spec/hub-api.md 3.12）；合并后的进度发到这里。
     pub progress: Option<ProgressSink>,
@@ -76,7 +77,7 @@ impl CallCtx {
     pub(crate) fn from_request(req: CallRequest) -> Self {
         Self {
             mcp_session: None,
-            session_key: crate::hub::api_session_key(req.session.as_deref()),
+            caller: CallerKey::api(req.session.as_deref()),
             name: req.name,
             arguments: req.arguments,
             session: req.session,
@@ -269,7 +270,7 @@ impl HubShared {
     ) -> Invocation {
         let started = tokio::time::Instant::now();
         let call_id = ctx.call_id.clone().unwrap_or_else(|| self.new_call_id());
-        let _activity = self.session_request(&ctx.session_key);
+        let _activity = self.session_request(&ctx.caller);
         let (tx, rx) = oneshot::channel::<()>();
         let token = self.next_id();
         lock(&self.calls).insert(call_id.clone(), (token, tx));
@@ -363,7 +364,7 @@ impl HubShared {
             };
             let mut out = inv(Some(app_id), Body::Upstream(result));
             if !matches!(out.body, Body::Upstream(Err(_))) {
-                out.overview = self.attach_overview(&ctx.session_key, app_id);
+                out.overview = self.attach_overview(&ctx.caller, app_id);
             }
             self.expose_in_session(&ctx, app_id);
             return out;
@@ -395,7 +396,7 @@ impl HubShared {
         }
         // 后台替代（spec/hub-api.md 3.14）：view 工具够不着且已知 App 在后台 → 直接改调声明的 app 工具；
         // 否则照常（导航），导航因 App 不能自行回到前台被拒（USER_ACTION_REQUIRED / foreground）时再改调。
-        let prefer = ctx.instance_id.clone().or_else(|| self.selected_for(&ctx.session_key, app_id));
+        let prefer = ctx.instance_id.clone().or_else(|| self.selected_for(&ctx.caller, app_id));
         let mut routed_to = self
             .background_alternative(app_id, tool, &args)
             .filter(|_| self.app_in_background(app_id, prefer.as_deref(), ctx.instance_id.is_some()));
@@ -405,7 +406,7 @@ impl HubShared {
             None => {
                 if let Err(e) = self.guard_call(app_id, tool, &args) {
                     let mut out = inv(Some(app_id), Body::App(Err(e)));
-                    out.overview = self.attach_overview(&ctx.session_key, app_id);
+                    out.overview = self.attach_overview(&ctx.caller, app_id);
                     return out;
                 }
                 self.invoke_tool(call_id, app_id, tool, args, &ctx, cancel.as_mut()).await
@@ -425,7 +426,7 @@ impl HubShared {
         out.output_shape = run.output_shape;
         out.woke = run.woke;
         out.routed_to = routed_to.map(|alt| format!("{app_id}.{alt}"));
-        out.overview = self.attach_overview(&ctx.session_key, app_id);
+        out.overview = self.attach_overview(&ctx.caller, app_id);
         self.expose_in_session(&ctx, app_id);
         out
     }
@@ -449,7 +450,7 @@ impl HubShared {
 
     /// 渐进暴露：把 App 加入调用方会话的工具列表；列表因此变化时通知该 MCP 会话。
     fn expose_in_session(self: &Arc<Self>, ctx: &CallCtx, app_id: &str) {
-        if self.expose_app(&ctx.session_key, app_id)
+        if self.expose_app(&ctx.caller, app_id)
             && let Some(id) = ctx.mcp_session
         {
             self.notify_session_tools_changed(id);
@@ -612,11 +613,11 @@ impl HubShared {
         output_shape: &mut OutputShape,
         woke: &mut bool,
     ) -> (Result<ToolsInvokeResult, ToolError>, Option<String>) {
-        self.lease_call_started(&ctx.session_key, app_id);
+        self.lease_call_started(&ctx.caller, app_id);
         let selected = ctx
             .instance_id
             .clone()
-            .or_else(|| self.selected_for(&ctx.session_key, app_id));
+            .or_else(|| self.selected_for(&ctx.caller, app_id));
         // 休眠实例 / 未运行的 App：先按快照（或清单）定义校验并审批，再唤醒（spec/lifecycle.md §9）。
         // 注意：先放开注册表锁再解析唤醒描述（resolve_wake_descriptor 会再次加锁）。
         let plan = self.registry().wake_plan_tool(
@@ -817,7 +818,7 @@ impl HubShared {
             }
         };
         self.registry().touch(app_id, &target.instance_id);
-        self.grant_lease(&ctx.session_key, app_id, &conn);
+        self.grant_lease(&ctx.caller, app_id, &conn);
         (result, instance)
     }
 
@@ -1002,7 +1003,7 @@ impl HubShared {
         name: &str,
         args: &Value,
     ) -> Option<Result<CallToolResult, ToolError>> {
-        let key = ctx.session_key.as_str();
+        let key = &ctx.caller;
         let schema = builtin_schema(name)?;
         if let SchemaCheck::Invalid(msg) = schema::check(&schema, args) {
             return Some(Err(ToolError::new(
@@ -1032,7 +1033,7 @@ impl HubShared {
                 let newly_listed = self
                     .exposed_apps(key)
                     .is_some_and(|e| !e.contains(&app_id));
-                self.select_in_session(key, &app_id, &instance_id);
+                self.select_for_caller(key, &app_id, &instance_id);
                 if newly_listed && let Some(id) = ctx.mcp_session {
                     self.notify_session_tools_changed(id);
                 }
@@ -1121,7 +1122,7 @@ impl HubShared {
 pub(crate) async fn read_resource(
     shared: &Arc<HubShared>,
     uri: &str,
-    session_key: &str,
+    caller: &CallerKey,
 ) -> Result<ReadResourceResult, McpError> {
     let Some((app_id, name)) = parse_resource_uri(uri) else {
         return Err(McpError::resource_not_found(
@@ -1129,7 +1130,7 @@ pub(crate) async fn read_resource(
             None,
         ));
     };
-    let _activity = shared.session_request(session_key);
+    let _activity = shared.session_request(caller);
     if shared.app_hidden_hit(app_id) {
         return Err(McpError::resource_not_found(format!("资源「{uri}」不存在"), Some(json!({ "kind": ErrorKind::ResourceNotFound }))));
     }
@@ -1137,7 +1138,7 @@ pub(crate) async fn read_resource(
         return read_upstream_resource(shared, app_id, name, uri, peer).await;
     }
     let (info, result) = shared
-        .read_app_resource(app_id, name, shared.selected_for(session_key, app_id))
+        .read_app_resource(app_id, name, shared.selected_for(caller, app_id))
         .await
         .map_err(|e| to_mcp_error(&e))?;
     let contents = resource_contents(uri, info.mime_type.as_deref(), result);

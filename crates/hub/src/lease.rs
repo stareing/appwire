@@ -330,6 +330,12 @@ impl LeaseBook {
         }
     }
 
+    /// 会话的请求活动：（进行中的请求数, 最近一次活动）；未跟踪（从未请求、已结束或被淘汰）时为 `None`。
+    /// Agent 任务的空闲回收据此判定（docs/plans/16-agent-os.md U9：复用请求流空闲判定）。
+    pub fn activity(&self, session: &str) -> Option<(u32, Instant)> {
+        self.sessions.get(session).map(|s| (s.inflight, s.last))
+    }
+
     /// 最早的空闲收回时刻；没有需要收回的会话时为 `None`。
     pub fn next_idle_deadline(&self, policy: &LeasePolicy) -> Option<Instant> {
         if !policy.adaptive || policy.idle_revoke.is_zero() {
@@ -599,6 +605,19 @@ mod tests {
             b.request_finished(&format!("x{i}"), t0 + Duration::from_millis(i as u64 + 1));
         }
         assert!(b.sessions.contains_key("busy"));
+    }
+
+    #[test]
+    fn activity_tracks_inflight_and_last() {
+        let mut b = LeaseBook::default();
+        let t0 = Instant::now();
+        assert_eq!(b.activity("s"), None);
+        b.request_started("s", t0);
+        assert_eq!(b.activity("s"), Some((1, t0)));
+        b.request_finished("s", t0 + secs(2));
+        assert_eq!(b.activity("s"), Some((0, t0 + secs(2))));
+        b.forget_session("s");
+        assert_eq!(b.activity("s"), None);
     }
 
     #[test]

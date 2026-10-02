@@ -41,6 +41,7 @@ use crate::overview::AppSummary;
 use crate::overview::{Overview, OverviewSource};
 use crate::tool_def::StaticManifest;
 use crate::registry::Registry;
+use crate::task::{CallerKey, TaskTable};
 use crate::types::{
     AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy, AuthStatus,
     CallOutcome, CallRequest, DiagnosticReport, HubError, HubEvent, HubResource, HubStatus, HubTool,
@@ -188,7 +189,16 @@ pub struct HubConfig {
     /// 按名拨入的通道在最后一次调用完成后保持的时间（spec/naming.md 7.2 `graceMs`）：关闭时刻为
     /// `max(最后一条消息 + 本值, 租约到期)`，宽限内到来的调用合并进同一通道。默认 [`DEFAULT_CHANNEL_GRACE`]。
     pub channel_grace: Duration,
+    /// 无会话（modern）MCP 请求的 Agent 任务在请求流空闲多久后回收（docs/plans/16-agent-os.md P1 / U9；
+    /// 回收 = 收回其仍未到期的租约、清除 `apps.select` 等状态）。`0` = 不因空闲回收。默认 [`DEFAULT_TASK_IDLE_TTL`]。
+    /// legacy MCP 会话与 Hub API 会话的任务不受影响（随会话结束 / `reset_session`）。
+    pub task_idle_ttl: Duration,
 }
+
+/// [`HubConfig::task_idle_ttl`] 的默认值。
+///
+/// @why 10 分钟：覆盖一轮对话中用户思考的停顿；不小于自适应租约默认上限（60 s），默认配置下空闲回收不会提前截断租约。
+pub const DEFAULT_TASK_IDLE_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// [`HubConfig::channel_grace`] 的默认值（spec/naming.md 7.2）。
 pub const DEFAULT_CHANNEL_GRACE: Duration = Duration::from_secs(15);
@@ -252,28 +262,8 @@ impl Default for HubConfig {
             policy: PolicyConfig::default(),
             connectors: Vec::new(),
             channel_grace: DEFAULT_CHANNEL_GRACE,
+            task_idle_ttl: DEFAULT_TASK_IDLE_TTL,
         }
-    }
-}
-
-/// 一个会话（MCP 会话或 API 的 `CallRequest.session`）的状态。
-#[derive(Debug, Default)]
-pub(crate) struct SessionState {
-    /// `apps.select`：appId → instanceId。
-    pub selected: HashMap<String, String>,
-    /// 已附带的总览：appId → 版本。
-    pub delivered: HashMap<String, String>,
-    /// 本会话发出的租约：连接 ID → 租约。
-    pub leases: HashMap<u64, crate::lifecycle::LeaseEntry>,
-    /// 渐进暴露：本会话展开过（`apps.tools`）或调用过的 App（含上游）。
-    pub exposed: HashSet<String>,
-}
-
-/// API 调用的会话键。
-pub(crate) fn api_session_key(session: Option<&str>) -> String {
-    match session {
-        Some(s) => format!("api:{s}"),
-        None => "api".to_owned(),
     }
 }
 
@@ -300,9 +290,9 @@ pub struct HubShared {
     /// 上游 MCP 服务器状态。
     upstreams: Mutex<BTreeMap<String, UpstreamState>>,
     events: broadcast::Sender<HubEvent>,
-    /// 会话键 → 会话状态。
-    session_state: Mutex<HashMap<String, SessionState>>,
-    /// [`Hub::select_instance`] 的选择（所有会话共用，会话自己的 `apps.select` 优先）。
+    /// 调用方键 → Agent 任务（调用方的跨请求状态，[`crate::task`]）。
+    agent_tasks: Mutex<TaskTable>,
+    /// [`Hub::select_instance`] 的选择（所有调用方共用，调用方自己的 `apps.select` 优先）。
     global_selected: Mutex<HashMap<String, String>>,
     /// 进行中的调用：callId → (登记序号, 取消信号)。
     pub(crate) calls: Mutex<HashMap<String, (u64, oneshot::Sender<()>)>>,
@@ -398,7 +388,7 @@ impl HubShared {
             dirty: Notify::new(),
             next_id: AtomicU64::new(1),
             events,
-            session_state: Mutex::new(HashMap::new()),
+            agent_tasks: Mutex::new(TaskTable::default()),
             global_selected: Mutex::new(HashMap::new()),
             calls: Mutex::new(HashMap::new()),
             progress_routes: Mutex::new(HashMap::new()),
@@ -672,55 +662,54 @@ impl HubShared {
     }
 
     // ------------------------------------------------------------------
-    // 会话状态
+    // Agent 任务（调用方的跨请求状态，crate::task）
     // ------------------------------------------------------------------
 
-    pub(crate) fn drop_session_state(&self, key: &str) {
+    /// 结束调用方的任务：收回其全部租约、删除其租约统计与状态（MCP 会话结束、`Hub::reset_session`、空闲回收）。
+    pub(crate) fn end_task(&self, key: &CallerKey) {
         self.release_leases(key);
-        lock(&self.session_state).remove(key);
+        lock(&self.agent_tasks).remove(key);
     }
 
-    pub(crate) fn session_state(&self) -> MutexGuard<'_, HashMap<String, SessionState>> {
-        lock(&self.session_state)
+    pub(crate) fn agent_tasks(&self) -> MutexGuard<'_, TaskTable> {
+        lock(&self.agent_tasks)
     }
 
-    /// 会话的 `apps.select` 优先，其次 [`Hub::select_instance`]。
-    pub(crate) fn selected_for(&self, key: &str, app_id: &str) -> Option<String> {
-        lock(&self.session_state)
+    /// 调用方的 `apps.select` 优先，其次 [`Hub::select_instance`]。
+    pub(crate) fn selected_for(&self, key: &CallerKey, app_id: &str) -> Option<String> {
+        lock(&self.agent_tasks)
             .get(key)
             .and_then(|s| s.selected.get(app_id).cloned())
             .or_else(|| lock(&self.global_selected).get(app_id).cloned())
     }
 
-    pub(crate) fn merged_selection(&self, key: &str) -> HashMap<String, String> {
+    pub(crate) fn merged_selection(&self, key: &CallerKey) -> HashMap<String, String> {
         let mut out = lock(&self.global_selected).clone();
-        if let Some(s) = lock(&self.session_state).get(key) {
+        if let Some(s) = lock(&self.agent_tasks).get(key) {
             out.extend(s.selected.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
         out
     }
 
-    pub(crate) fn select_in_session(&self, key: &str, app_id: &str, instance_id: &str) {
-        lock(&self.session_state)
-            .entry(key.to_owned())
-            .or_default()
+    pub(crate) fn select_for_caller(&self, key: &CallerKey, app_id: &str, instance_id: &str) {
+        lock(&self.agent_tasks)
+            .entry(key)
             .selected
             .insert(app_id.to_owned(), instance_id.to_owned());
     }
 
-    pub(crate) fn mark_delivered(&self, key: &str, app_id: &str, version: &str) {
-        lock(&self.session_state)
-            .entry(key.to_owned())
-            .or_default()
+    pub(crate) fn mark_delivered(&self, key: &CallerKey, app_id: &str, version: &str) {
+        lock(&self.agent_tasks)
+            .entry(key)
             .delivered
             .insert(app_id.to_owned(), version.to_owned());
     }
 
-    /// 该会话首次接触某 App（或其总览版本变化）时返回总览，并记为已附带。
-    pub(crate) fn attach_overview(&self, key: &str, app_id: &str) -> Option<Overview> {
+    /// 该调用方首次接触某 App（或其总览版本变化）时返回总览，并记为已附带。
+    pub(crate) fn attach_overview(&self, key: &CallerKey, app_id: &str) -> Option<Overview> {
         let ov = self.overview(app_id)?;
-        let mut st = lock(&self.session_state);
-        let s = st.entry(key.to_owned()).or_default();
+        let mut st = lock(&self.agent_tasks);
+        let s = st.entry(key);
         if s.delivered.get(app_id) == Some(&ov.version) {
             return None;
         }
@@ -765,25 +754,24 @@ impl HubShared {
         }
     }
 
-    /// 会话中直接列出工具的 App：展开过 / 调用过的，以及选定了实例的（会话 `apps.select` 与全局选择）。
+    /// 调用方直接列出工具的 App：展开过 / 调用过的，以及选定了实例的（调用方 `apps.select` 与全局选择）。
     /// 渐进暴露未生效时返回 `None`（全部列出）。
-    pub(crate) fn exposed_apps(&self, key: &str) -> Option<HashSet<String>> {
+    pub(crate) fn exposed_apps(&self, key: &CallerKey) -> Option<HashSet<String>> {
         if !self.progressive() {
             return None;
         }
         let mut out: HashSet<String> = self.merged_selection(key).into_keys().collect();
-        if let Some(s) = lock(&self.session_state).get(key) {
+        if let Some(s) = lock(&self.agent_tasks).get(key) {
             out.extend(s.exposed.iter().cloned());
         }
         Some(out)
     }
 
-    /// 把 App 记为本会话已展开。渐进暴露生效且此前未列出时返回 `true`（会话的工具列表因此变化）。
-    pub(crate) fn expose_app(&self, key: &str, app_id: &str) -> bool {
+    /// 把 App 记为调用方已展开。渐进暴露生效且此前未列出时返回 `true`（调用方的工具列表因此变化）。
+    pub(crate) fn expose_app(&self, key: &CallerKey, app_id: &str) -> bool {
         let selected = self.merged_selection(key).contains_key(app_id);
-        let inserted = lock(&self.session_state)
-            .entry(key.to_owned())
-            .or_default()
+        let inserted = lock(&self.agent_tasks)
+            .entry(key)
             .exposed
             .insert(app_id.to_owned());
         inserted && !selected && self.progressive()
@@ -808,7 +796,7 @@ impl HubShared {
 
     /// MCP `tools/list`：内置工具 + （渐进暴露时只含已展开 App 的）App 工具 + 上游工具。
     #[cfg(feature = "mcp-server")]
-    pub(crate) fn mcp_tools(&self, key: &str) -> Vec<Tool> {
+    pub(crate) fn mcp_tools(&self, key: &CallerKey) -> Vec<Tool> {
         let exposed = self.exposed_apps(key);
         let listed = |app_id: &str| exposed.as_ref().is_none_or(|e| e.contains(app_id));
         let policy = self.policy();
@@ -1703,6 +1691,12 @@ impl Hub {
         Ok(hub)
     }
 
+    /// 内部共享状态（crate 内的测试检查任务表用）。
+    #[cfg(test)]
+    pub(crate) fn shared(&self) -> &Arc<HubShared> {
+        &self.shared
+    }
+
     /// HTTP 服务（`/app`、`/mcp`、`/healthz`）实际监听的地址；未开启时为 `None`。
     pub fn listen_addr(&self) -> Option<SocketAddr> {
         self.listen_addr
@@ -1782,7 +1776,7 @@ impl Hub {
     /// （此时另有 `apps.tools`）与 `filter.session` 会话已展开 / 调用过 / 选定了实例的 App 的工具；
     /// 显式给出 `filter.apps` 时列出这些 App 的全部工具。
     pub fn tools(&self, filter: &ToolFilter) -> Vec<HubTool> {
-        let exposed = self.shared.exposed_apps(&api_session_key(filter.session.as_deref()));
+        let exposed = self.shared.exposed_apps(&CallerKey::api(filter.session.as_deref()));
         let progressive = exposed.is_some();
         let exposed = exposed.filter(|_| filter.apps.is_none());
         let wanted = |app: &str| {
@@ -1892,7 +1886,7 @@ impl Hub {
 
     /// 读取资源（`app-mcp://<appId>/<name>`）。
     pub async fn read_resource(&self, uri: &str) -> Result<ResourceContent, HubError> {
-        call::read_resource(&self.shared, uri, &api_session_key(None))
+        call::read_resource(&self.shared, uri, &CallerKey::api(None))
             .await
             .map_err(|e| HubError(call::mcp_resource_error_to_tool(&e)))
             .map(|r| call::first_content(uri, r))
@@ -1935,7 +1929,7 @@ impl Hub {
     /// 清除某个 API 会话的状态（已附带的总览、`apps.select`），并取消该会话发出的租约（`app/lease { ttlMs: 0 }`）。
     /// 厂商开始新对话时调用。spec 之外的补充方法。
     pub fn reset_session(&self, session: Option<&str>) {
-        self.shared.drop_session_state(&api_session_key(session));
+        self.shared.end_task(&CallerKey::api(session));
     }
 
     // ---- 事件 ----
@@ -2078,7 +2072,7 @@ impl Hub {
             mcp_session: None,
             name: self.shared.resolve_export_name(&parsed.name),
             arguments: parsed.arguments.clone(),
-            session_key: api_session_key(session),
+            caller: CallerKey::api(session),
             session: session.map(str::to_owned),
             instance_id: None,
             timeout: None,
@@ -2204,16 +2198,15 @@ mod tests {
     #[test]
     fn session_selection_and_overview_delivery() {
         let shared = HubShared::new(HubConfig::default(), None);
+        let (a, b) = (CallerKey::api(Some("a")), CallerKey::api(Some("b")));
         lock(&shared.global_selected).insert("shop".into(), "g".into());
-        assert_eq!(shared.selected_for("a", "shop").as_deref(), Some("g"));
-        shared.select_in_session("a", "shop", "s");
-        assert_eq!(shared.selected_for("a", "shop").as_deref(), Some("s"));
-        assert_eq!(shared.selected_for("b", "shop").as_deref(), Some("g"));
-        assert_eq!(shared.merged_selection("a")["shop"], "s");
-        shared.drop_session_state("a");
-        assert_eq!(shared.selected_for("a", "shop").as_deref(), Some("g"));
-        assert_eq!(api_session_key(None), "api");
-        assert_eq!(api_session_key(Some("x")), "api:x");
+        assert_eq!(shared.selected_for(&a, "shop").as_deref(), Some("g"));
+        shared.select_for_caller(&a, "shop", "s");
+        assert_eq!(shared.selected_for(&a, "shop").as_deref(), Some("s"));
+        assert_eq!(shared.selected_for(&b, "shop").as_deref(), Some("g"));
+        assert_eq!(shared.merged_selection(&a)["shop"], "s");
+        shared.end_task(&a);
+        assert_eq!(shared.selected_for(&a, "shop").as_deref(), Some("g"));
     }
 
     #[test]
