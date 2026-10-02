@@ -106,29 +106,13 @@ pub async fn cmd(action: AppAction) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// 数据目录：`--data-home` > 平台默认（Linux `$XDG_DATA_HOME`（绝对路径时）> `~/.local/share`；Windows `%LOCALAPPDATA%`）。
+/// 数据目录：`--data-home` > 平台默认（[`crate::data_home::user_data_home`]，与 doctor、Hub 读取的位置相同）。
 fn data_home(target: &AppTargetArgs) -> anyhow::Result<PathBuf> {
     if let Some(d) = &target.data_home {
         return absolute(d);
     }
-    default_data_home()
-}
-
-#[cfg(not(windows))]
-fn default_data_home() -> anyhow::Result<PathBuf> {
-    if let Some(d) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|d| d.is_absolute()) {
-        return Ok(d);
-    }
-    Ok(dirs::home_dir().context("无法确定用户主目录；请用 --data-home 指定")?.join(".local").join("share"))
-}
-
-/// Windows：与 Hub（`PipeConnector::default_apps_dir`）读取的是同一目录——`%LOCALAPPDATA%`。
-#[cfg(windows)]
-fn default_data_home() -> anyhow::Result<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .filter(|d| d.is_absolute())
-        .context("环境变量 LOCALAPPDATA 未设置；请用 --data-home 指定")
+    crate::data_home::user_data_home()
+        .with_context(|| format!("无法确定用户数据目录（{}）；请用 --data-home 指定", crate::data_home::SOURCE))
 }
 
 /// 登记：校验参数后写登记文件、（Linux）激活文件与清单副本。返回写入的位置。

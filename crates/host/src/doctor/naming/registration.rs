@@ -21,7 +21,7 @@ const MAX_FILES: usize = 256;
 /// 单个登记文件的大小上限（B-07）。
 const MAX_FILE_BYTES: u64 = 64 * 1024;
 
-const REINSTALL_HINT: &str = "重新登记：app-mcp-host app install --app-id <appId> --exec <程序>；不再使用时 app-mcp-host app uninstall --app-id <appId>";
+pub(super) const REINSTALL_HINT: &str = "重新登记：app-mcp-host app install --app-id <appId> --exec <程序>；不再使用时 app-mcp-host app uninstall --app-id <appId>";
 
 /// 一个登记文件的检查结果。
 #[derive(Debug)]
@@ -30,6 +30,8 @@ pub struct RegistrationFinding {
     pub app_id: Option<String>,
     pub source: Option<String>,
     pub findings: Vec<Finding>,
+    /// 通过格式校验的登记（其他检查据此核对平台上的名字，如 `naming.pipes`）。
+    pub registration: Option<Registration>,
 }
 
 /// 规则的输入（已通过 [`registration::parse`] 的格式校验）。
@@ -45,7 +47,7 @@ type Rule = fn(&RuleInput) -> Option<Finding>;
 const RULES: &[Rule] = &[rule_executable, rule_manifest, rule_activation];
 
 /// 绝对路径且是文件；否则给出原因。
-fn missing_file(path: &str) -> Option<&'static str> {
+pub(super) fn missing_file(path: &str) -> Option<&'static str> {
     let p = Path::new(path);
     if !p.is_absolute() {
         return Some("不是绝对路径");
@@ -117,10 +119,13 @@ fn activation_dbus(i: &RuleInput) -> Option<Finding> {
     })
 }
 
-/// `exec`：运行 `target`（缺省为 `executable`）。
+/// `exec` 激活运行的程序：`target`，为空时为 `executable`（spec/naming.md 4.3）。
+pub(super) fn exec_program(reg: &Registration) -> Option<&str> {
+    Some(reg.activation.target.as_str()).filter(|t| !t.is_empty()).or(reg.executable.as_deref())
+}
+
 fn activation_exec(i: &RuleInput) -> Option<Finding> {
-    let target = Some(i.reg.activation.target.as_str()).filter(|t| !t.is_empty()).or(i.reg.executable.as_deref());
-    let Some(target) = target else {
+    let Some(target) = exec_program(i.reg) else {
         return Some(Finding::new(Level::Error, "激活方式 exec 既没有 target 也没有 executable").hint(REINSTALL_HINT));
     };
     let why = missing_file(target)?;
@@ -151,12 +156,19 @@ pub fn inspect(path: &Path, text: &str, platform: Platform, dbus_service_dirs: &
                 app_id: None,
                 source: None,
                 findings: vec![Finding::new(Level::Error, format!("{e}；该文件被忽略")).hint(REINSTALL_HINT)],
+                registration: None,
             };
         }
     };
     let input = RuleInput { reg: &reg, platform, dbus_service_dirs };
     let findings = RULES.iter().filter_map(|rule| rule(&input)).collect();
-    RegistrationFinding { path: path.to_owned(), app_id: Some(reg.app_id.clone()), source: Some(reg.source.clone()), findings }
+    RegistrationFinding {
+        path: path.to_owned(),
+        app_id: Some(reg.app_id.clone()),
+        source: Some(reg.source.clone()),
+        findings,
+        registration: Some(reg),
+    }
 }
 
 /// 文件权限：Unix 上须属于当前用户（系统目录可属于 root），且组与其他用户不可写（spec/naming.md 5.3）。
@@ -184,6 +196,7 @@ fn read_one(path: &Path, platform: Platform, dbus_service_dirs: &[PathBuf]) -> R
         app_id: None,
         source: None,
         findings: vec![Finding::new(Level::Error, text)],
+        registration: None,
     };
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
@@ -266,6 +279,12 @@ pub fn check(env: &NamingEnv) -> Check {
 mod tests {
     use super::*;
 
+    /// 不存在的绝对路径的目录（各平台的绝对路径形式不同）。
+    #[cfg(windows)]
+    const GONE: &str = r"C:\nonexistent\app-mcp";
+    #[cfg(not(windows))]
+    const GONE: &str = "/nonexistent/app-mcp";
+
     struct Scratch(PathBuf);
     impl Scratch {
         fn new() -> Self {
@@ -307,6 +326,7 @@ mod tests {
         let (path, reg, services) = valid(&s.0);
         let r = inspect(&path, &reg.to_string(), Platform::Linux, &services);
         assert!(r.findings.is_empty(), "{:?}", texts(&r));
+        assert_eq!(r.registration.as_ref().map(|g| g.app_id.as_str()), Some("my-shop"), "其他检查据此核对平台上的名字");
         assert_eq!(evaluate(&[], &[r]).status, Level::Ok);
     }
 
@@ -323,12 +343,12 @@ mod tests {
             ("appId invalid", |r| r["appId"] = json!("Bad Id"), Level::Error, "不合法"),
             ("appId != stem", |r| r["appId"] = json!("other"), Level::Error, "与文件名「my-shop.json」不一致"),
             ("exe relative", |r| r["executable"] = json!("bin/shop"), Level::Error, "不是绝对路径"),
-            ("exe gone", |r| r["executable"] = json!("/nonexistent/app-mcp/shop"), Level::Error, "程序 /nonexistent/app-mcp/shop 不存在"),
+            ("exe gone", |r| r["executable"] = json!(format!("{GONE}/shop")), Level::Error, "app-mcp/shop 不存在"),
             ("manifest gone", |r| r["manifest"] = json!("/nonexistent/app-mcp/m.json"), Level::Warn, "无法读取"),
             ("manifest changed", |r| r["manifestSha256"] = json!("00"), Level::Warn, "不一致"),
             ("activation missing", |r| { r.as_object_mut().unwrap().remove("activation"); }, Level::Error, "activation"),
             ("dbus target", |r| r["activation"]["target"] = json!("dev.appmcp.App.x"), Level::Warn, "激活目标应为 dev.appmcp.App.my_shop"),
-            ("exec gone", |r| r["activation"] = json!({"kind": "exec", "target": "/nonexistent/app-mcp/x"}), Level::Error, "激活程序 /nonexistent/app-mcp/x 不存在"),
+            ("exec gone", |r| r["activation"] = json!({"kind": "exec", "target": format!("{GONE}/x")}), Level::Error, "app-mcp/x 不存在"),
             ("exec nothing", |r| { r["activation"] = json!({"kind": "exec"}); r.as_object_mut().unwrap().remove("executable"); }, Level::Error, "既没有 target 也没有 executable"),
             ("uri no target", |r| r["activation"] = json!({"kind": "uri"}), Level::Error, "缺少 target"),
             ("aumid no target", |r| r["activation"] = json!({"kind": "aumid"}), Level::Error, "缺少 target"),
@@ -371,6 +391,7 @@ mod tests {
         assert!(r.findings.iter().any(|f| f.text.contains("只在 Linux 有效")), "{:?}", texts(&r));
         let r = inspect(&path, "not json", Platform::Linux, &[]);
         assert_eq!(r.findings[0].level, Level::Error);
+        assert!(r.registration.is_none());
     }
 
     #[test]
@@ -385,7 +406,7 @@ mod tests {
         std::fs::write(system.join("my-shop.json"), "broken").unwrap();
         std::fs::write(system.join("readme.txt"), "ignored").unwrap();
         let mut bad = reg.clone();
-        bad["executable"] = json!("/nonexistent/app-mcp/other");
+        bad["executable"] = json!(format!("{GONE}/other"));
         bad["appId"] = json!("other");
         bad["activation"] = json!({"kind": "none"});
         std::fs::write(system.join("other.json"), bad.to_string()).unwrap();
@@ -402,7 +423,7 @@ mod tests {
         assert!(found[0].findings.is_empty(), "{:?}", texts(&found[0]));
         let c = evaluate(&dirs, &found);
         assert_eq!(c.status, Level::Error);
-        assert!(c.summary.contains("my-shop") && c.summary.contains("正常") && c.summary.contains("程序 /nonexistent/app-mcp/other 不存在"), "{}", c.summary);
+        assert!(c.summary.contains("my-shop") && c.summary.contains("正常") && c.summary.contains(&format!("程序 {GONE}/other 不存在")), "{}", c.summary);
         assert!(c.hint.as_deref().is_some_and(|h| h.contains("app install")));
         assert_eq!(c.details["registrations"].as_array().map(Vec::len), Some(2));
 

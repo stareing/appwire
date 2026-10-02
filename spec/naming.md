@@ -622,14 +622,14 @@ Android 上每个 App 是不同的 uid，"同用户"不成立，App 须判断拨
 
 `app-mcp-host doctor` 增加名字服务检查组（检查项 ID 以 `naming.` 开头，`--json` 中同名）。各平台运行哪些检查由检查表决定
 （`crates/host/src/doctor/naming/`）；平台上尚无连接器实现的检查报「跳过：未实现」，不做假检查。所有探测只读：不激活名字、
-不 `bindService`、不改系统设置；外部命令与总线调用各有 5 秒超时，总线 / adb 缺失时快速返回。
+不打开 `appmcp-` 管道（只列名字）、不 `bindService`、不改系统设置；外部命令、总线调用与列出管道各有 5 秒超时，总线 / adb 缺失时快速返回。
 
 | 检查项 | 平台 | 内容 | 状态（2026-10-02） |
 |---|---|---|---|
 | `naming.registrations` | Linux / Windows / macOS | App 登记文件（5.3，用户级目录优先、同名只认第一个）：格式 / 版本 / 文件名与 appId（`naming::registration::parse`）、`executable` 是否存在、清单可读且与 `manifestSha256` 一致、文件权限（Unix）；激活方式按 kind 核对：`dbus` 须有同名激活文件且目标为 `dev.appmcp.App.<id>`，`exec` 的程序存在，`uri` / `aumid` 有 `target`，未知 kind 按不可激活提示 | 已实现 |
 | `naming.dbus` | Linux | 会话总线可达（经 Hub 的 `DbusConnector::discover`：`ListActivatableNames` + `ListNames`，不触发激活）；`$XDG_DATA_HOME` / `$XDG_DATA_DIRS` 下 `dbus-1/services/dev.appmcp.App.*.service`：`Name=` 合法且与文件名一致、不是实例名字、`Exec` 程序为绝对路径且存在（否则 `NAME_NOT_FOUND`，调用报 `APP_NOT_INSTALLED`）、带 `--app-mcp-activation`、名字在总线的可激活列表中（不在则提示 `ReloadConfig`）；列出总线上 `dev.appmcp.App.*` 名字的可激活 / 运行状态 | 已实现 |
 | `naming.android` | 任意（经 adb） | PATH 中有 adb 且有已连接设备时（最多 4 台）：`cmd package query-services -a dev.appmcp.TOOLS` 的 Service（导出、启用、`android:permission`）；独立 Hub App（`dev.appmcp.HUB`）是否安装；`getprop` 识别 ROM（Flyme 已真机确认，MIUI / HyperOS、EMUI / HarmonyOS、ColorOS、OriginOS 为未验证的常见设置位置）；`logcat -d -s ActivityManager:W` 中相关包的绑定拦截记录（目前只收录 Flyme 原文 `requires a ifw permit`）→ 注意 + `ACTIVATION_BLOCKED` + 放行路径 | 已实现 |
-| `naming.pipes` | Windows | `appmcp-<SID>-*` 管道与登记文件的对应 | 未实现（Hub 侧 Windows 连接器未完成，14.3）；登记文件由 `naming.registrations` 检查 |
+| `naming.pipes` | Windows | 当前用户 SID 与每个登记 App 的期望管道名 `\\.\pipe\appmcp-<SID>-<appId>`；列出 `\\.\pipe\` 中 `appmcp-` 开头的名字（目录查询，最多 16384 项，不打开管道：打开即被 App 当作通道接受）判断是否运行中（另计实例管道）；未运行时按激活方式核对：`exec` 的程序存在（否则 `APP_NOT_INSTALLED`）、`uri` / `aumid` 有 `target`、其他方式只在运行时可调用；登记的 `executable` 已不存在 → Hub 忽略该登记；当前用户 SID 下没有登记文件的管道（Hub 发现不了，提示 `app install`）；其他用户 SID 的管道与不合命名规则的管道列为信息。管道所有者与服务端进程映像不核对（需打开管道；由 Hub 拨号时核对，10.3），以当前用户 SID 命名却被他人抢先创建的管道会显示为运行中 | 已实现 |
 | `naming.launchd` | macOS | `dev.appmcp.App.*` Agent 登记与 Mach 服务 | 未实现（macOS 连接器未完成，4.4） |
 | `naming.discovery` | 全部 | 每个 App 的发现来源（`source`、首次 / 最近见到时间）、指纹状态、是否可激活 | 未做（目前见 `apps.list` 的 `nameService`；发现记录持久化与指纹未做，14.3） |
 | `naming.bindings` | 全部 | 当前通道 / 绑定数与上限、每条通道的宽限剩余时间、最近的对端死亡事件 | 未做（绑定上限未实现，14.3） |
@@ -672,7 +672,7 @@ adb shell dumpsys activity | grep -A 20 "Apps frozen:"        # 冻结列表
 **Windows（命名管道）**
 
 ```powershell
-[System.IO.Directory]::GetFiles("\\.\pipe\") | Where-Object { $_ -like '*appmcp-*' }   # 管道列表（非官方文档化用法，U-06；doctor 不依赖）
+[System.IO.Directory]::GetFiles("\\.\pipe\") | Where-Object { $_ -like '*appmcp-*' }   # 管道列表（非官方文档化用法，U-06；Hub 不依赖，doctor 的 naming.pipes 只用于显示运行状态）
 Get-ChildItem "$env:LOCALAPPDATA\app-mcp\apps"                                         # App 登记文件
 Get-Content "$env:LOCALAPPDATA\app-mcp\apps\<appId>.json" | ConvertFrom-Json            # 看 executable 与 activation
 ```
@@ -905,8 +905,8 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 | e2e（Windows 实机） | 库级：发现不激活 → 调用 exec 冷启动 → 宽限后关闭（App 退出、管道消失、Hub 句柄第二轮不增长）→ 再激活；常驻 App 已有通道 → `CHANNEL_LIMIT`；同名管道被其他程序抢注 → `PEER_IDENTITY_MISMATCH`；运行中新增 / 删除登记即时生效；激活程序缺失 → `APP_NOT_INSTALLED`。Host 级：`app install` → stdio Host 列出不启动 → 冷启动 → 宽限后退出 → 再激活 → `app uninstall` 后记录移除 | `crates/hub/tests/naming_pipe.rs`、`tests/windows/naming-e2e.mjs` |
 
 未做 / 未验证：打包 App 的 AppExtension 发现与 COM / App Service 激活（U-07、U-08）；`uri` / `aumid` 激活只经单元测试与已有唤醒器实测，未在按名寻址
-链路上实机跑；WSL 中的 Hub 打开 Windows 管道（U-10）；C# / C++ / Python SDK 的登记选项（C# SDK 尚未暴露 `register_name`）；`doctor` 的
-`naming.pipes`；Authenticode 发布者指纹（5.4）。
+链路上实机跑；WSL 中的 Hub 打开 Windows 管道（U-10）；C# / C++ / Python SDK 的登记选项（C# SDK 尚未暴露 `register_name`）；Authenticode 发布者指纹（5.4）。
+`doctor` 的 `naming.pipes` 已实现（第 11 节）。
 
 ### 14.4 未做（后续段落）
 
@@ -917,7 +917,7 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
   （同一 SDK 的核心同时只允许一条连接，实际不会出现）。
 - 多 Hub：App 同时接受多条通道（9.1，当前上限 1）。
 - 绑定：uniffi（D-Bus 登记选项）/ node / 其他语言 SDK 的登记选项、Hub 其他语言绑定（C、Node）的连接器回调与 `channel_grace`；
-  `doctor` 的 `naming.*` 检查（第 11 节，含 `naming.android`）。
+  `doctor` 的 `naming.launchd`、`naming.discovery`、`naming.bindings`（第 11 节；`naming.registrations` / `naming.dbus` / `naming.android` / `naming.pipes` 已实现）。
 - Android：真机验证（冷启动绑定、宽限后回到 cached 并被冻结、进程被杀后再绑定、多 App、Flyme 关联启动拦截，U-01–U-03）；LeakCanary 接入（7.7）；
   独立 Hub App 的用户授权 Agent 名单（TASKS 4g e，与第 16 项 P1 / P2 合并）。
 - Host 默认开启按名寻址（当前需 `--name-service`）；dbus-broker 上的实测（U-05）。

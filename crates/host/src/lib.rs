@@ -15,6 +15,7 @@
 pub mod app_install;
 pub mod cli;
 pub mod config;
+pub mod data_home;
 pub mod doctor;
 pub mod logging;
 pub mod policy;

@@ -153,7 +153,8 @@ Hub 在 Windows 上启动的子进程（唤醒命令、上游 MCP 服务器）�
 | 名字服务：App 登记文件（`naming.registrations`，桌面） | 登记目录（Linux `$XDG_DATA_HOME` / `$XDG_DATA_DIRS` 下 `app-mcp/apps`，Windows `%LOCALAPPDATA%\app-mcp\apps`，macOS `~/Library/Application Support/app-mcp/apps`）中每个 `<appId>.json`：格式与文件名、`executable` 与清单是否存在、清单摘要、文件权限、激活方式（`dbus` 须有激活文件） |
 | 名字服务：D-Bus（`naming.dbus`，Linux） | 会话总线可达（`ListActivatableNames` / `ListNames`，不触发激活）；`dev.appmcp.App.*.service` 的 `Name` / `Exec` 程序是否存在 / `--app-mcp-activation` / 是否已被总线读到；总线上名字的可激活 / 运行状态 |
 | 名字服务：Android（`naming.android`） | adb 与设备都在时：`dev.appmcp.TOOLS` Service 是否导出 / 启用 / 无权限要求、独立 Hub App（`dev.appmcp.HUB`）是否安装、ROM 识别、系统日志中的绑定拦截（Flyme `ifw permit`）→ `ACTIVATION_BLOCKED` 与放行路径（不修改设置） |
-| 名字服务：Windows 命名管道 / macOS launchd（`naming.pipes` / `naming.launchd`） | 连接器尚未实现，报「跳过：未实现」 |
+| 名字服务：Windows 命名管道（`naming.pipes`，Windows） | 每个登记 App 的期望管道名 `\\.\pipe\appmcp-<SID>-<appId>` 是否存在（只列 `\\.\pipe\` 中的名字，不打开管道、不唤醒 App）；未运行时能否激活（`exec` 程序是否存在、`uri` / `aumid` 有无 `target`）；没有登记文件的本用户管道、其他用户的管道。管道所有者不核对（需打开管道，由 Hub 拨号时核对） |
+| 名字服务：macOS launchd（`naming.launchd`） | 连接器尚未实现，报「跳过：未实现」 |
 
 名字服务检查的细节与人工排查命令（`busctl` / `dbus-monitor`、`adb shell cmd package query-services`、`dumpsys activity services`、管道列表、
 `launchctl print`）见 spec/naming.md 第 11 节。

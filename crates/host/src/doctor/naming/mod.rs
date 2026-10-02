@@ -3,7 +3,8 @@
 //! 按平台从 [`NAMING_CHECKS`] 表中选出要运行的检查；平台上尚无连接器实现的检查以「跳过（未实现）」报告，不做假检查。
 //! 每项检查分两步：探测（读文件、问总线、跑 adb，都有超时）→ 评估（纯函数，单元测试用假数据覆盖）。
 //!
-//! 只读：不激活任何名字（`ListActivatableNames` / `ListNames` 不触发激活）、不 `bindService`、不改系统设置。
+//! 只读：不激活任何名字（`ListActivatableNames` / `ListNames` 不触发激活）、不打开 `appmcp-` 管道（只列名字）、不 `bindService`、
+//! 不改系统设置。
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -17,9 +18,10 @@ use super::{Check, Level};
 mod android;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod dbus;
+mod pipes;
 mod registration;
 
-/// 名字服务探测的单项超时（总线调用、每条 adb 命令；B-08）。
+/// 名字服务探测的单项超时（总线调用、每条 adb 命令、列出管道；B-08）。
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 平台。
@@ -64,10 +66,10 @@ pub struct NamingEnv {
 impl NamingEnv {
     /// 按当前用户与平台的约定位置构造。
     ///
-    /// @input Linux：`$XDG_DATA_HOME`（绝对路径时，否则 `~/.local/share`）与 `$XDG_DATA_DIRS`（缺省 `/usr/local/share:/usr/share`）；
-    /// Windows：`%LOCALAPPDATA%`；macOS：`~/Library/Application Support`。
+    /// @input 用户级数据目录（[`crate::data_home::user_data_home`]，与 `app install` 写入的位置相同）；
+    /// Linux 另加 `$XDG_DATA_DIRS`（缺省 `/usr/local/share:/usr/share`）。
     pub fn from_system() -> Self {
-        let user = dirs::data_local_dir();
+        let user = crate::data_home::user_data_home();
         let system: Vec<PathBuf> = if cfg!(target_os = "linux") { xdg_data_dirs(std::env::var_os("XDG_DATA_DIRS")) } else { Vec::new() };
         let data_dirs: Vec<PathBuf> = user.into_iter().chain(system).collect();
         Self {
@@ -154,7 +156,7 @@ const ANY: &[Platform] = &[Platform::Linux, Platform::Windows, Platform::MacOs, 
 const NAMING_CHECKS: &[NamingCheck] = &[
     NamingCheck { id: registration::ID, platforms: DESKTOP, run: run_registrations },
     NamingCheck { id: dbus::ID, platforms: &[Platform::Linux], run: run_dbus },
-    NamingCheck { id: PIPES.id, platforms: &[Platform::Windows], run: run_pipes },
+    NamingCheck { id: pipes::ID, platforms: &[Platform::Windows], run: run_pipes },
     NamingCheck { id: LAUNCHD.id, platforms: &[Platform::MacOs], run: run_launchd },
     NamingCheck { id: android::ID, platforms: ANY, run: run_android },
 ];
@@ -165,8 +167,8 @@ fn run_registrations(env: &NamingEnv) -> CheckFuture<'_> {
 fn run_dbus(env: &NamingEnv) -> CheckFuture<'_> {
     Box::pin(dbus::check(env))
 }
-fn run_pipes(_: &NamingEnv) -> CheckFuture<'_> {
-    Box::pin(async { PIPES.check() })
+fn run_pipes(env: &NamingEnv) -> CheckFuture<'_> {
+    Box::pin(pipes::check(env))
 }
 fn run_launchd(_: &NamingEnv) -> CheckFuture<'_> {
     Box::pin(async { LAUNCHD.check() })
@@ -187,12 +189,6 @@ impl NotImplemented {
         Check::new(self.id, self.title, Level::Skip, format!("未实现：{}", self.reason))
     }
 }
-
-const PIPES: NotImplemented = NotImplemented {
-    id: "naming.pipes",
-    title: "名字服务：Windows 命名管道",
-    reason: "doctor 尚未检查命名管道（Windows 连接器在 4d-E 实现中，spec/naming.md 14.3）；App 登记文件见「名字服务：App 登记文件」",
-};
 
 const LAUNCHD: NotImplemented = NotImplemented {
     id: "naming.launchd",
@@ -241,11 +237,9 @@ mod tests {
             adb: None,
             timeout: Duration::from_secs(1),
         };
-        for (run, id) in [(run_pipes as fn(&NamingEnv) -> CheckFuture<'_>, "naming.pipes"), (run_launchd, "naming.launchd")] {
-            let c = run(&env).await;
-            assert_eq!((c.id, c.status), (id, Level::Skip));
-            assert!(c.summary.starts_with("未实现："), "{}", c.summary);
-        }
+        let c = run_launchd(&env).await;
+        assert_eq!((c.id, c.status), ("naming.launchd", Level::Skip));
+        assert!(c.summary.starts_with("未实现："), "{}", c.summary);
     }
 
     #[test]
