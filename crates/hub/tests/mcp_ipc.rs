@@ -194,6 +194,104 @@ async fn rmcp_client_over_unix_socket() {
     hub.shutdown().await;
 }
 
+/// 第 12 项 S7：MCP 2026-07-28 客户端经 IPC 上的 Streamable HTTP（rmcp 无状态路径）：`server/discover` 协商 2026-07-28、
+/// 列工具、调用、`subscriptions/listen` 在 App 上线 / 下线后收到 `tools/list_changed`；不产生 MCP 会话。
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn modern_rmcp_client_over_unix_socket_with_listen() {
+    use rmcp::ClientServiceExt;
+    use rmcp::model::{CallToolRequestParams, GetMeta, ProtocolVersion, SubscriptionFilter};
+    use rmcp::service::{ClientCacheConfig, ClientLifecycleMode};
+    use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+    use rmcp::transport::{StreamableHttpClientTransport, UnixSocketHttpClient};
+
+    let ep = endpoint("modern");
+    let hub = Hub::start(config(&ep)).await.expect("hub");
+    let path = ep.strip_prefix("unix:").expect("unix endpoint");
+    let url = "http://localhost/mcp";
+    let transport = StreamableHttpClientTransport::with_client(
+        UnixSocketHttpClient::new(path, url),
+        StreamableHttpClientTransportConfig::with_uri(url),
+    );
+    let lifecycle = ClientLifecycleMode::Discover { preferred_versions: vec![ProtocolVersion::V_2026_07_28] };
+    let client = ().serve_with_lifecycle(transport, lifecycle).await.expect("server/discover over IPC");
+    client.peer().set_response_cache_config(ClientCacheConfig::disabled()).await;
+    assert_eq!(client.peer().peer_info().map(|i| i.protocol_version.clone()), Some(ProtocolVersion::V_2026_07_28));
+    let names = || async {
+        client.list_all_tools().await.expect("tools/list").into_iter().map(|t| t.name.to_string()).collect::<Vec<_>>()
+    };
+    assert!(!names().await.iter().any(|n| n == "calc.math.add"));
+
+    let mut sub = client
+        .peer()
+        .listen(SubscriptionFilter::builder().tools_list_changed().build())
+        .await
+        .expect("subscriptions/listen");
+    eventually("listen 流计入 /status", || hub.status().mcp_listen_streams == Some(1)).await;
+    let next_method = |n: rmcp::model::ServerNotification| {
+        assert!(n.get_meta().subscription_id().is_some(), "带 subscriptionId");
+        serde_json::to_value(&n).expect("json")["method"].as_str().unwrap_or_default().to_owned()
+    };
+
+    let app = start_app(&ep);
+    let n = tokio::time::timeout(T, sub.next()).await.expect("等待 list_changed").expect("listen").expect("通知");
+    assert_eq!(next_method(n), "notifications/tools/list_changed");
+    assert!(names().await.iter().any(|n| n == "calc.math.add"));
+    let mut args = serde_json::Map::new();
+    args.insert("a".into(), json!(40));
+    args.insert("b".into(), json!(2));
+    let r = client
+        .call_tool(CallToolRequestParams::new("calc.math.add").with_arguments(args))
+        .await
+        .expect("tools/call");
+    let text: String = r.content.iter().filter_map(|c| c.as_text().map(|t| t.text.clone())).collect();
+    assert!(text.contains("42"), "{text}");
+
+    app.stop();
+    let n = tokio::time::timeout(T, sub.next()).await.expect("等待 list_changed").expect("listen").expect("通知");
+    assert_eq!(next_method(n), "notifications/tools/list_changed");
+    assert_eq!(hub.status().mcp_sessions, 0, "无会话请求不产生 MCP 会话");
+
+    // 客户端关闭流（HTTP 断开）：Hub 移除订阅方
+    sub.cancel().await.expect("cancel");
+    eventually("listen 流移除", || hub.status().mcp_listen_streams == Some(0)).await;
+    let _ = client.cancel().await;
+    hub.shutdown().await;
+}
+
+/// 第 12 项 S7：直接发一个 2026-07-28 请求（不经 rmcp 客户端）——响应不带 `Mcp-Session-Id`，结果带 `resultType: complete`。
+#[tokio::test(flavor = "multi_thread")]
+async fn raw_modern_request_over_ipc_has_no_session() {
+    let ep = endpoint("raw-modern");
+    let hub = Hub::start(config(&ep)).await.expect("hub");
+    let req = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+        "params": {"_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {"name": "vendor-agent", "version": "1"}
+        }}
+    })
+    .to_string();
+    let (code, headers, body) = send(
+        open_ipc(&ep).await,
+        "POST",
+        "/mcp",
+        &[
+            ("content-type", "application/json"),
+            ("accept", "application/json, text/event-stream"),
+            ("mcp-protocol-version", "2026-07-28"),
+            ("mcp-method", "tools/list"),
+        ],
+        &req,
+    )
+    .await;
+    assert_eq!(code, 200, "{body}");
+    assert!(headers.get("mcp-session-id").is_none(), "{headers:?}");
+    assert!(body.contains(r#""resultType":"complete""#) && body.contains("apps.list"), "{body}");
+    hub.shutdown().await;
+}
+
 /// 命名管道 / Unix 套接字上直接发 MCP `initialize`（不依赖 rmcp 客户端）。
 #[tokio::test(flavor = "multi_thread")]
 async fn raw_initialize_over_ipc() {

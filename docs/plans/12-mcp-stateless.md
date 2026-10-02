@@ -1,6 +1,6 @@
 # 12 MCP 无状态协议：会话状态迁移、`_meta` 键名与错误码分区（方案）
 
-> 状态：方案（2026-10-02）；S1、S3、S4、S5、S6 已实施，S2 部分完成（见第 6 节各记录）。
+> 状态：方案（2026-10-02）；S1–S7 已实施（S2 的空结果问题在 S7 核实为不出现），剩 S8（见第 6 节各记录）。
 > 与 `docs/plans/12-mcp-2026-07-28.md`（下称「12 迁移计划」）的分工：变更全表（M1–M9、m1–m10）、rmcp 能力核查、传输与版本路由
 > 以 12 迁移计划为准，本文件不重复定义；本文件只负责**依赖 MCP 会话的行为如何迁移**、`_meta` 键名、错误码分区三件事。
 > 本文件第 3 节与 12 迁移计划 3.2 表不一致处（见 3.6），以本文件为准，建议主会话在 12 迁移计划 3.2 / m10 加指向本文件的说明。
@@ -138,9 +138,9 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 | 客户端 | 行为 |
 |---|---|
 | legacy（e2e 客户端 `2025-06-18`、旧版本 Claude Code） | 完全不变 |
-| dual-era（Claude Code 2.1.281） | S7 之前：`-32022` → 回退 legacy（12 迁移计划 U1 已实测）；S7 之后：modern 语义 |
+| dual-era（Claude Code 2.1.281） | S7 之前：`-32022` → 回退 legacy（12 迁移计划 U1 已实测）；S7 之后：协商 2026-07-28，modern 语义（**已实测**，S7 记录） |
 | modern-only | S7 之后可用 |
-| 回退开关 | `mcp.max_protocol_version`（12 迁移计划 3.1）设为 `2025-11-25` 即恢复现状 |
+| 回退开关 | `HubConfig.mcp_protocol_mode = LegacyOnly`（S7 实现；取代 12 迁移计划 3.1 的 `mcp.max_protocol_version` 写法）即恢复 S7 之前的行为 |
 
 ### 3.6 与 12 迁移计划 3.2 的差异（以本文件为准）
 
@@ -214,7 +214,7 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 | S4 | `CallerKey` 收敛；`McpSession` 分 legacy / stateless；主体键（HTTP 令牌 / IPC）；stdio modern 同样无状态 | 4e 已完成；与 16 P1 同批设计 | 连续 N 个 modern 请求不新增 / 删除 `SessionState`；legacy 与 modern 并发互不影响；租约在 modern 下按空闲收回。**已完成（2026-10-02，与 16 P1 最小任务对象同批）**，见下方 S4 记录 |
 | S5 | modern 列表规则（3.3）与总览改经 discover / `apps.tools`；`ttlMs` / `cacheScope` | S4；与 4c F 合并 | modern 下两次 `tools/list` 之间夹任意 `apps.tools` / 调用 / `apps.select`，结果逐字节相同；`server/discover.instructions` 含 App 简介。**已完成（2026-10-02）**，见下方 S5 记录 |
 | S6 | `apps.select` 主体级语义与 TTL；审批 `principal` 与 `client_name`；`/status` 新字段 | S4 | modern `apps.select` 后路由命中所选实例、列表不变；TTL 到期后回到默认路由。**已完成（2026-10-02）**，见下方 S6 记录 |
-| S7 | `subscriptions/listen`（12 迁移计划 M4）+ 默认放开 2026-07-28 | S1–S6 | Claude Code 2.1.281 实测：Host 日志无 `Mcp-Session-Id`、调用成功、App 上下线后列表刷新；回退开关恢复 legacy |
+| S7 | `subscriptions/listen`（12 迁移计划 M4）+ 默认放开 2026-07-28 | S1–S6 | Claude Code 2.1.281 实测：Host 日志无 `Mcp-Session-Id`、调用成功、App 上下线后列表刷新；回退开关恢复 legacy。**已完成（2026-10-02）**，见下方 S7 记录 |
 | S8 | P1 任务句柄（3.4）：`taskId` 工具参数 + 可选 `_meta` 通道 | 16 P1、N5 | 两个任务句柄各自的选择 / 租约互不影响；过期句柄返回可恢复错误 |
 
 **S2 记录（2026-10-02，rmcp 锁定版本 3.5.0，源码 `~/.cargo/registry/src/*/rmcp-3.5.0`，未升级）**
@@ -320,6 +320,61 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
   `tests/call_meta.rs` 的未用导入与 `Hub::shared` 的 dead_code）。T-10：分别把无会话列表改回读任务状态、恢复无会话首次附带并取消选择有效期、
   去掉缓存提示 / 改用 legacy instructions / 去掉 `principal`，对应测试分别失败（1 / 2 / 3 个），恢复后全部通过。
 
+**S7 记录（2026-10-02，rmcp 锁定 3.5.0，未升级）**
+
+- 依据（`[R]`）：`ServerHandler::{supported_protocol_versions, accepted_subscription_filter, listen}`（`handler/server.rs:147-182, 380-480`）；
+  `SubscriptionContext::establish` 在调用 `listen` **之前**发确认通知，`SubscriptionSink` 按接受的过滤器校验并加 `subscriptionId`
+  （`service/server.rs:120-400`）；HTTP 无状态路径的 listen 响应为 SSE，客户端断开经 `CancelOnDisconnect` 取消请求
+  （`transport/streamable_http_server/tower.rs:1488-1581`）；被取消请求的响应被丢弃（`service.rs:1503-1506`）；`listen` 返回 `Ok`
+  时 rmcp 发最终 `SubscriptionsListenResult`。`ProtocolVersion::LATEST` 已是 2026-07-28，`LATEST_WITH_INITIALIZE` = 2025-11-25
+  （`model.rs:170-270`）。
+- 协商：`HubConfig.mcp_protocol_mode: McpProtocolMode`（`Auto` 默认 / `LegacyOnly`，`types.rs`）。`Auto` 声明到 2026-07-28（写死常量
+  `MAX_PROTOCOL_VERSION`，rmcp 升级不会自动扩大）；`initialize` 照旧至多 2025-11-25；`LegacyOnly` 只声明到 2025-11-25 且不提供 listen
+  （= S7 之前）。`app-mcp-host` 配置 / 命令行与各绑定**未**暴露（另一会话正在同步绑定，由主会话接线）。
+- 通知：新模块 `crates/hub/src/subscribers.rs`——订阅方表 `SubscriberTable`（订阅方 ID → legacy 会话 peer 或 listen 流），取代
+  `HubShared.sessions`；`resource_subs` 的值改为订阅方 ID（与会话号同一序号空间）。列表变化（`notify_loop`）与资源变化
+  （`resource_updated`）对两种订阅方走同一逻辑；渐进暴露的单会话通知只发 legacy。`HubShared::open_listen` 在一把锁内核对每主体
+  上限并登记，返回守卫 `ListenRegistration`（Drop 移除订阅方与资源订阅，覆盖取消 / 出错 / Hub 停止各路径）；`Hub::shutdown` / Drop
+  先置 `closing`，listen 流据此正常结束。listen 不计入请求流活动（否则长期打开的流会阻止租约空闲收回与任务回收）。
+- 上限（B-07）：`max_listen_streams`（每主体，默认 16，`0` = 不提供 listen）、`max_listen_resources`（每流，默认 256）。因确认先于 Hub
+  处理，超限表现为"确认后以 `RATE_LIMITED` 错误结束"（rmcp 3.5.0 无法在确认前拒绝，除非 `accepted_subscription_filter` 返回 `None`
+  即 method not found——语义不符，未采用）。
+- 错误码（第 5 节 S3 的 modern 部分）：`mcp.rs` `error_for_version`——请求协商 2026-07-28 及以后时，-32000…-32019 改为 `-32602`
+  （`INVALID_INPUT` / `RESOURCE_NOT_FOUND`）或 `-32603`（其余），`data.kind` 保留；用于 `resources/read` 与 listen 错误（工具调用走
+  `isError` 结果，不涉及码值）。legacy 与以旧版本经 discover 到达的请求码值不变。
+- resultType（S2 遗留）：modern 结果由 rmcp 构造器带 `complete`（测试断言 tools/list、tools/call、resources/read、resources/list、
+  server/discover、原始 HTTP 回复）；空结果问题**不出现**——对 modern 请求 rmcp 把 `ping`、`resources/subscribe` / `unsubscribe` 直接
+  返回 method not found（`handler/server.rs:110-116, 184-202`），`logging/setLevel` 本 Hub 不实现，listen 的最终结果带 `resultType`。
+- 测试（`crates/hub/src/mcp.rs` rmcp 客户端 `ClientLifecycleMode::Discover { V_2026_07_28 }`；`crates/hub/tests/mcp_ipc.rs` 经 IPC 上的
+  Streamable HTTP）：`modern_2026_negotiation_results_and_error_codes`、`modern_listen_delivers_list_changes_and_resource_updates`（App
+  上线 / 资源变化 / 下线依次在流上收到通知且带 `subscriptionId`、关闭流后清理、Hub 停止时 `SubscriptionEnd::Graceful`）、
+  `listen_streams_are_bounded_per_principal`（含 legacy 会话 listen → method not found、`max_listen_streams = 0`）、
+  `legacy_only_switch_restores_legacy_negotiation`；`modern_rmcp_client_over_unix_socket_with_listen`、
+  `raw_modern_request_over_ipc_has_no_session`（响应无 `Mcp-Session-Id`、带 `resultType`）。e2e：`e2e/src/mcp-client.ts` 增加 modern 模式
+  （`_meta`、`MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name`、listen 流），`m1.test.ts` 关键用例另由 modern 客户端并行验证
+  （discover instructions、无总览附带、listen 上的 `list_changed` 带 `subscriptionId`、列表 / 调用 / 资源读取与 legacy 一致、无会话 ID）。
+  T-10：分别把 `Auto` 改为只声明 2025-11-25、listen 通知改为不发送、去掉错误码映射、去掉上限、守卫 Drop 不移除、`LegacyOnly` 仍提供
+  listen、停止时不置 `closing`，对应测试分别失败（3 / 1 / 2 / 1 / 2 / 1 / 1 个），恢复后全部通过。
+- **Claude Code 2.1.281 实测**（临时 Host：`serve --home <临时> --listen 127.0.0.1:0 --ipc-endpoint none --waker none`、
+  `RUST_LOG=info,rmcp=debug`；最小假 App 经 `/app` 注册 `calc.add` / `calc.secret`；`claude -p --mcp-config <临时> --strict-mcp-config
+  --model haiku`，共 3 次短提示）。事实：
+  - 协商：Claude Code 先发 `server/discover`（id `server-discover-probe-1`，`clientInfo claude-code 2.1.281`，版本 2026-07-28）成功，其 debug
+    日志 `protocolEra: modern, negotiatedProtocolVersion: 2026-07-28`、`mcp runtime arm: v2 (source: growthbook)`；随后 `subscriptions/listen`
+    （id `listen:0`，请求 `toolsListChanged` + `resourcesListChanged`）、`tools/list`、`resources/list`、`tools/call` 全部走无状态路径；
+    Host 日志无 `create new session`、无 `initialize`（即无 `Mcp-Session-Id`）。`calc.add(2,3)` 返回 5。
+  - 列表刷新：App 连接后 58 ms、断开后 57 ms Claude Code 重新 `tools/list`（其 debug 日志："Received tools/list_changed notification,
+    refreshing tools"），同一 `-p` 轮次内模型随即调用了新出现的工具；两次通知之间没有按 `ttlMs`（5 秒）的周期重取（U9）。
+  - U3：`--stateless-tool-exposure progressive` 下模型调用 `apps.tools` 看到 `calc.secret` 的定义后无法调用它（Host 只收到 `apps.tools`，
+    模型答复"不是可加载的工具"）——**通用客户端只能调用 `tools/list` 中的工具**，默认 `All` 保持。
+  - 回退：同一会话中曾误用一个只声明到 2025-11-25 的旧构建（与 `LegacyOnly` 同样的应答），Claude Code 得 `-32022` 后以 2025-11-25
+    `initialize` 成功并完成调用（与 12 迁移计划 U1 一致）；`LegacyOnly` 开关本身由 `legacy_only_switch_restores_legacy_negotiation` 覆盖，
+    未经 Host 命令行实测（开关未接入 Host）。
+  - **推断**：Claude Code 在 2026-07-28 连接上依赖 listen 通知而非 TTL 刷新列表，因此 `stateless_list_ttl` 5 秒对它无害，可按需调长；
+    依据是上述日志中两次刷新都紧跟 App 上下线、其间没有重取。
+- 未做 / 未知：Host 配置与绑定接入 `mcp_protocol_mode` / `max_listen_*`（主会话）；`notifications/resources/updated` 未经 Claude Code 实测
+  （Claude Code 本次未在 listen 中订阅资源 URI）；`/status` 一行摘要与 doctor 未显示 listen 流数（`crates/host` 不在本次范围）；
+  调用中断开流 → App 收到 `call/cancel`（12 迁移计划 m-cancel）仍未专门验证；U2（客户端是否透传厂商 `_meta` 键）未验证。
+
 顺序：S3（独立缺陷修复，可立即做）→ S1 → S2 → S4 → S5、S6（可并行）→ S7 → S8（随第 16 项 P1）。
 总验收：`cargo test -p app-mcp-hub -p app-mcp-host`、`cargo clippy --workspace --all-targets` 0 警告；默认配置（S7 前）e2e 不变；
 S7 后 `e2e/src/mcp-client.ts` 增加 modern 模式，关键用例两代各跑一遍。
@@ -352,12 +407,12 @@ S7 后 `e2e/src/mcp-client.ts` 增加 modern 模式，关键用例两代各跑�
 |---|---|---|
 | U1 | 项目是否拥有 `appmcp.dev`（或 `appwire.dev`）域名；机主倾向工作名还是品牌名前缀 | **已定**（机主 2026-10-02）：品牌名前缀 `dev.appwire/`；S1 已实施 |
 | U2 | 通用客户端（Claude Code 等）是否透传 / 允许设置厂商 `_meta` 键；工具结果 `_meta` 是否对模型可见 | **验证**：临时 Host（`--home` 临时目录）+ Claude Code 实测，记录请求 `_meta` 全部键；结论只影响“可选通道”是否有用，不影响正确性 |
-| U3 | modern 客户端是否允许调用 `tools/list` 中未列出的工具（决定渐进暴露在 modern 下能否保留“按全名调用”） | **待验证**（S5 时无法实测：Hub 在 S7 前只协商到 2025-11-25，Claude Code 回退 legacy）。已按保守方案实施：`HubConfig.stateless_tool_exposure` 默认 `All`，渐进暴露默认只在 legacy 生效；S7 放开 2026-07-28 后用 Claude Code 实测，允许时再考虑改默认 |
+| U3 | modern 客户端是否允许调用 `tools/list` 中未列出的工具（决定渐进暴露在 modern 下能否保留“按全名调用”） | **已验证（2026-10-02，S7 记录）**：Claude Code 2.1.281 以 2026-07-28 连接时只能调用列出的工具；`stateless_tool_exposure` 默认 `All` 不变，modern 渐进暴露只适合能按名调用的自研 Agent |
 | U4 | rmcp 自定义 `_meta` 键在 modern 路径是否原样到达 handler | **推断**可以（S-F10 透明 map）；S1 用 `ClientLifecycleMode::Discover` 的集成测试断言。S4 已验证无会话请求经 Discover 生命周期到达 handler（`mcp.rs` 测试），自定义键尚未单独断言 |
 | U5 | -32001…-32015 是否早于 2026-07-28 分配（git 历史从 2026-10-01 起，无法判定） | 不影响结论：modern 出口不再发这些码（第 5 节） |
 | U6 | 主体级 `apps.select` 的空闲 TTL 默认值 | **保守，已实施**：`principal_select_ttl` 默认 60 秒（与 `idle_revoke` 30 秒、租约上限 60 秒同量级）、可配置、取用即续期；S7 后按真实使用观察再定 |
 | U8 | 多实例都未聚焦时，`view` 工具按首选实例列出，首选实例的"最近活跃"含最近完成的调用（H20），调用可能改变无会话列表 | **保持现状、已写入 spec 3.7 例外**；S7 前与 4c 页面目录一起评估无会话列表改按"聚焦 → 连接顺序"取首选实例 |
-| U9 | `stateless_list_ttl` 默认 5 秒是否合适（12 迁移计划 U5） | S7 实现 `subscriptions/listen` 后用 Claude Code 观察是否按 TTL 重拉，再调 |
+| U9 | `stateless_list_ttl` 默认 5 秒是否合适（12 迁移计划 U5） | **部分回答（S7）**：Claude Code 2.1.281 开 listen 流，列表刷新由 `list_changed` 触发，未见按 TTL 重取；默认值暂不改（不开 listen 的客户端仍靠 TTL），待更多客户端数据 |
 | U7 | 规范本身后续是否给“本地错误”“需用户操作”分配标准码 | 跟踪 changelog；有标准码时在 MCP 出口映射，AppWire 协议不变 |
 
 ### 8.3 风险（涉及兼容性、并发、权限）

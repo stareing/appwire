@@ -1,11 +1,12 @@
 /**
- * 最小 MCP 客户端（Streamable HTTP，协议 2025-06-18）：连接常驻的 `app-mcp-host serve`。
+ * 最小 MCP 客户端（Streamable HTTP）：连接常驻的 `app-mcp-host serve`。两代协议：
  *
- * - 请求：POST /mcp，响应为 JSON 或 SSE（从中取出对应 id 的响应，顺带收集通知）；
- * - 服务器主动消息（`notifications/tools/list_changed` 等）：initialize 后打开 GET /mcp 的 SSE 流接收；
- * - 服务器发起的请求（ping / roots/list）：以 POST 回复最小应答。
+ * - legacy（默认，协议 2025-06-18）：`initialize` 建会话（`Mcp-Session-Id`），服务器主动消息经 GET /mcp 的 SSE 流接收；
+ * - modern（协议 2026-07-28，docs/plans/12-mcp-stateless.md S7）：不握手，`server/discover` 后每个请求在 `_meta` 自带协议版本 /
+ *   客户端能力 / 客户端信息，并带 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 头；通知经 `subscriptions/listen` 的长响应流接收。
  *
- * 只实现 e2e 需要的部分：initialize、tools/list、tools/call、resources/list、resources/read 与通知。
+ * 请求：POST /mcp，响应为 JSON 或 SSE（从中取出对应 id 的响应，顺带收集通知）；服务器发起的请求（ping / roots/list）以 POST 回复最小应答。
+ * 只实现 e2e 需要的部分：initialize / server/discover、tools/list、tools/call、resources/list、resources/read 与通知。
  */
 
 export interface Tool {
@@ -29,6 +30,18 @@ export interface InitializeResult {
   instructions?: string
 }
 
+export interface DiscoverResult {
+  supportedVersions: string[]
+  capabilities: Record<string, unknown>
+  instructions?: string
+}
+
+/** 协议代际：`legacy` = initialize + 会话；`modern` = 2026-07-28 无会话。 */
+export type McpEra = 'legacy' | 'modern'
+
+/** modern 模式协商的协议版本。 */
+export const MODERN_PROTOCOL_VERSION = '2026-07-28'
+
 export interface Notification {
   method: string
   params?: any
@@ -41,6 +54,8 @@ export interface McpClientOptions {
   headers?: Record<string, string>
   /** 失败时附带的诊断信息（如 Host 最近的日志）。 */
   diagnostics?: () => string
+  /** 协议代际，默认 `legacy`。 */
+  era?: McpEra
 }
 
 /** 逐个产出 SSE 事件的 data（多行 data 以换行拼接；空 data 跳过）。 */
@@ -79,13 +94,20 @@ export class McpClient {
   private protocolVersion: string | undefined
   private readonly streamAbort = new AbortController()
   private closed = false
+  readonly era: McpEra
   readonly notifications: Notification[] = []
   initializeResult: InitializeResult | undefined
+  discoverResult: DiscoverResult | undefined
+  /** 收到过的 `Mcp-Session-Id`（modern 模式下应始终为空）。 */
+  readonly sessionIdsSeen: string[] = []
+  /** modern：`subscriptions/listen` 的订阅 ID（listen 请求的 JSON-RPC id）。 */
+  subscriptionId: number | undefined
 
   constructor(options: McpClientOptions) {
     this.url = options.url
     this.extraHeaders = options.headers ?? {}
     this.diagnostics = options.diagnostics ?? (() => '')
+    this.era = options.era ?? 'legacy'
   }
 
   private headers(extra: Record<string, string> = {}): Record<string, string> {
@@ -94,6 +116,30 @@ export class McpClient {
       ...(this.sessionId && { 'mcp-session-id': this.sessionId }),
       ...(this.protocolVersion && { 'mcp-protocol-version': this.protocolVersion }),
       ...extra,
+    }
+  }
+
+  /** modern：每个请求自带的协议 `_meta`（SEP-2575）。 */
+  private requestMeta(): Record<string, unknown> {
+    return {
+      'io.modelcontextprotocol/protocolVersion': MODERN_PROTOCOL_VERSION,
+      'io.modelcontextprotocol/clientCapabilities': {},
+      'io.modelcontextprotocol/clientInfo': { name: 'app-mcp-e2e', version: '0.1.0' },
+    }
+  }
+
+  /** modern：请求体加 `_meta`，请求头加 `Mcp-Method` / `Mcp-Name`（SEP-2243）。 */
+  private modernize(method: string, params: any): { params: any; headers: Record<string, string> } {
+    if (this.era !== 'modern') return { params, headers: {} }
+    const p = { ...(params ?? {}), _meta: { ...(params?._meta ?? {}), ...this.requestMeta() } }
+    const name = method === 'tools/call' || method === 'prompts/get' ? p.name : method === 'resources/read' ? p.uri : undefined
+    return {
+      params: p,
+      headers: {
+        'mcp-protocol-version': MODERN_PROTOCOL_VERSION,
+        'mcp-method': method,
+        ...(name !== undefined && { 'mcp-name': String(name) }),
+      },
     }
   }
 
@@ -117,10 +163,10 @@ export class McpClient {
     return undefined
   }
 
-  private post(body: unknown, signal?: AbortSignal): Promise<Response> {
+  private post(body: unknown, signal?: AbortSignal, extra: Record<string, string> = {}): Promise<Response> {
     return fetch(this.url, {
       method: 'POST',
-      headers: this.headers({ 'content-type': 'application/json', accept: 'application/json, text/event-stream' }),
+      headers: this.headers({ 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...extra }),
       body: JSON.stringify(body),
       signal,
     })
@@ -131,11 +177,16 @@ export class McpClient {
     const id = this.nextId++
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), timeoutMs)
+    const modern = this.modernize(method, params)
+    params = modern.params
     try {
-      const res = await this.post({ jsonrpc: '2.0', id, method, ...(params !== undefined && { params }) }, abort.signal)
+      const res = await this.post({ jsonrpc: '2.0', id, method, ...(params !== undefined && { params }) }, abort.signal, modern.headers)
       if (!res.ok) throw this.fail(`MCP 请求 ${method} 失败：HTTP ${res.status} ${await res.text()}`)
       const sid = res.headers.get('mcp-session-id')
-      if (sid) this.sessionId = sid
+      if (sid) {
+        this.sessionIdsSeen.push(sid)
+        this.sessionId = sid
+      }
       let response: any
       const type = res.headers.get('content-type') ?? ''
       if (type.includes('text/event-stream') && res.body) {
@@ -199,6 +250,48 @@ export class McpClient {
     await new Promise<void>((ready) => void this.listen(ready))
     this.initializeResult = result
     return result
+  }
+
+  /** modern：`server/discover`，再打开 `subscriptions/listen`（工具 / 资源列表变化）并等到确认。 */
+  async discover(): Promise<DiscoverResult> {
+    const result = await this.request<DiscoverResult>('server/discover', {})
+    this.discoverResult = result
+    await this.openListen()
+    return result
+  }
+
+  /** legacy：`initialize`；modern：`server/discover`。 */
+  connect(): Promise<unknown> {
+    return this.era === 'modern' ? this.discover() : this.initialize()
+  }
+
+  /** modern：`subscriptions/listen` 长响应流，确认（`notifications/subscriptions/acknowledged`）到达后返回；之后的通知收集到 `notifications`。 */
+  private async openListen(): Promise<void> {
+    const id = this.nextId++
+    this.subscriptionId = id
+    const filter = { toolsListChanged: true, resourcesListChanged: true }
+    const modern = this.modernize('subscriptions/listen', { notifications: filter })
+    const res = await this.post(
+      { jsonrpc: '2.0', id, method: 'subscriptions/listen', params: modern.params },
+      this.streamAbort.signal,
+      modern.headers,
+    )
+    if (!res.ok || !res.body) throw this.fail(`subscriptions/listen 失败：HTTP ${res.status} ${await res.text()}`)
+    const sid = res.headers.get('mcp-session-id')
+    if (sid) this.sessionIdsSeen.push(sid)
+    const stream = sseData(res.body)
+    const first = await stream.next()
+    const ack = first.done ? undefined : JSON.parse(first.value)
+    if (ack?.method !== 'notifications/subscriptions/acknowledged') {
+      throw this.fail(`subscriptions/listen 没有确认：${first.done ? '流已结束' : first.value}`)
+    }
+    void (async () => {
+      try {
+        for await (const data of stream) this.handle(JSON.parse(data))
+      } catch {
+        // 关闭时中止
+      }
+    })()
   }
 
   async listTools(): Promise<Tool[]> {

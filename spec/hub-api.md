@@ -297,7 +297,33 @@ pub struct Health {                          // serde camelCase
   如 `app-mcp-host` 兼容期内显式配置的旧 MCP 端口 7718。可多次调用。
 - **多会话**：每个 `Mcp-Session-Id` 对应一个独立的 `McpSession`（会话键 `mcp:<n>`）：`apps.select` 选择、
   “已附带总览版本”、资源订阅按会话保存；App 连接、注册表、上游在所有会话间共享。会话结束（DELETE 或断开）时清理其状态。
-  服务器主动通知（`tools/list_changed` 等）经各会话的 GET SSE 流发送。
+  服务器主动通知（`tools/list_changed` 等）经各会话的 GET SSE 流发送（legacy；无会话请求见下方「通知」）。
+- **协议版本**（第 12 项 S7）：`HubConfig.mcp_protocol_mode: McpProtocolMode`（serde `"auto"` / `"legacyOnly"`），默认 `Auto`。
+
+  | 模式 | 声明的版本（`server/discover` 的 `supportedVersions`、每请求版本校验） | `initialize` | `subscriptions/listen` |
+  |---|---|---|---|
+  | `Auto`（默认） | 2024-11-05 … **2026-07-28**（上限写死为 2026-07-28，rmcp 升级不会自动扩大） | 至多 2025-11-25（rmcp `LATEST_WITH_INITIALIZE`），行为不变 | 提供 |
+  | `LegacyOnly`（回退开关） | 2024-11-05 … 2025-11-25：声明 2026-07-28 的请求得 `-32022 UnsupportedProtocolVersion`（`data.supported` 不含 2026-07-28），能回退的客户端改用 `initialize`（S7 之前的行为） | 同上 | 不提供（method not found） |
+
+  同一端点同时服务两代（dual-era）：`initialize` 客户端走 legacy 会话；以 2026-07-28 经 `server/discover` / 每请求 `_meta` 到达的请求
+  走无会话路径（rmcp 不签发 `Mcp-Session-Id`）。modern 结果带 `resultType: "complete"`（rmcp 构造器填写，回复旧版本时去掉）；
+  modern 下不存在空结果——`ping`、`resources/subscribe` / `unsubscribe` 对 modern 请求由 rmcp 返回 method not found，
+  `logging/setLevel` 本 Hub 不实现。modern 请求的 JSON-RPC 错误不使用 AppWire 的 -32000…-32019 码：输入 / 资源不存在类
+  （`data.kind` 为 `INVALID_INPUT` / `RESOURCE_NOT_FOUND`）→ `-32602`，其余 → `-32603`，类别仍在 `data.kind`；legacy 码值不变
+  （docs/plans/12-mcp-stateless.md 第 5 节）。`app-mcp-host` 配置与各语言绑定暂未暴露此开关（默认值即 `Auto`）。
+- **通知**（第 12 项 S7，`crates/hub/src/subscribers.rs`）：通知订阅方按 Hub 内部的订阅方 ID 寻址，两种——
+  legacy 会话的 peer（`notifications/initialized` 时登记，会话结束移除；`resources/subscribe` 订阅按会话），与无会话请求的
+  **`subscriptions/listen` 流**：订阅寿命即该请求的寿命，客户端关闭流（HTTP 断开 / `notifications/cancelled`）即结束并移除其资源订阅；
+  Hub 停止（`shutdown` / Drop）时流以最终结果（`SubscriptionsListenResult`）正常结束。接受的类别：`toolsListChanged`、
+  `resourcesListChanged`，以及 `resourceSubscriptions` 中可订阅的 URI（本 Hub 的 `app-mcp://` 资源、App 未被 `hide`、不是上游资源；
+  去重后至多 `HubConfig.max_listen_resources`，默认 `DEFAULT_MAX_LISTEN_RESOURCES` = 256），确认通知只列出接受的部分；
+  每条通知带 `subscriptionId`（rmcp 填写）。`tools/list_changed` / `resources/list_changed` 只在服务器状态变化（App 连接 / 断开 / 注册、
+  全局选择、策略）时、经同一合并窗口（`list_changed_debounce`）发给所有订阅方；渐进暴露"本会话展开"的单会话通知只发 legacy 会话。
+  上限（B-07）：每个主体同时打开的 listen 流至多 `HubConfig.max_listen_streams`（默认 `DEFAULT_MAX_LISTEN_STREAMS` = 16，`0` = 不提供
+  listen）；确认由 rmcp 在 Hub 处理之前发出，因此超限表现为确认之后该 listen 请求以 `RATE_LIMITED` 错误（modern `-32603`）结束。
+  listen 流不计入请求流活动（不阻止 3.5 的租约空闲收回与任务回收）；它占着一条 HTTP 连接，按需启动的 Host（spec/protocol.md 1.9）
+  在流打开期间不会空闲退出（与 legacy 会话的 GET 流相同）。不轮询、不加定时器（rmcp 的 SSE 保活 15 秒与 legacy GET 流相同）。
+  `HubStatus.mcp_listen_streams: Option<usize>`（只增字段）为当前 listen 流数，`mcp_sessions` 只计 legacy 会话。
 - **调用方与 Agent 任务**（第 12 项 S4、第 16 项 P1；`crates/hub/src/task.rs`）：调用方的跨请求状态（`apps.select` 选择、已附带总览、
   租约、渐进暴露已列出的 App）记在该调用方的 **Agent 任务**上，任务按**调用方键**寻址，不挂在传输会话上。每个调用方键至多一个任务，
   任务 ID 为 Hub 签发的 `task-<128 位随机数十六进制>`（当前只在内部与 debug 日志中使用；第 12 项 S8 作为显式句柄对外）。
@@ -310,9 +336,9 @@ pub struct Health {                          // serde camelCase
 
   主体只取自传输层凭据，不取自 `clientInfo`：TCP 上的本机令牌（及允许不带令牌的回环请求）、IPC 的同一用户、stdio 的父进程现在都是
   `principal:local`（第 16 项 N5 按 Agent 发令牌后细分）。因此**所有无会话请求共用一个任务**（一个 Agent 的 `apps.select` /
-  `apps.release` 影响另一个，docs/plans/12-mcp-stateless.md R1）。无会话请求不登记 peer、不发 `list_changed`、处理器析构无副作用
-  （rmcp 无状态 HTTP 路径每请求构造一次处理器）。Hub 现在只协商到 2025-11-25，无会话请求只能以该版本及以前的版本经
-  `server/discover` 到达；其列表与总览按 3.7「无会话请求的列表与总览」（第 12 项 S5），订阅仍同 legacy（S7 改写）。
+  `apps.release` 影响另一个，docs/plans/12-mcp-stateless.md R1）。无会话请求不登记 peer、处理器析构无副作用（rmcp 无状态 HTTP 路径
+  每请求构造一次处理器），通知经 `subscriptions/listen`（上方「通知」）。无会话请求可协商 2026-07-28（上方「协议版本」），也可以
+  2025-11-25 及以前的版本经 `server/discover` 到达；其列表与总览按 3.7「无会话请求的列表与总览」（第 12 项 S5）。
   **主体级 `apps.select`**（第 12 项 S6）：无会话请求的选择记在主体任务上，对该主体的所有无会话客户端生效，**不改变工具列表**；
   另有空闲有效期 `HubConfig.principal_select_ttl: Duration`（默认 `DEFAULT_PRINCIPAL_SELECT_TTL` = 60 秒，`0` = 不单独过期）：
   选定或最近一次用于路由（工具调用、资源读取、`apps.navigate` / `apps.activate`）后这么久未再使用即失效，之后按默认规则路由，
@@ -541,8 +567,9 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
 - **暴露方式**：`HubConfig.stateless_tool_exposure: ToolExposure`，**默认 `All`**（全部列出，不含 `apps.tools`）。设为
   `Progressive` / `Auto`（阈值同 `tool_exposure_threshold`）且生效时列表 = 内置工具（含 `apps.tools`）+ 全局选定实例的 App 的工具；
   `apps.tools` 只返回定义、不改变列表，模型须按全名调用未列出的工具。
-  @why 默认 `All`：modern 客户端是否允许调用 `tools/list` 中未列出的工具尚未实测（docs/plans/12-mcp-stateless.md U3）；
-  不允许时渐进暴露在 modern 下不可用，保守地全部列出，U3 实测后再定默认值。
+  @why 默认 `All`：实测（2026-10-02，Claude Code 2.1.281 以 2026-07-28 连接，docs/plans/12-mcp-stateless.md U3）客户端只能调用
+  `tools/list` 中列出的工具——`Progressive` 下模型经 `apps.tools` 看到定义后仍无法调用未列出的工具（Host 未收到该调用）。
+  因此 modern 下渐进暴露只适合自己实现客户端、能按名调用的 Agent；通用客户端保持 `All`。
 - **缓存提示**（SEP-2549）：无会话请求的 `tools/list`、`resources/list`、`resources/templates/list`、`server/discover` 结果带
   `ttlMs` = `HubConfig.stateless_list_ttl`（默认 `DEFAULT_STATELESS_LIST_TTL` = 5 秒）与 `cacheScope: "private"`；`resources/read`
   带 `ttlMs: 0`、`cacheScope: "private"`。legacy 会话的结果不带这两个字段（线上格式不变）。
@@ -550,8 +577,17 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
   "调用 `apps.overview` 查看完整总览（`apps.tools` 的结果也附带）"，渐进暴露生效时另说明列表不随调用变化；`apps.tools`：每次在内容
   最前附带该 App 的总览文本（格式同 spec/protocol.md 7.3，说明句为"可用 apps.overview 重新查看"），`structuredContent` 另有
   `overview` 字段（`apps.overview` 的结构）；`apps.overview` 不变。无会话调用方的任务不记"已附带"。
-- **通知**：无会话请求不登记 peer，收不到 `list_changed`（S7 经 `subscriptions/listen` 提供）；`Hub::select_instance` 在 legacy 或
+- **通知**：无会话请求不登记 peer，经 `subscriptions/listen` 流收 `list_changed`（3.6「通知」，S7）；`Hub::select_instance` 在 legacy 或
   无会话渐进暴露生效时按普通列表变化处理。
+- **配置入口**（3.6 `task_idle_ttl` / `principal_select_ttl` 与本节 `stateless_tool_exposure` / `stateless_list_ttl`，缺省均取 Hub 默认值）：
+
+  | 绑定 | `task_idle_ttl` | `stateless_tool_exposure` | `principal_select_ttl` | `stateless_list_ttl` |
+  |---|---|---|---|---|
+  | `app-mcp-host` 配置文件 | `lifecycle.taskIdleTtlMs` | `tools.statelessExposure` | `lifecycle.principalSelectTtlMs` | `tools.statelessListTtlMs` |
+  | `app-mcp-host` 命令行 | `--task-idle-ttl-ms` | `--stateless-tool-exposure` | `--principal-select-ttl-ms` | （仅配置文件） |
+  | hub-c（头文件 v15）/ hub-node / `@app-mcp/hub` JSON | `taskIdleTtlMs` | `statelessToolExposure` | `principalSelectTtlMs` | `statelessListTtlMs` |
+  | hub-uniffi `HubConfig` | `task_idle_ttl_ms: u64?` | `stateless_tool_exposure: ToolExposure?` | `principal_select_ttl_ms: u64?` | `stateless_list_ttl_ms: u64?` |
+  | C# `HubOptions` | `TaskIdleTtl` | `StatelessToolExposure` | `PrincipalSelectTtl` | `StatelessListTtl` |
 
 配置入口：`app-mcp-host` 配置文件 `tools: {exposure, threshold}`、命令行 `--tool-exposure auto|progressive|all`、
 `--tool-exposure-threshold <N>`；C / Node 配置 JSON `toolExposure`、`toolExposureThreshold`（同时新增 `waker`：`"system"` /
@@ -594,7 +630,8 @@ pub struct HubStatus {
     #[serde(flatten)] identity: HostIdentity,          // service / version / user / pid
     listen: Option<String>, ipc_endpoint: Option<String>, started_at_ms: u64,
     mcp_http: bool, auth: AuthStatus,                  // { token_configured, token_required_without_origin }
-    mcp_sessions: usize,
+    mcp_sessions: usize,                               // legacy MCP 会话数
+    mcp_listen_streams: Option<usize>,                 // 第 12 项 S7：subscriptions/listen 流数（3.6「通知」；旧 Host → None）
     apps: Vec<AppStatus>,                              // 按 appId 排序，含上游
     reports: Vec<DiagnosticReport>,                    // 最近 32 条 SDK 上报（MAX_REPORTS），旧的在前
     lease: Option<LeaseStatus>,                        // 4e B2：租约策略与统计（旧 Host 无此字段 → None）
@@ -664,6 +701,13 @@ pub struct DiagnosticReport { app_id, instance_id, connection_id, code, message,
 
 uniffi 的 `HubStatus` 把 `identity` 展开为 `service` / `version` / `user` / `pid` 四个字段，`InstanceStatus` 为 `{ info: InstanceInfo, state }`
 （JSON 中 `info` 为 flatten），`mcp_sessions` 为 `u64`；其余字段与 JSON 一一对应。
+
+Agent 任务（`HubStatus.tasks`，第 12 项 S6）与审批的 `principal` / `client_name`（3.3）：hub-c 为 JSON 原样（头文件 v15）；
+`@app-mcp/hub` `HubStatus.tasks?: AgentTaskStatus[]`（`CallerKind`、`TaskSelectionStatus`、`TaskLeaseStatus`）、`ApprovalRequest.principal?` /
+`clientName?`；hub-uniffi `HubStatus.tasks: [AgentTaskStatus]?`（`kind: CallerKind` 枚举 `McpSession` / `Principal` / `Api`）、
+`ApprovalRequest.principal` / `client_name: String?`（Kotlin / Swift / Python 封装层以同名类型别名导出）；C# `HubStatusInfo.Tasks`
+（`AgentTaskStatusInfo`，`Kind` 为字符串）、`ApprovalRequest.Principal` / `ClientName`。`app-mcp-host status` 的一行摘要与 doctor
+「App 实例」检查显示 Agent 任务数（旧 Host 不报告时省略）。
 
 ### 3.10 cargo features（能力裁剪）
 

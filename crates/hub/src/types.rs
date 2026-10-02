@@ -173,6 +173,19 @@ pub enum ToolExposure {
     Auto,
 }
 
+/// MCP 出口协商的协议版本范围（spec/hub-api.md 3.6「协议版本」，docs/plans/12-mcp-stateless.md S7）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum McpProtocolMode {
+    /// 默认：双版本——`initialize` 客户端走 legacy 会话（至多 2025-11-25），每请求自带 `_meta` 的客户端可协商 2026-07-28
+    /// （无会话语义、`subscriptions/listen`）。
+    #[default]
+    Auto,
+    /// 回退开关：只声明到 2025-11-25（S7 之前的行为）。声明 2026-07-28 的请求得 `-32022 UnsupportedProtocolVersion`，
+    /// 能回退的客户端改用 `initialize`；`subscriptions/listen` 不可用。
+    LegacyOnly,
+}
+
 /// 风险等级的顺序：read < write < destructive < payment < os-sensitive（与协议中的列举顺序一致）。
 pub fn risk_rank(r: Risk) -> u8 {
     match r {
@@ -412,6 +425,9 @@ pub struct HubStatus {
     pub auth: AuthStatus,
     /// 已初始化的 MCP 会话数。
     pub mcp_sessions: usize,
+    /// 进行中的 `subscriptions/listen` 流数（无会话请求的通知订阅，spec/hub-api.md 3.6「通知」）；旧 Host 没有时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_listen_streams: Option<usize>,
     /// App（含上游），按 appId 排序。
     pub apps: Vec<AppStatus>,
     /// 最近的 SDK 诊断上报（`app/diagnostic`），旧的在前，最多 [`crate::hub::MAX_REPORTS`] 条。
@@ -825,6 +841,9 @@ mod tests {
         let f: ToolFilter = serde_json::from_value(json!({"session": "s"})).unwrap();
         assert_eq!(f.session.as_deref(), Some("s"));
         assert_eq!(serde_json::to_value(ToolExposure::Progressive).unwrap(), json!("progressive"));
+        assert_eq!(serde_json::to_value(McpProtocolMode::LegacyOnly).unwrap(), json!("legacyOnly"));
+        assert_eq!(serde_json::from_value::<McpProtocolMode>(json!("auto")).unwrap(), McpProtocolMode::Auto);
+        assert_eq!(McpProtocolMode::default(), McpProtocolMode::Auto);
         assert_eq!(serde_json::from_value::<ToolExposure>(json!("all")).unwrap(), ToolExposure::All);
         assert_eq!(ToolExposure::default(), ToolExposure::Auto);
         let o = CallOutcome {

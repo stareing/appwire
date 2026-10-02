@@ -19,8 +19,10 @@ use app_mcp_protocol::{
 };
 #[cfg(any(feature = "mcp-server", feature = "upstream"))]
 use rmcp::model::Resource;
-use rmcp::model::{ResourceUpdatedNotificationParam, Tool};
-use rmcp::{Peer, RoleClient, RoleServer};
+use rmcp::model::Tool;
+use rmcp::{Peer, RoleClient};
+#[cfg(feature = "mcp-server")]
+use rmcp::RoleServer;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, broadcast, oneshot};
@@ -41,12 +43,15 @@ use crate::overview::AppSummary;
 use crate::overview::{Overview, OverviewSource};
 use crate::tool_def::StaticManifest;
 use crate::registry::Registry;
+use crate::subscribers::SubscriberTable;
+#[cfg(feature = "mcp-server")]
+use crate::task::Principal;
 use crate::task::{CallerKey, TaskTable};
 use crate::types::{
     AgentTaskStatus, AppInfo, AppKind, AppOverviewInfo, AppState, AppStatus, ApprovalHandler, ApprovalPolicy, AuthStatus,
     CallOutcome, CallRequest, DiagnosticReport, HubError, HubEvent, HubResource, HubStatus, HubTool,
     InstanceState, InstanceStatus, LastError, PairingHandler, ResourceContent, TaskLeaseStatus, TaskSelectionStatus,
-    ToolExposure, ToolFilter,
+    McpProtocolMode, ToolExposure, ToolFilter,
 };
 use crate::upstream::{UpstreamConfig, UpstreamState, encode_uri_component};
 use crate::connector::Connector;
@@ -196,7 +201,8 @@ pub struct HubConfig {
     pub task_idle_ttl: Duration,
     /// 无会话（modern）MCP 请求的工具暴露方式（spec/hub-api.md 3.7「无会话请求的列表」）。默认 [`ToolExposure::All`]：
     /// 无会话请求的 `tools/list` 不能随调用 / `apps.tools` / `apps.select` 变化（MCP 2026-07-28，SEP-2567），渐进暴露只剩
-    /// "内置工具 + 全局选定的 App"；客户端是否允许调用未列出的工具尚未验证（docs/plans/12-mcp-stateless.md U3），因此保守地全部列出。
+    /// "内置工具 + 全局选定的 App"；通用客户端只能调用列出的工具（Claude Code 2.1.281 实测，docs/plans/12-mcp-stateless.md U3），
+    /// 因此默认全部列出。
     /// legacy 会话与 Hub API 仍按 [`HubConfig::tool_exposure`]。
     pub stateless_tool_exposure: ToolExposure,
     /// 无会话请求的主体级 `apps.select` 选择的空闲有效期：选定或最近一次用于路由后这么久未再使用即失效，回到默认路由
@@ -206,7 +212,26 @@ pub struct HubConfig {
     /// 无会话请求的列表结果（`tools/list`、`resources/list`、`resources/templates/list`、`server/discover`）的 `ttlMs`
     /// （SEP-2549；`cacheScope` 恒为 `private`）。默认 [`DEFAULT_STATELESS_LIST_TTL`]。legacy 会话的结果不带这两个字段。
     pub stateless_list_ttl: Duration,
+    /// MCP 出口协商的协议版本范围（spec/hub-api.md 3.6「协议版本」）。默认 [`McpProtocolMode::Auto`]：双版本，可协商 2026-07-28；
+    /// [`McpProtocolMode::LegacyOnly`] 为回退开关，只声明到 2025-11-25（第 12 项 S7 之前的行为）。
+    pub mcp_protocol_mode: McpProtocolMode,
+    /// 每个主体同时打开的 `subscriptions/listen` 流数上限（B-07）；超出时该 listen 请求以 `RATE_LIMITED` 错误结束。
+    /// `0` = 不提供 `subscriptions/listen`。默认 [`DEFAULT_MAX_LISTEN_STREAMS`]。
+    pub max_listen_streams: usize,
+    /// 一个 listen 流接受的资源 URI 数上限（超出的不接受，确认通知中只列出接受的部分）。默认 [`DEFAULT_MAX_LISTEN_RESOURCES`]。
+    pub max_listen_resources: usize,
 }
+
+/// [`HubConfig::max_listen_streams`] 的默认值。
+///
+/// @why 16：一个 MCP 客户端通常每个服务器只开一个 listen 流（重连时旧流先断开）；N5 之前本机所有无会话客户端共用一个主体，
+/// 16 足够多个客户端并存，又限制了异常客户端反复打开流占用的连接与内存。
+pub const DEFAULT_MAX_LISTEN_STREAMS: usize = 16;
+
+/// [`HubConfig::max_listen_resources`] 的默认值。
+///
+/// @why 256：远多于单个 Agent 实际关心的资源数；限制一个流在 Hub 的订阅表与 App 侧 `resources/subscribe` 上造成的负担。
+pub const DEFAULT_MAX_LISTEN_RESOURCES: usize = 256;
 
 /// [`HubConfig::principal_select_ttl`] 的默认值。
 ///
@@ -217,8 +242,8 @@ pub const DEFAULT_PRINCIPAL_SELECT_TTL: Duration = Duration::from_secs(60);
 
 /// [`HubConfig::stateless_list_ttl`] 的默认值。
 ///
-/// @why 5 秒：列表随 App 连接 / 断开变化，第 12 项 S7 之前无会话客户端收不到 `list_changed`（`subscriptions/listen` 未实现），
-/// 只能靠过期重取；本机重取的代价很小。S7 之后可按实测调长（12 迁移计划 U5）。
+/// @why 5 秒：列表随 App 连接 / 断开变化；第 12 项 S7 起无会话客户端可经 `subscriptions/listen` 收到 `list_changed`，
+/// 但不开 listen 流的客户端只能靠过期重取，本机重取的代价很小。按实测再调（docs/plans/12-mcp-stateless.md U9）。
 pub const DEFAULT_STATELESS_LIST_TTL: Duration = Duration::from_secs(5);
 
 /// [`HubConfig::task_idle_ttl`] 的默认值。
@@ -292,6 +317,9 @@ impl Default for HubConfig {
             stateless_tool_exposure: ToolExposure::All,
             principal_select_ttl: DEFAULT_PRINCIPAL_SELECT_TTL,
             stateless_list_ttl: DEFAULT_STATELESS_LIST_TTL,
+            mcp_protocol_mode: McpProtocolMode::Auto,
+            max_listen_streams: DEFAULT_MAX_LISTEN_STREAMS,
+            max_listen_resources: DEFAULT_MAX_LISTEN_RESOURCES,
         }
     }
 }
@@ -308,10 +336,12 @@ pub struct HubShared {
     diagnostics: Mutex<Diagnostics>,
     pub(crate) origins: OriginPolicy,
     registry: Mutex<Registry>,
-    /// 已完成初始化的 MCP 会话：会话 ID → peer。
-    sessions: Mutex<HashMap<u64, Peer<RoleServer>>>,
-    /// 资源订阅：URI → 订阅方（MCP 会话 ID；[`API_SUBSCRIBER`] 为 Hub API）。
+    /// 通知订阅方：已完成初始化的 legacy MCP 会话与 `subscriptions/listen` 流（[`crate::subscribers`]）。
+    subscribers: Mutex<SubscriberTable>,
+    /// 资源订阅：URI → 订阅方 ID（[`Self::subscribers`] 的 ID；[`API_SUBSCRIBER`] 为 Hub API）。
     resource_subs: Mutex<HashMap<String, HashSet<u64>>>,
+    /// Hub 停止中（[`Hub::shutdown`] / Drop 置位）：listen 流据此正常结束（发最终结果）。
+    closing: tokio::sync::watch::Sender<bool>,
     tools_dirty: AtomicBool,
     resources_dirty: AtomicBool,
     dirty: Notify,
@@ -355,6 +385,20 @@ pub struct HubShared {
     pub(crate) tools_rev: tokio::sync::watch::Sender<u64>,
     /// 接受闸门与连接计数（按需启动的空闲退出，[`crate::activity`]）。
     pub(crate) activity: crate::activity::Activity,
+}
+
+/// 一个已登记的 `subscriptions/listen` 流（[`HubShared::open_listen`]）；析构时移除该流及其资源订阅。
+#[cfg(feature = "mcp-server")]
+pub(crate) struct ListenRegistration {
+    shared: Arc<HubShared>,
+    id: u64,
+}
+
+#[cfg(feature = "mcp-server")]
+impl Drop for ListenRegistration {
+    fn drop(&mut self) {
+        self.shared.remove_subscriber(self.id);
+    }
 }
 
 /// 一次调用的进度路由（[`HubShared::progress_routes`]）。
@@ -412,8 +456,9 @@ impl HubShared {
             origins: OriginPolicy::new(config.allow_origins.iter().cloned()),
             config,
             registry: Mutex::new(registry),
-            sessions: Mutex::new(HashMap::new()),
+            subscribers: Mutex::new(SubscriberTable::default()),
             resource_subs: Mutex::new(HashMap::new()),
+            closing: tokio::sync::watch::Sender::new(false),
             tools_dirty: AtomicBool::new(false),
             resources_dirty: AtomicBool::new(false),
             dirty: Notify::new(),
@@ -602,7 +647,8 @@ impl HubShared {
                 token_required_without_origin: self.config.http.token.is_some()
                     && self.config.http.require_token_without_origin,
             },
-            mcp_sessions: lock(&self.sessions).len(),
+            mcp_sessions: self.mcp_session_count(),
+            mcp_listen_streams: Some(lock(&self.subscribers).listen_count()),
             apps,
             reports,
             lease: Some(lock(&self.leases).status(&self.config.lease, self.config.lease_ttl)),
@@ -642,7 +688,7 @@ impl HubShared {
         self.dirty.notify_one();
     }
 
-    /// 合并 `list_changed_debounce` 内的多次变化，发一次事件并通知所有 MCP 会话。
+    /// 合并 `list_changed_debounce` 内的多次变化，发一次事件并通知所有订阅方（legacy 会话与 listen 流）。
     async fn notify_loop(self: Arc<Self>) {
         loop {
             self.dirty.notified().await;
@@ -658,21 +704,11 @@ impl HubShared {
             if resources {
                 self.emit(HubEvent::ResourcesChanged);
             }
-            let peers: Vec<(u64, Peer<RoleServer>)> = lock(&self.sessions)
-                .iter()
-                .map(|(k, v)| (*k, v.clone()))
-                .collect();
-            for (id, peer) in peers {
-                let mut ok = true;
-                if tools {
-                    ok &= peer.notify_tool_list_changed().await.is_ok();
-                }
-                if resources && ok {
-                    ok &= peer.notify_resource_list_changed().await.is_ok();
-                }
-                if !ok {
-                    tracing::debug!(session = id, "MCP 会话已关闭，移除");
-                    self.remove_session(id);
+            let subscribers = lock(&self.subscribers).all();
+            for (id, subscriber) in subscribers {
+                if !subscriber.notify_lists_changed(tools, resources).await {
+                    tracing::debug!(subscriber = id, "MCP 订阅方已关闭，移除");
+                    self.remove_subscriber(id);
                 }
             }
         }
@@ -680,17 +716,63 @@ impl HubShared {
 
     #[cfg(feature = "mcp-server")]
     pub(crate) fn register_session(&self, id: u64, peer: Peer<RoleServer>) {
-        lock(&self.sessions).insert(id, peer);
+        lock(&self.subscribers).insert_session(id, peer);
     }
 
-    /// 移除 MCP 会话及其资源订阅。
     /// 已初始化的 MCP 会话数。
     pub(crate) fn mcp_session_count(&self) -> usize {
-        lock(&self.sessions).len()
+        lock(&self.subscribers).session_count()
     }
 
-    pub(crate) fn remove_session(self: &Arc<Self>, id: u64) {
-        lock(&self.sessions).remove(&id);
+    /// 登记一个 `subscriptions/listen` 流并订阅其接受的资源；返回的守卫析构时移除该流及其资源订阅（所有结束路径，S-06）。
+    ///
+    /// @error 该主体的流数已达 [`HubConfig::max_listen_streams`] → `RATE_LIMITED`。
+    #[cfg(feature = "mcp-server")]
+    pub(crate) fn open_listen(
+        self: &Arc<Self>,
+        sink: rmcp::service::SubscriptionSink,
+        principal: Principal,
+    ) -> Result<ListenRegistration, ToolError> {
+        let id = self.next_id();
+        let uris = sink.accepted().resource_subscriptions.clone().unwrap_or_default();
+        lock(&self.subscribers)
+            .try_insert_listen(id, sink, principal, self.config.max_listen_streams)
+            .map_err(|e| {
+                ToolError::new(
+                    ErrorKind::RateLimited,
+                    format!("同时打开的 subscriptions/listen 流已达上限（{} 个），请先关闭不用的流。", e.max),
+                )
+            })?;
+        let registration = ListenRegistration { shared: self.clone(), id };
+        for uri in uris {
+            // 接受过滤器时已按同样的规则筛过（McpSession::accepted_subscription_filter）；这里失败只可能是其间策略变化。
+            if let Err(e) = self.subscribe(id, &uri) {
+                tracing::debug!(%uri, error = %e.message, "listen 流的资源订阅未建立");
+            }
+        }
+        Ok(registration)
+    }
+
+    /// 没有任何资源订阅（测试检查订阅方移除后的清理）。
+    #[cfg(all(test, feature = "mcp-server"))]
+    pub(crate) fn has_no_resource_subscriptions(&self) -> bool {
+        lock(&self.resource_subs).is_empty()
+    }
+
+    /// 等到 Hub 开始停止（listen 流据此正常结束）。
+    #[cfg(feature = "mcp-server")]
+    pub(crate) async fn closing(&self) {
+        let mut rx = self.closing.subscribe();
+        let _ = rx.wait_for(|closing| *closing).await;
+    }
+
+    fn begin_closing(&self) {
+        self.closing.send_replace(true);
+    }
+
+    /// 移除订阅方（legacy 会话或 listen 流）及其资源订阅。
+    pub(crate) fn remove_subscriber(self: &Arc<Self>, id: u64) {
+        lock(&self.subscribers).remove(id);
         let uris: Vec<String> = lock(&self.resource_subs)
             .iter()
             .filter(|(_, s)| s.contains(&id))
@@ -917,7 +999,7 @@ impl HubShared {
 
     /// 只通知一个 MCP 会话工具列表已变化（渐进暴露下该会话展开了新的 App）。
     pub(crate) fn notify_session_tools_changed(self: &Arc<Self>, session: u64) {
-        let Some(peer) = lock(&self.sessions).get(&session).cloned() else {
+        let Some(peer) = lock(&self.subscribers).session(session) else {
             return;
         };
         let Ok(rt) = tokio::runtime::Handle::try_current() else {
@@ -927,7 +1009,7 @@ impl HubShared {
         rt.spawn(async move {
             if peer.notify_tool_list_changed().await.is_err() {
                 tracing::debug!(session, "MCP 会话已关闭，移除");
-                shared.remove_session(session);
+                shared.remove_subscriber(session);
             }
         });
     }
@@ -1194,7 +1276,7 @@ impl HubShared {
         Ok((target.resource, result))
     }
 
-    /// 订阅资源（`session` 为 MCP 会话 ID 或 [`API_SUBSCRIBER`]）。
+    /// 订阅资源（`session` 为订阅方 ID——legacy MCP 会话或 listen 流——或 [`API_SUBSCRIBER`]）。
     pub(crate) fn subscribe(self: &Arc<Self>, session: u64, uri: &str) -> Result<(), ToolError> {
         let Some((app_id, _)) = parse_resource_uri(uri) else {
             return Err(ToolError::new(
@@ -1311,7 +1393,7 @@ impl HubShared {
         }
     }
 
-    /// SDK 报告资源内容变化：发事件，并通知订阅了该资源的 MCP 会话。
+    /// SDK 报告资源内容变化：发事件，并通知订阅了该资源的订阅方（legacy 会话与 listen 流）。
     pub(crate) fn resource_updated(self: &Arc<Self>, app_id: &str, name: &str) {
         // 被 `hide` 隐藏的 App 的资源变化不通知（隐藏前建立的订阅也不再收到）。
         if self.app_hidden(app_id) {
@@ -1319,27 +1401,17 @@ impl HubShared {
         }
         let uri = resource_uri(app_id, name);
         self.emit(HubEvent::ResourceUpdated { uri: uri.clone() });
-        let sessions: Vec<u64> = lock(&self.resource_subs)
+        let ids: Vec<u64> = lock(&self.resource_subs)
             .get(&uri)
             .map(|s| s.iter().copied().collect())
             .unwrap_or_default();
-        let peers: Vec<(u64, Peer<RoleServer>)> = {
-            let all = lock(&self.sessions);
-            sessions
-                .iter()
-                .filter_map(|id| all.get(id).map(|p| (*id, p.clone())))
-                .collect()
-        };
-        for (id, peer) in peers {
+        let subscribers = lock(&self.subscribers).pick(&ids);
+        for (id, subscriber) in subscribers {
             let uri = uri.clone();
             let shared = self.clone();
             tokio::spawn(async move {
-                if peer
-                    .notify_resource_updated(ResourceUpdatedNotificationParam::new(uri))
-                    .await
-                    .is_err()
-                {
-                    shared.remove_session(id);
+                if !subscriber.notify_resource_updated(uri).await {
+                    shared.remove_subscriber(id);
                 }
             });
         }
@@ -1890,6 +1962,8 @@ impl Hub {
 
     /// 停止：中止后台任务（含上游子进程）、关闭所有 App 连接，删除登记文件并释放单实例锁。
     pub async fn shutdown(self) {
+        // listen 流先收到结束信号，下面等待 App 连接关闭的间隙里发出最终结果。
+        self.shared.begin_closing();
         for t in lock(&self.tasks).drain(..) {
             t.abort();
         }
@@ -2263,6 +2337,7 @@ pub struct LocalAppChannel {
 
 impl Drop for Hub {
     fn drop(&mut self) {
+        self.shared.begin_closing();
         for t in lock(&self.tasks).iter() {
             t.abort();
         }

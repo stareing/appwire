@@ -1,12 +1,13 @@
 /**
  * M1 验收（app-mcp-plan.md 第 15 节）：MCP 客户端（Streamable HTTP）→ app-mcp-host serve → shop Demo（vite dev，persistent 模式）。
  *
- * 各用例按顺序共用同一个 Host / 页面状态。
+ * 各用例按顺序共用同一个 Host / 页面状态。关键用例另由一个 MCP 2026-07-28（modern，无会话 + subscriptions/listen）客户端
+ * 并行验证（docs/plans/12-mcp-stateless.md S7）；legacy 客户端的断言不变。
  */
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { Browser, type Page } from '../src/browser'
 import { type HostHandle, type ShopServer, startHost, startShop } from '../src/env'
-import { data, ok, texts } from '../src/mcp-client'
+import { McpClient, data, ok, texts } from '../src/mcp-client'
 import { establishedTo, waitFor } from '../src/util'
 
 let host: HostHandle
@@ -14,6 +15,7 @@ let shop: ShopServer
 let browser: Browser
 let tabA: Page
 let tabB: Page | undefined
+let modern: McpClient
 
 const STATIC_TOOLS = ['shop.catalog.search', 'shop.info', 'shop.deliveryEstimate']
 
@@ -21,9 +23,12 @@ beforeAll(async () => {
   // M1 行为：Host 不唤醒（--waker none），App 未打开时调用返回 APP_DISCONNECTED + 启动地址（自动唤醒见 lifecycle.test.ts）
   host = await startHost(inject('hostBin'), [], { waker: 'none' })
   browser = await Browser.launch(inject('chromeBin'))
+  modern = new McpClient({ url: host.mcpUrl, era: 'modern', diagnostics: () => host.log(200) })
+  await modern.discover()
 })
 
 afterAll(async () => {
+  await modern?.close()
   await browser?.close()
   await shop?.stop()
   await host?.stop()
@@ -75,11 +80,22 @@ describe('M1 验收', () => {
 
     const app = await shopApp()
     expect(app).toMatchObject({ connected: false, launchUrl: 'http://localhost:5173/', staticToolCount: 3 })
+
+    // modern：协商 2026-07-28，总览经 discover 的 instructions 给出、不在调用结果中附带；无 Mcp-Session-Id
+    expect(modern.discoverResult!.supportedVersions).toContain('2026-07-28')
+    expect(modern.discoverResult!.instructions).toContain('shop（示例商城）')
+    const modernNames = await modern.toolNames()
+    for (const n of ['apps.list', 'apps.select', 'apps.overview', ...STATIC_TOOLS]) expect(modernNames).toContain(n)
+    const m = texts(await modern.callTool('shop.catalog.search', { keyword: '耳机' }))
+    expect(m).toHaveLength(1)
+    expect(m[0]).toMatch(/^APP_DISCONNECTED/)
+    expect(modern.sessionIdsSeen).toEqual([])
   })
 
   it('打开页面：连接 Host，工具出现（tools/list_changed），调用成功', async () => {
     shop = await startShop({ VITE_APP_MCP_HOST_URL: host.wsUrl })
     const since = mcp().notifications.length
+    const modernSince = modern.notifications.length
     tabA = await browser.newPage(`${shop.url}?tab=a`)
     await tabA.waitForBadge('已连接', 60_000)
     const names = await waitTools((n) => n.includes('shop.todos.add'), '待办工具出现')
@@ -101,6 +117,13 @@ describe('M1 验收', () => {
     // 惰性加载的静态工具（catalog.search）
     const found = ok(await mcp().callTool('shop.catalog.search', { keyword: '耳机' }))
     expect(JSON.stringify(found)).toContain('耳机')
+
+    // modern：list_changed 经 subscriptions/listen 流送达（带 subscriptionId），列表与调用与 legacy 一致
+    await waitFor(() => modern.countSince('notifications/tools/list_changed', modernSince) > 0, 'modern 收到 tools/list_changed')
+    const note = modern.notifications.slice(modernSince).find((n) => n.method === 'notifications/tools/list_changed')!
+    expect(note.params?._meta?.['io.modelcontextprotocol/subscriptionId']).toBe(modern.subscriptionId)
+    expect(await modern.toolNames()).toEqual(await mcp().toolNames())
+    expect(JSON.stringify(ok(await modern.callTool('shop.catalog.search', { keyword: '耳机' })))).toContain('耳机')
   })
 
   it('添加 3 个待办并勾选第 2 个（resources/read 与页面渲染一致）', async () => {
@@ -117,6 +140,7 @@ describe('M1 验收', () => {
     const uri = resources.find((r) => r.uri.endsWith('todos.list'))?.uri
     expect(uri).toBeDefined()
     const list = await mcp().readResource(uri!)
+    expect(await modern.readResource(uri!)).toEqual(list)
     const mine = list.todos.filter((t: { id: string }) => added.includes(t.id))
     expect(mine.map((t: { title: string; done: boolean }) => [t.title, t.done])).toEqual([
       ['e2e 待办一', false],
@@ -234,8 +258,12 @@ describe('M1 验收', () => {
   })
 
   it('关闭全部页面：运行时工具移除，静态工具仍在，调用返回 APP_DISCONNECTED', async () => {
+    const modernSince = modern.notifications.length
     await tabA.close()
     const names = await waitTools((n) => !n.includes('shop.todos.add'), '运行时工具移除')
+    await waitFor(() => modern.countSince('notifications/tools/list_changed', modernSince) > 0, 'modern 收到 tools/list_changed')
+    expect(await modern.toolNames()).toEqual(names)
+    expect(modern.sessionIdsSeen).toEqual([])
     for (const n of STATIC_TOOLS) expect(names).toContain(n)
     const r = await mcp().callTool('shop.catalog.search', { keyword: '' })
     expect(r.isError).toBe(true)
