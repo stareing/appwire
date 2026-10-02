@@ -1136,10 +1136,16 @@ fn mcp_over_fd() {
     let mut writer = agent;
     let mut rpc = |msg: Value| -> Option<Value> {
         writeln!(writer, "{msg}").expect("写");
-        msg.get("id")?;
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("读");
-        Some(serde_json::from_str(&line).expect("json"))
+        let id = msg.get("id")?.clone();
+        // @why Hub 会在回复之间推送通知（如 tools/list_changed），按 id 取对应回复。
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("读");
+            let v: Value = serde_json::from_str(&line).expect("json");
+            if v.get("id") == Some(&id) {
+                return Some(v);
+            }
+        }
     };
     let init = rpc(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
         "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "agent-test", "version": "0"}}}))
