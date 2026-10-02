@@ -838,6 +838,10 @@ Outcome run_case(const std::string& sdk, const std::string& fake_host, const fs:
         for (const auto& m : missing) list += (list.empty() ? "" : ", ") + m;
         cmd += " --skip " + shell_quote("runner 不支持：" + list);
     }
+#ifdef _WIN32
+    // @compat _popen 经 cmd.exe /c：命令以引号开头且含两个以上引号时 cmd 会去掉首尾引号，整条再包一层引号。
+    cmd = "\"" + cmd + "\"";
+#endif
     FILE* host = popen(cmd.c_str(), "r");
     if (!host) return {"error", "无法启动 fake_host"};
 
