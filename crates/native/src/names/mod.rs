@@ -2,12 +2,15 @@
 //! 变成一条通道交给运行时（[`ChannelSink`]），运行时在通道上跑与 App 拨出连接相同的帧与核心。
 //!
 //! - [`NameServer`]：平台无关的登记接口；[`platform`] 返回本平台的实现（Linux：D-Bus 会话总线，[`dbus`]；
-//!   Windows：每 App 每用户命名管道，[`pipe`]）。
+//!   Windows：每 App 每用户命名管道，[`pipe`]；macOS：launchd 用户 Agent 的按需套接字，[`launchd`]）。
 //! - 登记的生命周期：[`crate::NativeClient::start`] 之后由运行时线程登记，`stop` / 客户端被丢弃时注销
 //!   （丢弃 [`Registration`]）。登记期间运行时线程保持 tokio 运行时（阻塞在名字服务连接上，无定时器）。
 
-// @why 只有平台实现（Linux D-Bus、Windows 命名管道）使用这些接口；其他平台 / 关闭 `dbus` 时登记直接报告"不支持"。
-#![cfg_attr(not(any(windows, all(target_os = "linux", not(target_env = "ohos"), feature = "dbus"))), allow(dead_code))]
+// @why 只有平台实现（Linux D-Bus、Windows 命名管道、macOS launchd）使用这些接口；其他平台 / 关闭 `dbus` 时登记直接报告"不支持"。
+#![cfg_attr(
+    not(any(windows, target_os = "macos", all(target_os = "linux", not(target_env = "ohos"), feature = "dbus"))),
+    allow(dead_code)
+)]
 
 use std::future::Future;
 use std::pin::Pin;
@@ -21,6 +24,9 @@ use crate::{Shared, now_ms};
 mod dbus;
 #[cfg(windows)]
 mod pipe;
+// @why 接受循环与拒绝在 Linux 上以真实 Unix 套接字测试；`launch_activate_socket` 只在 macOS 编译。
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod launchd;
 
 /// 一条由 Hub 拨入的通道（App 一侧的一端）。
 #[cfg(unix)]
@@ -37,10 +43,12 @@ pub(crate) enum Channel {}
 pub(crate) struct NameRequest {
     pub app_id: String,
     /// 登记实例名；`Some` 时另登记实例名字。
+    // @why macOS launchd 作业只有一个套接字，不登记实例名字（spec/naming.md 4.4）。
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub instance: Option<String>,
     /// 名字服务地址（D-Bus 地址）；`None` = 按环境。
-    // @why Windows 命名管道没有"名字服务地址"。
-    #[cfg_attr(windows, allow(dead_code))]
+    // @why Windows 命名管道、macOS launchd 没有"名字服务地址"。
+    #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
     pub address: Option<String>,
 }
 
@@ -84,7 +92,12 @@ pub(crate) fn platform() -> Option<&'static dyn NameServer> {
         static PIPE: pipe::PipeNameServer = pipe::PipeNameServer;
         Some(&PIPE)
     }
-    #[cfg(not(any(windows, all(target_os = "linux", not(target_env = "ohos"), feature = "dbus"))))]
+    #[cfg(target_os = "macos")]
+    {
+        static LAUNCHD: launchd::LaunchdNameServer = launchd::LaunchdNameServer;
+        Some(&LAUNCHD)
+    }
+    #[cfg(not(any(windows, target_os = "macos", all(target_os = "linux", not(target_env = "ohos"), feature = "dbus"))))]
     {
         None
     }
@@ -111,4 +124,35 @@ impl ChannelSink for ChannelInbox {
         shared.wake();
         Ok(())
     }
+}
+
+/// 写出拒绝行后等待 Hub 读取并关闭的上限（之后 App 断开；只在拒绝路径上计时）。
+#[cfg(any(windows, target_os = "macos", all(test, unix)))]
+const REFUSAL_LINGER: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// 在通道上写一行 `<CODE>：<说明>` 后等 Hub 读取并关闭（最长 [`REFUSAL_LINGER`]），再断开（spec/naming.md 4.3"拒绝"，
+/// Windows 命名管道与 macOS launchd 套接字共用：二者都没有可回错误的方法调用）。
+///
+/// @why 直接断开会丢弃 Hub 尚未读取的数据，Hub 就只能看到"对端关闭"而不知道原因。
+#[cfg(any(windows, target_os = "macos", all(test, unix)))]
+pub(crate) async fn refuse<S>(mut stream: S, refusal: Refusal)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use app_mcp_protocol::naming::{codes, pipe as names};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let code = match refusal {
+        Refusal::Busy => codes::CHANNEL_LIMIT,
+        Refusal::Stopped | Refusal::Invalid(_) => codes::ACTIVATION_DENIED,
+    };
+    let mut line = names::refusal_line(code, &refusal.to_string());
+    line.push('\n');
+    if stream.write_all(line.as_bytes()).await.is_err() {
+        return;
+    }
+    let mut sink = [0u8; 256];
+    let _ = tokio::time::timeout(REFUSAL_LINGER, async {
+        while matches!(stream.read(&mut sink).await, Ok(n) if n > 0) {}
+    })
+    .await;
 }

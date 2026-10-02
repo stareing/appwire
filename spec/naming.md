@@ -36,11 +36,11 @@
 
 | 术语 | 含义 |
 |---|---|
-| 名字 | 系统名字服务中代表一个 App（或其一个实例）的条目：D-Bus 总线名、Android Service 组件、命名管道名、launchd Mach 服务名 |
+| 名字 | 系统名字服务中代表一个 App（或其一个实例）的条目：D-Bus 总线名、Android Service 组件、命名管道名、launchd 作业的按需套接字 |
 | 地址 | 与平台无关的 App 身份 `appmcp://<appId>[/<instance>]`（第 2 节），由 Hub 映射为当前平台的名字 |
 | 拨号 | Hub 按地址打开一条到 App 的通道（第 3 节） |
 | 激活 | 名字的所有者进程未运行时，由系统在拨号时拉起它（D-Bus 激活、`bindService`、launchd 按需启动、COM / 协议激活） |
-| 通道 | 拨号得到的一条字节流（socketpair 的一端、命名管道、XPC 传来的 fd），其上跑与现有传输相同的帧与消息 |
+| 通道 | 拨号得到的一条字节流（socketpair 的一端、命名管道、launchd 套接字上的连接），其上跑与现有传输相同的帧与消息 |
 | App 登记文件 | App 安装 / 首次运行时写下的元数据文件（第 5.3 节）。**不同于** spec/protocol.md 1.7 的 Host 登记文件 `endpoints.json` |
 | 发现记录 | Hub 本地为每个 appId 保存的合并结果（来源、时间、签名指纹、快照，第 5.4 节） |
 | 活引用 | 能让 App 进程保持运行或被唤醒的东西：绑定、连接、fd、跨进程回调对象、定时器、WakeLock |
@@ -83,7 +83,7 @@ instance = %x61-7A *31( %x61-7A / DIGIT / "-" )      ; [a-z][a-z0-9-]{0,31}
 ```mermaid
 flowchart LR
   subgraph os["系统名字服务"]
-    name["名字（D-Bus 名 / Service / 管道 / Mach 服务）"]
+    name["名字（D-Bus 名 / Service / 管道 / launchd 套接字）"]
   end
   hub["Hub（拨号方）"] -- "1 解析地址 → 名字" --> name
   name -- "2 未运行则激活" --> app["App 进程（被连接方）"]
@@ -126,7 +126,7 @@ flowchart TD
   rec -- "是" --> parse["解析地址 → 平台名字（第 4 节）"]
   parse --> idchk{"名字所有者身份与记录一致？（运行中时）"}
   idchk -- "否" --> mismatch["PEER_IDENTITY_MISMATCH，不拨号"]
-  idchk -- "是 / 未运行" --> dial["拨号：Open() / bindService + open() / 打开管道 / XPC open"]
+  idchk -- "是 / 未运行" --> dial["拨号：Open() / bindService + open() / 打开管道 / connect launchd 套接字"]
   dial -- "系统激活失败或拒绝" --> fail["LAUNCH_FAILED（data.code = ACTIVATION_DENIED / ACTIVATION_TIMEOUT）；确认未安装则 APP_NOT_INSTALLED"]
   dial -- "得到通道" --> hello["SDK 发 app/hello → 快速恢复或完整同步 → app/ready"]
   hello --> claim["认领本次拨号的待派调用"]
@@ -146,7 +146,7 @@ flowchart TD
 | Linux（桌面） | 会话总线名 `dev.appmcp.App.<id>`、实例 `dev.appmcp.App.<id>.<inst>`；对象路径 `/dev/appmcp/App[/<inst>]` | 方法 `dev.appmcp.App1.Open() → h`（socketpair 一端） | D-Bus 服务激活（`.service` 文件） | `ListActivatableNames` / `ListNames` + `NameOwnerChanged` + XDG 登记 | 是 |
 | Android | 导出的绑定式 Service，Intent 动作 `dev.appmcp.TOOLS` | `bindService` → `IBinder` → `open(instance) → ParcelFileDescriptor`（socketpair 一端） | `bindService(BIND_AUTO_CREATE)` | `queryIntentServices` + `<meta-data>` 清单资源 + 包变更 | 是 |
 | Windows | 命名管道 `\\.\pipe\appmcp-<SID>-<id>[.<inst>]` | Hub 作为管道客户端打开 | 未打包：协议激活后等待管道出现；打包：待验证（U-07），确认前同未打包 | App 登记文件（`%LOCALAPPDATA%\app-mcp\apps\`）+ 打包 App 扩展目录 | 是 |
-| macOS | launchd 用户 Agent 的 Mach 服务 `dev.appmcp.App.<id>` | XPC 连接，消息 `open` → 回复中带 fd | launchd 按需启动 | `~/Library/LaunchAgents` / App 内嵌 Agent plist + App 登记文件 | 仅非沙盒；沙盒不支持（4.4） |
+| macOS | launchd 用户 Agent `dev.appmcp.App.<id>` 的按需 Unix 套接字（`Sockets`，路径写在登记文件 `activation.target`） | Hub `connect` 该套接字，连接即通道 | launchd 按需启动（连接到来时） | App 登记文件（`~/Library/Application Support/app-mcp/apps/`）+ `~/Library/LaunchAgents` | 仅非沙盒；沙盒不支持（4.4） |
 | iOS | 无 | — | — | — | **不支持**：第三方 App 不能调用其他 App 的 App Intents；App 能力经 codegen 的 App Intents 交给系统入口（4.5） |
 | 网页 | 扩展已知的标签页 | 页面 → content script → 扩展 service worker → Native Messaging → Hub | `web-url`（WakeDescriptor 后备） | 扩展枚举已打开且加载了 SDK 的标签页 | 是（方向不反转，见 4.6） |
 | 鸿蒙 | 暂无 | — | — | — | 4d 不覆盖，沿用现有 WebSocket 路径 |
@@ -272,23 +272,47 @@ flowchart TD
   `%LOCALAPPDATA%` 默认只有本用户可写。管道不能枚举，发现记录的 `running` 恒为否（正在运行的实例由拨号得知）。
 - **清单**：登记文件的 `manifest` 指向的静态清单由连接器读取（Host 不必重启即可按清单列出新登记 App 的工具），卸载事件随之撤下。
 
-### 4.4 macOS：launchd + XPC
+### 4.4 macOS：launchd 按需套接字
 
-- **名字**：用户 LaunchAgent（标签 `dev.appmcp.App.<appId>`）的 `MachServices` 中声明 `dev.appmcp.App.<appId>`；
-  Agent plist 随 App 包分发（包内 `Contents/Library/LaunchAgents/`，经 `SMAppService.agent(plistName:)` 注册，macOS 13+，
-  出现在"登录项"中、受用户批准）或由安装程序写入 `~/Library/LaunchAgents/`。实例不登记独立 Mach 服务，以 XPC 消息参数 `instance` 区分。
-- **名字的所有者是 launchd 作业**：Apple 不支持两个 App 之间直接用 XPC 通信，推荐经 launchd 作业会合（F-27）；Mach 服务只能由该
-  作业的进程签入。因此按需进程是 Agent 作业（App 包内的无界面辅助程序，或以无界面模式运行的 App 本体）；用户从 Finder 打开的 GUI
-  进程不是该作业，如何与作业共享工具（转交 / 合并为一个进程）在 4d-F 决定（U-09），确认前 GUI 进程仍走现有 App 拨 Hub 路径。
-- **拨号**：Hub 以 `xpc_connection_create_mach_service` 连接，发送 `{op: "open", v: 1, instance}`，回复中以 `xpc_dictionary_set_fd`
-  携带 socketpair 的一端；之后消息走 fd。XPC 连接在拿到 fd 后即取消，不长期持有。
-- **激活**：launchd 在有人连接该 Mach 服务时按需启动 Agent（`MachServices` + 不设 `KeepAlive`）。
-- **调用方身份**：App 核对 XPC 对端 euid（`xpc_connection_get_euid`）与自身相同；macOS 12+ 用
-  `xpc_connection_set_peer_code_signing_requirement` 限定对端（可信 Hub 的签名要求）。XPC 没有公开的审计令牌接口；Unix 套接字上有
-  `LOCAL_PEERTOKEN`。
-- **沙盒 App**：App Group 容器内的 Unix 套接字只对**同一开发团队（Team ID）**的进程可用（F-28），第三方 Hub 无法使用；沙盒 Hub 查找
-  全局 Mach 服务需要临时例外权利。因此沙盒 App（及沙盒 Hub）**不支持按名寻址**，走现有 WakeDescriptor + App 拨 Hub 路径。
-- 无 Mac 实机：Linux 上编译与单元测试，实机验收列入 TASKS 待办。
+（2026-10-02，4d-F 实施时的决定：由草案的 `MachServices` + XPC 改为 launchd `Sockets`。理由见本节末"为何不用 XPC"。）
+
+- **名字**：用户 LaunchAgent，标签 `dev.appmcp.App.<appId>`（appId 原样），`Sockets` 字典中键 `AppMcp` 声明一个 Unix 套接字：
+  `SockPathName` = 套接字绝对路径、`SockPathMode` = `384`（`0600`，plist 只有十进制，F-44）；`ProgramArguments` = 程序 +
+  `--app-mcp-activation`；不设 `RunAtLoad` / `KeepAlive`（缺省只按需启动，F-44）。plist 由 `app-mcp-host app install` 写入
+  `~/Library/LaunchAgents/dev.appmcp.App.<appId>.plist` 并 `launchctl bootstrap gui/<uid>`（或安装程序写入；包内 Agent 经
+  `SMAppService.agent(plistName:)` 注册为待验证，U-25）。生成函数 `app_mcp_protocol::naming::launchd::agent_plist`（单一定义）。
+- **套接字位置**：`app install` 用 `<Host 配置目录>/run/apps/<appId>.sock`（默认 `~/.app-mcp/run/apps/`，目录 `0700`），绝对路径写入登记文件
+  `activation: { "kind": "launchd", "target": "<套接字路径>" }`；Hub 只按登记文件拨号，不推导路径。路径须放得进 `sockaddr_un`
+  （macOS 103 字节），超长在安装时即失败（`IPC_PATH_TOO_LONG`，可用 `--home` 缩短）。`~/Library/Application Support/…` 不用于套接字：
+  加上 63 字符的 appId 容易超长。
+- **实例**：一个作业只有一个套接字，不登记实例名字；带实例的地址拨号即 `NAME_NOT_FOUND`。
+- **拨号 = 激活**：Hub `connect` 该路径。launchd 持有监听端，作业未运行时在连接到来时启动它，连接先排在监听队列中；作业以
+  `launch_activate_socket("AppMcp")` 取得监听 fd（F-45）并 `accept`，每个连接即一条通道（帧与 4.1 相同，SDK 先发 `app/hello`）。
+  激活与握手共用 Hub 的唤醒超时，超时 `ACTIVATION_TIMEOUT`。`connect` 失败：套接字不存在 → `NAME_NOT_FOUND`（作业未载入，调用报
+  `APP_NOT_INSTALLED`）；无人监听（`ECONNREFUSED`，作业被卸下后的残留文件）→ `ACTIVATION_DENIED`；无权限 → `BIND_PERMISSION_DENIED`。
+- **拒绝**：与 Windows 相同（4.3"拒绝"）：App 在连接上写一行 `<CODE>：<说明>\n` 后断开；Hub 在交出通道前读第一段数据区分升级请求与拒绝行。
+- **身份**：Hub 拨号前核对套接字目录属于当前用户且组 / 其他用户不可写（否则 `PEER_IDENTITY_MISMATCH`，不连接）；连接后以 `getpeereid`
+  核对对端为当前用户**或 root**（launchd 创建的监听端的凭据可能记为 root，U-23）；对端进程号为 1（launchd）时不记录。App 侧 `accept` 后
+  核对对端 uid 与自身相同，否则直接关闭。登记 `executable` ↔ 作业程序由 `doctor` 比对 plist（不在拨号时核对，与 Linux 第一段相同）；
+  Team ID / 代码签名指纹（5.4、10.3）未做。
+- **App 进程**：只有 launchd 启动的作业进程能取得套接字。`launch_activate_socket` 每个进程只能成功一次（再取为 `EALREADY`），SDK 把 launchd
+  交来的 fd 留在进程内、每次登记复制一份（`stop` 后再 `start` 仍可登记）；SDK 停止而进程未退出期间，Hub 的连接排队至超时
+  （launchd 不会另起进程）。由 `--app-mcp-activation` 启动的进程在通道关闭后发出 idle-exit（与 4.1 相同），进程退出后 launchd 恢复监听。
+- **GUI 进程（U-09 的决定）**：用户从 Finder 打开的进程不是 launchd 作业，`launch_activate_socket` 返回 `ESRCH`，SDK 记录警告、不登记名字，
+  继续走 App 拨 Hub（IPC / WebSocket）路径。Hub 的路由先用已有活连接（3.1），因此 GUI 进程已连接时不会拨号；GUI 进程运行但处于休眠时，
+  Hub 拨号会让 launchd 另起一个作业进程（无界面模式），两进程各自注册工具——App 需要单实例语义时自行在作业进程中转交（如 `NSDistributedNotificationCenter`
+  / 打开 GUI），本库不做进程合并。
+- **发现与更新**：只读登记目录 `~/Library/Application Support/app-mcp/apps/`（5.3），不连接套接字（连接即激活）。目录变化由一个阻塞在
+  `kevent` 上的线程等待（`EVFILT_VNODE`：目录项增删 / 改名，无定时器、不轮询；只在启用按名寻址时存在，事件流被丢弃即以 `EVFILT_USER` 唤醒退出）；
+  kqueue 不给出文件名，每次变化重新枚举（与 Windows 溢出时相同）。原地改写已有文件（不经改名）不产生通知；`app install` 以"临时文件 + 改名"写入。
+- **沙盒 App**：App Group 容器内的 Unix 套接字只对**同一开发团队（Team ID）**的进程可用（F-28），第三方 Hub 无法使用；`open -g` 激活后等待
+  该套接字同样受此限制。因此沙盒 App（及沙盒 Hub）**不支持按名寻址**，走现有 WakeDescriptor（`open -g`）+ App 拨 Hub 路径。
+- **为何不用 XPC**（草案原方案）：① XPC 的事件处理器是 Objective-C block，Rust 侧需要 block ABI（新增依赖或手写不安全代码）加 `xpc_object_t`
+  字典的引用计数管理，不安全代码面远大于一次 `launch_activate_socket` 调用；② 两者都要求按需进程是 launchd 作业（Apple 不支持 App 之间直接 XPC，
+  F-27），GUI 进程问题（U-09）相同；③ `Sockets` 下 Hub 侧只需普通的 Unix 套接字 `connect`，无 FFI，连接、身份、拒绝、超时逻辑能在 Linux 上
+  以真实套接字测试；④ 不需要 XPC 的 fd 传递：通道就是 launchd 套接字上的连接。代价：XPC 的 `xpc_connection_set_peer_code_signing_requirement`
+  （按签名限定对端）没有对等物，同用户内以目录权限 + `getpeereid` 为准（10.1，与 Host 的本地 IPC 相同）。
+- **待实机验证**：无 Mac 实机，Linux 上编译（`aarch64-apple-darwin` / `x86_64-apple-darwin` 的 `cargo clippy`）与单元测试，实机验收见 14.4。
 
 ### 4.5 iOS：不支持
 
@@ -350,7 +374,7 @@ flowchart TD
 ### 5.1 原则
 
 - **只读数据，从不为发现而启动进程**：发现只读安装期元数据、App 登记文件与名字服务的列表 / 事件；不调用 App 的任何方法、
-  不 `bindService`、不连接 Mach 服务。
+  不 `bindService`、不连接 launchd 套接字。
 - **时机**：Hub 启动时扫描一次（Android 用 `getChangedPackages(sequence)` 增量）+ Hub 运行期间订阅系统变更事件
   （包安装 / 更新 / 卸载、inotify / `ReadDirectoryChangesW` 监视登记目录、D-Bus `NameOwnerChanged`）。**无轮询**。
 - **多来源合并**：读安装信息只是其中一种主动鉴别方式；四种来源合并为每个 appId 一条发现记录（5.4）。
@@ -361,7 +385,7 @@ flowchart TD
 |---|---|---|---|
 | `install` | 平台安装元数据：Android `<meta-data>` 清单资源、Linux `.service` + XDG 登记、Windows 打包 App 扩展 / 登记文件、macOS 包内清单 + launchd plist | 安装 / 更新时；Hub 启动扫描与变更事件读到 | 否（主路径） |
 | `self-report` | App 首次打开（及登记内容变化时）的一次性自报 | 见 5.5 | 仅自报那一刻 |
-| `name-service` | 名字出现 / 消失（`NameOwnerChanged`、管道 / Mach 服务的出现由激活与通道得知） | App 运行并登记名字时 | 是 |
+| `name-service` | 名字出现 / 消失（`NameOwnerChanged`、管道 / launchd 作业的运行由激活与通道得知） | App 运行并登记名字时 | 是 |
 | `manual` | 用户执行 `app-mcp-host app install <清单或程序>` 写入的 App 登记文件 | 用户操作时 | 否 |
 
 ### 5.3 App 登记文件
@@ -377,7 +401,7 @@ flowchart TD
   "manifest": "/opt/shop/app-mcp.json",         // 静态清单的绝对路径（可省略）
   "manifestSha256": "…",                        // 清单内容摘要（可省略）
   "executable": "/opt/shop/bin/shop",           // 用于判断"已不存在"与核对通道对端
-  "activation": { "kind": "dbus" | "exec" | "launchd" | "uri" | "aumid" | "com" | "app-service" | "none", "target": "…" },   // exec / aumid 见 4.3
+  "activation": { "kind": "dbus" | "exec" | "launchd" | "uri" | "aumid" | "com" | "app-service" | "none", "target": "…" },   // exec / aumid 见 4.3，launchd（target = 套接字路径）见 4.4
   "signature": { "kind": "authenticode" | "codesign" | "none", "fingerprint": "sha256:…" } }   // 可省略；Hub 自己计算的值优先
 ```
 
@@ -523,7 +547,7 @@ stateDiagram-v2
 | Android | `IBinder.linkToDeath`（绑定期间注册，解绑前注销）+ fd EOF | fd EOF |
 | Linux | `NameOwnerChanged`（新所有者为空）+ fd EOF | fd EOF |
 | Windows | 管道读到 EOF / 管道断开 | 同左 |
-| macOS | fd EOF（XPC 连接在拿到 fd 后已取消） | fd EOF |
+| macOS | 套接字连接 EOF | 同左 |
 
 - 心跳在这些通道上关闭（第 3 节）。
 - App 被杀后实例转为"未运行 + 快照"，不发 `list_changed`（工具仍按快照列出）。
@@ -579,7 +603,7 @@ stateDiagram-v2
   - `persistent` 模式的 App 仍可主动拨 Hub（旧行为）；Hub 发现某实例已有 App 发起的活连接时不再拨号；
   - 竞态（Hub 的通道与 App 发起的连接同时就绪、同一 `instanceId`）：**App 发起的连接优先**，Hub 关闭自己拨出的通道并把待派调用
     转到 App 的连接上。Hub 从不因为自己拨了号而关闭 App 发起的连接（否则 App 会按断线重连，形成循环）。
-- **版本演进**：名字接口带主版本（D-Bus `dev.appmcp.App1`、AIDL 接口描述符带版本、XPC 消息 `op` 带版本），Hub 优先用自己支持的
+- **版本演进**：名字接口带主版本（D-Bus `dev.appmcp.App1`、Binder 接口描述符带版本、launchd 套接字键 `AppMcp` 演进时另加键），Hub 优先用自己支持的
   最高版本；握手中的 `protocolVersion` 规则不变。
 
 ## 10. 安全
@@ -630,7 +654,7 @@ Android 上每个 App 是不同的 uid，"同用户"不成立，App 须判断拨
 | `naming.dbus` | Linux | 会话总线可达（经 Hub 的 `DbusConnector::discover`：`ListActivatableNames` + `ListNames`，不触发激活）；`$XDG_DATA_HOME` / `$XDG_DATA_DIRS` 下 `dbus-1/services/dev.appmcp.App.*.service`：`Name=` 合法且与文件名一致、不是实例名字、`Exec` 程序为绝对路径且存在（否则 `NAME_NOT_FOUND`，调用报 `APP_NOT_INSTALLED`）、带 `--app-mcp-activation`、名字在总线的可激活列表中（不在则提示 `ReloadConfig`）；列出总线上 `dev.appmcp.App.*` 名字的可激活 / 运行状态 | 已实现 |
 | `naming.android` | 任意（经 adb） | PATH 中有 adb 且有已连接设备时（最多 4 台）：`cmd package query-services -a dev.appmcp.TOOLS` 的 Service（导出、启用、`android:permission`）；独立 Hub App（`dev.appmcp.HUB`）是否安装；`getprop` 识别 ROM（Flyme 已真机确认，MIUI / HyperOS、EMUI / HarmonyOS、ColorOS、OriginOS 为未验证的常见设置位置）；`logcat -d -s ActivityManager:W` 中相关包的绑定拦截记录（目前只收录 Flyme 原文 `requires a ifw permit`）→ 注意 + `ACTIVATION_BLOCKED` + 放行路径 | 已实现 |
 | `naming.pipes` | Windows | 当前用户 SID 与每个登记 App 的期望管道名 `\\.\pipe\appmcp-<SID>-<appId>`；列出 `\\.\pipe\` 中 `appmcp-` 开头的名字（目录查询，最多 16384 项，不打开管道：打开即被 App 当作通道接受）判断是否运行中（另计实例管道）；未运行时按激活方式核对：`exec` 的程序存在（否则 `APP_NOT_INSTALLED`）、`uri` / `aumid` 有 `target`、其他方式只在运行时可调用；登记的 `executable` 已不存在 → Hub 忽略该登记；当前用户 SID 下没有登记文件的管道（Hub 发现不了，提示 `app install`）；其他用户 SID 的管道与不合命名规则的管道列为信息。管道所有者与服务端进程映像不核对（需打开管道；由 Hub 拨号时核对，10.3），以当前用户 SID 命名却被他人抢先创建的管道会显示为运行中 | 已实现 |
-| `naming.launchd` | macOS | `dev.appmcp.App.*` Agent 登记与 Mach 服务 | 未实现（macOS 连接器未完成，4.4） |
+| `naming.launchd` | macOS | 激活方式为 `launchd` 的登记 App：`~/Library/LaunchAgents/dev.appmcp.App.<id>.plist` 存在且与登记一致（`agent_plist` 重新生成比对）、套接字目录属主与权限、`launchctl print gui/<uid>/<label>` 的退出码（已载入，只看退出码不解析输出，F-46）、套接字文件已由 launchd 创建；没有登记的 `dev.appmcp.App.*` plist。不连接套接字（连接即激活） | 已实现（未在 Mac 上运行） |
 | `naming.discovery` | 全部 | 每个 App 的发现来源（`source`、首次 / 最近见到时间）、指纹状态、是否可激活 | 未做（目前见 `apps.list` 的 `nameService`；发现记录持久化与指纹未做，14.3） |
 | `naming.bindings` | 全部 | 当前通道 / 绑定数与上限、每条通道的宽限剩余时间、最近的对端死亡事件 | 未做（绑定上限未实现，14.3） |
 
@@ -680,10 +704,17 @@ Get-Content "$env:LOCALAPPDATA\app-mcp\apps\<appId>.json" | ConvertFrom-Json    
 **macOS（launchd）**
 
 ```bash
-launchctl print gui/$UID | grep dev.appmcp                   # 已登记的 Agent 与 Mach 服务
-launchctl print gui/$UID/dev.appmcp.App.<id>                 # 单个 Agent 的状态（输出不是稳定接口，doctor 不解析）
-ls ~/Library/LaunchAgents/dev.appmcp.App.*.plist ~/Library/Application\ Support/app-mcp/apps/
+launchctl print gui/$UID | grep dev.appmcp                   # 已载入的 Agent
+launchctl print gui/$UID/dev.appmcp.App.<id>                 # 单个 Agent 的状态与 sockets（输出不是稳定接口，doctor 只看退出码）
+ls ~/Library/LaunchAgents/dev.appmcp.App.*.plist ~/Library/Application\ Support/app-mcp/apps/ ~/.app-mcp/run/apps/
+plutil -lint ~/Library/LaunchAgents/dev.appmcp.App.<id>.plist   # plist 格式
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.appmcp.App.<id>.plist   # 载入（创建套接字，不启动 App）
+launchctl bootout gui/$UID/dev.appmcp.App.<id>               # 卸下
+log show --last 5m --predicate 'process == "launchd"' | grep dev.appmcp   # 按需启动失败的原因
 ```
+
+套接字不存在：作业未载入（`bootstrap`）；连接后超时：App 启动失败或未在 `--app-mcp-activation` 下以 `register_name` 启动 SDK（看 App 日志）；
+用户直接打开的 App 日志中"本进程不是由 launchd 启动的"是正常的（4.4 GUI 进程）。
 
 ## 12. 错误码（新增，待合入）
 
@@ -783,6 +814,9 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 | F-28 | App Group 容器中的 Unix 套接字只对同一 Team ID 的进程可用；沙盒进程查找全局 Mach 服务需临时例外权利 | `bundleresources/entitlements/com.apple.security.application-groups`；Forums thread 742759 |
 | F-29 | `SMAppService.agent(plistName:)`（macOS 13+，plist 位于包内 `Contents/Library/LaunchAgents`，需用户批准）；`xpc_connection_set_peer_code_signing_requirement` macOS 12+；XPC 无公开审计令牌接口，Unix 套接字有 `LOCAL_PEERTOKEN`；`launchctl print` 输出不是接口 | `servicemanagement/smappservice`；`xpc/xpc_connection_set_peer_code_signing_requirement`；launchctl(1) |
 | F-30 | App Intents（iOS 16+）是向系统暴露动作的机制；launchd / XPC 服务接口只在 macOS 提供 | `documentation/appintents`；`xpc_connection_create_mach_service` 平台可用性 |
+| F-44 | `Sockets`："launch on demand sockets that can be used to let launchd know when to run the job"；`SockPathName` 指定 Unix 套接字路径；`SockPathMode` 无八进制、须写十进制；`SockPassive` 缺省 true（listen）；`KeepAlive` 缺省 false，"only demand will start the job"；`ThrottleInterval` 缺省 10 秒（作业不会比这更频繁地被启动）；作业须以 `launch_activate_socket(3)` 签入取得 fd（2026-10-02 核对） | launchd.plist(5) |
+| F-45 | `int launch_activate_socket(const char *name, int **fds, size_t *cnt)`（`<launch.h>`）：成功返回 0；`ENOENT` 名字不在 plist 中、`ESRCH` 调用进程不受 launchd 管理、`EALREADY` 已被激活；`fds` 数组在堆上分配，由调用方 `free` | launch(3) |
+| F-46 | `launchctl bootstrap gui/<uid> <plist>` / `bootout gui/<uid>/<label>`；`print` 的输出 "is NOT API in any sense at all"；成功退出码 0 | launchctl(1) |
 | F-36 | 一个 App 不能调用另一个 App 的 App Intent："One application cannot invoke an app intent of another." | Developer Forums thread 776820（DTS Engineer，2025-03） |
 | F-37 | 执行 App Intents 的是系统入口：Siri / Apple Intelligence、快捷指令、Spotlight、小组件与控件、操作按钮、实时活动；没有第三方调用方 | WWDC26 session 240 / 343 / 345；`documentation/appintents/apple-intelligence-and-siri-ai` |
 | F-38 | 快捷指令 URL：`shortcuts://run-shortcut?name=&input=&text=`；`shortcuts://x-callback-url/run-shortcut?…` 的 `x-success`（`result=` 为文本输出）/ `x-error`（`errorMessage`）/ `x-cancel`；按名字运行用户已有的快捷指令并打开快捷指令 App | 快捷指令使用手册 URL scheme 说明（2026-10-02 调研记录） |
@@ -813,7 +847,7 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 | U-06 | 枚举 `\\.\pipe\` 无官方文档 | **保守处理**：Hub / `doctor` 不枚举管道，只用登记文件；命令仅作人工排查 |
 | U-07 | 打包 App 的激活方式（COM `ExeServer` / App Service）能否被未打包的 Hub 调用 | **验证**（Windows 实机）；确认前打包 App 走协议激活 + 等待管道 |
 | U-08 | 哪些打包形态属于"被虚拟化"（RuntimeBehavior / TrustLevel 组合） | **保守处理**：打包 App 一律不依赖自写登记文件，用 AppExtension 声明；**验证** |
-| U-09 | macOS 上 launchd 作业进程与用户打开的 GUI 进程如何共享工具 | **待确认**（4d-F 设计）；确认前 GUI 进程走现有 App 拨 Hub 路径 |
+| U-09 | macOS 上 launchd 作业进程与用户打开的 GUI 进程如何共享工具 | **已决定**（2026-10-02，4.4）：GUI 进程不登记名字、走 App 拨 Hub；Hub 先用活连接；GUI 休眠时拨号另起作业进程，单实例语义由 App 自行处理 |
 | U-10 | WSL 中的 Hub 能否打开 Windows 侧命名管道、激活 Windows App | **验证**（interop 实测）；不能则 WSL Hub 只服务 Linux App |
 | U-11 | 自报登记文件写入（5.5 载体 1）对开发者是否可接受（首次运行的文件副作用） | **待确认**；提供关闭开关，默认开启仅限桌面平台 |
 | U-12 | `maxBoundApps = 4`、`graceMs = 15 s`、`maxHoldMs = 10 min` 是否合适 | **验证**：真机功耗测量后调整；均为配置项 |
@@ -827,6 +861,9 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 | U-20 | iOS 27 "Siri 扩展" / 模型委托是否会开放给第三方 Agent（目前仅见 9to5Mac 2026-09-14 报道为私有接口、未启用） | **明确不在范围**；公开 API 出现后重新核实 4.5 |
 | U-21 | ExtensionFoundation 跨开发者扩展（F-42）：App Store 是否接受（论坛 803753 有校验报错）、宿主在后台时能否启动 / 使用扩展、iOS 上扩展的内存与时间上限 | **待确认**，只记为候选；确认前 iOS 不做按名寻址（4.5） |
 | U-22 | codegen 的 App Intents 扩展输出：未在真实 SDK 上编译；iOS 27 前 intent 同时在 App 与扩展中时由哪个进程执行；`AppShortcutsProvider` 放在共享包中是否被系统识别；扩展进程的内存上限（已抓取的文档未写） | **验证**（Xcode + 真机）；**保守处理**：默认关闭，生成文件头标明未验证，foreground 工具在扩展布局下给出警告并建议声明 `allowedExecutionTargets` |
+| U-23 | launchd 持有监听端时，连接方 `getpeereid` 得到的是 launchd（root）还是作业所属用户；launchd 载入作业时是否先删除残留的同名套接字文件 | **保守处理**：Hub 接受当前用户或 root（root 本在信任边界之上），套接字目录须属于当前用户且 `0700`；`app install` 载入前删除残留文件；**验证**（Mac 实机） |
+| U-24 | `ThrottleInterval`（缺省 10 s）对"宽限后退出 → 立刻再次调用"的再激活延迟的影响；launchd 启动作业失败时排队的连接是否被关闭 | **验证**（Mac 实机，测冷 / 热 / 退出后再激活延迟）；失败时 Hub 以唤醒超时兜底（`ACTIVATION_TIMEOUT`） |
+| U-25 | 包内 Agent 经 `SMAppService.agent(plistName:)` 注册（需用户在"登录项"批准）时 `Sockets` 是否同样可用、批准前的连接表现 | **验证**（Mac 实机）；确认前只支持 `~/Library/LaunchAgents` 中的 plist（`app install` / 安装程序写入） |
 
 ### 13.3 风险与限制手段
 
@@ -847,6 +884,7 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 | R-13 | 未覆盖的平台（iOS、鸿蒙、沙盒 macOS）行为不一致 | 兼容 | 明确列为"不支持按名寻址"，沿用现有路径，不做部分实现 |
 | R-14 | 未知的未知（如系统名字服务异常、激活风暴） | 稳定性 | 每 App 唤醒 / 拨号速率上限（复用 4e O4）；拨号去重；所有失败带错误码进入 `last_error` 与 `doctor` |
 | R-15 | codegen 的 App Intents 扩展 / 可选输出与真实 SDK 不符（未编译验证），或需要界面的工具落到扩展进程执行 | 兼容 | 选项默认关闭、关闭时输出与快照一致；桩类型检查（`crates/codegen/scripts/verify.sh`）；`allowedExecutionTargets` 只在 iOS 27 起以 `@available` 声明；扩展布局下 foreground 工具给出警告（U-22） |
+| R-16 | macOS 按名寻址只在 Linux 上编译与单元测试，launchd 实际行为（U-23–U-25）可能与实现假设不符 | 兼容 | Hub 侧无 FFI、只有 `connect`；App 侧唯一的 FFI 调用集中在 `names/launchd.rs` 的 `sys`；所有失败显式返回第 12 节的码；`doctor` 的 `naming.launchd` 只读核对；`--name-service` 默认关闭；实机验收列在 14.4 |
 
 ## 14. 实现状态
 
@@ -909,7 +947,26 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 链路上实机跑；WSL 中的 Hub 打开 Windows 管道（U-10）；经 Kotlin / Swift / Dart / C++ 封装的 Windows 管道登记（C# 已在 Windows 实测，2026-10-02）；Authenticode 发布者指纹（5.4）。
 `doctor` 的 `naming.pipes` 已实现（第 11 节）。
 
-### 14.4 未做（后续段落）
+### 14.4 第四段：macOS launchd 按需套接字（2026-10-02，4d-F，未经 Mac 实机验证）
+
+| 部分 | 已实现 | 位置 |
+|---|---|---|
+| 名字映射与 plist | `naming::launchd`（标签、`SOCKET_KEY = "AppMcp"`、`agent_plist`（XML 转义，控制字符显式失败）、`socket_dir_issue`）；激活方式 `kinds::LAUNCHD`（`target` = 套接字路径） | `app_mcp_protocol::naming` |
+| 原生运行时 | macOS `NameServer`：`launch_activate_socket` 取得 launchd 的监听 fd（进程内保留原 fd、每次登记复制一份），接受任务阻塞在 `accept` 上，核对对端 uid 后交 `accept_channel`（与 Linux 同一路径、同一帧）；拒绝写拒绝行（与 Windows 共用 `names::refuse`）；不由 launchd 启动时记录警告不登记 | `crates/native/src/names/launchd.rs`（接受 / 拒绝在 Linux 上以真实套接字测试） |
+| Hub | `LaunchdConnector`：登记目录发现 + kqueue 目录通知（一个阻塞线程）、`connect` 即激活、套接字目录属主 / 权限与对端 uid 核对、拒绝识别；与 Windows 共用登记目录（`connector/registered.rs`）与首段数据识别（`connector/greeting.rs`） | `crates/hub/src/connector/launchd.rs`（`launchd/kqueue.rs`、`launchd/tests.rs`） |
+| Host | `serve --name-service` 在 macOS 上启用 `LaunchdConnector`；`app install` 写登记文件（`launchd`）、`~/Library/LaunchAgents/dev.appmcp.App.<id>.plist`、套接字目录（`0700`）并 `launchctl bootstrap`（先 `bootout` 旧作业），`app uninstall` 先 `bootout` 再删文件；`--no-reload` 跳过 launchctl | `crates/host/src/app_install.rs`、`lib.rs` |
+| doctor | `naming.launchd`（第 11 节）；`naming.registrations` 认得 `launchd` 激活方式 | `crates/host/src/doctor/naming/launchd.rs` |
+
+验证（Linux）：`cargo clippy --target aarch64-apple-darwin` / `x86_64-apple-darwin`（protocol、native、hub、host，含测试目标）无警告——ring 的 C 代码需要 macOS SDK
+头文件，检查时以临时的最小头文件（`stdint.h` 之外的 `string.h` / `stdlib.h` / `assert.h` / `TargetConditionals.h` 桩）代替，只用于类型检查、不链接；
+单元测试覆盖 plist 生成、登记与安装布局、App 侧接受 / 拒绝 / 注销、Hub 侧发现不连接、拨号回放、拒绝 / 超时 / 关闭、拨号前错误、身份规则、目录事件、doctor 规则表。
+
+**Mac 实机待验收**：`app install` → `launchctl print` 显示已载入、套接字已创建；`serve --name-service` 列出工具不启动 App；首次调用由 launchd
+冷启动（测延迟）→ 宽限后 App 退出 → 再调用再激活（ThrottleInterval 影响，U-24）；对端凭据（U-23）；App 已有通道 → `CHANNEL_LIMIT`；
+程序缺失 → launchd 启动失败时的表现（U-24）；GUI 进程打开时的路由（U-09 决定）；kqueue 目录通知即时生效；`app uninstall` 后作业卸下；
+`doctor` 的 `naming.launchd` 实际输出；SMAppService 包内 Agent（U-25）；经 Swift（uniffi `register_name`）/ Python / Node 绑定的按名冷启动。
+
+### 14.5 未做（后续段落）
 
 - 发现：App 登记文件（5.3）的读取与目录监视（Host 的 `app install` 已写入）、自报登记 `app/register`（5.5）、签名指纹与
   `fingerprintChanged`（5.4）、发现记录持久化 `discovery.json`。
@@ -918,7 +975,7 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
   （同一 SDK 的核心同时只允许一条连接，实际不会出现）。
 - 多 Hub：App 同时接受多条通道（9.1，当前上限 1）。
 - 绑定：Hub 其他语言绑定（C、Node）的连接器回调与 `channel_grace`；
-  `doctor` 的 `naming.launchd`、`naming.discovery`、`naming.bindings`（第 11 节；`naming.registrations` / `naming.dbus` / `naming.android` / `naming.pipes` 已实现）。
+  `doctor` 的 `naming.discovery`、`naming.bindings`（第 11 节；`naming.registrations` / `naming.dbus` / `naming.android` / `naming.pipes` / `naming.launchd` 已实现）。
 - Android：真机验证（冷启动绑定、宽限后回到 cached 并被冻结、进程被杀后再绑定、多 App、Flyme 关联启动拦截，U-01–U-03）；LeakCanary 接入（7.7）；
   独立 Hub App 的用户授权 Agent 名单（TASKS 4g e，与第 16 项 P1 / P2 合并）。
 - Host 默认开启按名寻址（当前需 `--name-service`）；dbus-broker 上的实测（U-05）。

@@ -86,6 +86,7 @@ const ACTIVATION_RULES: &[(&str, Rule)] = &[
     (kinds::EXEC, activation_exec),
     (kinds::URI, activation_target_required),
     (kinds::AUMID, activation_aumid),
+    (kinds::LAUNCHD, activation_launchd),
     (kinds::NONE, activation_none),
 ];
 
@@ -139,6 +140,16 @@ fn activation_target_required(i: &RuleInput) -> Option<Finding> {
 fn activation_aumid(i: &RuleInput) -> Option<Finding> {
     activation_target_required(i)
         .or_else(|| Some(Finding::new(Level::Info, "aumid 激活未核对（打包 App 是否已安装需在 Windows 上查看「开始」菜单或 Get-AppxPackage）")))
+}
+
+/// `launchd`（4.4）：只在 macOS 有效，`target` 为套接字的绝对路径；作业与套接字由 `naming.launchd` 核对。
+fn activation_launchd(i: &RuleInput) -> Option<Finding> {
+    if i.platform != Platform::MacOs {
+        return Some(Finding::new(Level::Warn, "激活方式 launchd 只在 macOS 有效").hint(REINSTALL_HINT));
+    }
+    (!Path::new(&i.reg.activation.target).is_absolute()).then(|| {
+        Finding::new(Level::Error, format!("激活目标「{}」不是套接字的绝对路径", i.reg.activation.target)).hint(REINSTALL_HINT)
+    })
 }
 
 fn activation_none(_: &RuleInput) -> Option<Finding> {
@@ -354,7 +365,8 @@ mod tests {
             ("aumid no target", |r| r["activation"] = json!({"kind": "aumid"}), Level::Error, "缺少 target"),
             ("aumid", |r| r["activation"] = json!({"kind": "aumid", "target": "Pub.App_x!App"}), Level::Info, "aumid 激活未核对"),
             ("none", |r| r["activation"] = json!({"kind": "none"}), Level::Info, "没有激活方式"),
-            ("unknown kind", |r| r["activation"] = json!({"kind": "launchd", "target": "x"}), Level::Warn, "未知的激活方式「launchd」"),
+            ("launchd off macOS", |r| r["activation"] = json!({"kind": "launchd", "target": "/s.sock"}), Level::Warn, "只在 macOS 有效"),
+            ("unknown kind", |r| r["activation"] = json!({"kind": "com", "target": "x"}), Level::Warn, "未知的激活方式「com」"),
         ];
         for (name, mutate, level, needle) in cases {
             let mut reg = base.clone();
@@ -392,6 +404,18 @@ mod tests {
         let r = inspect(&path, "not json", Platform::Linux, &[]);
         assert_eq!(r.findings[0].level, Level::Error);
         assert!(r.registration.is_none());
+    }
+
+    #[test]
+    fn launchd_activation_needs_absolute_socket_on_macos() {
+        let s = Scratch::new();
+        let (path, mut reg, _) = valid(&s.0);
+        reg["activation"] = json!({"kind": "launchd", "target": "/Users/u/.app-mcp/run/apps/my-shop.sock"});
+        let r = inspect(&path, &reg.to_string(), Platform::MacOs, &[]);
+        assert!(r.findings.is_empty(), "{:?}", texts(&r));
+        reg["activation"]["target"] = json!("my-shop.sock");
+        let r = inspect(&path, &reg.to_string(), Platform::MacOs, &[]);
+        assert!(r.findings.iter().any(|f| f.level == Level::Error && f.text.contains("不是套接字的绝对路径")), "{:?}", texts(&r));
     }
 
     #[test]

@@ -20,7 +20,7 @@ use crate::config::{AppHome, AuthMode, Settings};
 use crate::ports::{self, PortOwner};
 use crate::probe::{self, Probe};
 
-mod command;
+pub(crate) mod command;
 mod naming;
 
 /// 检查结果的级别。

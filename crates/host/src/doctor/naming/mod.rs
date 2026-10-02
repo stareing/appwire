@@ -1,6 +1,6 @@
 //! doctor 的名字服务检查组（spec/naming.md 第 11 节，检查项 ID 以 `naming.` 开头）。
 //!
-//! 按平台从 [`NAMING_CHECKS`] 表中选出要运行的检查；平台上尚无连接器实现的检查以「跳过（未实现）」报告，不做假检查。
+//! 按平台从 [`NAMING_CHECKS`] 表中选出要运行的检查（各平台的连接器均已实现，不做假检查）。
 //! 每项检查分两步：探测（读文件、问总线、跑 adb，都有超时）→ 评估（纯函数，单元测试用假数据覆盖）。
 //!
 //! 只读：不激活任何名字（`ListActivatableNames` / `ListNames` 不触发激活）、不打开 `appmcp-` 管道（只列名字）、不 `bindService`、
@@ -18,6 +18,9 @@ use super::{Check, Level};
 mod android;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod dbus;
+// @why 探测只在 macOS 上运行；评估规则在各平台测试。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod launchd;
 mod pipes;
 mod registration;
 
@@ -157,7 +160,7 @@ const NAMING_CHECKS: &[NamingCheck] = &[
     NamingCheck { id: registration::ID, platforms: DESKTOP, run: run_registrations },
     NamingCheck { id: dbus::ID, platforms: &[Platform::Linux], run: run_dbus },
     NamingCheck { id: pipes::ID, platforms: &[Platform::Windows], run: run_pipes },
-    NamingCheck { id: LAUNCHD.id, platforms: &[Platform::MacOs], run: run_launchd },
+    NamingCheck { id: launchd::ID, platforms: &[Platform::MacOs], run: run_launchd },
     NamingCheck { id: android::ID, platforms: ANY, run: run_android },
 ];
 
@@ -170,31 +173,12 @@ fn run_dbus(env: &NamingEnv) -> CheckFuture<'_> {
 fn run_pipes(env: &NamingEnv) -> CheckFuture<'_> {
     Box::pin(pipes::check(env))
 }
-fn run_launchd(_: &NamingEnv) -> CheckFuture<'_> {
-    Box::pin(async { LAUNCHD.check() })
+fn run_launchd(env: &NamingEnv) -> CheckFuture<'_> {
+    Box::pin(launchd::check(env))
 }
 fn run_android(env: &NamingEnv) -> CheckFuture<'_> {
     Box::pin(android::check(env))
 }
-
-/// 本平台尚无连接器实现的检查：如实报告「未实现」。
-struct NotImplemented {
-    id: &'static str,
-    title: &'static str,
-    reason: &'static str,
-}
-
-impl NotImplemented {
-    fn check(&self) -> Check {
-        Check::new(self.id, self.title, Level::Skip, format!("未实现：{}", self.reason))
-    }
-}
-
-const LAUNCHD: NotImplemented = NotImplemented {
-    id: "naming.launchd",
-    title: "名字服务：macOS launchd",
-    reason: "macOS launchd / XPC 连接器尚未实现（spec/naming.md 4.4、14.3），Hub 不会按名拨号",
-};
 
 /// `platform` 上要运行的检查（按表顺序）。
 fn selected(platform: Platform) -> impl Iterator<Item = &'static NamingCheck> {
@@ -226,20 +210,6 @@ mod tests {
         assert_eq!(ids_for(Platform::Windows), ["naming.registrations", "naming.pipes", "naming.android"]);
         assert_eq!(ids_for(Platform::MacOs), ["naming.registrations", "naming.launchd", "naming.android"]);
         assert_eq!(ids_for(Platform::Other), ["naming.android"]);
-    }
-
-    #[tokio::test]
-    async fn unimplemented_platform_checks_skip_with_reason() {
-        let env = NamingEnv {
-            registration_dirs: vec![],
-            dbus_service_dirs: vec![],
-            dbus_address: None,
-            adb: None,
-            timeout: Duration::from_secs(1),
-        };
-        let c = run_launchd(&env).await;
-        assert_eq!((c.id, c.status), ("naming.launchd", Level::Skip));
-        assert!(c.summary.starts_with("未实现："), "{}", c.summary);
     }
 
     #[test]

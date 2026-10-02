@@ -220,6 +220,96 @@ pub mod pipe {
     }
 }
 
+/// macOS：launchd 用户 Agent 的按需套接字（spec/naming.md 4.4）。
+///
+/// App 随包（或经 `app-mcp-host app install`）提供一个用户 LaunchAgent：标签 `dev.appmcp.App.<appId>`，`Sockets` 中键
+/// [`SOCKET_KEY`] 声明一个 Unix 套接字。launchd 持有该套接字的监听端，有人连接时按需启动作业（`ProgramArguments` 末尾为
+/// [`ACTIVATION_ARG`]），作业以 `launch_activate_socket(SOCKET_KEY)` 取得监听 fd 并 `accept`；Hub 拨号即 `connect` 这个路径。
+pub mod launchd {
+    /// 作业标签前缀（含末尾的 `.`）：标签 `dev.appmcp.App.<appId>`（appId 原样，launchd 标签允许 `-`）。
+    pub const LABEL_PREFIX: &str = "dev.appmcp.App.";
+    /// plist `Sockets` 字典中的键；App 以此名调用 `launch_activate_socket`。
+    pub const SOCKET_KEY: &str = "AppMcp";
+    /// 激活参数：与 D-Bus 激活文件的 `Exec` 相同，SDK 据此知道自己由名字服务激活（通道关闭后发出 idle-exit）。
+    pub const ACTIVATION_ARG: &str = super::dbus::ACTIVATION_ARG;
+    /// 套接字文件权限 `0600`（plist 只有十进制整数，launchd.plist(5) `SockPathMode`）。
+    pub const SOCK_PATH_MODE: u32 = 0o600;
+    /// App 拒绝通道时写给 Hub 的一行：与 Windows 相同的写法（4.3"拒绝"）。
+    pub use super::pipe::{MAX_REFUSAL_LINE, parse_refusal, refusal_line};
+
+    /// 作业标签：`dev.appmcp.App.<appId>`。
+    pub fn label(app_id: &str) -> String {
+        format!("{LABEL_PREFIX}{app_id}")
+    }
+
+    /// Agent plist 的文件名（与标签一致）：`dev.appmcp.App.<appId>.plist`。
+    pub fn plist_file_name(app_id: &str) -> String {
+        format!("{}.plist", label(app_id))
+    }
+
+    /// 套接字文件名：`<appId>.sock`（目录由安装方选择，绝对路径写入登记文件 `activation.target`）。
+    pub fn socket_file_name(app_id: &str) -> String {
+        format!("{app_id}.sock")
+    }
+
+    /// 套接字所在目录的属主与权限问题（10.1：与 Host 的 IPC 目录同样的要求）；没有问题时为 `None`。
+    ///
+    /// @security 他人可写的目录中，套接字可被替换为别的程序监听的同名套接字。
+    /// @input `uid` / `mode` 为目录的属主与 `st_mode`，`me` 为当前有效用户 ID。
+    pub fn socket_dir_issue(uid: u32, mode: u32, me: u32) -> Option<String> {
+        if uid != me {
+            return Some(format!("属于 uid {uid}，不是当前用户（uid {me}）"));
+        }
+        (mode & 0o022 != 0).then(|| format!("权限 {:o}，组或其他用户可写", mode & 0o777))
+    }
+
+    /// XML 字符串转义；XML 1.0 不能表示的控制字符显式失败。
+    fn xml_text(s: &str) -> Result<String, String> {
+        if let Some(c) = s.chars().find(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r')) {
+            return Err(format!("含有不能写入 plist 的控制字符 U+{:04X}：{s:?}", u32::from(c)));
+        }
+        Ok(s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;"))
+    }
+
+    /// 用户 LaunchAgent 的 plist（spec/naming.md 4.4）：按需启动（不设 `RunAtLoad` / `KeepAlive`，launchd.plist(5)
+    /// `KeepAlive` 缺省为否"only demand will start the job"），`ProgramArguments` = 程序 + [`ACTIVATION_ARG`]，
+    /// `Sockets.AppMcp.SockPathName` = 套接字路径、`SockPathMode` = [`SOCK_PATH_MODE`]。
+    ///
+    /// @input `program`、`socket_path` 为绝对路径（调用方校验）。
+    /// @error 字段含 XML 不能表示的控制字符时返回说明。
+    pub fn agent_plist(app_id: &str, program: &str, socket_path: &str) -> Result<String, String> {
+        let label = xml_text(&label(app_id))?;
+        let program = xml_text(program)?;
+        let socket = xml_text(socket_path)?;
+        Ok(format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>{label}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{program}</string>
+		<string>{ACTIVATION_ARG}</string>
+	</array>
+	<key>Sockets</key>
+	<dict>
+		<key>{SOCKET_KEY}</key>
+		<dict>
+			<key>SockPathName</key>
+			<string>{socket}</string>
+			<key>SockPathMode</key>
+			<integer>{SOCK_PATH_MODE}</integer>
+		</dict>
+	</dict>
+</dict>
+</plist>
+"#
+        ))
+    }
+}
+
 /// App 登记文件（spec/naming.md 5.3）：桌面平台共用的 JSON，由安装程序 / `app-mcp-host app install` / SDK 自报写入，
 /// Hub 只读（Windows 上是发现的唯一来源，4.3）。
 pub mod registration {
@@ -238,6 +328,8 @@ pub mod registration {
         pub const URI: &str = "uri";
         /// Windows 打包 App：`IApplicationActivationManager::ActivateApplication`（`target` = AUMID，参数 `--app-mcp-activation`）。
         pub const AUMID: &str = "aumid";
+        /// macOS：launchd 用户 Agent 的按需套接字（`target` = 套接字绝对路径，4.4，2026-10-02 加入）。
+        pub const LAUNCHD: &str = "launchd";
         /// 不可激活：只在 App 运行时可拨号。
         pub const NONE: &str = "none";
     }
@@ -465,6 +557,27 @@ mod tests {
         assert!(registration::parse("{", "shop").is_err());
         assert!(registration::parse(r#"{"registrationVersion":1,"appId":"shop","source":"x"}"#, "shop").is_err(), "缺 activation");
         assert_eq!(registration::file_name("shop"), "shop.json");
+    }
+
+    #[test]
+    fn launchd_plist_declares_on_demand_socket() {
+        assert_eq!(launchd::label("my-shop"), "dev.appmcp.App.my-shop");
+        assert_eq!(launchd::plist_file_name("my-shop"), "dev.appmcp.App.my-shop.plist");
+        assert_eq!(launchd::socket_file_name("my-shop"), "my-shop.sock");
+        let text = launchd::agent_plist("my-shop", "/Applications/A & B.app/Contents/MacOS/<x>", "/Users/u/.app-mcp/run/apps/my-shop.sock").unwrap();
+        assert!(text.contains("<key>Label</key>\n\t<string>dev.appmcp.App.my-shop</string>"), "{text}");
+        assert!(
+            text.contains("<string>/Applications/A &amp; B.app/Contents/MacOS/&lt;x&gt;</string>\n\t\t<string>--app-mcp-activation</string>"),
+            "{text}"
+        );
+        assert!(text.contains("<key>AppMcp</key>"), "{text}");
+        assert!(text.contains("<string>/Users/u/.app-mcp/run/apps/my-shop.sock</string>"), "{text}");
+        // 0600 的十进制（plist 不支持八进制）。
+        assert!(text.contains("<key>SockPathMode</key>\n\t\t\t<integer>384</integer>"), "{text}");
+        // 只按需启动。
+        assert!(!text.contains("RunAtLoad") && !text.contains("KeepAlive"), "{text}");
+        assert!(launchd::agent_plist("a", "/bin/a\u{1}", "/s").is_err(), "控制字符");
+        assert_eq!(launchd::parse_refusal(&launchd::refusal_line(codes::CHANNEL_LIMIT, "x")).0, codes::CHANNEL_LIMIT);
     }
 
     #[test]

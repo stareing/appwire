@@ -447,7 +447,7 @@ mod platform {
         run("launchctl", &["kickstart", &target()?]).map(|_| ())
     }
 
-    pub fn stop() -> anyhow::Result<bool> {
+    pub fn stop() -> anyhow::Result<()> {
         // SIGTERM → serve 正常退出（退出码 0），KeepAlive.SuccessfulExit=false 不会重启。
         run("launchctl", &["kill", "SIGTERM", &target()?]).map(|_| ())
     }

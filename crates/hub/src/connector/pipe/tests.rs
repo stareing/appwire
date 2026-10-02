@@ -10,6 +10,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use super::*;
+use crate::connector::registered::lock;
+use app_mcp_protocol::naming::registration;
 use crate::connector::Connector;
 
 const SID: &str = "S-1-5-21-1-2-3-1001";

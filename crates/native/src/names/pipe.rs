@@ -13,17 +13,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use app_mcp_protocol::endpoint::{check_pipe_name, win};
-use app_mcp_protocol::naming::{Address, codes, pipe as names};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use app_mcp_protocol::naming::{Address, pipe as names};
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::task::JoinHandle;
 
-use super::{ChannelSink, NameRequest, NameServer, RegisterFuture, Refusal, Registration};
+use super::{ChannelSink, NameRequest, NameServer, RegisterFuture, Registration};
 
 /// `ERROR_ACCESS_DENIED`：带 `FILE_FLAG_FIRST_PIPE_INSTANCE` 创建已存在的管道时返回。
 const ERROR_ACCESS_DENIED: i32 = 5;
-/// 写出拒绝行后等待 Hub 读取并关闭的上限（之后 App 断开；只在拒绝路径上计时）。
-const REFUSAL_LINGER: Duration = Duration::from_secs(2);
 /// 创建下一个管道实例失败时的重试次数与间隔（只在失败路径上计时，空闲时没有定时器）。
 const CREATE_RETRIES: u32 = 3;
 const CREATE_RETRY_DELAY: Duration = Duration::from_millis(100);
@@ -147,27 +144,7 @@ async fn serve(name: String, security: Arc<win::PipeSecurity>, first: NamedPipeS
         }
         next = create_next(&name, &security).await.ok();
         if let Err((refusal, server)) = sink.try_offer(server) {
-            tokio::spawn(refuse(server, refusal));
+            tokio::spawn(super::refuse(server, refusal));
         }
     }
-}
-
-/// 在管道上写一行 `<CODE>：<说明>` 后等 Hub 读取并关闭（最长 [`REFUSAL_LINGER`]），再断开。
-///
-/// @why 直接断开会丢弃 Hub 尚未读取的数据（`DisconnectNamedPipe`），Hub 就只能看到"对端关闭"而不知道原因。
-async fn refuse(mut server: NamedPipeServer, refusal: Refusal) {
-    let code = match refusal {
-        Refusal::Busy => codes::CHANNEL_LIMIT,
-        Refusal::Stopped | Refusal::Invalid(_) => codes::ACTIVATION_DENIED,
-    };
-    let mut line = names::refusal_line(code, &refusal.to_string());
-    line.push('\n');
-    if server.write_all(line.as_bytes()).await.is_err() {
-        return;
-    }
-    let mut sink = [0u8; 256];
-    let _ = tokio::time::timeout(REFUSAL_LINGER, async {
-        while matches!(server.read(&mut sink).await, Ok(n) if n > 0) {}
-    })
-    .await;
 }

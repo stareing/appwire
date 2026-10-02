@@ -6,6 +6,9 @@
 //!   它是 Windows 上 Hub 发现 App 的唯一来源（Hub 经目录变更通知即时看到，无需重启）；
 //! - 仅 Linux：会话服务激活文件 `<数据目录>/dbus-1/services/dev.appmcp.App.<id>.service`（`Name=` 与文件名一致，
 //!   `Exec="<程序>" --app-mcp-activation`），写入后调用 `ReloadConfig`。
+//! - 仅 macOS（4.4）：数据目录为 `~/Library/Application Support`，激活方式 `launchd`（`target` = 套接字路径
+//!   `<home>/run/apps/<appId>.sock`）；用户 LaunchAgent `<数据目录的上级>/LaunchAgents/dev.appmcp.App.<id>.plist`
+//!   （默认 `~/Library/LaunchAgents`，按需套接字，不常驻），写入后 `launchctl bootstrap gui/<uid>`；撤销时先 `launchctl bootout`。
 //!
 //! 给出静态清单时另复制到 `<home>/manifests/<appId>.json`：Host 启动时加载，App 未运行也能列出工具并按名激活
 //! （登记文件的 `manifest` 指向该副本）。
@@ -26,8 +29,35 @@ use crate::config::{AppHome, absolute};
 pub struct Paths {
     /// D-Bus 激活文件（仅 Linux）。
     pub service_file: Option<PathBuf>,
+    /// launchd 用户 Agent 的 plist 与按需套接字（仅 macOS，[`LaunchdPaths`]）。
+    pub launchd: Option<LaunchdPaths>,
     pub registration_file: PathBuf,
     pub manifest_copy: PathBuf,
+}
+
+/// macOS launchd 的两个位置（spec/naming.md 4.4）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaunchdPaths {
+    /// `<数据目录的上级>/LaunchAgents/dev.appmcp.App.<appId>.plist`（默认 `~/Library/LaunchAgents`）。
+    pub plist: PathBuf,
+    /// `<home>/run/apps/<appId>.sock`：launchd 创建与监听，Hub 连接即激活。
+    pub socket: PathBuf,
+}
+
+impl LaunchdPaths {
+    /// 用户 LaunchAgents 目录：数据目录的上级下的 `LaunchAgents`（默认 `~/Library/LaunchAgents`；doctor 读同一位置）。
+    pub fn agents_dir(data_home: &Path) -> PathBuf {
+        data_home.parent().unwrap_or(data_home).join("LaunchAgents")
+    }
+
+    /// @why LaunchAgents 目录由数据目录（`~/Library/Application Support`）推出，`--data-home` 指向临时目录时一并隔离。
+    pub fn new(data_home: &Path, home: &AppHome, app_id: &str) -> Self {
+        use app_mcp_protocol::naming::launchd as names;
+        Self {
+            plist: Self::agents_dir(data_home).join(names::plist_file_name(app_id)),
+            socket: home.run_dir().join("apps").join(names::socket_file_name(app_id)),
+        }
+    }
 }
 
 impl Paths {
@@ -35,13 +65,18 @@ impl Paths {
     pub fn new(data_home: &Path, home: &AppHome, app_id: &str) -> Self {
         Self {
             service_file: service_file_path(data_home, app_id),
+            launchd: cfg!(target_os = "macos").then(|| LaunchdPaths::new(data_home, home, app_id)),
             registration_file: registration::apps_dir(data_home).join(registration::file_name(app_id)),
             manifest_copy: home.manifest_dir().join(format!("{app_id}.json")),
         }
     }
 
     fn all(&self) -> Vec<&PathBuf> {
-        self.service_file.iter().chain([&self.registration_file, &self.manifest_copy]).collect()
+        self.service_file
+            .iter()
+            .chain(self.launchd.iter().flat_map(|l| [&l.plist, &l.socket]))
+            .chain([&self.registration_file, &self.manifest_copy])
+            .collect()
     }
 }
 
@@ -58,23 +93,35 @@ fn service_file_path(_data_home: &Path, _app_id: &str) -> Option<PathBuf> {
 
 /// 本平台的激活方式（spec/naming.md 5.3 `activation`）。
 #[cfg(target_os = "linux")]
-fn activation_for(address: &Address) -> Activation {
-    Activation {
+fn activation_for(address: &Address, _paths: &Paths) -> anyhow::Result<Activation> {
+    Ok(Activation {
         kind: registration::kinds::DBUS.to_owned(),
         target: app_mcp_protocol::naming::dbus::bus_name(address),
+    })
+}
+
+/// Windows：`exec`，`target` 留空 = 运行 `executable`；macOS：`launchd`，`target` = 套接字路径（4.4）。
+#[cfg(not(target_os = "linux"))]
+fn activation_for(_address: &Address, paths: &Paths) -> anyhow::Result<Activation> {
+    match &paths.launchd {
+        Some(l) => launchd_activation(&l.socket),
+        None => Ok(Activation { kind: registration::kinds::EXEC.to_owned(), target: String::new() }),
     }
 }
 
-/// Windows：`exec`，`target` 留空 = 运行 `executable`。
-#[cfg(not(target_os = "linux"))]
-fn activation_for(_address: &Address) -> Activation {
-    Activation { kind: registration::kinds::EXEC.to_owned(), target: String::new() }
+/// `launchd` 激活方式：套接字须能放进 `sockaddr_un`（macOS 103 字节），否则安装前即失败（IPC_PATH_TOO_LONG）。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn launchd_activation(socket: &Path) -> anyhow::Result<Activation> {
+    #[cfg(unix)]
+    app_mcp_protocol::endpoint::check_unix_socket_path(socket).map_err(|issue| anyhow::anyhow!("{issue}（可用 --home 指定较短的目录）"))?;
+    let target = socket.to_str().with_context(|| format!("套接字路径不是 UTF-8：{}", socket.display()))?;
+    Ok(Activation { kind: registration::kinds::LAUNCHD.to_owned(), target: target.to_owned() })
 }
 
 pub async fn cmd(action: AppAction) -> anyhow::Result<ExitCode> {
     anyhow::ensure!(
-        cfg!(any(target_os = "linux", windows)),
-        "本平台尚未实现按名寻址的 App 登记（spec/naming.md 4.0：目前有 Linux D-Bus 与 Windows 命名管道）"
+        cfg!(any(target_os = "linux", target_os = "macos", windows)),
+        "本平台尚未实现按名寻址的 App 登记（spec/naming.md 4.0：目前有 Linux D-Bus、Windows 命名管道与 macOS launchd）"
     );
     let (target, reload) = match action {
         AppAction::Install(args) => {
@@ -83,6 +130,14 @@ pub async fn cmd(action: AppAction) -> anyhow::Result<ExitCode> {
             if let Some(service) = &paths.service_file {
                 println!("  激活文件  {}", service.display());
             }
+            if let Some(l) = &paths.launchd {
+                println!("  Agent     {}", l.plist.display());
+                println!("  套接字    {}", l.socket.display());
+                #[cfg(target_os = "macos")]
+                if !args.target.no_reload {
+                    launchd::load(&args.app_id, l).await?;
+                }
+            }
             println!("  登记文件  {}", paths.registration_file.display());
             if args.manifest.is_some() {
                 println!("  清单      {}（Host 重启后生效）", paths.manifest_copy.display());
@@ -90,6 +145,10 @@ pub async fn cmd(action: AppAction) -> anyhow::Result<ExitCode> {
             (args.target, true)
         }
         AppAction::Uninstall(args) => {
+            #[cfg(target_os = "macos")]
+            if !args.target.no_reload {
+                launchd::unload(&args.app_id).await;
+            }
             let removed = uninstall(&args)?;
             if removed.is_empty() {
                 println!("{} 没有登记，无需撤销", args.app_id);
@@ -169,7 +228,14 @@ pub fn install(args: &AppInstallArgs) -> anyhow::Result<Paths> {
         manifest: manifest_copy,
         manifest_sha256: manifest.as_ref().map(|(_, _, b)| format!("{:x}", Sha256::digest(b))),
         executable: Some(exec_text.clone()),
-        activation: activation_for(&address),
+        activation: activation_for(&address, &paths)?,
+    };
+    let plist = match &paths.launchd {
+        Some(_) => Some(
+            app_mcp_protocol::naming::launchd::agent_plist(&args.app_id, &exec_text, &registration.activation.target)
+                .map_err(|e| anyhow::anyhow!("无法生成 launchd plist：{e}"))?,
+        ),
+        None => None,
     };
 
     if let Some((_, _, bytes)) = &manifest {
@@ -181,7 +247,79 @@ pub fn install(args: &AppInstallArgs) -> anyhow::Result<Paths> {
     if let Some(service) = &paths.service_file {
         write_file(service, app_mcp_protocol::naming::dbus::service_file(&args.app_id, &exec_text).as_bytes())?;
     }
+    if let (Some(l), Some(plist)) = (&paths.launchd, &plist) {
+        write_file(&l.plist, plist.as_bytes())?;
+        prepare_socket_dir(&l.socket)?;
+    }
     Ok(paths)
+}
+
+/// 套接字目录：只有当前用户可进入（`0700`，spec/protocol.md 1.4 同样的要求，Hub 拨号前核对）；删除残留的旧套接字
+/// （launchd 是否先删除再绑定未见文档，U-23）。
+#[cfg_attr(not(unix), allow(dead_code))]
+fn prepare_socket_dir(socket: &Path) -> anyhow::Result<()> {
+    let dir = socket.parent().with_context(|| format!("{} 没有上级目录", socket.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("创建目录 {} 失败", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("设置 {} 的权限失败", dir.display()))?;
+    }
+    match std::fs::remove_file(socket) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(anyhow::anyhow!("删除旧套接字 {} 失败：{e}", socket.display())),
+    }
+}
+
+/// `launchctl bootstrap / bootout`（gui/<uid> 域，launchctl(1)）；每条命令 5 秒超时。
+#[cfg(target_os = "macos")]
+mod launchd {
+    use std::path::Path;
+    use std::time::Duration;
+
+    use anyhow::Context;
+    use app_mcp_protocol::naming::launchd as names;
+
+    use super::LaunchdPaths;
+
+    const LAUNCHCTL: &str = "/bin/launchctl";
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
+    fn domain() -> String {
+        format!("gui/{}", app_mcp_protocol::endpoint::current_uid())
+    }
+
+    async fn launchctl(args: &[&str]) -> anyhow::Result<crate::doctor::command::ToolOutput> {
+        crate::doctor::command::run_tool(Path::new(LAUNCHCTL), args, TIMEOUT)
+            .await
+            .map_err(|e| anyhow::anyhow!("launchctl {}：{e}", args.join(" ")))
+    }
+
+    /// 载入作业：先卸下同名旧作业（未载入时的失败忽略），再 `bootstrap`。launchd 随即创建并监听套接字，不启动 App。
+    pub(super) async fn load(app_id: &str, paths: &LaunchdPaths) -> anyhow::Result<()> {
+        unload(app_id).await;
+        let plist = paths.plist.to_str().with_context(|| format!("plist 路径不是 UTF-8：{}", paths.plist.display()))?;
+        let out = launchctl(&["bootstrap", &domain(), plist]).await?;
+        anyhow::ensure!(
+            out.success,
+            "launchctl bootstrap {} {plist} 失败：{}（检查 plist：plutil -lint {plist}）",
+            domain(),
+            out.stderr.trim()
+        );
+        Ok(())
+    }
+
+    /// 卸下作业（`bootout gui/<uid>/<label>`）；未载入等失败只提示。
+    pub(super) async fn unload(app_id: &str) {
+        let target = format!("{}/{}", domain(), names::label(app_id));
+        match launchctl(&["bootout", &target]).await {
+            Ok(o) if o.success => println!("已卸下 launchd 作业 {target}"),
+            Ok(_) => {}
+            Err(e) => eprintln!("提示：未能卸下 launchd 作业（{e}）"),
+        }
+    }
 }
 
 /// 撤销登记：删除 install 写入的文件，返回实际删除的路径。
@@ -285,6 +423,15 @@ mod tests {
                 service,
                 format!("[D-BUS Service]\nName=dev.appmcp.App.my_shop\nExec=\"{}\" --app-mcp-activation\n", exe.display())
             );
+        } else if cfg!(target_os = "macos") {
+            // macOS：launchd 按需套接字（spec/naming.md 4.4），Agent plist 与套接字目录随登记写出。
+            let l = paths.launchd.clone().unwrap();
+            assert_eq!(reg["activation"]["kind"], "launchd");
+            assert_eq!(reg["activation"]["target"], l.socket.to_str().unwrap());
+            assert_eq!(l.plist, dir.join("LaunchAgents/dev.appmcp.App.my-shop.plist"));
+            let plist = std::fs::read_to_string(&l.plist).unwrap();
+            assert!(plist.contains(&format!("<string>{}</string>", exe.display())), "{plist}");
+            assert!(l.socket.parent().unwrap().is_dir());
         } else {
             // Windows：Hub 直接运行 executable（spec/naming.md 4.3 `exec`），没有激活文件；路径不带 `\\?\`。
             assert_eq!(reg["activation"]["kind"], "exec");
@@ -295,13 +442,52 @@ mod tests {
         // 幂等：再装一次覆盖。
         install(&args).unwrap();
 
+        // macOS 的套接字由 launchd 创建（此处未载入作业，不存在）：只数存在的文件。
+        let existing = paths.all().iter().filter(|p| p.exists()).count();
         let removed =
             uninstall(&AppUninstallArgs { app_id: "my-shop".into(), target: target(&dir) }).unwrap();
-        assert_eq!(removed.len(), paths.all().len());
+        assert_eq!(removed.len(), existing);
+        assert!(existing >= 2, "至少有登记文件与清单副本");
         assert!(paths.all().iter().all(|p| !p.exists()));
         let again = uninstall(&AppUninstallArgs { app_id: "my-shop".into(), target: target(&dir) }).unwrap();
         assert!(again.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// macOS 的登记位置、激活方式与套接字目录（纯逻辑，各平台都运行；launchctl 只在 Mac 上验证）。
+    #[cfg(unix)]
+    #[test]
+    fn launchd_layout_and_activation() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch();
+        let home = AppHome::resolve(Some(&dir.join("home"))).unwrap();
+        let data = dir.join("Library").join("Application Support");
+        let l = LaunchdPaths::new(&data, &home, "my-shop");
+        assert_eq!(l.plist, dir.join("Library/LaunchAgents/dev.appmcp.App.my-shop.plist"));
+        assert_eq!(l.socket, home.run_dir().join("apps").join("my-shop.sock"));
+
+        let a = launchd_activation(&l.socket).unwrap();
+        assert_eq!((a.kind.as_str(), a.target.as_str()), ("launchd", l.socket.to_str().unwrap()));
+        let long = PathBuf::from(format!("/{}/x.sock", "d".repeat(200)));
+        assert!(launchd_activation(&long).unwrap_err().to_string().contains("IPC_PATH_TOO_LONG"));
+
+        // 套接字目录 0700，残留的旧套接字被删除。
+        std::fs::create_dir_all(l.socket.parent().unwrap()).unwrap();
+        std::fs::write(&l.socket, b"stale").unwrap();
+        prepare_socket_dir(&l.socket).unwrap();
+        let mode = std::fs::metadata(l.socket.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        assert!(!l.socket.exists());
+        prepare_socket_dir(&l.socket).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `app install` 写入的登记目录就是 Hub 的 launchd 连接器读取的目录（spec/naming.md 5.3）。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn matches_launchd_connector_apps_dir() {
+        let ours = crate::data_home::user_data_home().map(|d| registration::apps_dir(&d));
+        assert_eq!(ours, app_mcp_hub::connector::LaunchdConnector::default_apps_dir());
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! - 连接器只做机制：何时拨号、何时关闭由 Hub 的路由与生命周期决定（7.2）。
 //!
 //! 平台实现：Linux D-Bus 会话总线（[`DbusConnector`]，cargo feature `dbus`）；Windows 每 App 每用户命名管道
-//! （`PipeConnector`，spec/naming.md 4.3）；由宿主语言实现发现与拨号的 [`HostedConnector`]（Unix，Android 经
+//! （`PipeConnector`，spec/naming.md 4.3）；macOS launchd 用户 Agent 的按需套接字（`LaunchdConnector`，4.4）；由宿主语言实现发现与拨号的 [`HostedConnector`]（Unix，Android 经
 //! hub-uniffi 的 Kotlin 实现，spec/naming.md 4.2）。
 
 use std::fmt;
@@ -25,6 +25,16 @@ pub use dbus::DbusConnector;
 mod pipe;
 #[cfg(windows)]
 pub use pipe::PipeConnector;
+// 以 App 登记文件为发现来源、App 以拒绝行回绝的连接器（Windows 管道、macOS launchd）共用。
+#[cfg(any(windows, target_os = "macos", test))]
+mod greeting;
+#[cfg(any(windows, target_os = "macos", test))]
+mod registered;
+// @why 与 `pipe` 相同：连接、身份与拒绝的逻辑用真实 Unix 套接字在 Linux 上测试；公开类型只在 macOS 导出。
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod launchd;
+#[cfg(target_os = "macos")]
+pub use launchd::LaunchdConnector;
 #[cfg(unix)]
 mod hosted;
 #[cfg(unix)]

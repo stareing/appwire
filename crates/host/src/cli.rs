@@ -65,8 +65,9 @@ pub enum Command {
         #[command(subcommand)]
         action: PolicyCommand,
     },
-    /// 按名寻址的 App 登记（spec/naming.md 4.1、4.3、5.3）：生成 App 登记文件（Linux 另生成 D-Bus 激活文件
-    /// `$XDG_DATA_HOME/dbus-1/services/dev.appmcp.App.<appId>.service`；Windows 写 `%LOCALAPPDATA%\app-mcp\apps\<appId>.json`），
+    /// 按名寻址的 App 登记（spec/naming.md 4.1、4.3、4.4、5.3）：生成 App 登记文件（Linux 另生成 D-Bus 激活文件
+    /// `$XDG_DATA_HOME/dbus-1/services/dev.appmcp.App.<appId>.service`；Windows 写 `%LOCALAPPDATA%\app-mcp\apps\<appId>.json`；
+    /// macOS 另生成按需套接字的用户 LaunchAgent `~/Library/LaunchAgents/dev.appmcp.App.<appId>.plist` 并 `launchctl bootstrap`），
     /// Hub（`serve --name-service`）不启动 App 即可发现它，调用时按需激活。
     App {
         #[command(subcommand)]
@@ -172,10 +173,12 @@ pub struct AppUninstallArgs {
 pub struct AppTargetArgs {
     #[command(flatten)]
     pub home: HomeArg,
-    /// 数据目录（激活文件与登记文件的根），默认 Linux $XDG_DATA_HOME 或 ~/.local/share、Windows %LOCALAPPDATA%。
+    /// 数据目录（激活文件与登记文件的根），默认 Linux $XDG_DATA_HOME 或 ~/.local/share、Windows %LOCALAPPDATA%、
+    /// macOS ~/Library/Application Support（LaunchAgent 写入其上级目录的 LaunchAgents）。
     #[arg(long, value_name = "DIR")]
     pub data_home: Option<PathBuf>,
-    /// 写入后不调用 D-Bus ReloadConfig（默认调用：dbus-broker 是否自动发现新文件未确认，spec/naming.md U-05；Windows 无效）。
+    /// 写入后不通知系统：Linux 不调用 D-Bus ReloadConfig（默认调用：dbus-broker 是否自动发现新文件未确认，spec/naming.md U-05）；
+    /// macOS 不执行 launchctl bootstrap / bootout（下次登录时由 launchd 载入）；Windows 无效。
     #[arg(long)]
     pub no_reload: bool,
 }
