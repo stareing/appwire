@@ -619,7 +619,7 @@ Android 冻结状态：`adb shell dumpsys activity | grep -A 20 "Apps frozen:"`�
 
 （2026-10-02，4d 第一段）这些码的字符串已定义在 `app_mcp_protocol::naming::codes`，Linux 实现用到其中的 `NAME_NOT_FOUND`、
 `ACTIVATION_DENIED`、`ACTIVATION_TIMEOUT`、`BIND_PERMISSION_DENIED`、`PEER_IDENTITY_MISMATCH`、`CHANNEL_LIMIT`（工具错误 `details.code`、
-Hub `last_error`）；Android 段另加 `HUB_NOT_TRUSTED`，并有 `codes::ALL`（宿主回传的码字符串据此还原，未知码按 `ACTIVATION_DENIED`）；并入 `ConnectionErrorCode` 与 spec/protocol.md 10.1 仍待做（该枚举与各语言 SDK 的镜像、文档表格由测试互相核对，
+Hub `last_error`）；Android 段另加 `HUB_NOT_TRUSTED`（2026-10-02 再加 `ACTIVATION_BLOCKED`、`HUB_UNSUPPORTED`），并有 `codes::ALL`（宿主回传的码字符串据此还原，未知码按 `ACTIVATION_DENIED`）；并入 `ConnectionErrorCode` 与 spec/protocol.md 10.1 仍待做（该枚举与各语言 SDK 的镜像、文档表格由测试互相核对，
 改动面超出本段，spec/protocol.md 1.8）。
 
 以下连接级错误码**待 4d 实现时加入 spec/protocol.md 第 10.1 节**（当前不改该表，以免与进行中的 4e 冲突；`ConnectionErrorCode` 与
@@ -629,10 +629,12 @@ Hub `last_error`）；Android 段另加 `HUB_NOT_TRUSTED`，并有 `codes::ALL`�
 |---|---|---|---|---|
 | `INVALID_ADDRESS` | naming | 配置解析、Hub API | 地址不符合 2.1 的规范形式 | 按 `appmcp://<appId>[/<instance>]` 书写 |
 | `NAME_NOT_FOUND` | naming | Hub `last_error`、`doctor` | 地址没有对应的名字，也没有激活方式（App 未登记或已卸载） | 安装 App 或 `app-mcp-host app install`；`doctor` 查看发现来源 |
-| `ACTIVATION_DENIED` | naming | Hub `last_error`、调用错误 `data.code` | 系统拒绝激活（Android 关联启动 / 自启动拦截、`bindService` 返回 false、D-Bus 激活被拒） | 在系统设置中允许该 App 被关联启动；`doctor` 给出指引 |
+| `ACTIVATION_DENIED` | naming | Hub `last_error`、调用错误 `data.code` | 激活失败的其他情况（D-Bus 激活被拒、Android 对端在连接前断开 / Binder 调用失败、宿主未细分的失败）；Android 系统拦截已安装的组件改用 `ACTIVATION_BLOCKED` | 查看 App 与 Hub 日志 |
+| `ACTIVATION_BLOCKED` | naming | 调用错误 `data.code`、Hub `last_error`、Android `ChannelOpenException.code` | （2026-10-02）目标已安装、组件存在（Android `getServiceInfo` 查得到），但系统拒绝绑定：`bindService` 返回 false 或抛 `SecurityException`（关联启动 / 自启动管控、OEM 拦截，如 Flyme `requires a ifw permit[3rd app inter-call]`）。组件查不到为 `NAME_NOT_FOUND`，未导出 / 缺权限为 `BIND_PERMISSION_DENIED` | 需要用户本人在系统设置中允许该 App 自启动 / 关联启动（Android `Settings.ACTION_APPLICATION_DETAILS_SETTINGS`，`HubClient.settingsIntent`） |
 | `ACTIVATION_TIMEOUT` | naming | 同上 | 已发出激活，但名字 / 通道在超时内没有出现 | 检查 App 是否启动失败（App 日志）；登记的激活方式是否正确 |
 | `BIND_PERMISSION_DENIED` | naming | 同上 | Hub 无权拨号（Android `SecurityException`、D-Bus `AccessDenied`、管道拒绝访问） | 以同一用户运行；Android 检查权限声明 |
 | `HUB_NOT_TRUSTED` | naming | SDK 日志、Hub `last_error` | App 拒绝了该 Hub（10.2） | 在 App 内确认该 Hub，或把 Hub 证书加入 App 的可信列表 |
+| `HUB_UNSUPPORTED` | naming | Agent 客户端 `ChannelOpenException.code`、独立 Hub App 日志（ERROR） | （2026-10-02）独立 Hub App 的原生库未包含 MCP 出口（`mcp-server`），Agent `open()` 被拒（不交出一条不能用的通道） | 用 `generate.sh --hub-app` 重新编译 Hub App 的原生库（spec/hub-api.md 3.10） |
 | `PEER_IDENTITY_MISMATCH` | identity | Hub `last_error`、`doctor` | 名字的所有者与登记的程序 / 用户 / 签名不一致 | 停止占用名字的进程；`doctor` 给出对端进程 |
 | `FINGERPRINT_CHANGED` | identity | Hub 事件、`doctor`（警告） | App 签名指纹与首次记录不同 | 确认是正常升级后在审批中允许 |
 | `PEER_DIED` | disconnect | Hub 实例状态、SDK `backoff` 不适用（Hub 侧） | 系统对端死亡通知（`linkToDeath`、`NameOwnerChanged`） | 无需处理；频繁出现时查看 App 崩溃日志 |
@@ -641,7 +643,14 @@ Hub `last_error`）；Android 段另加 `HUB_NOT_TRUSTED`，并有 `codes::ALL`�
 | `MESSAGE_TOO_LARGE` | browser | 调用错误 `data.code` | 单条消息超过 Native Messaging 上限 | 减小参数 / 结果，或改用分页资源 |
 
 工具调用层继续使用 spec/protocol.md 第 4 节的类别：激活被拒 / 超时 → `LAUNCH_FAILED`（`data.code` 为上表的码）；确认未安装 →
-`APP_NOT_INSTALLED`；调用中对端死亡 → `APP_NOT_RESPONDING` + `data.outcome = "unknown"`（7.5）。
+`APP_NOT_INSTALLED`；系统拦截已安装的目标（`ACTIVATION_BLOCKED`）→ `USER_ACTION_REQUIRED`（`reason: "os-permission"`，`data` 带
+`appId`、`appName`、`packageName`、`code`，唯一定义见 spec/protocol.md 第 4 节）；调用中对端死亡 → `APP_NOT_RESPONDING` +
+`data.outcome = "unknown"`（7.5）。
+
+Agent → 独立 Hub App 一段（Android，Binder 线协议同 4.2）的失败以 `ChannelOpenException`（`app-mcp-binder`）交给 Agent：`code` 为上表
+的码，`message` 是不带码前缀的说明；`ACTIVATION_BLOCKED` 时 `message` 为面向用户的一句提示、`blocked` 给出 Hub App 的包名与应用名。
+Binder 回复中仍以 `<CODE>：<说明>` 传码（`wireMessage`）。码字符串的 Kotlin 定义为 `dev.appmcp.binder.NamingCodes`（与
+`app_mcp_protocol::naming::codes` 同一组）。
 
 ## 13. 事实 / 未知 / 风险
 
@@ -802,9 +811,9 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 | App 端 | `ToolsService`（4.2、10.2）；清单合并声明；`WakeReceiver` 路径保留 | `sdks/kotlin/app-mcp-android` |
 | Hub（Rust） | 宿主实现的连接器 `HostedConnector` + `HostNameService`（发现 / 拨号 / 释放三个同步回调）；`NameEvent::{Installed, Removed}`（包安装 / 卸载）；`Connector::manifest`（安装元数据中的清单，未运行的 App 也按清单列出工具，卸载时一并移除）；拨号结果经 oneshot 交回，超时 / 调用被放弃后迟到的通道由回调线程释放；通道被丢弃时恰好释放一次租约 | `crates/hub/src/connector/hosted.rs`、`naming.rs`（`tests/hosted.rs`） |
 | hub-uniffi | 外部实现的 `HubNameService`（`discover` / `dial` / `release`）、`AppMcpHub::start_with_name_service`、`name_service_installed` / `name_service_removed`、`HubConfig.channel_grace_ms`；fd 上的 MCP `serve_mcp_fd`（独立 Hub App 用，需 `mcp-server`） | `bindings/hub-uniffi/src/naming.rs`（spec/hub-api.md 3.16） |
-| Hub 端（Kotlin） | `AndroidNameService`：发现（4.2）、包变更接收器、`bindService` 拨号、宽限后 `release` → `unbindService`、OEM 拦截时的设置指引 | `sdks/kotlin/app-mcp-hub-android` |
-| 独立 Hub App 原型（TASKS 4g d） | `HubService`（动作 `dev.appmcp.HUB`，同一 Binder 线协议，描述符 `dev.appmcp.IHub/1`）：Hub 在第一个 Agent `open()` 时惰性启动，fd 上为 MCP（每行一条 JSON-RPC，与 stdio 相同）；记录调用方 uid → 包名 / 证书；最后一个 Agent 解绑后 Service 销毁、Hub 关闭、对全部 App 解绑 | `sdks/kotlin/hub-app-android` |
-| Agent 客户端（TASKS 4g f） | `HubClient`（绑定 Hub App + MCP 会话 initialize / tools/list / tools/call）、`McpLineClient`；示例 Agent | `sdks/kotlin/app-mcp-agent-android`、`sample-agent-android` |
+| Hub 端（Kotlin） | `AndroidNameService`：发现（4.2）、包变更接收器、`bindService` 拨号、宽限后 `release` → `unbindService`；拨号失败区分组件不存在（`NAME_NOT_FOUND`）与系统拦截（`DialOutcome::Blocked` → `USER_ACTION_REQUIRED` / `os-permission`，第 12 节），拦截时回调 `onBlocked` | `sdks/kotlin/app-mcp-hub-android` |
+| 独立 Hub App 原型（TASKS 4g d） | `HubService`（动作 `dev.appmcp.HUB`，同一 Binder 线协议，描述符 `dev.appmcp.IHub/1`）：Hub 在第一个 Agent `open()` 时惰性启动，fd 上为 MCP（每行一条 JSON-RPC，与 stdio 相同）；记录调用方 uid → 包名 / 证书；最后一个 Agent 解绑后 Service 销毁、Hub 关闭、对全部 App 解绑；原生库单独编译（带 `mcp-server`，`generate.sh --hub-app`），`open()` 时检查 `hub_features().mcp_server`，缺少 → `HUB_UNSUPPORTED`；Hub → App 被系统拦截时，已有通知权限才发一条通知（点开即该 App 的设置详情页，不申请权限） | `sdks/kotlin/hub-app-android` |
+| Agent 客户端（TASKS 4g f） | `HubClient`（绑定 Hub App + MCP 会话 initialize / tools/list / tools/call）、`McpLineClient`、`HubClient.settingsIntent(packageName)`（标准应用详情设置页）；示例 Agent 在 `ACTIVATION_BLOCKED` / `os-permission` 时显示提示与「去设置」按钮 | `sdks/kotlin/app-mcp-agent-android`、`sample-agent-android` |
 
 与本文件前文的差异：
 

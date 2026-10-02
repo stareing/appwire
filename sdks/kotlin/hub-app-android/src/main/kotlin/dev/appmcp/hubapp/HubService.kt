@@ -10,9 +10,11 @@ import dev.appmcp.binder.BinderCaller
 import dev.appmcp.binder.ChannelOpenException
 import dev.appmcp.binder.FdChannel
 import dev.appmcp.binder.FdChannelBinder
+import dev.appmcp.binder.NamingCodes
 import dev.appmcp.binder.PackageIdentity
 import dev.appmcp.hub.Hub
 import dev.appmcp.hub.HubConfig
+import dev.appmcp.hub.HubFeatures
 import dev.appmcp.hub.android.AndroidNameService
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -57,12 +59,23 @@ class HubService : Service() {
         return agentEnd
     }
 
+    /**
+     * @error 原生库缺少 MCP 出口 → `HUB_UNSUPPORTED`（原样回给 Agent，logcat 记 ERROR）；其他启动失败 → `ACTIVATION_DENIED`。
+     * 失败不缓存：换上正确的库重装后下一次 `open()` 即可成功。
+     */
     @Synchronized
     private fun ensureBackend(): McpBackend = backend ?: try {
         backendFactory(this).also { backend = it }
+    } catch (e: ChannelOpenException) {
+        Log.e(TAG, "无法启动 Hub：$e")
+        throw e
     } catch (e: Exception) {
         Log.e(TAG, "无法启动 Hub", e)
-        throw ChannelOpenException("ACTIVATION_DENIED", "Hub 启动失败：${e.message}", e)
+        throw ChannelOpenException(NamingCodes.ACTIVATION_DENIED, "Hub 启动失败：${e.message}", e)
+    } catch (e: LinkageError) {
+        // @why 原生库缺失 / 与绑定 checksum 不一致时 JNA 抛 Error 而非 Exception；同样回给 Agent，而不是让 Binder 线程崩溃。
+        Log.e(TAG, "无法加载 Hub 原生库", e)
+        throw ChannelOpenException(NamingCodes.ACTIVATION_DENIED, "Hub 原生库无法加载：${e.message}", e)
     }
 
     override fun onDestroy() {
@@ -103,9 +116,21 @@ interface McpBackend : AutoCloseable {
     suspend fun serve(end: ParcelFileDescriptor)
 }
 
-/** 默认后端：内嵌 Hub，按名寻址连接本机 App（spec/naming.md 4.2），休眠快照存在 App 私有目录（重启后仍可列出）。 */
+/**
+ * 默认后端：内嵌 Hub，按名寻址连接本机 App（spec/naming.md 4.2），休眠快照存在 App 私有目录（重启后仍可列出）。
+ *
+ * @error 原生库不含 MCP 出口（用了 `generate.sh --android` 的默认精简库）→ `HUB_UNSUPPORTED`（[requireMcpServer]）。
+ */
 internal class EmbeddedHub(context: Context) : McpBackend {
-    private val names = AndroidNameService(context)
+    init {
+        requireMcpServer(Hub.features())
+    }
+
+    private val names = AndroidNameService(context).apply {
+        // @why Hub → App 被系统拦截时，调用方（Agent）已收到 USER_ACTION_REQUIRED；有通知权限时再给用户一个直达设置的入口。
+        val app = context.applicationContext
+        onBlocked = { target -> BlockedNotice.post(app, target) }
+    }
     private val hub: Hub = names.start(
         HubConfig(
             enableListen = false,
@@ -119,6 +144,18 @@ internal class EmbeddedHub(context: Context) : McpBackend {
     override fun close() {
         names.close()
         hub.close()
+    }
+
+    companion object {
+        /** 缺少 MCP 出口时给 Agent 的说明（含重新编译的命令）。 */
+        const val UNSUPPORTED_MESSAGE = "此 Hub 原生库未包含 MCP 服务（mcp-server），请用 " +
+            "`bash bindings/hub-uniffi/scripts/generate.sh --release --hub-app --abi <abi>` 重新编译 Hub App 的原生库"
+
+        /** @error [features] 不含 MCP 出口 → [ChannelOpenException]（`HUB_UNSUPPORTED`）。 */
+        @JvmStatic
+        fun requireMcpServer(features: HubFeatures) {
+            if (!features.mcpServer) throw ChannelOpenException(NamingCodes.HUB_UNSUPPORTED, UNSUPPORTED_MESSAGE)
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 // Android 库：Hub SDK（Agent 端）的 AAR。复用 :app-mcp-hub 的代码，打包各 ABI 的 libapp_mcp_hub_uniffi.so
 // （src/main/jniLibs/<abi>/），由
 //   bash bindings/hub-uniffi/scripts/generate.sh --android
-// 交叉编译生成。R8 规则随 :app-mcp-hub 的 jar 发布（META-INF/proguard/app-mcp-hub.pro）。
+// 交叉编译生成（精简组合 mobile,schema-validation，不含 MCP 出口；独立 Hub App 用自己的一份，见 :hub-app-android）。R8 规则随 :app-mcp-hub 的 jar 发布（META-INF/proguard/app-mcp-hub.pro）。
 plugins {
     id("com.android.library")
     kotlin("android")

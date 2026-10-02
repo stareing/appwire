@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use app_mcp_hub::connector::{HostNameService, HostedChannel, HostedConnector, HostedName};
-use app_mcp_hub::{CallRequest, ConnectorError, DiscoveredName, ErrorKind, Hub, HubConfig, ToolFilter, WakerConfig};
+use app_mcp_hub::{BlockedTarget, CallRequest, ConnectorError, DiscoveredName, ErrorKind, Hub, HubConfig, ToolFilter, WakerConfig};
 use app_mcp_native::{CallHandle, LifecycleMode, NativeClient, NativeConfig, StateStatus, ToolHandler, ToolSpec};
 use app_mcp_protocol::naming::{Address, codes};
 use serde_json::{Value, json};
@@ -67,6 +67,8 @@ enum Behavior {
     Serve,
     /// 宿主报告失败（错误码字符串）。
     Fail(&'static str),
+    /// 组件存在但系统拒绝绑定（Flyme 关联启动拦截等）：宿主给出包名与应用名。
+    Blocked,
     /// 交回通道，但声称期望的对端 uid 是另一个（模拟包身份不符）。
     WrongUid,
     /// 阻塞超过超时后才交回通道。
@@ -118,6 +120,10 @@ impl HostNameService for FakeAndroid {
         let mut peer_uid = Some(me);
         match behavior {
             Behavior::Fail(code) => return Err(ConnectorError::new(app_mcp_hub::connector::naming_code(code), "宿主拒绝")),
+            Behavior::Blocked => {
+                let target = BlockedTarget { package_name: format!("dev.example.{}", address.app_id), app_name: "被拦的店".into() };
+                return Err(ConnectorError::blocked(target, "系统拒绝绑定 ComponentInfo{dev.example/x.ToolsService}"));
+            }
             Behavior::WrongUid => peer_uid = Some(me.wrapping_add(1)),
             Behavior::Late(d) => std::thread::sleep(d),
             Behavior::Serve => {}
@@ -206,6 +212,29 @@ async fn discover_dial_grace_release_and_package_events() {
     let err = call(&hub, "picky-app", json!({})).await.expect_err("应失败");
     assert_eq!(err.kind, ErrorKind::LaunchFailed, "{err:?}");
     assert_eq!(err.details.as_ref().and_then(|d| d["code"].as_str()), Some("HUB_NOT_TRUSTED"), "{err:?}");
+
+    // 6b. 已安装但系统拒绝绑定：USER_ACTION_REQUIRED（os-permission），消息面向用户、不含组件名，details 带包名与应用名。
+    android.behaviors.lock().unwrap().insert("blocked-app".into(), Behavior::Blocked);
+    connector.installed(hosted("blocked-app", true));
+    eventually("blocked 列出", || tool_names(&hub).contains(&"blocked-app.echo".to_owned())).await;
+    let err = call(&hub, "blocked-app", json!({})).await.expect_err("应失败");
+    assert_eq!(err.kind, ErrorKind::UserActionRequired, "{err:?}");
+    assert_eq!(
+        err.message,
+        "系统阻止了 AppWire Hub 启动『被拦的店』。请在系统设置中允许『被拦的店』自启动 / 关联启动后重试。"
+    );
+    assert_eq!(
+        err.details,
+        Some(json!({"reason": "os-permission", "appId": "blocked-app", "appName": "被拦的店",
+                    "packageName": "dev.example.blocked-app", "code": "ACTIVATION_BLOCKED"}))
+    );
+    // 宿主以错误码字符串回传（未带目标）时同样归为需要用户操作，应用名退回 appId。
+    android.behaviors.lock().unwrap().insert("blocked2-app".into(), Behavior::Fail("ACTIVATION_BLOCKED"));
+    connector.installed(hosted("blocked2-app", true));
+    eventually("blocked2 列出", || tool_names(&hub).contains(&"blocked2-app.echo".to_owned())).await;
+    let err = call(&hub, "blocked2-app", json!({})).await.expect_err("应失败");
+    assert_eq!(err.kind, ErrorKind::UserActionRequired, "{err:?}");
+    assert!(err.message.contains("『blocked2-app』"), "{}", err.message);
 
     // 7. 对端 uid 与登记不符：PEER_IDENTITY_MISMATCH，已交回的通道随即释放租约。
     android.behaviors.lock().unwrap().insert("spoof-app".into(), Behavior::WrongUid);

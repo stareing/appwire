@@ -120,8 +120,14 @@ typealias HubException = dev.appmcp.hub.ffi.HubException
 typealias HubNameService = dev.appmcp.hub.ffi.HubNameService
 /** 名字服务发现的一个 App（appId、可激活、平台名字、清单 JSON）。 */
 typealias NamedApp = dev.appmcp.hub.ffi.NamedApp
-/** 拨号结果；变体经 `dev.appmcp.hub.ffi.DialOutcome.Channel` / `.Failed` 访问。 */
+/**
+ * 拨号结果；变体经 `dev.appmcp.hub.ffi.DialOutcome.Channel` / `.Failed` / `.Blocked` 访问。`Blocked`：目标已安装但系统拒绝绑定
+ * （关联启动 / 自启动管控），Hub 以 `USER_ACTION_REQUIRED`（`reason: "os-permission"`）结束调用。
+ */
 typealias DialOutcome = dev.appmcp.hub.ffi.DialOutcome
+
+/** 原生库编译进的可选能力（[Hub.features]；spec/hub-api.md 3.10）。 */
+typealias HubFeatures = dev.appmcp.hub.ffi.HubFeatures
 
 internal val HubJson = Json { ignoreUnknownKeys = true }
 
@@ -215,6 +221,12 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
 
         /** 解析格式名：`mcp`、`openai-chat`（`openai`）、`openai-responses`、`anthropic`、`gemini`。 */
         fun parseFormat(name: String): ToolFormat = dev.appmcp.hub.ffi.parseToolFormat(name)
+
+        /**
+         * 已加载的原生库编译进的可选能力（`mcpServer` / `upstream` / `schemaValidation`）。启动前据此检查：如独立 Hub App
+         * 需要 `mcpServer`，Android 默认精简库（`generate.sh --android`）不含。
+         */
+        fun features(): HubFeatures = dev.appmcp.hub.ffi.hubFeatures()
 
         /** Hub 日志输出到 stderr（`RUST_LOG` 语法）。只有第一次调用生效。 */
         fun initLogging(filter: String? = null): Boolean = dev.appmcp.hub.ffi.initLogging(filter)

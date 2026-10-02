@@ -633,8 +633,12 @@ rmcp 的 `server` / `client` 始终开启（模型类型与 `Peer`）。
 `bindings/hub-uniffi` 的组合：默认 `["cli", "desktop"]`（`desktop` = 全部能力，jar / wheel / Swift 包用）；`mobile` = 不含上述三项；
 `mcp-server`（2026-10-02 拆出，`desktop` 包含）= MCP 出口（含 `serve_mcp_fd`），独立 Hub App 用 `--android-features mobile,schema-validation,mcp-server`
 （arm64 mobile-release 9.48 MB，比默认组合 7.71 MB 多约 1.8 MB，gzip 3.47 / 2.91 MB）。
-`scripts/generate.sh --android` 用 `--no-default-features --features mobile,schema-validation`（保留 Hub 侧参数校验），
-`--android-features <list>` 可改（体积优先用 `mobile`，去掉校验）。各组合导出的 uniffi 接口相同。arm64（mobile-release）：完整 8.98 MB（gzip 3.26）、
+`scripts/generate.sh --android` 用 `--no-default-features --features mobile,schema-validation`（保留 Hub 侧参数校验）输出到
+`sdks/kotlin/app-mcp-hub-android`（给嵌入 Hub 的厂商），`--android-features <list>` 可改（体积优先用 `mobile`，去掉校验）；
+`--hub-app`（2026-10-02）另编一份 `mobile,schema-validation,mcp-server` 输出到 `sdks/kotlin/hub-app-android/src/main/jniLibs`，
+独立 Hub App 打包时以这份为准（`packaging.jniLibs.pickFirsts`，缺少所请求 ABI 的这份时构建失败）。
+运行时查询编进的能力：hub-uniffi `hub_features() -> HubFeatures { mcp_server, upstream, schema_validation }`（Kotlin `Hub.features()`）；
+独立 Hub App 在 Agent `open()` 时检查 `mcp_server`，缺少时回 `HUB_UNSUPPORTED`（spec/naming.md 第 12 节）。各组合导出的 uniffi 接口相同。arm64（mobile-release）：完整 8.98 MB（gzip 3.26）、
 `mobile,schema-validation` 6.66 MB（2.52）、`mobile` 3.92 MB（1.56）。
 
 ### 3.11 资源保护：限流与大小上限（第 14 项 S3 / S4）
@@ -947,7 +951,11 @@ pub struct ConnectorError { pub code: &'static str, pub message: String }   // c
       fn release(&self, lease: u64);
   }
   pub struct NamedApp { app_id, activatable /* 默认 true */, running /* false */, detail /* "" */, manifest_json: Option<String> }
-  pub enum DialOutcome { Channel { fd: i32, lease: u64, peer_uid: Option<u32> }, Failed { code: String, message: String } }
+  pub enum DialOutcome {
+      Channel { fd: i32, lease: u64, peer_uid: Option<u32> },
+      Failed { code: String, message: String },
+      Blocked { package_name: String, app_label: String, message: String },  // 2026-10-02 新增
+  }
   impl AppMcpHub {
       #[uniffi::constructor] pub fn start_with_name_service(config: HubConfig, kind: String, service: Arc<dyn HubNameService>)
           -> Result<Arc<Self>, HubError>;                                  // kind "android"（其他记为 "host"）；非 Unix → Unsupported
@@ -959,6 +967,8 @@ pub struct ConnectorError { pub code: &'static str, pub message: String }   // c
   ```
 
   `DialOutcome::Channel.fd` 的所有权交给 Hub（Kotlin `ParcelFileDescriptor.detachFd()`）；`Failed.code` 为 spec/naming.md 第 12 节的码。
+  `Blocked`：目标已安装、组件存在，但系统拒绝绑定（`ACTIVATION_BLOCKED`）——Hub 侧为 `ConnectorError::blocked(BlockedTarget { package_name,
+  app_name }, message)`，调用以 `USER_ACTION_REQUIRED`（`reason: "os-permission"`，spec/protocol.md 第 4 节）结束；`message` 只进日志。
   回调抛出的异常按失败处理（发现为空、拨号 `ACTIVATION_DENIED`）。Kotlin 封装：`Hub.startWithNameService`、`Hub.nameServiceInstalled` /
   `nameServiceRemoved`、`Hub.serveMcpFd`；Android 实现 `dev.appmcp.hub.android.AndroidNameService`（spec/naming.md 4.2）。
 - **fd 上的 MCP**（TASKS 4g d 独立 Hub App）：`Hub::serve_mcp_stream<S: AsyncRead + AsyncWrite>(stream)`（feature `mcp-server`）在任意双向字节流上

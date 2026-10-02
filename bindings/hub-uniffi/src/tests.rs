@@ -647,6 +647,13 @@ fn disabled_features_report_unsupported() {
     let serve = wait(hub.serve_http("127.0.0.1:0".into(), false)).map(drop);
     expect(hub::features::MCP_SERVER, "mcp-server", serve);
     hub.shutdown();
+
+    // 宿主（独立 Hub App）启动前据此报告缺少的能力，而不是等 serve_mcp_fd 失败。
+    let f = hub_features();
+    assert_eq!(
+        (f.mcp_server, f.upstream, f.schema_validation),
+        (hub::features::MCP_SERVER, hub::features::UPSTREAM, hub::features::SCHEMA_VALIDATION)
+    );
 }
 
 struct SubmitOrder;
@@ -1018,6 +1025,13 @@ impl HubNameService for FakeNameService {
 
     fn dial(&self, app_id: String, _timeout_ms: u64) -> DialOutcome {
         use std::os::fd::IntoRawFd;
+        if app_id == "walled" {
+            return DialOutcome::Blocked {
+                package_name: "dev.example.walled".into(),
+                app_label: "围墙笔记".into(),
+                message: "系统拒绝绑定 ComponentInfo{dev.example.walled/x}".into(),
+            };
+        }
         if app_id != FD_APP {
             return DialOutcome::Failed { code: "HUB_NOT_TRUSTED".into(), message: "App 拒绝了该 Hub".into() };
         }
@@ -1105,6 +1119,24 @@ fn name_service_discover_dial_release_and_events() {
     assert_eq!(details.as_ref().and_then(|d| d["code"].as_str()), Some("HUB_NOT_TRUSTED"), "{details:?}");
     hub.name_service_removed("late".into());
     eventually("卸载后移除", || !names(&hub).contains(&"late.echo".to_owned()));
+
+    // 系统拦截已安装的 App：USER_ACTION_REQUIRED（os-permission），details 带包名与应用名，消息不含组件名。
+    hub.name_service_installed(NamedApp {
+        app_id: "walled".into(),
+        activatable: true,
+        running: false,
+        detail: String::new(),
+        manifest_json: Some(fd_app_manifest("walled")),
+    });
+    eventually("walled 列出", || names(&hub).contains(&"walled.echo".to_owned()));
+    let out = wait(hub.call_tool(req("walled.echo", json!({})))).expect("调用");
+    let err = out.error.expect("应失败");
+    assert_eq!(err.kind, "USER_ACTION_REQUIRED");
+    assert_eq!(err.message, "系统阻止了 AppWire Hub 启动『围墙笔记』。请在系统设置中允许『围墙笔记』自启动 / 关联启动后重试。");
+    let details: Value = serde_json::from_str(err.details_json.as_deref().unwrap_or("null")).expect("details");
+    assert_eq!(details["reason"], "os-permission");
+    assert_eq!(details["packageName"], "dev.example.walled");
+    assert_eq!(details["appName"], "围墙笔记");
 
     hub.shutdown();
     app.stop();

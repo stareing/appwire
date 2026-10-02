@@ -239,6 +239,9 @@ pub mod user_action_reason {
     pub const FOREGROUND: &str = "foreground";
     /// 需要用户在 App 内确认。
     pub const CONFIRM: &str = "confirm";
+    /// 操作系统阻止了 Hub 启动 / 绑定目标 App（关联启动、自启动管控），需用户在系统设置中放行；由 Hub 产生
+    /// （spec/protocol.md 第 4 节，`data` 另带 `appId`、`packageName`、`appName`、`code`）。
+    pub const OS_PERMISSION: &str = "os-permission";
 }
 
 impl From<ToolError> for RpcError {

@@ -2,8 +2,11 @@ package dev.appmcp.hubapp
 
 import android.content.Intent
 import android.os.ParcelFileDescriptor
+import dev.appmcp.binder.ChannelOpenException
 import dev.appmcp.binder.FdChannel
 import dev.appmcp.binder.FdChannelClient
+import dev.appmcp.binder.NamingCodes
+import dev.appmcp.hub.HubFeatures
 import kotlinx.coroutines.CompletableDeferred
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -81,5 +84,26 @@ class HubServiceTest {
         // 最后一个 Agent 解绑 → 系统销毁 Service → Hub 关闭。
         controller.destroy()
         assertTrue(backend.closed)
+    }
+
+    @Test
+    fun missingMcpServerIsReportedToTheAgent() {
+        // 默认精简库（不含 mcp-server）：Agent 的 open() 得到 HUB_UNSUPPORTED 与重新编译的说明，而不是一条静默失效的通道。
+        HubService.backendFactory = {
+            EmbeddedHub.requireMcpServer(HubFeatures(mcpServer = false, upstream = false, schemaValidation = true))
+            FakeBackend().also { backends += it }
+        }
+        val controller = Robolectric.buildService(HubService::class.java).create()
+        val binder = controller.get().onBind(Intent(HubService.ACTION_HUB))!!
+        val e = runCatching { FdChannelClient.open(binder, FdChannel.HUB_DESCRIPTOR) }.exceptionOrNull()
+        assertTrue("$e", e is ChannelOpenException)
+        e as ChannelOpenException
+        assertEquals(NamingCodes.HUB_UNSUPPORTED, e.code)
+        assertEquals(EmbeddedHub.UNSUPPORTED_MESSAGE, e.message)
+        assertTrue(e.message!!.contains("--hub-app"))
+        assertTrue("失败时不创建后端", backends.isEmpty())
+        // 有 MCP 出口时放行。
+        EmbeddedHub.requireMcpServer(HubFeatures(mcpServer = true, upstream = false, schemaValidation = true))
+        controller.destroy()
     }
 }

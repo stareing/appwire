@@ -254,6 +254,8 @@ mod tests {
         assert_eq!(naming_code("HUB_NOT_TRUSTED"), codes::HUB_NOT_TRUSTED);
         assert_eq!(naming_code("NAME_NOT_FOUND"), codes::NAME_NOT_FOUND);
         assert_eq!(naming_code("CHANNEL_LIMIT"), codes::CHANNEL_LIMIT);
+        assert_eq!(naming_code("ACTIVATION_BLOCKED"), codes::ACTIVATION_BLOCKED);
+        assert_eq!(naming_code("HUB_UNSUPPORTED"), codes::HUB_UNSUPPORTED);
         assert_eq!(naming_code("whatever"), codes::ACTIVATION_DENIED);
     }
 }

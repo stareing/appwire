@@ -4,6 +4,8 @@ app-mcp/src/generated/
 app-mcp-hub/src/generated/
 app-mcp-android/src/main/jniLibs/
 app-mcp-hub-android/src/main/jniLibs/
+# 独立 Hub App 的原生库（带 mcp-server，generate.sh --hub-app）
+hub-app-android/src/main/jniLibs/
 
 .gradle/
 .kotlin/

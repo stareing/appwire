@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 构建 app-mcp-hub-uniffi 并生成 Kotlin / Python / Swift 绑定，复制到各 SDK 目录。
 #
-# 用法：bash bindings/hub-uniffi/scripts/generate.sh [--release] [--android] [--abi <abi>]... [--android-features <list>]
+# 用法：bash bindings/hub-uniffi/scripts/generate.sh [--release] [--android] [--hub-app] [--abi <abi>]... [--android-features <list>]
 #        [--only kotlin|python|swift] [--no-strip]
 #
 #   --release   以 cargo profile bindings-release 构建本机库（release 优化，只去调试信息、保留 uniffi 元数据
@@ -13,8 +13,13 @@
 #               默认全部；发布前必须全 ABI 重编（uniffi 加载时校验 checksum）
 #   --android-features L  与 --android 连用：Hub 能力组合（bindings/hub-uniffi/Cargo.toml 的 features，逗号分隔），
 #               默认 mobile,schema-validation（不含 MCP 出口与上游聚合，保留 Hub 侧参数校验）；体积优先可用 mobile（去掉校验，约省 2.7 MB）、完整能力用 desktop。
-#               独立 Hub App（sdks/kotlin/hub-app-android，fd 上的 MCP）需要 MCP 出口：mobile,schema-validation,mcp-server（arm64 约 +1.8 MB）。
+#               独立 Hub App 需要 MCP 出口，用 --hub-app 另编一份（不要改这里的默认组合）。
 #               本机库（jar / wheel / Swift）总是 desktop（完整能力）；各组合的 uniffi 接口相同
+#   --hub-app   额外交叉编译独立 Hub App（sdks/kotlin/hub-app-android，fd 上的 MCP）用的一份 .so：
+#               features mobile,schema-validation,mcp-server（arm64 约 9.5 MB，比默认组合多约 1.8 MB），
+#               输出到 sdks/kotlin/hub-app-android/src/main/jniLibs/<abi>/；Hub App 的 packaging 规则优先打包这一份、
+#               忽略 :app-mcp-hub-android 里的同名精简库（见该模块 build.gradle.kts）。可与 --android 同时给出；
+#               同样受 --abi 约束，发布前全 ABI 重编
 #   --only X    只生成一种语言
 #   --no-strip  复制到 SDK 目录的本机库保留调试信息（默认 strip -S，debug 版约 250 MB → 约 40 MB）
 #
@@ -23,6 +28,7 @@
 #   sdks/kotlin/app-mcp-hub/src/generated/kotlin/dev/appmcp/hub/ffi/app_mcp_hub_uniffi.kt
 #   sdks/kotlin/app-mcp-hub/src/generated/resources/<jna-platform>/libapp_mcp_hub_uniffi.so
 #   sdks/kotlin/app-mcp-hub-android/src/main/jniLibs/<abi>/libapp_mcp_hub_uniffi.so（--android）
+#   sdks/kotlin/hub-app-android/src/main/jniLibs/<abi>/libapp_mcp_hub_uniffi.so（--hub-app）
 #   sdks/swift/Sources/AppMcpHubBindings/AppMcpHubBindings.swift
 #   sdks/swift/Sources/app_mcp_hub_uniffiFFI/include/{app_mcp_hub_uniffiFFI.h,module.modulemap}
 #   sdks/swift/lib/libapp_mcp_hub_uniffi.so（macOS 为 .dylib）
@@ -40,16 +46,20 @@ ANDROID=0
 ONLY=""
 ABIS=()
 ANDROID_FEATURES=mobile,schema-validation
+# 独立 Hub App：精简组合 + MCP 出口（HubService 启动前检查 hub_features().mcp_server，缺少时向 Agent 报 HUB_UNSUPPORTED）。
+HUB_APP_FEATURES=mobile,schema-validation,mcp-server
+HUB_APP=0
 STRIP=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --release) PROFILE=bindings-release; CARGO_PROFILE_ARGS=(--profile bindings-release) ;;
     --android) ANDROID=1 ;;
+    --hub-app) HUB_APP=1 ;;
     --only) ONLY="$2"; shift ;;
     --abi) ABIS+=("$2"); shift ;;
     --android-features) ANDROID_FEATURES="$2"; shift ;;
     --no-strip) STRIP=0 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
   shift
@@ -124,33 +134,43 @@ if want swift; then
   copy_lib "$SW/lib/libapp_mcp_hub_uniffi.$LIB_EXT"
 fi
 
-if [[ $ANDROID -eq 1 ]]; then
-  NDK="${ANDROID_NDK_HOME:-}"
+# 交叉编译一份 Android .so：$1 = features，$2 = jniLibs 目录（其下 <abi>/libapp_mcp_hub_uniffi.so）。
+# @why 两种组合产物同名、同在 target/<triple>/mobile-release/：每次编译后立即复制，不依赖 target 中留下的是哪一份。
+build_android() {
+  local features="$1" jni="$2"
+  local NDK="${ANDROID_NDK_HOME:-}"
   if [[ -z "$NDK" ]]; then
     NDK="$(ls -d "$HOME"/Android/Sdk/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
   fi
   [[ -d "$NDK" ]] || { echo "找不到 Android NDK（设置 ANDROID_NDK_HOME）" >&2; exit 1; }
-  TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
-  API=24
-  JNI="$ROOT/sdks/kotlin/app-mcp-hub-android/src/main/jniLibs"
+  local TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+  local API=24
   for pair in aarch64-linux-android:arm64-v8a x86_64-linux-android:x86_64 \
               armv7-linux-androideabi:armeabi-v7a i686-linux-android:x86; do
-    triple="${pair%%:*}"; abi="${pair##*:}"
+    local triple="${pair%%:*}" abi="${pair##*:}" clang
     if [[ " ${ABIS[*]} " != *" $abi "* ]]; then continue; fi
     case "$triple" in
       armv7-linux-androideabi) clang="armv7a-linux-androideabi$API-clang" ;;
       *) clang="$triple$API-clang" ;;
     esac
+    local env_triple
     env_triple="$(echo "$triple" | tr 'a-z-' 'A-Z_')"
-    echo "==> 交叉编译 $triple → $abi（mobile-release，features：$ANDROID_FEATURES）"
+    echo "==> 交叉编译 $triple → $abi（mobile-release，features：$features）→ ${jni#"$ROOT"/}"
     env "CARGO_TARGET_${env_triple}_LINKER=$TOOLCHAIN/$clang" \
         "CC_${triple//-/_}=$TOOLCHAIN/$clang" \
         "AR_${triple//-/_}=$TOOLCHAIN/llvm-ar" \
-      cargo build -p app-mcp-hub-uniffi --lib --no-default-features --features "$ANDROID_FEATURES" \
+      cargo build -p app-mcp-hub-uniffi --lib --no-default-features --features "$features" \
         --target "$triple" --profile mobile-release
-    mkdir -p "$JNI/$abi"
-    cp "$CARGO_TARGET_DIR/$triple/mobile-release/libapp_mcp_hub_uniffi.so" "$JNI/$abi/"
+    mkdir -p "$jni/$abi"
+    cp "$CARGO_TARGET_DIR/$triple/mobile-release/libapp_mcp_hub_uniffi.so" "$jni/$abi/"
   done
+}
+
+if [[ $ANDROID -eq 1 ]]; then
+  build_android "$ANDROID_FEATURES" "$ROOT/sdks/kotlin/app-mcp-hub-android/src/main/jniLibs"
+fi
+if [[ $HUB_APP -eq 1 ]]; then
+  build_android "$HUB_APP_FEATURES" "$ROOT/sdks/kotlin/hub-app-android/src/main/jniLibs"
 fi
 
 echo "==> 完成"

@@ -12,7 +12,7 @@ import android.os.RemoteException
  *
  * - 事务 [OPEN]（`FIRST_CALL_TRANSACTION`）：请求 `writeInterfaceToken(descriptor)` + `writeString(instance)`（可空）；
  *   成功回复 `writeNoException()` + `writeInt(1)` + `ParcelFileDescriptor`（socketpair 的一端）；
- *   失败回复 `writeException(e)`，说明以错误码开头：`<CODE>：<说明>`（[ChannelOpenException]）。
+ *   失败回复 `writeException(e)`，说明以错误码开头：`<CODE>：<说明>`（[ChannelOpenException.wireMessage]）。
  * - 之后消息都走 fd，Binder 上不再有任何调用；不传回调 Binder 对象，服务端不保存客户端引用。
  */
 object FdChannel {
@@ -27,12 +27,26 @@ object FdChannel {
 }
 
 /**
- * 打开通道失败。[code] 为 spec/naming.md 第 12 节的错误码（`HUB_NOT_TRUSTED`、`CHANNEL_LIMIT`、`ACTIVATION_DENIED`…）。
+ * 打开通道失败。[code] 为 spec/naming.md 第 12 节的错误码（[NamingCodes]：`HUB_NOT_TRUSTED`、`CHANNEL_LIMIT`、
+ * `ACTIVATION_BLOCKED`…）；[message] 只是说明，不带错误码前缀（可直接展示）。
+ *
+ * [blocked]：码为 `ACTIVATION_BLOCKED` 时被系统拦截的目标（包名、应用名）；此时 [message] 是面向用户的一句提示
+ * （[BlockedTarget.userMessage]），设置入口见 [BlockedTarget.settingsIntent]。
  */
-class ChannelOpenException(val code: String, message: String, cause: Throwable? = null) :
-    Exception("$code：$message", cause) {
-    /** 不带错误码前缀的说明。 */
+class ChannelOpenException @JvmOverloads constructor(
+    val code: String,
+    message: String,
+    cause: Throwable? = null,
+    val blocked: BlockedTarget? = null,
+) : Exception(message, cause) {
+    /** 不带错误码前缀的说明（与 [message] 相同）。 */
     val detail: String = message
+
+    /** Binder 回复中的形式：`<CODE>：<说明>`（[fromRemote] 据此还原）。 */
+    val wireMessage: String get() = "$code：$detail"
+
+    // @why 日志 / 字符串拼接只带错误码，不带类名（release 构建混淆后类名是无意义的短名）。
+    override fun toString(): String = wireMessage
 
     companion object {
         private val CODED = Regex("^([A-Z][A-Z_]{2,40})：(.*)$", RegexOption.DOT_MATCHES_ALL)
@@ -78,13 +92,15 @@ class FdChannelBinder(
         val fd = try {
             open(caller, instance)
         } catch (e: ChannelOpenException) {
-            out.writeException(if (e.code == HUB_NOT_TRUSTED) SecurityException(e.message) else IllegalStateException(e.message))
+            out.writeException(
+                if (e.code == NamingCodes.HUB_NOT_TRUSTED) SecurityException(e.wireMessage) else IllegalStateException(e.wireMessage),
+            )
             return true
         } catch (e: SecurityException) {
-            out.writeException(SecurityException("$HUB_NOT_TRUSTED：${e.message}"))
+            out.writeException(SecurityException("${NamingCodes.HUB_NOT_TRUSTED}：${e.message}"))
             return true
         } catch (e: RuntimeException) {
-            out.writeException(IllegalStateException("$ACTIVATION_DENIED：${e.message ?: e.javaClass.simpleName}"))
+            out.writeException(IllegalStateException("${NamingCodes.ACTIVATION_DENIED}：${e.message ?: e.javaClass.simpleName}"))
             return true
         }
         try {
@@ -96,11 +112,6 @@ class FdChannelBinder(
             runCatching { fd.close() }
         }
         return true
-    }
-
-    private companion object {
-        const val HUB_NOT_TRUSTED = "HUB_NOT_TRUSTED"
-        const val ACTIVATION_DENIED = "ACTIVATION_DENIED"
     }
 }
 
@@ -120,16 +131,16 @@ object FdChannelClient {
             try {
                 binder.transact(FdChannel.OPEN, data, reply, 0)
             } catch (e: RemoteException) {
-                throw ChannelOpenException("ACTIVATION_DENIED", "Binder 调用失败（对端进程可能已退出）：${e.message}", e)
+                throw ChannelOpenException(NamingCodes.ACTIVATION_DENIED, "Binder 调用失败（对端进程可能已退出）：${e.message}", e)
             }
             try {
                 reply.readException()
             } catch (e: SecurityException) {
-                throw ChannelOpenException.fromRemote(e, "HUB_NOT_TRUSTED")
+                throw ChannelOpenException.fromRemote(e, NamingCodes.HUB_NOT_TRUSTED)
             } catch (e: RuntimeException) {
-                throw ChannelOpenException.fromRemote(e, "ACTIVATION_DENIED")
+                throw ChannelOpenException.fromRemote(e, NamingCodes.ACTIVATION_DENIED)
             }
-            if (reply.readInt() != 1) throw ChannelOpenException("ACTIVATION_DENIED", "对端没有返回通道")
+            if (reply.readInt() != 1) throw ChannelOpenException(NamingCodes.ACTIVATION_DENIED, "对端没有返回通道")
             return ParcelFileDescriptor.CREATOR.createFromParcel(reply)
         } finally {
             data.recycle()

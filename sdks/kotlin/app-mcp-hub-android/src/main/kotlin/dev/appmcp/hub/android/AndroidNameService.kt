@@ -11,8 +11,10 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import dev.appmcp.binder.BlockedTarget
 import dev.appmcp.binder.ChannelOpenException
 import dev.appmcp.binder.FdChannel
+import dev.appmcp.binder.NamingCodes
 import dev.appmcp.binder.ServiceChannelDialer
 import dev.appmcp.hub.ffi.DialOutcome
 import dev.appmcp.hub.Hub
@@ -179,8 +181,8 @@ class AndroidNameService(context: Context) : HubNameService, AutoCloseable {
     }
 
     override fun dial(appId: String, timeoutMs: ULong): DialOutcome {
-        val app = apps[appId] ?: return DialOutcome.Failed("NAME_NOT_FOUND", "没有发现 App「$appId」（未安装或未声明 $ACTION_TOOLS）")
-        if (closed.get()) return DialOutcome.Failed("ACTIVATION_DENIED", "名字服务已关闭")
+        val app = apps[appId] ?: return DialOutcome.Failed(NamingCodes.NAME_NOT_FOUND, "没有发现 App「$appId」（未安装或未声明 $ACTION_TOOLS）")
+        if (closed.get()) return DialOutcome.Failed(NamingCodes.ACTIVATION_DENIED, "名字服务已关闭")
         val intent = Intent(ACTION_TOOLS).setComponent(app.component)
         return try {
             val dialed = dialer.dial(intent, FdChannel.APP_TOOLS_DESCRIPTOR, timeoutMs.toLong().coerceAtLeast(1))
@@ -188,9 +190,24 @@ class AndroidNameService(context: Context) : HubNameService, AutoCloseable {
             leases[lease] = dialed
             DialOutcome.Channel(detach(dialed.fd), lease.toULong(), app.uid.toUInt())
         } catch (e: ChannelOpenException) {
-            Log.w(TAG, "拨号 ${app.component.flattenToShortString()} 失败：${e.message}")
-            DialOutcome.Failed(e.code, settingsHint(e))
+            Log.w(TAG, "拨号 ${app.component.flattenToShortString()} 失败：$e")
+            val blocked = e.blocked
+            if (blocked == null) return DialOutcome.Failed(e.code, settingsHint(e))
+            notifyBlocked(blocked)
+            DialOutcome.Blocked(blocked.packageName, blocked.appLabel, "系统拒绝绑定 ${app.component.flattenToShortString()}")
         }
+    }
+
+    /**
+     * 系统拦截了对某个 App 的绑定（[NamingCodes.ACTIVATION_BLOCKED]）时回调（在 Hub 的阻塞线程上；如独立 Hub App 据此发通知）。
+     * 调用方仍会收到 `USER_ACTION_REQUIRED`；本回调只用于额外的提示，异常被记录后忽略。
+     */
+    @Volatile
+    var onBlocked: ((BlockedTarget) -> Unit)? = null
+
+    private fun notifyBlocked(target: BlockedTarget) {
+        val listener = onBlocked ?: return
+        runCatching { listener(target) }.onFailure { Log.w(TAG, "onBlocked 回调异常：${it.message}") }
     }
 
     override fun release(lease: ULong) {
@@ -224,11 +241,13 @@ class AndroidNameService(context: Context) : HubNameService, AutoCloseable {
             json.parseToJsonElement(manifestJson).jsonObject["appId"]?.jsonPrimitive?.content
         }.getOrNull()?.takeIf { APP_ID.matches(it) }
 
-        /** 被系统 / OEM 拦截时附带设置指引（spec/naming.md 第 8 节"OEM 拦截"）。 */
+        /**
+         * 失败说明附带处理建议。系统拦截（`ACTIVATION_BLOCKED`）不经这里：以 [DialOutcome.Blocked] 交给 Hub，
+         * 由 Hub 生成面向用户的 `USER_ACTION_REQUIRED`（spec/protocol.md 第 4 节）。
+         */
         @JvmStatic
         fun settingsHint(e: ChannelOpenException): String = when (e.code) {
-            "ACTIVATION_DENIED" -> "${e.detail}。部分系统（如 Flyme、MIUI）需要在设置中允许该 App 被关联启动 / 自启动。"
-            "HUB_NOT_TRUSTED" -> "${e.detail}。请在该 App 内确认本 Hub，或把本 Hub 的签名证书加入其可信列表。"
+            NamingCodes.HUB_NOT_TRUSTED -> "${e.detail}。请在该 App 内确认本 Hub，或把本 Hub 的签名证书加入其可信列表。"
             else -> e.detail
         }
 

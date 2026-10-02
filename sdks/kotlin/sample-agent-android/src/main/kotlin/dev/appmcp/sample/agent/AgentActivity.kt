@@ -3,9 +3,13 @@ package dev.appmcp.sample.agent
 import android.app.Activity
 import android.os.Bundle
 import android.util.Log
+import android.view.View
+import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import dev.appmcp.agent.HubClient
+import dev.appmcp.binder.ChannelOpenException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -14,6 +18,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -25,11 +30,18 @@ import kotlinx.serialization.json.jsonPrimitive
 class AgentActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var output: TextView
+    private lateinit var settingsButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         output = TextView(this).apply { setPadding(32, 32, 32, 32); setTextIsSelectable(true) }
-        setContentView(ScrollView(this).apply { addView(output) })
+        settingsButton = Button(this).apply { text = "去设置"; visibility = View.GONE }
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(output)
+            addView(settingsButton)
+        }
+        setContentView(ScrollView(this).apply { addView(column) })
         val tool = intent.getStringExtra(EXTRA_TOOL) ?: DEFAULT_TOOL
         val args = intent.getStringExtra(EXTRA_ARGS)
             ?.let { runCatching { Json.parseToJsonElement(it).jsonObject }.getOrNull() }
@@ -49,6 +61,8 @@ class AgentActivity : Activity() {
                 show("tools/list（${tools.size}）：${tools.joinToString()}")
                 val result = hub.callTool(tool, args)
                 show("tools/call $tool → $result")
+                // Hub 拨号目标 App 被系统拦截：USER_ACTION_REQUIRED（os-permission），details 带被拦 App 的包名。
+                osPermissionTarget(result)?.let { (message, pkg) -> offerSettings(message, pkg) }
                 show("用时 ${(System.nanoTime() - t0) / 1_000_000} ms")
                 if (holdMs > 0) {
                     show("保持绑定 $holdMs ms")
@@ -56,9 +70,34 @@ class AgentActivity : Activity() {
                 }
             }
             show("已解绑 Hub App")
+        } catch (e: ChannelOpenException) {
+            // 到 Hub App 的绑定被系统拦截（ACTIVATION_BLOCKED）：message 是面向用户的提示，blocked 给出 Hub App 的包名。
+            val blocked = e.blocked
+            if (blocked != null) offerSettings(e.message.orEmpty(), blocked.packageName)
+            else show("失败（${e.code}）：${e.message}")
         } catch (e: Exception) {
-            show("失败：${e.javaClass.simpleName}：${e.message}")
+            show("失败：${e.message ?: e.toString()}")
         }
+    }
+
+    /** 展示需要用户本人处理的提示，并给出打开该 App 系统设置的按钮（只给入口，由用户决定）。 */
+    private fun offerSettings(message: String, packageName: String) {
+        show(message)
+        settingsButton.visibility = View.VISIBLE
+        settingsButton.setOnClickListener {
+            runCatching { startActivity(HubClient.settingsIntent(packageName)) }
+                .onFailure { show("无法打开系统设置：${it.message}") }
+        }
+    }
+
+    /** 工具结果为 USER_ACTION_REQUIRED 且 `reason` 为 `os-permission` 时，取（面向用户的消息，被拦 App 的包名）。 */
+    private fun osPermissionTarget(result: JsonObject): Pair<String, String>? {
+        val error = (result["structuredContent"] as? JsonObject)?.get("error") as? JsonObject ?: return null
+        val details = error["details"] as? JsonObject ?: return null
+        if ((error["kind"] as? JsonPrimitive)?.content != "USER_ACTION_REQUIRED") return null
+        if ((details["reason"] as? JsonPrimitive)?.content != "os-permission") return null
+        val pkg = (details["packageName"] as? JsonPrimitive)?.content ?: return null
+        return (error["message"] as? JsonPrimitive)?.content.orEmpty() to pkg
     }
 
     private fun show(line: String) {

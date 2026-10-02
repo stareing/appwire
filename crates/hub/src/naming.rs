@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use app_mcp_protocol::naming::{Address, codes};
-use app_mcp_protocol::{ErrorKind, ToolError};
+use app_mcp_protocol::{ErrorKind, ToolError, user_action_reason};
 use futures::StreamExt;
 use serde_json::json;
 
@@ -195,12 +195,41 @@ fn default_detail(kind: &str, app_id: &str) -> String {
     }
 }
 
-/// 拨号失败 → 工具错误（spec/naming.md 第 12 节末段）：确认未安装为 `APP_NOT_INSTALLED`，其余为 `LAUNCH_FAILED`，
-/// `data.code` 为名字服务错误码。
+/// 拨号失败 → 工具错误（spec/naming.md 第 12 节末段）：确认未安装为 `APP_NOT_INSTALLED`；系统拦截已安装的目标
+/// （`ACTIVATION_BLOCKED`）为 `USER_ACTION_REQUIRED`（[`blocked_error`]）；其余为 `LAUNCH_FAILED`。`data.code` 为名字服务错误码。
 pub(crate) fn dial_error(app_id: &str, e: &ConnectorError) -> ToolError {
+    if e.code == codes::ACTIVATION_BLOCKED {
+        return blocked_error(app_id, e);
+    }
     let kind = if e.code == codes::NAME_NOT_FOUND { ErrorKind::AppNotInstalled } else { ErrorKind::LaunchFailed };
     ToolError::new(kind, format!("按名拨号 App「{app_id}」失败：{}", e.message))
         .with_details(json!({ "appId": app_id, "code": e.code }))
+}
+
+/// 系统阻止 Hub 启动目标 App（spec/protocol.md 第 4 节 `USER_ACTION_REQUIRED`，`reason: "os-permission"`）。
+///
+/// @security `message` 面向用户，只含应用名；宿主的内部说明（组件名等）只进日志（E-05）。
+fn blocked_error(app_id: &str, e: &ConnectorError) -> ToolError {
+    let (package_name, app_name) = match &e.blocked {
+        Some(t) if !t.app_name.trim().is_empty() => (Some(t.package_name.as_str()), t.app_name.trim()),
+        Some(t) => (Some(t.package_name.as_str()), app_id),
+        None => (None, app_id),
+    };
+    tracing::warn!(app_id, code = e.code, detail = %e.message, "系统拒绝 Hub 启动 App，需用户在系统设置中放行");
+    let mut details = json!({
+        "reason": user_action_reason::OS_PERMISSION,
+        "appId": app_id,
+        "appName": app_name,
+        "code": e.code,
+    });
+    if let (Some(pkg), Some(obj)) = (package_name.filter(|p| !p.is_empty()), details.as_object_mut()) {
+        obj.insert("packageName".into(), json!(pkg));
+    }
+    ToolError::new(
+        ErrorKind::UserActionRequired,
+        format!("系统阻止了 AppWire Hub 启动『{app_name}』。请在系统设置中允许『{app_name}』自启动 / 关联启动后重试。"),
+    )
+    .with_details(details)
 }
 
 #[cfg(test)]
@@ -215,5 +244,38 @@ mod tests {
         let e = dial_error("shop", &ConnectorError::new(codes::ACTIVATION_TIMEOUT, "x"));
         assert_eq!(e.kind, ErrorKind::LaunchFailed);
         assert_eq!(e.details.as_ref().and_then(|d| d["code"].as_str()), Some("ACTIVATION_TIMEOUT"));
+        // 宿主未细分的拒绝仍是 LAUNCH_FAILED（不冒充需要用户操作）
+        let e = dial_error("shop", &ConnectorError::new(codes::ACTIVATION_DENIED, "x"));
+        assert_eq!(e.kind, ErrorKind::LaunchFailed);
+    }
+
+    #[test]
+    fn blocked_target_becomes_user_action_required() {
+        let target = crate::connector::BlockedTarget { package_name: "dev.example.shop".into(), app_name: "小店".into() };
+        let internal = "系统拒绝绑定 ComponentInfo{dev.example.shop/dev.appmcp.android.ToolsService}";
+        let e = dial_error("shop", &ConnectorError::blocked(target, internal));
+        assert_eq!(e.kind, ErrorKind::UserActionRequired);
+        assert_eq!(e.message, "系统阻止了 AppWire Hub 启动『小店』。请在系统设置中允许『小店』自启动 / 关联启动后重试。");
+        assert!(!e.message.contains("ComponentInfo"), "内部信息不得出现在面向用户的消息中");
+        assert_eq!(
+            e.details,
+            Some(json!({"reason": "os-permission", "appId": "shop", "appName": "小店",
+                        "packageName": "dev.example.shop", "code": "ACTIVATION_BLOCKED"}))
+        );
+        let rpc: app_mcp_protocol::RpcError = e.into();
+        assert_eq!(rpc.code, -32019);
+    }
+
+    #[test]
+    fn blocked_without_label_falls_back_to_app_id() {
+        let e = dial_error("shop", &ConnectorError::new(codes::ACTIVATION_BLOCKED, "x"));
+        assert_eq!(e.kind, ErrorKind::UserActionRequired);
+        assert!(e.message.contains("『shop』"), "{}", e.message);
+        let d = e.details.unwrap_or_default();
+        assert_eq!(d["reason"], "os-permission");
+        assert!(d.get("packageName").is_none(), "{d}");
+        let blank = crate::connector::BlockedTarget { package_name: "p".into(), app_name: "  ".into() };
+        let e = dial_error("shop", &ConnectorError::blocked(blank, "x"));
+        assert!(e.message.contains("『shop』"), "{}", e.message);
     }
 }

@@ -61,7 +61,7 @@ pub use policy::{
     AnnotationMatch, MAX_POLICY_RULES, PolicyAction, PolicyConfig, PolicyHook, PolicyLoadError, PolicyRule, PolicyRuleStatus,
     PolicyStatus,
 };
-pub use connector::{ConnectorError, Connector, DialedChannel, DiscoveredName, NameEvent};
+pub use connector::{BlockedTarget, ConnectorError, Connector, DialedChannel, DiscoveredName, NameEvent};
 pub use hub::{
     DEFAULT_CHANNEL_GRACE, DEFAULT_NAVIGATE_TIMEOUT, DEFAULT_PROGRESS_INTERVAL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
     load_manifests, parse_resource_uri, resource_uri,

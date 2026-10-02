@@ -38,6 +38,10 @@ pub enum DialOutcome {
     /// 失败：`code` 为 spec/naming.md 第 12 节的错误码（如 `ACTIVATION_DENIED`、`HUB_NOT_TRUSTED`、`NAME_NOT_FOUND`），
     /// 未知码按 `ACTIVATION_DENIED` 处理。失败时宿主自行释放已占用的资源，不会再收到 `release`。
     Failed { code: String, message: String },
+    /// 目标已安装、组件存在，但系统拒绝绑定（Android `bindService` 返回 false 或 `SecurityException`：关联启动 / 自启动管控）。
+    /// Hub 以 `USER_ACTION_REQUIRED`（`reason: "os-permission"`）结束调用，面向用户的消息只用 `app_label`；
+    /// `message` 为内部说明，只进日志。宿主自行释放已占用的资源，不会再收到 `release`。
+    Blocked { package_name: String, app_label: String, message: String },
 }
 
 /// 由宿主语言实现的名字服务。各方法在 Hub 的阻塞线程上调用，可以阻塞（`dial` 不超过 `timeout_ms`）。
@@ -120,6 +124,10 @@ impl hub::connector::HostNameService for NameServiceAdapter {
             DialOutcome::Failed { code, message } => {
                 Err(hub::ConnectorError::new(hub::connector::naming_code(&code), message))
             }
+            DialOutcome::Blocked { package_name, app_label, message } => Err(hub::ConnectorError::blocked(
+                hub::BlockedTarget { package_name, app_name: app_label },
+                message,
+            )),
         }
     }
 

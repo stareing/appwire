@@ -169,6 +169,11 @@ pub mod codes {
     pub const CHANNEL_LIMIT: &str = "CHANNEL_LIMIT";
     /// App 拒绝了拨号的 Hub（spec/naming.md 10.2，Android `open()` 内的调用方校验）。
     pub const HUB_NOT_TRUSTED: &str = "HUB_NOT_TRUSTED";
+    /// 目标已安装、组件存在，但系统拒绝绑定 / 激活（Android `bindService` 返回 false 或 `SecurityException`：关联启动 /
+    /// 自启动管控、OEM 拦截）；需用户在系统设置中放行（spec/naming.md 第 12 节）。工具调用层为 `USER_ACTION_REQUIRED`。
+    pub const ACTIVATION_BLOCKED: &str = "ACTIVATION_BLOCKED";
+    /// 独立 Hub App 的原生库未包含 MCP 出口（cargo feature `mcp-server`），无法为 Agent 提供 MCP（spec/naming.md 第 12 节）。
+    pub const HUB_UNSUPPORTED: &str = "HUB_UNSUPPORTED";
 
     /// 以上全部错误码（宿主语言回传错误码字符串时据此还原为本模块的常量）。
     pub const ALL: &[&str] = &[
@@ -181,6 +186,8 @@ pub mod codes {
         PEER_DIED,
         CHANNEL_LIMIT,
         HUB_NOT_TRUSTED,
+        ACTIVATION_BLOCKED,
+        HUB_UNSUPPORTED,
     ];
 }
 

@@ -71,12 +71,35 @@ impl fmt::Debug for DialedChannel {
 #[error("{code}：{message}")]
 pub struct ConnectorError {
     pub code: &'static str,
+    /// 内部说明（日志、`last_error`）；可能含平台组件名等，不直接展示给用户。
     pub message: String,
+    /// 被系统拦截的目标（`code` 为 [`codes::ACTIVATION_BLOCKED`] 时由宿主给出），用于面向用户的提示。
+    ///
+    /// [`codes::ACTIVATION_BLOCKED`]: app_mcp_protocol::naming::codes::ACTIVATION_BLOCKED
+    pub blocked: Option<BlockedTarget>,
+}
+
+/// 已安装、但系统拒绝 Hub 绑定 / 激活的目标 App（spec/naming.md 第 12 节 `ACTIVATION_BLOCKED`）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockedTarget {
+    /// 平台包标识（Android 包名）。
+    pub package_name: String,
+    /// 面向用户的应用名（Android `loadLabel`）；空时按 appId 展示。
+    pub app_name: String,
 }
 
 impl ConnectorError {
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self { code, message: message.into(), blocked: None }
+    }
+
+    /// 系统拒绝绑定已安装的目标（`ACTIVATION_BLOCKED`）：需用户在系统设置中放行。
+    pub fn blocked(target: BlockedTarget, message: impl Into<String>) -> Self {
+        Self {
+            code: app_mcp_protocol::naming::codes::ACTIVATION_BLOCKED,
+            message: message.into(),
+            blocked: Some(target),
+        }
     }
 }
 

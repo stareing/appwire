@@ -6,8 +6,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import dev.appmcp.binder.BlockedTarget
 import dev.appmcp.binder.ChannelOpenException
 import dev.appmcp.binder.FdChannel
+import dev.appmcp.binder.NamingCodes
 import dev.appmcp.binder.ServiceChannelDialer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -64,13 +66,18 @@ class HubClient private constructor(
         /**
          * 查找并绑定 Hub App。[packageName] 为空时取第一个声明了 [ACTION_HUB] 的导出 Service（按包名排序）。
          *
-         * @error 没有 Hub App → [ChannelOpenException]（`NAME_NOT_FOUND`）；绑定被拒 / 超时 → 对应的码。
+         * 失败抛 [ChannelOpenException]：[ChannelOpenException.code] 供程序判断，[ChannelOpenException.message] 可直接展示。
+         * @error 没有 Hub App → `NAME_NOT_FOUND`；
+         * 系统拦截了到 Hub App 的绑定（关联启动 / 自启动管控）→ `ACTIVATION_BLOCKED`，需用户本人在系统设置中放行：
+         * [ChannelOpenException.blocked] 给出 Hub App 的包名与应用名，`message` 为面向用户的提示，入口用 [settingsIntent]；
+         * Hub App 的原生库不含 MCP 出口 → `HUB_UNSUPPORTED`（需重新编译 Hub App，用户无法自行解决）；
+         * 超时 → `ACTIVATION_TIMEOUT`；其他 → 对应的码（spec/naming.md 第 12 节）。
          */
         suspend fun connect(context: Context, packageName: String? = null, timeoutMillis: Long = 15_000): HubClient =
             withContext(Dispatchers.IO) {
                 val app = context.applicationContext
                 val component = findHub(app, packageName)
-                    ?: throw ChannelOpenException("NAME_NOT_FOUND", "没有找到 Hub App（未安装声明 $ACTION_HUB 的应用）")
+                    ?: throw ChannelOpenException(NamingCodes.NAME_NOT_FOUND, "没有找到 Hub App（未安装声明 $ACTION_HUB 的应用）")
                 val dialed = ServiceChannelDialer(app)
                     .dial(Intent(ACTION_HUB).setComponent(component), FdChannel.HUB_DESCRIPTOR, timeoutMillis)
                 try {
@@ -86,6 +93,14 @@ class HubClient private constructor(
                     throw e
                 }
             }
+
+        /**
+         * 打开 [packageName] 的系统设置详情页（`Settings.ACTION_APPLICATION_DETAILS_SETTINGS`），供用户允许其自启动 / 关联启动。
+         * 用于 `ACTIVATION_BLOCKED`（[ChannelOpenException.blocked] 的包名）与 Hub 返回的 `USER_ACTION_REQUIRED`
+         * （`reason: "os-permission"`，`packageName`）。只给入口，不替用户做决定；不打开厂商私有页面。
+         */
+        @JvmStatic
+        fun settingsIntent(packageName: String): Intent = BlockedTarget.settingsIntent(packageName)
 
         /** 声明了 [ACTION_HUB] 的导出 Service。 */
         @JvmStatic

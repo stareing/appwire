@@ -10,9 +10,11 @@ import android.os.Bundle
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import androidx.test.core.app.ApplicationProvider
+import dev.appmcp.binder.BlockedTarget
 import dev.appmcp.binder.ChannelOpenException
 import dev.appmcp.binder.FdChannel
 import dev.appmcp.binder.FdChannelBinder
+import dev.appmcp.binder.NamingCodes
 import dev.appmcp.hub.ffi.DialOutcome
 import dev.appmcp.hub.NamedApp
 import org.junit.Assert.assertEquals
@@ -45,7 +47,7 @@ class AndroidNameServiceTest {
             name = cls
             this.exported = exported
             metaData = Bundle().apply { putInt(AndroidNameService.META_MANIFEST, 1) }
-            applicationInfo = ApplicationInfo().apply { packageName = pkg; this.uid = uid; enabled = true }
+            applicationInfo = ApplicationInfo().apply { packageName = pkg; this.uid = uid; enabled = true; nonLocalizedLabel = "小店" }
         }
         val spm = shadowOf(app.packageManager)
         spm.installPackage(android.content.pm.PackageInfo().apply { packageName = pkg; applicationInfo = info.applicationInfo })
@@ -157,11 +159,23 @@ class AndroidNameServiceTest {
         assertEquals(0, names.boundCount)
         assertEquals(1, shadowOf(app).unboundServiceConnections.size)
 
-        // 系统拒绝绑定（组件不可绑定 / OEM 拦截）→ ACTIVATION_DENIED。
+        // 组件存在但系统拒绝绑定（关联启动 / OEM 拦截）→ Blocked：带包名与应用名，交给 Hub 生成 USER_ACTION_REQUIRED；
+        // 同时回调 onBlocked（独立 Hub App 据此发通知）。
+        val blockedSeen = mutableListOf<BlockedTarget>()
+        names.onBlocked = { blockedSeen += it }
         shadowOf(app).declareComponentUnbindable(component)
-        val denied = offMain { names.dial("shop", 5_000u) }
-        assertEquals("ACTIVATION_DENIED", (denied as DialOutcome.Failed).code)
-        assertTrue(denied.message, denied.message.contains("关联启动"))
+        val blocked = offMain { names.dial("shop", 5_000u) }
+        assertTrue("$blocked", blocked is DialOutcome.Blocked)
+        blocked as DialOutcome.Blocked
+        assertEquals("dev.example.shop", blocked.packageName)
+        assertEquals("小店", blocked.appLabel)
+        assertEquals(listOf(BlockedTarget("dev.example.shop", "小店")), blockedSeen)
+        assertEquals(0, names.boundCount)
+
+        // 包已被卸载（发现记录还在）：组件查不到 → NAME_NOT_FOUND，而不是"被拦截"。
+        shadowOf(app.packageManager).removeService(component)
+        val gone = offMain { names.dial("shop", 5_000u) }
+        assertEquals(NamingCodes.NAME_NOT_FOUND, (gone as DialOutcome.Failed).code)
 
         assertEquals("NAME_NOT_FOUND", (names.dial("ghost", 1_000u) as DialOutcome.Failed).code)
     }

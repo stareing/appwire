@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      可选：Hub → App 的绑定被系统拦截时发一条通知，点开即该 App 的设置页（BlockedNotice）。只声明、从不申请：
+      API 33+ 用户在系统设置中打开本应用的通知后才会发送；没有权限时调用方照常收到 USER_ACTION_REQUIRED。
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="AppWire Hub"
