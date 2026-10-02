@@ -610,10 +610,12 @@ fn auth_check(home: &AppHome, s: &Settings) -> Check {
     }
 }
 
-/// 调用方计数（`status` 一行摘要与 doctor 共用）：MCP 会话数，以及 Agent 任务数（spec/hub-api.md 3.6；旧 Host 不报告时省略）。
+/// 调用方计数（`status` 一行摘要与 doctor 共用）：MCP 会话数，以及 `subscriptions/listen` 流数与 Agent 任务数
+/// （spec/hub-api.md 3.6；旧 Host 不报告时省略）。
 pub(crate) fn callers_text(st: &HubStatus) -> String {
+    let listen = st.mcp_listen_streams.map(|n| format!("、listen 流 {n} 个")).unwrap_or_default();
     let tasks = st.tasks.as_ref().map(|t| format!("、Agent 任务 {} 个", t.len())).unwrap_or_default();
-    format!("MCP 会话 {} 个{tasks}", st.mcp_sessions)
+    format!("MCP 会话 {} 个{listen}{tasks}", st.mcp_sessions)
 }
 
 fn apps_check(status: Option<&Result<HubStatus, String>>) -> Check {
@@ -1118,8 +1120,10 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(callers_text(&st), "MCP 会话 1 个、Agent 任务 2 个");
+        st.mcp_listen_streams = Some(3);
+        assert_eq!(callers_text(&st), "MCP 会话 1 个、listen 流 3 个、Agent 任务 2 个");
         let c = apps_check(Some(&Ok(st)));
-        assert!(c.summary.contains("Agent 任务 2 个"), "{}", c.summary);
+        assert!(c.summary.contains("listen 流 3 个、Agent 任务 2 个"), "{}", c.summary);
     }
 
     #[test]

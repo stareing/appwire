@@ -35,6 +35,8 @@ public typealias ApprovalRequest = AppMcpHubBindings.ApprovalRequest
 public typealias PairingRequest = AppMcpHubBindings.PairingRequest
 /// 工具暴露方式（`.auto` / `.progressive` / `.all`，spec/hub-api.md 3.7）。
 public typealias ToolExposure = AppMcpHubBindings.ToolExposure
+/// MCP 出口协商的协议版本范围（`.auto` / `.legacyOnly`，spec/hub-api.md 3.6「协议版本」）。
+public typealias McpProtocolMode = AppMcpHubBindings.McpProtocolMode
 /// 唤醒器配置（`.system` / `.disabled` / `.exec(argv:)`）。
 public typealias WakerConfig = AppMcpHubBindings.WakerConfig
 /// 交给 `Hub.setWaker` 的唤醒请求（`appId`、`instanceId`、`descriptor`、`token`、`activationArg`）。

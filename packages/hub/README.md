@@ -122,6 +122,10 @@ const addr = await hub.serveHttp('127.0.0.1:0')      // 额外监听器（/app�
 `statelessListTtlMs`（列表结果的 `ttlMs`，默认 5000）。`hub.status().tasks` 列出各调用方的 Agent 任务；MCP 出口发起的审批另带
 `principal` 与 `clientName`（客户端自报，仅供显示，不得据此授权）。
 
+MCP 出口的协议版本与通知（spec/hub-api.md 3.6）：`mcpProtocolMode`（`'auto'` 默认，可协商 2026-07-28；`'legacyOnly'` 为回退开关，
+只声明到 2025-11-25）、`maxListenStreams`（每个主体的 `subscriptions/listen` 流数上限，默认 16，0 不提供 listen）、
+`maxListenResources`（一个 listen 流接受的资源 URI 数上限，默认 256）。`hub.status().mcpListenStreams` 为当前 listen 流数。
+
 ## 资源保护与结果校验（spec/hub-api.md 3.11）
 
 Hub 对 App 与上游工具的调用限流、限制数据大小，超出时调用以明确错误结束（不静默丢弃、不截断）：

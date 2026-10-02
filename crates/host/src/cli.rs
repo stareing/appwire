@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use app_mcp_hub::{LeaseOverrides, LimitOverrides, OutputValidation, ToolExposure, WakerConfig};
+use app_mcp_hub::{LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, ToolExposure, WakerConfig};
 use app_mcp_hub::upstream::parse_cli_spec;
 use clap::{Args, Parser, Subcommand};
 
@@ -395,6 +395,15 @@ pub struct HubArgs {
     #[arg(long, value_name = "MS")]
     pub principal_select_ttl_ms: Option<u64>,
 
+    /// MCP 出口协商的协议版本范围（spec/hub-api.md 3.6「协议版本」）：auto（默认，可协商 2026-07-28）/
+    /// legacy-only（回退开关，只声明到 2025-11-25，subscriptions/listen 不可用）。
+    #[arg(long, value_name = "auto|legacy-only", value_parser = parse_protocol_mode)]
+    pub mcp_protocol_mode: Option<McpProtocolMode>,
+
+    /// 每个主体同时打开的 subscriptions/listen 流数上限（spec/hub-api.md 3.6「通知」），默认 16；0 不提供 listen。
+    #[arg(long, value_name = "N")]
+    pub max_listen_streams: Option<usize>,
+
     /// 日志级别（trace / debug / info / warn / error），默认 info。设置 RUST_LOG 时以 RUST_LOG 为准。
     #[arg(long, value_name = "LEVEL")]
     pub log_level: Option<String>,
@@ -456,6 +465,8 @@ impl HubArgs {
             stateless_tool_exposure: self.stateless_tool_exposure,
             task_idle_ttl_ms: self.task_idle_ttl_ms,
             principal_select_ttl_ms: self.principal_select_ttl_ms,
+            mcp_protocol_mode: self.mcp_protocol_mode,
+            max_listen_streams: self.max_listen_streams,
             ..Default::default()
         })
     }
@@ -550,6 +561,14 @@ fn parse_exposure(s: &str) -> Result<ToolExposure, String> {
         .map_err(|_| format!("应为 auto、progressive 或 all，而不是「{s}」"))
 }
 
+/// @input 配置文件的取值 `auto` / `legacyOnly`，或命令行习惯的 `legacy-only`。
+fn parse_protocol_mode(s: &str) -> Result<McpProtocolMode, String> {
+    let s = s.trim();
+    let name = if s == "legacy-only" { "legacyOnly" } else { s };
+    serde_json::from_value(serde_json::Value::String(name.to_owned()))
+        .map_err(|_| format!("应为 auto 或 legacy-only，而不是「{s}」"))
+}
+
 fn parse_waker(s: &str) -> Result<WakerConfig, String> {
     let s = s.trim();
     let json = if s.starts_with('{') || s.starts_with('"') {
@@ -635,6 +654,30 @@ mod tests {
         assert_eq!(o.stateless_tool_exposure, Some(ToolExposure::Progressive));
         assert_eq!((o.task_idle_ttl_ms, o.principal_select_ttl_ms), (Some(0), Some(1500)));
         assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--stateless-tool-exposure", "some"]).is_err());
+    }
+
+    #[test]
+    fn parses_mcp_settings() {
+        assert_eq!(parse_protocol_mode("legacy-only"), Ok(McpProtocolMode::LegacyOnly));
+        assert_eq!(parse_protocol_mode("legacyOnly"), Ok(McpProtocolMode::LegacyOnly));
+        assert_eq!(parse_protocol_mode("auto"), Ok(McpProtocolMode::Auto));
+        assert!(parse_protocol_mode("modern").is_err());
+        let cli =
+            Cli::try_parse_from(["app-mcp-host", "serve", "--mcp-protocol-mode", "legacy-only", "--max-listen-streams", "0"])
+                .unwrap();
+        let Some(Command::Serve(s)) = cli.command else {
+            panic!()
+        };
+        let o = s.hub.overrides().unwrap();
+        assert_eq!((o.mcp_protocol_mode, o.max_listen_streams), (Some(McpProtocolMode::LegacyOnly), Some(0)));
+        let cli = Cli::try_parse_from(["app-mcp-host", "serve"]).unwrap();
+        let Some(Command::Serve(s)) = cli.command else {
+            panic!()
+        };
+        let o = s.hub.overrides().unwrap();
+        assert_eq!((o.mcp_protocol_mode, o.max_listen_streams), (None, None));
+        assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--max-listen-streams", "-1"]).is_err());
+        assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--mcp-protocol-mode", "modern"]).is_err());
     }
 
     #[test]

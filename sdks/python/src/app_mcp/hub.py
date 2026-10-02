@@ -82,6 +82,8 @@ WakeDescriptor = ffi.WakeDescriptor
 WakeRequest = ffi.WakeRequest
 #: 工具暴露方式（``ToolExposure.AUTO`` / ``PROGRESSIVE`` / ``ALL``，spec/hub-api.md 3.7）。
 ToolExposure = ffi.ToolExposure
+#: MCP 出口协商的协议版本范围（``McpProtocolMode.AUTO`` / ``LEGACY_ONLY``，spec/hub-api.md 3.6「协议版本」）。
+McpProtocolMode = ffi.McpProtocolMode
 #: 唤醒器配置（``WakerConfig.SYSTEM()`` / ``DISABLED()`` / ``EXEC(argv=[...])``）。
 WakerConfig = ffi.WakerConfig
 # 运行状态（:meth:`Hub.status`，spec/hub-api.md 3.9）。
@@ -190,6 +192,7 @@ __all__ = [
     "InstanceStatus",
     "LastError",
     "LimitsConfig",
+    "McpProtocolMode",
     "OutputValidation",
     "PairingRequest",
     "PolicyAction",

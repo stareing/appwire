@@ -474,6 +474,8 @@ fn app_round_trip_events_approval_and_shutdown() {
     let task = st["tasks"].as_array().and_then(|t| t.iter().find(|t| t["caller"] == "api:s1")).cloned();
     let task = task.unwrap_or_else(|| panic!("缺少 api:s1 任务：{st}"));
     assert_eq!(task["kind"], "api");
+    // v16：listen 流数（没有 MCP 客户端时为 0）
+    assert_eq!(st["mcpListenStreams"], 0, "{st}");
     assert!(task["id"].as_str().is_some_and(|id| id.starts_with("task-")), "{task}");
     // 参数不合法
     call(hub, json!({"name":"notes.add","arguments":{},"session":"s1"}), &tx);

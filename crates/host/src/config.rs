@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use app_mcp_hub::{
-    LeaseOverrides, LeasePolicy, LimitOverrides, LimitPolicy, OutputValidation, ToolExposure, UpstreamConfig, WakerConfig,
+    LeaseOverrides, LeasePolicy, LimitOverrides, LimitPolicy, McpProtocolMode, OutputValidation, ToolExposure, UpstreamConfig,
+    WakerConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -189,6 +190,21 @@ pub struct ToolsSection {
     pub stateless_list_ttl_ms: Option<u64>,
 }
 
+/// MCP 出口（spec/hub-api.md 3.6「协议版本」「通知」）。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct McpSection {
+    /// 协商的协议版本范围：`"auto"`（默认，可协商 2026-07-28）/ `"legacyOnly"`（回退开关，只声明到 2025-11-25）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_mode: Option<McpProtocolMode>,
+    /// 每个主体同时打开的 `subscriptions/listen` 流数上限，默认 16；0 = 不提供 listen。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_listen_streams: Option<usize>,
+    /// 一个 listen 流接受的资源 URI 数上限，默认 256。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_listen_resources: Option<usize>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LogSection {
@@ -234,6 +250,8 @@ pub struct FileConfig {
     pub lifecycle: LifecycleSection,
     #[serde(skip_serializing_if = "is_default")]
     pub tools: ToolsSection,
+    #[serde(skip_serializing_if = "is_default")]
+    pub mcp: McpSection,
     /// 资源保护（spec/hub-api.md 3.11）：`{"toolRatePerMinute","toolRateBurst","appRatePerMinute","appRateBurst",
     /// "maxArgumentsBytes","maxResultBytes","maxResourceBytes"}`，缺省字段取默认值。
     #[serde(skip_serializing_if = "is_default")]
@@ -308,6 +326,8 @@ pub struct Overrides {
     pub task_idle_ttl_ms: Option<u64>,
     pub principal_select_ttl_ms: Option<u64>,
     pub stateless_tool_exposure: Option<ToolExposure>,
+    pub mcp_protocol_mode: Option<McpProtocolMode>,
+    pub max_listen_streams: Option<usize>,
 }
 
 impl FileConfig {
@@ -346,6 +366,8 @@ impl FileConfig {
         set(&mut self.lifecycle.task_idle_ttl_ms, &o.task_idle_ttl_ms);
         set(&mut self.lifecycle.principal_select_ttl_ms, &o.principal_select_ttl_ms);
         set(&mut self.tools.stateless_exposure, &o.stateless_tool_exposure);
+        set(&mut self.mcp.protocol_mode, &o.mcp_protocol_mode);
+        set(&mut self.mcp.max_listen_streams, &o.max_listen_streams);
         set(&mut self.tools.exposure, &o.tool_exposure);
         set(&mut self.tools.threshold, &o.tool_exposure_threshold);
         set(&mut self.tools.output_validation, &o.output_validation);
@@ -423,6 +445,10 @@ pub struct Settings {
     pub progress_interval_ms: u64,
     pub stateless_tool_exposure: ToolExposure,
     pub stateless_list_ttl_ms: u64,
+    pub mcp_protocol_mode: McpProtocolMode,
+    /// 每个主体的 `subscriptions/listen` 流数上限；0 = 不提供 listen。
+    pub max_listen_streams: usize,
+    pub max_listen_resources: usize,
     pub log_level: String,
     pub log_file: bool,
     pub log_max_bytes: u64,
@@ -545,6 +571,9 @@ impl Settings {
                 .tools
                 .stateless_list_ttl_ms
                 .unwrap_or(app_mcp_hub::DEFAULT_STATELESS_LIST_TTL.as_millis() as u64),
+            mcp_protocol_mode: c.mcp.protocol_mode.unwrap_or_default(),
+            max_listen_streams: c.mcp.max_listen_streams.unwrap_or(app_mcp_hub::DEFAULT_MAX_LISTEN_STREAMS),
+            max_listen_resources: c.mcp.max_listen_resources.unwrap_or(app_mcp_hub::DEFAULT_MAX_LISTEN_RESOURCES),
             log_level: c.log.level.unwrap_or_else(|| "info".to_owned()),
             log_file: c.log.file.unwrap_or(true),
             log_max_bytes: c.log.max_bytes.unwrap_or(5 * 1024 * 1024),
@@ -624,6 +653,46 @@ mod tests {
         // 类型不对：明确报错
         assert!(serde_json::from_str::<FileConfig>(r#"{"tools":{"statelessExposure":"some"}}"#).is_err());
         assert!(serde_json::from_str::<FileConfig>(r#"{"lifecycle":{"taskIdleTtlMs":-1}}"#).is_err());
+    }
+
+    #[test]
+    fn mcp_settings_from_file_and_cli() {
+        let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home()).unwrap();
+        let hub = app_mcp_hub::HubConfig::default();
+        assert_eq!(
+            (s.mcp_protocol_mode, s.max_listen_streams, s.max_listen_resources),
+            (hub.mcp_protocol_mode, hub.max_listen_streams, hub.max_listen_resources),
+            "默认值与 HubConfig 一致"
+        );
+        let file: FileConfig = serde_json::from_str(
+            r#"{"mcp":{"protocolMode":"legacyOnly","maxListenStreams":0,"maxListenResources":8}}"#,
+        )
+        .unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home()).unwrap();
+        assert_eq!(
+            (s.mcp_protocol_mode, s.max_listen_streams, s.max_listen_resources),
+            (McpProtocolMode::LegacyOnly, 0, 8)
+        );
+        // 命令行覆盖；service install 持久化为配置文件的键
+        let o = Overrides {
+            mcp_protocol_mode: Some(McpProtocolMode::Auto),
+            max_listen_streams: Some(4),
+            ..Default::default()
+        };
+        let s = Settings::resolve(&file, &o, &home()).unwrap();
+        assert_eq!(
+            (s.mcp_protocol_mode, s.max_listen_streams, s.max_listen_resources),
+            (McpProtocolMode::Auto, 4, 8)
+        );
+        let mut f = FileConfig::default();
+        f.apply(&o).unwrap();
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["mcp"], serde_json::json!({"protocolMode": "auto", "maxListenStreams": 4}));
+        assert!(serde_json::to_value(FileConfig::default()).unwrap().get("mcp").is_none(), "未设置时不写出");
+        // 类型不对：明确报错
+        assert!(serde_json::from_str::<FileConfig>(r#"{"mcp":{"protocolMode":"modern"}}"#).is_err());
+        assert!(serde_json::from_str::<FileConfig>(r#"{"mcp":{"maxListenStreams":-1}}"#).is_err());
+        assert!(serde_json::from_str::<FileConfig>(r#"{"mcp":{"maxListenResources":1.5}}"#).is_err());
     }
 
     #[test]

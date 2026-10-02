@@ -219,6 +219,38 @@ public class HubBasicTests
     }
 
     [Fact]
+    public void McpListenConfigSerializesAndStarts()
+    {
+        var options = new HubOptions
+        {
+            DisableIpc = true,
+            DisableListen = true,
+            Dispatcher = null,
+            McpProtocolMode = McpProtocolMode.LegacyOnly,
+            MaxListenStreams = 0,
+            MaxListenResources = 8,
+        };
+        var json = JsonNode.Parse(options.ToConfigJson())!.AsObject();
+        Assert.Equal("legacyOnly", (string?)json["mcpProtocolMode"]);
+        Assert.Equal(0, (int?)json["maxListenStreams"]);
+        Assert.Equal(8, (int?)json["maxListenResources"]);
+        Assert.Equal("auto", (string?)JsonNode.Parse(new HubOptions { McpProtocolMode = McpProtocolMode.Auto }.ToConfigJson())!["mcpProtocolMode"]);
+        var defaults = JsonNode.Parse(new HubOptions().ToConfigJson())!.AsObject();
+        Assert.False(defaults.ContainsKey("mcpProtocolMode") || defaults.ContainsKey("maxListenStreams")
+            || defaults.ContainsKey("maxListenResources"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new HubOptions { MaxListenStreams = -1 }.ToConfigJson());
+        Assert.Throws<ArgumentOutOfRangeException>(() => new HubOptions { MaxListenResources = -1 }.ToConfigJson());
+        Assert.Throws<ArgumentOutOfRangeException>(() => new HubOptions { McpProtocolMode = (McpProtocolMode)9 }.ToConfigJson());
+        using var hub = AppMcpHub.Start(options);
+        Assert.Equal(0, hub.Status().McpListenStreams);
+        var old = JsonSerializer.Deserialize<HubStatusInfo>("""
+            {"service":"app-mcp","version":"0","pid":1,"startedAtMs":0,"mcpHttp":true,
+             "auth":{"tokenConfigured":false,"tokenRequiredWithoutOrigin":false},"mcpSessions":1,"apps":[],"reports":[]}
+            """, AppMcpHub.WireOptions)!;
+        Assert.Null(old.McpListenStreams);
+    }
+
+    [Fact]
     public void StatusParsesAgentTasksAndApprovalPrincipal()
     {
         var status = JsonSerializer.Deserialize<HubStatusInfo>("""

@@ -97,6 +97,8 @@ typealias PolicyLoadError = dev.appmcp.hub.ffi.PolicyLoadError
 
 /** 工具暴露方式（`AUTO` / `PROGRESSIVE` / `ALL`，spec/hub-api.md 3.7）。 */
 typealias ToolExposure = dev.appmcp.hub.ffi.ToolExposure
+/** MCP 出口协商的协议版本范围（`AUTO` / `LEGACY_ONLY`，spec/hub-api.md 3.6「协议版本」）。 */
+typealias McpProtocolMode = dev.appmcp.hub.ffi.McpProtocolMode
 
 /** 唤醒器配置；变体需通过 `dev.appmcp.hub.ffi.WakerConfig.System` / `.Disabled` / `.Exec(argv)` 访问（typealias 不能访问嵌套类）。 */
 typealias WakerConfig = dev.appmcp.hub.ffi.WakerConfig

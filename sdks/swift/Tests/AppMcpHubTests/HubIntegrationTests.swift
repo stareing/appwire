@@ -447,6 +447,17 @@ final class HubIntegrationTests: XCTestCase {
         hub.close()
     }
 
+    /// spec/hub-api.md 3.6：MCP 出口协议版本与 listen 上限可设置；status 报告 listen 流数。
+    func testMcpListenConfig() throws {
+        let config = HubConfig(
+            enableListen: false, enableIpc: false, mcpProtocolMode: .legacyOnly, maxListenStreams: 0, maxListenResources: 8
+        )
+        XCTAssertEqual(config.mcpProtocolMode, .legacyOnly)
+        let hub = try Hub(config: config)
+        XCTAssertEqual(try hub.status().mcpListenStreams, 0)
+        hub.close()
+    }
+
     func testProgressiveExposureConfig() throws {
         let hub = try Hub(config: HubConfig(
             enableListen: false, enableIpc: false, waker: .exec(argv: ["true"]), toolExposure: .progressive, toolExposureThreshold: 5

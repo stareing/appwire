@@ -120,6 +120,12 @@ export type WakerConfig = 'system' | 'none' | { exec: string[] }
 export type ToolExposure = 'auto' | 'progressive' | 'all'
 
 /**
+ * MCP 出口协商的协议版本范围（spec/hub-api.md 3.6「协议版本」）：`auto`（默认：`initialize` 客户端走 legacy 会话，
+ * 每请求自带 `_meta` 的客户端可协商 2026-07-28）/ `legacyOnly`（回退开关：只声明到 2025-11-25，`subscriptions/listen` 不可用）。
+ */
+export type McpProtocolMode = 'auto' | 'legacyOnly'
+
+/**
  * 自适应租约策略：租约 = 同一（会话, App）最近 `window` 个调用间隔的 p90 + `marginMs`，限制在 [`minMs`, `maxMs`]；
  * 样本不足 3 个时用 `leaseTtlMs`。`window = 0` 或 `minMs > maxMs` 时 `Hub.start` 失败。
  */
@@ -297,6 +303,13 @@ export interface HubConfig {
   principalSelectTtlMs?: number
   /** 无会话请求的列表结果所带缓存提示 `ttlMs`，缺省 5000。 */
   statelessListTtlMs?: number
+  // ---- MCP 出口协议版本与通知（spec/hub-api.md 3.6）----
+  /** 协商的协议版本范围，缺省 `auto`。 */
+  mcpProtocolMode?: McpProtocolMode
+  /** 每个主体同时打开的 `subscriptions/listen` 流数上限，缺省 16；0 不提供 listen。 */
+  maxListenStreams?: number
+  /** 一个 listen 流接受的资源 URI 数上限，缺省 256。 */
+  maxListenResources?: number
   /** 上游 MCP 服务器：名称（appId 规则）→ 启动方式。 */
   upstreams?: Record<string, UpstreamConfig>
   approval?: ApprovalPolicy
@@ -634,8 +647,10 @@ export interface HubStatus {
   /** 是否提供 MCP Streamable HTTP（`/mcp`）。 */
   mcpHttp: boolean
   auth: AuthStatus
-  /** 已初始化的 MCP 会话数。 */
+  /** 已初始化的 legacy MCP 会话数。 */
   mcpSessions: number
+  /** 进行中的 `subscriptions/listen` 流数（spec/hub-api.md 3.6「通知」）；旧 Hub 缺省。 */
+  mcpListenStreams?: number
   /** App（含上游），按 appId 排序。 */
   apps: AppStatus[]
   /** 最近的 SDK 诊断上报，旧的在前（最多 32 条）。 */

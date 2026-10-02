@@ -166,6 +166,9 @@ fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
         stateless_tool_exposure: s.stateless_tool_exposure,
         principal_select_ttl: Duration::from_millis(s.principal_select_ttl_ms),
         stateless_list_ttl: Duration::from_millis(s.stateless_list_ttl_ms),
+        mcp_protocol_mode: s.mcp_protocol_mode,
+        max_listen_streams: s.max_listen_streams,
+        max_listen_resources: s.max_listen_resources,
         ..defaults
     }
 }
@@ -872,5 +875,25 @@ mod tests {
         assert_eq!(c.principal_select_ttl, Duration::ZERO);
         assert_eq!(c.stateless_tool_exposure, app_mcp_hub::ToolExposure::Progressive);
         assert_eq!(c.stateless_list_ttl, Duration::from_millis(750));
+    }
+
+    #[test]
+    fn hub_config_carries_mcp_settings() {
+        let home = AppHome { dir: std::env::temp_dir().join(format!("app-mcp-hubcfg-mcp-{}", std::process::id())) };
+        let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home).unwrap();
+        let c = hub_config(&s, &home);
+        let d = HubConfig::default();
+        assert_eq!(
+            (c.mcp_protocol_mode, c.max_listen_streams, c.max_listen_resources),
+            (d.mcp_protocol_mode, d.max_listen_streams, d.max_listen_resources)
+        );
+        let file: FileConfig = serde_json::from_str(
+            r#"{"mcp":{"protocolMode":"legacyOnly","maxListenStreams":3,"maxListenResources":7}}"#,
+        )
+        .unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home).unwrap();
+        let c = hub_config(&s, &home);
+        assert_eq!(c.mcp_protocol_mode, app_mcp_hub::McpProtocolMode::LegacyOnly);
+        assert_eq!((c.max_listen_streams, c.max_listen_resources), (3, 7));
     }
 }

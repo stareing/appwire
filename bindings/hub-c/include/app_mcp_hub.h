@@ -89,6 +89,9 @@
  *   · am_hub_start 配置新增可选字段 taskIdleTtlMs、statelessToolExposure、principalSelectTtlMs、statelessListTtlMs。
  *   · JSON 中新增：ApprovalRequest.principal / clientName（只在 MCP 出口发起的审批中出现）；
  *     HubStatus.tasks（Agent 任务数组）。
+ * - v16（MCP 2026-07-28 与 subscriptions/listen，spec/hub-api.md 3.6「协议版本」「通知」）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 mcpProtocolMode、maxListenStreams、maxListenResources。
+ *   · JSON 中新增：HubStatus.mcpListenStreams（进行中的 subscriptions/listen 流数）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -253,6 +256,11 @@ void am_hub_string_free(char *s);
  *                        渐进时列表只含内置工具与全局选定实例的 App，不随调用变化
  *   principalSelectTtlMs 无会话请求的主体级 apps.select 选择的空闲有效期，默认 60000；0 不单独过期
  *   statelessListTtlMs   无会话请求的列表结果所带缓存提示 ttlMs，默认 5000
+ *   —— v16 MCP 出口协议版本与通知（spec/hub-api.md 3.6）——
+ *   mcpProtocolMode      "auto"（默认：initialize 客户端走 legacy 会话，每请求自带 _meta 的客户端可协商 2026-07-28）/
+ *                        "legacyOnly"（回退开关：只声明到 2025-11-25，subscriptions/listen 不可用）
+ *   maxListenStreams     每个主体同时打开的 subscriptions/listen 流数上限，默认 16；0 不提供 listen
+ *   maxListenResources   一个 listen 流接受的资源 URI 数上限，默认 256
  *   workerThreads        tokio 工作线程数（默认 2）
  * 未知字段报 AM_HUB_ERR_INVALID_JSON。清单无效报 AM_HUB_ERR_INVALID_CONFIG；地址无法绑定报 AM_HUB_ERR_IO。 */
 AmHubStatus am_hub_start(const char *config_json, AmHub **out_hub);
@@ -310,7 +318,8 @@ AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **ou
  * v15 起另有 tasks：Agent 任务（spec/hub-api.md 3.6），按 caller 排序：[{id（"task-<128 位十六进制>"）,
  *   caller（调用方键 "mcp:<n>" | "principal:<主体>" | "api" | "api:<session>"）, kind（"mcpSession" | "principal" | "api"）,
  *   selections: [{appId, instanceId, expiresInMs?（主体级选择距失效的毫秒数）}], leases: [{connectionId, expiresInMs}],
- *   inflight（进行中的请求数）, idleMs?（距最近一次请求活动的毫秒数）}] */
+ *   inflight（进行中的请求数）, idleMs?（距最近一次请求活动的毫秒数）}]
+ * v16 起另有 mcpListenStreams：进行中的 subscriptions/listen 流数（mcpSessions 只计 legacy 会话）。 */
 AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------

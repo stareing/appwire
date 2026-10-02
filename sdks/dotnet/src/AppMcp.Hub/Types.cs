@@ -60,6 +60,15 @@ public enum ToolExposure
     All,
 }
 
+/// <summary>MCP 出口协商的协议版本范围（spec/hub-api.md 3.6「协议版本」）。</summary>
+public enum McpProtocolMode
+{
+    /// <summary>默认：initialize 客户端走 legacy 会话，每请求自带 _meta 的客户端可协商 2026-07-28（subscriptions/listen 可用）。</summary>
+    Auto,
+    /// <summary>回退开关：只声明到 2025-11-25，subscriptions/listen 不可用。</summary>
+    LegacyOnly,
+}
+
 /// <summary>结果与工具 outputSchema 不符时 Hub 的处理（spec/hub-api.md 3.11）。</summary>
 [JsonConverter(typeof(JsonStringEnumConverter<OutputValidation>))]
 public enum OutputValidation
@@ -325,6 +334,15 @@ public sealed class HubOptions
     /// <summary>无会话请求的列表结果所带缓存提示 ttlMs（默认 5 秒）。</summary>
     public TimeSpan? StatelessListTtl { get; set; }
 
+    // ---- MCP 出口协议版本与通知（spec/hub-api.md 3.6）----
+
+    /// <summary>协商的协议版本范围（默认 <see cref="AppMcp.Hub.McpProtocolMode.Auto"/>）。</summary>
+    public McpProtocolMode? McpProtocolMode { get; set; }
+    /// <summary>每个主体同时打开的 subscriptions/listen 流数上限（默认 16）；0 不提供 listen。</summary>
+    public int? MaxListenStreams { get; set; }
+    /// <summary>一个 listen 流接受的资源 URI 数上限（默认 256）。</summary>
+    public int? MaxListenResources { get; set; }
+
     /// <summary>上游 MCP 服务器（名称 → 启动方式）。</summary>
     public IDictionary<string, UpstreamOptions> Upstreams { get; } = new Dictionary<string, UpstreamOptions>();
 
@@ -403,6 +421,17 @@ public sealed class HubOptions
         if (StatelessToolExposure is { } ste) o["statelessToolExposure"] = ste.ToString().ToLowerInvariant();
         AddMs(o, "principalSelectTtlMs", PrincipalSelectTtl);
         AddMs(o, "statelessListTtlMs", StatelessListTtl);
+        if (McpProtocolMode is { } mode)
+        {
+            o["mcpProtocolMode"] = mode switch
+            {
+                AppMcp.Hub.McpProtocolMode.Auto => "auto",
+                AppMcp.Hub.McpProtocolMode.LegacyOnly => "legacyOnly",
+                _ => throw new ArgumentOutOfRangeException(nameof(McpProtocolMode)),
+            };
+        }
+        AddCount(o, "maxListenStreams", MaxListenStreams, nameof(MaxListenStreams));
+        AddCount(o, "maxListenResources", MaxListenResources, nameof(MaxListenResources));
         if (Upstreams.Count > 0)
         {
             var ups = new JsonObject();
@@ -426,6 +455,15 @@ public sealed class HubOptions
         {
             if (v < TimeSpan.Zero) throw new ArgumentOutOfRangeException(key, "时长不能为负数");
             o[key] = (ulong)v.TotalMilliseconds;
+        }
+    }
+
+    internal static void AddCount(JsonObject o, string key, int? value, string name)
+    {
+        if (value is { } v)
+        {
+            if (v < 0) throw new ArgumentOutOfRangeException(name, "上限不能为负数");
+            o[key] = v;
         }
     }
 }
@@ -761,6 +799,8 @@ public sealed record HubStatusInfo(
     public DormantStoreStatusInfo? DormantStore { get; init; }
     /// <summary>Agent 任务（调用方的跨请求状态，spec/hub-api.md 3.6），按 Caller 排序；旧 Hub 为 null。</summary>
     public IReadOnlyList<AgentTaskStatusInfo>? Tasks { get; init; }
+    /// <summary>进行中的 subscriptions/listen 流数（spec/hub-api.md 3.6「通知」；McpSessions 只计 legacy 会话）；旧 Hub 为 null。</summary>
+    public int? McpListenStreams { get; init; }
 }
 
 /// <summary>

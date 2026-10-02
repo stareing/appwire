@@ -26,6 +26,7 @@ import {
   type ApprovalRequest,
   type HubEvent,
   type HubStartOptions,
+  type McpProtocolMode,
   type PairingRequest,
   type ToolExposure,
   type WakeRequest,
@@ -476,6 +477,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
       service: 'app-mcp',
       listen: hub.listenAddr,
       mcpSessions: 0,
+      mcpListenStreams: 0,
       auth: { tokenConfigured: false, tokenRequiredWithoutOrigin: false },
       apps: [],
       reports: [],
@@ -515,6 +517,19 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
       { principalSelectTtlMs: 1.5 },
       { statelessListTtlMs: -5 },
       { statelessToolExposure: 'some' as unknown as ToolExposure },
+    ]
+    for (const options of bad) {
+      await expect(Hub.start({ listen: null, ipcEndpoint: null, ...options })).rejects.toBeInstanceOf(HubError)
+    }
+  })
+
+  it('MCP 出口协议版本与 listen 上限：合法取值透传，非法取值启动失败', async () => {
+    const { hub } = await startHub({ mcpProtocolMode: 'legacyOnly', maxListenStreams: 0, maxListenResources: 8 })
+    expect(hub.status().mcpListenStreams).toBe(0)
+    const bad = [
+      { mcpProtocolMode: 'modern' as unknown as McpProtocolMode },
+      { maxListenStreams: -1 },
+      { maxListenResources: 1.5 },
     ]
     for (const options of bad) {
       await expect(Hub.start({ listen: null, ipcEndpoint: null, ...options })).rejects.toBeInstanceOf(HubError)

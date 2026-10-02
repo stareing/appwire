@@ -45,6 +45,24 @@ impl From<ToolExposure> for hub::ToolExposure {
     }
 }
 
+/// MCP 出口协商的协议版本范围（spec/hub-api.md 3.6「协议版本」）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum McpProtocolMode {
+    /// 默认：`initialize` 客户端走 legacy 会话，每请求自带 `_meta` 的客户端可协商 2026-07-28（`subscriptions/listen` 可用）。
+    Auto,
+    /// 回退开关：只声明到 2025-11-25，`subscriptions/listen` 不可用。
+    LegacyOnly,
+}
+
+impl From<McpProtocolMode> for hub::McpProtocolMode {
+    fn from(v: McpProtocolMode) -> Self {
+        match v {
+            McpProtocolMode::Auto => hub::McpProtocolMode::Auto,
+            McpProtocolMode::LegacyOnly => hub::McpProtocolMode::LegacyOnly,
+        }
+    }
+}
+
 /// 唤醒器配置（spec/hub-api.md 3.5；对应 JSON 的 `"system"` / `"none"` / `{"exec": [...]}`）。
 /// `set_waker` 设置的实现优先。
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -509,6 +527,16 @@ pub struct HubConfig {
     /// 无会话请求的列表结果所带缓存提示 `ttlMs`（默认 5 s）。
     #[uniffi(default = None)]
     pub stateless_list_ttl_ms: Option<u64>,
+    // ---- MCP 出口协议版本与通知（spec/hub-api.md 3.6）----
+    /// 协商的协议版本范围（默认 `Auto`）。
+    #[uniffi(default = None)]
+    pub mcp_protocol_mode: Option<McpProtocolMode>,
+    /// 每个主体同时打开的 `subscriptions/listen` 流数上限（默认 16）；`0` 不提供 listen。
+    #[uniffi(default = None)]
+    pub max_listen_streams: Option<u32>,
+    /// 一个 listen 流接受的资源 URI 数上限（默认 256）。
+    #[uniffi(default = None)]
+    pub max_listen_resources: Option<u32>,
 }
 
 impl Default for HubConfig {
@@ -556,6 +584,9 @@ impl Default for HubConfig {
             stateless_tool_exposure: None,
             principal_select_ttl_ms: None,
             stateless_list_ttl_ms: None,
+            mcp_protocol_mode: None,
+            max_listen_streams: None,
+            max_listen_resources: None,
         }
     }
 }
@@ -921,6 +952,15 @@ impl HubConfig {
         set(&mut c.stateless_list_ttl, self.stateless_list_ttl_ms);
         if let Some(v) = self.stateless_tool_exposure {
             c.stateless_tool_exposure = v.into();
+        }
+        if let Some(v) = self.mcp_protocol_mode {
+            c.mcp_protocol_mode = v.into();
+        }
+        if let Some(v) = self.max_listen_streams {
+            c.max_listen_streams = v as usize;
+        }
+        if let Some(v) = self.max_listen_resources {
+            c.max_listen_resources = v as usize;
         }
         Ok(c)
     }
@@ -1290,8 +1330,11 @@ pub struct HubStatus {
     /// 是否提供 MCP Streamable HTTP（`/mcp`）。
     pub mcp_http: bool,
     pub auth: AuthStatus,
-    /// 已初始化的 MCP 会话数。
+    /// 已初始化的 legacy MCP 会话数。
     pub mcp_sessions: u64,
+    /// 进行中的 `subscriptions/listen` 流数（spec/hub-api.md 3.6「通知」）；旧 Host 为空。
+    #[uniffi(default = None)]
+    pub mcp_listen_streams: Option<u64>,
     /// App（含上游），按 appId 排序。
     pub apps: Vec<AppStatus>,
     /// 最近的 SDK 诊断上报，旧的在前（最多 32 条）。
@@ -1504,6 +1547,7 @@ impl From<hub::HubStatus> for HubStatus {
                 token_required_without_origin: s.auth.token_required_without_origin,
             },
             mcp_sessions: u64::try_from(s.mcp_sessions).unwrap_or(u64::MAX),
+            mcp_listen_streams: s.mcp_listen_streams.map(|n| u64::try_from(n).unwrap_or(u64::MAX)),
             apps: s.apps.into_iter().map(Into::into).collect(),
             reports: s.reports.into_iter().map(Into::into).collect(),
             lease: s.lease.map(Into::into),
@@ -2102,6 +2146,10 @@ mod tests {
             (c.task_idle_ttl, c.stateless_tool_exposure, c.principal_select_ttl, c.stateless_list_ttl),
             (d.task_idle_ttl, d.stateless_tool_exposure, d.principal_select_ttl, d.stateless_list_ttl)
         );
+        assert_eq!(
+            (c.mcp_protocol_mode, c.max_listen_streams, c.max_listen_resources),
+            (d.mcp_protocol_mode, d.max_listen_streams, d.max_listen_resources)
+        );
         assert_eq!(c.approval, d.approval);
         assert!(c.manifests.is_empty() && c.upstreams.is_empty());
     }
@@ -2121,6 +2169,9 @@ mod tests {
             stateless_tool_exposure: Some(ToolExposure::Progressive),
             principal_select_ttl_ms: Some(1500),
             stateless_list_ttl_ms: Some(750),
+            mcp_protocol_mode: Some(McpProtocolMode::LegacyOnly),
+            max_listen_streams: Some(0),
+            max_listen_resources: Some(8),
             upstreams: vec![UpstreamSpec {
                 name: "fs".into(),
                 command: "npx".into(),
@@ -2145,6 +2196,8 @@ mod tests {
         assert_eq!(c.stateless_tool_exposure, hub::ToolExposure::Progressive);
         assert_eq!(c.principal_select_ttl, Duration::from_millis(1500));
         assert_eq!(c.stateless_list_ttl, Duration::from_millis(750));
+        assert_eq!(c.mcp_protocol_mode, hub::McpProtocolMode::LegacyOnly);
+        assert_eq!((c.max_listen_streams, c.max_listen_resources), (0, 8));
         assert_eq!(c.upstreams["fs"].env["A"], "1");
         assert_eq!(c.manifests[0].app_id, "shop");
 
@@ -2491,7 +2544,7 @@ mod tests {
             "service": "app-mcp", "version": "9.9.9", "user": "u", "pid": 42,
             "listen": "127.0.0.1:7717", "ipcEndpoint": "unix:/x.sock", "startedAtMs": 5,
             "mcpHttp": true, "auth": {"tokenConfigured": true, "tokenRequiredWithoutOrigin": false},
-            "mcpSessions": 2,
+            "mcpSessions": 2, "mcpListenStreams": 3,
             "apps": [
                 {"appId": "a", "name": "A", "kind": "app", "state": "dormant",
                  "instances": [
@@ -2520,7 +2573,7 @@ mod tests {
         assert_eq!((s.service.as_str(), s.version.as_str(), s.user.as_deref(), s.pid), ("app-mcp", "9.9.9", Some("u"), 42));
         assert_eq!(s.listen.as_deref(), Some("127.0.0.1:7717"));
         assert_eq!(s.ipc_endpoint.as_deref(), Some("unix:/x.sock"));
-        assert_eq!((s.started_at_ms, s.mcp_http, s.mcp_sessions), (5, true, 2));
+        assert_eq!((s.started_at_ms, s.mcp_http, s.mcp_sessions, s.mcp_listen_streams), (5, true, 2, Some(3)));
         assert_eq!(
             s.auth,
             AuthStatus {
@@ -2589,6 +2642,18 @@ mod tests {
         assert_eq!(InstanceState::from(hub::InstanceState::Dormant), InstanceState::Dormant);
         assert_eq!(AppState::from(hub::AppState::Waking), AppState::Waking);
         assert_eq!(AppState::from(hub::AppState::Connected), AppState::Connected);
+    }
+
+    #[test]
+    fn old_host_status_has_no_listen_streams() {
+        let st: hub::HubStatus = serde_json::from_value(serde_json::json!({
+            "service": "app-mcp", "version": "0", "pid": 1, "startedAtMs": 0, "mcpHttp": true,
+            "auth": {"tokenConfigured": false, "tokenRequiredWithoutOrigin": false}, "mcpSessions": 1,
+            "apps": [], "reports": []
+        }))
+        .unwrap();
+        let s = HubStatus::from(st);
+        assert_eq!((s.mcp_sessions, s.mcp_listen_streams, s.tasks), (1, None, None));
     }
 
     #[test]

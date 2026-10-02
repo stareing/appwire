@@ -562,6 +562,7 @@ fn status_reports_instances_connection_ids_and_shutdown() {
     assert_eq!(notes.instances[0].connection_id.as_deref(), Some(app_cid.as_str()));
     // Hub API 会话的 Agent 任务（spec/hub-api.md 3.6）
     assert_eq!(hub.status().expect("status").tasks, Some(vec![]), "调用前没有任务");
+    assert_eq!(hub.status().expect("status").mcp_listen_streams, Some(0), "没有 MCP 客户端时 listen 流为 0");
     let out = wait(hub.call_tool(CallRequest { session: Some("s1".into()), ..req("notes.notes.add", json!({"text": "x"})) }));
     assert!(out.expect("调用").error.is_none());
     let tasks = hub.status().expect("status").tasks.expect("tasks");

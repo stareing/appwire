@@ -310,7 +310,7 @@ pub struct Health {                          // serde camelCase
   modern 下不存在空结果——`ping`、`resources/subscribe` / `unsubscribe` 对 modern 请求由 rmcp 返回 method not found，
   `logging/setLevel` 本 Hub 不实现。modern 请求的 JSON-RPC 错误不使用 AppWire 的 -32000…-32019 码：输入 / 资源不存在类
   （`data.kind` 为 `INVALID_INPUT` / `RESOURCE_NOT_FOUND`）→ `-32602`，其余 → `-32603`，类别仍在 `data.kind`；legacy 码值不变
-  （docs/plans/12-mcp-stateless.md 第 5 节）。`app-mcp-host` 配置与各语言绑定暂未暴露此开关（默认值即 `Auto`）。
+  （docs/plans/12-mcp-stateless.md 第 5 节）。配置入口见下方「通知」之后的表（缺省均取 Hub 默认值）。
 - **通知**（第 12 项 S7，`crates/hub/src/subscribers.rs`）：通知订阅方按 Hub 内部的订阅方 ID 寻址，两种——
   legacy 会话的 peer（`notifications/initialized` 时登记，会话结束移除；`resources/subscribe` 订阅按会话），与无会话请求的
   **`subscriptions/listen` 流**：订阅寿命即该请求的寿命，客户端关闭流（HTTP 断开 / `notifications/cancelled`）即结束并移除其资源订阅；
@@ -324,6 +324,19 @@ pub struct Health {                          // serde camelCase
   listen 流不计入请求流活动（不阻止 3.5 的租约空闲收回与任务回收）；它占着一条 HTTP 连接，按需启动的 Host（spec/protocol.md 1.9）
   在流打开期间不会空闲退出（与 legacy 会话的 GET 流相同）。不轮询、不加定时器（rmcp 的 SSE 保活 15 秒与 legacy GET 流相同）。
   `HubStatus.mcp_listen_streams: Option<usize>`（只增字段）为当前 listen 流数，`mcp_sessions` 只计 legacy 会话。
+- **配置入口**（`mcp_protocol_mode` / `max_listen_streams` / `max_listen_resources`，缺省均取 Hub 默认值）：
+
+  | 绑定 | `mcp_protocol_mode` | `max_listen_streams` | `max_listen_resources` |
+  |---|---|---|---|
+  | `app-mcp-host` 配置文件 | `mcp.protocolMode`（`"auto"` / `"legacyOnly"`） | `mcp.maxListenStreams` | `mcp.maxListenResources` |
+  | `app-mcp-host` 命令行 | `--mcp-protocol-mode auto\|legacy-only` | `--max-listen-streams` | （仅配置文件） |
+  | hub-c（头文件 v16）/ hub-node / `@app-mcp/hub` JSON | `mcpProtocolMode`（`"auto"` / `"legacyOnly"`） | `maxListenStreams` | `maxListenResources` |
+  | hub-uniffi `HubConfig` | `mcp_protocol_mode: McpProtocolMode?`（`Auto` / `LegacyOnly`） | `max_listen_streams: u32?` | `max_listen_resources: u32?` |
+  | C# `HubOptions` | `McpProtocolMode`（枚举 `Auto` / `LegacyOnly`） | `MaxListenStreams`（`int?`，负数抛 `ArgumentOutOfRangeException`） | `MaxListenResources`（同左） |
+
+  `HubStatus.mcp_listen_streams`：hub-c 为 JSON `mcpListenStreams`（头文件 v16）；`@app-mcp/hub` `mcpListenStreams?: number`；hub-uniffi
+  `mcp_listen_streams: u64?`（Kotlin / Swift / Python 封装层另以同名类型别名导出 `McpProtocolMode`）；C# `HubStatusInfo.McpListenStreams`（`int?`）。
+  旧 Host 不报告时为空。`app-mcp-host status` 的一行摘要与 doctor「App 实例」检查显示 listen 流数（旧 Host 不报告时省略）。
 - **调用方与 Agent 任务**（第 12 项 S4、第 16 项 P1；`crates/hub/src/task.rs`）：调用方的跨请求状态（`apps.select` 选择、已附带总览、
   租约、渐进暴露已列出的 App）记在该调用方的 **Agent 任务**上，任务按**调用方键**寻址，不挂在传输会话上。每个调用方键至多一个任务，
   任务 ID 为 Hub 签发的 `task-<128 位随机数十六进制>`（当前只在内部与 debug 日志中使用；第 12 项 S8 作为显式句柄对外）。

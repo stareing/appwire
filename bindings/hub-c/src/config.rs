@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use hub::{
-    ApprovalPolicy, HubConfig, LeaseOverrides, LimitOverrides, OutputValidation, PolicyConfig, ToolExposure, UpstreamConfig,
-    WakerConfig, load_manifests,
+    ApprovalPolicy, HubConfig, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PolicyConfig, ToolExposure,
+    UpstreamConfig, WakerConfig, load_manifests,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -78,6 +78,12 @@ pub(crate) struct ConfigJson {
     pub principal_select_ttl_ms: Option<u64>,
     /// v15：无会话请求列表结果的 `ttlMs`（spec/hub-api.md 3.7），缺省 5000。
     pub stateless_list_ttl_ms: Option<u64>,
+    /// v16：MCP 出口协商的协议版本范围（spec/hub-api.md 3.6「协议版本」），缺省 `"auto"`。
+    pub mcp_protocol_mode: Option<McpProtocolMode>,
+    /// v16：每个主体同时打开的 `subscriptions/listen` 流数上限（spec/hub-api.md 3.6「通知」），缺省 16；0 不提供 listen。
+    pub max_listen_streams: Option<usize>,
+    /// v16：一个 listen 流接受的资源 URI 数上限，缺省 256。
+    pub max_listen_resources: Option<usize>,
     pub upstreams: BTreeMap<String, UpstreamConfig>,
     pub approval: ApprovalPolicy,
     pub worker_threads: Option<usize>,
@@ -123,6 +129,9 @@ impl Default for ConfigJson {
             stateless_tool_exposure: None,
             principal_select_ttl_ms: None,
             stateless_list_ttl_ms: None,
+            mcp_protocol_mode: None,
+            max_listen_streams: None,
+            max_listen_resources: None,
             upstreams: BTreeMap::new(),
             approval: ApprovalPolicy::default(),
             worker_threads: None,
@@ -236,6 +245,16 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     if let Some(v) = c.stateless_tool_exposure {
         hub.stateless_tool_exposure = v;
     }
+    // MCP 出口协议版本与 listen 上限（spec/hub-api.md 3.6）。
+    if let Some(v) = c.mcp_protocol_mode {
+        hub.mcp_protocol_mode = v;
+    }
+    if let Some(v) = c.max_listen_streams {
+        hub.max_listen_streams = v;
+    }
+    if let Some(v) = c.max_listen_resources {
+        hub.max_listen_resources = v;
+    }
 
     // 目录与文件：失败的清单由 Hub 记录日志后跳过（与 app-mcp-host 一致）。
     hub.manifests = load_manifests(&c.manifest_files, c.manifest_dir.as_deref(), false);
@@ -341,6 +360,27 @@ mod tests {
         assert_eq!(e, Some(AmHubStatus::InvalidJson), "非法取值报错");
         let e = parse(Some(r#"{"taskIdleTtlMs": -1}"#)).err().map(|e| e.status);
         assert_eq!(e, Some(AmHubStatus::InvalidJson), "负数报错");
+    }
+
+    #[test]
+    fn mcp_listen_fields() {
+        let d = HubConfig::default();
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert_eq!(
+            (p.hub.mcp_protocol_mode, p.hub.max_listen_streams, p.hub.max_listen_resources),
+            (d.mcp_protocol_mode, d.max_listen_streams, d.max_listen_resources)
+        );
+        let p = parse(Some(r#"{"mcpProtocolMode": "legacyOnly", "maxListenStreams": 0, "maxListenResources": 8}"#))
+            .map_err(|e| e.message)
+            .expect("解析");
+        assert_eq!(
+            (p.hub.mcp_protocol_mode, p.hub.max_listen_streams, p.hub.max_listen_resources),
+            (McpProtocolMode::LegacyOnly, 0, 8)
+        );
+        for bad in [r#"{"mcpProtocolMode": "modern"}"#, r#"{"maxListenStreams": -1}"#, r#"{"maxListenResources": 1.5}"#] {
+            let e = parse(Some(bad)).err().map(|e| e.status);
+            assert_eq!(e, Some(AmHubStatus::InvalidJson), "{bad}");
+        }
     }
 
     #[test]

@@ -243,6 +243,12 @@ Host 随即只向该 MCP 会话发 `notifications/tools/list_changed`。未列�
 默认 600000，0 = 不回收）、`lifecycle.principalSelectTtlMs`（`--principal-select-ttl-ms`，主体级 `apps.select` 的空闲有效期，
 默认 60000，0 = 不单独过期）。`app-mcp-host status` 的一行摘要与 doctor「App 实例」检查显示 Agent 任务数。
 
+MCP 出口的协议版本与通知（spec/hub-api.md 3.6「协议版本」「通知」）：`mcp.protocolMode`（`--mcp-protocol-mode auto|legacy-only`，
+默认 `"auto"`：`initialize` 客户端走 legacy 会话，每请求自带 `_meta` 的客户端可协商 2026-07-28；`"legacyOnly"` 为回退开关，只声明到
+2025-11-25，`subscriptions/listen` 不可用）、`mcp.maxListenStreams`（`--max-listen-streams`，每个主体同时打开的 `subscriptions/listen`
+流数上限，默认 16，0 = 不提供 listen）、`mcp.maxListenResources`（一个 listen 流接受的资源 URI 数上限，默认 256）。`status` 摘要与
+doctor「App 实例」检查另显示 listen 流数（旧 Host 不报告时省略）。
+
 `limits`（资源保护，spec/hub-api.md 3.11）：保护 App 与设备，超出时返回明确错误，不静默丢弃、不截断（错误码见 spec/protocol.md 第 4 节）。
 上表中的值即默认值，缺省字段取默认，`0` 表示不限；未知字段报错，`*PerMinute > 0` 而对应 `*Burst = 0` 时配置无效、启动失败。
 
@@ -274,6 +280,7 @@ App 声明的工具注解与结果契约（`annotations`、`outputSchema`、结�
 `--upstream <name>=<命令行>`（可重复）、`--lease-ms`、`--wake-timeout-ms`、`--wake-from-launch`、
 `--waker system|none|'{"exec":[...]}'`、`--tool-exposure auto|progressive|all`、`--tool-exposure-threshold <N>`、
 `--stateless-tool-exposure auto|progressive|all`、`--task-idle-ttl-ms`、`--principal-select-ttl-ms`、
+`--mcp-protocol-mode auto|legacy-only`、`--max-listen-streams <N>`、
 `--tool-rate-limit` / `--tool-rate-burst` / `--app-rate-limit` / `--app-rate-burst` / `--max-arguments-bytes` / `--max-result-bytes` /
 `--max-resource-bytes <N>`、`--output-validation off|log|reject`、`--log-level`、
 `--no-log-file`、`--config <file>`、`--home <dir>`。`app-mcp-host token` 打印令牌（`--regenerate` 重新生成）。

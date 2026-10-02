@@ -328,6 +328,20 @@ class HubIntegrationTest {
         Hub.start(config).use { hub -> assertEquals(emptyList<AgentTaskStatus>(), hub.status().tasks) }
     }
 
+    /** spec/hub-api.md 3.6：MCP 出口协议版本与 listen 上限可设置；status 报告 listen 流数。 */
+    @Test
+    fun mcpListenConfig() {
+        val config = HubConfig(
+            enableListen = false,
+            enableIpc = false,
+            mcpProtocolMode = McpProtocolMode.LEGACY_ONLY,
+            maxListenStreams = 0u,
+            maxListenResources = 8u,
+        )
+        assertEquals(McpProtocolMode.LEGACY_ONLY, config.mcpProtocolMode)
+        Hub.start(config).use { hub -> assertEquals(0uL, hub.status().mcpListenStreams) }
+    }
+
     /** spec/hub-api.md 3.14 / 3.15：HubTool.surface / page、callTool(idempotencyKey) 原样转交、routedTo、navigateTimeoutMs。 */
     @Test
     fun surfacePageAndIdempotencyKey() = runBlocking {

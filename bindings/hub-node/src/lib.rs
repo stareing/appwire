@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use app_mcp_hub::{
     ApprovalHandler, ApprovalPolicy, ApprovalRequest, CallRequest, ErrorKind, Hub, HubConfig,
-    HubError, LeaseOverrides, LimitOverrides, OutputValidation, PairingHandler, PairingRequest,
+    HubError, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PairingHandler, PairingRequest,
     PolicyConfig, ToolExposure, ToolFilter, ToolFormat, UpstreamConfig, WakeRequest, Waker, WakerConfig,
     async_trait, load_manifests,
 };
@@ -182,6 +182,12 @@ struct ConfigJson {
     principal_select_ttl_ms: Option<u64>,
     /// 无会话请求列表结果的 `ttlMs`（spec/hub-api.md 3.7），缺省 5000。
     stateless_list_ttl_ms: Option<u64>,
+    /// MCP 出口协商的协议版本范围（spec/hub-api.md 3.6「协议版本」），缺省 `"auto"`。
+    mcp_protocol_mode: Option<McpProtocolMode>,
+    /// 每个主体同时打开的 `subscriptions/listen` 流数上限（spec/hub-api.md 3.6「通知」），缺省 16；0 不提供 listen。
+    max_listen_streams: Option<usize>,
+    /// 一个 listen 流接受的资源 URI 数上限，缺省 256。
+    max_listen_resources: Option<usize>,
     upstreams: BTreeMap<String, UpstreamConfig>,
     approval: ApprovalPolicy,
 }
@@ -297,6 +303,15 @@ impl ConfigJson {
         }
         if let Some(v) = self.stateless_list_ttl_ms {
             c.stateless_list_ttl = ms(v);
+        }
+        if let Some(v) = self.mcp_protocol_mode {
+            c.mcp_protocol_mode = v;
+        }
+        if let Some(v) = self.max_listen_streams {
+            c.max_listen_streams = v;
+        }
+        if let Some(v) = self.max_listen_resources {
+            c.max_listen_resources = v;
         }
         c.upstreams = self.upstreams;
         c.approval = self.approval;

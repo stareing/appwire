@@ -286,6 +286,24 @@ def test_stateless_config() -> None:
         Hub(enable_listen=False, enable_ipc=False, task_idle_ttl_ms=-1)
 
 
+def test_mcp_listen_config() -> None:
+    """spec/hub-api.md 3.6：MCP 出口协议版本与 listen 上限可设置；status 报告 listen 流数。"""
+    from app_mcp.hub import McpProtocolMode
+
+    with Hub(
+        enable_listen=False,
+        enable_ipc=False,
+        mcp_protocol_mode=McpProtocolMode.LEGACY_ONLY,
+        max_listen_streams=0,
+        max_listen_resources=8,
+    ) as hub:
+        assert hub.status().mcp_listen_streams == 0
+    with pytest.raises(ValueError):
+        Hub(enable_listen=False, enable_ipc=False, max_listen_streams=-1)
+    with pytest.raises(ValueError):
+        Hub(enable_listen=False, enable_ipc=False, max_listen_resources=2**32)
+
+
 def json_text(content: object) -> str:
     """Anthropic tool_result.content 可能是字符串或 [{type: text, text}]。"""
     if isinstance(content, str):
