@@ -146,7 +146,7 @@ flowchart TD
 | Android | 导出的绑定式 Service，Intent 动作 `dev.appmcp.TOOLS` | `bindService` → `IBinder` → `open(instance) → ParcelFileDescriptor`（socketpair 一端） | `bindService(BIND_AUTO_CREATE)` | `queryIntentServices` + `<meta-data>` 清单资源 + 包变更 | 是 |
 | Windows | 命名管道 `\\.\pipe\appmcp-<SID>-<id>[.<inst>]` | Hub 作为管道客户端打开 | 未打包：协议激活后等待管道出现；打包：待验证（U-07），确认前同未打包 | App 登记文件（`%LOCALAPPDATA%\app-mcp\apps\`）+ 打包 App 扩展目录 | 是 |
 | macOS | launchd 用户 Agent 的 Mach 服务 `dev.appmcp.App.<id>` | XPC 连接，消息 `open` → 回复中带 fd | launchd 按需启动 | `~/Library/LaunchAgents` / App 内嵌 Agent plist + App 登记文件 | 仅非沙盒；沙盒不支持（4.4） |
-| iOS | 无 | — | — | — | **不支持**：只走 App Intents（codegen） |
+| iOS | 无 | — | — | — | **不支持**：第三方 App 不能调用其他 App 的 App Intents；App 能力经 codegen 的 App Intents 交给系统入口（4.5） |
 | 网页 | 扩展已知的标签页 | 页面 → content script → 扩展 service worker → Native Messaging → Hub | `web-url`（WakeDescriptor 后备） | 扩展枚举已打开且加载了 SDK 的标签页 | 是（方向不反转，见 4.6） |
 | 鸿蒙 | 暂无 | — | — | — | 4d 不覆盖，沿用现有 WebSocket 路径 |
 
@@ -243,9 +243,34 @@ flowchart TD
 
 ### 4.5 iOS：不支持
 
-iOS 上没有可供第三方使用的 launchd / XPC 服务接口（`xpc_connection_create_mach_service`、`SMAppService` 只在 macOS 提供），
-系统给出的暴露动作的机制是 App Intents（F-30）。iOS 上**不提供**按名寻址，App 的能力经 codegen 生成的 App Intents 暴露；现有 `uri`
-唤醒（前台）与 SDK 直连保留。
+**结论**：iOS 上**不提供**按名寻址，iOS 上的 Hub / Agent App 也**不能**把其他 App 的 App Intents 当作工具调用。App 的能力经 codegen
+生成的 App Intents 交给**系统入口**（Siri、快捷指令等）执行；现有 `uri` 唤醒（前台）与 App 在前台时的 SDK 直连保留。核实于 2026-10-02
+（F-36 至 F-43）。
+
+- **没有名字服务**：iOS 上没有可供第三方使用的 launchd / XPC 服务接口（`xpc_connection_create_mach_service`、`SMAppService` 只在
+  macOS 提供，F-30）；App 挂起后其监听套接字不处理连接（F-43），App 也不能反过来"监听、等 Hub 来连"。
+- **第三方不能调用他人的 App Intents**：Apple DTS 工程师在开发者论坛 776820 中明确答复 "One application cannot invoke an app intent
+  of another."（F-36）。App Intents 只由系统入口执行：Siri / Apple Intelligence、快捷指令、Spotlight、小组件与控件、操作按钮、实时活动
+  （F-37），没有第三方调用方。
+- **快捷指令 URL scheme 只是人工后备**：`shortcuts://run-shortcut?name=…`（及 `x-callback-url` 变体）只能按名字运行**用户自己建好**的
+  快捷指令，会切到快捷指令 App，回传只有 `x-success` 的文本输出（F-38）。用户可以自建"包一层 App Intent"的快捷指令，由 Agent App 按名运行，
+  但无法枚举、参数与结果都不是结构化的，需要用户逐个手工配置——**不作为 Hub 的调用通道**，只在文档中作为用户自建桥接说明。
+- **不改变结论的新入口**：
+  - 日本侧边按钮：`@AppIntent(schema: .assistant.activate)` + 权利 `com.apple.developer.side-button-access.allow`，只在日本、只用于
+    **启动**语音对话 App（F-39）——让 Agent App 可被唤起，不让它调用其他 App；
+  - 欧盟：Apple 提出的 "Trusted System Agent" 方案被欧委会否决，欧盟 Siri AI 推迟、无时间表（F-40）；
+  - iOS 27 的 "Siri 扩展" / 模型委托：仅见媒体报道为代码中的私有接口、未启用，公开文档中没有（U-20）。
+- **候选（不支持，只记录）**：iOS 26 的 ExtensionFoundation 是唯一公开的跨开发者进程间通信：宿主（Hub App）定义扩展点并设
+  `Scope(restriction: .none)` 允许其他开发者的扩展绑定，App 随包提供绑定该扩展点的扩展（`Identifier(host:name:)`，一个扩展只能绑定一个
+  扩展点），**设备主人批准**后宿主经 `AppExtensionProcess` 建立 XPC 会话（F-42）。App Store 接受度、宿主在后台时能否启动 / 使用扩展、
+  扩展的内存与时间上限均未知（U-21），在这些确认之前不实现、不写入协议。
+- **codegen 的 App Intents 扩展输出**（`swift-app-intents` 加 `--app-intents-extension`）：价值在**系统入口**——App 未运行时由
+  App Intents 扩展进程执行 intent，不必启动 App（`AppIntentsExtension`，F-41），与 Hub 无关。intent 代码放在 App 与扩展共用的
+  Swift 包（`AppIntentsPackage` + `includedPackages`）；handler 由开发者实现一次（`<Module>IntentHandlersProviding`），App 与扩展的
+  `init` 各调用一次 `<Module>IntentRuntime.configure(_:)`，首次执行 intent 时才构造。可选：`--app-intents-execution-targets` 按
+  `activation` 声明 `allowedExecutionTargets`（`foreground` → `.main`，`background` / `headless` → `[.main, .appIntentsExtension]`；
+  iOS 27 起，以 `@available` 限定）；`--app-intents-cancellable` 遵循 `CancellableIntent`（iOS 26.4 起，以 `#available` 限定）。
+  未开启扩展时输出不变。生成代码只做过 Linux 上的桩类型检查，未在真实 SDK 上编译（U-22、R-15）。
 
 ### 4.6 网页：浏览器扩展 + Native Messaging
 
@@ -590,7 +615,7 @@ Android 冻结状态：`adb shell dumpsys activity | grep -A 20 "Apps frozen:"`�
 
 ## 13. 事实 / 未知 / 风险
 
-平台事实于 2026-10-01 按官方文档核对（原文抓取，不凭记忆）；编号只增不改。
+平台事实于 2026-10-01 按官方文档核对（原文抓取，不凭记忆），iOS 事实（F-36 至 F-43）于 2026-10-02 核对；编号只增不改。
 
 ### 13.1 事实（本规范依据的已确认接口与平台 API）
 
@@ -649,6 +674,14 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 | F-28 | App Group 容器中的 Unix 套接字只对同一 Team ID 的进程可用；沙盒进程查找全局 Mach 服务需临时例外权利 | `bundleresources/entitlements/com.apple.security.application-groups`；Forums thread 742759 |
 | F-29 | `SMAppService.agent(plistName:)`（macOS 13+，plist 位于包内 `Contents/Library/LaunchAgents`，需用户批准）；`xpc_connection_set_peer_code_signing_requirement` macOS 12+；XPC 无公开审计令牌接口，Unix 套接字有 `LOCAL_PEERTOKEN`；`launchctl print` 输出不是接口 | `servicemanagement/smappservice`；`xpc/xpc_connection_set_peer_code_signing_requirement`；launchctl(1) |
 | F-30 | App Intents（iOS 16+）是向系统暴露动作的机制；launchd / XPC 服务接口只在 macOS 提供 | `documentation/appintents`；`xpc_connection_create_mach_service` 平台可用性 |
+| F-36 | 一个 App 不能调用另一个 App 的 App Intent："One application cannot invoke an app intent of another." | Developer Forums thread 776820（DTS Engineer，2025-03） |
+| F-37 | 执行 App Intents 的是系统入口：Siri / Apple Intelligence、快捷指令、Spotlight、小组件与控件、操作按钮、实时活动；没有第三方调用方 | WWDC26 session 240 / 343 / 345；`documentation/appintents/apple-intelligence-and-siri-ai` |
+| F-38 | 快捷指令 URL：`shortcuts://run-shortcut?name=&input=&text=`；`shortcuts://x-callback-url/run-shortcut?…` 的 `x-success`（`result=` 为文本输出）/ `x-error`（`errorMessage`）/ `x-cancel`；按名字运行用户已有的快捷指令并打开快捷指令 App | 快捷指令使用手册 URL scheme 说明（2026-10-02 调研记录） |
+| F-39 | 侧边按钮：`@AppIntent(schema: .assistant.activate)` + 权利 `com.apple.developer.side-button-access.allow`，只在日本 iPhone，用于启动语音对话 App | `documentation/appintents/launching-your-voice-based-conversational-app-from-the-side-button-of-iphone` |
+| F-40 | 因 DMA，欧盟 Siri AI 推迟、无时间表；Apple 的 "Trusted System Agent" 方案被欧委会否决 | Apple Newsroom（2026-06） |
+| F-41 | `AppIntentsExtension: AppExtension`（iOS 16）："run your custom app intents when your app isn't running"，intent 代码可放在 Swift 包；`AppIntentsPackage.includedPackages`（iOS 17）；`IntentExecutionTargets` / `allowedExecutionTargets`（iOS 27：`.main` / `.appIntentsExtension` / `.widgetKitExtension` / `.default`，缺省任一可用进程）；`CancellableIntent` + `withIntentCancellationHandler(operation:onCancel:isolation:)` + `IntentCancellationReason.timeout / .userCancelled`（iOS 26.4）；`supportedModes` / `IntentModes`（iOS 26，`openAppWhenRun` 同版本弃用）；`LongRunningIntent`（iOS 27，iOS 上缺省 30 s） | `documentation/appintents/app-extension`、`.../appintentsextension`、`.../appintentspackage`、`.../intentexecutiontargets`、`.../cancellableintent`、`.../intentmodes`、`.../longrunningintent` |
+| F-42 | ExtensionFoundation 宿主定义扩展点（iOS 26）：`AppExtensionPoint` `@Definition`、`Scope.Restriction`（`.none` 允许其他开发者的扩展）、`Bind` / `Identifier(host:name:)`（一个扩展绑定一个扩展点）、`Monitor`（新装扩展须设备主人批准，未批准的不出现在 `identities`）、`AppExtensionProcess.makeXPCConnection()` / `makeXPCSession()` | `documentation/extensionfoundation/appextensionpoint`（及 `/scope/restriction`、`/bind`、`/monitor`）、`.../appextensionprocess` |
+| F-43 | 挂起的 App 中监听套接字不处理连接 | TN2277 |
 
 浏览器（developer.chrome.com、MDN、W3C）：
 
@@ -682,6 +715,9 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 | U-17 | `app-mcp-plan.md` 10.4 调用链接与本地址共用 `appmcp://` | **待确认**：本规范已规定第一个路径段为实例；调用链接实施时改用其他形式 |
 | U-18 | Linux 上无平台签名，"签名指纹"只能是路径 + 包管理器归属 | **保守处理**：Linux 指纹变化只提示不阻断；记录为限制 |
 | U-19 | Electron / Tauri 等混合应用的名字登记由主进程还是渲染进程负责 | **待确认**（按原生规则由主进程负责为默认假设） |
+| U-20 | iOS 27 "Siri 扩展" / 模型委托是否会开放给第三方 Agent（目前仅见 9to5Mac 2026-09-14 报道为私有接口、未启用） | **明确不在范围**；公开 API 出现后重新核实 4.5 |
+| U-21 | ExtensionFoundation 跨开发者扩展（F-42）：App Store 是否接受（论坛 803753 有校验报错）、宿主在后台时能否启动 / 使用扩展、iOS 上扩展的内存与时间上限 | **待确认**，只记为候选；确认前 iOS 不做按名寻址（4.5） |
+| U-22 | codegen 的 App Intents 扩展输出：未在真实 SDK 上编译；iOS 27 前 intent 同时在 App 与扩展中时由哪个进程执行；`AppShortcutsProvider` 放在共享包中是否被系统识别；扩展进程的内存上限（已抓取的文档未写） | **验证**（Xcode + 真机）；**保守处理**：默认关闭，生成文件头标明未验证，foreground 工具在扩展布局下给出警告并建议声明 `allowedExecutionTargets` |
 
 ### 13.3 风险与限制手段
 
@@ -701,3 +737,4 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 | R-12 | 平台 API 在新系统版本变化（Android 冻结策略、`onTrimMemory` 弃用、MSIX 虚拟化） | 兼容 | 平台事实集中在本节并标注来源与日期；各平台集成测试与真机验收；配置项可回退到旧路径（App 不登记名字即走旧路径） |
 | R-13 | 未覆盖的平台（iOS、鸿蒙、沙盒 macOS）行为不一致 | 兼容 | 明确列为"不支持按名寻址"，沿用现有路径，不做部分实现 |
 | R-14 | 未知的未知（如系统名字服务异常、激活风暴） | 稳定性 | 每 App 唤醒 / 拨号速率上限（复用 4e O4）；拨号去重；所有失败带错误码进入 `last_error` 与 `doctor` |
+| R-15 | codegen 的 App Intents 扩展 / 可选输出与真实 SDK 不符（未编译验证），或需要界面的工具落到扩展进程执行 | 兼容 | 选项默认关闭、关闭时输出与快照一致；桩类型检查（`crates/codegen/scripts/verify.sh`）；`allowedExecutionTargets` 只在 iOS 27 起以 `@available` 声明；扩展布局下 foreground 工具给出警告（U-22） |

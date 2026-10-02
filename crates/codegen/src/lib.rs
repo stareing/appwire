@@ -20,6 +20,7 @@ use std::str::FromStr;
 use app_mcp_manifest::Manifest;
 
 pub use schema::{Model, Warning};
+pub use targets::app_intents::AppIntentsOptions;
 
 /// 生成目标。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -106,6 +107,8 @@ pub struct Options {
     pub intent_domain: Option<String>,
     /// 鸿蒙意图绑定的 UIAbility 名（`harmony-insight-intents`），缺省 `EntryAbility`。
     pub ability: Option<String>,
+    /// `swift-app-intents` 的可选输出（App Intents 扩展布局、执行进程声明、取消处理）；缺省全部关闭。
+    pub app_intents: AppIntentsOptions,
 }
 
 /// 一个生成的文件。

@@ -1,11 +1,12 @@
 //! `app-mcp-codegen --manifest app-mcp.json --target <target> --out <dir> [--package <name>] [--module <name>]
-//! [--intent-domain <垂域>] [--ability <UIAbility>]`
+//! [--intent-domain <垂域>] [--ability <UIAbility>]
+//! [--app-intents-extension] [--app-intents-execution-targets] [--app-intents-cancellable]`
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Context;
-use app_mcp_codegen::{Options, Target, generate_from_str};
+use app_mcp_codegen::{AppIntentsOptions, Options, Target, generate_from_str};
 use clap::Parser;
 
 /// 从 app-mcp.json 生成各平台原生意图声明与各语言类型化接口。
@@ -34,16 +35,34 @@ struct Args {
     /// 鸿蒙意图绑定的 UIAbility 名（harmony-insight-intents），缺省 EntryAbility。
     #[arg(long)]
     ability: Option<String>,
+    /// swift-app-intents：改为"共享 Swift 包 + App Intents 扩展"布局，App 不运行时也能由扩展执行 intent。
+    #[arg(long)]
+    app_intents_extension: bool,
+    /// swift-app-intents：按 activation 声明 allowedExecutionTargets（iOS / macOS 27 起，以 @available 限定）。
+    #[arg(long)]
+    app_intents_execution_targets: bool,
+    /// swift-app-intents：intent 遵循 CancellableIntent（iOS / macOS 26.4 起，以 #available 限定），把取消原因转给 App。
+    #[arg(long)]
+    app_intents_cancellable: bool,
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
     let text = std::fs::read_to_string(&args.manifest)
         .with_context(|| format!("读取清单 {} 失败", args.manifest.display()))?;
+    let app_intents = AppIntentsOptions {
+        extension: args.app_intents_extension,
+        execution_targets: args.app_intents_execution_targets,
+        cancellable: args.app_intents_cancellable,
+    };
+    if app_intents != AppIntentsOptions::default() && args.target != Target::SwiftAppIntents {
+        anyhow::bail!("--app-intents-* 选项只用于 --target swift-app-intents（当前为 {}）", args.target);
+    }
     let options = Options {
         package: args.package,
         module: args.module,
         intent_domain: args.intent_domain,
         ability: args.ability,
+        app_intents,
     };
     let (output, manifest_warnings) = generate_from_str(&text, args.target, &options)
         .with_context(|| format!("清单 {} 无效", args.manifest.display()))?;

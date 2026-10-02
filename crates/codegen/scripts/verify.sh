@@ -389,6 +389,55 @@ if want swift-app-intents; then
   record NOTE app-intents "真实 AppIntents 框架需 Xcode（macOS），本机只做了语法与桩类型检查"
 fi
 
+# 扩展布局 + 全部可选输出：共享包编为模块，再分别检查扩展入口与 App 侧（开发者的 provider 用一个最小实现模拟）
+if want swift-app-intents-extension; then
+  D="$WORK/swift-app-intents-extension"
+  gen swift-app-intents "$D/src" --app-intents-extension --app-intents-execution-targets --app-intents-cancellable
+  if [[ -n "$SWIFTC" ]]; then
+    mkdir -p "$D/stub" "$D/mod"
+    cat >"$D/Provider.swift" <<'EOF'
+import ShopIntents
+
+struct DemoHandlers: ShopToolHandlers {
+    func catalogSearch(_ params: CatalogSearchParams) async throws -> any Encodable & Sendable { params }
+    func cartAdd(_ params: CartAddParams) async throws -> any Encodable & Sendable { params.productId }
+    func cartRemoveItem(_ params: CartRemoveItemParams) async throws -> any Encodable & Sendable { params.itemId }
+    func cartCheckout(_ params: CartCheckoutParams) async throws -> any Encodable & Sendable { params }
+    func todosAdd(_ params: TodosAddParams) async throws -> any Encodable & Sendable { params }
+    func todosClear(_ params: TodosClearParams) async throws -> any Encodable & Sendable { "cleared" }
+    func ordersExport(_ params: OrdersExportParams) async throws -> any Encodable & Sendable { params }
+    func statsSummary(_ params: StatsSummaryParams) async throws -> any Encodable & Sendable { params }
+}
+
+enum ShopIntentHandlersProvider: ShopIntentHandlersProviding {
+    static func makeHandlers() -> any ShopToolHandlers { DemoHandlers() }
+}
+
+func installCancelHook() {
+    ShopIntentRuntime.onCancel { tool, reason in print(tool, reason) }
+}
+EOF
+    S="$D/src/ShopIntents/Sources/ShopIntents"
+    run_step app-intents-ext-stub-typecheck bash -c "
+      '$SWIFTC' -swift-version 6 -parse-as-library -emit-module -emit-library -module-name AppIntents \
+        -o '$D/stub/libAppIntents.so' -emit-module-path '$D/stub/AppIntents.swiftmodule' '$STUBS/AppIntents.swift' &&
+      '$SWIFTC' -swift-version 6 -parse-as-library -warnings-as-errors -emit-module -emit-library -module-name ShopIntents \
+        -I '$D/stub' -L '$D/stub' -lAppIntents -o '$D/mod/libShopIntents.so' -emit-module-path '$D/mod/ShopIntents.swiftmodule' \
+        '$S/ShopTools.swift' '$S/ShopAppIntents.swift' &&
+      '$SWIFTC' -swift-version 6 -parse-as-library -typecheck -warnings-as-errors -I '$D/stub' -I '$D/mod' \
+        '$D/Provider.swift' '$D/src/ShopIntentsExtension/ShopIntentsExtension.swift' &&
+      '$SWIFTC' -swift-version 6 -parse-as-library -typecheck -warnings-as-errors -I '$D/stub' -I '$D/mod' \
+        '$D/Provider.swift' '$D/src/App/ShopAppIntentsPackage.swift'"
+    SWIFT_BIN="$(dirname "$(command -v "$SWIFTC" || echo "$SWIFTC")")/swift"
+    if [[ -x "$SWIFT_BIN" ]]; then
+      run_step app-intents-ext-package bash -c "cd '$D/src/ShopIntents' && '$SWIFT_BIN' package dump-package >/dev/null"
+    fi
+  else
+    record SKIP swift-app-intents-extension "未找到 swiftc"
+  fi
+  record NOTE app-intents-extension "扩展布局只做了桩类型检查；AppIntentsExtension / 包内 intent 元数据需 Xcode 实机验证"
+fi
+
 # ---------------------------------------------------------------- Kotlin（JVM）与 AppFunctions（Android + KSP）
 GRADLE=""
 for cand in gradle "$HOME"/.local/gradle-*/bin/gradle; do

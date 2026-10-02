@@ -5,6 +5,11 @@
 //   AppEnum（typeDisplayRepresentation / caseDisplayRepresentations）、IntentResult & ReturnsValue、
 //   .result(value:)、requestConfirmation(conditions:actionName:dialog:)、IntentModes、
 //   AppShortcutsProvider / AppShortcut(intent:phrases:shortTitle:systemImageName:)。
+// 扩展布局与可选输出（文档 JSON，2026-10-02）：AppIntentsPackage.includedPackages（iOS 17）、
+//   AppIntentsExtension: AppExtension（iOS 16；AppExtension 来自 ExtensionFoundation，init() + main()）、
+//   IntentExecutionTargets / allowedExecutionTargets（iOS 27）、CancellableIntent /
+//   withIntentCancellationHandler(operation:onCancel:isolation:) / IntentCancellationReason（iOS 26.4）。
+//   Linux 上 `*` 覆盖全部版本，@available / #available 的门槛本身不被检查。
 // 通过这里的检查不代表能在真实 SDK 上编译，真实验证需要 Xcode。
 
 public struct LocalizedStringResource: ExpressibleByStringInterpolation, Sendable, Hashable {
@@ -57,18 +62,32 @@ extension IntentResult {
     }
 }
 
+@available(iOS 27.0, macOS 27.0, *)
+public struct IntentExecutionTargets: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+    public static let main = IntentExecutionTargets(rawValue: 1)
+    public static let appIntentsExtension = IntentExecutionTargets(rawValue: 2)
+    public static let widgetKitExtension = IntentExecutionTargets(rawValue: 4)
+    public static let `default` = IntentExecutionTargets(rawValue: 7)
+}
+
 public protocol AppIntent: Sendable {
     associatedtype PerformResult: IntentResult
     init()
     static var title: LocalizedStringResource { get }
     static var description: IntentDescription? { get }
     static var supportedModes: IntentModes { get }
+    @available(iOS 27.0, macOS 27.0, *)
+    static var allowedExecutionTargets: IntentExecutionTargets { get }
     func perform() async throws -> PerformResult
 }
 
 extension AppIntent {
     public static var description: IntentDescription? { nil }
     public static var supportedModes: IntentModes { .background }
+    @available(iOS 27.0, macOS 27.0, *)
+    public static var allowedExecutionTargets: IntentExecutionTargets { .default }
 
     public func requestConfirmation(
         conditions: ConfirmationConditions = [],
@@ -142,3 +161,42 @@ public struct AppShortcutsBuilder {
 public protocol AppShortcutsProvider: Sendable {
     @AppShortcutsBuilder static var appShortcuts: [AppShortcut] { get }
 }
+
+@available(iOS 26.4, macOS 26.4, *)
+public struct IntentCancellationReason: Sendable, Equatable {
+    private let code: Int
+    public static let timeout = IntentCancellationReason(code: 1)
+    public static let userCancelled = IntentCancellationReason(code: 2)
+}
+
+@available(iOS 26.4, macOS 26.4, *)
+public protocol CancellableIntent: AppIntent {}
+
+@available(iOS 26.4, macOS 26.4, *)
+extension CancellableIntent {
+    public func withIntentCancellationHandler<T>(
+        operation: () async throws -> T,
+        onCancel: @Sendable (IntentCancellationReason) -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) async rethrows -> T {
+        try await operation()
+    }
+}
+
+public protocol AppIntentsPackage {
+    static var includedPackages: [any AppIntentsPackage.Type] { get }
+}
+
+extension AppIntentsPackage {
+    public static var includedPackages: [any AppIntentsPackage.Type] { [] }
+}
+
+public protocol AppExtension {
+    init()
+}
+
+extension AppExtension {
+    public static func main() {}
+}
+
+public protocol AppIntentsExtension: AppExtension {}

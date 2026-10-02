@@ -32,7 +32,7 @@ pub fn generate(
         Target::Kotlin => vec![kotlin::generate(model, &kotlin_package(model, options))],
         Target::Python => vec![python::generate(model)],
         Target::Dart => vec![dart::generate(model)],
-        Target::SwiftAppIntents => app_intents::generate(model, warnings),
+        Target::SwiftAppIntents => app_intents::generate(model, &options.app_intents, warnings),
         Target::KotlinAppFunctions => {
             appfunctions::generate(model, &kotlin_package(model, options), warnings)
         }

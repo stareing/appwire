@@ -1,0 +1,3 @@
+工具 orders.export 的 /properties/filter：不支持一般形式的 `oneOf`，降级为原始 JSON
+工具 orders.export 的 /properties/template：不支持 `$ref`，降级为原始 JSON
+swift-app-intents：扩展布局中有 6 个 activation 为 foreground 的工具，未声明 allowedExecutionTargets 时系统可能在扩展进程（无界面）执行；需要界面的请加 --app-intents-execution-targets（iOS 27 起生效）
