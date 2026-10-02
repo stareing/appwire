@@ -238,10 +238,12 @@ declara lo que puede hacer y el modelo orquesta.
    (`@app-mcp/inspect`) es solo un recurso alternativo opcional.
 3. **Las herramientas nacen y mueren con la interfaz.** Abre una pestaña y aparecen sus herramientas; ciérrala
    y desaparecen; un carrito vacío no tiene `checkout`. El modelo siempre ve lo que se puede hacer *ahora*.
-4. **Dormir en reposo, despertar al ser llamado.** Las apps inactivas cierran su conexión y liberan hilos; nada
-   mantiene un proceso fijado en memoria. Cuando se necesita, el Hub despierta la app mediante el mecanismo de
-   activación nativo de la plataforma y la reanuda en un solo viaje de ida y vuelta. Una conexión es un medio,
-   nunca una carga.
+4. **Acude cuando se le llama, se va cuando termina.** El objetivo es estar *siempre invocable*, no *siempre en
+   ejecución*. Descubrir herramientas nunca lanza una app: se listan desde el manifiesto y su última instantánea.
+   Una llamada la despierta mediante la activación nativa de la plataforma; al terminar se liberan la conexión y
+   los hilos y el proceso vuelve al sistema operativo. Nada fija un proceso en memoria, ningún demonio por app
+   la sustituye, y el ciclo de vida del proceso lo gestiona el sistema operativo, no AppWire. Una conexión es un
+   medio, nunca una carga.
 5. **Un hub, todos los endpoints.** Un único Hub atiende apps web, de escritorio y móviles, y habla los formatos
    de herramientas de MCP, OpenAI, Anthropic y Gemini, o se integra directamente en el agente propio de un
    proveedor. Integra una vez, úsalo en todas partes.

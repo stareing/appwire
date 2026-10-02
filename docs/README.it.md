@@ -244,10 +244,12 @@ dichiara cosa sa fare e il modello orchestra.
 3. **Gli strumenti nascono e muoiono con l'interfaccia.** Apri una scheda e i suoi strumenti
    compaiono; chiudila e scompaiono; un carrello vuoto non ha `checkout`. Il modello vede sempre ciò
    che si può fare *adesso*.
-4. **Dormi quando sei inattivo, svegliati quando vieni chiamato.** Le app inattive chiudono la
-   connessione e rilasciano i thread; nulla tiene un processo bloccato in memoria. Quando serve,
-   l'Hub risveglia l'app tramite il meccanismo di attivazione nativo della piattaforma e riprende in un
-   solo round trip. Una connessione è un mezzo, mai un peso.
+4. **Arriva quando lo chiami, se ne va a lavoro finito.** L'obiettivo è essere *sempre invocabile*, non *sempre
+   in esecuzione*. Scoprire gli strumenti non avvia mai un'app: sono elencati dal manifesto e dall'ultimo
+   snapshot. Una chiamata la risveglia tramite l'attivazione nativa della piattaforma; a lavoro finito la
+   connessione e i thread vengono rilasciati e il processo torna al sistema operativo. Nulla tiene un processo
+   bloccato in memoria, nessun demone per app la sostituisce, e il ciclo di vita del processo è del sistema
+   operativo, non di AppWire. Una connessione è un mezzo, mai un peso.
 5. **Un solo hub, ogni endpoint.** Un unico Hub serve app web, desktop e mobile e parla i formati di
    strumenti di MCP, OpenAI, Anthropic e Gemini — oppure si integra direttamente nell'agente di un
    vendor. Integri una volta, usi ovunque.

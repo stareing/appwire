@@ -6,6 +6,18 @@
 Logo 与社交卡片在 `docs/assets/`（`logo/appwire-mark.svg` 为主图形，各 README 页头用 `appwire-logo-{light,dark}.png`）。
 面向用户的文档与包描述（npm / crates.io / PyPI / NuGet / pub.dev）用英文、以 AppWire 称呼项目，便于检索；`llms.txt` 与 README 首段保持一致。
 
+## 产品理念
+
+理念的权威表述在 `README.md`「Philosophy」（九条原则），这里只列开发时必须对照的两条：
+
+- **万物皆工具**：按钮、表单、菜单命令、状态库动作、系统能力、已有 MCP 服务器，都以"名称 + 输入 schema + 声明 + handler"表达；模型只需要 list / call / read。
+- **召之即来，挥之即去**（原则 4）：目标是"永远可调用"，而不是"永远在运行"。
+  - 发现不启动 App：工具从清单与休眠快照列出，`apps.list` / `tools/list` 不得触发唤醒。
+  - 调用才激活：经各平台原生激活（广播 / bindService、D-Bus、launchd / XPC、协议 / AUMID、URL）唤醒，办完即释放连接与线程，进程交还系统。
+  - 不强占驻留：不加前台服务、WakeLock、后台任务断言、每 App 常驻守护进程，不用轮询；进程生命周期归操作系统，本库不与之对抗。
+  - 保温只是优化：租约与合并窗口可以缩短下一次调用，但正确性不依赖进程存活（进程随时可能被系统回收）。
+  - 新增功能先问：空闲时它会不会让 App 或 Host 多一个定时器、连接、线程或常驻内存？会的话需要说明理由，并有功耗 / 内存测量支撑。
+
 ## 目录结构（M1）
 
 ```

@@ -240,10 +240,12 @@ l'application déclare ce qu'elle sait faire, et le modèle orchestre.
 3. **Les outils naissent et meurent avec l'interface.** Ouvrez un onglet et ses outils apparaissent ;
    fermez-le et ils disparaissent ; un panier vide n'a pas de `checkout`. Le modèle voit toujours ce qui est
    possible *maintenant*.
-4. **Dormir au repos, se réveiller à l'appel.** Les applications inactives coupent leur connexion et libèrent
-   leurs threads ; rien ne retient un processus en mémoire. Au besoin, le Hub réveille l'application via le
-   mécanisme d'activation natif de la plateforme et reprend en un seul aller-retour. Une connexion est un moyen,
-   jamais un fardeau.
+4. **Venir à l'appel, partir une fois le travail fait.** Le but est d'être *toujours appelable*, pas *toujours en
+   cours d'exécution*. Découvrir les outils ne lance jamais une application : ils sont listés à partir du
+   manifeste et du dernier instantané. Un appel la réveille via l'activation native de la plateforme ; une fois
+   le travail fait, la connexion et les threads sont libérés et le processus est rendu au système. Rien ne
+   retient un processus en mémoire, aucun démon par application ne la remplace, et c'est le système, non
+   AppWire, qui gère le cycle de vie du processus. Une connexion est un moyen, jamais un fardeau.
 5. **Un seul hub, tous les endpoints.** Un seul Hub sert les applications web, desktop et mobiles, et parle les
    formats d'outils MCP, OpenAI, Anthropic et Gemini — ou s'intègre directement dans l'agent d'un éditeur.
    Intégrez une fois, utilisez partout.

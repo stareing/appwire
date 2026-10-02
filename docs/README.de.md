@@ -238,9 +238,12 @@ deklariert, was sie kann, und das Modell orchestriert.
    (`@app-mcp/inspect`) ist nur ein optionaler Fallback.
 3. **Tools entstehen und vergehen mit der Oberfläche.** Öffnen Sie einen Tab, erscheinen seine Tools; schließen Sie
    ihn, verschwinden sie; ein leerer Warenkorb hat kein `checkout`. Das Modell sieht immer, was *jetzt* möglich ist.
-4. **Im Leerlauf ruhen, bei Aufruf aufwachen.** Untätige Apps trennen ihre Verbindung und geben Threads frei; nichts
-   hält einen Prozess im Speicher fest. Bei Bedarf weckt der Hub die App über den nativen Aktivierungsmechanismus der
-   Plattform und setzt in einem einzigen Round Trip fort. Eine Verbindung ist ein Mittel, nie eine Last.
+4. **Auf Zuruf da, nach getaner Arbeit wieder weg.** Ziel ist *jederzeit aufrufbar*, nicht *ständig laufend*.
+   Das Auffinden von Tools startet keine App: Sie werden aus dem Manifest und dem letzten Snapshot gelistet. Ein
+   Aufruf weckt die App über den nativen Aktivierungsmechanismus der Plattform; ist die Arbeit erledigt, werden
+   Verbindung und Threads freigegeben und der Prozess an das Betriebssystem zurückgegeben. Nichts hält einen
+   Prozess im Speicher fest, kein Daemon pro App vertritt sie, und den Prozess-Lebenszyklus verwaltet das
+   Betriebssystem, nicht AppWire. Eine Verbindung ist ein Mittel, nie eine Last.
 5. **Ein Hub, alle Endpunkte.** Ein Hub bedient Web-, Desktop- und Mobile-Apps und spricht die Tool-Formate von MCP,
    OpenAI, Anthropic und Gemini — oder wird direkt in den eigenen Agenten eines Anbieters eingebettet. Einmal
    integrieren, überall nutzen.

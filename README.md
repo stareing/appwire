@@ -237,9 +237,12 @@ declares what it can do, and the model orchestrates.
    (`@app-mcp/inspect`) is an opt-in fallback only.
 3. **Tools live and die with the interface.** Open a tab and its tools appear; close it and they
    disappear; an empty cart has no `checkout`. The model always sees what can be done *now*.
-4. **Sleep when idle, wake on call.** Idle apps drop their connection and release threads; nothing
-   pins a process in memory. When needed, the Hub wakes the app through the platform's native
-   activation and resumes in one round trip. A connection is a means, never a burden.
+4. **Summoned on call, dismissed when done.** The goal is *always callable*, not *always running*.
+   Discovery never launches an app: its tools are listed from the manifest and its last snapshot. A call
+   wakes it through the platform's own activation; when the work is done the connection and threads are
+   released and the process is handed back to the OS. Nothing pins a process in memory, no per-app daemon
+   stands in for the app, and the OS, not AppWire, owns the process lifecycle. A connection is a means,
+   never a burden.
 5. **One hub, every endpoint.** One Hub serves web, desktop and mobile apps, and speaks MCP, OpenAI,
    Anthropic and Gemini tool formats — or embeds directly into a vendor's own agent. Integrate once,
    use everywhere.
