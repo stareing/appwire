@@ -297,6 +297,7 @@ WSL2 本机，`CARGO_TARGET_DIR=~/.cache/tastyrice/target-hub`。全部通过，
 10. [ ] 核心热路径：参数免完整解析、进程内共享运行时、休眠重建基准
 11. [ ] Hub：Schema 校验缓存、导出名/会话 LRU·TTL、tracing 调用链与指标
 12. [ ] MCP 2026-07-28 无状态协议迁移方案（文档 + 兼容层设计）
+   - 会话状态迁移方案（2026-10-02）：`docs/plans/12-mcp-stateless.md`（补充 `12-mcp-2026-07-28.md`，两者差异列在其 3.6 节）。结论：不改 SDK ↔ Host 协议、不升级 rmcp，只改 Hub 内部与 spec；依赖会话的行为（apps.select、总览只附带一次、渐进暴露、租约随会话收回、资源订阅、stdio 一进程一会话）对旧客户端保持，新无状态请求按请求凭据主体保存（按 Agent 发令牌前共用一个主体，与第 16 项 P1 合并）；`_meta` 前缀建议 `app-mcp/` → `dev.appmcp/`（规范 SHOULD 反向域名；待机主定 U1）；-32000…-32019 不得再分配新码，m10 "新码用 -32016～-32019" 作废；缺陷 S3：`mcp_error_to_tool`（call.rs）按数值反查上游 MCP 错误码，违反规范 MUST NOT。任务 S1–S8，建议先做 S3
    - 计划（2026-10-02）：见 `docs/plans/12-mcp-2026-07-28.md`
 13. [ ] 开箱即用：全新机器从安装到工具出现 ≤ 2 条命令、≤ 2 分钟（2026-10-02 加入）——计划见 `docs/plans/13-out-of-box.md`
    - 第一部分（可与 4e 并行）：D1 发布流水线（各平台预编译 Host）；D2 `npx appwire` / `uvx appwire`；D3 `setup` / `uninstall`（自启 + 写入已装 Agent 的 MCP 配置 + doctor 自检，幂等、可回滚）；D4 默认免令牌、README 快速开始改 2 条命令
