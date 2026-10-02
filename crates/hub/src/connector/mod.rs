@@ -5,10 +5,12 @@
 //!   得到的通道交给 App 连接服务，其上跑与本地 IPC 相同的帧与消息（SDK 先发 `app/hello`）。
 //! - 连接器只做机制：何时拨号、何时关闭由 Hub 的路由与生命周期决定（7.2）。
 //!
-//! 平台实现：Linux D-Bus 会话总线（[`DbusConnector`]，cargo feature `dbus`）。
+//! 平台实现：Linux D-Bus 会话总线（[`DbusConnector`]，cargo feature `dbus`）；由宿主语言实现发现与拨号的
+//! [`HostedConnector`]（Unix，Android 经 hub-uniffi 的 Kotlin 实现，spec/naming.md 4.2）。
 
 use std::fmt;
 
+use app_mcp_manifest::Manifest;
 use app_mcp_protocol::naming::Address;
 use futures::stream::BoxStream;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -17,6 +19,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 mod dbus;
 #[cfg(all(target_os = "linux", not(target_env = "ohos"), feature = "dbus"))]
 pub use dbus::DbusConnector;
+#[cfg(unix)]
+mod hosted;
+#[cfg(unix)]
+pub use hosted::{HostNameService, HostedChannel, HostedConnector, HostedName, naming_code};
 
 /// 发现到的一个名字（App 的默认名字或一个登记实例）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +43,10 @@ pub enum NameEvent {
     Appeared(Address),
     /// 名字消失（所有者退出 / 注销）。
     Vanished(Address),
+    /// App 安装或更新（Android 包变更广播）：新增 / 更新发现记录（静态清单经 [`Connector::manifest`] 读取）。
+    Installed(DiscoveredName),
+    /// App 卸载：移除发现记录与来自安装元数据的清单（spec/naming.md 5.4"卸载事件"）。
+    Removed(Address),
 }
 
 /// 通道两端的字节流。
@@ -83,6 +93,12 @@ pub trait Connector: Send + Sync + fmt::Debug + 'static {
 
     /// 名字出现 / 消失的事件流（无事件时不唤醒）；不支持时返回空流。
     async fn watch(&self) -> Result<BoxStream<'static, NameEvent>, ConnectorError>;
+
+    /// 安装元数据中该 App 的静态清单（Android `<meta-data>` 清单资源）；没有时为 `None`（默认）。
+    /// Hub 在发现 / 安装事件后读取，使未运行的 App 也能按清单列出工具（spec/naming.md 5.6）。
+    fn manifest(&self, _app_id: &str) -> Option<Manifest> {
+        None
+    }
 
     /// 按地址拨号；名字的所有者未运行时由系统激活。`timeout` 为激活与 `Open` 合计的上限。
     async fn dial(&self, address: &Address, timeout: std::time::Duration) -> Result<DialedChannel, ConnectorError>;

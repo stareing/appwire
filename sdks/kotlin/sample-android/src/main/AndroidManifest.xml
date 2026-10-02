@@ -19,5 +19,16 @@
         <activity
             android:name=".NavActivity"
             android:exported="true" />
+
+        <!--
+          按名寻址（spec/naming.md 4.2）：SDK 的 ToolsService 经清单合并加入；这里补上静态清单，设备上的 Hub（如
+          hub-app-android）只读这项元数据发现本 App，调用时 bindService 即激活本进程。release 与 Hub App 都用 debug
+          keystore 签名，同证书即可信（HubTrust）。
+        -->
+        <service android:name="dev.appmcp.android.ToolsService">
+            <meta-data
+                android:name="dev.appmcp.manifest"
+                android:resource="@raw/app_mcp" />
+        </service>
     </application>
 </manifest>

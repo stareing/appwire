@@ -115,6 +115,14 @@ typealias HubEvent = dev.appmcp.hub.ffi.HubEvent
  */
 typealias HubException = dev.appmcp.hub.ffi.HubException
 
+// 按名寻址（spec/hub-api.md 3.16、spec/naming.md 4.2）。
+/** 宿主实现的名字服务（Android：`dev.appmcp.hub.android.AndroidNameService`）；[Hub.startWithNameService]。 */
+typealias HubNameService = dev.appmcp.hub.ffi.HubNameService
+/** 名字服务发现的一个 App（appId、可激活、平台名字、清单 JSON）。 */
+typealias NamedApp = dev.appmcp.hub.ffi.NamedApp
+/** 拨号结果；变体经 `dev.appmcp.hub.ffi.DialOutcome.Channel` / `.Failed` 访问。 */
+typealias DialOutcome = dev.appmcp.hub.ffi.DialOutcome
+
 internal val HubJson = Json { ignoreUnknownKeys = true }
 
 private fun parseJson(text: String?): JsonElement? = text?.let { HubJson.parseToJsonElement(it) }
@@ -196,6 +204,14 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
     companion object {
         /** 启动 Hub（绑定 App 连接服务并启动后台任务）。 */
         fun start(config: HubConfig = HubConfig()): Hub = Hub(FfiHub.start(config))
+
+        /**
+         * 启动 Hub 并以宿主实现的名字服务按名寻址（spec/hub-api.md 3.16）：启动时 `discover` 一次（清单中的工具随即可列出，
+         * 不启动 App）；调用到达而 App 没有活连接时 `dial`，通道宽限（[HubConfig.channelGraceMs]）后关闭并 `release`。
+         * 安装 / 卸载变化用 [nameServiceInstalled] / [nameServiceRemoved] 推送。非 Unix 平台抛 `HubException.Unsupported`。
+         */
+        fun startWithNameService(config: HubConfig, kind: String, service: HubNameService): Hub =
+            Hub(FfiHub.startWithNameService(config, kind, service))
 
         /** 解析格式名：`mcp`、`openai-chat`（`openai`）、`openai-responses`、`anthropic`、`gemini`。 */
         fun parseFormat(name: String): ToolFormat = dev.appmcp.hub.ffi.parseToolFormat(name)
@@ -418,6 +434,18 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
             }
         })
     }
+
+    /** 名字服务推送：App 安装或更新（[startWithNameService] 启动的 Hub）。 */
+    fun nameServiceInstalled(app: NamedApp) = inner.nameServiceInstalled(app)
+
+    /** 名字服务推送：App 卸载。 */
+    fun nameServiceRemoved(appId: String) = inner.nameServiceRemoved(appId)
+
+    /**
+     * 在交来的 fd（Unix 流式套接字，如 Android `bindService` 换得的 socketpair 一端）上提供 MCP，挂起直到对端关闭；
+     * 帧与 stdio 相同（每行一条 JSON-RPC）。[fd] 的所有权转移给 Hub。本构建不含 `mcp-server` 时抛 `HubException.Unsupported`。
+     */
+    suspend fun serveMcpFd(fd: Int) = inner.serveMcpFd(fd)
 
     /** 停止 Hub（断开所有 App、结束后台任务）。可重复调用。 */
     override fun close() {

@@ -19,6 +19,8 @@ android {
     testOptions {
         // Robolectric 需要合并后的 manifest（WakeReceiver 声明）与资源。
         unitTests.isIncludeAndroidResources = true
+        // Robolectric 的 ParcelFileDescriptor.detachFd / adoptFd 需要访问 java.io.FileDescriptor 内部字段（JDK 17+）。
+        unitTests.all { it.jvmArgs("--add-opens=java.base/java.io=ALL-UNNAMED") }
     }
 
     compileOptions {
@@ -40,6 +42,8 @@ dependencies {
     }
     api("net.java.dev.jna:jna:5.18.1@aar")
     api("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // 按名寻址：Binder 上交换 fd（ToolsService，spec/naming.md 4.2）
+    api(project(":app-mcp-binder"))
     implementation("androidx.lifecycle:lifecycle-process:2.9.4")
     // 公开 API（enableWhile）用到 LifecycleOwner / Lifecycle
     api("androidx.lifecycle:lifecycle-common:2.9.4")

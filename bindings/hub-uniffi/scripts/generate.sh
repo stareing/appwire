@@ -13,6 +13,7 @@
 #               默认全部；发布前必须全 ABI 重编（uniffi 加载时校验 checksum）
 #   --android-features L  与 --android 连用：Hub 能力组合（bindings/hub-uniffi/Cargo.toml 的 features，逗号分隔），
 #               默认 mobile,schema-validation（不含 MCP 出口与上游聚合，保留 Hub 侧参数校验）；体积优先可用 mobile（去掉校验，约省 2.7 MB）、完整能力用 desktop。
+#               独立 Hub App（sdks/kotlin/hub-app-android，fd 上的 MCP）需要 MCP 出口：mobile,schema-validation,mcp-server（arm64 约 +1.8 MB）。
 #               本机库（jar / wheel / Swift）总是 desktop（完整能力）；各组合的 uniffi 接口相同
 #   --only X    只生成一种语言
 #   --no-strip  复制到 SDK 目录的本机库保留调试信息（默认 strip -S，debug 版约 250 MB → 约 40 MB）

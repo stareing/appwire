@@ -21,6 +21,7 @@
 //!
 //! 外部同步回调抛出的未预期异常在 uniffi 里会变成 panic；适配器用 `catch_unwind` 兜底。
 
+pub mod naming;
 pub mod types;
 
 use std::future::Future;
@@ -35,6 +36,7 @@ use tokio::sync::oneshot;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 
+pub use naming::{DialOutcome, HubNameService, NamedApp};
 pub use types::*;
 
 uniffi::setup_scaffolding!();
@@ -285,6 +287,9 @@ pub struct AppMcpHub {
     events_task: Mutex<Option<JoinHandle<()>>>,
     listen_addr: Option<String>,
     ipc_endpoint: Option<String>,
+    /// [`AppMcpHub::start_with_name_service`] 的连接器：宿主推送安装 / 卸载事件经它送达 Hub。
+    #[cfg(unix)]
+    name_service: Option<Arc<hub::connector::HostedConnector>>,
 }
 
 impl std::fmt::Debug for AppMcpHub {
@@ -297,6 +302,49 @@ impl std::fmt::Debug for AppMcpHub {
 }
 
 impl AppMcpHub {
+    #[cfg(unix)]
+    fn launch(cfg: hub::HubConfig, name_service: Option<Arc<hub::connector::HostedConnector>>) -> Result<Arc<Self>, HubError> {
+        let (hub, handle, runtime) = Self::boot(cfg)?;
+        Ok(Arc::new(Self::assemble(hub, handle, runtime, name_service)))
+    }
+
+    #[cfg(not(unix))]
+    fn launch(cfg: hub::HubConfig, _name_service: Option<()>) -> Result<Arc<Self>, HubError> {
+        let (hub, handle, runtime) = Self::boot(cfg)?;
+        Ok(Arc::new(Self::assemble(hub, handle, runtime)))
+    }
+
+    fn boot(cfg: hub::HubConfig) -> Result<(hub::Hub, Handle, Runtime), HubError> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("app-mcp-hub")
+            .enable_all()
+            .build()?;
+        let handle = runtime.handle().clone();
+        let hub = block_on(&handle, hub::Hub::start(cfg))?;
+        Ok((hub, handle, runtime))
+    }
+
+    fn assemble(
+        hub: hub::Hub,
+        handle: Handle,
+        runtime: Runtime,
+        #[cfg(unix)] name_service: Option<Arc<hub::connector::HostedConnector>>,
+    ) -> Self {
+        let listen_addr = hub.listen_addr().map(|a| a.to_string());
+        let ipc_endpoint = hub.ipc_endpoint().map(str::to_owned);
+        AppMcpHub {
+            hub: Mutex::new(Some(Arc::new(hub))),
+            handle,
+            runtime: Mutex::new(Some(runtime)),
+            events_task: Mutex::new(None),
+            listen_addr,
+            ipc_endpoint,
+            #[cfg(unix)]
+            name_service,
+        }
+    }
+
     fn hub(&self) -> Result<Arc<hub::Hub>, HubError> {
         lock(&self.hub).clone().ok_or(HubError::Shutdown)
     }
@@ -316,24 +364,35 @@ impl AppMcpHub {
     /// 启动 Hub：绑定 App 连接服务（若开启）并启动后台任务。
     #[uniffi::constructor]
     pub fn start(config: HubConfig) -> Result<Arc<Self>, HubError> {
-        let cfg = config.into_hub()?;
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .thread_name("app-mcp-hub")
-            .enable_all()
-            .build()?;
-        let handle = runtime.handle().clone();
-        let hub = block_on(&handle, hub::Hub::start(cfg))?;
-        let listen_addr = hub.listen_addr().map(|a| a.to_string());
-        let ipc_endpoint = hub.ipc_endpoint().map(str::to_owned);
-        Ok(Arc::new(AppMcpHub {
-            hub: Mutex::new(Some(Arc::new(hub))),
-            handle,
-            runtime: Mutex::new(Some(runtime)),
-            events_task: Mutex::new(None),
-            listen_addr,
-            ipc_endpoint,
-        }))
+        Self::launch(config.into_hub()?, None)
+    }
+
+    /// 启动 Hub，并以宿主实现的名字服务按名寻址（spec/naming.md 4.2 Android、spec/hub-api.md 3.16）：Hub 启动时调用一次
+    /// `discover`（只读安装元数据，清单中的工具随即可列出）；调用到达而 App 没有活连接时 `dial`，通道宽限
+    /// （`HubConfig.channel_grace_ms`）后关闭并 `release`。之后的安装 / 卸载由宿主经 [`AppMcpHub::name_service_installed`] /
+    /// [`AppMcpHub::name_service_removed`] 推送。`kind` 为发现记录的来源名（`"android"`；其他值记为 `"host"`）。
+    /// 非 Unix 平台返回 `Unsupported`。
+    #[uniffi::constructor]
+    pub fn start_with_name_service(
+        config: HubConfig,
+        kind: String,
+        service: Arc<dyn HubNameService>,
+    ) -> Result<Arc<Self>, HubError> {
+        #[cfg(unix)]
+        {
+            let connector = Arc::new(hub::connector::HostedConnector::new(
+                naming::source_kind(&kind),
+                Arc::new(naming::NameServiceAdapter(service)),
+            ));
+            let mut cfg = config.into_hub()?;
+            cfg.connectors.push(connector.clone());
+            Self::launch(cfg, Some(connector))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (config, kind, service);
+            Err(HubError::Unsupported { detail: "本平台没有宿主名字服务（按名寻址仅支持 Unix 上以 fd 交换通道）".to_owned() })
+        }
     }
 
     /// HTTP 服务（`/app`、`/healthz`）实际监听的地址（`127.0.0.1:12345`，App 端点为 `ws://<地址>/app`）；未开启时为空。
@@ -583,6 +642,43 @@ impl AppMcpHub {
         }
     }
 
+    // ---- 按名寻址（spec/hub-api.md 3.16）----
+
+    /// 宿主推送：App 安装或更新（Android `PACKAGE_ADDED` / `PACKAGE_REPLACED` 后重新读到的元数据）。
+    /// 不是以 `start_with_name_service` 启动的 Hub 时无效果。
+    pub fn name_service_installed(&self, app: NamedApp) {
+        #[cfg(unix)]
+        if let (Some(connector), Some(name)) = (&self.name_service, naming::hosted_name(app)) {
+            connector.installed(name);
+        }
+        #[cfg(not(unix))]
+        let _ = app;
+    }
+
+    /// 宿主推送：App 卸载（Android `PACKAGE_REMOVED` 且非替换）。移除发现记录与来自安装元数据的清单。
+    pub fn name_service_removed(&self, app_id: String) {
+        #[cfg(unix)]
+        if let Some(connector) = &self.name_service {
+            connector.removed(&app_id);
+        }
+        #[cfg(not(unix))]
+        let _ = app_id;
+    }
+
+    // ---- 系统 IPC 上的 MCP 出口（TASKS 4g d）----
+
+    /// 在交来的 fd（Unix 流式套接字，如 Android `bindService` 换得的 socketpair 一端）上提供 MCP，直到对端关闭；
+    /// 帧与 stdio 相同（每行一条 JSON-RPC 消息），每次调用是一个独立会话。
+    ///
+    /// @input `fd` 的所有权随调用转移给本库（负数不接管）。
+    /// @error 本构建不含 `mcp-server`（Android 精简库，spec/hub-api.md 3.10）或非 Unix 平台 → `Unsupported`；
+    /// fd 不是套接字 → `Io`。
+    pub async fn serve_mcp_fd(&self, fd: i32) -> Result<(), HubError> {
+        let hub = self.hub()?;
+        let stream = mcp_stream(fd)?;
+        self.run(async move { serve_mcp(hub, stream).await }).await?
+    }
+
     // ---- 格式导出与分派 ----
 
     /// 按格式导出工具定义（JSON 文本；名称已编码为 `[a-zA-Z0-9_-]{1,64}`）。
@@ -635,6 +731,41 @@ impl Drop for AppMcpHub {
 enum Delivery {
     Event(HubEvent),
     Lagged(u64),
+}
+
+#[cfg(unix)]
+fn mcp_stream(fd: i32) -> Result<std::os::unix::net::UnixStream, HubError> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    if fd < 0 {
+        return Err(HubError::Io { detail: format!("fd 无效：{fd}") });
+    }
+    // @security 调用方按契约转移一个打开的 fd 的所有权（Kotlin `ParcelFileDescriptor.detachFd()`），之后不再使用它。
+    let stream = std::os::unix::net::UnixStream::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    // 不是 Unix 套接字的 fd 在这里失败（随 `stream` 丢弃而关闭）。
+    stream.local_addr()?;
+    stream.set_nonblocking(true)?;
+    Ok(stream)
+}
+
+#[cfg(not(unix))]
+fn mcp_stream(fd: i32) -> Result<std::convert::Infallible, HubError> {
+    Err(HubError::Unsupported { detail: format!("本平台不支持以 fd 交来 MCP 通道（fd {fd}）") })
+}
+
+#[cfg(all(unix, feature = "mcp-server"))]
+async fn serve_mcp(hub: Arc<hub::Hub>, stream: std::os::unix::net::UnixStream) -> Result<(), HubError> {
+    let stream = tokio::net::UnixStream::from_std(stream)?;
+    hub.serve_mcp_stream(stream).await.map_err(|e| HubError::Io { detail: e.to_string() })
+}
+
+#[cfg(all(unix, not(feature = "mcp-server")))]
+async fn serve_mcp(_hub: Arc<hub::Hub>, _stream: std::os::unix::net::UnixStream) -> Result<(), HubError> {
+    Err(HubError::Unsupported { detail: "本构建未包含 MCP 出口（cargo feature `mcp-server`）".to_owned() })
+}
+
+#[cfg(not(unix))]
+async fn serve_mcp(_hub: Arc<hub::Hub>, stream: std::convert::Infallible) -> Result<(), HubError> {
+    match stream {}
 }
 
 fn empty_export(format: ToolFormat) -> String {

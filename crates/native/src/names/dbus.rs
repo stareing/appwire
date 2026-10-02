@@ -122,7 +122,7 @@ impl AppObject {
                 "{}：App 已有连接，同时只接受一条通道",
                 app_mcp_protocol::naming::codes::CHANNEL_LIMIT
             ))),
-            Err(Refusal::Stopped) => Err(fdo::Error::Failed("App 的 SDK 已停止".to_owned())),
+            Err(e @ (Refusal::Stopped | Refusal::Invalid(_))) => Err(fdo::Error::Failed(e.to_string())),
         }
     }
 }

@@ -12,6 +12,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use app_mcp_core::ConnectionState;
+
 use crate::{Shared, now_ms};
 
 #[cfg(all(target_os = "linux", not(target_env = "ohos"), feature = "dbus"))]
@@ -34,14 +36,8 @@ pub(crate) struct NameRequest {
     pub address: Option<String>,
 }
 
-/// App 拒绝一次拨号的原因。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Refusal {
-    /// 已有连接 / 通道（上限 1，spec/naming.md U-16），错误码 `CHANNEL_LIMIT`。
-    Busy,
-    /// 客户端已停止。
-    Stopped,
-}
+/// App 拒绝一次拨号的原因（公开类型，见 [`crate::ChannelRefusal`]）。
+pub(crate) use crate::ChannelRefusal as Refusal;
 
 /// 接收拨入的通道：接受时交给运行时，拒绝时通道被丢弃。
 pub(crate) trait ChannelSink: Send + Sync + 'static {
@@ -85,7 +81,7 @@ impl ChannelSink for ChannelInbox {
         let shared = self.0.upgrade().ok_or(Refusal::Stopped)?;
         {
             let mut st = shared.lock();
-            if st.stopped {
+            if st.stopped || *st.client.state() == ConnectionState::Idle {
                 return Err(Refusal::Stopped);
             }
             if !st.client.accept_channel(now_ms()) {

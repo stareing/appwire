@@ -1,2 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      按名寻址（spec/naming.md 4.2）：Android 11+ 包可见性——只按动作查询声明了 dev.appmcp.TOOLS 的 Service，
+      不申请 QUERY_ALL_PACKAGES。经清单合并进入使用本库的 Hub App。
+    -->
+    <queries>
+        <intent>
+            <action android:name="dev.appmcp.TOOLS" />
+        </intent>
+    </queries>
+</manifest>

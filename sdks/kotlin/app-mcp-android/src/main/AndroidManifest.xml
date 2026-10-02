@@ -19,5 +19,25 @@
         <receiver
             android:name="dev.appmcp.android.WakeReceiver"
             android:exported="true" />
+
+        <!--
+          按名寻址（spec/naming.md 4.2）：设备上的 Hub 以低优先级标志 bindService 本 Service 即激活本进程，open() 换得
+          socketpair 的一端后消息走 fd。exported=true：Hub 是其他 App；调用方在 open() 内按 Binder.getCallingUid()
+          校验（同 uid / 同签名证书 / 可信证书列表，见 HubTrust），不以权限声明作为授权手段（10.2）。
+
+          App 在自己的清单中为它补上静态清单（Hub 只读这项元数据发现本 App，不启动进程）：
+            <service android:name="dev.appmcp.android.ToolsService">
+                <meta-data android:name="dev.appmcp.manifest" android:resource="@raw/app_mcp" />
+                <meta-data android:name="dev.appmcp.trustedHubs" android:value="sha256:…" />   （可选）
+            </service>
+          不需要按名寻址：<service android:name="dev.appmcp.android.ToolsService" tools:node="remove" />
+        -->
+        <service
+            android:name="dev.appmcp.android.ToolsService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="dev.appmcp.TOOLS" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

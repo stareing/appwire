@@ -29,6 +29,11 @@ typealias AppOverview = dev.appmcp.ffi.AppOverview
 typealias CallDedupPolicy = dev.appmcp.ffi.CallDedupPolicy
 /** 原生层错误的基类。具体子类（如 `AlreadyCompleted`）需通过 `dev.appmcp.ffi.AppMcpException` 访问（typealias 不能访问嵌套类）。 */
 typealias AppMcpException = dev.appmcp.ffi.AppMcpException
+/**
+ * [AppMcp.acceptChannelFd] 的结果（spec/naming.md 4.2）。变体经 `dev.appmcp.ffi.ChannelOffer.Accepted` / `.Busy` /
+ * `.Stopped` / `.Invalid` 访问（typealias 不能访问嵌套类）。
+ */
+typealias ChannelOffer = dev.appmcp.ffi.ChannelOffer
 
 /** 协议错误类别（FFI 上的字符串形式）。 */
 object ErrorKind {

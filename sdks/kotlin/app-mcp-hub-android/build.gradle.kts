@@ -15,6 +15,12 @@ android {
         minSdk = 24
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        // Robolectric 的 ParcelFileDescriptor.detachFd / adoptFd 需要访问 java.io.FileDescriptor 内部字段（JDK 17+）。
+        unitTests.all { it.jvmArgs("--add-opens=java.base/java.io=ALL-UNNAMED") }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -34,4 +40,10 @@ dependencies {
     }
     api("net.java.dev.jna:jna:5.18.1@aar")
     api("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // 按名寻址：bindService + Binder 上交换 fd（AndroidNameService，spec/naming.md 4.2）
+    api(project(":app-mcp-binder"))
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
 }

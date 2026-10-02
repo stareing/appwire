@@ -186,23 +186,38 @@ flowchart TD
 
 - **名字**：App 清单中导出的 Service（SDK 提供 `dev.appmcp.android.ToolsService`，经清单合并加入），intent-filter 动作
   `dev.appmcp.TOOLS`；`<meta-data android:name="dev.appmcp.manifest" android:resource="@raw/app_mcp"/>` 指向构建期生成的
-  静态清单。appId 由该清单给出（不由包名推导），Hub 核对"包名 ↔ appId ↔ 签名指纹"（第 10.3 节）。
+  静态清单（App 在自己的清单中为该 Service 补上，与库的声明合并）。appId 由该清单给出（不由包名推导），Hub 核对"包名 ↔ appId ↔ 签名指纹"（第 10.3 节）。
+  不需要按名寻址的 App 以 `tools:node="remove"` 去掉该 Service。
 - **拨号**：Hub `bindService(显式 Intent(动作 + 包名 + 组件), flags)`（flags 见第 8 节；`bindService` 必须用显式组件）→
-  `onServiceConnected(IBinder)` → 调用 AIDL 方法 `open(String instance) → ParcelFileDescriptor`：App 以
-  `ParcelFileDescriptor.createSocketPair()` 创建一对、返回一端，消息走 fd 上的同一帧格式。
+  `onServiceConnected(IBinder)` → 调用一次 `open(String instance) → ParcelFileDescriptor`：App 以
+  `ParcelFileDescriptor.createSocketPair()` 创建一对、一端交给本进程的原生客户端（`NativeClient::accept_channel`）、另一端返回，
+  消息走 fd 上的同一帧格式（HTTP/1.1 + WebSocket，SDK 为客户端，第 3 节）。
+- **Binder 线协议**（不用 AIDL 生成类，避免同一 App 同时含 App 端与 Hub 端库时类重复；实现 `sdks/kotlin/app-mcp-binder`）：
+  接口描述符 `dev.appmcp.IAppTools/1`（主版本在描述符中，第 9.2 节"版本演进"）；唯一的事务 `open` = `IBinder.FIRST_CALL_TRANSACTION`。
+  请求 `writeInterfaceToken(描述符)` + `writeString(instance)`（可空，空 = 默认名字）；成功回复 `writeNoException()` + `writeInt(1)` +
+  `ParcelFileDescriptor`；失败回复 `writeException(e)`，说明以第 12 节的错误码开头（`<CODE>：<说明>`）：调用方不可信 →
+  `SecurityException("HUB_NOT_TRUSTED：…")`，其余为 `IllegalStateException`（`CHANNEL_LIMIT`、`NAME_NOT_FOUND`（不存在的实例）、
+  `ACTIVATION_DENIED`（SDK 未创建 / 已停止））。Hub 侧按说明前缀还原错误码；没有前缀时 `SecurityException` 记 `HUB_NOT_TRUSTED`、其余记 `ACTIVATION_DENIED`。
 - **冻结**：同步 Binder 调用打到已冻结的进程会使该进程被杀、调用方得到 `RemoteException`（F-08）。因此 `open()` 只在
   `onServiceConnected` 之后调用（绑定把进程从缓存态抬起；以 `BIND_WAIVE_PRIORITY` 绑定的 Service 在其客户端都进入缓存态之前不被冻结）；
   通道建立后消息走 fd、不再经 Binder。`open()` 收到 `RemoteException` 按"激活失败"处理，不在同一次调用内反复重试（U-02）。
 - **一次绑定只交换一个 fd**：不传递任何回调 Binder 对象（远端代理会把对方对象钉住、阻碍 GC）；Service 不保存客户端引用；
-  每次使用前重新 `bindService`（冻结中的进程由绑定解冻），不复用旧会话的 `IBinder` 代理。
+  每次使用前重新 `bindService`（冻结中的进程由绑定解冻），不复用旧会话的 `IBinder` 代理（拿到 fd 后即丢弃代理引用）。
+- **App 端正在拨出时**：SDK 的核心同时只接受一条连接（U-16）。`open()` 时客户端恰好处于连接中 / 握手中 / 回连中（如 on-demand 进入前台后
+  连 Host）时，App 端等它落定（事件驱动，最长 3 s）后再试一次；仍有连接则 `CHANNEL_LIMIT`。Hub 一侧不重试。
 - **调用方身份**：`open()` 在 Binder 事务内执行，App 用 `Binder.getCallingUid()` 取 Hub 的 uid，按第 10.2 节的 Hub 信任规则
   校验后才创建通道；不通过返回 `SecurityException`（Hub 记 `HUB_NOT_TRUSTED`）。`onBind()` 不做校验（不在调用方事务内）。
-- **发现**：Hub 清单声明 `<queries><intent><action android:name="dev.appmcp.TOOLS"/></intent></queries>`，用
-  `queryIntentServices(Intent(dev.appmcp.TOOLS), GET_META_DATA)` 一次性枚举，经 `PackageItemInfo.loadXmlMetaData` / 目标包资源读
-  `<meta-data>` 指向的清单（PackageManager 接口，不经 App 进程；"确实不启动进程"列为待真机确认，U-01）；**不申请**
-  `QUERY_ALL_PACKAGES`（Play 上需审批）。增量：Hub 启动时 `getChangedPackages(上次序号)`（序号每次开机归零，归零或返回异常时
-  做一次全量 `queryIntentServices`）；运行期间以**动态注册**的接收器收包变更广播（清单注册的接收器在 API 26+ 收不到
-  `PACKAGE_ADDED` / `REPLACED`）。
+- **发现**：Hub 清单声明 `<queries><intent><action android:name="dev.appmcp.TOOLS"/></intent></queries>`（Hub 端库的清单已带），用
+  `queryIntentServices(Intent(dev.appmcp.TOOLS), GET_META_DATA)` 一次性枚举（只取导出且启用的 Service），经
+  `PackageManager.getResourcesForApplication(目标包).openRawResource(meta-data 资源)` 读清单（PackageManager 接口，不经 App 进程，
+  上限 512 KiB；"确实不启动进程"列为待真机确认，U-01）；**不申请** `QUERY_ALL_PACKAGES`。没有清单或清单 appId 不合法的 Service 跳过；
+  同一 appId 由多个包声明时按包名排序只认第一个，其余记录警告（该包仍安装期间不被替换）。增量：运行期间以**动态注册**的接收器收包变更广播
+  （`PACKAGE_ADDED` / `REPLACED` / `CHANGED` / `REMOVED`（非替换）/ `FULLY_REMOVED`；清单注册的接收器在 API 26+ 收不到前两者），对变化的包重新查询。
+  Hub 启动时总是做一次全量查询（Hub 只在助手活跃时运行，启动查询是一次本地调用）；`getChangedPackages(sequence)` 增量未采用。
+- **Hub 侧身份核对**：拨号得到 fd 后，Hub 以 socketpair 对端凭据（`SO_PEERCRED`，即创建通道的进程）的 uid 与发现时记录的目标包 uid 比对，
+  不同即 `PEER_IDENTITY_MISMATCH` 并解绑（第 10.3 节）。
+- **对端死亡**：App 死亡 → fd EOF（Hub 关闭通道并解绑）；Hub 死亡 → fd EOF（App 转休眠）、系统自动解除绑定。未使用 `linkToDeath`
+  （需要持有 `IBinder` 代理，与"拿到 fd 即丢弃代理"冲突；fd EOF 已覆盖，第 7.5 节）。
 - **旧路径**：`WakeReceiver`（广播 `dev.appmcp.action.WAKE`）+ 加急 WorkManager 唤醒保留给"没有 Android 端 Hub、Hub 在 PC
   经 `adb reverse` 连接"的场景（spec/lifecycle.md 第 5 节）。
 
@@ -552,8 +567,11 @@ stateDiagram-v2
 Android 上每个 App 是不同的 uid，"同用户"不成立，App 须判断拨号的 Hub 是否可信：
 
 - `open()` 内以 `Binder.getCallingUid()` 取调用方包与签名证书，按以下规则放行：①签名证书摘要在 App 配置的可信 Hub 列表中
-  （构建期写入）；②用户曾在 App 内确认过该 Hub（与现有配对同构，记录证书摘要）。都不满足时拒绝（`HUB_NOT_TRUSTED`）；不在冷启动绑定中
-  弹出界面。
+  （构建期写入：`ToolsService` 上的 `<meta-data android:name="dev.appmcp.trustedHubs" android:value="sha256:…,…"/>`，或代码配置
+  `AppMcpAndroid.trustedHubCertificates`）；②用户曾在 App 内确认过该 Hub（`AppMcpAndroid.confirmHub(context, 摘要)`，记在 App 私有存储，
+  与现有配对同构）；③（实现补充，2026-10-02）调用方与本 App 是同一 uid（进程内 Hub）或同一签名证书（`checkSignatures` 为
+  `SIGNATURE_MATCH`，即同一开发者）。系统查不到调用方的包时不可信。都不满足时拒绝（`HUB_NOT_TRUSTED`）；不在冷启动绑定中弹出界面。
+  摘要格式 `sha256:<小写十六进制>`（大小写与 `:` 分隔不限，读入时规范化）。
 - **不以签名级权限作为唯一手段**（修正 TASKS 4d-D 的 `dev.appmcp.permission.BIND_TOOLS`）：`signature` 级权限只授予与**定义该权限的
   App** 同证书签名的 App（F-05）；系统不允许不同证书的包定义同名权限（后安装者失败）；被要求而无人定义的权限是"孤儿权限"，恶意 App
   可抢先定义并获得它（F-06）。因此：
@@ -601,7 +619,7 @@ Android 冻结状态：`adb shell dumpsys activity | grep -A 20 "Apps frozen:"`�
 
 （2026-10-02，4d 第一段）这些码的字符串已定义在 `app_mcp_protocol::naming::codes`，Linux 实现用到其中的 `NAME_NOT_FOUND`、
 `ACTIVATION_DENIED`、`ACTIVATION_TIMEOUT`、`BIND_PERMISSION_DENIED`、`PEER_IDENTITY_MISMATCH`、`CHANNEL_LIMIT`（工具错误 `details.code`、
-Hub `last_error`）；并入 `ConnectionErrorCode` 与 spec/protocol.md 10.1 仍待做（该枚举与各语言 SDK 的镜像、文档表格由测试互相核对，
+Hub `last_error`）；Android 段另加 `HUB_NOT_TRUSTED`，并有 `codes::ALL`（宿主回传的码字符串据此还原，未知码按 `ACTIVATION_DENIED`）；并入 `ConnectionErrorCode` 与 spec/protocol.md 10.1 仍待做（该枚举与各语言 SDK 的镜像、文档表格由测试互相核对，
 改动面超出本段，spec/protocol.md 1.8）。
 
 以下连接级错误码**待 4d 实现时加入 spec/protocol.md 第 10.1 节**（当前不改该表，以免与进行中的 4e 冲突；`ConnectionErrorCode` 与
@@ -774,14 +792,39 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 - **租约**：Hub 仍在通道上发 `app/lease`（SDK 在通道上不据此计时），租约到期时刻参与 Hub 的关闭时刻（7.2）。
 - **快速恢复**：Hub 关闭通道时生成的恢复令牌不下发（没有承载它的消息），下次握手按完整同步；`app/sleep { reason: "app" }` 路径照常带令牌。
 
-### 14.2 未做（后续段落）
+### 14.2 第二段：Android 绑定激活 + 设备上的 Hub（2026-10-02，未经真机验证）
+
+| 部分 | 已实现 | 位置 |
+|---|---|---|
+| 原生运行时 | `NativeClient::accept_channel(UnixStream)`：接受一个现成 fd 作为通道（与 D-Bus `Open()` 拨入的通道走同一路径：休眠时重建运行时、SDK 先发 `app/hello`、通道关闭后转休眠并释放运行时）；拒绝原因 `ChannelRefusal { Busy, Stopped, Invalid }`（非套接字在进入核心前拒绝） | `crates/native/src/lib.rs`（`tests/channel.rs`） |
+| uniffi（App 端） | `AppMcpClient::accept_channel_fd(fd) → ChannelOffer`（fd 所有权转移）；Kotlin `AppMcp.acceptChannelFd` | `bindings/uniffi`、`sdks/kotlin/app-mcp` |
+| Binder 协议 | 4.2"Binder 线协议"的服务端 / 客户端、绑定与等待（第 8 节标志）、调用方包与证书摘要 | `sdks/kotlin/app-mcp-binder` |
+| App 端 | `ToolsService`（4.2、10.2）；清单合并声明；`WakeReceiver` 路径保留 | `sdks/kotlin/app-mcp-android` |
+| Hub（Rust） | 宿主实现的连接器 `HostedConnector` + `HostNameService`（发现 / 拨号 / 释放三个同步回调）；`NameEvent::{Installed, Removed}`（包安装 / 卸载）；`Connector::manifest`（安装元数据中的清单，未运行的 App 也按清单列出工具，卸载时一并移除）；拨号结果经 oneshot 交回，超时 / 调用被放弃后迟到的通道由回调线程释放；通道被丢弃时恰好释放一次租约 | `crates/hub/src/connector/hosted.rs`、`naming.rs`（`tests/hosted.rs`） |
+| hub-uniffi | 外部实现的 `HubNameService`（`discover` / `dial` / `release`）、`AppMcpHub::start_with_name_service`、`name_service_installed` / `name_service_removed`、`HubConfig.channel_grace_ms`；fd 上的 MCP `serve_mcp_fd`（独立 Hub App 用，需 `mcp-server`） | `bindings/hub-uniffi/src/naming.rs`（spec/hub-api.md 3.16） |
+| Hub 端（Kotlin） | `AndroidNameService`：发现（4.2）、包变更接收器、`bindService` 拨号、宽限后 `release` → `unbindService`、OEM 拦截时的设置指引 | `sdks/kotlin/app-mcp-hub-android` |
+| 独立 Hub App 原型（TASKS 4g d） | `HubService`（动作 `dev.appmcp.HUB`，同一 Binder 线协议，描述符 `dev.appmcp.IHub/1`）：Hub 在第一个 Agent `open()` 时惰性启动，fd 上为 MCP（每行一条 JSON-RPC，与 stdio 相同）；记录调用方 uid → 包名 / 证书；最后一个 Agent 解绑后 Service 销毁、Hub 关闭、对全部 App 解绑 | `sdks/kotlin/hub-app-android` |
+| Agent 客户端（TASKS 4g f） | `HubClient`（绑定 Hub App + MCP 会话 initialize / tools/list / tools/call）、`McpLineClient`；示例 Agent | `sdks/kotlin/app-mcp-agent-android`、`sample-agent-android` |
+
+与本文件前文的差异：
+
+- **不用 AIDL**：同一 App 可能同时依赖 App 端与 Hub 端库（如示例 App 的进程内 Hub 自检），AIDL 生成类会重复；改为 4.2 的手写 Binder 线协议，
+  两端共用 `app-mcp-binder`。
+- **Hub 信任补充规则**（10.2 ③）：同 uid / 同签名证书的 Hub 默认可信。
+- **身份核对**：Hub 以通道对端 uid 与发现时记录的包 uid 比对（与 Linux 第一段相同的"拿到通道后核对"）；签名指纹记录与 `fingerprintChanged`（5.4）未做。
+- **发现增量**：未用 `getChangedPackages(sequence)`，Hub 启动时总是全量 `queryIntentServices`。
+- **未用 `linkToDeath`**（4.2"对端死亡"）。
+
+### 14.3 未做（后续段落）
 
 - 发现：App 登记文件（5.3）的读取与目录监视（Host 的 `app install` 已写入）、自报登记 `app/register`（5.5）、签名指纹与
   `fingerprintChanged`（5.4）、发现记录持久化 `discovery.json`。
-- 结束与回收：`maxBoundApps` LRU（7.3）、内存压力（7.4）、`app/hold` 与 `maxHoldMs`（7.2）、调用中对端死亡的 `outcome: "unknown"` 与
-  `read` 工具自动重试（7.5，当前按现有断线错误返回）、9.2 竞态"App 发起的连接优先"的显式处理（同一 SDK 的核心同时只允许一条连接，
-  实际不会出现）。
+- 结束与回收：`maxBoundApps` LRU（7.3）、内存压力（7.4，Android `onTrimMemory` 关闭宽限中的通道尚无 Hub API）、`app/hold` 与 `maxHoldMs`（7.2）、
+  调用中对端死亡的 `outcome: "unknown"` 与 `read` 工具自动重试（7.5，当前按现有断线错误返回）、9.2 竞态"App 发起的连接优先"的显式处理
+  （同一 SDK 的核心同时只允许一条连接，实际不会出现）。
 - 多 Hub：App 同时接受多条通道（9.1，当前上限 1）。
-- 绑定：uniffi / node / 各语言 SDK 的登记选项、Hub 各语言绑定的 `connectors` / `channel_grace`；`doctor` 的 `naming.*` 检查（第 11 节）。
+- 绑定：uniffi（D-Bus 登记选项）/ node / 其他语言 SDK 的登记选项、Hub 其他语言绑定（C、Node）的连接器回调与 `channel_grace`；
+  `doctor` 的 `naming.*` 检查（第 11 节，含 `naming.android`）。
+- Android：真机验证（冷启动绑定、宽限后回到 cached 并被冻结、进程被杀后再绑定、多 App、Flyme 关联启动拦截，U-01–U-03）；LeakCanary 接入（7.7）；
+  独立 Hub App 的用户授权 Agent 名单（TASKS 4g e，与第 16 项 P1 / P2 合并）。
 - Host 默认开启按名寻址（当前需 `--name-service`）；dbus-broker 上的实测（U-05）。
-

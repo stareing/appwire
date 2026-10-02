@@ -979,3 +979,182 @@ fn surface_page_idempotency_key_and_builtins() {
     app.stop();
     hub.shutdown();
 }
+
+/// 宿主名字服务（spec/naming.md 4.2）：socketpair 模拟 Android 的 `bindService` + `open()`——"App 进程"是同进程的
+/// `NativeClient`，拨号时把一端交给它的 `accept_channel`，另一端以 fd 交回 Hub。
+#[cfg(unix)]
+#[derive(Default)]
+struct FakeNameService {
+    app: Mutex<Option<native::NativeClient>>,
+    dials: Mutex<u64>,
+    released: Mutex<Vec<u64>>,
+}
+
+#[cfg(unix)]
+const FD_APP: &str = "fd-notes";
+
+#[cfg(unix)]
+fn fd_app_manifest(app_id: &str) -> String {
+    json!({"manifestVersion": 1, "appId": app_id, "name": "fd 笔记",
+        "tools": [{"name": "echo", "description": "原样返回", "inputSchema": {"type": "object"}}]})
+    .to_string()
+}
+
+#[cfg(unix)]
+impl HubNameService for FakeNameService {
+    fn discover(&self) -> Vec<NamedApp> {
+        vec![
+            NamedApp {
+                app_id: FD_APP.into(),
+                activatable: true,
+                running: false,
+                detail: "dev.example.notes/dev.appmcp.android.ToolsService".into(),
+                manifest_json: Some(fd_app_manifest(FD_APP)),
+            },
+            // 不合法的 appId 与清单不一致的条目被忽略 / 不带清单。
+            NamedApp { app_id: "Bad".into(), activatable: true, running: false, detail: String::new(), manifest_json: None },
+        ]
+    }
+
+    fn dial(&self, app_id: String, _timeout_ms: u64) -> DialOutcome {
+        use std::os::fd::IntoRawFd;
+        if app_id != FD_APP {
+            return DialOutcome::Failed { code: "HUB_NOT_TRUSTED".into(), message: "App 拒绝了该 Hub".into() };
+        }
+        let (app_end, hub_end) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+        let app = lock(&self.app)
+            .get_or_insert_with(|| {
+                let mut cfg = native::NativeConfig::new(FD_APP, "fd 笔记");
+                cfg.lifecycle.mode = native::LifecycleMode::OnDemand;
+                cfg.host_url = format!("unix:{}", std::env::temp_dir().join("app-mcp-no-hub.sock").display());
+                let app = native::NativeClient::new(cfg, None).expect("App");
+                app.register_tool(native::ToolSpec::new("echo", "原样返回"), Arc::new(AddNote)).expect("注册");
+                app.start();
+                app
+            })
+            .clone();
+        if let Err(e) = app.accept_channel(app_end) {
+            return DialOutcome::Failed { code: "CHANNEL_LIMIT".into(), message: e.to_string() };
+        }
+        let mut dials = lock(&self.dials);
+        *dials += 1;
+        DialOutcome::Channel {
+            fd: hub_end.into_raw_fd(),
+            lease: *dials,
+            peer_uid: Some(app_mcp_protocol::endpoint::current_uid()),
+        }
+    }
+
+    fn release(&self, lease: u64) {
+        lock(&self.released).push(lease);
+    }
+}
+
+#[cfg(unix)]
+fn eventually(what: &str, f: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !f() {
+        assert!(Instant::now() < deadline, "等待超时：{what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn name_service_discover_dial_release_and_events() {
+    let service = Arc::new(FakeNameService::default());
+    let hub = AppMcpHub::start_with_name_service(
+        HubConfig {
+            enable_listen: false,
+            enable_ipc: false,
+            channel_grace_ms: Some(200),
+            lease_ttl_ms: Some(0),
+            list_changed_debounce_ms: Some(10),
+            ..Default::default()
+        },
+        "android".into(),
+        service.clone(),
+    )
+    .expect("启动 Hub");
+    let names = |hub: &AppMcpHub| hub.tools(ToolFilter::default()).into_iter().map(|t| t.name).collect::<Vec<_>>();
+
+    // 发现只读元数据：清单中的工具列出，未拨号。
+    eventually("按清单列出", || names(&hub).contains(&format!("{FD_APP}.echo")));
+    assert_eq!(*lock(&service.dials), 0);
+    assert!(!hub.apps().iter().any(|a| a.app_id == "Bad"));
+
+    // 调用 → 拨号 → 宽限后释放一次。
+    let out = wait(hub.call_tool(req(&format!("{FD_APP}.echo"), json!({"text": "hi"})))).expect("调用");
+    assert!(out.error.is_none(), "{out:?}");
+    assert_eq!(serde_json::from_str::<Value>(out.data_json.as_deref().unwrap_or("null")).unwrap()["saved"], "hi");
+    eventually("宽限后释放租约", || *lock(&service.released) == vec![1]);
+    let app = lock(&service.app).clone().expect("App 已创建");
+    eventually("App 回到休眠", || app.state().status == native::StateStatus::Dormant);
+
+    // 宿主推送安装 / 卸载；宿主错误码进入 details.code。
+    hub.name_service_installed(NamedApp {
+        app_id: "late".into(),
+        activatable: true,
+        running: false,
+        detail: String::new(),
+        manifest_json: Some(fd_app_manifest("late")),
+    });
+    eventually("安装后列出", || names(&hub).contains(&"late.echo".to_owned()));
+    let (kind, details) = call_error_kind(&hub, "late.echo");
+    assert_eq!(kind.as_deref(), Some("LAUNCH_FAILED"));
+    assert_eq!(details.as_ref().and_then(|d| d["code"].as_str()), Some("HUB_NOT_TRUSTED"), "{details:?}");
+    hub.name_service_removed("late".into());
+    eventually("卸载后移除", || !names(&hub).contains(&"late.echo".to_owned()));
+
+    hub.shutdown();
+    app.stop();
+}
+
+/// 系统 IPC 交来的 fd 上的 MCP（TASKS 4g d）：每行一条 JSON-RPC；对端关闭后 `serve_mcp_fd` 返回。
+#[cfg(unix)]
+#[test]
+fn mcp_over_fd() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::fd::IntoRawFd;
+    let hub = start_hub(None);
+    let _app = start_app(&hub);
+    eventually("App 已连接", || hub.apps().iter().any(|a| a.app_id == "notes" && a.connected));
+
+    let (agent, hub_end) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+    let server = {
+        let hub = hub.clone();
+        std::thread::spawn(move || wait(hub.serve_mcp_fd(hub_end.into_raw_fd())))
+    };
+    if !hub::features::MCP_SERVER {
+        let r = server.join().expect("线程");
+        assert!(matches!(r, Err(HubError::Unsupported { ref detail }) if detail.contains("`mcp-server`")), "{r:?}");
+        hub.shutdown();
+        return;
+    }
+    agent.set_read_timeout(Some(Duration::from_secs(10))).expect("timeout");
+    let mut reader = BufReader::new(agent.try_clone().expect("clone"));
+    let mut writer = agent;
+    let mut rpc = |msg: Value| -> Option<Value> {
+        writeln!(writer, "{msg}").expect("写");
+        msg.get("id")?;
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("读");
+        Some(serde_json::from_str(&line).expect("json"))
+    };
+    let init = rpc(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "agent-test", "version": "0"}}}))
+    .expect("initialize 回复");
+    assert!(init["result"]["serverInfo"].is_object(), "{init}");
+    rpc(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    let list = rpc(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).expect("tools/list 回复");
+    let tools = list["result"]["tools"].as_array().cloned().unwrap_or_default();
+    assert!(tools.iter().any(|t| t["name"].as_str().is_some_and(|n| n.contains("notes.add"))), "{list}");
+    let called = rpc(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "notes.notes.add", "arguments": {"text": "经 fd"}}}))
+    .expect("tools/call 回复");
+    assert_eq!(called["result"]["isError"], false, "{called}");
+    drop(writer);
+    drop(reader);
+    server.join().expect("线程").expect("对端关闭后正常返回");
+    hub.shutdown();
+}

@@ -304,6 +304,20 @@ pub enum NativeError {
     Internal(String),
 }
 
+/// App 拒绝一条由 Hub 拨入的通道的原因（[`NativeClient::accept_channel`]、D-Bus `Open()`，spec/naming.md 4.1、4.2、9.1）。
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ChannelRefusal {
+    /// 已有连接或通道（含建立中；同时只接受一条，spec/naming.md U-16），Hub 记 `CHANNEL_LIMIT`。
+    #[error("App 已有连接，同时只接受一条通道")]
+    Busy,
+    /// 客户端尚未 `start`、已停止或已被丢弃。
+    #[error("App 的 SDK 尚未启动或已停止")]
+    Stopped,
+    /// 交来的 fd 不是可用的流式套接字。
+    #[error("通道不可用：{0}")]
+    Invalid(String),
+}
+
 // ---------------------------------------------------------------------------
 // 句柄
 // ---------------------------------------------------------------------------
@@ -946,6 +960,21 @@ impl NativeClient {
         shared.wake();
         HoldHandle::new(shared.clone(), id)
     }
+    /// 接受 Hub 交来的一条已建立的通道（socketpair 的一端，spec/naming.md 第 3 节"被连接方"）：平台名字服务不在本库内
+    /// 时由封装层调用——Android `ToolsService` 的 `open()` 创建 socketpair，一端交到这里、另一端经 Binder 返回给 Hub
+    /// （4.2）。之后与 D-Bus `Open()` 拨入的通道相同：SDK 在其上作为 WebSocket 客户端先发 `app/hello`
+    /// （`wakeReason: "os-activation"`），不发心跳、不做 App 端空闲计时；对端关闭（Hub 宽限到期 / 解绑 / 进程死亡）后
+    /// 非 `persistent` 转休眠、不重连。
+    ///
+    /// @error 已有连接或通道 → [`ChannelRefusal::Busy`]；尚未 `start` / 已停止 → [`ChannelRefusal::Stopped`]；
+    /// 不是流式 Unix 套接字 → [`ChannelRefusal::Invalid`]。被拒绝的通道随之关闭。
+    #[cfg(unix)]
+    pub fn accept_channel(&self, channel: std::os::unix::net::UnixStream) -> Result<(), ChannelRefusal> {
+        // @why 不是套接字的 fd（如管道、普通文件）在 getsockname 处失败（ENOTSOCK），不进入核心。
+        channel.local_addr().map_err(|e| ChannelRefusal::Invalid(e.to_string()))?;
+        names::ChannelSink::offer(&names::ChannelInbox(Arc::downgrade(&self.owner.shared)), channel)
+    }
+
     /// 当前工具与资源定义的摘要（spec/lifecycle.md 第 6 节）。
     pub fn tools_hash(&self) -> String {
         self.owner.shared.lock().client.tools_hash()

@@ -513,6 +513,16 @@ class AppMcp private constructor(
         return outcome ?: WakeOutcome.TIMED_OUT
     }
 
+    /**
+     * 接受 Hub 交来的通道（socketpair 的一端，spec/naming.md 4.2）：Android `ToolsService` 在 Binder 事务内创建一对，
+     * 一端以 fd 交到这里，另一端返回给 Hub。之后 SDK 在其上先发 `app/hello`（`wakeReason: os-activation`）；Hub 关闭
+     * （宽限到期 / 解绑 / 进程死亡）后转休眠、不重连。
+     *
+     * @input [fd] 的所有权随调用转移给 SDK（无论是否接受）。
+     * @output 客户端已关闭时为 null，此时 fd **未被接管**，由调用方关闭。
+     */
+    fun acceptChannelFd(fd: Int): ChannelOffer? = if (closed.get()) null else inner.acceptChannelFd(fd)
+
     /** 停止并释放原生对象与协程作用域。幂等。 */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return

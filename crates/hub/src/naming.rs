@@ -63,6 +63,7 @@ impl HubShared {
                 running: false,
                 first_seen: now,
                 last_seen: now,
+                install_manifest: false,
             });
             e.activatable |= n.activatable;
             e.running |= n.running;
@@ -76,11 +77,35 @@ impl HubShared {
                 entry.detail = default_detail(kind, &app_id);
             }
             tracing::info!(app_id, connector = kind, activatable = entry.activatable, running = entry.running, "名字服务发现 App");
-            changed |= self.registry().set_named(&app_id, Some(entry));
+            changed |= self.record_named(index, &app_id, entry);
         }
         if changed {
             self.mark_tools_changed();
         }
+    }
+
+    /// 记下发现记录；连接器带有安装元数据中的清单时一并登记（未运行的 App 也按清单列出工具，spec/naming.md 5.6）。
+    fn record_named(&self, index: usize, app_id: &str, mut entry: NamedEntry) -> bool {
+        let manifest = self.config.connectors.get(index).and_then(|c| c.manifest(app_id));
+        entry.install_manifest = manifest.is_some();
+        let mut registry = self.registry();
+        let mut changed = registry.set_named(app_id, Some(entry));
+        if let Some(m) = manifest {
+            registry.set_manifest(m);
+            changed = true;
+        }
+        changed
+    }
+
+    /// 卸载事件：移除发现记录，以及来自安装元数据的清单（spec/naming.md 5.4）。
+    fn forget_named(&self, app_id: &str) -> bool {
+        let mut registry = self.registry();
+        let install_manifest = registry.named(app_id).is_some_and(|n| n.install_manifest);
+        let mut changed = registry.set_named(app_id, None);
+        if install_manifest {
+            changed |= registry.clear_manifest(app_id);
+        }
+        changed
     }
 
     fn apply_name_event(&self, index: usize, kind: &str, event: NameEvent) {
@@ -89,6 +114,14 @@ impl HubShared {
             // 实例名字消失不代表 App 不再运行（默认名字可能仍在）：只跟踪默认名字的消失。
             NameEvent::Vanished(a) if a.instance.is_some() => return,
             NameEvent::Vanished(a) => (a, false),
+            NameEvent::Installed(name) => return self.apply_installed(index, kind, name),
+            NameEvent::Removed(a) => {
+                tracing::info!(app_id = a.app_id, connector = kind, "名字服务：App 已卸载");
+                if self.forget_named(&a.app_id) {
+                    self.mark_tools_changed();
+                }
+                return;
+            }
         };
         let app_id = address.app_id.clone();
         let make = || {
@@ -101,11 +134,35 @@ impl HubShared {
                 running: true,
                 first_seen: now,
                 last_seen: now,
+                install_manifest: false,
             }
         };
         let changed = self.registry().set_named_running(&app_id, running, make);
         tracing::debug!(app_id, running, "名字服务事件");
         if changed {
+            self.mark_tools_changed();
+        }
+    }
+
+    /// 安装 / 更新事件：与启动扫描同样登记（首次见到时间沿用旧记录）。
+    fn apply_installed(&self, index: usize, kind: &str, name: DiscoveredName) {
+        if name.address.instance.is_some() {
+            return;
+        }
+        let now = SystemTime::now();
+        let app_id = name.address.app_id.clone();
+        let entry = NamedEntry {
+            source: kind.to_owned(),
+            connector: index,
+            detail: if name.detail.is_empty() { default_detail(kind, &app_id) } else { name.detail },
+            activatable: name.activatable,
+            running: name.running,
+            first_seen: now,
+            last_seen: now,
+            install_manifest: false,
+        };
+        tracing::info!(app_id, connector = kind, "名字服务：App 已安装 / 更新");
+        if self.record_named(index, &app_id, entry) {
             self.mark_tools_changed();
         }
     }

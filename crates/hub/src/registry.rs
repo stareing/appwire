@@ -210,6 +210,8 @@ pub struct NamedEntry {
     pub running: bool,
     pub first_seen: SystemTime,
     pub last_seen: SystemTime,
+    /// 该 App 的静态清单来自连接器的安装元数据（[`crate::connector::Connector::manifest`]）：卸载事件时随记录一起移除。
+    pub install_manifest: bool,
 }
 
 impl AppEntry {
@@ -355,6 +357,16 @@ impl Registry {
     pub fn set_static_manifest(&mut self, manifest: StaticManifest) -> bool {
         let entry = self.apps.entry(manifest.meta().app_id.clone()).or_default();
         entry.manifest.replace(manifest).is_some()
+    }
+
+    /// 移除静态清单（卸载事件，spec/naming.md 5.4）。返回是否有清单被移除。
+    pub fn clear_manifest(&mut self, app_id: &str) -> bool {
+        let Some(entry) = self.apps.get_mut(app_id) else { return false };
+        let removed = entry.manifest.take().is_some();
+        if entry.is_empty() {
+            self.apps.remove(app_id);
+        }
+        removed
     }
 
     pub fn manifest(&self, app_id: &str) -> Option<&StaticManifest> {

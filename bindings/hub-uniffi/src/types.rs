@@ -490,6 +490,11 @@ pub struct HubConfig {
     /// `Auto` 的阈值：App 与上游工具总数超过此值时渐进暴露（默认 40）。
     #[uniffi(default = None)]
     pub tool_exposure_threshold: Option<u32>,
+    // ---- 按名寻址（spec/hub-api.md 3.16）----
+    /// 按名拨入的通道在最后一次调用后保持的时间（spec/naming.md 7.2 `graceMs`，默认 15 s）。只对
+    /// `AppMcpHub::start_with_name_service` 的名字服务生效。
+    #[uniffi(default = None)]
+    pub channel_grace_ms: Option<u64>,
 }
 
 impl Default for HubConfig {
@@ -532,6 +537,7 @@ impl Default for HubConfig {
             policy: None,
             tool_exposure: None,
             tool_exposure_threshold: None,
+            channel_grace_ms: None,
         }
     }
 }
@@ -891,6 +897,7 @@ impl HubConfig {
         if let Some(v) = self.tool_exposure_threshold {
             c.tool_exposure_threshold = v as usize;
         }
+        set(&mut c.channel_grace, self.channel_grace_ms);
         Ok(c)
     }
 }
@@ -2250,6 +2257,9 @@ mod tests {
         assert_eq!(d.waker, hub::WakerConfig::System);
         assert_eq!(d.tool_exposure, hub::ToolExposure::Auto);
         assert_eq!(d.tool_exposure_threshold, hub::DEFAULT_TOOL_EXPOSURE_THRESHOLD);
+        assert_eq!(d.channel_grace, hub::DEFAULT_CHANNEL_GRACE);
+        let g = HubConfig { channel_grace_ms: Some(250), ..Default::default() }.into_hub().unwrap();
+        assert_eq!(g.channel_grace, Duration::from_millis(250));
         let c = HubConfig {
             waker: Some(WakerConfig::Disabled),
             tool_exposure: Some(ToolExposure::Progressive),

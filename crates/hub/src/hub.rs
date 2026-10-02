@@ -1985,6 +1985,20 @@ impl Hub {
         Ok(())
     }
 
+    /// 在一条双向字节流上提供 MCP（帧与 [`Hub::serve_stdio`] 相同：每行一条 JSON-RPC 消息），直到对端关闭。
+    /// 用于系统 IPC 交来的通道（Android 独立 Hub App：Agent 经 `bindService` 换得的 socketpair fd，TASKS 4g d）。
+    /// 每次调用是一个独立的 MCP 会话。feature `mcp-server`。
+    #[cfg(feature = "mcp-server")]
+    pub async fn serve_mcp_stream<S>(&self, stream: S) -> anyhow::Result<()>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+    {
+        use rmcp::ServiceExt;
+        let service = self.mcp_session().serve(stream).await?;
+        service.waiting().await?;
+        Ok(())
+    }
+
     /// 另开一个 HTTP 监听器（路径与主服务相同：`/app`、`/mcp`、`/healthz`，且总是提供 `/mcp`），返回实际监听地址。
     ///
     /// 非回环地址需要 `allow_remote`；否则返回错误。等价于

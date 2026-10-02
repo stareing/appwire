@@ -167,6 +167,21 @@ pub mod codes {
     pub const PEER_IDENTITY_MISMATCH: &str = "PEER_IDENTITY_MISMATCH";
     pub const PEER_DIED: &str = "PEER_DIED";
     pub const CHANNEL_LIMIT: &str = "CHANNEL_LIMIT";
+    /// App 拒绝了拨号的 Hub（spec/naming.md 10.2，Android `open()` 内的调用方校验）。
+    pub const HUB_NOT_TRUSTED: &str = "HUB_NOT_TRUSTED";
+
+    /// 以上全部错误码（宿主语言回传错误码字符串时据此还原为本模块的常量）。
+    pub const ALL: &[&str] = &[
+        INVALID_ADDRESS,
+        NAME_NOT_FOUND,
+        ACTIVATION_DENIED,
+        ACTIVATION_TIMEOUT,
+        BIND_PERMISSION_DENIED,
+        PEER_IDENTITY_MISMATCH,
+        PEER_DIED,
+        CHANNEL_LIMIT,
+        HUB_NOT_TRUSTED,
+    ];
 }
 
 #[cfg(test)]

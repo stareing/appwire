@@ -630,7 +630,9 @@ uniffi 的 `HubStatus` 把 `identity` 展开为 `service` / `version` / `user` /
 HTTP 服务（`/app`、`/healthz`、`/status`）与本地 IPC 始终编译：移动端 App 也经 `ws://127.0.0.1:7717/app` 连接 Hub。
 rmcp 的 `server` / `client` 始终开启（模型类型与 `Peer`）。
 
-`bindings/hub-uniffi` 的组合：默认 `["cli", "desktop"]`（`desktop` = 全部能力，jar / wheel / Swift 包用）；`mobile` = 不含上述三项。
+`bindings/hub-uniffi` 的组合：默认 `["cli", "desktop"]`（`desktop` = 全部能力，jar / wheel / Swift 包用）；`mobile` = 不含上述三项；
+`mcp-server`（2026-10-02 拆出，`desktop` 包含）= MCP 出口（含 `serve_mcp_fd`），独立 Hub App 用 `--android-features mobile,schema-validation,mcp-server`
+（arm64 mobile-release 9.48 MB，比默认组合 7.71 MB 多约 1.8 MB，gzip 3.47 / 2.91 MB）。
 `scripts/generate.sh --android` 用 `--no-default-features --features mobile,schema-validation`（保留 Hub 侧参数校验），
 `--android-features <list>` 可改（体积优先用 `mobile`，去掉校验）。各组合导出的 uniffi 接口相同。arm64（mobile-release）：完整 8.98 MB（gzip 3.26）、
 `mobile,schema-validation` 6.66 MB（2.52）、`mobile` 3.92 MB（1.56）。
@@ -882,7 +884,8 @@ hub-uniffi `HubConfig.navigate_timeout_ms`、C# `HubOptions.NavigateTimeout`。
 
 ### 3.16 按名寻址：名字服务连接器（第 4d 项，spec/naming.md）
 
-行为契约以 spec/naming.md 为准，本节只定义 Hub API。实现状态（2026-10-02）：Linux D-Bus 全链路；其他平台的连接器待 4d D / E / F。
+行为契约以 spec/naming.md 为准，本节只定义 Hub API。实现状态（2026-10-02）：Linux D-Bus 全链路；Android（宿主实现的连接器，未经真机验证）；
+Windows / macOS 待 4d E / F。
 
 ```rust
 pub struct HubConfig {
@@ -899,13 +902,67 @@ pub trait Connector: Send + Sync + Debug + 'static {
     async fn discover(&self) -> Result<Vec<DiscoveredName>, ConnectorError>; // 一次性枚举，只读、不激活
     async fn watch(&self) -> Result<BoxStream<'static, NameEvent>, ConnectorError>; // 名字出现 / 消失
     async fn dial(&self, address: &Address, timeout: Duration) -> Result<DialedChannel, ConnectorError>;
+    fn manifest(&self, app_id: &str) -> Option<Manifest> { None }          // 安装元数据中的静态清单（2026-10-02 新增，默认无）
 }
 pub struct DiscoveredName { pub address: Address, pub activatable: bool, pub running: bool, pub detail: String }
-pub enum NameEvent { Appeared(Address), Vanished(Address) }
+pub enum NameEvent {
+    Appeared(Address), Vanished(Address),        // 名字出现 / 消失（运行状态）
+    Installed(DiscoveredName), Removed(Address), // 安装 / 更新、卸载（包变更，2026-10-02 新增）
+}
 pub struct DialedChannel { pub stream: Box<dyn ChannelIo>, pub pid: Option<u32> }
 pub struct ConnectorError { pub code: &'static str, pub message: String }   // code ∈ spec/naming.md 第 12 节
 ```
 
+- **宿主实现的连接器**（Unix，2026-10-02，Android 段）：发现与拨号由宿主语言完成（Android：`PackageManager` + `bindService`），
+  Rust 一侧只做适配。
+
+  ```rust
+  pub trait HostNameService: Send + Sync + 'static {                       // 方法在 Hub 的阻塞线程上调用，可阻塞
+      fn discover(&self) -> Result<Vec<HostedName>, ConnectorError>;       // 一次性枚举，只读安装元数据，不启动进程
+      fn dial(&self, address: &Address, timeout: Duration) -> Result<HostedChannel, ConnectorError>;
+      fn release(&self, lease: u64);                                       // 每个成功拨号的租约恰好一次（Android：unbindService）
+  }
+  pub struct HostedName { pub name: DiscoveredName, pub manifest: Option<Manifest> }  // 清单 appId 与名字不符时忽略清单
+  pub struct HostedChannel { pub fd: OwnedFd, pub lease: u64, pub peer_uid: Option<u32> }
+  impl HostedConnector {
+      pub fn new(kind: &'static str, service: Arc<dyn HostNameService>) -> Self;
+      pub fn installed(&self, app: HostedName);                            // 宿主推送：安装 / 更新 → NameEvent::Installed
+      pub fn removed(&self, app_id: &str);                                 // 宿主推送：卸载 → NameEvent::Removed
+  }
+  pub fn naming_code(code: &str) -> &'static str;                          // 宿主回传的码 → codes 常量，未知为 ACTIVATION_DENIED
+  ```
+
+  拨号得到的 fd 包成通道：`peer_uid` 给出时按对端凭据（`SO_PEERCRED`）核对，不符 → `PEER_IDENTITY_MISMATCH`；通道被丢弃（宽限到期关闭、
+  对端 EOF、核对失败）时调用一次 `release`。宿主超过 `timeout` + 2 s 未返回 → `ACTIVATION_TIMEOUT`；超时或 Hub 放弃这次拨号后宿主才交回的
+  通道由回调线程立即释放（不留绑定）。安装事件按启动扫描同样登记发现记录与清单（未运行的 App 按清单列出工具，不拨号）；卸载事件移除发现记录
+  与来自连接器的清单。
+- **hub-uniffi**（Kotlin / Swift / Python）：外部实现的回调接口与 Hub 构造：
+
+  ```rust
+  #[uniffi::export(foreign)]
+  pub trait HubNameService: Send + Sync {
+      fn discover(&self) -> Vec<NamedApp>;
+      fn dial(&self, app_id: String, timeout_ms: u64) -> DialOutcome;
+      fn release(&self, lease: u64);
+  }
+  pub struct NamedApp { app_id, activatable /* 默认 true */, running /* false */, detail /* "" */, manifest_json: Option<String> }
+  pub enum DialOutcome { Channel { fd: i32, lease: u64, peer_uid: Option<u32> }, Failed { code: String, message: String } }
+  impl AppMcpHub {
+      #[uniffi::constructor] pub fn start_with_name_service(config: HubConfig, kind: String, service: Arc<dyn HubNameService>)
+          -> Result<Arc<Self>, HubError>;                                  // kind "android"（其他记为 "host"）；非 Unix → Unsupported
+      pub fn name_service_installed(&self, app: NamedApp);
+      pub fn name_service_removed(&self, app_id: String);
+      pub async fn serve_mcp_fd(&self, fd: i32) -> Result<(), HubError>;  // fd 上的 MCP，见下
+  }
+  // HubConfig 新增 channel_grace_ms: Option<u64>（默认 15 s）
+  ```
+
+  `DialOutcome::Channel.fd` 的所有权交给 Hub（Kotlin `ParcelFileDescriptor.detachFd()`）；`Failed.code` 为 spec/naming.md 第 12 节的码。
+  回调抛出的异常按失败处理（发现为空、拨号 `ACTIVATION_DENIED`）。Kotlin 封装：`Hub.startWithNameService`、`Hub.nameServiceInstalled` /
+  `nameServiceRemoved`、`Hub.serveMcpFd`；Android 实现 `dev.appmcp.hub.android.AndroidNameService`（spec/naming.md 4.2）。
+- **fd 上的 MCP**（TASKS 4g d 独立 Hub App）：`Hub::serve_mcp_stream<S: AsyncRead + AsyncWrite>(stream)`（feature `mcp-server`）在任意双向字节流上
+  提供 MCP，帧与 `serve_stdio` 相同（每行一条 JSON-RPC），每次调用是一个独立会话，对端关闭后返回。hub-uniffi `serve_mcp_fd(fd)` 接管一个 Unix
+  套接字 fd 调用它；本构建不含 `mcp-server`（Android 默认精简库）时为 `Unsupported`。
 - **平台实现**：`connector::DbusConnector::new(address: Option<String>)`（Linux，cargo feature `dbus`，默认开启；`None` = 当前用户的
   会话总线）。另有 `DbusConnector::reload_config()`（写 / 删激活文件后调用，spec/naming.md 4.1）。`Address` 为
   `app_mcp_protocol::naming::Address`。
@@ -925,7 +982,7 @@ pub struct ConnectorError { pub code: &'static str, pub message: String }   // c
   只有发现记录、没有清单与快照的 App 也会列出（`connected: false`），可用 `apps.activate` 拨号后获得工具。发现记录变化时发
   `tools/list_changed`。`AppInfo`（Hub API）暂无对应字段。
 - **未做**（spec/naming.md 第 14 节）：App 登记文件（5.3）的读取与目录监视、签名指纹 / 名字所有者与登记程序的核对（10.3，当前只核对
-  通道对端 uid）、`maxBoundApps` LRU（7.3）、内存压力关闭（7.4）、`app/hold`（7.2）、各语言 Hub 绑定的配置项。
+  通道对端 uid）、`maxBoundApps` LRU（7.3）、内存压力关闭（7.4）、`app/hold`（7.2）、hub-c / hub-node 的连接器回调与 `channel_grace`。
 
 `app-mcp-host`：`serve --name-service`（配置 `lifecycle.nameService: true`）在 Linux 上加入 `DbusConnector::new(None)`，
 `--channel-grace-ms` / `lifecycle.channelGraceMs` 设置宽限；默认关闭。`app-mcp-host app install --app-id <id> --exec <程序>

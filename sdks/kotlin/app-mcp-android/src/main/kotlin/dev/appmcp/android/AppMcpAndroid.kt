@@ -3,6 +3,7 @@ package dev.appmcp.android
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.Lifecycle
@@ -97,6 +98,7 @@ class AppMcpWakeTarget(val client: AppMcp) : WakeTarget {
  * - 注册为进程级 [wakeTarget]，供 [WakeReceiver] / [WakeWorker] 使用。
  *
  * 不申请前台服务或 WakeLock：休眠后进程交给系统回收；Host 需要时通过显式广播唤醒（见 [WakeReceiver]）。
+ * 设备上的 Hub 按名寻址时改为 `bindService` 本 App 的 [ToolsService]（连接即激活，spec/naming.md 4.2），广播唤醒保留作后备。
  */
 object AppMcpAndroid {
     /** 唤醒广播的 action。 */
@@ -126,6 +128,48 @@ object AppMcpAndroid {
     @JvmStatic
     @Volatile
     var wakeTarget: WakeTarget? = null
+
+    // ---- 按名寻址（spec/naming.md 4.2）----
+
+    /** [ToolsService] 的 Intent 动作：Hub 以它发现与绑定本 App。 */
+    const val ACTION_TOOLS = "dev.appmcp.TOOLS"
+
+    /** [ToolsService] 上指向静态清单资源的 meta-data 名（`android:resource="@raw/…"`）。 */
+    const val META_MANIFEST = "dev.appmcp.manifest"
+
+    /** [ToolsService] 上的可信 Hub 证书摘要列表 meta-data 名（`android:value="sha256:…,sha256:…"`，构建期写入）。 */
+    const val META_TRUSTED_HUBS = "dev.appmcp.trustedHubs"
+
+    /**
+     * 代码配置的可信 Hub 签名证书摘要（`sha256:<十六进制>`，大小写与 `:` 不限），与清单 meta-data、用户确认的合并
+     * （[HubTrust]）。与本 App 同证书的 Hub 总是可信，不需要列出。
+     */
+    @JvmStatic
+    @Volatile
+    var trustedHubCertificates: Set<String> = emptySet()
+
+    /** 进程级通道接收方（[ToolsService]）；[AppMcpAndroid.create] 自动设置。测试或自定义宿主可替换。 */
+    @JvmStatic
+    @Volatile
+    var channelTarget: ChannelTarget? = null
+
+    /** [ToolsService] 创建 socketpair 的方式（测试可替换）。 */
+    @JvmStatic
+    @Volatile
+    var socketPairFactory: SocketPairFactory = SocketPairFactory {
+        val pair = ParcelFileDescriptor.createSocketPair()
+        pair[0] to pair[1]
+    }
+
+    /** 用户在 App 内确认信任某个 Hub（签名证书摘要，spec/naming.md 10.2 ②）。摘要格式不合法时返回 false。 */
+    @JvmStatic
+    fun confirmHub(context: Context, certificateDigest: String): Boolean =
+        HubTrust.setConfirmed(context.applicationContext, certificateDigest, true)
+
+    /** 撤销 [confirmHub]。 */
+    @JvmStatic
+    fun revokeHub(context: Context, certificateDigest: String): Boolean =
+        HubTrust.setConfirmed(context.applicationContext, certificateDigest, false)
 
     /** 最近一次 [create] 创建的客户端（已关闭时为 null）。 */
     @JvmStatic
@@ -171,6 +215,7 @@ object AppMcpAndroid {
             ),
         )
         wakeTarget = AppMcpWakeTarget(client)
+        channelTarget = AppMcpChannelTarget(client)
         if (trackVisibility) {
             initialVisibility()?.let { client.setVisibility(it, false) }
             val observer = object : DefaultLifecycleObserver {
@@ -220,6 +265,14 @@ object AppMcpAndroid {
 
     /** 缺省日志（[logcat]）使用的 Logcat 标签。 */
     const val LOG_TAG = "AppMcp"
+
+    /** 取得通道接收方：已注册的 [channelTarget]，否则由 `Application`（[AppMcpProvider]）创建。 */
+    internal fun resolveChannelTarget(context: Context): ChannelTarget? {
+        channelTarget?.let { t -> if (t !is AppMcpChannelTarget || !t.client.isClosed) return t }
+        val provider = context.applicationContext as? AppMcpProvider ?: return null
+        val c = runCatching { provider.appMcp() }.getOrNull()?.takeUnless { it.isClosed } ?: return null
+        return (channelTarget as? AppMcpChannelTarget)?.takeIf { it.client === c } ?: AppMcpChannelTarget(c).also { channelTarget = it }
+    }
 
     /** 取得唤醒接收方：已注册的 [wakeTarget]，否则由 `Application`（[AppMcpProvider]）创建。 */
     internal fun resolveTarget(context: Context): WakeTarget? {

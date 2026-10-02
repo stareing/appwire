@@ -1,0 +1,35 @@
+{
+  "manifestVersion": 1,
+  "appId": "sample-android",
+  "name": "app-mcp Android 示例",
+  "version": "0.1.0",
+  "description": "Android 示例：回显文本、计数器（按名寻址：设备上的 Hub 绑定 dev.appmcp.TOOLS 即激活）",
+  "tools": [
+    {
+      "name": "demo.echo",
+      "description": "原样返回 text，并附带执行线程名",
+      "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] },
+      "annotations": { "readOnlyHint": true }
+    },
+    {
+      "name": "demo.counter.increment",
+      "description": "计数器加 by（默认 1，须为正），返回新值",
+      "inputSchema": { "type": "object", "properties": { "by": { "type": "integer" } } }
+    },
+    {
+      "name": "demo.counter.reset",
+      "description": "计数器清零（无返回值）",
+      "inputSchema": { "type": "object" },
+      "annotations": { "destructiveHint": true, "idempotentHint": true }
+    },
+    {
+      "name": "demo.long_task",
+      "description": "模拟耗时任务：每秒一步（steps 默认 5），报告进度，可取消",
+      "inputSchema": { "type": "object", "properties": { "steps": { "type": "integer" } } },
+      "annotations": { "readOnlyHint": true }
+    }
+  ],
+  "resources": [
+    { "name": "demo.counter", "description": "当前计数" }
+  ]
+}

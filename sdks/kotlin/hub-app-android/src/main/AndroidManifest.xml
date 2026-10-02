@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:label="AppWire Hub"
+        android:allowBackup="false">
+        <!--
+          Agent 绑定入口（TASKS 4g d）：bindService(Intent("dev.appmcp.HUB")) → open() 换得 socketpair 的一端，
+          之后 MCP（每行一条 JSON-RPC）走 fd。exported=true：Agent 是其他 App；调用方身份在 open() 内按
+          Binder.getCallingUid() 记录（用户授权的 Agent 名单待第 16 项 P1 / P2）。只有绑定、没有 startService：
+          最后一个 Agent 解绑后 Service 销毁、Hub 关闭，进程由系统回收。
+        -->
+        <service
+            android:name=".HubService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="dev.appmcp.HUB" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

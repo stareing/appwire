@@ -7,7 +7,8 @@
 //! - 记录（`uniffi::Record`）：[`ClientConfig`]、[`AppOverview`]、[`ToolSpec`]、[`ToolAnnotations`]、[`ResourceSpec`]、
 //!   [`CallResult`]、[`ContentAnnotations`]、[`StateInfo`]、[`LifecyclePolicy`]、[`WakeDescriptor`]、[`CallDedupPolicy`]。
 //! - 枚举（`uniffi::Enum`）：[`Risk`]、[`ResultStatus`]、[`Audience`]、[`Activation`]、[`Visibility`]、[`ClientKind`]、[`CancelReason`]、
-//!   [`StateStatus`]、[`LogLevel`]、[`LifecycleMode`]、[`Residency`]、[`WakeKind`]、[`WakeReason`]、[`SleepReason`]。
+//!   [`StateStatus`]、[`LogLevel`]、[`LifecycleMode`]、[`Residency`]、[`WakeKind`]、[`WakeReason`]、[`SleepReason`]、
+//!   [`ChannelOffer`]。
 //! - 函数：[`error_kinds`]、[`parse_wake_token`]。
 //! - 错误（`uniffi::Error`）：[`AppMcpError`]。
 //! - 由外部语言实现的回调接口（`#[uniffi::export(foreign)]`，即旧写法 `with_foreign` 的规范形式）：
@@ -1364,6 +1365,56 @@ impl AppMcpClient {
     pub fn tools_hash(&self) -> String {
         self.inner.tools_hash()
     }
+    /// 接受 Hub 交来的通道（socketpair 的一端，spec/naming.md 4.2）：Android `ToolsService` 的 `open()` 用
+    /// `ParcelFileDescriptor.createSocketPair()` 创建一对，`detachFd()` 一端交到这里，另一端经 Binder 返回给 Hub。
+    ///
+    /// @input `fd` 的所有权随调用转移给本库（无论接受与否；被拒绝时随即关闭）；负数不接管、返回 `Invalid`。
+    /// @output 是否接受；`Busy` 时 Hub 记 `CHANNEL_LIMIT`。非 Unix 平台总是 `Invalid`。
+    pub fn accept_channel_fd(&self, fd: i32) -> ChannelOffer {
+        accept_fd(&self.inner, fd)
+    }
+}
+
+/// [`AppMcpClient::accept_channel_fd`] 的结果。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ChannelOffer {
+    /// 已接受：SDK 随即在通道上发 `app/hello`。
+    Accepted,
+    /// 已有连接或通道（同时只接受一条），`detail` 为说明。
+    Busy { detail: String },
+    /// SDK 尚未启动或已停止。
+    Stopped { detail: String },
+    /// fd 不是可用的 Unix 流式套接字（或平台不支持）。
+    Invalid { detail: String },
+}
+
+impl From<Result<(), native::ChannelRefusal>> for ChannelOffer {
+    fn from(r: Result<(), native::ChannelRefusal>) -> Self {
+        use native::ChannelRefusal as R;
+        match r {
+            Ok(()) => ChannelOffer::Accepted,
+            Err(e @ R::Busy) => ChannelOffer::Busy { detail: e.to_string() },
+            Err(e @ R::Stopped) => ChannelOffer::Stopped { detail: e.to_string() },
+            Err(e @ R::Invalid(_)) => ChannelOffer::Invalid { detail: e.to_string() },
+        }
+    }
+}
+
+#[cfg(unix)]
+fn accept_fd(client: &native::NativeClient, fd: i32) -> ChannelOffer {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    if fd < 0 {
+        return ChannelOffer::Invalid { detail: format!("fd 无效：{fd}") };
+    }
+    // @security 调用方按契约转移一个打开的 fd 的所有权（Kotlin `ParcelFileDescriptor.detachFd()`），之后不再使用它；
+    // 本库唯一持有并负责关闭（被拒绝时在此处随 `OwnedFd` 丢弃而关闭）。
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    client.accept_channel(std::os::unix::net::UnixStream::from(owned)).into()
+}
+
+#[cfg(not(unix))]
+fn accept_fd(_client: &native::NativeClient, fd: i32) -> ChannelOffer {
+    ChannelOffer::Invalid { detail: format!("本平台不支持以 fd 交来通道（fd {fd}）") }
 }
 
 #[cfg(test)]
@@ -1861,6 +1912,45 @@ mod tests {
                 assert_eq!((errors[0], errors[1]), (&fg, &fg), "{out:?}");
             }
         }
+    }
+
+    /// `accept_channel_fd`：fd 所有权转移、各拒绝原因与接受后 SDK 在通道上先发 `app/hello`（spec/naming.md 4.2）。
+    #[cfg(unix)]
+    #[test]
+    fn accept_channel_fd_offers() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::fd::IntoRawFd;
+        use std::os::unix::net::UnixStream;
+        let mut config = fake_host_config("uniffi-channel", "127.0.0.1:1");
+        config.lifecycle = Some(LifecyclePolicy {
+            mode: Some(LifecycleMode::OnDemand),
+            idle_timeout_ms: 60_000,
+            hidden_idle_timeout_ms: 15_000,
+            grace_ms: 10_000,
+            residency: None,
+            wake: None,
+            host_absent_retries: 3,
+            legacy_timers: false,
+            merge_window_ms: 2_000,
+            sleep_on_background: false,
+        });
+        let client = AppMcpClient::new(config, None).expect("client");
+        assert!(matches!(client.accept_channel_fd(-1), ChannelOffer::Invalid { .. }));
+        let (app_end, _hub_end) = UnixStream::pair().expect("socketpair");
+        assert!(matches!(client.accept_channel_fd(app_end.into_raw_fd()), ChannelOffer::Stopped { .. }), "尚未 start");
+
+        client.start();
+        let (app_end, hub_end) = UnixStream::pair().expect("socketpair");
+        assert_eq!(client.accept_channel_fd(app_end.into_raw_fd()), ChannelOffer::Accepted);
+        // Hub 一端读到 SDK 的 WebSocket 升级请求（SDK 仍是 WebSocket 客户端）。
+        hub_end.set_read_timeout(Some(std::time::Duration::from_secs(5))).expect("timeout");
+        let mut first = String::new();
+        BufReader::new(&hub_end).read_line(&mut first).expect("读升级请求");
+        assert!(first.starts_with("GET /app"), "{first:?}");
+        let (busy_end, _b) = UnixStream::pair().expect("socketpair");
+        assert!(matches!(client.accept_channel_fd(busy_end.into_raw_fd()), ChannelOffer::Busy { .. }));
+        let _ = (&hub_end).write_all(b"");
+        client.stop();
     }
 
     #[test]
