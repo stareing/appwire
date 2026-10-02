@@ -392,6 +392,8 @@ mod tests {
     }
 
     #[test]
+    // @why Windows 上 PreboundListeners 只有 tcp 一个字段，`..Default::default()` 在那里多余；其他平台需要它。
+    #[cfg_attr(windows, allow(clippy::needless_update))]
     fn prebound_is_empty() {
         assert!(PreboundListeners::default().is_empty());
         let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
