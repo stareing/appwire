@@ -124,6 +124,11 @@ final class FakeNative {
 
   /// v13：最近一次 am_client_new_ex 的调用去重 `ttlMs|maxEntries`（C ABI 编码）。
   String? callDedup() => _take(_callDedup());
+  late final _nameService =
+      lib.lookupFunction<Pointer<Utf8> Function(), Pointer<Utf8> Function()>('fake_name_service');
+
+  /// v17：最近一次 am_client_new_ex 的按名寻址 `registerName(0/1)|nameInstance 或 -`。
+  String? nameService() => _take(_nameService());
   late final _toolEnabled = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>(
       'fake_tool_enabled');
   late final _toolDescription = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),

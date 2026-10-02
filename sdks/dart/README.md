@@ -193,6 +193,16 @@ appLinks.uriLinkStream.listen(wake.handleLink);
 或在 `AppDelegate` / `SceneDelegate` 的 `application(_:open:options:)` / `scene(_:openURLContexts:)` 中经同一个
 MethodChannel 调用 `handleWake`。iOS 没有后台唤醒（后台调用走 App Intents）。
 
+## 按名寻址（spec/naming.md）
+
+`AppMcp(..., registerName: true, nameInstance: null)`：`start()` 后在系统名字服务登记（Linux：D-Bus `dev.appmcp.App.<appId>`；
+Windows：命名管道 `\\.\pipe\appmcp-<用户 SID>-<appId>`），App 不主动连接 Hub，由 Hub（`app-mcp-host serve --name-service`）
+按名拨入，未运行时由系统激活（先用 `app-mcp-host app install --app-id <appId> --exec <程序>` 登记）。通常与
+`LifecyclePolicy(mode: LifecycleMode.onDemand, residency: Residency.exitWhenIdle)` 同用：由激活启动（命令行带
+`--app-mcp-activation`）的进程在通道关闭后收到 `onIdleExit`。`nameInstance` 为可选的登记实例名（`[a-z][a-z0-9-]{0,31}`，
+不能是 `default`），不合法时抛出 `AppMcpException`（`AppMcpErrorCode.invalidConfig`）。对应 C ABI `AmClientOptions.register_name` /
+`name_instance`（app_mcp.h v17）。本平台不支持时经 `logs` 报告，其余照常。
+
 ## 线程模型
 
 所有原生回调都用 `NativeCallable.listener` 接收，投递到创建 `AppMcp` 的 isolate（Flutter 中即主 isolate）

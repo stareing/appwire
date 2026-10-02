@@ -16,6 +16,7 @@
  * （annotations_json 为 "{bad" 时返回 AM_ERR_INVALID_JSON）。
  * v13：am_client_new_ex 记录调用去重（fake_call_dedup："<ttl_ms>|<max_entries>"）；am_resource_register_ex 记录
  * 资源内容标注（fake_resource_annotations；annotations_json 为 "{bad" 时返回 AM_ERR_INVALID_JSON）。
+ * v17：am_client_new_ex 记录按名寻址（fake_name_service："<register_name 0/1>|<name_instance 或 ->"）。
  *
  * 编译：cc -shared -fPIC -o libfake_app_mcp.so fake_app_mcp.c -lpthread
  * Windows（MSVC）：cl /c /utf-8 编译后按 dumpbin /symbols 中的外部函数生成 .def 再 link /DLL
@@ -226,6 +227,7 @@ void am_string_free(char *s) {
 
 static char *g_lifecycle = NULL; /* 最近一次配置的生命周期，见 am_client_new_ex */
 static char *g_call_dedup = NULL; /* v13：最近一次配置的调用去重，见 am_client_new_ex */
+static char *g_name_service = NULL; /* v17：最近一次配置的按名寻址，见 am_client_new_ex */
 static AmStatus client_new(const AmClientConfig *config, const AmClientCallbacks *callbacks, AmClient **out) {
     if (!config || !out || !config->app_id || !config->app_name) {
         set_error("缺少必填参数");
@@ -281,7 +283,13 @@ AmStatus am_client_new_ex(const AmClientConfig *config, const AmClientCallbacks 
     g_lifecycle = NULL;
     free(g_call_dedup);
     g_call_dedup = NULL;
+    free(g_name_service);
+    g_name_service = NULL;
     if (options) {
+        char naming[64];
+        snprintf(naming, sizeof naming, "%d|%s", options->register_name ? 1 : 0,
+                 options->name_instance ? options->name_instance : "-");
+        g_name_service = dup_str(naming);
         char dedup[64];
         snprintf(dedup, sizeof dedup, "%lld|%d", (long long)options->call_dedup_ttl_ms,
                  (int)options->call_dedup_max_entries);
@@ -503,6 +511,8 @@ int fake_hold_count(void) {
 char *fake_lifecycle(void) { return dup_str(g_lifecycle); }
 /* v13：最近一次 am_client_new_ex 的调用去重，"<ttl_ms>|<max_entries>"（需 am_string_free）；没有 options 时 NULL。 */
 char *fake_call_dedup(void) { return dup_str(g_call_dedup); }
+/* v17：最近一次 am_client_new_ex 的按名寻址，"<0/1>|<name_instance 或 ->"（需 am_string_free）；没有 options 时 NULL。 */
+char *fake_name_service(void) { return dup_str(g_name_service); }
 /* 最近一次 sleep 的原因（需 am_string_free）。 */
 char *fake_last_sleep(void) {
     lock_global();
@@ -1167,6 +1177,8 @@ size_t fake_sizeof(int which) {
     case 20: return offsetof(AmClientOptions, call_dedup_ttl_ms);
     case 21: return offsetof(AmClientOptions, call_dedup_max_entries);
     case 22: return offsetof(AmResourceOptions, annotations_json);
+    case 23: return offsetof(AmClientOptions, register_name);
+    case 24: return offsetof(AmClientOptions, name_instance);
     default: return 0;
     }
 }

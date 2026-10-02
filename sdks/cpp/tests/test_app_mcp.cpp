@@ -457,6 +457,33 @@ void test_navigation() {
     EXPECT(status_of([&] { empty.fail_user_action("x", "foreground"); }) == AM_ERR_ALREADY_COMPLETED);
 }
 
+void test_name_options() {
+    // 按名寻址（app_mcp.h v17，spec/naming.md）：默认不登记；register_name / name_instance 原样传给 C ABI。
+    app_mcp::ClientConfig config;
+    config.app_id = "cpp-named";
+    config.app_name = "C++ Named";
+    config.host_url = "ws://127.0.0.1:1";
+    AmLifecycle lc{};
+    AmClientOptions opts{};
+    app_mcp::detail::fill_client_options(config, &lc, &opts);
+    EXPECT(!opts.register_name && opts.name_instance == nullptr);
+    config.register_name = true;
+    config.name_instance = std::string("w2");
+    app_mcp::detail::fill_client_options(config, &lc, &opts);
+    EXPECT(opts.register_name && opts.name_instance == config.name_instance->c_str());
+
+    // 实例名的规则只在原生库定义（spec/naming.md 2.1）：不合法时构造抛出 AM_ERR_INVALID_CONFIG。
+    for (const char* bad : {"default", "W2", "2w", ""}) {
+        app_mcp::ClientConfig b = config;
+        b.name_instance = std::string(bad);
+        EXPECT(status_of([&] { app_mcp::Client c(b); }) == AM_ERR_INVALID_CONFIG);
+    }
+    // 合法时创建成功（不调用 start：不在名字服务登记）。
+    config.lifecycle.mode = AM_LIFECYCLE_ON_DEMAND;
+    config.lifecycle.residency = AM_RESIDENCY_EXIT_WHEN_IDLE;
+    EXPECT(status_of([&] { app_mcp::Client c(config); }) == AM_OK);
+}
+
 }  // namespace
 
 int main() {
@@ -465,6 +492,7 @@ int main() {
         test_runtime();
         test_lifecycle();
         test_power_options();
+        test_name_options();
         test_diagnostics();
         test_annotations();
         test_navigation();

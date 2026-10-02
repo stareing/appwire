@@ -555,6 +555,28 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 50));
   }, skip: nativePath == null ? '找不到原生库' : false);
 
+  test('真实原生库：按名寻址选项（v17）——合法实例名被接受，不合法时 invalidConfig', () async {
+    AppMcp create(String? instance) => AppMcp(
+          appId: 'dart-named',
+          appName: 'named',
+          hostUrl: 'ws://127.0.0.1:9',
+          libraryPath: nativePath,
+          lifecycle: const LifecyclePolicy(mode: LifecycleMode.onDemand, residency: Residency.exitWhenIdle),
+          registerName: true,
+          nameInstance: instance,
+        );
+    // 不调用 start：不在系统名字服务登记。
+    create(null).dispose();
+    create('w2').dispose();
+    // 实例名规则只在原生库定义（spec/naming.md 2.1），封装层原样传递。
+    for (final bad in ['default', 'W2', '2w', '']) {
+      expect(() => create(bad),
+          throwsA(isA<AppMcpException>().having((e) => e.code, 'code', AppMcpErrorCode.invalidConfig)),
+          reason: bad);
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }, skip: nativePath == null ? '找不到原生库' : false);
+
   test('导航（v14）：回调在本 isolate 上执行；完成 / 拒绝 / 失败到达 Host；view 工具声明 surface / page', () async {
     final host = await FakeHost.start([
       '--tool-info',

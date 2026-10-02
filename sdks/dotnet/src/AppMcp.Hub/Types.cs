@@ -619,6 +619,8 @@ public sealed class CallOutcome
             Annotations = ann.Deserialize<HubContentAnnotations>(AppMcpHub.WireOptions);
         }
         if (json.TryGetProperty("routedTo", out var rt) && rt.ValueKind == JsonValueKind.String) RoutedTo = rt.GetString();
+        if (json.TryGetProperty("durationMs", out var dur) && dur.ValueKind == JsonValueKind.Number && dur.TryGetInt64(out var ms)) DurationMs = ms;
+        if (json.TryGetProperty("woke", out var woke) && woke.ValueKind is JsonValueKind.True or JsonValueKind.False) Woke = woke.GetBoolean();
     }
 
     public string CallId { get; }
@@ -640,6 +642,11 @@ public sealed class CallOutcome
     public HubContentAnnotations? Annotations { get; }
     /// <summary>App 在后台、Hub 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则为 null。</summary>
     public string? RoutedTo { get; }
+    /// <summary>Hub 收到调用到得出结果的毫秒数（含审批、唤醒与等待 App；spec/hub-api.md 3.15）。旧 Hub 未给出时为 0。</summary>
+    public long DurationMs { get; }
+    /// <summary>本次 App 工具调用是否经历了唤醒（调用时目标未连接，唤醒 / 按名激活回连后才送达；spec/hub-api.md 3.15）。
+    /// 内置工具与上游工具恒为 false；旧 Hub 未给出时为 false。</summary>
+    public bool Woke { get; }
     /// <summary>原始 CallOutcome JSON。</summary>
     public JsonElement Json { get; }
 

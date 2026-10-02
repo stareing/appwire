@@ -267,6 +267,12 @@ final class AmClientOptions extends Struct {
   /// 0 = 默认 64，负数 = 关闭去重。
   @Int32()
   external int call_dedup_max_entries;
+  // v17（按名寻址，spec/naming.md）
+  @Bool()
+  external bool register_name;
+
+  /// 可为 nullptr：登记实例名。
+  external Pointer<Utf8> name_instance;
 }
 
 /// v8：`am_resource_register_ex` 的资源选项。

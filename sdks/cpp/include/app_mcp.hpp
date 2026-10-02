@@ -26,6 +26,9 @@
 // - Call::complete(const CallResult&)：业务状态（done / pending / partial / noop）、state_resource、summary、内容注解。
 // - ResourceOptions::annotations（资源内容的标注，app_mcp.h v13）；ClientConfig::call_dedup（调用去重，v13）。
 //
+// 按名寻址（spec/naming.md，app_mcp.h v17）：ClientConfig::register_name / name_instance。App 在系统名字服务登记，
+// 不主动连接 Hub；由激活启动（命令行带 --app-mcp-activation）时通道关闭后触发 on_idle_exit，示例见 examples/named.cpp。
+//
 // 界面级暴露与导航（spec/protocol.md 3.4，app_mcp.h v14）：
 // - ToolOptions::surface（Surface::App 缺省 / Surface::View 依赖界面）与 ToolOptions::page（所在页面）。
 //   view 工具只在所在界面可见且处于最上层时注册（或 set_enabled(true)）；何时可见由 App / UI 框架决定。
@@ -327,6 +330,14 @@ struct ClientConfig {
     HeartbeatMode heartbeat = AM_HEARTBEAT_AUTO;
     /// 调用去重（默认保留 5 分钟、最多 64 条；任一字段为 0 关闭）。
     CallDedup call_dedup;
+    /// 按名寻址（spec/naming.md，app_mcp.h v17）：start() 后在系统名字服务登记，由 Hub 按名拨入
+    /// （Linux：D-Bus dev.appmcp.App.<app_id>；Windows：命名管道 \\.\pipe\appmcp-<用户 SID>-<app_id>）。
+    /// 需 `app-mcp-host app install --app-id <app_id> --exec <本程序>` 登记；通常与 AM_LIFECYCLE_ON_DEMAND +
+    /// AM_RESIDENCY_EXIT_WHEN_IDLE 同用。本平台不支持时经 on_log 报告，其余照常。
+    bool register_name = false;
+    /// 登记实例名（[a-z][a-z0-9-]{0,31}，不能是 "default"），另登记 dev.appmcp.App.<app_id>.<实例>；
+    /// 不合法时 Client 构造抛出 Error（AM_ERR_INVALID_CONFIG）。
+    std::optional<std::string> name_instance;
 };
 
 struct ClientCallbacks {
@@ -390,7 +401,7 @@ inline int32_t encode_dedup_max_entries(uint32_t n) noexcept {
 }
 
 /// ClientConfig → AmLifecycle + AmClientOptions（不含回调）。
-/// @invariant opts->lifecycle 指向 *lc，lc.wake_target 借用 config 的字符串；二者都不能比 config 活得久。
+/// @invariant opts->lifecycle 指向 *lc，lc.wake_target 与 opts->name_instance 借用 config 的字符串；二者都不能比 config 活得久。
 inline void fill_client_options(const ClientConfig& config, AmLifecycle* lc, AmClientOptions* opts) {
     am_lifecycle_init(lc);
     lc->mode = config.lifecycle.mode;
@@ -414,6 +425,8 @@ inline void fill_client_options(const ClientConfig& config, AmLifecycle* lc, AmC
     opts->sleep_on_background = config.lifecycle.sleep_on_background;
     opts->call_dedup_ttl_ms = encode_dedup_ttl_ms(config.call_dedup.ttl_ms);
     opts->call_dedup_max_entries = encode_dedup_max_entries(config.call_dedup.max_entries);
+    opts->register_name = config.register_name;
+    opts->name_instance = c_str_or_null(config.name_instance);
 }
 
 /// 逐个追加 JSON 对象成员（跳过未设置的可选值）。

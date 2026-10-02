@@ -70,6 +70,11 @@ add_executable(lifecycle_cpp examples/lifecycle.cpp)
 target_link_libraries(lifecycle_cpp PRIVATE app_mcp_cpp)
 target_compile_options(lifecycle_cpp PRIVATE ${_warn})
 
+# 按名寻址示例（app_mcp.h v17，spec/naming.md）
+add_executable(named_cpp examples/named.cpp)
+target_link_libraries(named_cpp PRIVATE app_mcp_cpp)
+target_compile_options(named_cpp PRIVATE ${_warn})
+
 add_executable(test_app_mcp tests/test_app_mcp.cpp)
 target_link_libraries(test_app_mcp PRIVATE app_mcp_cpp)
 target_compile_options(test_app_mcp PRIVATE ${_warn})
@@ -131,6 +136,12 @@ if(BASH_PROGRAM)
   add_test(NAME result_cpp
     COMMAND ${BASH_PROGRAM} "${CMAKE_CURRENT_SOURCE_DIR}/tests/with_fake_host.sh" "$<TARGET_FILE:result_cpp_test>")
   set_tests_properties(result_cpp PROPERTIES LABELS "integration;result" TIMEOUT 120)
+
+  # 按名寻址 Linux 全链路：私有 D-Bus 会话总线 + app-mcp-host（app install、stdio --name-service）+ named_cpp 冷激活。
+  # 非 Linux 或没有 dbus-daemon 时跳过（退出码 77）。
+  add_test(NAME naming_e2e
+    COMMAND ${BASH_PROGRAM} "${CMAKE_CURRENT_SOURCE_DIR}/tests/naming_e2e.sh" "$<TARGET_FILE:named_cpp>")
+  set_tests_properties(naming_e2e PROPERTIES LABELS "integration;naming" TIMEOUT 180 SKIP_RETURN_CODE 77)
 endif()
 
 # 一致性用例 runner（conformance/README.md）：同一程序以 cpp（C++ 封装）与 c（直接调 C ABI）两种方式跑全部用例，

@@ -1,25 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <OutputType>Exe</OutputType>
     <TargetFramework>net9.0</TargetFramework>
-    <IsPackable>false</IsPackable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>AppMcp.Samples.Named</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
-    <PackageReference Include="xunit" Version="2.9.2" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Using Include="Xunit" />
     <ProjectReference Include="../../src/AppMcp/AppMcp.csproj" />
-    <!-- 按名寻址 e2e（NamingE2eTests）由 Hub 激活的 App：只需先构建，不引用其程序集。 -->
-    <ProjectReference Include="../../samples/Named/AppMcp.Samples.Named.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
-  <!-- 原生库复制到输出目录（由 Rust 构建：cargo build -p app-mcp-c） -->
   <ItemGroup>
     <None Include="$(AppMcpNativeDir)/libapp_mcp.so" Condition="Exists('$(AppMcpNativeDir)/libapp_mcp.so')" Link="libapp_mcp.so" CopyToOutputDirectory="PreserveNewest" />
     <None Include="$(AppMcpNativeDir)/libapp_mcp.dylib" Condition="Exists('$(AppMcpNativeDir)/libapp_mcp.dylib')" Link="libapp_mcp.dylib" CopyToOutputDirectory="PreserveNewest" />

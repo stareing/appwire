@@ -906,7 +906,7 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 | e2e（Windows 实机） | 库级：发现不激活 → 调用 exec 冷启动 → 宽限后关闭（App 退出、管道消失、Hub 句柄第二轮不增长）→ 再激活；常驻 App 已有通道 → `CHANNEL_LIMIT`；同名管道被其他程序抢注 → `PEER_IDENTITY_MISMATCH`；运行中新增 / 删除登记即时生效；激活程序缺失 → `APP_NOT_INSTALLED`。Host 级：`app install` → stdio Host 列出不启动 → 冷启动 → 宽限后退出 → 再激活 → `app uninstall` 后记录移除 | `crates/hub/tests/naming_pipe.rs`、`tests/windows/naming-e2e.mjs` |
 
 未做 / 未验证：打包 App 的 AppExtension 发现与 COM / App Service 激活（U-07、U-08）；`uri` / `aumid` 激活只经单元测试与已有唤醒器实测，未在按名寻址
-链路上实机跑；WSL 中的 Hub 打开 Windows 管道（U-10）；C# / C++ / Python SDK 的登记选项（C# SDK 尚未暴露 `register_name`）；Authenticode 发布者指纹（5.4）。
+链路上实机跑；WSL 中的 Hub 打开 Windows 管道（U-10）；经 Kotlin / Swift / Dart / C++ 封装的 Windows 管道登记（C# 已在 Windows 实测，2026-10-02）；Authenticode 发布者指纹（5.4）。
 `doctor` 的 `naming.pipes` 已实现（第 11 节）。
 
 ### 14.4 未做（后续段落）
@@ -917,7 +917,7 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
   调用中对端死亡的 `outcome: "unknown"` 与 `read` 工具自动重试（7.5，当前按现有断线错误返回）、9.2 竞态"App 发起的连接优先"的显式处理
   （同一 SDK 的核心同时只允许一条连接，实际不会出现）。
 - 多 Hub：App 同时接受多条通道（9.1，当前上限 1）。
-- 绑定：uniffi（D-Bus 登记选项）/ node / 其他语言 SDK 的登记选项、Hub 其他语言绑定（C、Node）的连接器回调与 `channel_grace`；
+- 绑定：Hub 其他语言绑定（C、Node）的连接器回调与 `channel_grace`；
   `doctor` 的 `naming.launchd`、`naming.discovery`、`naming.bindings`（第 11 节；`naming.registrations` / `naming.dbus` / `naming.android` / `naming.pipes` 已实现）。
 - Android：真机验证（冷启动绑定、宽限后回到 cached 并被冻结、进程被杀后再绑定、多 App、Flyme 关联启动拦截，U-01–U-03）；LeakCanary 接入（7.7）；
   独立 Hub App 的用户授权 Agent 名单（TASKS 4g e，与第 16 项 P1 / P2 合并）。

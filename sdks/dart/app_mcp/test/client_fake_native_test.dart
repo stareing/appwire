@@ -8,6 +8,7 @@ import 'dart:isolate';
 
 import 'package:app_mcp/app_mcp.dart';
 import 'package:app_mcp/src/bindings.dart';
+import 'package:ffi/ffi.dart';
 import 'package:test/test.dart';
 
 import 'support/fake_native.dart';
@@ -42,6 +43,20 @@ void main() {
     expect(sizeOf<AmResourceOptions>(), fake.sizeOf(14));
     expect(sizeOf<AmToolOptions>(), fake.sizeOf(16));
     expect(sizeOf<AmCallResult>(), fake.sizeOf(17));
+  });
+
+  test('AmClientOptions 的 v17 字段偏移与 C 一致', () {
+    // 经 Dart 结构体写入，按 C 的 offsetof 读回。
+    final probe = calloc<AmClientOptions>();
+    try {
+      probe.ref
+        ..register_name = true
+        ..name_instance = Pointer<Utf8>.fromAddress(0x1234);
+      expect(probe.cast<Uint8>()[fake.sizeOf(23)], 1);
+      expect(Pointer<IntPtr>.fromAddress(probe.address + fake.sizeOf(24)).value, 0x1234);
+    } finally {
+      calloc.free(probe);
+    }
   });
 
   test('surface / page 经 AmToolOptions（v14）传入；update 未提供保持、null 清除', () {
@@ -247,6 +262,17 @@ void main() {
           libraryPath: path,
           callDedup: const CallDedupPolicy(ttl: Duration(seconds: 1), maxEntries: 3));
       expect(fake.callDedup(), '1000|3');
+    });
+
+    test('按名寻址经 am_client_new_ex 传入（v17）', () {
+      // 默认不登记。
+      expect(fake.nameService(), '0|-');
+      client.dispose();
+      client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path, registerName: true);
+      expect(fake.nameService(), '1|-');
+      client.dispose();
+      client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path, registerName: true, nameInstance: 'w2');
+      expect(fake.nameService(), '1|w2');
     });
   });
 

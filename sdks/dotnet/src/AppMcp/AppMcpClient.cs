@@ -86,7 +86,7 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         };
         var policy = options.Lifecycle ?? new LifecycleOptions();
         var lifecycle = ToNative(policy, strings);
-        var ext = ToNativeOptions(options, policy);
+        var ext = ToNativeOptions(options, policy, strings);
         ext.Lifecycle = (nint)(&lifecycle);
         ext.OnIdleExit = Callbacks.IdleExitPtr; // user_data 与 callbacks 共用（ClientEventSink）
         NativeMethods.Check(NativeMethods.am_client_new_ex(&config, &callbacks, &ext, out var raw));
@@ -118,10 +118,10 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         WakeBackground = l.Wake?.Background == true ? (byte)1 : (byte)0,
     };
 
-    /// <summary>托管选项 → AmClientOptions（不含 Lifecycle 指针与回调）。</summary>
+    /// <summary>托管选项 → AmClientOptions（不含 Lifecycle 指针与回调；NameInstance 字符串分配在 <paramref name="strings"/> 中）。</summary>
     /// <remarks>@compat C ABI 的 host_absent_retries 0 = 默认 3、负数 = 一直重连；merge_window_ms 0 = 默认 2000、负数 = 不留窗口；
     /// call_dedup_* 0 = 默认、负数 = 关闭；托管层 0 表示"一直重连 / 不留窗口 / 关闭去重"，在此转换。</remarks>
-    internal static unsafe AmClientOptions ToNativeOptions(AppMcpClientOptions options, LifecycleOptions l)
+    internal static unsafe AmClientOptions ToNativeOptions(AppMcpClientOptions options, LifecycleOptions l, Utf8Strings strings)
     {
         if (l.HostAbsentRetries < 0) throw new ArgumentOutOfRangeException(nameof(l.HostAbsentRetries), "HostAbsentRetries 不能为负数（0 = 一直重连）");
         if (!Enum.IsDefined(options.Heartbeat)) throw new ArgumentOutOfRangeException(nameof(options.Heartbeat), "非法的 Heartbeat");
@@ -140,6 +140,8 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
             SleepOnBackground = l.SleepOnBackground ? (byte)1 : (byte)0,
             CallDedupTtlMs = dedupTtl == 0 ? -1 : (long)Math.Min(dedupTtl, long.MaxValue),
             CallDedupMaxEntries = dedup.MaxEntries == 0 ? -1 : dedup.MaxEntries,
+            RegisterName = options.RegisterName ? (byte)1 : (byte)0,
+            NameInstance = strings.Add(options.NameInstance),
         };
     }
 

@@ -355,6 +355,13 @@ final class AppMcp {
   /// [callDedup] 为调用去重策略（spec/protocol.md 3.3，默认保留 5 分钟、最多 64 条；[CallDedupPolicy.off] 关闭）。
   /// [navigateInBackground] 见 [setNavigateInBackground]；缺省用平台默认（桌面 true，Android / iOS false）。
   ///
+  /// [registerName] 为 true 时按名寻址（spec/naming.md）：[start] 后在系统名字服务登记，由 Hub 按名拨入
+  /// （Linux：D-Bus `dev.appmcp.App.<appId>`；Windows：命名管道 `\\.\pipe\appmcp-<用户 SID>-<appId>`），需先用
+  /// `app-mcp-host app install --app-id <appId> --exec <本程序>` 登记。通常与 [LifecycleMode.onDemand] +
+  /// [Residency.exitWhenIdle] 同用：由激活启动（命令行带 `--app-mcp-activation`）的进程在通道关闭后收到 [onIdleExit]。
+  /// 本平台不支持时经 [logs] 报告，其余照常。[nameInstance] 为登记实例名（`[a-z][a-z0-9-]{0,31}`，不能是 `default`），
+  /// 另登记 `dev.appmcp.App.<appId>.<实例>`；不合法时抛出 [AppMcpException]（[AppMcpErrorCode.invalidConfig]）。
+  ///
   /// [libraryPath] 指定原生库路径；缺省时读取环境变量 `APP_MCP_NATIVE_PATH`，
   /// 否则按平台默认名加载。失败时抛出 [AppMcpException]。
   factory AppMcp({
@@ -376,6 +383,8 @@ final class AppMcp {
     String? libraryPath,
     AppMcpBindings? bindings,
     bool? navigateInBackground,
+    bool registerName = false,
+    String? nameInstance,
   }) {
     final b = bindings ?? _defaultBindings(libraryPath);
     final rt = _Runtime.of(b);
@@ -431,7 +440,9 @@ final class AppMcp {
           ..merge_window_ms = mergeWindowToNative(policy.mergeWindow)
           ..sleep_on_background = policy.sleepOnBackground
           ..call_dedup_ttl_ms = dedupTtlToNative(callDedup.ttl)
-          ..call_dedup_max_entries = dedupMaxEntriesToNative(callDedup.maxEntries);
+          ..call_dedup_max_entries = dedupMaxEntriesToNative(callDedup.maxEntries)
+          ..register_name = registerName
+          ..name_instance = _optStr(nameInstance, arena);
         final out = arena<Pointer<AmClient>>();
         rt.check(b.am_client_new_ex(config, callbacks, options, out));
         client._ptr = out.value;

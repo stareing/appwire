@@ -82,6 +82,9 @@ internal struct AmClientOptions
     // v13（调用去重，spec/protocol.md 3.3）
     public long CallDedupTtlMs;    // 0 = 默认 300000，负数 = 关闭
     public int CallDedupMaxEntries; // 0 = 默认 64，负数 = 关闭
+    // v17（按名寻址，spec/naming.md）
+    public byte RegisterName;      // C bool
+    public nint NameInstance;      // const char*，可为 0
 }
 
 /// <summary>v8：am_resource_register_ex 的资源选项。StructSize = sizeof(AmResourceOptions)。</summary>

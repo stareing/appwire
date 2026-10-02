@@ -258,6 +258,20 @@ public sealed class AppMcpClientOptions
     /// 为 null 时默认（保留 5 分钟、最多 64 条）；见 <see cref="CallDedupOptions"/>。</summary>
     public CallDedupOptions? CallDedup { get; init; }
 
+    /// <summary>按名寻址（spec/naming.md）：<see cref="AppMcpClient.Start"/> 后在系统名字服务登记，由 Hub 按名拨入
+    /// （Linux：D-Bus 会话总线名 <c>dev.appmcp.App.&lt;AppId&gt;</c>；Windows：命名管道 <c>\\.\pipe\appmcp-&lt;用户 SID&gt;-&lt;AppId&gt;</c>）。
+    /// 需先用 <c>app-mcp-host app install --app-id &lt;AppId&gt; --exec &lt;本程序&gt;</c> 登记，Hub 以 <c>--name-service</c> 运行。
+    /// 通常与 <see cref="LifecycleMode.OnDemand"/> + <see cref="Residency.ExitWhenIdle"/> 同用：由激活启动（命令行带
+    /// <c>--app-mcp-activation</c>）的进程在通道关闭后收到 <see cref="AppMcpClient.IdleExit"/>。本平台不支持时经
+    /// <see cref="AppMcpClient.Log"/> 报告，其余照常。默认 false。</summary>
+    public bool RegisterName { get; init; }
+
+    /// <summary>登记实例名（<c>[a-z][a-z0-9-]{0,31}</c>，不能是 <c>default</c>）：在默认名字之外另登记
+    /// <c>dev.appmcp.App.&lt;AppId&gt;.&lt;实例&gt;</c>（Windows 管道 <c>…-&lt;AppId&gt;.&lt;实例&gt;</c>），只在本进程运行期间存在。
+    /// 只在 <see cref="RegisterName"/> 为 true 时有意义；不合法时 <see cref="AppMcpClient.Create"/> 抛出
+    /// <see cref="AppMcpException"/>（<see cref="AppMcpStatus.InvalidConfig"/>）。为 null 时不登记实例名。</summary>
+    public string? NameInstance { get; init; }
+
     /// <summary>App 在后台（<see cref="AppVisibility"/> 非 Visible）时是否仍把导航交给导航回调（spec/protocol.md 3.4「后台与前台」）。
     /// 为 null 时用平台默认（Windows / Linux / macOS 桌面为 true：回调可自行激活窗口）；false 时直接以 USER_ACTION_REQUIRED
     /// （reason "foreground"）回复。运行中可用 <see cref="AppMcpClient.SetNavigateInBackground"/> 修改。</summary>

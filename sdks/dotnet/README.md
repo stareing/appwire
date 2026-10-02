@@ -176,6 +176,8 @@ var outcome = await hub.CallAsync("notes.add", new { text = "买牛奶" });  // 
 - `new CallRequest("shop.order.submit", args) { IdempotencyKey = "order-7" }`：幂等键原样转交 App（`ToolContext.IdempotencyKey`），
   不合法时 `Error.Kind` 为 `INVALID_INPUT`。
 - 内置工具 `apps.activate` / `apps.release` 总是列出，有页面目录时另有 `apps.page` / `apps.navigate`（经 `CallAsync` / `DispatchAsync` 调用）。
+- 调用元信息：`CallOutcome.DurationMs`（Hub 收到调用到得出结果的毫秒数，含审批、唤醒与等待 App）、`CallOutcome.Woke`
+  （本次 App 工具调用是否经历了唤醒 / 按名激活；内置与上游工具恒为 false）。旧 Hub 未给出时为 0 / false。
 
 ### 休眠与唤醒（spec/hub-api.md 3.5）
 
@@ -302,3 +304,33 @@ client.IdleExit += (_, _) => { if (!userInteracted) Application.Current.Exit(); 
 
 窗口 `Closing` 中照常 `await client.DisposeAsync()`。完整示例见 `samples/Wpf`（`App.xaml.cs` 单实例 + 协议注册，
 `MainWindow.xaml.cs` 生命周期配置与 `IdleExit`）。
+
+## 按名寻址（spec/naming.md）
+
+App 在系统名字服务登记名字，不主动连接 Hub；Hub（`app-mcp-host serve --name-service`）发现它时不启动进程，调用时按名拨号，
+App 未运行由系统激活（Linux：D-Bus 会话总线名 `dev.appmcp.App.<AppId>`；Windows：命名管道 `\\.\pipe\appmcp-<用户 SID>-<AppId>`，
+Hub 直接运行登记的程序）。通道在最后一次调用后宽限（默认 15 秒）关闭。
+
+```csharp
+await using var client = AppMcpClient.Create(new AppMcpClientOptions
+{
+    AppId = "named-dotnet",
+    AppName = "按名寻址示例",
+    RegisterName = true,                 // Start() 后登记名字
+    NameInstance = null,                 // 可选：另登记实例名 [a-z][a-z0-9-]{0,31}（不能是 default），不合法时 Create 抛 InvalidConfig
+    Lifecycle = new LifecycleOptions { Mode = LifecycleMode.OnDemand, Residency = Residency.ExitWhenIdle },
+});
+client.IdleExit += (_, _) => quit.TrySetResult();  // 由激活启动（命令行带 --app-mcp-activation）的进程在通道关闭后退出
+client.Start();
+```
+
+```bash
+dotnet build samples/Named
+app-mcp-host app install --app-id named-dotnet --exec <输出目录>/AppMcp.Samples.Named(.exe) [--manifest app-mcp.json]
+app-mcp-host serve --name-service
+```
+
+- 对应 C ABI `AmClientOptions.register_name` / `name_instance`（app_mcp.h v17，按 `struct_size` 读取）。本平台不支持时经 `Log` 报告，其余照常。
+- 完整示例 `samples/Named`；全链路测试 `tests/AppMcp.Tests/NamingE2eTests.cs`（`app install` → `app-mcp-host stdio --name-service`
+  → 发现不激活 → 冷激活调用 → 宽限后 App 退出 → 再激活；Linux 用私有 D-Bus 会话总线，没有 `dbus-daemon` 时跳过；Windows 用命名管道，
+  登记目录经 `LOCALAPPDATA` 指到临时目录）。需要 `cargo build -p app-mcp-host`（或环境变量 `APP_MCP_HOST_BIN`），找不到时跳过。

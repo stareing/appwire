@@ -8,6 +8,20 @@ namespace AppMcp.Hub.Tests;
 public class HubBasicTests
 {
     [Fact]
+    public void CallOutcomeParsesDurationAndWoke()
+    {
+        // spec/hub-api.md 3.15：durationMs / woke 只增字段；旧 Hub 缺省时为 0 / false。
+        using var full = JsonDocument.Parse(
+            """{"callId":"c1","result":{"ok":{"x":1}},"stateHints":[],"routedTo":"shop.cart.summary","durationMs":1234,"woke":true}""");
+        var o = new CallOutcome(full.RootElement);
+        Assert.Equal((1234L, true, "shop.cart.summary"), (o.DurationMs, o.Woke, o.RoutedTo));
+        using var old = JsonDocument.Parse("""{"callId":"c2","result":{"error":{"kind":"TOOL_NOT_FOUND","message":"x"}}}""");
+        var legacy = new CallOutcome(old.RootElement);
+        Assert.Equal((0L, false, (string?)null), (legacy.DurationMs, legacy.Woke, legacy.RoutedTo));
+        Assert.Equal("TOOL_NOT_FOUND", legacy.Error?.Kind);
+    }
+
+    [Fact]
     public void NativeLibraryLoads()
     {
         Assert.False(string.IsNullOrEmpty(AppMcpHub.Version));
@@ -641,6 +655,8 @@ public class HubIntegrationTests
         var r = await hub.CallAsync("sleepy.ping", new { x = 1 }).WaitAsync(Wait);
         Assert.True(r.IsSuccess, r.Json.GetRawText());
         Assert.Equal("s1", r.InstanceId);
+        Assert.True(r.Woke, r.Json.GetRawText()); // 休眠实例经唤醒回连后才送达（spec/hub-api.md 3.15）
+        Assert.True(r.DurationMs >= 0);
         Assert.True(wakes.TryDequeue(out var w));
         Assert.Equal("sleepy", w.AppId);
         Assert.Equal("s1", w.InstanceId);
@@ -814,6 +830,8 @@ public class HubIntegrationTests
         Assert.True(out1.IsSuccess, out1.Json.ToString());
         Assert.Equal("order-7", out1.Data!.Value.GetProperty("key").GetString());
         Assert.Null(out1.RoutedTo);
+        Assert.False(out1.Woke, out1.Json.GetRawText()); // 已连接：不经唤醒
+        Assert.True(out1.Json.TryGetProperty("durationMs", out _), out1.Json.GetRawText());
         var bad = await hub.CallAsync(new CallRequest("cafe.order.submit") { IdempotencyKey = "" });
         Assert.Equal("INVALID_INPUT", bad.Error?.Kind);
         app.Stop();

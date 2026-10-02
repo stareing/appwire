@@ -7,8 +7,13 @@ using Xunit.Abstractions;
 
 namespace AppMcp.Tests;
 
-public class LifecycleUnitTests
+public class LifecycleUnitTests : IDisposable
 {
+    /// <summary>ToNativeOptions 分配的字符串（NameInstance），测试结束时释放。</summary>
+    private readonly Utf8Strings _strings = new();
+
+    public void Dispose() => _strings.Dispose();
+
     private static AppMcpClient NewClient(LifecycleOptions? lifecycle = null) => AppMcpClient.Create(new AppMcpClientOptions
     {
         AppId = "dotnet-lc",
@@ -23,14 +28,15 @@ public class LifecycleUnitTests
     public void NativeStructLayoutsMatchHeader()
     {
         // 与 app_mcp.h 一致（64 位）：AmLifecycle = int, 3×u64, int, int, ptr, bool；
-        // AmClientOptions = u32, ptr, u32, ptr, (v7) int, i32, bool, (v8) i64, bool；AmResourceOptions = u32, bool。
+        // AmClientOptions = u32, ptr, u32, ptr, (v7) int, i32, bool, (v8) i64, bool, (v13) i64, i32, (v17) bool, ptr；
+        // AmResourceOptions = u32, bool, ptr。
         if (IntPtr.Size != 8) return;
         Assert.Equal(56, Marshal.SizeOf<AmLifecycle>());
         Assert.Equal(8, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.IdleTimeoutMs)));
         Assert.Equal(32, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.Residency)));
         Assert.Equal(40, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.WakeTarget)));
         Assert.Equal(48, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.WakeBackground)));
-        Assert.Equal(80, Marshal.SizeOf<AmClientOptions>());
+        Assert.Equal(88, Marshal.SizeOf<AmClientOptions>());
         Assert.Equal(8, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.Lifecycle)));
         Assert.Equal(24, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.OnIdleExit)));
         Assert.Equal(32, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.Heartbeat)));
@@ -40,13 +46,18 @@ public class LifecycleUnitTests
         Assert.Equal(56, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.SleepOnBackground)));
         Assert.Equal(64, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.CallDedupTtlMs)));
         Assert.Equal(72, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.CallDedupMaxEntries)));
+        Assert.Equal(76, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.RegisterName)));
+        Assert.Equal(80, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.NameInstance)));
         Assert.Equal(16, Marshal.SizeOf<AmResourceOptions>());
         Assert.Equal(4, (int)Marshal.OffsetOf<AmResourceOptions>(nameof(AmResourceOptions.Realtime)));
         Assert.Equal(8, (int)Marshal.OffsetOf<AmResourceOptions>(nameof(AmResourceOptions.AnnotationsJson)));
     }
 
-    private static AppMcpClientOptions BaseOptions(LifecycleOptions? lifecycle = null, HeartbeatMode heartbeat = HeartbeatMode.Auto) => new()
+    private static AppMcpClientOptions BaseOptions(
+        LifecycleOptions? lifecycle = null, HeartbeatMode heartbeat = HeartbeatMode.Auto, bool registerName = false, string? nameInstance = null) => new()
     {
+        RegisterName = registerName,
+        NameInstance = nameInstance,
         AppId = "dotnet-power",
         AppName = "Power",
         HostUrl = "ws://127.0.0.1:1",
@@ -66,7 +77,7 @@ public class LifecycleUnitTests
         Assert.False(l.SleepOnBackground);
         Assert.Equal(HeartbeatMode.Auto, BaseOptions().Heartbeat);
 
-        var n = AppMcpClient.ToNativeOptions(BaseOptions(), l);
+        var n = AppMcpClient.ToNativeOptions(BaseOptions(), l, _strings);
         Assert.Equal((uint)Marshal.SizeOf<AmClientOptions>(), n.StructSize);
         Assert.Equal(0, n.Heartbeat);
         Assert.Equal(3, n.HostAbsentRetries);
@@ -75,21 +86,57 @@ public class LifecycleUnitTests
         Assert.Equal(0, n.SleepOnBackground);
         Assert.Equal(300000L, n.CallDedupTtlMs);
         Assert.Equal(64, n.CallDedupMaxEntries);
+        Assert.Equal(0, n.RegisterName);
+        Assert.Equal(0, n.NameInstance);
+    }
+
+    [Fact]
+    public void NameRegistrationMapsToCAbi()
+    {
+        // v17（spec/naming.md）：RegisterName → C bool，NameInstance → UTF-8 字符串（null → NULL）。
+        var plain = AppMcpClient.ToNativeOptions(BaseOptions(registerName: true), new LifecycleOptions(), _strings);
+        Assert.Equal(1, plain.RegisterName);
+        Assert.Equal(0, plain.NameInstance);
+        var inst = AppMcpClient.ToNativeOptions(BaseOptions(registerName: true, nameInstance: "w2"), new LifecycleOptions(), _strings);
+        Assert.Equal(1, inst.RegisterName);
+        Assert.Equal("w2", Marshal.PtrToStringUTF8(inst.NameInstance));
+    }
+
+    [Theory]
+    [InlineData("default")]
+    [InlineData("W2")]
+    [InlineData("2w")]
+    [InlineData("")]
+    public void InvalidNameInstanceIsRejectedByNativeLibrary(string instance)
+    {
+        // 实例名的规则只在原生库定义（spec/naming.md 2.1），封装层原样传递，由 am_client_new_ex 返回 AM_ERR_INVALID_CONFIG。
+        var e = Assert.Throws<AppMcpException>(() => AppMcpClient.Create(BaseOptions(registerName: true, nameInstance: instance)));
+        Assert.Equal(AppMcpStatus.InvalidConfig, e.Status);
+        Assert.Contains("name_instance", e.Message);
+    }
+
+    [Fact]
+    public void ValidNameInstanceIsAccepted()
+    {
+        // 不调用 Start：不在系统名字服务登记（登记只在 start 之后）。
+        using var client = AppMcpClient.Create(BaseOptions(
+            new LifecycleOptions { Mode = LifecycleMode.OnDemand, Residency = Residency.ExitWhenIdle }, registerName: true, nameInstance: "w2"));
+        Assert.Equal(ClientStatus.Idle, client.State.Status);
     }
 
     [Fact]
     public void CallDedupMapsToCAbiEncoding()
     {
         // 0 = 关闭 → C ABI 负数；其他值原样传递。
-        var off = AppMcpClient.ToNativeOptions(new AppMcpClientOptions { AppId = "d", AppName = "D", CallDedup = CallDedupOptions.Off }, new LifecycleOptions());
+        var off = AppMcpClient.ToNativeOptions(new AppMcpClientOptions { AppId = "d", AppName = "D", CallDedup = CallDedupOptions.Off }, new LifecycleOptions(), _strings);
         Assert.True(off.CallDedupTtlMs < 0 && off.CallDedupMaxEntries < 0);
         var custom = AppMcpClient.ToNativeOptions(
             new AppMcpClientOptions { AppId = "d", AppName = "D", CallDedup = new CallDedupOptions { Ttl = TimeSpan.FromSeconds(1), MaxEntries = 3 } },
-            new LifecycleOptions());
+            new LifecycleOptions(), _strings);
         Assert.Equal(1000L, custom.CallDedupTtlMs);
         Assert.Equal(3, custom.CallDedupMaxEntries);
         Assert.Throws<ArgumentOutOfRangeException>(() => AppMcpClient.ToNativeOptions(
-            new AppMcpClientOptions { AppId = "d", AppName = "D", CallDedup = new CallDedupOptions { MaxEntries = -1 } }, new LifecycleOptions()));
+            new AppMcpClientOptions { AppId = "d", AppName = "D", CallDedup = new CallDedupOptions { MaxEntries = -1 } }, new LifecycleOptions(), _strings));
         using var client = AppMcpClient.Create(new AppMcpClientOptions
         {
             AppId = "dotnet-dedup", AppName = "Dedup", HostUrl = "ws://127.0.0.1:1", Dispatcher = null, CallDedup = CallDedupOptions.Off,
@@ -109,7 +156,7 @@ public class LifecycleUnitTests
             MergeWindow = TimeSpan.Zero,
             SleepOnBackground = true,
         };
-        var n = AppMcpClient.ToNativeOptions(BaseOptions(l, HeartbeatMode.Off), l);
+        var n = AppMcpClient.ToNativeOptions(BaseOptions(l, HeartbeatMode.Off), l, _strings);
         Assert.Equal(2, n.Heartbeat);
         Assert.True(n.HostAbsentRetries < 0);
         Assert.Equal(1, n.LegacyTimers);
@@ -117,14 +164,14 @@ public class LifecycleUnitTests
         Assert.Equal(1, n.SleepOnBackground);
 
         var m = l with { HostAbsentRetries = 7, MergeWindow = TimeSpan.FromMilliseconds(500) };
-        var nm = AppMcpClient.ToNativeOptions(BaseOptions(m, HeartbeatMode.Always), m);
+        var nm = AppMcpClient.ToNativeOptions(BaseOptions(m, HeartbeatMode.Always), m, _strings);
         Assert.Equal(1, nm.Heartbeat);
         Assert.Equal(7, nm.HostAbsentRetries);
         Assert.Equal(500L, nm.MergeWindowMs);
 
-        Assert.Throws<ArgumentOutOfRangeException>(() => AppMcpClient.ToNativeOptions(BaseOptions(), new LifecycleOptions { HostAbsentRetries = -1 }));
-        Assert.Throws<ArgumentOutOfRangeException>(() => AppMcpClient.ToNativeOptions(BaseOptions(), new LifecycleOptions { MergeWindow = TimeSpan.FromSeconds(-1) }));
-        Assert.Throws<ArgumentOutOfRangeException>(() => AppMcpClient.ToNativeOptions(BaseOptions(heartbeat: (HeartbeatMode)9), new LifecycleOptions()));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AppMcpClient.ToNativeOptions(BaseOptions(), new LifecycleOptions { HostAbsentRetries = -1 }, _strings));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AppMcpClient.ToNativeOptions(BaseOptions(), new LifecycleOptions { MergeWindow = TimeSpan.FromSeconds(-1) }, _strings));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AppMcpClient.ToNativeOptions(BaseOptions(heartbeat: (HeartbeatMode)9), new LifecycleOptions(), _strings));
     }
 
     [Fact]
