@@ -147,7 +147,7 @@ fn activation_launchd(i: &RuleInput) -> Option<Finding> {
     if i.platform != Platform::MacOs {
         return Some(Finding::new(Level::Warn, "激活方式 launchd 只在 macOS 有效").hint(REINSTALL_HINT));
     }
-    (!Path::new(&i.reg.activation.target).is_absolute()).then(|| {
+    (!app_mcp_protocol::endpoint::is_unix_absolute(&i.reg.activation.target)).then(|| {
         Finding::new(Level::Error, format!("激活目标「{}」不是套接字的绝对路径", i.reg.activation.target)).hint(REINSTALL_HINT)
     })
 }

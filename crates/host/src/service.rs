@@ -76,7 +76,8 @@ impl OnDemandSockets {
         }
         let ipc = match ipc_endpoint.map(app_mcp_protocol::Endpoint::parse) {
             None => None,
-            Some(Ok(app_mcp_protocol::Endpoint::Unix(path))) if path.is_absolute() => Some(path),
+            // Endpoint::parse 已保证 unix: 为 POSIX 绝对路径（不按编译平台判定）。
+            Some(Ok(app_mcp_protocol::Endpoint::Unix(path))) => Some(path),
             Some(Ok(other)) => anyhow::bail!("按需启动只支持 unix:<绝对路径> 形式的本地 IPC 端点，而不是 {other}"),
             Some(Err(e)) => anyhow::bail!("本地 IPC 端点不合法：{e}"),
         };

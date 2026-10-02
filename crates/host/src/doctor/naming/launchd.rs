@@ -62,7 +62,7 @@ fn bootstrap_hint(app_id: &str) -> String {
 
 fn app_target(p: &AppProbe) -> Option<Finding> {
     let t = &p.reg.activation.target;
-    (!Path::new(t).is_absolute()).then(|| {
+    (!app_mcp_protocol::endpoint::is_unix_absolute(t)).then(|| {
         Finding::new(Level::Error, format!("激活目标「{t}」不是套接字的绝对路径：Hub 无法拨号")).hint(REINSTALL_HINT)
     })
 }

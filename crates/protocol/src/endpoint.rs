@@ -54,7 +54,7 @@ impl Endpoint {
             return Ok(Self::WebSocket(s.to_owned()));
         }
         if let Some(path) = s.strip_prefix("unix:") {
-            if !path.starts_with('/') {
+            if !is_unix_absolute(path) {
                 return Err(format!("unix: 端点必须是绝对路径：{s:?}"));
             }
             return Ok(Self::Unix(PathBuf::from(path)));
@@ -132,6 +132,14 @@ fn url_host(url: &str) -> Option<&str> {
 }
 
 /// 主机名是否为本机回环：`localhost`（不区分大小写）、`127.0.0.0/8`、`::1`。
+/// Unix 域套接字路径是否为绝对路径（POSIX 规则：以 `/` 开头）。
+///
+/// @why 不用 `Path::is_absolute`：它按编译平台判定，在 Windows 上检查 macOS / Linux 的套接字路径（doctor 核对登记、
+/// 生成 launchd / systemd 服务文件）会把 `/run/…` 误判为相对路径。
+pub fn is_unix_absolute(path: &str) -> bool {
+    path.starts_with('/')
+}
+
 pub fn is_loopback_host(host: &str) -> bool {
     let host = host.trim_start_matches('[').trim_end_matches(']');
     host.eq_ignore_ascii_case("localhost")
@@ -512,6 +520,16 @@ mod tests {
         let wide = format!("{PIPE_ROOT}{}", "😀".repeat((max - PIPE_ROOT.len()) / 2));
         assert_eq!(check_pipe_name(&wide), Ok(()));
         assert!(check_pipe_name(&format!("{wide}😀")).is_err());
+    }
+
+    /// 按 POSIX 规则判定，与编译平台无关（回归：Windows 上 `Path::is_absolute("/run/…")` 为假）。
+    #[test]
+    fn unix_absolute_is_platform_independent() {
+        assert!(is_unix_absolute("/run/user/1/app-mcp/hub.sock"));
+        assert!(is_unix_absolute("/Users/u/.app-mcp/run/apps/my-shop.sock"));
+        for rel in ["my-shop.sock", "run/hub.sock", "", r"C:\x\hub.sock"] {
+            assert!(!is_unix_absolute(rel), "{rel}");
+        }
     }
 
     #[test]
