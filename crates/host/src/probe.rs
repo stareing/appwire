@@ -2,11 +2,11 @@
 //! 端口被占用时说明占用者）。本配置目录的实例以登记文件为准，见 `lib.rs` 的 `running_instance`。
 //!
 //! [`fetch_status`]：读取运行中 Host 的 `GET /status`（`doctor`、`status`）——优先经本地 IPC（连接后核对监听方
-//! 是同一用户，与原生 SDK 相同），IPC 关闭时经 TCP 携带令牌。[`post_policy`]：`POST /policy`（`policy reload`），同样的通道与授权。
+//! 是同一用户，与原生 SDK 相同），IPC 关闭时经 TCP 携带令牌。[`post_policy`]：`POST /policy`（`policy reload`），[`post_agents`]：`POST /agents`（`agent add / remove`），同样的通道与授权。
 
 use std::time::Duration;
 
-use app_mcp_hub::http_server::{HEALTH_PATH, POLICY_PATH, PolicyReply, STATUS_PATH};
+use app_mcp_hub::http_server::{AGENTS_PATH, AgentsReply, HEALTH_PATH, POLICY_PATH, PolicyReply, STATUS_PATH};
 use app_mcp_hub::{Health, HubStatus};
 use app_mcp_protocol::Endpoint;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -236,6 +236,24 @@ pub async fn post_policy(
     let (code, body) = request_host(ipc_endpoint, listen, token, req).await?;
     if code == 404 {
         return Err("运行中的 Host 版本不支持重载策略规则（POST /policy），请升级后重启 Host".to_owned());
+    }
+    serde_json::from_str(&body).map_err(|_| format!("HTTP {code}：{body}"))
+}
+
+/// 把 Agent 登记（`agents.json` 的原文）交给运行中的 Host 替换（`POST /agents`，第 16 项 N5）。Host 校验不合法时返回
+/// `AgentsReply { ok: false, error }` 并保留之前的登记。
+///
+/// @error 连接失败、旧版 Host 不支持（404）、响应无法解析。
+pub async fn post_agents(
+    ipc_endpoint: Option<&str>,
+    listen: Option<&str>,
+    token: Option<&str>,
+    agents_json: &str,
+) -> Result<AgentsReply, String> {
+    let req = HostRequest { method: "POST", path: AGENTS_PATH, body: Some(agents_json) };
+    let (code, body) = request_host(ipc_endpoint, listen, token, req).await?;
+    if code == 404 {
+        return Err("运行中的 Host 版本不支持 Agent 登记（POST /agents），请升级后重启 Host".to_owned());
     }
     serde_json::from_str(&body).map_err(|_| format!("HTTP {code}：{body}"))
 }

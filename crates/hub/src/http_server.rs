@@ -7,6 +7,7 @@
 //! | `/healthz` | `GET`：Host 身份与监听信息（[`Health`]），不需要令牌 | `Origin` 允许列表（403） |
 //! | `/status` | `GET`：运行状态（[`crate::HubStatus`]：实例、最近错误、SDK 诊断上报） | `Origin` 允许列表（403）→ IPC 直接允许；TCP 必须携带有效令牌（未配置令牌时 403） |
 //! | `/policy` | `POST`：替换策略规则（请求体为 [`crate::PolicyConfig`] JSON，spec/hub-api.md 3.13）；不合法时 400、保留之前的规则 | 同 `/status` |
+//! | `/agents` | `POST`：替换已登记的 Agent（请求体为 [`AgentsConfig`] JSON，spec/hub-api.md 3.6「Agent 身份」）；不合法时 400、保留之前的登记 | 同 `/status`（Agent 令牌不能访问） |
 //!
 //! - 本地 IPC 端点上的 `/mcp`（[`crate::HubConfig::mcp_http`] 开启时）与 TCP 上相同，但**不校验令牌**：
 //!   IPC 的对端用户已由操作系统核对为同一用户（[`crate::ipc`]），同一用户本来就能读取令牌文件，令牌没有额外防护。
@@ -19,6 +20,8 @@
 //! - 本地访问令牌（[`HttpOptions::token`]）：带 `Origin` 头的请求（浏览器）必须携带
 //!   `Authorization: Bearer <令牌>`；不带 `Origin` 的本地客户端是否必须携带由
 //!   [`HttpOptions::require_token_without_origin`] 决定。只作用于 `/mcp`。
+//! - Agent 令牌（[`crate::HubConfig::agents`]，第 16 项 N5）：`/mcp` 出示已登记 Agent 的令牌时通过，且该请求的主体为
+//!   `agent:<名>`（TCP 与 IPC 相同）；Agent 令牌不能访问 `/status`、`/policy`、`/agents`。
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -41,6 +44,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 
+use crate::agents::{AgentName, AgentsConfig, token_eq};
 use crate::app_server::Peer;
 use crate::hub::HubShared;
 #[cfg(feature = "mcp-server")]
@@ -77,6 +81,8 @@ pub use app_mcp_protocol::{APP_PATH, HEALTH_PATH, MCP_PATH, STATUS_PATH};
 
 /// 替换策略规则（`POST`，spec/hub-api.md 3.13）；授权同 `/status`。
 pub const POLICY_PATH: &str = "/policy";
+/// 替换已登记的 Agent（`POST`，请求体为 [`AgentsConfig`] JSON；第 16 项 N5）。
+pub const AGENTS_PATH: &str = "/agents";
 
 /// `/healthz` 响应中的服务标识（[`app_mcp_protocol::identity::SERVICE_NAME`]）。
 pub const HEALTH_SERVICE: &str = app_mcp_protocol::identity::SERVICE_NAME;
@@ -167,6 +173,25 @@ impl PolicyReply {
     }
 }
 
+/// `POST /agents` 的响应体。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentsReply {
+    pub ok: bool,
+    /// 成功时登记的 Agent 数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<usize>,
+    /// 失败原因（之前的登记继续生效）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl AgentsReply {
+    fn error(message: String) -> Self {
+        Self { ok: false, agents: None, error: Some(message) }
+    }
+}
+
 /// 取 `Authorization: Bearer <令牌>` 中的令牌；空令牌视为未携带。
 fn bearer(headers: &http::HeaderMap) -> Option<&str> {
     let value = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
@@ -178,29 +203,28 @@ fn bearer(headers: &http::HeaderMap) -> Option<&str> {
     (!token.is_empty()).then_some(token)
 }
 
-/// 常量时间比较（避免按字节提前返回泄露令牌前缀）。
-fn token_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-/// 令牌校验结果：`None` = 通过；`Some(原因)` = 拒绝。
+/// `/mcp` 的令牌核对：`Ok(None)` = 本机主体；`Ok(Some(名))` = 出示了已登记 Agent 的令牌（第 16 项 N5）；`Err(原因)` = 拒绝（401）。
+///
+/// 先比本机令牌，再查 Agent 登记（`identify`）。未配置本机令牌时（IPC 端点、`--auth none`）不拒绝任何请求，
+/// 但出示的 Agent 令牌仍确定主体；不认识的令牌按未携带处理（与之前一致）。
 fn check_token(
     options: &HttpOptions,
+    identify: impl Fn(&str) -> Option<AgentName>,
     has_origin: bool,
     headers: &http::HeaderMap,
-) -> Option<&'static str> {
-    let expected = options.token.as_deref()?;
+) -> Result<Option<AgentName>, &'static str> {
+    let expected = options.token.as_deref();
     match bearer(headers) {
-        Some(got) if token_eq(got, expected) => None,
-        Some(_) => Some("访问令牌不正确。"),
-        None if has_origin || options.require_token_without_origin => Some(
-            "需要本地访问令牌：请求头 Authorization: Bearer <令牌>（令牌见 ~/.app-mcp/token）。",
-        ),
-        None => None,
+        Some(got) if expected.is_some_and(|t| token_eq(got, t)) => Ok(None),
+        Some(got) => match identify(got) {
+            Some(agent) => Ok(Some(agent)),
+            None if expected.is_some() => Err("访问令牌不正确。"),
+            None => Ok(None),
+        },
+        None if expected.is_some() && (has_origin || options.require_token_without_origin) => {
+            Err("需要本地访问令牌：请求头 Authorization: Bearer <令牌>（令牌见 ~/.app-mcp/token）。")
+        }
+        None => Ok(None),
     }
 }
 
@@ -305,14 +329,31 @@ impl Router {
                 }
                 self.replace_policy(req).await
             }
+            AGENTS_PATH => {
+                if req.method() != http::Method::POST {
+                    return plain(http::StatusCode::METHOD_NOT_ALLOWED, "只支持 POST");
+                }
+                if let Some(resp) = self.authorize_status(req.headers(), peer) {
+                    return resp;
+                }
+                self.replace_agents(req).await
+            }
             MCP_PATH => {
                 let Some(service) = &self.mcp else {
                     return plain(http::StatusCode::NOT_FOUND, "本端点未开启 MCP HTTP 服务。");
                 };
-                if let Some(reason) = check_token(&self.options, origin.is_some(), req.headers()) {
-                    tracing::warn!(%peer, ?origin, "拒绝未携带有效令牌的 HTTP 请求");
-                    return unauthorized(reason);
-                }
+                let agent = match check_token(&self.options, |t| self.shared.identify_agent(t), origin.is_some(), req.headers()) {
+                    Ok(agent) => agent,
+                    Err(reason) => {
+                        tracing::warn!(%peer, ?origin, "拒绝未携带有效令牌的 HTTP 请求");
+                        return unauthorized(reason);
+                    }
+                };
+                // 主体随请求交给 McpSession（rmcp 把 http::request::Parts 放进请求上下文的扩展）。
+                #[cfg(feature = "mcp-server")]
+                req.extensions_mut().insert(agent.map_or(crate::task::Principal::Local, crate::task::Principal::Agent));
+                #[cfg(not(feature = "mcp-server"))]
+                let _ = agent;
                 #[cfg(feature = "mcp-server")]
                 return service.handle(req).await;
                 #[cfg(not(feature = "mcp-server"))]
@@ -349,6 +390,28 @@ impl Router {
                 // from_json 失败时也记下错误（set_policy 内部校验失败已记录）。
                 self.shared.record_policy_error(&e);
                 json(http::StatusCode::BAD_REQUEST, &PolicyReply::error(e))
+            }
+        }
+    }
+
+    /// `POST /agents`：读取请求体（上限 [`MAX_POLICY_BODY`]）并替换 Agent 登记；不合法时 400，之前的登记继续生效。
+    /// 应答不含令牌（只回登记条数）。
+    async fn replace_agents(&self, req: http::Request<Incoming>) -> http::Response<Body> {
+        let body = http_body_util::Limited::new(req.into_body(), MAX_POLICY_BODY);
+        let bytes = match body.collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(e) => {
+                return json(http::StatusCode::PAYLOAD_TOO_LARGE, &AgentsReply::error(format!("读取请求体失败（上限 {MAX_POLICY_BODY} 字节）：{e}")));
+            }
+        };
+        let result = AgentsConfig::from_json(&String::from_utf8_lossy(&bytes)).and_then(|config| {
+            self.shared.set_agents(&config).map(|()| config.agents.len())
+        });
+        match result {
+            Ok(n) => json(http::StatusCode::OK, &AgentsReply { ok: true, agents: Some(n), error: None }),
+            Err(e) => {
+                tracing::warn!(error = %e, "Agent 登记不合法，继续使用之前的登记");
+                json(http::StatusCode::BAD_REQUEST, &AgentsReply::error(e))
             }
         }
     }
@@ -580,36 +643,49 @@ mod tests {
         assert_eq!(bearer(&headers(None)), None);
     }
 
+    /// 只认 `agent-token` 为 Agent `claude`。
+    fn identify(t: &str) -> Option<AgentName> {
+        (t == "agent-token").then(|| AgentName::for_test("claude"))
+    }
+
+    /// `Ok(None)` → "local"，`Ok(Some(a))` → a，`Err` → "401"。
+    fn who(options: &HttpOptions, has_origin: bool, auth: Option<&str>) -> String {
+        match check_token(options, identify, has_origin, &headers(auth)) {
+            Ok(None) => "local".to_owned(),
+            Ok(Some(a)) => a.to_string(),
+            Err(_) => "401".to_owned(),
+        }
+    }
+
     #[test]
     fn token_policy() {
         let none = HttpOptions::default();
-        assert!(check_token(&none, true, &headers(None)).is_none());
+        assert_eq!(who(&none, true, None), "local");
+        // 未配置本机令牌（IPC / --auth none）：不认识的令牌照旧忽略，Agent 令牌确定主体
+        assert_eq!(who(&none, true, Some("Bearer nope")), "local");
+        assert_eq!(who(&none, false, Some("Bearer agent-token")), "claude");
 
         let lax = HttpOptions {
             token: Some("secret".into()),
             ..Default::default()
         };
         // 浏览器（带 Origin）必须携带
-        assert!(check_token(&lax, true, &headers(None)).is_some());
-        assert!(check_token(&lax, true, &headers(Some("Bearer nope"))).is_some());
-        assert!(check_token(&lax, true, &headers(Some("Bearer secret"))).is_none());
+        assert_eq!(who(&lax, true, None), "401");
+        assert_eq!(who(&lax, true, Some("Bearer nope")), "401");
+        assert_eq!(who(&lax, true, Some("Bearer secret")), "local");
+        assert_eq!(who(&lax, true, Some("Bearer agent-token")), "claude");
         // 本地客户端（无 Origin）默认可不携带；携带了就必须正确；空令牌视为未携带
-        assert!(check_token(&lax, false, &headers(None)).is_none());
-        assert!(check_token(&lax, false, &headers(Some("Bearer "))).is_none());
-        assert!(check_token(&lax, false, &headers(Some("Bearer nope"))).is_some());
+        assert_eq!(who(&lax, false, None), "local");
+        assert_eq!(who(&lax, false, Some("Bearer ")), "local");
+        assert_eq!(who(&lax, false, Some("Bearer nope")), "401");
+        assert_eq!(who(&lax, false, Some("Bearer agent-token")), "claude");
 
         let strict = HttpOptions {
             require_token_without_origin: true,
             ..lax
         };
-        assert!(check_token(&strict, false, &headers(None)).is_some());
-        assert!(check_token(&strict, false, &headers(Some("Bearer secret"))).is_none());
-    }
-
-    #[test]
-    fn constant_time_eq() {
-        assert!(token_eq("abc", "abc"));
-        assert!(!token_eq("abc", "abd"));
-        assert!(!token_eq("abc", "abcd"));
+        assert_eq!(who(&strict, false, None), "401");
+        assert_eq!(who(&strict, false, Some("Bearer secret")), "local");
+        assert_eq!(who(&strict, false, Some("Bearer agent-token")), "claude");
     }
 }

@@ -25,25 +25,36 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
+use crate::agents::AgentName;
 use crate::lifecycle::LeaseEntry;
 
 /// 调用方主体：由**传输层凭据**决定，不取自 `clientInfo`（MCP 规范：自报信息不可信，S-F6）。
 ///
-/// @why 现在只有 [`Principal::Local`]：HTTP 只有一个本机令牌（未带令牌的回环请求同样是本机用户）、IPC 由操作系统核对为
-/// 同一用户、stdio 的对端是父进程——三者都是"本机用户"。第 16 项 N5 按 Agent 发令牌后在此增加变体，主体自然细分，
-/// 调用方键与任务表无需再改（docs/plans/12-mcp-stateless.md 3.1）。
+/// 本机令牌（及允许不带令牌的回环请求）、IPC 同一用户、stdio 父进程都是"本机用户" [`Principal::Local`]；
+/// 出示已登记 Agent 令牌的 `/mcp` 请求为 [`Principal::Agent`]（第 16 项 N5，[`crate::agents`]）。
 #[cfg(feature = "mcp-server")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Principal {
     /// 本机用户（本机令牌 / IPC 同用户 / stdio 父进程）。
     Local,
+    /// 已登记的 Agent（出示了其令牌）。
+    Agent(AgentName),
 }
 
 #[cfg(feature = "mcp-server")]
 impl Principal {
-    pub(crate) fn as_str(self) -> &'static str {
+    /// 主体的字符串形式：`local` / `agent:<名>`（调用方键 `principal:<主体>`、`ApprovalRequest::principal`）。
+    pub(crate) fn label(&self) -> String {
         match self {
-            Principal::Local => "local",
+            Principal::Local => "local".to_owned(),
+            Principal::Agent(name) => format!("agent:{name}"),
+        }
+    }
+
+    pub(crate) fn agent(&self) -> Option<&AgentName> {
+        match self {
+            Principal::Local => None,
+            Principal::Agent(name) => Some(name),
         }
     }
 }
@@ -70,12 +81,16 @@ pub enum CallerKind {
 }
 
 /// 调用方键（单一定义；见模块文档的表）。
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+///
+/// @invariant 相等与哈希只看 `key`：字符串已唯一确定种类、是否句柄与发起方 Agent（legacy 会话的 Agent 在会话内不变）。
+#[derive(Clone, Debug)]
 pub(crate) struct CallerKey {
     key: String,
     kind: CallerKind,
     /// 任务句柄的调用方（`principal:<主体>/<任务 ID>`）：种类仍为 [`CallerKind::Principal`]（无会话请求），任务 ID 来自句柄。
     handle: bool,
+    /// 发起方 Agent（第 16 项 N5）：Agent 主体及其任务句柄、以 Agent 令牌建立的 legacy 会话；本机用户与 Hub API 为 `None`。
+    agent: Option<AgentName>,
 }
 
 /// 任务 ID 的前缀（[`AgentTask::id`]）。
@@ -97,14 +112,16 @@ pub(crate) fn is_task_id(id: &str) -> bool {
 impl CallerKey {
     /// legacy MCP 会话。
     #[cfg(feature = "mcp-server")]
-    pub(crate) fn mcp_session(id: u64) -> Self {
-        Self { key: format!("mcp:{id}"), kind: CallerKind::McpSession, handle: false }
+    ///
+    /// @input agent 会话建立（`initialize`）时出示的 Agent 身份。
+    pub(crate) fn mcp_session(id: u64, agent: Option<AgentName>) -> Self {
+        Self { key: format!("mcp:{id}"), kind: CallerKind::McpSession, handle: false, agent }
     }
 
     /// 无会话的 MCP 请求：按主体。
     #[cfg(feature = "mcp-server")]
-    pub(crate) fn principal(p: Principal) -> Self {
-        Self { key: format!("principal:{}", p.as_str()), kind: CallerKind::Principal, handle: false }
+    pub(crate) fn principal(p: &Principal) -> Self {
+        Self { key: format!("principal:{}", p.label()), kind: CallerKind::Principal, handle: false, agent: p.agent().cloned() }
     }
 
     /// Hub API 的会话（`None` = 默认会话）。
@@ -113,7 +130,7 @@ impl CallerKey {
             Some(s) => format!("api:{s}"),
             None => "api".to_owned(),
         };
-        Self { key, kind: CallerKind::Api, handle: false }
+        Self { key, kind: CallerKind::Api, handle: false, agent: None }
     }
 
     /// 主体名下的任务句柄 `task_id`（`owner` 为无会话主体的调用方键）。
@@ -121,7 +138,7 @@ impl CallerKey {
     /// @input task_id 已通过 [`is_task_id`]（键中不会出现 `/` 等分隔字符）。
     pub(crate) fn task_handle(owner: &CallerKey, task_id: &str) -> Self {
         debug_assert!(owner.can_own_handles() && is_task_id(task_id));
-        Self { key: format!("{}/{task_id}", owner.key), kind: owner.kind, handle: true }
+        Self { key: format!("{}/{task_id}", owner.key), kind: owner.kind, handle: true, agent: owner.agent.clone() }
     }
 
     /// 可以签发 / 使用任务句柄的调用方：无会话主体本身（legacy 会话与 Hub API 已各有自己的任务，句柄不嵌套）。
@@ -152,6 +169,11 @@ impl CallerKey {
         self.kind
     }
 
+    /// 发起方 Agent 名（第 16 项 N5）；本机用户与 Hub API 为 `None`。
+    pub(crate) fn agent(&self) -> Option<&AgentName> {
+        self.agent.as_ref()
+    }
+
     /// 无会话（modern）调用方：列表只随服务器状态与主体变化（S5），`apps.select` 带空闲有效期（S6）。
     pub(crate) fn is_stateless(&self) -> bool {
         self.kind == CallerKind::Principal
@@ -162,6 +184,20 @@ impl CallerKey {
             CallerKind::Principal => TaskLifetime::UntilIdle,
             CallerKind::McpSession | CallerKind::Api => TaskLifetime::UntilEnd,
         }
+    }
+}
+
+impl PartialEq for CallerKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl Eq for CallerKey {}
+
+impl std::hash::Hash for CallerKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
     }
 }
 
@@ -331,8 +367,8 @@ mod tests {
     #[test]
     fn caller_keys_are_distinct_and_carry_lifetime() {
         let keys = [
-            (CallerKey::mcp_session(3), "mcp:3", TaskLifetime::UntilEnd, CallerKind::McpSession),
-            (CallerKey::principal(Principal::Local), "principal:local", TaskLifetime::UntilIdle, CallerKind::Principal),
+            (CallerKey::mcp_session(3, None), "mcp:3", TaskLifetime::UntilEnd, CallerKind::McpSession),
+            (CallerKey::principal(&Principal::Local), "principal:local", TaskLifetime::UntilIdle, CallerKind::Principal),
             (CallerKey::api(None), "api", TaskLifetime::UntilEnd, CallerKind::Api),
             (CallerKey::api(Some("x")), "api:x", TaskLifetime::UntilEnd, CallerKind::Api),
         ];
@@ -345,6 +381,30 @@ mod tests {
         assert_eq!(set.len(), keys.len());
         assert!(keys.iter().all(|(k, _, _, _)| !k.is_task_handle()));
         assert_eq!(keys.iter().filter(|(k, _, _, _)| k.can_own_handles()).count(), 1, "只有无会话主体可持有句柄");
+    }
+
+    /// N5：每个 Agent 一个主体（各自的任务与句柄）；句柄与 legacy 会话带着发起方 Agent；本机用户与 Hub API 没有。
+    #[test]
+    fn agent_principals_are_separate_callers() {
+        let claude = Principal::Agent(AgentName::for_test("claude"));
+        let cursor = Principal::Agent(AgentName::for_test("cursor"));
+        let (pc, pr, pl) = (CallerKey::principal(&claude), CallerKey::principal(&cursor), CallerKey::principal(&Principal::Local));
+        assert_eq!((pc.as_str(), pr.as_str()), ("principal:agent:claude", "principal:agent:cursor"));
+        assert_eq!(pc.agent().map(AgentName::as_str), Some("claude"));
+        assert_eq!((pl.agent(), CallerKey::api(None).agent()), (None, None));
+        assert!(pc.can_own_handles() && pc.is_stateless());
+
+        let mut t = TaskTable::default();
+        let h = t.begin_handle(&pc, 1).expect("claude 的句柄");
+        assert_eq!(h.agent().map(AgentName::as_str), Some("claude"));
+        assert!(h.as_str().starts_with("principal:agent:claude/task-"), "{h}");
+        assert!(t.begin_handle(&pr, 1).is_ok(), "句柄上限按 Agent 分别计算");
+        assert_eq!((t.handle_count(&pc), t.handle_count(&pr), t.handle_count(&pl)), (1, 1, 0));
+        t.entry(&pc).select("shop", "a", Instant::now());
+        assert!(t.get(&pr).is_none() && t.get(&pl).is_none(), "选择不跨 Agent");
+
+        let s = CallerKey::mcp_session(7, claude.agent().cloned());
+        assert_eq!((s.as_str(), s.agent().map(AgentName::as_str)), ("mcp:7", Some("claude")));
     }
 
     #[test]
@@ -361,7 +421,7 @@ mod tests {
     #[test]
     fn task_handles_are_separate_tasks_with_cap() {
         let mut t = TaskTable::default();
-        let p = CallerKey::principal(Principal::Local);
+        let p = CallerKey::principal(&Principal::Local);
         let a = t.begin_handle(&p, 2).expect("a");
         let b = t.begin_handle(&p, 2).expect("b");
         assert_eq!(t.begin_handle(&p, 2), Err(2), "超过上限");
@@ -380,7 +440,7 @@ mod tests {
         assert_eq!(t.handle_count(&p), 2);
         assert!(t.get(&b).is_some_and(|x| x.selected.is_empty()));
         // 其他调用方名下没有句柄；与主体同前缀但不是句柄的键不计
-        assert_eq!(t.handle_count(&CallerKey::mcp_session(1)), 0);
+        assert_eq!(t.handle_count(&CallerKey::mcp_session(1, None)), 0);
         let mut idle = t.idle_lifetime_keys();
         idle.sort_by(|x, y| x.as_str().cmp(y.as_str()));
         assert_eq!(idle.len(), 3, "句柄任务与主体任务都按空闲回收");
@@ -397,8 +457,8 @@ mod tests {
     #[test]
     fn one_task_per_caller_with_stable_unguessable_id() {
         let mut t = TaskTable::default();
-        let p = CallerKey::principal(Principal::Local);
-        let s = CallerKey::mcp_session(1);
+        let p = CallerKey::principal(&Principal::Local);
+        let s = CallerKey::mcp_session(1, None);
         let id = t.entry(&p).id.clone();
         assert!(id.starts_with("task-") && id.len() == "task-".len() + 32, "{id}");
         // 再次写入同一调用方：同一个任务
@@ -420,7 +480,7 @@ mod tests {
     #[test]
     fn selection_idle_ttl_renews_on_use_and_expires() {
         let mut t = TaskTable::default();
-        let p = CallerKey::principal(Principal::Local);
+        let p = CallerKey::principal(&Principal::Local);
         let t0 = Instant::now();
         let ttl = Some(Duration::from_secs(60));
         let task = t.entry(&p);

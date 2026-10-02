@@ -88,3 +88,7 @@ rmcp = { workspace = true, features = ["client", "transport-streamable-http-clie
 [[test]]
 name = "mcp_ipc"
 required-features = ["mcp-server"]
+
+[[test]]
+name = "agents"
+required-features = ["mcp-server"]

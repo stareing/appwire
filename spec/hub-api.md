@@ -206,7 +206,7 @@ pub struct ApprovalRequest { pub call_id: String, pub app_id: String, pub app_na
     pub tool: String, pub title: Option<String>, pub description: String,
     pub risk: Risk, pub arguments: Value, pub session: Option<String>,
     pub annotations: ToolAnnotations,       // 与 HubTool.annotations 相同，供厂商按声明决定是否确认
-    pub principal: Option<String>,          // 第 12 项 S6：MCP 出口的认证主体（传输层凭据，现在恒为 "local"）；Hub API 为 None
+    pub principal: Option<String>,          // 第 12 项 S6：MCP 出口的认证主体（传输层凭据：`local` / `agent:<名>`，3.6「Agent 身份」）；Hub API 为 None
     pub client_name: Option<String> }       // 第 12 项 S6：MCP 客户端自报的 clientInfo.name，仅供显示（不可信，不得据此授权）
 // session：Hub API 为 CallRequest.session 原样；MCP 出口为调用方键（legacy `mcp:<n>`，无会话请求 `principal:<主体>`，3.6）
 // principal / client_name 为 None 时 JSON 中不出现（Hub API 发起的审批与之前逐字节相同）；client_name：legacy 取自 initialize，
@@ -269,6 +269,7 @@ pub struct PairingRequest { pub app_id: String, pub app_name: String,
 | `/healthz` | `GET` → `Health` JSON | `Origin` 允许列表（403），不需要令牌 |
 | `/status` | `GET` → `HubStatus` JSON（3.9） | `Origin` 允许列表（403）→ IPC 直接允许；TCP 必须带有效令牌，未配置令牌时 403 |
 | `/policy` | `POST`（请求体为 `PolicyConfig` JSON，≤ 1 MiB）→ `{ok, rules?, error?}`；替换策略规则（3.13） | 同 `/status`；规则不合法时 400，之前的规则继续生效 |
+| `/agents` | `POST`（请求体为 `AgentsConfig` JSON，≤ 1 MiB）→ `AgentsReply {ok, agents?, error?}`（不含令牌）；替换 Agent 登记（下方「Agent 身份」） | 同 `/status`（Agent 令牌 401）；不合法时 400，之前的登记继续生效 |
 
 ```rust
 pub struct HttpOptions {
@@ -348,9 +349,10 @@ pub struct Health {                          // serde camelCase
   | Hub API（`CallRequest.session`、`ToolFilter.session`、`dispatch_in_session`） | `api` / `api:<session>` | `reset_session` |
   | 无会话 MCP 请求出示任务句柄（参数 `taskId` / `_meta` `dev.appwire/taskId`，第 12 项 S8） | `principal:<主体>/<任务 ID>` | 同上一行的空闲回收，或 `apps.task.end` |
 
-  主体只取自传输层凭据，不取自 `clientInfo`：TCP 上的本机令牌（及允许不带令牌的回环请求）、IPC 的同一用户、stdio 的父进程现在都是
-  `principal:local`（第 16 项 N5 按 Agent 发令牌后细分）。因此**不带任务句柄的无会话请求共用一个任务**（一个 Agent 的 `apps.select` /
-  `apps.release` 影响另一个，docs/plans/12-mcp-stateless.md R1；需要隔离时用下方「任务句柄」）。无会话请求不登记 peer、处理器析构无副作用（rmcp 无状态 HTTP 路径
+  主体只取自传输层凭据，不取自 `clientInfo`：出示已登记 Agent 令牌的 `/mcp` 请求为 `principal:agent:<名>`（下方「Agent 身份」）；
+  其余——TCP 上的本机令牌（及允许不带令牌的回环请求）、IPC 的同一用户、stdio 的父进程——都是 `principal:local`。因此**同一主体下
+  不带任务句柄的无会话请求共用一个任务**（未登记 Agent 时本机所有 Agent 共用，一个的 `apps.select` / `apps.release` 影响另一个，
+  docs/plans/12-mcp-stateless.md R1；需要隔离时登记 Agent 或用下方「任务句柄」）。无会话请求不登记 peer、处理器析构无副作用（rmcp 无状态 HTTP 路径
   每请求构造一次处理器），通知经 `subscriptions/listen`（上方「通知」）。无会话请求可协商 2026-07-28（上方「协议版本」），也可以
   2025-11-25 及以前的版本经 `server/discover` 到达；其列表与总览按 3.7「无会话请求的列表与总览」（第 12 项 S5）。
   **主体级 `apps.select`**（第 12 项 S6）：无会话请求的选择记在主体任务上，对该主体的所有无会话客户端生效，**不改变工具列表**；
@@ -360,6 +362,31 @@ pub struct Health {                          // serde camelCase
   `HubConfig.task_idle_ttl: Duration`（默认 `DEFAULT_TASK_IDLE_TTL` = 10 分钟，`0` = 不因空闲回收）：无会话调用方没有进行中的请求、
   距最近一次请求活动（与 3.5 租约的请求流空闲判定共用一份记录）达此时长时，回收其任务——收回仍未到期的租约（`ttlMs: 0`，其他调用方的
   未到期租约随后补发；已到期的不再发消息）、删除其租约统计与状态。没有按空闲回收的任务时 Hub 不设定时器。
+- **Agent 身份**（第 16 项 N5；`crates/hub/src/agents.rs`）：按 Agent 发访问令牌，Hub 据此区分主体；身份只用于区分与归属
+  （任务、句柄、记账、日志），**不做授权**（Agent 能调用什么由 Agent 自身配置与 3.13 策略决定）。
+  ```rust
+  pub struct AgentCredential { pub name: String, pub token: String }   // Debug 不输出令牌
+  pub struct AgentsConfig { pub agents: Vec<AgentCredential> }          // serde：{"agents":[{"name","token"}]}
+  impl AgentsConfig { pub fn from_json(text: &str) -> Result<Self, String>; pub fn validate(&self) -> Result<(), String> }
+  HubConfig.agents: AgentsConfig                                        // 默认空：所有请求为本机主体（与之前相同）
+  Hub::set_agents(&self, AgentsConfig) -> Result<(), HubError>          // 不合法 → INVALID_INPUT，之前的登记继续生效
+  HubStatus.agents: Option<Vec<String>>                                 // 已登记的名字（按名排序，不含令牌）；旧 Host 为 None
+  AgentTaskStatus.agent: Option<String>                                 // 任务的发起方 Agent；本机主体与 Hub API 为 None
+  ```
+  - **校验**（`Hub::start` 时不合法 → `InvalidInput`）：至多 `MAX_AGENTS` = 256 个；名字 1–64 个 ASCII 字母、数字、`-`、`_`、`.`，
+    以字母或数字开头（`agents::is_valid_agent_name`）；令牌 32–512 个可见 ASCII 字符、不含空白；名字与令牌各不重复。错误信息不含令牌。
+  - **核对**（`/mcp`，TCP 与 IPC 相同）：`Authorization: Bearer` 先比本机令牌（→ `local`），再逐条常量时间比 Agent 令牌（→ `agent:<名>`）；
+    都不匹配时，配置了本机令牌 → 401，未配置（IPC、不校验令牌的监听器）→ 按未携带处理（`local`，与之前一致）。不带令牌的请求按上方令牌规则。
+    Agent 令牌**只**用于 `/mcp`：`/status`、`/policy`、`/agents` 一律 401。stdio 与 `serve_mcp_stream` 没有 HTTP 头，恒为 `local`。
+  - **作用**：无会话请求的调用方键为 `principal:agent:<名>`，任务句柄为 `principal:agent:<名>/<任务 ID>`（句柄归签发的 Agent，其他 Agent
+    与本机出示时与不存在相同）；主体级 `apps.select`、租约、`max_task_handles` 与 `max_listen_streams` 上限都按 Agent 分别计算；
+    审批 `ApprovalRequest.principal` 为 `agent:<名>`。legacy 会话的调用方键仍为 `mcp:<n>`，`initialize` 时出示的身份记在会话上
+    （`AgentTaskStatus.agent`、审批 `principal`），会话内后续请求沿用。
+  - **替换**：`set_agents` / `POST /agents` 只影响之后到达的请求；已建立的 legacy 会话保持建立时的身份，被移除 Agent 的主体任务按空闲回收。
+  - **Host**：`<home>/agents.json`（0600，格式即 `AgentsConfig`），启动时加载（不合法拒绝启动）；`app-mcp-host agent add <名> [--rotate]`
+    生成 64 位十六进制令牌并打印到 stdout、`remove`、`token <名>`、`list [--json]`（只列名字）、`reload`（手工编辑后），运行中的 Host 经
+    `POST /agents` 随即生效。doctor「Agent 登记」列出各 Agent 的任务数，文件不合法为错误，其他用户可读（Unix）或与运行中不一致为注意。
+  - **绑定**：hub-c / hub-node / hub-uniffi / C# 暂未暴露（嵌入式 Hub 的调用方识别随第 4g e 项）。
 - **任务句柄**（第 12 项 S8、第 16 项 P1；`crates/hub/src/task_handle.rs`；名称见 3.15 名称表）：同一无会话主体经句柄同时运行多个互相隔离的
   任务（各自的 `apps.select` 选择与租约）。只提供机制：开几个、何时结束由 Agent 决定。
   - **签发** `apps.task.begin {}` → `{taskId, idleTtlMs, message}`：为请求主体创建一个新任务，`taskId` 即其任务 ID（≥128 位随机，

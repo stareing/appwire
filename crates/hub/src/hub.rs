@@ -223,6 +223,10 @@ pub struct HubConfig {
     /// 每个主体同时存在的任务句柄数上限（`apps.task.begin`，spec/hub-api.md 3.6「任务句柄」，B-07）；达到上限时签发以
     /// `RATE_LIMITED` 失败。`0` = 不提供任务句柄（`apps.task.*` 不列出，`taskId` 一律无效）。默认 [`DEFAULT_MAX_TASK_HANDLES`]。
     pub max_task_handles: usize,
+    /// 已登记的 Agent 及其访问令牌（第 16 项 N5，spec/hub-api.md 3.6「Agent 身份」）：出示其令牌的 `/mcp` 请求的主体为
+    /// `agent:<名>`，任务、任务句柄、`apps.select`、租约与 listen 流上限按 Agent 分开。默认无登记（所有请求为本机主体）。
+    /// 运行中可用 [`Hub::set_agents`] 替换。
+    pub agents: crate::agents::AgentsConfig,
 }
 
 /// [`HubConfig::max_task_handles`] 的默认值。
@@ -330,6 +334,7 @@ impl Default for HubConfig {
             max_listen_streams: DEFAULT_MAX_LISTEN_STREAMS,
             max_listen_resources: DEFAULT_MAX_LISTEN_RESOURCES,
             max_task_handles: DEFAULT_MAX_TASK_HANDLES,
+            agents: crate::agents::AgentsConfig::default(),
         }
     }
 }
@@ -391,6 +396,8 @@ pub struct HubShared {
     pub(crate) rates: Mutex<RateBook>,
     /// 生效的策略规则、命中计数与最近的加载错误（spec/hub-api.md 3.13）。
     pub(crate) policy: Mutex<PolicyState>,
+    /// 已登记 Agent 的令牌（[`HubConfig::agents`]，运行中由 [`Hub::set_agents`] 整体替换）。
+    pub(crate) agents: Mutex<crate::agents::AgentRegistry>,
     /// 工具注册的变化序号（每次 [`Self::mark_tools_changed`] 加一）；导航后等待目标工具注册时订阅（spec/hub-api.md 3.14）。
     pub(crate) tools_rev: tokio::sync::watch::Sender<u64>,
     /// 接受闸门与连接计数（按需启动的空闲退出，[`crate::activity`]）。
@@ -456,6 +463,7 @@ impl HubShared {
         }
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let policy = PolicyState::new(config.policy.clone(), unix_millis());
+        let agents = crate::agents::AgentRegistry::new(&config.agents);
         let persist = config.state_dir.as_deref().map(crate::lifecycle::Persist::new);
         Self {
             identity: HostIdentity::current(env!("CARGO_PKG_VERSION")),
@@ -491,6 +499,7 @@ impl HubShared {
             lease_changed: Notify::new(),
             rates: Mutex::new(RateBook::default()),
             policy: Mutex::new(policy),
+            agents: Mutex::new(agents),
             tools_rev: tokio::sync::watch::Sender::new(0),
             activity: crate::activity::Activity::default(),
         }
@@ -667,6 +676,7 @@ impl HubShared {
             policy: Some(lock(&self.policy).status()),
             dormant_store: self.persist.as_ref().map(crate::lifecycle::Persist::status),
             tasks: Some(tasks),
+            agents: Some(lock(&self.agents).names()),
         }
     }
 
@@ -850,6 +860,7 @@ impl HubShared {
                     id: t.id.clone(),
                     caller: key.to_string(),
                     kind: key.kind(),
+                    agent: key.agent().map(|a| a.as_str().to_owned()),
                     selections,
                     leases,
                     inflight,
@@ -1101,6 +1112,19 @@ impl HubShared {
             Err(e) => tracing::warn!(error = %e, "策略规则不合法，继续使用之前的规则"),
         }
         r
+    }
+
+    /// 替换已登记的 Agent（[`Hub::set_agents`]、`POST /agents`）；不合法时之前的登记继续生效。
+    pub(crate) fn set_agents(&self, config: &crate::agents::AgentsConfig) -> Result<(), String> {
+        config.validate()?;
+        *lock(&self.agents) = crate::agents::AgentRegistry::new(config);
+        tracing::info!(agents = config.agents.len(), "Agent 登记已更新");
+        Ok(())
+    }
+
+    /// 出示的令牌对应的已登记 Agent。
+    pub(crate) fn identify_agent(&self, token: &str) -> Option<crate::agents::AgentName> {
+        lock(&self.agents).identify(token)
     }
 
     /// 记下一次加载失败（规则文本不是合法 JSON 等），之前的规则继续生效。
@@ -1817,6 +1841,7 @@ impl Hub {
             .validate()
             .and_then(|()| config.limits.validate())
             .and_then(|()| config.policy.validate())
+            .and_then(|()| config.agents.validate())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         // 锁先于任何监听：并发启动的两个 Host 只有一个能走到绑定。
         let instance = config.run_dir.as_deref().map(Instance::acquire).transpose()?;
@@ -2084,6 +2109,12 @@ impl Hub {
         self.shared
             .set_policy(config)
             .map_err(|e| HubError(ToolError::new(ErrorKind::InvalidInput, e)))
+    }
+
+    /// 替换已登记的 Agent（第 16 项 N5，spec/hub-api.md 3.6「Agent 身份」）。不合法时返回 `INVALID_INPUT`，之前的登记继续生效。
+    /// 只影响之后到达的请求：已建立的 legacy 会话保持建立时的身份，被移除 Agent 的任务按空闲回收。
+    pub fn set_agents(&self, config: crate::agents::AgentsConfig) -> Result<(), HubError> {
+        self.shared.set_agents(&config).map_err(|e| HubError(ToolError::new(ErrorKind::InvalidInput, e)))
     }
 
     /// 生效的策略规则、各规则命中次数与最近的加载错误。

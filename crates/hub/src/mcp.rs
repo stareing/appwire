@@ -28,12 +28,12 @@
 //! 错误不发 AppWire 的 -32000…-32019 码（[`error_for_version`]）。
 
 use std::borrow::Cow;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use rmcp::model::{
     CacheScope, CallToolRequestParams, ErrorCode, SubscriptionFilter, CallToolResponse, DiscoverResult, Implementation, InitializeRequestParams, InitializeResult,
-    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion, RequestMetaObject,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
     ReadResourceRequestParams, ReadResourceResponse, Resource, ServerCapabilities, ServerConfig, SubscribeRequestParams,
     UnsubscribeRequestParams,
 };
@@ -65,11 +65,15 @@ pub struct McpSession {
     /// @why 在 `initialize` 而不是 `notifications/initialized` 时置位：rmcp 不等 `initialized` 就处理后续请求
     /// （HTTP 上两者是独立的 POST，无先后保证），按后者判定会把握手后的首批请求误判为无会话。
     handshake: AtomicBool,
+    /// legacy 会话建立（`initialize`）时请求的认证主体：会话内的请求沿用它（第 16 项 N5）。
+    session_principal: OnceLock<Principal>,
 }
 
 /// 一个请求的调用方。
 struct RequestCaller {
     key: CallerKey,
+    /// 认证主体（`ApprovalRequest::principal`）。
+    principal: Principal,
     /// legacy 会话号（只向该会话发 `list_changed`）；无会话请求为 `None`。
     mcp_session: Option<u64>,
 }
@@ -82,6 +86,7 @@ impl McpSession {
             id,
             cid: format!("mcp-{id}"),
             handshake: AtomicBool::new(false),
+            session_principal: OnceLock::new(),
         }
     }
 
@@ -113,18 +118,36 @@ impl McpSession {
             .with_instructions(instructions)
     }
 
+    /// 本 legacy 会话的调用方键（带建立会话时的 Agent 身份）。
+    fn session_key(&self) -> CallerKey {
+        CallerKey::mcp_session(self.id, self.session_principal.get().and_then(Principal::agent).cloned())
+    }
+
     /// 按请求判定调用方（模块文档）。
     ///
-    /// @security 主体只取自传输层：`/mcp` 在 rmcp 之前已核对本机令牌（TCP）或由操作系统核对同一用户（IPC），stdio 的对端是
-    /// 父进程——现在都是 [`Principal::Local`]；不读 `clientInfo`（自报、不可信）。
-    fn caller(&self, meta: &RequestMetaObject) -> RequestCaller {
-        let declares_modern = meta.protocol_version().is_some_and(|v| !v.has_initialize());
+    /// @security 主体只取自传输层（[`request_principal`]）；不读 `clientInfo`（自报、不可信）。
+    fn caller(&self, context: &RequestContext<RoleServer>) -> RequestCaller {
+        let declares_modern = context.meta.protocol_version().is_some_and(|v| !v.has_initialize());
         if self.is_legacy() && !declares_modern {
-            RequestCaller { key: CallerKey::mcp_session(self.id), mcp_session: Some(self.id) }
+            let principal = self.session_principal.get().cloned().unwrap_or(Principal::Local);
+            RequestCaller { key: self.session_key(), principal, mcp_session: Some(self.id) }
         } else {
-            RequestCaller { key: CallerKey::principal(Principal::Local), mcp_session: None }
+            let principal = request_principal(context);
+            RequestCaller { key: CallerKey::principal(&principal), principal, mcp_session: None }
         }
     }
+}
+
+/// 请求的认证主体：`/mcp` 核对令牌后放进 HTTP 请求扩展（`http_server`，rmcp 把 `http::request::Parts` 放进请求上下文）；
+/// 出示已登记 Agent 令牌 → [`Principal::Agent`]。其余——本机令牌 / 回环 / IPC 同用户 / stdio 与流传输（没有 HTTP 部分）——
+/// 都是 [`Principal::Local`]。
+fn request_principal(context: &RequestContext<RoleServer>) -> Principal {
+    context
+        .extensions
+        .get::<http::request::Parts>()
+        .and_then(|parts| parts.extensions.get::<Principal>())
+        .cloned()
+        .unwrap_or(Principal::Local)
 }
 
 /// MCP 2026-07-28 及以后的请求：AppWire 自定义的 -32000…-32019 码改为规范码，类别仍在 `data.kind`
@@ -167,7 +190,7 @@ impl Drop for McpSession {
         }
         tracing::debug!(cid = %self.cid, "MCP 会话结束");
         self.shared.remove_subscriber(self.id);
-        self.shared.end_task(&CallerKey::mcp_session(self.id));
+        self.shared.end_task(&self.session_key());
     }
 }
 
@@ -214,6 +237,8 @@ impl ServerHandler for McpSession {
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, McpError> {
         self.handshake.store(true, Ordering::SeqCst);
+        // 重复的 initialize 不改变会话身份（OnceLock 只取第一次）。
+        let _ = self.session_principal.set(request_principal(&context));
         context.peer.set_peer_info(request.clone());
         self.negotiate_initialize(&request)
     }
@@ -240,7 +265,7 @@ impl ServerHandler for McpSession {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let caller = self.caller(&context.meta);
+        let caller = self.caller(&context);
         let _activity = self.shared.session_request(&caller.key);
         let r = ListToolsResult::with_all_items(self.shared.mcp_tools(&caller.key));
         Ok(match self.list_ttl_ms(&caller) {
@@ -259,7 +284,7 @@ impl ServerHandler for McpSession {
             Ok(m) => m,
             Err(e) => return Ok(call::error_result(&e).into()),
         };
-        let caller = self.caller(&context.meta);
+        let caller = self.caller(&context);
         let progress = context.meta.get_progress_token().map(|token| forward_progress(context.peer.clone(), token));
         let ctx = CallCtx {
             name: request.name.to_string(),
@@ -272,7 +297,7 @@ impl ServerHandler for McpSession {
             mcp_session: caller.mcp_session,
             progress,
             idempotency_key: agent.idempotency_key,
-            principal: Some(Principal::Local.as_str().to_owned()),
+            principal: Some(caller.principal.label()),
             client_name: context.client_info().map(|i| i.name),
             task_id: agent.task_id,
         };
@@ -289,7 +314,7 @@ impl ServerHandler for McpSession {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        let caller = self.caller(&context.meta);
+        let caller = self.caller(&context);
         let _activity = self.shared.session_request(&caller.key);
         let policy = self.shared.policy();
         let resources = self
@@ -337,7 +362,7 @@ impl ServerHandler for McpSession {
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
         let r = ListResourceTemplatesResult::default();
-        Ok(match self.list_ttl_ms(&self.caller(&context.meta)) {
+        Ok(match self.list_ttl_ms(&self.caller(&context)) {
             Some(ttl) => r.with_ttl_ms(ttl).with_cache_scope(CacheScope::Private),
             None => r,
         })
@@ -348,7 +373,7 @@ impl ServerHandler for McpSession {
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        let caller = self.caller(&context.meta);
+        let caller = self.caller(&context);
         let version = context.protocol_version();
         let r = call::read_resource(&self.shared, &request.uri, &caller.key)
             .await
@@ -390,7 +415,7 @@ impl ServerHandler for McpSession {
         let version = context.request_context().protocol_version();
         let _registration = self
             .shared
-            .open_listen(context.sink().clone(), Principal::Local)
+            .open_listen(context.sink().clone(), request_principal(context.request_context()))
             .map_err(|e| error_for_version(to_mcp_error(&e), version.as_ref()))?;
         tracing::info!(cid = %self.cid, subscription = %context.sink().id(), accepted = ?context.accepted(), "subscriptions/listen 已建立");
         tokio::select! {
@@ -406,7 +431,7 @@ impl ServerHandler for McpSession {
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
         // rmcp 只把 legacy 请求的 `resources/subscribe` 交到这里（无会话请求得 method not found，订阅改经 S7 的 listen）。
-        let _activity = self.shared.session_request(&self.caller(&context.meta).key);
+        let _activity = self.shared.session_request(&self.caller(&context).key);
         if let Some((app_id, _)) = parse_resource_uri(&request.uri)
             && self.shared.is_upstream(app_id)
         {
@@ -558,7 +583,7 @@ mod tests {
     }
 
     fn principal() -> CallerKey {
-        CallerKey::principal(Principal::Local)
+        CallerKey::principal(&Principal::Local)
     }
 
     /// （任务数, 主体任务 ID, 主体任务的选择, 主体任务的租约数）

@@ -96,7 +96,7 @@ impl SubscriberTable {
         principal: Principal,
         max: usize,
     ) -> Result<(), ListenLimitReached> {
-        if self.listen_count_of(principal) >= max {
+        if self.listen_count_of(&principal) >= max {
             return Err(ListenLimitReached { max });
         }
         self.map.insert(id, Subscriber::Listen { sink, principal });
@@ -134,7 +134,7 @@ impl SubscriberTable {
     }
 
     #[cfg(feature = "mcp-server")]
-    fn listen_count_of(&self, principal: Principal) -> usize {
-        self.map.values().filter(|s| matches!(s, Subscriber::Listen { principal: p, .. } if *p == principal)).count()
+    fn listen_count_of(&self, principal: &Principal) -> usize {
+        self.map.values().filter(|s| matches!(s, Subscriber::Listen { principal: p, .. } if p == principal)).count()
     }
 }

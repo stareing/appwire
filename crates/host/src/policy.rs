@@ -129,16 +129,9 @@ pub fn describe_status(st: &PolicyStatus) -> String {
         .join("\n")
 }
 
-/// 运行中的 Host 与访问它所需的令牌。
-async fn running_host(home: &AppHome) -> Option<(app_mcp_protocol::registry::EndpointRegistry, Option<String>)> {
-    let reg = crate::running_instance(home).await?;
-    let token = std::fs::read_to_string(home.token_file()).ok().map(|t| t.trim().to_owned());
-    Some((reg, token))
-}
-
 /// 把规则文件交给运行中的 Host。`Ok(None)` = Host 未运行。
 async fn push(home: &AppHome) -> anyhow::Result<Option<usize>> {
-    let Some((reg, token)) = running_host(home).await else {
+    let Some((reg, token)) = crate::running_host(home).await else {
         return Ok(None);
     };
     let text = read_text(&home.policy_file())
@@ -200,7 +193,7 @@ pub async fn cmd(command: crate::cli::PolicyCommand) -> anyhow::Result<ExitCode>
         C::Show { home, json } => {
             let home = AppHome::resolve(home.home.as_deref())?;
             let file = validate_file(&home.policy_file());
-            let running = match running_host(&home).await {
+            let running = match crate::running_host(&home).await {
                 Some((reg, token)) => {
                     let listen = reg.listen.as_deref().map(crate::probe_addr);
                     Some(

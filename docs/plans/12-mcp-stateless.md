@@ -455,7 +455,7 @@ S7 后 `e2e/src/mcp-client.ts` 增加 modern 模式，关键用例两代各跑�
 
 | # | 风险 | 收敛措施 |
 |---|---|---|
-| R1 | N5 之前所有 modern Agent 共用一个主体：一个 Agent 的 `apps.select` / `apps.release` 影响另一个 | 结果文本写明作用范围；`apps.select` 带 TTL；S8 任务句柄提供隔离；`/status` 显示主体级选择 |
+| R1 | N5 之前所有 modern Agent 共用一个主体：一个 Agent 的 `apps.select` / `apps.release` 影响另一个 | 结果文本写明作用范围；`apps.select` 带 TTL；S8 任务句柄提供隔离；`/status` 显示主体级选择；N5（2026-10-03）后登记了令牌的 Agent 各自一个主体 |
 | R2 | modern 取消渐进暴露的动态列表后工具数过多 | 全局选择与策略 `hide` 仍可裁剪；`ttlMs` 让客户端缓存；U3 实测后再定默认 |
 | R3 | 改 `_meta` 前缀破坏已有 Agent 配置 | 请求侧旧键弃用期兼容；冲突显式失败 |
 | R4 | 修复上游错误反查后，依赖旧（错误）分类的调用方行为改变 | 原码保留在 `details.upstreamCode`；在报告与 spec 中写明 |

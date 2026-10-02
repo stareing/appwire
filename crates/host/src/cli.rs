@@ -65,6 +65,12 @@ pub enum Command {
         #[command(subcommand)]
         action: PolicyCommand,
     },
+    /// Agent 登记（<home>/agents.json）：每个 Agent 一个令牌，MCP 客户端以 Authorization: Bearer <令牌> 连接 /mcp 时
+    /// 按 Agent 区分（任务、任务句柄、apps.select、租约分开）。未登记时所有请求为本机主体（spec/hub-api.md 3.6「Agent 身份」）。
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommand,
+    },
     /// 按名寻址的 App 登记（spec/naming.md 4.1、4.3、4.4、5.3）：生成 App 登记文件（Linux 另生成 D-Bus 激活文件
     /// `$XDG_DATA_HOME/dbus-1/services/dev.appmcp.App.<appId>.service`；Windows 写 `%LOCALAPPDATA%\app-mcp\apps\<appId>.json`；
     /// macOS 另生成按需套接字的用户 LaunchAgent `~/Library/LaunchAgents/dev.appmcp.App.<appId>.plist` 并 `launchctl bootstrap`），
@@ -118,6 +124,42 @@ pub enum PolicyCommand {
         #[command(flatten)]
         home: HomeArg,
         id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AgentCommand {
+    /// 登记 Agent 并生成令牌（令牌打印到 stdout）；Host 在运行时随即生效。
+    Add {
+        #[command(flatten)]
+        home: HomeArg,
+        /// Agent 名：字母、数字、-、_、.，以字母或数字开头，至多 64 个字符。
+        name: String,
+        /// 为已登记的 Agent 换新令牌（旧令牌随即失效）。
+        #[arg(long)]
+        rotate: bool,
+    },
+    /// 删除 Agent（其令牌随即失效）。
+    Remove {
+        #[command(flatten)]
+        home: HomeArg,
+        name: String,
+    },
+    /// 让运行中的 Host 重新加载登记文件（手工编辑后）；不合法时 Host 保留之前的登记（退出码 1）。Host 未运行时退出码 3。
+    Reload(HomeArg),
+    /// 打印 Agent 的令牌。
+    Token {
+        #[command(flatten)]
+        home: HomeArg,
+        name: String,
+    },
+    /// 列出登记文件与运行中 Host 的 Agent（只列名字）。
+    List {
+        #[command(flatten)]
+        home: HomeArg,
+        /// 输出 JSON。
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -794,6 +836,13 @@ mod tests {
         assert_eq!((rule.app.as_str(), rule.tool.as_deref()), ("shop", Some("pay*")));
         let cli = Cli::try_parse_from(["app-mcp-host", "policy", "reload", "--home", "/tmp/x"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Policy { action: PolicyCommand::Reload(_) })));
+
+        let cli = Cli::try_parse_from(["app-mcp-host", "agent", "add", "claude", "--rotate"]).unwrap();
+        let Some(Command::Agent { action: AgentCommand::Add { name, rotate: true, .. } }) = cli.command else { panic!() };
+        assert_eq!(name, "claude");
+        let cli = Cli::try_parse_from(["app-mcp-host", "agent", "list", "--json"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Agent { action: AgentCommand::List { json: true, .. } })));
+        assert!(Cli::try_parse_from(["app-mcp-host", "agent", "token"]).is_err(), "token 需要名字");
 
         let cli = Cli::try_parse_from(["app-mcp-host", "setup"]).unwrap();
         let Some(Command::Setup(a)) = cli.command else { panic!() };

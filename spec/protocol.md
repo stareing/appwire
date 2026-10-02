@@ -41,10 +41,11 @@ Host 默认监听：
   | 路径 | 内容 | 校验 |
   |---|---|---|
   | `/app` | WebSocket 升级 → App 连接（本规范的消息） | `Origin` 在 `app/hello` 时按允许列表 / 配对处理（第 6 节） |
-  | `/mcp` | MCP Streamable HTTP（`app-mcp-host serve` 开启；嵌入式 Hub 可选） | `Origin` 允许列表（403）→ 本地访问令牌（401） |
+  | `/mcp` | MCP Streamable HTTP（`app-mcp-host serve` 开启；嵌入式 Hub 可选） | `Origin` 允许列表（403）→ 本地访问令牌或已登记 Agent 的令牌（401；Agent 令牌同时确定请求的主体，spec/hub-api.md 3.6「Agent 身份」） |
   | `/healthz` | `GET`：Host 身份与监听信息（1.6），不需要令牌 | `Origin` 允许列表（403） |
   | `/status` | `GET`：运行状态（各 App 实例的连接 / 休眠 / 唤醒、最近错误、SDK 上报，10.2），供 `app-mcp-host doctor` / `status` | 本地 IPC 直接允许；TCP 必须带有效令牌（未配置令牌时 403，请经 IPC 访问） |
   | `/policy` | `POST`：替换策略规则（spec/hub-api.md 3.13），供 `app-mcp-host policy reload` | 同 `/status` |
+  | `/agents` | `POST`：替换已登记的 Agent（spec/hub-api.md 3.6「Agent 身份」），供 `app-mcp-host agent add / remove / reload` | 同 `/status`（Agent 令牌不能访问） |
 
   未显式配置监听地址且默认端口被占用时，Host 依次尝试**固定的备选端口** `7737`、`7757`，实际地址写入登记文件（1.7）。
   合并之前的独立 MCP 端口 `7718` 不再默认监听；兼容期内可显式配置（`app-mcp-host` 的 `http.addr` / `--http`，

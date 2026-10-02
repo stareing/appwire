@@ -11,6 +11,7 @@
 //! 可执行程序 `app-mcp-host` 是本库之上的命令行薄壳。
 
 mod activity;
+pub mod agents;
 mod agent_control;
 pub mod app_server;
 pub mod call;
@@ -60,6 +61,7 @@ pub use format::ToolFormat;
 pub use lease::{LeaseOverrides, LeasePairStatus, LeasePolicy, LeaseStatus};
 pub use limits::{LimitOverrides, LimitPolicy, OutputValidation, RateLimit};
 pub use activity::PreboundListeners;
+pub use agents::{AgentCredential, AgentsConfig};
 pub use http_server::{Health, HttpOptions};
 pub use progress::ProgressUpdate;
 pub use policy::{

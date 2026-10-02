@@ -408,6 +408,7 @@ pub async fn run(home: &AppHome, s: &Settings) -> Report {
     checks.push(tools_check(status.as_ref()));
     checks.push(limits_check(status.as_ref()));
     checks.push(policy_check(validate_policy_file(home), status.as_ref()));
+    checks.push(agents_check(&read_agents_file(home), status.as_ref()));
 
     // 10. 网页拦截上报
     checks.push(reports_check(status.as_ref()));
@@ -849,6 +850,90 @@ fn limits_check(status: Option<&Result<HubStatus, String>>) -> Check {
         .details(details)
 }
 
+/// Agent 登记文件的读取结果（`agents_check` 的输入，便于测试）。
+struct AgentsFile {
+    path: String,
+    config: Result<app_mcp_hub::AgentsConfig, String>,
+    /// 文件权限位（Unix，存在时）；其他平台与不存在时为 `None`。
+    mode: Option<u32>,
+}
+
+fn read_agents_file(home: &AppHome) -> AgentsFile {
+    let path = home.agents_file();
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(&path).ok().map(|m| m.permissions().mode() & 0o777)
+    };
+    #[cfg(not(unix))]
+    let mode = None;
+    AgentsFile { path: path.display().to_string(), config: crate::agents::validate_file(&path), mode }
+}
+
+/// Agent 登记（第 16 项 N5，spec/hub-api.md 3.6「Agent 身份」）：登记的 Agent 与各自的任务数（只列名字，不含令牌）。
+/// 文件不合法为错误；文件可被其他用户读取、文件与运行中的登记不一致为注意。
+fn agents_check(file: &AgentsFile, status: Option<&Result<HubStatus, String>>) -> Check {
+    const T: &str = "Agent 登记";
+    let st = match status {
+        Some(Ok(st)) => Some(st),
+        _ => None,
+    };
+    let running = st.and_then(|s| s.agents.clone());
+    let file_names: Option<Vec<String>> = file.config.as_ref().ok().map(|c| {
+        let mut n: Vec<String> = c.agents.iter().map(|a| a.name.clone()).collect();
+        n.sort();
+        n
+    });
+    let details = json!({
+        "file": file.path,
+        "fileAgents": file_names,
+        "fileError": file.config.as_ref().err(),
+        "running": running,
+    });
+    if let Err(e) = &file.config {
+        let effect = if running.is_some() { "运行中的 Host 继续使用之前的登记" } else { "Host 启动时会因此失败" };
+        return Check::new("agents", T, Level::Error, format!("登记文件无效（{effect}）：{e}"))
+            .hint("修正或删除该文件后运行 app-mcp-host agent reload")
+            .details(details);
+    }
+    if let Some(mode) = file.mode.filter(|m| m & 0o077 != 0) {
+        return Check::new("agents", T, Level::Warn, format!("登记文件含令牌，但其他用户可读（权限 {mode:03o}）"))
+            .hint(format!("chmod 600 {}", file.path))
+            .details(details);
+    }
+    let names = file_names.unwrap_or_default();
+    let Some(running) = running else {
+        let summary = match (names.is_empty(), st.is_some()) {
+            (true, _) => "未登记 Agent（所有 MCP 请求为本机主体）".to_owned(),
+            (false, true) => format!("登记文件有 {} 个 Agent；运行中的 Host 版本不支持 Agent 登记", names.len()),
+            (false, false) => format!("登记文件有 {} 个 Agent；Host 未运行或状态不可读，无法确认生效情况", names.len()),
+        };
+        let level = if names.is_empty() { Level::Ok } else { Level::Skip };
+        return Check::new("agents", T, level, summary).details(details);
+    };
+    if running != names {
+        return Check::new("agents", T, Level::Warn, format!("登记文件与运行中的登记不一致（改动尚未生效）。生效：{}", join_or_none(&running)))
+            .hint("运行 app-mcp-host agent reload 使文件中的登记生效")
+            .details(details);
+    }
+    if running.is_empty() {
+        return Check::new("agents", T, Level::Ok, "未登记 Agent（所有 MCP 请求为本机主体）").details(details);
+    }
+    let tasks = st.and_then(|s| s.tasks.as_ref());
+    let described: Vec<String> = running
+        .iter()
+        .map(|name| {
+            let n = tasks.map_or(0, |t| t.iter().filter(|t| t.agent.as_deref() == Some(name.as_str())).count());
+            format!("{name}（{n} 个任务）")
+        })
+        .collect();
+    Check::new("agents", T, Level::Info, described.join("、")).details(details)
+}
+
+fn join_or_none(names: &[String]) -> String {
+    if names.is_empty() { "无".to_owned() } else { names.join("、") }
+}
+
 /// 规则文件的校验结果（`policy_check` 的输入，便于测试）。
 fn validate_policy_file(home: &AppHome) -> (String, Result<app_mcp_hub::PolicyConfig, String>) {
     let path = home.policy_file();
@@ -1170,6 +1255,40 @@ mod tests {
         let c = policy_check(file(Ok(PolicyConfig::default())), Some(&Ok(empty)));
         assert!(matches!(c.status, Level::Ok) && c.summary.contains("默认放行"), "{}", c.summary);
         assert!(matches!(policy_check(file(Ok(PolicyConfig::default())), None).status, Level::Skip));
+    }
+
+    #[test]
+    fn agents_check_levels() {
+        use app_mcp_hub::{AgentCredential, AgentsConfig};
+        let two = AgentsConfig {
+            agents: ["cursor", "claude"].map(|n| AgentCredential { name: n.into(), token: format!("{n}-{}", "0".repeat(40)) }).to_vec(),
+        };
+        let file = |config: Result<AgentsConfig, String>, mode: Option<u32>| AgentsFile { path: "/x/agents.json".into(), config, mode };
+        let mut st = status_with_tools(0);
+        st.agents = Some(vec!["claude".into(), "cursor".into()]);
+        st.tasks = Some(vec![serde_json::from_value(json!({
+            "id": "task-1", "caller": "principal:agent:claude", "kind": "principal", "agent": "claude",
+            "selections": [], "leases": [], "inflight": 0
+        })).unwrap()]);
+
+        let c = agents_check(&file(Ok(two.clone()), Some(0o600)), Some(&Ok(st.clone())));
+        assert!(matches!(c.status, Level::Info) && c.summary == "claude（1 个任务）、cursor（0 个任务）", "{}", c.summary);
+        assert!(!c.details.to_string().contains("0000000000"), "不含令牌");
+        let c = agents_check(&file(Ok(two.clone()), Some(0o644)), Some(&Ok(st.clone())));
+        assert!(matches!(c.status, Level::Warn) && c.summary.contains("644"), "{}", c.summary);
+        let c = agents_check(&file(Ok(AgentsConfig::default()), None), Some(&Ok(st.clone())));
+        assert!(matches!(c.status, Level::Warn) && c.summary.contains("不一致"), "{}", c.summary);
+        let c = agents_check(&file(Err("重复".into()), Some(0o600)), Some(&Ok(st.clone())));
+        assert!(matches!(c.status, Level::Error) && c.summary.contains("继续使用之前的登记"), "{}", c.summary);
+        assert!(agents_check(&file(Err("重复".into()), None), None).summary.contains("启动时会因此失败"));
+        assert!(matches!(agents_check(&file(Ok(two.clone()), None), None).status, Level::Skip));
+        assert!(matches!(agents_check(&file(Ok(AgentsConfig::default()), None), None).status, Level::Ok));
+        let mut old = st.clone();
+        old.agents = None;
+        assert!(agents_check(&file(Ok(two), None), Some(&Ok(old))).summary.contains("不支持"));
+        let mut empty = st;
+        empty.agents = Some(Vec::new());
+        assert!(matches!(agents_check(&file(Ok(AgentsConfig::default()), None), Some(&Ok(empty))).status, Level::Ok));
     }
 
     #[test]

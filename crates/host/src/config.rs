@@ -52,6 +52,10 @@ impl AppHome {
     pub fn policy_file(&self) -> PathBuf {
         self.dir.join("policy.json")
     }
+    /// 已登记的 Agent 与其令牌（第 16 项 N5；0600）。
+    pub fn agents_file(&self) -> PathBuf {
+        self.dir.join("agents.json")
+    }
     pub fn log_dir(&self) -> PathBuf {
         self.dir.join("logs")
     }

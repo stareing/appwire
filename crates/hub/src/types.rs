@@ -450,6 +450,9 @@ pub struct HubStatus {
     /// Agent 任务（调用方的跨请求状态，spec/hub-api.md 3.6），按调用方键排序；只读。旧 Host 没有时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tasks: Option<Vec<AgentTaskStatus>>,
+    /// 已登记的 Agent 名（第 16 项 N5，不含令牌），按名字排序。旧 Host 没有时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<String>>,
 }
 
 /// 一个 Agent 任务（[`HubStatus::tasks`]）。
@@ -461,6 +464,9 @@ pub struct AgentTaskStatus {
     /// 调用方键：`mcp:<n>` / `principal:<主体>` / `api` / `api:<session>`。
     pub caller: String,
     pub kind: crate::task::CallerKind,
+    /// 发起方 Agent 名（第 16 项 N5）：Agent 主体及其任务句柄、以 Agent 令牌建立的 legacy 会话；本机用户与 Hub API 为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// 未过期的 `apps.select` 选择，按 appId 排序。
     pub selections: Vec<TaskSelectionStatus>,
     /// 本任务发出、尚未到期且实例仍连接的租约，按连接 ID 排序。

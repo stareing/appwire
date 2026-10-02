@@ -20,6 +20,7 @@ pub mod config;
 pub mod data_home;
 pub mod doctor;
 pub mod logging;
+pub mod agents;
 pub mod policy;
 pub mod ports;
 pub mod probe;
@@ -102,6 +103,7 @@ async fn run(cli: Cli, inherited: Result<Option<Inherited>, ActivationError>) ->
         Some(Command::Setup(args)) => setup_cmd(args).await,
         Some(Command::Uninstall(args)) => uninstall_cmd(args).await,
         Some(Command::Policy { action }) => policy::cmd(action).await,
+        Some(Command::Agent { action }) => agents::cmd(action).await,
         Some(Command::App { action }) => app_install::cmd(action).await,
         Some(Command::Token { home, regenerate }) => {
             let home = AppHome::resolve(home.home.as_deref())?;
@@ -231,7 +233,7 @@ async fn run_legacy(args: LegacyArgs) -> anyhow::Result<ExitCode> {
         file: None,
     })?;
     log_notices(&s);
-    let config = HubConfig { policy: policy::load(&home)?, ..hub_config(&s, &home) };
+    let config = HubConfig { policy: policy::load(&home)?, agents: agents::load(&home)?, ..hub_config(&s, &home) };
     let hub = match Hub::start(config).await {
         Ok(h) => h,
         Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => {
@@ -322,6 +324,13 @@ pub(crate) async fn running_instance(home: &AppHome) -> Option<EndpointRegistry>
     }
 }
 
+/// 运行中的 Host 与访问它所需的本机令牌（`policy reload`、`agent add / remove` 推送变更）。
+pub(crate) async fn running_host(home: &AppHome) -> Option<(EndpointRegistry, Option<String>)> {
+    let reg = running_instance(home).await?;
+    let token = std::fs::read_to_string(home.token_file()).ok().map(|t| t.trim().to_owned());
+    Some((reg, token))
+}
+
 /// 单实例锁已被持有：等待持锁实例写好登记文件（可能正在启动），打印其信息后以退出码 0 结束。
 async fn already_running(home: &AppHome, err: &std::io::Error) -> anyhow::Result<ExitCode> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -398,6 +407,7 @@ async fn serve(args: ServeArgs, inherited: Result<Option<Inherited>, ActivationE
         http: options.clone(),
         mcp_http: true,
         policy: policy::load(&home)?,
+        agents: agents::load(&home)?,
         ..hub_config(&s, &home)
     };
     if !prebound.is_empty() {

@@ -640,6 +640,59 @@ async fn policy_file_reload_and_cli() {
     assert!(err.contains("策略规则文件无效"), "{err}");
 }
 
+/// 运行 `app-mcp-host agent …`（同步），返回（退出码，stdout，stderr）。
+fn agent_cli(home: &Path, args: &[&str]) -> (i32, String, String) {
+    let mut c = Command::new(BIN);
+    c.arg("agent").args(args).arg("--home").arg(home).env_remove("APP_MCP_HOME");
+    run_to_exit(c)
+}
+
+/// 第 16 项 N5：`agent add` 写 `<home>/agents.json` 并让运行中的 Host 立即生效；Agent 令牌可连 `/mcp`、不能读 `/status`，
+/// 其会话的任务在 doctor 中按 Agent 计数；`agent remove` 后令牌失效；不合法的文件使 serve 拒绝启动。
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_registry_cli_and_tokens() {
+    let home = TempHome::new("agents");
+    let serve = start_serve(&home, &[]).await;
+    let _app = calc_app(&serve.ipc);
+
+    let (code, token, err) = agent_cli(&home.0, &["add", "claude"]);
+    assert_eq!(code, 0, "{err}");
+    let token = token.trim().to_owned();
+    assert!(token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()), "stdout 只有令牌：{token}");
+    assert!(err.contains("运行中的 Host 已更新 Agent 登记（1 个）"), "{err}");
+    let (code, again, _) = agent_cli(&home.0, &["token", "claude"]);
+    assert_eq!((code, again.trim()), (0, token.as_str()));
+
+    let client = mcp(serve.addr, Some(&token)).await;
+    wait_tool(&client, "calc.math.add").await;
+    assert_ne!(add(&client, 1, 2).await.is_error, Some(true));
+    let bearer = format!("Bearer {token}");
+    assert_eq!(http_status(serve.addr, "GET", "/status", &[("Authorization", &bearer)], ""), 401, "Agent 令牌不能读 /status");
+
+    let (code, out, _) = agent_cli(&home.0, &["list", "--json"]);
+    assert_eq!(code, 0);
+    let listed: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((listed["fileAgents"].clone(), listed["running"].clone()), (json!(["claude"]), json!(["claude"])), "{listed}");
+    assert!(!out.contains(&token), "list 不输出令牌");
+    let doctor = Command::new(BIN).args(["doctor", "--json", "--home"]).arg(&home.0).env_remove("APP_MCP_HOME").output().unwrap();
+    let report: Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    let check = report["checks"].as_array().unwrap().iter().find(|c| c["id"] == "agents").cloned().expect("agents 检查");
+    assert_eq!(check["summary"], "claude（1 个任务）", "{check}");
+    let _ = client.cancel().await;
+
+    let (code, _, err) = agent_cli(&home.0, &["remove", "claude"]);
+    assert_eq!(code, 0, "{err}");
+    let mcp_headers = [("Authorization", bearer.as_str()), ("Content-Type", "application/json"), ("Accept", "application/json, text/event-stream")];
+    assert_eq!(http_status(serve.addr, "POST", "/mcp", &mcp_headers, "{}"), 401, "删除后令牌失效");
+    assert_eq!(agent_cli(&home.0, &["remove", "claude"]).0, 1, "不存在");
+    drop(serve);
+
+    std::fs::write(home.0.join("agents.json"), r#"{"agents":[{"name":"a b","token":"0123456789abcdef0123456789abcdef"}]}"#).unwrap();
+    let (code, _, err) = run_to_exit(serve_cmd(&home.0, "127.0.0.1:0", &[]));
+    assert_ne!(code, 0);
+    assert!(err.contains("Agent 登记文件无效"), "{err}");
+}
+
 /// 休眠记录持久化（spec/hub-api.md 3.5「持久化」）：App 休眠后 Host 被杀掉重启（同一 `--home`），重启后的 Host 仍列出
 /// 该 App 的工具，调用经唤醒器（exec，测试程序把唤醒请求写到文件，测试据此把激活参数交给 App）带回同一实例并完成，
 /// 且用读回的恢复令牌快速恢复。回归（Windows 实测）：重启后调用返回 TOOL_NOT_FOUND。

@@ -94,8 +94,8 @@
     为主通道，`_meta` `dev.appwire/taskId` 为可选通道（任何工具调用）；各句柄的选择与租约互不影响，寿命复用 `task_idle_ttl`（U9），
     过期 / 结束后出示 → `INVALID_INPUT`（`reason: task-expired`，可恢复：重新 `apps.task.begin`）；legacy 会话与 Hub API 出示 →
     `INVALID_INPUT`（`task-handle-unsupported`）。契约见 `spec/hub-api.md` 3.6「任务句柄」，记录见第 12 项 S8 记录。
-  - 未实施（挂点已留在 `AgentTask` 上）：N5 身份、P2 按 Agent 匹配、P3 记账、N6 锁、第 17 项句柄与订阅归属；通用客户端（不填 `_meta`）
-    的 App 工具调用仍按主体默认任务路由。
+  - 未实施（挂点已留在 `AgentTask` 上）：P2 按 Agent 匹配、P3 记账、N6 锁、第 17 项句柄与订阅归属；通用客户端（不填 `_meta`）
+    的 App 工具调用仍按主体默认任务路由。N5 身份已实施（2026-10-03，见第三部分 N5 记录）。
 - **P2 策略挂点（2026-10-02 决定实施；第 18 项 L5 暴露开关由此实现）**：类比 LSM，本库只提供执行点，不内置任何判断；无规则时行为与现状完全一致。
   - **执行点**：列出（`tools/list`、`apps.*`）、调用、唤醒、句柄访问（句柄挂点只定义类型，规则用到即校验失败，待第 17 项句柄落地）。
   - **两种动作**：`hide`（不出现在任何列表中，调用按 `TOOL_NOT_FOUND`）与 `deny`（可见但调用被拒）。
@@ -139,6 +139,20 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
 ### 第三部分：多 Agent 与协同
 
 - **N5 Agent 身份**：Agent 首次连接时登记身份（`clientInfo` + 本机令牌 / 进程信息），记在 P1 任务对象上，用于句柄绑定、P3 记账与调用日志；授权由 Agent 自身配置负责，本库不做。
+  - **实施（2026-10-03）**：按 Agent 发令牌（不用 `clientInfo`：自报不可信，第 12 项 S-F6）。契约见 `spec/hub-api.md` 3.6「Agent 身份」。
+    - 事实：`HubConfig.agents: AgentsConfig`（`crates/hub/src/agents.rs`，名字 / 令牌校验、常量时间核对）、`Hub::set_agents`、`POST /agents`；
+      `/mcp` 核对令牌时得出 `Principal::Agent(名)`，经 HTTP 请求扩展交给 `McpSession`（rmcp 3.5.0 把 `http::request::Parts` 放进请求上下文，
+      `tower.rs` 1524 / 2072）；调用方键 `principal:agent:<名>`，legacy 会话在 `initialize` 时记下身份（`CallerKey.agent`，相等与哈希只看键字符串）。
+      任务、句柄（归签发 Agent）、主体级选择、租约、句柄与 listen 流上限、审批 `principal` 随之按 Agent 分开；`/status` `agents`（只列名字）
+      与 `tasks[].agent`。Host `<home>/agents.json`（0600）+ `app-mcp-host agent add / remove / token / list / reload`，doctor「Agent 登记」。
+    - 测试：`crates/hub/tests/agents.rs` 5 个（两个 Agent 令牌的任务与句柄归属、句柄上限按 Agent、legacy 会话记身份、`/agents` 替换与
+      Agent 令牌不能读 `/status`、启动校验；把主体恒置为本机时其中 3 个失败）；`agents.rs` / `task.rs` / `http_server.rs` 单元；Host
+      `serve.rs agent_registry_cli_and_tokens`、`agents.rs` 与 doctor 单元。
+    - 未知 / 未做：stdio 与 `serve_mcp_stream`（含移动端 Binder 上的 MCP）没有 HTTP 头，恒为本机主体，嵌入式 Hub 的调用方识别随第 4g e 项；
+      `setup` 写入 Agent 配置时尚不为每个 Agent 自动登记令牌；hub-c / hub-node / hub-uniffi / C# 尚未暴露 `agents`；IPC 上出示 Agent 令牌
+      只是身份声明（同一用户本来能读 `agents.json`），不构成隔离。
+    - 风险：令牌泄露即可冒用该 Agent 的身份——只影响区分与归属，不扩大权限（Agent 令牌不能访问 `/status`、`/policy`、`/agents`）；
+      文件以 0600 写入，doctor 检出权限过宽。
 - **N6 并发仲裁**：SDK 提供 `busy()` / 对象锁；Hub 对写调用排队或返回明确错误；多会话对同一 App 公平排队。
   工具可声明 `concurrency: N` / `exclusive`（同一资源互斥），SDK 按声明排队，队列上限可配置，满时返回明确错误（4f k，由 4f 实施）。
 
