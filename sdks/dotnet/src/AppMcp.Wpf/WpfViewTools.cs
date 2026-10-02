@@ -136,7 +136,8 @@ public static class WpfViewTools
 /// </example>
 public static class WpfNavigation
 {
-    /// <summary>未列出的页面以 NAVIGATION_FAILED 失败；工厂抛出 <see cref="NavigationDeniedException"/> 即拒绝。handler 在客户端调度器（UI 线程）上运行。</summary>
+    /// <summary>未列出的页面以 NAVIGATION_FAILED 失败；工厂抛出 <see cref="NavigationDeniedException"/> 即拒绝。handler 在客户端调度器（UI 线程）上运行。
+    /// 所在窗口未激活（后台、最小化）时先还原并激活；系统不允许前置时以 USER_ACTION_REQUIRED（reason "foreground"）回复。</summary>
     public static Func<NavigationRequest, Task> ForFrame(Frame frame, IReadOnlyDictionary<string, Func<NavigationRequest, object>> pages)
     {
         ArgumentNullException.ThrowIfNull(frame);
@@ -147,6 +148,7 @@ public static class WpfNavigation
             // 不同线程（客户端未在 UI 线程上创建）时切回 Frame 的 Dispatcher。
             await frame.Dispatcher.InvokeAsync(async () =>
             {
+                BringToFront(Window.GetWindow(frame));
                 var content = create(request);
                 var navigated = new TaskCompletionSource();
                 void OnNavigated(object s, System.Windows.Navigation.NavigationEventArgs e) => navigated.TrySetResult();
@@ -171,5 +173,15 @@ public static class WpfNavigation
                 await frame.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
             }).Task.Unwrap();
         };
+    }
+
+    /// <summary>@why 后台导航（桌面默认 navigateInBackground = true）：view 工具只在窗口激活时启用，导航前先把窗口提到前台。</summary>
+    /// <remarks>@error 系统前台锁拒绝激活时抛出 <see cref="UserActionRequiredException"/>（foreground）。</remarks>
+    private static void BringToFront(Window? window)
+    {
+        if (window is null || window.IsActive) return;
+        if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
+        if (!window.IsVisible) window.Show();
+        if (!window.Activate()) throw new UserActionRequiredException("请把窗口切到前台后重试", UserActionReason.Foreground);
     }
 }

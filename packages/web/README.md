@@ -131,6 +131,11 @@ appMcp.setNavigationHandler(async ({ page, params }) => router.push(pagePath(rou
   `{ 页面名: 路由模式 }`）供自写适配使用。
 - Electron / Tauri 页面侧（桥接模式）同样支持门控与 `setNavigationHandler`（主进程 / Rust 侧需开启导航转发）；
   没有 AppMcp 实例时用 `attachBridgeNavigation(bridge, handler)`。
+- **后台时**：标签页不可见时，需要前台的导航立即以 `USER_ACTION_REQUIRED`（`reason: "foreground"`）返回、不调用回调
+  （`navigateInBackground` 缺省 `false`：浏览器标签页无法自行回到前台；置为 `true`（选项或 `setNavigateInBackground`）时交给回调，
+  回调可抛出 `ToolCallError.userActionRequired(msg, { reason: 'foreground', uri })`，如发通知请用户点开）。后台也要能用的能力
+  做成 `app` 工具，或给 `view` 工具声明 `backgroundTool`（同一 App 中一个 `app` 工具的名称，页面在后台时 Hub 改调它）；
+  详见 spec/protocol.md 3.4「后台与前台」。桥接模式下 `navigateInBackground` 由主进程 / Rust 侧决定。
 
 ## 运行环境
 

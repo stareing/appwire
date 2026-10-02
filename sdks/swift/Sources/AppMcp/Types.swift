@@ -324,6 +324,11 @@ public struct AppMcpConfig {
     /// 调用去重（spec/protocol.md 3.3）；为 `nil` 时 300000 ms、64 条，`CallDedupPolicy(ttlMs: 0, maxEntries: 0)` 关闭。
     /// 命中时经 `onLog` 记一条警告日志。
     public var callDedup: CallDedupPolicy?
+    /// 后台时是否仍把导航请求交给导航回调（spec/protocol.md 3.4「后台与前台」；之后可用
+    /// `AppMcpClient.setNavigateInBackground(_:)` 修改）。为 `nil` 时取平台默认：macOS / Linux 为 `true`（可自行前置窗口），
+    /// iOS 为 `false`（后台不能自行打开界面，导航立即以 `USER_ACTION_REQUIRED`（reason `foreground`）回复）。
+    /// 设为 `true` 时由回调决定，如发本地通知请用户点开后返回 `.userActionRequired(...)`。
+    public var navigateInBackground: Bool?
 
     public init(
         appId: String,
@@ -344,7 +349,8 @@ public struct AppMcpConfig {
         connectTimeout: TimeInterval? = nil,
         heartbeat: HeartbeatMode = .auto,
         onIdleExit: (@MainActor @Sendable () -> Void)? = nil,
-        callDedup: CallDedupPolicy? = nil
+        callDedup: CallDedupPolicy? = nil,
+        navigateInBackground: Bool? = nil
     ) {
         self.appId = appId
         self.appName = appName
@@ -365,6 +371,7 @@ public struct AppMcpConfig {
         self.heartbeat = heartbeat
         self.onIdleExit = onIdleExit
         self.callDedup = callDedup
+        self.navigateInBackground = navigateInBackground
     }
 }
 

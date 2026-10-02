@@ -63,7 +63,9 @@ export interface IpcMainLike {
  * 生命周期方法可选：缺少时页面的 `wake()` / `sleep()` / `hold()` / `connectNow()` 为空操作。
  */
 export type MainAppMcp = Pick<AppMcp, 'scope' | 'instanceId' | 'state' | 'onStateChange'> &
-  Partial<Pick<AppMcp, 'wake' | 'sleep' | 'hold' | 'connectNow' | 'connectionId' | 'setNavigationHandler'>>
+  Partial<
+    Pick<AppMcp, 'wake' | 'sleep' | 'hold' | 'connectNow' | 'connectionId' | 'setNavigationHandler' | 'setNavigateInBackground'>
+  >
 
 export interface AttachOptions {
   appMcp: MainAppMcp
@@ -77,6 +79,14 @@ export interface AttachOptions {
    * 不设置（主进程可自行 `appMcp.setNavigationHandler`，如切换窗口），页面开启导航时收到错误。
    */
   navigation?: boolean
+  /**
+   * 导航转给页面之前调用（`navigation: true` 时）：把该页面所在窗口带到前台，如
+   * `(wc) => { const w = BrowserWindow.fromWebContents(wc); if (w?.isMinimized()) w.restore(); w?.show(); w?.focus() }`。
+   * 给出时接入把 `appMcp` 的 `navigateInBackground` 设为 true（窗口在后台时导航仍交给页面，由本回调回到前台）；
+   * 未给出时设为 false：窗口在后台（`attachLifecycle` 上报 hidden）时导航立即以 `USER_ACTION_REQUIRED`（`foreground`）
+   * 回复（spec/protocol.md 3.4）。抛出的异常记警告，不影响导航。
+   */
+  raiseWindow?: (webContents: WebContentsLike) => void
 }
 
 export interface AppMcpAttachment {
@@ -148,7 +158,7 @@ class RendererSession {
         if (!pending) return undefined
         this.navigations.delete(op.navId)
         if (op.ok) pending.resolve()
-        else pending.reject(new ToolCallError(op.kind === 'NAVIGATION_DENIED' ? 'NAVIGATION_DENIED' : 'NAVIGATION_FAILED', String(op.message ?? '页面导航失败')))
+        else pending.reject(navigationError(op))
         return undefined
       }
       case 'tool.register': {
@@ -336,7 +346,25 @@ function toolDefinition(spec: ToolSpecMessage) {
     outputSchema: spec.outputSchema,
     surface: spec.surface,
     page: spec.page,
+    backgroundTool: spec.backgroundTool,
   }
+}
+
+/**
+ * 页面的导航失败 → ToolCallError：`NAVIGATION_DENIED` 拒绝；`USER_ACTION_REQUIRED` 带详情中的 `reason` / `uri`；其他按失败。
+ * @input op 页面送来的 `navigate.result`（`ok: false`），字段未经校验。
+ */
+function navigationError(op: Extract<RendererOp, { op: 'navigate.result'; ok: false }>): ToolCallError {
+  const message = String(op.message ?? '页面导航失败')
+  if (op.kind === 'NAVIGATION_DENIED') return ToolCallError.navigationDenied(message)
+  if (op.kind !== 'USER_ACTION_REQUIRED') return ToolCallError.navigationFailed(message)
+  const details = plainDetails(op.details)
+  const text = (key: string): string | undefined => (typeof details?.[key] === 'string' ? (details[key] as string) : undefined)
+  return ToolCallError.userActionRequired(message, defined({ reason: text('reason'), uri: text('uri') }))
+}
+
+function defined<T extends object>(obj: T): Partial<T> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>
 }
 
 /** 页面的成功结果 → @app-mcp/node 的结构化结果（只带出现的字段；旧页面只有 data / stateHints）。 */
@@ -378,6 +406,7 @@ class Attachment implements AppMcpAttachment {
     if (options.navigation) {
       if (options.appMcp.setNavigationHandler) {
         options.appMcp.setNavigationHandler(({ page, params }) => this.forwardNavigate(page, params))
+        options.appMcp.setNavigateInBackground?.(options.raiseWindow !== undefined)
       } else {
         this.logger.warn('[app-mcp] appMcp 不支持导航回调（@app-mcp/node 版本过旧），navigation 选项无效')
       }
@@ -404,6 +433,11 @@ class Attachment implements AppMcpAttachment {
     const target = this.navigationTarget
     if (!target || target.isDestroyed?.()) {
       return Promise.reject(new Error(`没有页面处理导航（页面「${page}」）：页面尚未加载或未开启导航`))
+    }
+    try {
+      this.options.raiseWindow?.(target)
+    } catch (error) {
+      this.logger.warn('[app-mcp] 导航前把窗口带到前台失败', error)
     }
     return this.sessionFor(target).forwardNavigate(page, params)
   }

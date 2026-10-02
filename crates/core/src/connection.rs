@@ -633,6 +633,10 @@ impl Client {
             self.respond(id, Err(RpcError::invalid_params(format!("app/navigate 的页面名不合法：{:?}", p.page))));
             return;
         }
+        if self.visibility != Visibility::Visible && !self.config.navigate_in_background {
+            self.respond(id, Err(foreground_required(&p.page).into()));
+            return;
+        }
         self.session.served_call = true;
         self.next_navigate_id += 1;
         let navigate = NavigateId(self.next_navigate_id);
@@ -885,4 +889,13 @@ impl Client {
             PairingStatus::Rejected => self.reject_with(result.reason, result.code.as_deref()),
         }
     }
+}
+
+/// 实例不可见、且不能自行回到前台时对 `app/navigate` 的回复（spec/protocol.md 3.4）：`USER_ACTION_REQUIRED`（`reason: "foreground"`）。
+fn foreground_required(page: &str) -> ToolError {
+    ToolError::user_action_required(
+        format!("App 当前在后台，无法自行切换到页面「{page}」。请让用户打开 App 后重试。"),
+        Some(proto::user_action_reason::FOREGROUND),
+        None,
+    )
 }

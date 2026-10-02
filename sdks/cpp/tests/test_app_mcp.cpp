@@ -426,6 +426,19 @@ void test_navigation() {
     bad.page = "bad page!";
     EXPECT(status_of([&] { client.register_tool("bad.page", "x", handler, bad); }) != AM_OK);
 
+    // v15：backgroundTool 随声明传给 C 接口（影响 toolsHash），名称非法时更新失败；navigateInBackground 可设置。
+    EXPECT(app_mcp::detail::tool_options(app_mcp::ToolOptions{}, std::nullopt).background_tool == nullptr);
+    options.background_tool = "cart.summary";
+    EXPECT(std::strcmp(app_mcp::detail::tool_options(options, std::nullopt).background_tool, "cart.summary") == 0);
+    before = client.tools_hash();
+    EXPECT(status_of([&] { t.update("结算", options); }) == AM_OK);
+    EXPECT(client.tools_hash() != before);
+    app_mcp::ToolOptions bad_bg = options;
+    bad_bg.background_tool = "bad tool!";
+    EXPECT(status_of([&] { t.update("结算", bad_bg); }) != AM_OK);
+    EXPECT(status_of([&] { client.set_navigate_in_background(false); }) == AM_OK);
+    EXPECT(status_of([&] { client.set_navigate_in_background(true); }) == AM_OK);
+
     // 设置 / 替换 / 清除导航回调；替换与清除时库释放旧的 std::function。
     auto alive = std::make_shared<int>(0);
     std::weak_ptr<int> watch = alive;
@@ -441,6 +454,7 @@ void test_navigation() {
     EXPECT(!empty.pending());
     EXPECT(status_of([&] { empty.complete(); }) == AM_ERR_ALREADY_COMPLETED);
     EXPECT(status_of([&] { empty.deny("x"); }) == AM_ERR_ALREADY_COMPLETED);
+    EXPECT(status_of([&] { empty.fail_user_action("x", "foreground"); }) == AM_ERR_ALREADY_COMPLETED);
 }
 
 }  // namespace

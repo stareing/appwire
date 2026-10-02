@@ -228,6 +228,33 @@ function submitFailure(failure: Failure, fail: (kind: string, message: string) =
   }
 }
 
+/**
+ * 导航回调的失败 → 原生导航句柄：`NAVIGATION_DENIED` 拒绝；`USER_ACTION_REQUIRED`（`ToolCallError.userActionRequired`）
+ * 带详情中的 `reason` / `uri`；其他按失败。
+ */
+function submitNavigationFailure(navigate: Navigate, error: Object | null | undefined): void {
+  const failure: Failure = toFailure(error);
+  if (failure.kind === 'NAVIGATION_DENIED') {
+    navigate.deny(failure.message);
+    return;
+  }
+  if (failure.kind === 'USER_ACTION_REQUIRED' && error instanceof ToolCallError) {
+    navigate.failUserAction(failure.message, detailText(error, 'reason'), detailText(error, 'uri'));
+    return;
+  }
+  navigate.fail(failure.message);
+}
+
+/** 错误详情中的字符串字段；没有或不是字符串时为 undefined。 */
+function detailText(error: ToolCallError, key: string): string | undefined {
+  const details = error.details;
+  if (details === undefined) {
+    return undefined;
+  }
+  const value: Object | undefined = details[key];
+  return typeof value === 'string' ? value as string : undefined;
+}
+
 function contentAnnotationsInit(a: ContentAnnotations): ContentAnnotationsInit {
   const init: ContentAnnotationsInit = {};
   if (a.audience !== undefined) {
@@ -304,6 +331,7 @@ class ToolEntry<I, O> implements ToolHandle, Child {
     spec.outputSchemaJson = d.outputSchema;
     spec.surface = d.surface;
     spec.page = d.page;
+    spec.backgroundTool = d.backgroundTool;
     return spec;
   }
 
@@ -323,6 +351,7 @@ class ToolEntry<I, O> implements ToolHandle, Child {
       enabled: patchField<boolean>(changes.enabled, d.enabled),
       surface: patchField<ToolSurface>(changes.surface, d.surface),
       page: patchField<string>(changes.page, d.page),
+      backgroundTool: patchField<string>(changes.backgroundTool, d.backgroundTool),
       handler: d.handler,
     };
     this.def = next;
@@ -668,6 +697,9 @@ export class AppMcp extends RegistrarBase {
     if (options.onNavigate !== undefined) {
       this.setNavigationHandler(options.onNavigate);
     }
+    if (options.navigateInBackground !== undefined) {
+      this.setNavigateInBackground(options.navigateInBackground);
+    }
     if (options.autoStart !== false) {
       this.start();
     }
@@ -733,7 +765,18 @@ export class AppMcp extends RegistrarBase {
     client.setNavigationHandler((navigate: Navigate): void => this.onNavigate(handler, navigate));
   }
 
-  /** 执行导航回调并提交结果：正常返回 → 完成；`NAVIGATION_DENIED` → 拒绝；其他异常 → 失败。 */
+  /** 修改 `AppMcpOptions.navigateInBackground`；只影响之后到达的导航请求。 */
+  setNavigateInBackground(enabled: boolean): void {
+    const client = this.live();
+    if (client !== null) {
+      client.setNavigateInBackground(enabled);
+    }
+  }
+
+  /**
+   * 执行导航回调并提交结果：正常返回 → 完成；`NAVIGATION_DENIED` → 拒绝；`USER_ACTION_REQUIRED` → 需要用户操作
+   * （带 `reason` / `uri`）；其他异常 → 失败。
+   */
   private onNavigate(handler: NavigationHandler, navigate: Navigate): void {
     const page = navigate.page;
     const submit = (action: () => void): void => {
@@ -756,8 +799,7 @@ export class AppMcp extends RegistrarBase {
       }
     }
     const onError = (error: Object | null | undefined): void => {
-      const failure: Failure = toFailure(error);
-      submit(() => failure.kind === 'NAVIGATION_DENIED' ? navigate.deny(failure.message) : navigate.fail(failure.message));
+      submit(() => submitNavigationFailure(navigate, error));
     };
     let pending: void | Promise<void>;
     try {

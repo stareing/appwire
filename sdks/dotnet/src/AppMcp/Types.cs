@@ -155,7 +155,8 @@ public static class UserActionReason
     public const string Confirm = "confirm";
 }
 
-/// <summary>在 handler 中抛出，以 <c>USER_ACTION_REQUIRED</c> 失败（app_mcp.h v11）：需要用户本人操作后才能继续。</summary>
+/// <summary>在 handler 中抛出，以 <c>USER_ACTION_REQUIRED</c> 失败（app_mcp.h v11）：需要用户本人操作后才能继续。
+/// 导航回调中抛出同样以 USER_ACTION_REQUIRED 结束导航（v15，如后台时发通知后以 reason "foreground" 与 uri 回复）。</summary>
 /// <param name="message">面向用户的说明（Agent 转告用户）。</param>
 /// <param name="reason">可选类别，见 <see cref="UserActionReason"/>；为 null 时不出现在错误的 data 中。</param>
 /// <param name="uri">可选的 App 内入口（深链接等）；为 null 时不出现在错误的 data 中。</param>
@@ -257,6 +258,11 @@ public sealed class AppMcpClientOptions
     /// 为 null 时默认（保留 5 分钟、最多 64 条）；见 <see cref="CallDedupOptions"/>。</summary>
     public CallDedupOptions? CallDedup { get; init; }
 
+    /// <summary>App 在后台（<see cref="AppVisibility"/> 非 Visible）时是否仍把导航交给导航回调（spec/protocol.md 3.4「后台与前台」）。
+    /// 为 null 时用平台默认（Windows / Linux / macOS 桌面为 true：回调可自行激活窗口）；false 时直接以 USER_ACTION_REQUIRED
+    /// （reason "foreground"）回复。运行中可用 <see cref="AppMcpClient.SetNavigateInBackground"/> 修改。</summary>
+    public bool? NavigateInBackground { get; init; }
+
     /// <summary>
     /// handler 与事件执行的线程。未设置时捕获 <see cref="AppMcpClient.Create"/> 调用时的
     /// <see cref="SynchronizationContext.Current"/>（在 WPF / WinUI 的 UI 线程创建即自动回到 UI 线程）；
@@ -298,6 +304,9 @@ public sealed class ToolOptions
     /// <summary>所在页面名（<c>[a-zA-Z0-9_.-]{1,64}</c>）；为 null 时不声明。Hub 在该工具未注册时据此导航
     /// （<see cref="AppMcpClient.SetNavigationHandler(Func{NavigationRequest, Task}?)"/>）。</summary>
     public string? Page { get; init; }
+    /// <summary>只对 <see cref="ToolSurface.View"/> 有意义：App 在后台、本工具不可调用时 Hub 改调的同 App app 工具本地名；
+    /// 为 null 时不声明（spec/protocol.md 3.4「后台与前台」）。</summary>
+    public string? BackgroundTool { get; init; }
 }
 
 /// <summary>工具对界面的依赖（spec/protocol.md 3.4）。</summary>

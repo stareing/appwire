@@ -459,6 +459,8 @@ export interface CallOutcome {
   summary?: string
   /** App 对结果内容的标注。 */
   annotations?: ContentAnnotations
+  /** App 在后台、Hub 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）。 */
+  routedTo?: string
 }
 
 // ---------------------------------------------------------------------------

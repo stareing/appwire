@@ -92,6 +92,8 @@ export interface NativeToolSpec {
   surface?: string
   /** 所在页面名（旧版原生模块忽略）。 */
   page?: string
+  /** 后台替代：同一 App 中一个 `app` 工具的局部名（spec/protocol.md 3.4；旧版原生模块忽略）。 */
+  backgroundTool?: string
 }
 
 export interface NativeToolAnnotations {
@@ -166,6 +168,8 @@ export interface NativeNavigate {
   fail(message: string): void
   /** 拒绝导航（`NAVIGATION_DENIED`，`reason: "app"`）。 */
   deny(message: string): void
+  /** 需要用户操作（`USER_ACTION_REQUIRED`，`reason` / `uri` 缺省不出现）。旧版原生模块没有此方法。 */
+  failUserAction?(message: string, reason?: string | null, uri?: string | null): void
 }
 
 export interface NativeTool {
@@ -205,6 +209,8 @@ export interface NativeClient extends NativeRegistrar {
   setVisibility(visibility: string, focused: boolean): void
   /** 设置导航回调；`null` 清除。握手时声明能力，应在 `start()` 之前设置。旧版原生模块没有此方法。 */
   setNavigationHandler?(handler: ((navigate: NativeNavigate) => void) | null): void
+  /** 不可见时导航请求是否仍交给导航回调（缺省按平台：桌面 true，移动端 false）。旧版原生模块没有此方法。 */
+  setNavigateInBackground?(enabled: boolean): void
   // ---- 生命周期（旧版原生模块没有这些方法）----
   handleWake?(args: string): boolean
   wake?(reason?: string | null): boolean

@@ -74,11 +74,19 @@ descriptor, as in the `attachLifecycle` example in `main.ts`.
 ## API
 
 - `@app-mcp/electron/main`
-  - `attachAppMcp({ appMcp, ipcMain, webContents?, logger?, navigation? })` - bridges renderer registrations; returns
+  - `attachAppMcp({ appMcp, ipcMain, webContents?, logger?, navigation?, raiseWindow? })` - bridges renderer registrations; returns
     `{ sessionCount, dispose() }`. `navigation: true` declares navigation support and forwards the Hub's page navigation
     requests to the renderer that enabled navigation most recently (`appMcp.setNavigationHandler` in the page, or
     `attachBridgeNavigation`; without `navigation: true`, the main process may call
-    `appMcp.setNavigationHandler` itself, e.g. to switch windows). Renderer tool `surface` / `page` are forwarded.
+    `appMcp.setNavigationHandler` itself, e.g. to switch windows). Renderer tool `surface` / `page` / `backgroundTool`
+    are forwarded, and a page handler throwing `ToolCallError.userActionRequired(message, { reason?, uri? })` replies
+    `USER_ACTION_REQUIRED`. In the background: with `navigation: true` the attachment sets `navigateInBackground` to
+    whether `raiseWindow` is given. Pass
+    `raiseWindow: (wc) => { const w = BrowserWindow.fromWebContents(wc); if (w?.isMinimized()) w.restore(); w?.show(); w?.focus() }`
+    so a navigation brings the window to the front before the page switches routes; without it, navigations while the
+    window is hidden (as reported by `attachLifecycle`) return `USER_ACTION_REQUIRED` (`reason: "foreground"`) at once.
+    Capabilities that must work in the background should be `app` tools, or `view` tools with `backgroundTool`; see
+    spec/protocol.md 3.4 ("background and foreground").
   - `attachLifecycle({ appMcp, app, argv?, window?, quitOnIdleExit?, onWake? })` - wires `second-instance`,
     `open-url`, window visibility and idle exit to the client lifecycle; returns an unsubscribe function.
 - `@app-mcp/electron/preload`

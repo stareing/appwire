@@ -1,0 +1,24 @@
+{
+  "id": "navigation-background-hook",
+  "title": "不可见但 navigateInBackground: true：导航交给回调；回调可以以 USER_ACTION_REQUIRED（reason / uri）回复",
+  "spec": ["protocol.md 3.4", "protocol.md 4"],
+  "requires": ["navigation", "backgroundNavigation"],
+  "app": {
+    "config": { "navigateInBackground": true },
+    "visibility": "hidden",
+    "tools": [{ "name": "home.ping", "description": "首页工具", "handler": { "return": { "pong": true } } }],
+    "navigation": {
+      "cart": { "userAction": { "message": "已发通知，请点开后继续", "reason": "foreground", "uri": "conf://cart" } },
+      "home": {}
+    }
+  },
+  "host": { "timeoutMs": 5000, "ops": [{ "navigate": "cart" }, { "navigate": "home" }] },
+  "expect": [
+    { "type": "navigate", "name": "cart", "error": { "code": -32019, "message": { "$contains": "已发通知" },
+        "data": { "kind": "USER_ACTION_REQUIRED", "reason": "foreground", "uri": "conf://cart" } } },
+    { "type": "navigate", "name": "home", "result": { "ok": true } }
+  ],
+  "contains": [
+    { "type": "recv", "method": "app/visibility", "params": { "visibility": "hidden" } }
+  ]
+}

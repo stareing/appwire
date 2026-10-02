@@ -69,6 +69,24 @@ describe('surface / page 声明', () => {
     h.app.dispose()
   })
 
+  it('backgroundTool：注册时声明（缺省不带）；update 修改与清除；不继承 scope', async () => {
+    const h = await connected()
+    h.app.tool('cart.add', { description: '加入', handler })
+    const t = h.app.tool('cart.viewAdd', { description: 'V', surface: 'view', page: 'cart', backgroundTool: 'cart.add', handler })
+    h.app.scope('s', { page: 'cart' }).tool('cart.inner', { description: 'I', handler })
+    expect(registered(h, 'cart.add')).not.toHaveProperty('backgroundTool')
+    expect(registered(h, 'cart.viewAdd')).toMatchObject({ surface: 'view', page: 'cart', backgroundTool: 'cart.add' })
+    expect(registered(h, 'cart.inner')).not.toHaveProperty('backgroundTool')
+    t.update({ backgroundTool: 'cart.add2' })
+    t.update({ backgroundTool: undefined })
+    t.update({ description: 'V2' })
+    const updates = h.core.callsOf('updateTool').map((c) => c[1])
+    expect(updates).toContainEqual({ backgroundTool: 'cart.add2' })
+    expect(updates).toContainEqual({ backgroundTool: null })
+    expect(updates).toContainEqual({ description: 'V2' })
+    h.app.dispose()
+  })
+
   it('scope 的界面声明被其下工具（含子 scope）继承，工具自身声明优先', async () => {
     const h = await connected()
     const page = h.app.scope('cart', { page: 'cart', surface: 'view', visibility: 'always' })

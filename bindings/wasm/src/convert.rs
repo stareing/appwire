@@ -176,6 +176,18 @@ impl Fields {
         self.map.remove(key).map(|v| (!v.is_null()).then_some(v))
     }
 
+    /// 可清除的字符串：缺省为 `None`，`null` 为 `Some(None)`。
+    fn nullable_string(&mut self, key: &str) -> Option<Option<String>> {
+        match self.nullable(key)? {
+            None => Some(None),
+            Some(Value::String(s)) => Some(Some(s)),
+            Some(_) => {
+                self.fail(format!("字段 {key} 应为字符串"));
+                None
+            }
+        }
+    }
+
     /// 嵌套对象，由 `T` 读取。
     fn object<T: FromJson>(&mut self, key: &str) -> Option<T> {
         match T::from_json(self.take(key)?) {
@@ -548,6 +560,8 @@ pub struct JsToolDef {
     /// `"app"`（缺省）/ `"view"`（spec/protocol.md 3.4）。
     pub surface: Option<ToolSurface>,
     pub page: Option<String>,
+    /// 后台替代：同一 App 中一个 `app` 工具的局部名（spec/protocol.md 3.4）。
+    pub background_tool: Option<String>,
     /// 缺省 true。
     pub enabled: Option<bool>,
     pub scope: Option<f64>,
@@ -573,6 +587,7 @@ impl FromJson for JsToolDef {
             output_schema: f.value("outputSchema"),
             surface: f.protocol("surface"),
             page: f.string("page"),
+            background_tool: f.string("backgroundTool"),
             enabled: f.bool("enabled"),
             scope: f.f64("scope"),
         };
@@ -595,6 +610,7 @@ impl JsToolDef {
             output_schema: self.output_schema,
             surface: self.surface.unwrap_or_default(),
             page: self.page,
+            background_tool: self.background_tool,
         })
     }
 }
@@ -668,6 +684,8 @@ pub struct JsToolUpdate {
     pub surface: Option<ToolSurface>,
     /// `null` 清除声明的页面。
     pub page: Option<Option<String>>,
+    /// `null` 清除声明的后台替代。
+    pub background_tool: Option<Option<String>>,
 }
 
 impl FromJson for JsToolUpdate {
@@ -678,15 +696,7 @@ impl FromJson for JsToolUpdate {
             Some(None) => Some(None),
             Some(Some(v)) => f.protocol_value("activation", v).map(Some),
         };
-        let title = match f.nullable("title") {
-            None => None,
-            Some(None) => Some(None),
-            Some(Some(Value::String(s))) => Some(Some(s)),
-            Some(Some(_)) => {
-                f.fail("字段 title 应为字符串".to_owned());
-                None
-            }
-        };
+        let title = f.nullable_string("title");
         let annotations = match f.nullable("annotations") {
             None => None,
             Some(None) => Some(None),
@@ -698,18 +708,12 @@ impl FromJson for JsToolUpdate {
                 }
             },
         };
-        let page = match f.nullable("page") {
-            None => None,
-            Some(None) => Some(None),
-            Some(Some(Value::String(s))) => Some(Some(s)),
-            Some(Some(_)) => {
-                f.fail("字段 page 应为字符串".to_owned());
-                None
-            }
-        };
+        let page = f.nullable_string("page");
+        let background_tool = f.nullable_string("backgroundTool");
         let u = JsToolUpdate {
             surface: f.protocol("surface"),
             page,
+            background_tool,
             annotations,
             output_schema: f.nullable("outputSchema"),
             description: f.string("description"),
@@ -736,6 +740,7 @@ impl JsToolUpdate {
             output_schema: self.output_schema,
             surface: self.surface,
             page: self.page,
+            background_tool: self.background_tool,
         }
     }
 }
@@ -1098,6 +1103,24 @@ mod tests {
         let u = JsToolUpdate::from_json(json!({ "page": "orders" })).unwrap().into_core();
         assert_eq!((u.surface, u.page), (None, Some(Some("orders".into()))));
         assert!(JsToolUpdate::from_json(json!({ "page": 1 })).is_err());
+    }
+
+    #[test]
+    fn tool_background_tool() {
+        let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "surface": "view", "backgroundTool": "x.bg" }))
+            .unwrap()
+            .into_core()
+            .unwrap();
+        assert_eq!(d.background_tool.as_deref(), Some("x.bg"));
+        let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {} })).unwrap().into_core().unwrap();
+        assert_eq!(d.background_tool, None);
+        assert!(JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "backgroundTool": 1 })).is_err());
+        let u = JsToolUpdate::from_json(json!({ "backgroundTool": null })).unwrap().into_core();
+        assert_eq!(u.background_tool, Some(None));
+        let u = JsToolUpdate::from_json(json!({ "backgroundTool": "x.bg" })).unwrap().into_core();
+        assert_eq!(u.background_tool, Some(Some("x.bg".into())));
+        assert_eq!(JsToolUpdate::from_json(json!({})).unwrap().into_core().background_tool, None);
+        assert!(JsToolUpdate::from_json(json!({ "backgroundTool": 1 })).is_err());
     }
 
     #[test]

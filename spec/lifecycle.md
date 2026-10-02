@@ -193,6 +193,7 @@ ConnectionState += dormant, waking
 
 唯一的生命周期控制器。负责：空闲判定、`app/sleep`、租约、休眠 / 唤醒 / 快速恢复、运行时线程释放、`IdleExit`。
 平台封装只做两件事：① 上报可见性（前后台、隐藏、冻结）；② 把 OS 激活参数交给 `handleWake`。
+可见性也决定导航请求在后台是否立即以 `USER_ACTION_REQUIRED`（`foreground`）回复（`navigateInBackground`，spec/protocol.md 3.4「后台与前台」）。
 
 ### 10.2 注册侧（工具 / 资源声明：React `useTool`、`data-mcp-*`、`@mcp` 注释、状态库适配、原生 `ToolSpec`、静态清单）
 

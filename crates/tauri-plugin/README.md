@@ -108,7 +108,13 @@ let _ = call.complete_with(CallResult { status: ResultStatus::Noop, summary: Som
 | `quit_on_idle_exit(bool)` | `true` | 休眠且 `residency` 允许退出时 `AppHandle::exit(0)` |
 | `wake_from_args(bool)` | `true` | 启动参数交给 `handle_wake`（冷启动唤醒） |
 | `auto_start(bool)` | `true` | 初始化后 `start()` |
-| `page_navigation(bool)` | `false` | 握手声明导航能力，把 Host 的 `app/navigate` 转给最近一次开启导航的页面（页面 `appMcp.setNavigationHandler` / `@app-mcp/react` 的 `useRouterNavigation`，或 `@app-mcp/tauri` 的 `attachTauriNavigation`）；关闭时 App 可自行 `client().set_navigation_handler(...)`（spec/protocol.md 3.4） |
+| `page_navigation(bool)` | `false` | 握手声明导航能力，把 Host 的 `app/navigate` 转给最近一次开启导航的页面（页面 `appMcp.setNavigationHandler` / `@app-mcp/react` 的 `useRouterNavigation`，或 `@app-mcp/tauri` 的 `attachTauriNavigation`）；关闭时 App 可自行 `client().set_navigation_handler(...)`（spec/protocol.md 3.4）。桌面上转给页面之前先把该页所在窗口带到前台（最小化则还原、隐藏则显示并聚焦；已可见不动） |
+
+**后台时**（spec/protocol.md 3.4「后台与前台」）：需要前台的导航在 App 不可见且 `navigate_in_background` 为 `false` 时立即以
+`USER_ACTION_REQUIRED`（`foreground`）返回、不转给页面。原生运行时按平台设缺省值：桌面 `true`（插件在转发前把窗口带到前台），
+Android / iOS `false`；App 可用 `client().set_navigate_in_background(...)` 修改。页面的导航回调可抛出
+`ToolCallError.userActionRequired(msg, { reason, uri })`（如发通知请用户点开）。后台也要能用的能力做成 `app` 工具，或给 `view`
+工具声明 `backgroundTool`（页面工具定义同名字段 / Rust `ToolOptions::background_tool`）。
 
 ## 生命周期（spec/lifecycle.md）
 

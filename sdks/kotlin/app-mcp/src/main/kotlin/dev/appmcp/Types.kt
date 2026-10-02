@@ -173,6 +173,13 @@ data class AppMcpConfig(
      * 命中时经 [onLog] 记一条 WARN 日志。
      */
     val callDedup: CallDedupPolicy? = null,
+    /**
+     * 后台时是否仍把导航请求交给导航回调（spec/protocol.md 3.4「后台与前台」；之后可用 [AppMcp.setNavigateInBackground] 修改）。
+     * 为空时取平台默认：桌面 JVM 为 true（可自行前置窗口），Android 为 false（后台不能自行打开界面，导航立即以
+     * `USER_ACTION_REQUIRED`（reason `foreground`）回复）。设为 true 时由回调决定，如发通知请用户点开后以
+     * [NavigationResult.UserActionRequired] 回复（Android 见 `dev.appmcp.android.AppMcpContinueNotification`）。
+     */
+    val navigateInBackground: Boolean? = null,
 ) {
     internal fun toFfi() = dev.appmcp.ffi.ClientConfig(
         appId = appId,

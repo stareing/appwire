@@ -31,6 +31,27 @@ class NavigationTest {
     }
 
     @Test
+    fun thrownErrorsMapToNavigationResults() {
+        val ua = ToolCallException.userActionRequired("请点开通知", UserActionReason.FOREGROUND, "shop://cart")
+        assertEquals(
+            NavigationResult.UserActionRequired("请点开通知", "foreground", "shop://cart"),
+            navigationFailure(ua.kind, ua.message, ua.details),
+        )
+        assertEquals(
+            NavigationResult.UserActionRequired("只有说明"),
+            navigationFailure(ErrorKind.USER_ACTION_REQUIRED, "只有说明", null),
+        )
+        assertEquals(NavigationResult.Denied("不行"), navigationFailure(ErrorKind.NAVIGATION_DENIED, "不行", null))
+        assertEquals(NavigationResult.Failed("坏了"), navigationFailure(ErrorKind.HANDLER_ERROR, "坏了", null))
+    }
+
+    @Test
+    fun navigateInBackgroundConfigAndSetter() {
+        AppMcp.create(AppMcpConfig("kotlin-nav-bg", "后台导航", hostUrl = "ws://127.0.0.1:9", navigateInBackground = true))
+            .use { it.setNavigateInBackground(false) }
+    }
+
+    @Test
     fun fillRouteSubstitutesParams() {
         val params = JsonObject(mapOf("id" to JsonPrimitive("a b/c"), "n" to JsonPrimitive(3)))
         assertEquals("orders/a%20b%2Fc?n=3", fillRoute("orders/{id}?n={n}", params))
@@ -48,7 +69,7 @@ class NavigationTest {
     @Test
     fun toolUpdatePatchClearsOnlyAssignedFields() {
         val base = dev.appmcp.ffi.ToolSpec(
-            name = "t", description = "旧", title = "标题", page = "cart", surface = ToolSurface.VIEW,
+            name = "t", description = "旧", title = "标题", page = "cart", surface = ToolSurface.VIEW, backgroundTool = "t.bg",
             annotations = ToolAnnotations(readOnlyHint = true, title = null, destructiveHint = null, idempotentHint = null, openWorldHint = null),
             outputSchemaJson = """{"type":"object"}""",
         )
@@ -64,13 +85,19 @@ class NavigationTest {
         assertEquals("标题", next.title)
         assertEquals("cart", next.page)
         assertEquals(ToolSurface.VIEW, next.surface)
+        assertEquals("t.bg", next.backgroundTool)
+        assertNull(ToolUpdate().apply { backgroundTool = null }.applyTo(base).backgroundTool)
         assertFailsWith<IllegalStateException> { ToolUpdate().title }
     }
 
     @Test
     fun toolDeclaresSurfaceAndPage() {
-        val handle = client.tool("v.tool", "依赖界面", surface = ToolSurface.VIEW, page = "cart") { _, _ -> null }
-        handle.update { page = null; surface = ToolSurface.APP }
+        val handle = client.tool("v.tool", "依赖界面", surface = ToolSurface.VIEW, page = "cart", backgroundTool = "v.bg") { _, _ -> null }
+        assertEquals("v.bg", handle.specForTest().backgroundTool)
+        handle.update(backgroundTool = "v.bg2")
+        assertEquals("v.bg2", handle.specForTest().backgroundTool)
+        handle.update { page = null; surface = ToolSurface.APP; backgroundTool = null }
+        assertNull(handle.specForTest().backgroundTool)
         handle.update(description = "旧式更新：只改描述")
         handle.dispose()
     }

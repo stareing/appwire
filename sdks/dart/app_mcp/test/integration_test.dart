@@ -616,4 +616,58 @@ void main() {
     c.dispose();
     await Future<void>.delayed(const Duration(milliseconds: 50));
   }, skip: nativePath == null ? '找不到原生库' : false);
+  test('后台导航（v15）：navigateInBackground 时回调抛 UserActionRequiredError → USER_ACTION_REQUIRED；关闭后核心直接回复；'
+      'backgroundTool 进入工具声明', () async {
+    final host = await FakeHost.start([
+      '--navigate', 'cart',
+      '--navigate', 'home',
+      '--catalog', '0',
+      '--timeout-ms', '15000',
+    ]);
+    final client = AppMcp(
+        appId: 'dart-bg-nav', appName: 'Dart 后台导航', hostUrl: 'ws://${host.addr}', libraryPath: nativePath,
+        navigateInBackground: true);
+    var calls = 0;
+    client.tool('cart.summary', description: '购物车摘要', handler: (args, ctx) => null);
+    final view = client.tool('cart.view',
+        description: '购物车', surface: ToolSurface.view, page: 'cart', backgroundTool: 'cart.summary',
+        handler: (args, ctx) => null);
+    client.setNavigationHandler((request) {
+      calls++;
+      client.setNavigateInBackground(false);
+      throw UserActionRequiredError('已发通知，请点开后继续', reason: 'foreground', uri: 'conf://${request.page}');
+    });
+    client.setVisibility(AppVisibility.hidden, focused: false);
+    client.start();
+    expect((await host.nextJson())['type'], 'tools');
+    final cart = await host.nextJson();
+    expect(cart['error'], {
+      'code': -32019,
+      'message': '已发通知，请点开后继续',
+      'data': {'kind': 'USER_ACTION_REQUIRED', 'reason': 'foreground', 'uri': 'conf://cart'},
+    });
+    final home = await host.nextJson();
+    expect(home['error']['code'], -32019);
+    expect(home['error']['data'], {'kind': 'USER_ACTION_REQUIRED', 'reason': 'foreground'});
+    final catalog = await host.nextJson();
+    expect(catalog['tools']['cart.view'], containsPair('backgroundTool', 'cart.summary'));
+    expect(calls, 1);
+    expect(view.spec.backgroundTool, 'cart.summary');
+    await host.process.exitCode;
+    client.dispose();
+  }, skip: skip, timeout: const Timeout(Duration(seconds: 60)));
+
+  test('真实原生库：backgroundTool 影响摘要、null 清除、名称非法时更新失败', () async {
+    final c = AppMcp(appId: 'dart-v15', appName: 'v15', hostUrl: 'ws://127.0.0.1:9', libraryPath: nativePath);
+    final t = c.tool('cart.view', description: '购物车', surface: ToolSurface.view, handler: (args, ctx) => null);
+    final plain = c.toolsHash;
+    t.update(backgroundTool: 'cart.summary');
+    expect(c.toolsHash, isNot(plain));
+    t.update(backgroundTool: null);
+    expect(c.toolsHash, plain);
+    expect(() => t.update(backgroundTool: 'bad tool!'), throwsA(isA<AppMcpException>()));
+    c.setNavigateInBackground(false);
+    c.dispose();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }, skip: nativePath == null ? '找不到原生库' : false);
 }

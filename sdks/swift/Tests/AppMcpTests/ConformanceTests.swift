@@ -12,7 +12,7 @@ final class ConformanceTests: XCTestCase {
     /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。
     private static let features: Set<String> = [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
-        "readFailure", "surface", "navigation",
+        "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation",
     ]
     private static let verdictOK: Set<String> = ["pass", "xfail", "xpass", "skip"]
 
@@ -135,6 +135,9 @@ private final class CaseApp {
                 return try app.navigate(pages, req)
             }
         }
+        if let v = c["app"]?["visibility"]?.stringValue {
+            app.client.setVisibility(v == "frozen" ? .frozen : v == "hidden" ? .hidden : .visible, focused: false)
+        }
         app.client.start()
         return app
     }
@@ -160,7 +163,8 @@ private final class CaseApp {
         return AppMcpConfig(
             appId: "conf", appName: "Conformance", hostURL: url,
             maxConcurrentCalls: Int(c?["maxConcurrentCalls"]?.doubleValue ?? 1),
-            lifecycle: lifecycle ?? .persistent, callDedup: dedup
+            lifecycle: lifecycle ?? .persistent, callDedup: dedup,
+            navigateInBackground: c?["navigateInBackground"]?.boolValue
         )
     }
 
@@ -179,7 +183,8 @@ private final class CaseApp {
             annotations: decl["annotations"].map(toolAnnotations),
             outputSchema: try decl["outputSchema"].map(text),
             surface: decl["surface"]?.stringValue == "view" ? .view : .app,
-            page: decl["page"]?.stringValue
+            page: decl["page"]?.stringValue,
+            backgroundTool: decl["backgroundTool"]?.stringValue
         ) { [weak self] (args: JSONValue, ctx: ToolContext) async throws -> ToolResult<JSONValue> in
             runs += 1
             return try await self?.run(spec, count: runs, args: args, ctx: ctx) ?? ToolResult(data: nil)
@@ -243,6 +248,7 @@ private final class CaseApp {
         case "outputSchema": d.outputSchema = v.flatMap { try? text($0) }
         case "surface": d.surface = v?.stringValue == "view" ? .view : .app
         case "page": d.page = v?.stringValue
+        case "backgroundTool": d.backgroundTool = v?.stringValue
         default: break
         }
     }
@@ -254,6 +260,10 @@ private final class CaseApp {
         if let msg = spec["throw"]?.stringValue { throw CaseError(description: msg) }
         if let msg = spec["deny"]?.stringValue { return .denied(msg) }
         if let msg = spec["fail"]?.stringValue { return .failed(msg) }
+        // 与工具 handler 同一惯用法：抛 userActionRequired（封装层映射为 USER_ACTION_REQUIRED，不是 NAVIGATION_FAILED）
+        if let u = spec["userAction"], u != .null {
+            throw ToolCallError.userActionRequired(message: u["message"]?.stringValue ?? "", reason: u["reason"]?.stringValue, uri: u["uri"]?.stringValue)
+        }
         if spec["failParams"]?.boolValue == true { return .failed(req.paramsJSON ?? "") }
         return .ok
     }

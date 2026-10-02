@@ -72,6 +72,13 @@ test('显式生命周期整体生效，不与平台默认合并；新字段与 h
   mcp.dispose();
 });
 
+test('onNavigate 与 navigateInBackground 透传给客户端', () => {
+  const { mcp, client } = create({ onNavigate: () => {}, navigateInBackground: true });
+  assert.notEqual(client.navigationHandler, undefined);
+  assert.deepEqual(client.calls.filter((c) => c[0] === 'setNavigateInBackground'), [['setNavigateInBackground', true]]);
+  mcp.dispose();
+});
+
 test('persistent 回到前台不调用 wake', () => {
   const { mcp, client } = create({ lifecycle: { mode: 'persistent' } });
   kits.appContext.fire('foreground');

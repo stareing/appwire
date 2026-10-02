@@ -95,6 +95,7 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         {
             var client = new AppMcpClient(handle, dispatcher, json);
             sink.Attach(client);
+            if (options.NavigateInBackground is { } navigateInBackground) client.SetNavigateInBackground(navigateInBackground);
             return client;
         }
         catch
@@ -164,7 +165,8 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// <para>handler 在 <see cref="Dispatcher"/> 上执行（WPF / WinUI 即 UI 线程）：切换到目标页面，最好等新页面的工具注册之后再返回。
-    /// 正常返回 = 导航完成；抛出 <see cref="NavigationDeniedException"/> = 拒绝（如用户正在输入）；其他异常 = 失败。</para>
+    /// 正常返回 = 导航完成；抛出 <see cref="NavigationDeniedException"/> = 拒绝（如用户正在输入）；
+    /// 抛出 <see cref="UserActionRequiredException"/> = USER_ACTION_REQUIRED（如后台时发通知，reason "foreground" + uri）；其他异常 = 失败。</para>
     /// <para>能力在握手时声明：建议在 <see cref="Start"/> 之前设置，连接后才设置的在下次连接时生效。</para>
     /// </remarks>
     public void SetNavigationHandler(Func<NavigationRequest, Task>? handler)
@@ -187,6 +189,10 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
             handler(request);
             return Task.CompletedTask;
         });
+
+    /// <summary>App 在后台时是否仍把导航交给导航回调（见 <see cref="AppMcpClientOptions.NavigateInBackground"/>）；对之后到达的请求生效。</summary>
+    public void SetNavigateInBackground(bool enabled) =>
+        NativeMethods.Check(NativeMethods.am_client_set_navigate_in_background(_handle, enabled));
 
     public void SetVisibility(AppVisibility visibility, bool focused) =>
         NativeMethods.Check(NativeMethods.am_client_set_visibility(_handle, (int)visibility, focused));

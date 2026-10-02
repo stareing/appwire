@@ -143,7 +143,8 @@ export async function execHandler(spec, env) {
 /**
  * 按导航行为表执行（conformance/README.md 2.4）：先 `mutate`，再给出结果。未列出的页面以失败完成。
  * @input pages 用例 `app.navigation`；env.mutate 由 SDK 映射。
- * @output `{kind:'ok'}` / `{kind:'deny'|'fail'|'throw', message}`，由 runner 映射为该语言的写法。
+ * @output `{kind:'ok'}` / `{kind:'deny'|'fail'|'throw', message}` / `{kind:'userAction', message, reason?, uri?}`，
+ *   由 runner 映射为该语言的写法。
  */
 export function execNavigation(pages, page, params, env) {
   const spec = Object.prototype.hasOwnProperty.call(pages, page) ? pages[page] : undefined;
@@ -152,6 +153,7 @@ export function execNavigation(pages, page, params, env) {
   for (const op of spec.mutate ?? []) env.mutate(op);
   if (typeof spec.deny === 'string') return { kind: 'deny', message: spec.deny };
   if (typeof spec.fail === 'string') return { kind: 'fail', message: spec.fail };
+  if (spec.userAction) return { kind: 'userAction', ...spec.userAction };
   if (spec.failParams === true) return { kind: 'fail', message: params === undefined ? '' : JSON.stringify(params) };
   return { kind: 'ok' };
 }
@@ -204,7 +206,14 @@ export function appConfig(testCase) {
   if (c.lifecycle) out.lifecycle = { ...c.lifecycle };
   if (c.callDedup) out.callDedup = { ...c.callDedup };
   if (typeof c.maxConcurrentCalls === 'number') out.maxConcurrentCalls = c.maxConcurrentCalls;
+  if (typeof c.navigateInBackground === 'boolean') out.navigateInBackground = c.navigateInBackground;
   return out;
+}
+
+/** 用例 `app.visibility`（启动前设置的实例可见性）；未给出或取值不认识时为 undefined。 */
+export function appVisibility(testCase) {
+  const v = testCase.app?.visibility;
+  return v === 'visible' || v === 'hidden' || v === 'frozen' ? v : undefined;
 }
 
 /** `{a: 1, b: undefined}` → `{a: 1}`（只传用例给出的字段）。 */
@@ -227,6 +236,7 @@ function jsToolFields(decl) {
     enabled: decl.enabled,
     surface: decl.surface,
     page: decl.page,
+    backgroundTool: decl.backgroundTool,
   });
 }
 
@@ -261,7 +271,8 @@ async function jsRead(spec, ToolCallError) {
  * @input app `@app-mcp/node` / `@app-mcp/web` 的实例；ToolCallError 该包导出的错误类。
  * @why update 为补丁型 API：`set` 中为 null 的字段以显式 undefined 清除（两包的 `ToolHandle.update` 约定）。
  * @output `{ navigate }`：用例有 `app.navigation` 时为 JS 写法的导航回调 `(page, params) => Promise<void>`
- *   （拒绝抛 `NAVIGATION_DENIED` 的 ToolCallError、失败抛 `NAVIGATION_FAILED`、`throw` 抛普通 Error），由 runner 交给 SDK；否则 undefined。
+ *   （拒绝抛 `NAVIGATION_DENIED` 的 ToolCallError、失败抛 `NAVIGATION_FAILED`、`userAction` 抛
+ *   `ToolCallError.userActionRequired`、`throw` 抛普通 Error），由 runner 交给 SDK；否则 undefined。
  */
 export function registerJsApp(app, testCase, ToolCallError) {
   const registry = createRegistry({
@@ -307,6 +318,9 @@ export function registerJsApp(app, testCase, ToolCallError) {
     if (outcome.kind === 'throw') throw new Error(outcome.message);
     if (outcome.kind === 'deny') throw new ToolCallError('NAVIGATION_DENIED', outcome.message);
     if (outcome.kind === 'fail') throw new ToolCallError('NAVIGATION_FAILED', outcome.message);
+    if (outcome.kind === 'userAction') {
+      throw ToolCallError.userActionRequired(outcome.message, defined({ reason: outcome.reason, uri: outcome.uri }));
+    }
   };
   return { navigate };
 }

@@ -47,7 +47,7 @@ namespace fs = std::filesystem;
 /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。
 const std::vector<std::string> kFeatures = {"toolOptions", "mutate",      "lifecycle",       "wake",       "richResult",
                                             "userAction",  "progress",    "resourceOptions", "readFailure",
-                                            "surface",     "navigation"};
+                                            "surface",     "navigation",  "backgroundTool",  "backgroundNavigation"};
 
 // ---------------------------------------------------------------------------
 // 用例字段 → SDK 枚举（协议同名字符串，spec/protocol.md 第 3 节）
@@ -86,6 +86,15 @@ AmLifecycleMode parse_mode(const Json& v) {
 }
 
 AmToolSurface parse_surface(const Json& v) { return v.str_or("app") == "view" ? AM_SURFACE_VIEW : AM_SURFACE_APP; }
+
+/// 用例 app.visibility（visible / hidden / frozen）；未给出时 nullopt。
+std::optional<AmVisibility> parse_visibility(const Json& v) {
+    static const std::map<std::string, AmVisibility> table = {
+        {"visible", AM_VISIBLE}, {"hidden", AM_HIDDEN}, {"frozen", AM_FROZEN}};
+    auto it = table.find(v.str_or(""));
+    if (it == table.end()) return std::nullopt;
+    return it->second;
+}
 
 std::optional<std::string> json_text(const Json& v) {
     if (v.is_null()) return std::nullopt;
@@ -133,6 +142,9 @@ public:
     virtual void handle_wake(const std::string& arg) = 0;
     /// 设置导航回调（conformance/README.md 2.4）；pages 为用例的 app.navigation。
     virtual void set_navigation(const Json& pages) = 0;
+    /// 后台导航（conformance/README.md 2 / 4 的 backgroundNavigation）：启动前调用。
+    virtual void set_navigate_in_background(bool enabled) = 0;
+    virtual void set_visibility(AmVisibility visibility) = 0;
     /// 停止客户端并等待 handler 线程结束。
     virtual void stop() = 0;
 
@@ -271,6 +283,7 @@ app_mcp::ToolOptions cpp_tool_options(const Json& decl) {
     o.output_schema_json = json_text(decl["outputSchema"]);
     o.surface = parse_surface(decl["surface"]) == AM_SURFACE_VIEW ? app_mcp::Surface::View : app_mcp::Surface::App;
     o.page = decl["page"].str();
+    o.background_tool = decl["backgroundTool"].str();
     return o;
 }
 
@@ -393,6 +406,8 @@ public:
                 nav.deny(*msg);
             } else if (auto msg = (*spec)["fail"].str()) {
                 nav.fail(*msg);
+            } else if (const Json& u = (*spec)["userAction"]; !u.is_null()) {
+                throw app_mcp::UserActionRequired(u["message"].str_or(""), u["reason"].str(), u["uri"].str());
             } else if ((*spec)["failParams"].boolean() == true) {
                 nav.fail(nav.params_json().value_or(""));
             } else {
@@ -400,6 +415,8 @@ public:
             }
         });
     }
+    void set_navigate_in_background(bool enabled) override { client_.set_navigate_in_background(enabled); }
+    void set_visibility(AmVisibility visibility) override { client_.set_visibility(visibility, false); }
     void stop() override {
         try {
             client_.stop();
@@ -463,7 +480,7 @@ void check_c(AmStatus s, const char* what) {
 /// 工具声明 → AmToolSpec + AmToolOptions；指针借用 decl 派生的字符串（由 holder 保持存活）。
 struct CToolDecl {
     std::string name, description;
-    std::optional<std::string> input_schema, title, annotations, output_schema, page;
+    std::optional<std::string> input_schema, title, annotations, output_schema, page, background_tool;
     AmToolSpec spec{};
     AmToolOptions options{};
 
@@ -474,7 +491,8 @@ struct CToolDecl {
           title(decl["title"].str()),
           annotations(json_text(decl["annotations"])),
           output_schema(json_text(decl["outputSchema"])),
-          page(decl["page"].str()) {
+          page(decl["page"].str()),
+          background_tool(decl["backgroundTool"].str()) {
         spec.name = name.c_str();
         spec.description = description.c_str();
         spec.input_schema_json = input_schema ? input_schema->c_str() : nullptr;
@@ -487,6 +505,7 @@ struct CToolDecl {
         options.output_schema_json = output_schema ? output_schema->c_str() : nullptr;
         options.page = page ? page->c_str() : nullptr;
         options.surface = parse_surface(decl["surface"]);
+        options.background_tool = background_tool ? background_tool->c_str() : nullptr;
     }
     CToolDecl(const CToolDecl&) = delete;
     CToolDecl& operator=(const CToolDecl&) = delete;
@@ -643,6 +662,12 @@ public:
                                                  [](void* p) { delete static_cast<CNavigationContext*>(p); }),
                 "am_client_set_navigation_handler");
     }
+    void set_navigate_in_background(bool enabled) override {
+        check_c(am_client_set_navigate_in_background(client_, enabled), "am_client_set_navigate_in_background");
+    }
+    void set_visibility(AmVisibility visibility) override {
+        check_c(am_client_set_visibility(client_, visibility, false), "am_client_set_visibility");
+    }
     void handle_wake(const std::string& arg) override { am_client_handle_wake(client_, arg.c_str()); }
     void stop() override {
         am_client_stop(client_);
@@ -683,7 +708,7 @@ private:
         }
     }
 
-    /// C 最自然的写法：am_navigate_complete / am_navigate_fail / am_navigate_deny；C 没有异常，`throw` 即 am_navigate_fail。
+    /// C 最自然的写法：am_navigate_complete / am_navigate_fail / am_navigate_deny / am_navigate_fail_user_action；C 没有异常，`throw` 即 am_navigate_fail。
     static void on_navigate(void* ud, AmNavigate* nav) {
         auto* ctx = static_cast<CNavigationContext*>(ud);
         const std::string page = am_navigate_page(nav);
@@ -706,6 +731,10 @@ private:
             am_navigate_deny(nav, msg->c_str());
         } else if (auto msg = (*spec)["fail"].str()) {
             am_navigate_fail(nav, msg->c_str());
+        } else if (const Json& u = (*spec)["userAction"]; !u.is_null()) {
+            auto reason = u["reason"].str();
+            auto uri = u["uri"].str();
+            am_navigate_fail_user_action(nav, u["message"].str_or("").c_str(), c_or_null(reason), c_or_null(uri));
         } else if ((*spec)["failParams"].boolean() == true) {
             const char* params = am_navigate_params_json(nav);
             am_navigate_fail(nav, params ? params : "");
@@ -810,6 +839,8 @@ Outcome run_case(const std::string& sdk, const std::string& fake_host, const fs:
                 for (const auto& t : kase["app"]["tools"].items()) app->register_tool(t);
                 for (const auto& r : kase["app"]["resources"].items()) app->register_resource(r);
                 if (kase["app"]["navigation"].is_object()) app->set_navigation(kase["app"]["navigation"]);
+                if (auto b = kase["app"]["config"]["navigateInBackground"].boolean()) app->set_navigate_in_background(*b);
+                if (auto v = parse_visibility(kase["app"]["visibility"])) app->set_visibility(*v);
                 app->start();
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "[%s] 创建 / 注册失败：%s\n", sdk.c_str(), e.what());

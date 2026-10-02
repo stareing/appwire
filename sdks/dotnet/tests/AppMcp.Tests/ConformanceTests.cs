@@ -19,7 +19,7 @@ public class ConformanceTests(ITestOutputHelper output)
     private static readonly HashSet<string> Features =
     [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure",
-        "surface", "navigation",
+        "surface", "navigation", "backgroundTool", "backgroundNavigation",
     ];
 
     private static readonly IReadOnlyDictionary<string, ToolRisk> Risks = new Dictionary<string, ToolRisk>
@@ -42,6 +42,11 @@ public class ConformanceTests(ITestOutputHelper output)
     private static readonly IReadOnlyDictionary<string, LifecycleMode> Modes = new Dictionary<string, LifecycleMode>
     {
         ["persistent"] = LifecycleMode.Persistent, ["idle"] = LifecycleMode.Idle, ["on-demand"] = LifecycleMode.OnDemand,
+    };
+
+    private static readonly IReadOnlyDictionary<string, AppVisibility> Visibilities = new Dictionary<string, AppVisibility>
+    {
+        ["visible"] = AppVisibility.Visible, ["hidden"] = AppVisibility.Hidden, ["frozen"] = AppVisibility.Frozen,
     };
 
     /// <summary>协议注解（camelCase 字段与枚举值）→ SDK 类型。</summary>
@@ -115,6 +120,7 @@ public class ConformanceTests(ITestOutputHelper output)
                     foreach (var t in Items(Get(Get(kase, "app"), "tools"))) app.RegisterTool(t);
                     foreach (var r in Items(Get(Get(kase, "app"), "resources"))) app.RegisterResource(r);
                     if (Get(Get(kase, "app"), "navigation").ValueKind == JsonValueKind.Object) app.SetNavigation(Get(Get(kase, "app"), "navigation"));
+                    if (Text(Get(Get(kase, "app"), "visibility")) is { } visibility) app.Client.SetVisibility(Visibilities[visibility], false);
                     app.Client.Start();
                     continue;
                 }
@@ -164,6 +170,12 @@ public class ConformanceTests(ITestOutputHelper output)
             Lifecycle = lifecycle,
             CallDedup = dedup,
             MaxConcurrentCalls = Get(c, "maxConcurrentCalls").ValueKind == JsonValueKind.Number ? Get(c, "maxConcurrentCalls").GetInt32() : 1,
+            NavigateInBackground = Get(c, "navigateInBackground").ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                _ => null,
+            },
         };
     }
 
@@ -204,6 +216,7 @@ public class ConformanceTests(ITestOutputHelper output)
         OutputSchemaJson = Raw(Get(decl, "outputSchema")),
         Surface = Text(Get(decl, "surface")) == "view" ? ToolSurface.View : ToolSurface.App,
         Page = Text(Get(decl, "page")),
+        BackgroundTool = Text(Get(decl, "backgroundTool")),
     };
 
     private static string? FindRepoRoot()
@@ -249,7 +262,7 @@ public class ConformanceTests(ITestOutputHelper output)
         }
 
         /// <summary>导航行为（conformance/README.md 2.4）。C# 最自然的写法：正常返回 = 完成，抛
-        /// <see cref="NavigationDeniedException"/> = 拒绝，其他异常 = 失败。</summary>
+        /// <see cref="NavigationDeniedException"/> = 拒绝，<see cref="UserActionRequiredException"/> = USER_ACTION_REQUIRED，其他异常 = 失败。</summary>
         public void SetNavigation(JsonElement pages) => Client.SetNavigationHandler(request =>
         {
             if (Get(pages, request.Page) is not { ValueKind: JsonValueKind.Object } spec)
@@ -258,6 +271,11 @@ public class ConformanceTests(ITestOutputHelper output)
             foreach (var op in Items(Get(spec, "mutate"))) Mutate(op);
             if (Text(Get(spec, "deny")) is { } deny) throw new NavigationDeniedException(deny);
             if (Text(Get(spec, "fail")) is { } fail) throw new InvalidOperationException(fail);
+            if (IsSet(Get(spec, "userAction")))
+            {
+                var u = Get(spec, "userAction");
+                throw new UserActionRequiredException(Text(Get(u, "message")) ?? "", Text(Get(u, "reason")), Text(Get(u, "uri")));
+            }
             if (Get(spec, "failParams").ValueKind == JsonValueKind.True) throw new InvalidOperationException(request.ParamsJson ?? "");
         });
 

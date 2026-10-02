@@ -80,6 +80,7 @@ typedef struct ToolRec {
     char *output_schema; /* v9 */
     char *page;          /* v14 */
     int surface;         /* v14 */
+    char *background_tool; /* v15 */
 } ToolRec;
 
 typedef struct ResRec {
@@ -627,12 +628,16 @@ static void apply_tool_options(ToolRec *t, const AmToolOptions *o) {
     free(t->annotations);
     free(t->output_schema);
     free(t->page);
+    free(t->background_tool);
     t->annotations = o ? dup_str(o->annotations_json) : NULL;
     t->output_schema = o ? dup_str(o->output_schema_json) : NULL;
     /* v14：按 struct_size 读取（旧调用方不含 page / surface）。 */
     int v14 = o && o->struct_size >= offsetof(AmToolOptions, surface) + sizeof o->surface;
     t->page = v14 ? dup_str(o->page) : NULL;
     t->surface = v14 ? o->surface : AM_SURFACE_APP;
+    /* v15：按 struct_size 读取（旧调用方不含 background_tool）。 */
+    int v15 = o && o->struct_size >= offsetof(AmToolOptions, background_tool) + sizeof o->background_tool;
+    t->background_tool = v15 ? dup_str(o->background_tool) : NULL;
 }
 AmStatus am_tool_register_ex(AmScope *scope, const AmToolSpec *spec, const AmToolOptions *options,
                              AmToolFn handler, void *user_data, AmFreeFn free_user_data, AmTool **out) {
@@ -1119,6 +1124,12 @@ char *fake_tool_view(const char *name) {
     char *buf = malloc(cap);
     snprintf(buf, cap, "%d|%s", t->surface, p);
     return buf;
+}
+
+/* v15：工具当前的 background_tool（需 am_string_free）；未声明或工具不存在时返回 NULL。 */
+char *fake_tool_background(const char *name) {
+    ToolRec *t = find_tool(g_client, name);
+    return t ? dup_str(t->background_tool) : NULL;
 }
 
 /* 最近一次 am_client_new 的总览（需 am_string_free）；没有时返回 NULL。 */

@@ -1,6 +1,8 @@
 package dev.appmcp
 
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /** 工具对界面的依赖（spec/protocol.md 3.4）：`APP`（缺省）后台可调、可唤醒；`VIEW` 只在所在界面可见且处于最上层时启用。 */
 typealias ToolSurface = dev.appmcp.ffi.ToolSurface
@@ -11,11 +13,37 @@ typealias ToolSurface = dev.appmcp.ffi.ToolSurface
  * - [Ok]：已切换到目标页面（最好在新页面的工具注册之后再返回，Host 会等待目标工具出现）。
  * - [Denied]：不愿切换（用户正在输入、页面需要登录等）→ `NAVIGATION_DENIED`；[message] 面向模型 / 用户。
  * - [Failed]：页面不存在、参数不合法等 → `NAVIGATION_FAILED`（`reason: "error"`）。
+ * - [UserActionRequired]：需要用户本人操作才能继续 → `USER_ACTION_REQUIRED`。典型是 App 在后台无法自行前置界面
+ *   （[AppMcpConfig.navigateInBackground] 为 true 时由回调决定）：发通知请用户点开后以 `reason = UserActionReason.FOREGROUND`、
+ *   `uri` = 该页面的 App 内入口回复（spec/protocol.md 3.4「后台与前台」）。
  */
 sealed class NavigationResult {
     data object Ok : NavigationResult()
     data class Denied(val message: String) : NavigationResult()
     data class Failed(val message: String) : NavigationResult()
+    /** @input reason / uri 为 null 时不出现在错误的 `data` 中（同 [ToolCallException.userActionRequired]）。 */
+    data class UserActionRequired(
+        val message: String,
+        val reason: String? = null,
+        val uri: String? = null,
+    ) : NavigationResult()
+}
+
+/**
+ * 导航回调抛出的异常（已映射为错误类别）→ 导航结果。
+ *
+ * @input details [ToolCallException.details]；`USER_ACTION_REQUIRED` 时从中取字符串 `reason` / `uri`
+ * @output `NAVIGATION_DENIED` → [NavigationResult.Denied]；`USER_ACTION_REQUIRED` → [NavigationResult.UserActionRequired]；
+ *   其他 → [NavigationResult.Failed]
+ */
+internal fun navigationFailure(kind: String, message: String, details: JsonElement?): NavigationResult = when (kind) {
+    ErrorKind.NAVIGATION_DENIED -> NavigationResult.Denied(message)
+    ErrorKind.USER_ACTION_REQUIRED -> {
+        val fields = details as? JsonObject
+        fun text(key: String) = (fields?.get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content
+        NavigationResult.UserActionRequired(message, text("reason"), text("uri"))
+    }
+    else -> NavigationResult.Failed(message)
 }
 
 /**
@@ -23,7 +51,8 @@ sealed class NavigationResult {
  *
  * @input page 目标页面名（清单 `pages[].name` 或工具声明的 `page`）
  * @input params 页面参数；Host 没有给出时为 null
- * @error 抛出的异常按 [NavigationResult.Failed] 回复；[ToolCallException]（`kind` 为 [ErrorKind.NAVIGATION_DENIED]）按拒绝回复
+ * @error 抛出的异常按 [NavigationResult.Failed] 回复；[ToolCallException]（`kind` 为 [ErrorKind.NAVIGATION_DENIED]）按拒绝回复，
+ *   [ToolCallException.userActionRequired] 按 [NavigationResult.UserActionRequired] 回复（带 reason / uri）
  */
 typealias NavigateFunction = suspend (page: String, params: JsonObject?) -> NavigationResult
 
@@ -104,6 +133,8 @@ class ToolUpdate internal constructor() {
     var surface: ToolSurface by field { s, v -> s.copy(surface = v) }
     /** null = 清除。 */
     var page: String? by field { s, v -> s.copy(page = v) }
+    /** null = 清除。 */
+    var backgroundTool: String? by field { s, v -> s.copy(backgroundTool = v) }
 
     private fun <T> field(patch: (FfiToolSpec, T) -> FfiToolSpec) =
         object : kotlin.properties.ReadWriteProperty<ToolUpdate, T> {

@@ -84,9 +84,14 @@ export interface CoreToolDef {
   /** 缺省 `app`（spec/protocol.md 3.4）。 */
   surface?: ToolSurface
   page?: string
+  /** 后台替代：同一 App 中一个 `app` 工具的名称（spec/protocol.md 3.4）。 */
+  backgroundTool?: string
 }
 
-/** 部分更新；缺省字段不变，`activation` / `title` / `annotations` / `outputSchema` / `page` 为 null 表示清除。 */
+/**
+ * 部分更新；缺省字段不变，`activation` / `title` / `annotations` / `outputSchema` / `page` / `backgroundTool`
+ * 为 null 表示清除。
+ */
 export interface CoreToolUpdate {
   description?: string
   inputSchema?: JsonSchema
@@ -98,6 +103,7 @@ export interface CoreToolUpdate {
   outputSchema?: OutputSchema | null
   surface?: ToolSurface
   page?: string | null
+  backgroundTool?: string | null
 }
 
 export interface CoreResourceDef {
@@ -118,7 +124,10 @@ export interface CoreToolError {
 /** handler / 资源读取结果（成功结果的可选字段见 bindings/wasm/src/convert.rs `JsCallOutcome`）。 */
 export type CoreOutcome = NormalizedResult | { error: CoreToolError }
 
-/** 导航结果：`{}` 完成，或 `NAVIGATION_FAILED` / `NAVIGATION_DENIED` 错误（spec/protocol.md 3.4）。 */
+/**
+ * 导航结果：`{}` 完成，或 `NAVIGATION_FAILED` / `NAVIGATION_DENIED` / `USER_ACTION_REQUIRED`（`details` 为
+ * `{ reason?, uri? }`）错误（spec/protocol.md 3.4）。
+ */
 export type CoreNavigateOutcome = Record<string, never> | { error: CoreToolError }
 
 /** 核心连接状态（`retryAt` 为核心时钟，即 `performance.now()` 毫秒）。 */
@@ -180,6 +189,11 @@ export interface CoreClient {
   completeNavigate(navigate: number, outcome: CoreNavigateOutcome): void
   /** 是否处理 `app/navigate`（握手时声明 `capabilities.navigate`；连接后修改在下次连接生效）。 */
   setNavigation(enabled: boolean): void
+  /**
+   * 不可见时导航请求是否仍产生 `navigate` 事件（spec/protocol.md 3.4）。缺省 false：核心直接以
+   * `USER_ACTION_REQUIRED`（`reason: "foreground"`）回复。随时生效，只影响之后到达的请求。
+   */
+  setNavigateInBackground(enabled: boolean): void
   pollEvent(): CoreEvent | undefined
   pollTimeout(): number | undefined
   // ---- 生命周期（spec/lifecycle.md）----

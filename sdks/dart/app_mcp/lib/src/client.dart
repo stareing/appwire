@@ -348,6 +348,7 @@ final class AppMcp {
   /// [lifecycle] 缺省时按平台取 [LifecyclePolicy.platformDefault]；显式传入的策略原样使用。
   /// [heartbeat] 为心跳策略（spec/lifecycle.md 第 11 节 A3）。
   /// [callDedup] 为调用去重策略（spec/protocol.md 3.3，默认保留 5 分钟、最多 64 条；[CallDedupPolicy.off] 关闭）。
+  /// [navigateInBackground] 见 [setNavigateInBackground]；缺省用平台默认（桌面 true，Android / iOS false）。
   ///
   /// [libraryPath] 指定原生库路径；缺省时读取环境变量 `APP_MCP_NATIVE_PATH`，
   /// 否则按平台默认名加载。失败时抛出 [AppMcpException]。
@@ -369,6 +370,7 @@ final class AppMcp {
     CallDedupPolicy callDedup = const CallDedupPolicy(),
     String? libraryPath,
     AppMcpBindings? bindings,
+    bool? navigateInBackground,
   }) {
     final b = bindings ?? _defaultBindings(libraryPath);
     final rt = _Runtime.of(b);
@@ -441,6 +443,7 @@ final class AppMcp {
       rt.targets.remove(id);
       rethrow;
     }
+    if (navigateInBackground != null) client.setNavigateInBackground(navigateInBackground);
     return client;
   }
 
@@ -558,7 +561,8 @@ final class AppMcp {
   /// 设置导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）；null 清除（之后的导航请求以 `NAVIGATION_FAILED` 回复）。
   ///
   /// [handler] 在创建客户端的 isolate（Flutter 主 isolate）上执行：切换到目标页面，最好等新页面的工具注册之后再返回。
-  /// 正常返回 = 完成；抛 [NavigationDeniedError] = 拒绝；其他异常 = 失败。能力在握手时声明：建议在 [start] 之前设置，
+  /// 正常返回 = 完成；抛 [NavigationDeniedError] = 拒绝；抛 [UserActionRequiredError] = `USER_ACTION_REQUIRED`
+  /// （reason / uri）；其他异常 = 失败。能力在握手时声明：建议在 [start] 之前设置，
   /// 连接后才设置的在下次连接生效。Flutter 可用 `app_mcp_flutter` 的 `McpNavigator` / go_router 适配。
   void setNavigationHandler(NavigationHandler? handler) {
     _ensureAlive();
@@ -568,6 +572,14 @@ final class AppMcp {
         handler == null ? nullptr : _rt.navigate.nativeFunction,
         Pointer<Void>.fromAddress(handler == null ? 0 : _userDataId),
         nullptr));
+  }
+
+  /// App 在后台（[AppVisibility.hidden] / [AppVisibility.frozen]）时是否仍把导航交给导航回调（spec/protocol.md 3.4
+  /// 「后台与前台」）。false 时直接以 `USER_ACTION_REQUIRED`（reason `foreground`）回复、不调用回调；true 时回调可自行
+  /// 把窗口提到前台，或抛 [UserActionRequiredError]（如发通知后带 reason `foreground` 与 uri）。对之后到达的请求生效。
+  void setNavigateInBackground(bool enabled) {
+    _ensureAlive();
+    _rt.check(_b.am_client_set_navigate_in_background(_ptr, enabled));
   }
 
   void setVisibility(AppVisibility visibility, {bool focused = true}) {
@@ -634,6 +646,7 @@ final class AppMcp {
     Map<String, Object?>? outputSchema,
     ToolSurface surface = ToolSurface.app,
     String? page,
+    String? backgroundTool,
     required ToolHandler handler,
   }) =>
       _root.tool(name,
@@ -647,6 +660,7 @@ final class AppMcp {
           outputSchema: outputSchema,
           surface: surface,
           page: page,
+          backgroundTool: backgroundTool,
           handler: handler);
 
   /// 在根作用域注册资源。见 [McpScope.resource]。
@@ -848,6 +862,9 @@ final class AppMcp {
     Future<void>.sync(() => handler(request)).then((_) => finish(null), onError: (Object e) {
       if (e is NavigationDeniedError) {
         finish((m) => _b.am_navigate_deny(ptr, m), e.message);
+      } else if (e is UserActionRequiredError) {
+        finish((m) => using((arena) =>
+            _b.am_navigate_fail_user_action(ptr, m, _optStr(e.reason, arena), _optStr(e.uri, arena))), e.message);
       } else {
         finish((m) => _b.am_navigate_fail(ptr, m), failureFromError(e).message);
       }
@@ -928,6 +945,7 @@ final class McpScope {
     Map<String, Object?>? outputSchema,
     ToolSurface surface = ToolSurface.app,
     String? page,
+    String? backgroundTool,
     required ToolHandler handler,
   }) =>
       registerTool(
@@ -942,7 +960,8 @@ final class McpScope {
               annotations: annotations,
               outputSchema: outputSchema,
               surface: surface,
-              page: page),
+              page: page,
+              backgroundTool: backgroundTool),
           handler);
 
   /// 用 [ToolSpec] 注册工具。
@@ -1096,7 +1115,8 @@ Pointer<AmToolOptions> _toolOptions(ToolSpec spec, Allocator arena) {
     ..annotations_json = _optStr(encodeToolAnnotations(spec.annotations), arena)
     ..output_schema_json = _optStr(encodeSchema(spec.outputSchema), arena)
     ..page = _optStr(spec.page, arena)
-    ..surface = surfaceToNative(spec.surface);
+    ..surface = surfaceToNative(spec.surface)
+    ..background_tool = _optStr(spec.backgroundTool, arena);
   return o;
 }
 
@@ -1127,8 +1147,8 @@ final class ToolHandle {
   ///
   /// 各参数类型同 [ToolSpec] 对应字段（`description` String、`inputSchema` / `outputSchema`
   /// `Map<String, Object?>`、`risk` [Risk]、`activation` [Activation]、`title` String、`enabled` bool、
-  /// `annotations` [ToolAnnotations]、`surface` [ToolSurface]、`page` String）。null 的含义：`title` / `activation` / `annotations` /
-  /// `outputSchema` / `page` 清除声明，`surface` 恢复 [ToolSurface.app]，`inputSchema` 为无参数，`risk` 恢复 [Risk.write]，`enabled` 恢复 true，
+  /// `annotations` [ToolAnnotations]、`surface` [ToolSurface]、`page` / `backgroundTool` String）。null 的含义：`title` / `activation` /
+  /// `annotations` / `outputSchema` / `page` / `backgroundTool` 清除声明，`surface` 恢复 [ToolSurface.app]，`inputSchema` 为无参数，`risk` 恢复 [Risk.write]，`enabled` 恢复 true，
   /// `description` 保持不变。
   ///
   /// @error 类型不符时抛 [ArgumentError]，不产生协议消息。
@@ -1144,6 +1164,7 @@ final class ToolHandle {
     Object? outputSchema = _keep,
     Object? surface = _keep,
     Object? page = _keep,
+    Object? backgroundTool = _keep,
   }) {
     final s = _spec;
     replace(ToolSpec(
@@ -1157,7 +1178,8 @@ final class ToolHandle {
         annotations: _patch<ToolAnnotations?>(annotations, s.annotations, 'annotations'),
         outputSchema: _patch<Map<String, Object?>?>(outputSchema, s.outputSchema, 'outputSchema'),
         surface: _patch<ToolSurface?>(surface, s.surface, 'surface') ?? ToolSurface.app,
-        page: _patch<String?>(page, s.page, 'page')));
+        page: _patch<String?>(page, s.page, 'page'),
+        backgroundTool: _patch<String?>(backgroundTool, s.backgroundTool, 'backgroundTool')));
   }
 
   /// [update] 参数缺省标记。
@@ -1186,7 +1208,8 @@ final class ToolHandle {
         annotations: spec.annotations,
         outputSchema: spec.outputSchema,
         surface: spec.surface,
-        page: spec.page);
+        page: spec.page,
+        backgroundTool: spec.backgroundTool);
     if (next == _spec) return;
     final rt = _scope._client._rt;
     using((arena) =>

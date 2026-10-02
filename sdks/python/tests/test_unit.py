@@ -483,6 +483,9 @@ class FakeNavigate:
     def deny(self, message):
         self._finish(("deny", message))
 
+    def fail_user_action(self, message, reason, uri):
+        self._finish(("user_action", message, reason, uri))
+
     def wait(self):
         assert self.done.wait(5), "导航未完成"
         return self.result
@@ -515,6 +518,22 @@ def test_navigation_outcomes(client):
         raise ToolCallError("NAVIGATION_DENIED", "正在编辑")
 
     assert _navigate(client, deny_kind, FakeNavigate("x")) == ("deny", "正在编辑")
+
+    # user_action_required → USER_ACTION_REQUIRED（不是 NAVIGATION_FAILED），reason / uri 原样带上
+    def background(page, params):
+        raise ToolCallError.user_action_required("已发通知，请点开", app_mcp.UserActionReason.FOREGROUND, "shop://cart")
+
+    assert _navigate(client, background, FakeNavigate("cart")) == (
+        "user_action",
+        "已发通知，请点开",
+        "foreground",
+        "shop://cart",
+    )
+
+    def bare(page, params):
+        raise ToolCallError.user_action_required("请先打开 App")
+
+    assert _navigate(client, bare, FakeNavigate("cart")) == ("user_action", "请先打开 App", None, None)
     # 参数不是对象 / 不是 JSON：不调用回调，直接失败
     assert _navigate(client, nav, FakeNavigate("cart", raw="[1]"))[0] == "fail"
     assert _navigate(client, nav, FakeNavigate("cart", raw="{"))[0] == "fail"
@@ -549,6 +568,14 @@ def test_navigation_async_and_dispatcher():
         c.close()
 
 
+def test_navigate_in_background_option_and_setter():
+    c = AppMcp(app_id="unit-nav-bg", app_name="Unit", host_url="ws://127.0.0.1:9", navigate_in_background=True)
+    try:
+        c.set_navigate_in_background(False)
+    finally:
+        c.close()
+
+
 def test_surface_and_page(client):
     handle = client.add_tool(lambda: None, "v.tool", "依赖界面", surface="view", page="cart")
     assert (handle._spec.surface, handle._spec.page) == (ffi.ToolSurface.VIEW, "cart")
@@ -558,5 +585,11 @@ def test_surface_and_page(client):
     assert (handle._spec.surface, handle._spec.page) == (ffi.ToolSurface.VIEW, "cart")
     handle.update(surface=None, page=None)
     assert (handle._spec.surface, handle._spec.page) == (None, None)
+    bg = client.add_tool(lambda: None, "v.bg", "后台替身", surface="view", background_tool="a.tool")
+    assert bg._spec.background_tool == "a.tool"
+    bg.update(description="新")
+    assert bg._spec.background_tool == "a.tool"
+    bg.update(background_tool=None)
+    assert bg._spec.background_tool is None
     with pytest.raises(ValueError):
         client.add_tool(lambda: None, "bad.tool", "非法", surface="modal")

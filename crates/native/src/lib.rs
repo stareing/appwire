@@ -149,6 +149,9 @@ pub struct ToolOptions {
     pub surface: ToolSurface,
     /// 所在页面名（`[a-zA-Z0-9_.-]{1,64}`）；Hub 在该工具未注册时据此导航（[`NativeClient::set_navigation_handler`]）。
     pub page: Option<String>,
+    /// 后台替代（spec/protocol.md 3.4）：同一 App 中一个 `App` 工具的名称；本 `View` 工具因 App 在后台不可调用时
+    /// Hub 改调它。`None` = 未声明。
+    pub background_tool: Option<String>,
 }
 
 /// 调用成功的完整结果（[`CallHandle::complete_with`]，spec/protocol.md 3.2）。`Default` = 无返回值、`done`。
@@ -525,6 +528,11 @@ impl NavigateHandle {
     pub fn deny(&self, message: &str) -> Result<(), NativeError> {
         self.inner.finish(Err(ToolError::navigation_denied(message)))
     }
+    /// 需要用户本人操作（`USER_ACTION_REQUIRED`，spec/protocol.md 3.4）：如 App 在后台、已发通知请用户点开
+    /// （`reason` 取 `foreground`，`uri` 为该页面的 App 内入口）。语义同 [`CallHandle::fail_user_action`]。
+    pub fn fail_user_action(&self, message: &str, reason: Option<&str>, uri: Option<&str>) -> Result<(), NativeError> {
+        self.inner.finish(Err(ToolError::user_action_required(message, reason, uri)))
+    }
 }
 
 /// 已注册的工具。可克隆；`dispose` 幂等。丢弃句柄**不会**注销工具。
@@ -549,6 +557,7 @@ impl ToolHandle {
             output_schema: Some(output_schema),
             surface: Some(options.surface),
             page: Some(options.page),
+            background_tool: Some(options.background_tool),
             ..spec_update(spec)?
         })
     }
@@ -785,6 +794,13 @@ impl NativeClient {
         let mut st = self.owner.shared.lock();
         st.client.set_navigation(handler.is_some());
         st.navigation = handler;
+    }
+
+    /// 实例不可见时导航请求是否仍交给导航回调（spec/protocol.md 3.4）。缺省按平台：桌面 `true`（App / 封装层能把窗口
+    /// 带到前台）；Android、iOS、鸿蒙 `false`（直接以 `USER_ACTION_REQUIRED`（`foreground`）回复，不等超时）。
+    /// App 要在后台自行处理（如发通知请用户点开，再以 [`NavigateHandle::fail_user_action`] 回复）时置为 `true`。随时生效。
+    pub fn set_navigate_in_background(&self, enabled: bool) {
+        self.owner.shared.lock().client.set_navigate_in_background(enabled);
     }
 
     pub fn instance_id(&self) -> String {
@@ -1047,6 +1063,7 @@ fn build_core_config(
     inner.expected_host_user = app_mcp_protocol::identity::expected_host_user();
     inner.max_concurrent_calls = usize::try_from(config.max_concurrent_calls).unwrap_or(usize::MAX);
     inner.call_dedup = config.call_dedup;
+    inner.navigate_in_background = app_mcp_protocol::platform::Target::CURRENT.allows_self_foreground();
     Ok((inner, endpoint))
 }
 
@@ -1298,6 +1315,7 @@ impl Shared {
                 output_schema,
                 surface: options.surface,
                 page: options.page,
+                background_tool: options.background_tool,
             })
             .map_err(core_error)?;
         st.tools.insert(id, ToolEntry { handler, scope });

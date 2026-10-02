@@ -158,6 +158,8 @@ class FakeNativeClient extends FakeRegistrar {
     this.resources = new Map();
     this.scopeDisposals = [];
     this.calls = [];
+    /** 不可见时导航是否仍交给回调；缺省同鸿蒙原生运行时为 false。 */
+    this.navigateInBackground = false;
     this.instanceId = 'inst-1';
     this.state = { status: 'idle' };
     this.connectionId = undefined;
@@ -202,11 +204,21 @@ class FakeNativeClient extends FakeRegistrar {
   setNavigationHandler(handler) {
     this.navigationHandler = handler ?? undefined;
   }
+  setNavigateInBackground(enabled) {
+    this.calls.push(['setNavigateInBackground', enabled]);
+    this.navigateInBackground = enabled;
+  }
   /** 测试用：模拟 Host 的 `app/navigate`；没有回调时同真实原生层以 unsupported 失败。返回 Promise<{ok} | {ok:false, kind, message}>。 */
   navigate(page, params) {
     return new Promise((resolve) => {
       if (!this.navigationHandler) {
         resolve({ ok: false, kind: 'unsupported', message: `App 不支持由 Agent 导航（页面「${page}」）。` });
+        return;
+      }
+      // 同核心：不可见且 navigateInBackground 为 false（鸿蒙原生缺省）时立即 userAction（foreground），不调用回调
+      const visibility = this.lastVisibility();
+      if (visibility !== undefined && visibility !== 'visible' && !this.navigateInBackground) {
+        resolve({ ok: false, kind: 'userAction', message: `App 在后台，无法切换到页面「${page}」`, reason: 'foreground', uri: null });
         return;
       }
       let done = false;
@@ -221,8 +233,15 @@ class FakeNativeClient extends FakeRegistrar {
         complete: () => finish({ ok: true }),
         fail: (message) => finish({ ok: false, kind: 'fail', message }),
         deny: (message) => finish({ ok: false, kind: 'deny', message }),
+        failUserAction: (message, reason, uri) =>
+          finish({ ok: false, kind: 'userAction', message, reason: reason ?? null, uri: uri ?? null }),
       });
     });
+  }
+  /** 最近一次 setVisibility 的可见性；未设置时为 undefined。 */
+  lastVisibility() {
+    const last = this.calls.filter((c) => c[0] === 'setVisibility').pop();
+    return last === undefined ? undefined : last[1];
   }
   /** 测试用：模拟 Host 调用工具。 */
   invoke(name, args) {

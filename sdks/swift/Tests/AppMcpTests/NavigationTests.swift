@@ -31,7 +31,7 @@ final class NavigationTests: XCTestCase {
         let base = ToolSpec(
             name: "t", description: "旧", title: "标题",
             annotations: ToolAnnotations(title: nil, readOnlyHint: true, destructiveHint: nil, idempotentHint: nil, openWorldHint: nil),
-            outputSchemaJson: #"{"type":"object"}"#, surface: .view, page: "cart"
+            outputSchemaJson: #"{"type":"object"}"#, surface: .view, page: "cart", backgroundTool: "t.bg"
         )
         var decl = ToolDeclaration(base)
         decl.description = "新"
@@ -44,7 +44,32 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(next.title, "标题")
         XCTAssertEqual(next.page, "cart")
         XCTAssertEqual(next.surface, .view)
+        XCTAssertEqual(next.backgroundTool, "t.bg")
+        decl.backgroundTool = nil
+        XCTAssertNil(decl.applied(to: base).backgroundTool)
         decl.surface = .app
         XCTAssertNil(decl.applied(to: base).surface, "app 为缺省，不序列化")
+    }
+
+    func testThrownErrorsMapToNavigationResults() throws {
+        let ua = ToolCallError.userActionRequired(message: "请点开通知", reason: UserActionReason.foreground, uri: "shop://cart")
+        XCTAssertEqual(
+            navigationFailure(kind: ua.kind, message: ua.message, detailsJSON: try ua.details.map(encodeJSON)),
+            .userActionRequired(message: "请点开通知", reason: "foreground", uri: "shop://cart")
+        )
+        XCTAssertEqual(
+            navigationFailure(kind: ErrorKind.userActionRequired, message: "只有说明", detailsJSON: nil),
+            .userActionRequired(message: "只有说明")
+        )
+        XCTAssertEqual(navigationFailure(kind: ErrorKind.navigationDenied, message: "不行", detailsJSON: nil), .denied("不行"))
+        XCTAssertEqual(navigationFailure(kind: ErrorKind.handlerError, message: "坏了", detailsJSON: nil), .failed("坏了"))
+    }
+
+    func testNavigateInBackgroundConfigAndSetter() throws {
+        let client = try AppMcpClient(config: AppMcpConfig(
+            appId: "swift-nav-bg", appName: "后台导航", hostURL: "ws://127.0.0.1:9", navigateInBackground: true
+        ))
+        client.setNavigateInBackground(false)
+        client.stop()
     }
 }

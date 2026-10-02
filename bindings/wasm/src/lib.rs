@@ -193,7 +193,8 @@ impl WasmClient {
     }
 
     /// 导航完成（`navigate` 事件，spec/protocol.md 3.4）。`outcome` 为 JSON：`{}`（完成）或
-    /// `{ error: { kind, message, details? } }`（`NAVIGATION_FAILED` / `NAVIGATION_DENIED`）。
+    /// `{ error: { kind, message, details? } }`（`NAVIGATION_FAILED` / `NAVIGATION_DENIED` /
+    /// `USER_ACTION_REQUIRED`，后者 `details` 为 `{ reason?, uri? }`）。
     #[wasm_bindgen(js_name = completeNavigate)]
     pub fn complete_navigate(&mut self, navigate: f64, outcome: &str) -> Result<(), JsError> {
         let outcome: JsCallOutcome = from_json(outcome, "导航结果")?;
@@ -205,6 +206,13 @@ impl WasmClient {
     #[wasm_bindgen(js_name = setNavigation)]
     pub fn set_navigation(&mut self, enabled: bool) {
         self.inner.set_navigation(enabled);
+    }
+
+    /// 不可见时导航请求是否仍交给导航回调（spec/protocol.md 3.4）。缺省 `false`：直接以
+    /// `USER_ACTION_REQUIRED`（`reason: "foreground"`）回复。随时生效，只影响之后到达的请求。
+    #[wasm_bindgen(js_name = setNavigateInBackground)]
+    pub fn set_navigate_in_background(&mut self, enabled: bool) {
+        self.inner.set_navigate_in_background(enabled);
     }
 
     // ---- 驱动层输出 -----------------------------------------------------

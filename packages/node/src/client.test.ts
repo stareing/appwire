@@ -795,6 +795,67 @@ describe('surface / page 与导航（spec/protocol.md 3.4）', () => {
     expect(await native.navigate('cart')).toMatchObject({ ok: false, kind: 'unsupported' })
   })
 
+  it('backgroundTool：注册时声明，update 显式 undefined 清除', () => {
+    const { app, native } = setup()
+    app.tool('cart.add', { description: '加入购物车', handler: () => 1 })
+    expect(native.tools.get('cart.add')?.spec).not.toHaveProperty('backgroundTool')
+    const t = app.tool('cart.viewAdd', {
+      description: '在当前页加入', surface: 'view', page: 'cart', backgroundTool: 'cart.add', handler: () => 1,
+    })
+    expect(native.tools.get('cart.viewAdd')?.spec).toMatchObject({ surface: 'view', page: 'cart', backgroundTool: 'cart.add' })
+    t.update({ description: '在当前页加入2' })
+    expect(native.tools.get('cart.viewAdd')?.spec).toMatchObject({ backgroundTool: 'cart.add' })
+    t.update({ backgroundTool: undefined })
+    expect(native.tools.get('cart.viewAdd')?.spec).not.toHaveProperty('backgroundTool')
+  })
+
+  it('导航回调抛出 userActionRequired → USER_ACTION_REQUIRED（带 reason / uri）', async () => {
+    const { native } = setup({
+      onNavigate: ({ page }) => {
+        if (page === 'bare') throw ToolCallError.userActionRequired('请切到前台')
+        throw ToolCallError.userActionRequired('已发通知，请点开', { reason: 'foreground', uri: 'shop://cart' })
+      },
+    })
+    expect(await native.navigate('cart')).toEqual({
+      ok: false, kind: 'userAction', message: '已发通知，请点开', reason: 'foreground', uri: 'shop://cart',
+    })
+    expect(await native.navigate('bare')).toEqual({ ok: false, kind: 'userAction', message: '请切到前台', reason: null, uri: null })
+  })
+
+  it('旧版原生模块没有 failUserAction：USER_ACTION_REQUIRED 按失败提交', async () => {
+    const { native } = setup({ onNavigate: () => { throw ToolCallError.userActionRequired('请切到前台') } })
+    const outcome = await new Promise((resolve) => {
+      native.navigationHandler!({
+        page: 'x',
+        complete: () => resolve('ok'),
+        fail: (m) => resolve(`fail:${m}`),
+        deny: (m) => resolve(`deny:${m}`),
+      })
+    })
+    expect(outcome).toBe('fail:请切到前台')
+  })
+
+  it('navigateInBackground：选项与 setNavigateInBackground 传给原生；不可见且为 false 时不调用回调', async () => {
+    const handler = vi.fn()
+    const { app, native } = setup({ onNavigate: handler, navigateInBackground: false })
+    expect(native.navigateInBackground).toBe(false)
+    app.setVisibility('hidden', false)
+    expect(await native.navigate('cart')).toMatchObject({ ok: false, kind: 'userAction', reason: 'foreground' })
+    expect(handler).not.toHaveBeenCalled()
+    app.setNavigateInBackground(true)
+    expect(native.navigateInBackground).toBe(true)
+    expect(await native.navigate('cart')).toEqual({ ok: true })
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('未给出 navigateInBackground 时不调用原生设置（用平台缺省）；旧版原生模块缺少时警告', () => {
+    const { app, native, logger } = setup()
+    expect(native.navigateInBackground).toBe(true)
+    ;(native as { setNavigateInBackground?: unknown }).setNavigateInBackground = undefined
+    app.setNavigateInBackground(false)
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('navigateInBackground'))
+  })
+
   it('未设置时不声明；旧版原生模块没有 setNavigationHandler 时警告', () => {
     const { app, native, logger } = setup()
     expect(native.navigationHandler).toBeUndefined()

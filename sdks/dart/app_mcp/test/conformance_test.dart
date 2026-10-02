@@ -19,7 +19,7 @@ const _sdk = 'dart';
 /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。
 const _features = {
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', //
-  'readFailure', 'surface', 'navigation',
+  'readFailure', 'surface', 'navigation', 'backgroundTool', 'backgroundNavigation',
 };
 
 final String _repoRoot = Directory('${Directory.current.path}/../../..').absolute.path;
@@ -119,6 +119,7 @@ final class _CaseApp {
         outputSchema: _map(decl['outputSchema']),
         surface: decl['surface'] == 'view' ? ToolSurface.view : ToolSurface.app,
         page: decl['page'] as String?,
+        backgroundTool: decl['backgroundTool'] as String?,
         handler: (args, ctx) => _runHandler(spec, ++runs, args, ctx));
   }
 
@@ -133,7 +134,7 @@ final class _CaseApp {
   }
 
   /// 导航行为（conformance/README.md 2.4）。Dart 最自然的写法：正常返回 = 完成，抛 [NavigationDeniedError] = 拒绝，
-  /// 其他异常 = 失败。
+  /// 抛 [UserActionRequiredError] = USER_ACTION_REQUIRED，其他异常 = 失败。
   void setNavigation(Map<String, Object?> pages) {
     client.setNavigationHandler((request) {
       final spec = _map(pages[request.page]);
@@ -144,6 +145,9 @@ final class _CaseApp {
       }
       if (spec['deny'] case final String message) throw NavigationDeniedError(message);
       if (spec['fail'] case final String message) throw StateError(message);
+      if (_map(spec['userAction']) case final u?) {
+        throw UserActionRequiredError(u['message'] as String? ?? '', reason: u['reason'] as String?, uri: u['uri'] as String?);
+      }
       if (spec['failParams'] == true) throw StateError(request.paramsJson ?? '');
     });
   }
@@ -249,6 +253,7 @@ AppMcp _client(String addr, Map<String, Object?> c) {
     callDedup: CallDedupPolicy(
         ttl: _ms(d['ttlMs']) ?? dedupDefaults.ttl,
         maxEntries: (d['maxEntries'] as num?)?.toInt() ?? dedupDefaults.maxEntries),
+    navigateInBackground: c['navigateInBackground'] as bool?,
   );
 }
 
@@ -277,6 +282,7 @@ Future<Map<String, Object?>> _runCase(File path, String reportDir) async {
           a.registerResource(_map(r)!);
         }
         if (_map(app['navigation']) case final pages?) a.setNavigation(pages);
+        if (app['visibility'] case final String v) a.client.setVisibility(AppVisibility.values.byName(v), focused: false);
         a.client.start();
         continue;
       }

@@ -62,6 +62,11 @@ client.setNavigationHandler(mcpNavigatorHandler(navKey, routes: {'cart': '/cart'
 - view 工具的门控：所在路由是栈顶（`ModalRoute.isCurrentOf`）且祖先 `McpViewGate(active: …)` 都为真。keep-alive 的标签页
   （`IndexedStack`、`TabBarView`）不改变路由，用 `McpViewGate(active: index == current)` 标出；`McpRouteGate(observer: …)`
   （`RouteAware`，观察者 `McpRouteObserver` 放进 `navigatorObservers`）在路由被盖住 / 恢复时另外回调 `onChanged`。
+- 后台时：需要前台的导航立即以 `USER_ACTION_REQUIRED`（reason `foreground`）返回；后台也要能用的能力做成 app 工具，或给 view
+  工具声明 `backgroundTool`（后台时 Hub 改调的同 App app 工具，`McpTool` / `useMcpTool` / `ToolSpec` 均可传）；详见
+  spec/protocol.md 3.4「后台与前台」。`AppMcp(navigateInBackground: …)` / `setNavigateInBackground(bool)` 控制后台时是否仍调用
+  导航回调（默认随平台：桌面 true，Android / iOS false）；回调中抛 `UserActionRequiredError(message, reason: 'foreground', uri: …)`
+  即以 `USER_ACTION_REQUIRED` 回复。
 
 ## 进程内控件兜底（Flutter，spec/ui-fallback.md）
 

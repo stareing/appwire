@@ -109,6 +109,13 @@ the process itself).
   is visible and topmost) and `page` (the page the tool lives on). `onNavigate: ({ page, params }) => …` (or
   `appMcp.setNavigationHandler(handler | null)`, set before connecting) lets the Hub switch pages before calling a tool
   that is not on the current page; throw `ToolCallError.navigationDenied(message)` to refuse, any other error fails it.
+- In the background (`setVisibility('hidden' | 'frozen')`): navigations that need the foreground return
+  `USER_ACTION_REQUIRED` (`reason: "foreground"`) immediately unless `navigateInBackground` is true (option or
+  `appMcp.setNavigateInBackground(enabled)`; the native default is `true` on desktop, where the app can raise its own
+  window, and `false` on mobile). With it on, the handler decides and may throw
+  `ToolCallError.userActionRequired(message, { reason: 'foreground', uri })` (e.g. after posting a notification). Make
+  capabilities that must work in the background `app` tools, or give a `view` tool `backgroundTool: '<app tool name>'`
+  for the Hub to call instead; see spec/protocol.md 3.4 ("background and foreground").
 - `ToolCallError(kind, message, details?)` - throw from a handler to return a specific error kind.
 - `ToolCallError.userActionRequired(message, { reason?, uri? })` - the user must act first (login expired, OS permission
   missing, app must be in the foreground, in-app confirmation); the agent receives `USER_ACTION_REQUIRED` and relays `message`.

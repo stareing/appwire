@@ -69,6 +69,12 @@ Identity and connection are owned by the Rust side: `appId`, `appName` and `host
   without an `AppMcp` instance (requires `Builder::page_navigation(true)` on the Rust side); returns `{ ready, dispose() }`.
   Usually `appMcp.setNavigationHandler(...)` (or `useRouterNavigation` from `@app-mcp/react`) is enough; both use
   `attachBridgeNavigation` from `@app-mcp/web`.
+- In the background: the plugin restores / shows / focuses the page's window before forwarding a navigation on desktop
+  (where the native runtime lets navigations through while hidden); on Android / iOS navigations that need the foreground
+  return `USER_ACTION_REQUIRED` (`reason: "foreground"`) immediately. A page navigation handler may throw
+  `ToolCallError.userActionRequired(message, { reason, uri })` itself. Capabilities that must work in the background
+  should be `app` tools, or `view` tools with `backgroundTool` (the name of an `app` tool the Hub calls instead); see
+  spec/protocol.md 3.4 ("background and foreground").
 - `TAURI_OP_COMMAND` (`'plugin:app-mcp|op'`), `TAURI_DISPATCH_FN`, `BRIDGE_VERSION` - protocol constants.
 - Types: `TauriAppMcpOptions`, `AppMcpBridge`, `HelloReply`, `MainEvent`, `OpReply`, `RendererOp`, `NavigationOp`, `NavigateEvent`.
 

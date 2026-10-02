@@ -130,6 +130,9 @@ export class FakeCore implements CoreClient {
   setNavigation(enabled: boolean): void {
     this.rec('setNavigation', enabled)
   }
+  setNavigateInBackground(enabled: boolean): void {
+    this.rec('setNavigateInBackground', enabled)
+  }
   pollEvent(): CoreEvent | undefined {
     return this.events.shift()
   }

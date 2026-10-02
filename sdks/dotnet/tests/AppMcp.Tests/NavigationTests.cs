@@ -11,17 +11,78 @@ namespace AppMcp.Tests;
 public class NavigationTests(ITestOutputHelper output)
 {
     [Fact]
-    public void ToolOptionsUseV14Layout()
+    public void ToolOptionsUseV15Layout()
     {
-        // @why 回归：v13 的 AmToolOptions 没有 page / surface，struct_size 按旧布局传入时库不读取这两个字段。
-        Assert.Equal(IntPtr.Size == 8 ? 40 : 20, Unsafe.SizeOf<AmToolOptions>());
+        // @why 回归：v13 的 AmToolOptions 没有 page / surface、v14 没有 background_tool，struct_size 按旧布局传入时库不读取这些字段。
+        Assert.Equal(IntPtr.Size == 8 ? 48 : 24, Unsafe.SizeOf<AmToolOptions>());
         using var strings = new Utf8Strings();
         var o = ToolScope.BuildOptions(strings, new ToolOptions { Surface = ToolSurface.View, Page = "cart" });
         Assert.Equal((uint)Unsafe.SizeOf<AmToolOptions>(), o.StructSize);
         Assert.Equal(1, o.Surface);
         Assert.Equal("cart", NativeMethods.PtrToString(o.Page));
         var d = ToolScope.BuildOptions(strings, new ToolOptions());
-        Assert.Equal((0, (nint)0), (d.Surface, d.Page));
+        Assert.Equal((0, (nint)0, (nint)0), (d.Surface, d.Page, d.BackgroundTool));
+        var bg = ToolScope.BuildOptions(strings, new ToolOptions { Surface = ToolSurface.View, BackgroundTool = "cart.summary" });
+        Assert.Equal("cart.summary", NativeMethods.PtrToString(bg.BackgroundTool));
+    }
+
+    [Fact]
+    public void BackgroundToolAffectsToolsHash()
+    {
+        using var client = AppMcpClient.Create(new AppMcpClientOptions
+        {
+            AppId = "dotnet-nav", AppName = "Nav", HostUrl = "ws://127.0.0.1:1", Dispatcher = null, NavigateInBackground = false,
+        });
+        using var tool = client.RegisterTool("cart.checkout", "结算", (_, _) => Task.FromResult<object?>(null),
+            new ToolOptions { Surface = ToolSurface.View, Page = "cart" });
+        var plain = client.ToolsHash;
+        tool.Update("结算", new ToolOptions { Surface = ToolSurface.View, Page = "cart", BackgroundTool = "cart.summary" });
+        Assert.NotEqual(plain, client.ToolsHash);
+        tool.Update("结算", new ToolOptions { Surface = ToolSurface.View, Page = "cart" }); // null 清除
+        Assert.Equal(plain, client.ToolsHash);
+        var ex = Assert.Throws<AppMcpException>(() =>
+            tool.Update("结算", new ToolOptions { Surface = ToolSurface.View, BackgroundTool = "bad tool!" }));
+        Assert.NotEqual(AppMcpStatus.Ok, ex.Status);
+        client.SetNavigateInBackground(true);
+    }
+
+    /// <summary>后台 + NavigateInBackground：handler 抛 <see cref="UserActionRequiredException"/> → USER_ACTION_REQUIRED（reason / uri）；
+    /// 关闭后核心直接以 foreground 回复、不调用 handler。</summary>
+    [Fact]
+    public async Task BackgroundNavigationAnswersUserAction()
+    {
+        var fakeHost = FakeHost.Locate(output);
+        if (fakeHost is null) return;
+        using var host = FakeHost.Start(fakeHost, "--navigate", "cart", "--navigate", "home", "--timeout-ms", "20000");
+        var addr = await host.ReadListeningAsync();
+        var calls = 0;
+        await using var client = AppMcpClient.Create(new AppMcpClientOptions
+        {
+            AppId = "dotnet-bg-nav", AppName = "Nav", HostUrl = $"ws://{addr}", Dispatcher = null, NavigateInBackground = true,
+        });
+        client.SetNavigationHandler((Action<NavigationRequest>)(request =>
+        {
+            Interlocked.Increment(ref calls);
+            client.SetNavigateInBackground(false);
+            throw new UserActionRequiredException("已发通知，请点开后继续", UserActionReason.Foreground, "conf://" + request.Page);
+        }));
+        client.SetVisibility(AppVisibility.Hidden, false);
+        client.Start();
+        var lines = await host.WaitForExitAsync(TimeSpan.FromSeconds(30));
+        foreach (var l in lines) output.WriteLine(l);
+        Assert.Equal(0, host.ExitCode);
+
+        var navs = lines.Where(l => l.StartsWith('{')).Select(l => JsonNode.Parse(l)!.AsObject())
+            .Where(j => (string?)j["type"] == "navigate").ToList();
+        Assert.Equal(2, navs.Count);
+        Assert.Equal(-32019, (int)navs[0]["error"]!["code"]!);
+        Assert.Equal("已发通知，请点开后继续", (string?)navs[0]["error"]!["message"]);
+        Assert.Equal("foreground", (string?)navs[0]["error"]!["data"]!["reason"]);
+        Assert.Equal("conf://cart", (string?)navs[0]["error"]!["data"]!["uri"]);
+        Assert.Equal(-32019, (int)navs[1]["error"]!["code"]!);
+        Assert.Equal("foreground", (string?)navs[1]["error"]!["data"]!["reason"]);
+        Assert.Null(navs[1]["error"]!["data"]!["uri"]);
+        Assert.Equal(1, calls);
     }
 
     [Fact]

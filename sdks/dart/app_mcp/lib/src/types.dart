@@ -629,6 +629,7 @@ final class ToolSpec {
     this.outputSchema,
     this.surface = ToolSurface.app,
     this.page,
+    this.backgroundTool,
   });
 
   /// App 内唯一，`[a-zA-Z0-9_.-]{1,64}`。
@@ -657,6 +658,10 @@ final class ToolSpec {
   /// 所在页面名（`[a-zA-Z0-9_.-]{1,64}`）；为 null 时不声明。Hub 在该工具未注册时据此导航（[AppMcp.setNavigationHandler]）。
   final String? page;
 
+  /// 只对 [ToolSurface.view] 有意义：App 在后台、本工具不可调用时 Hub 改调的同 App app 工具本地名；为 null 时不声明
+  /// （spec/protocol.md 3.4「后台与前台」）。
+  final String? backgroundTool;
+
   ToolSpec copyWith({
     String? description,
     Map<String, Object?>? inputSchema,
@@ -668,6 +673,7 @@ final class ToolSpec {
     Map<String, Object?>? outputSchema,
     ToolSurface? surface,
     String? page,
+    String? backgroundTool,
   }) =>
       ToolSpec(
         name: name,
@@ -681,6 +687,7 @@ final class ToolSpec {
         outputSchema: outputSchema ?? this.outputSchema,
         surface: surface ?? this.surface,
         page: page ?? this.page,
+        backgroundTool: backgroundTool ?? this.backgroundTool,
       );
 
   @override
@@ -695,12 +702,13 @@ final class ToolSpec {
       other.annotations == annotations &&
       other.surface == surface &&
       other.page == page &&
+      other.backgroundTool == backgroundTool &&
       _schemaText(other.inputSchema) == _schemaText(inputSchema) &&
       _schemaText(other.outputSchema) == _schemaText(outputSchema);
 
   @override
   int get hashCode => Object.hash(name, description, risk, activation, title, enabled, annotations,
-      _schemaText(inputSchema), _schemaText(outputSchema), surface, page);
+      _schemaText(inputSchema), _schemaText(outputSchema), surface, page, backgroundTool);
 
   static String? _schemaText(Map<String, Object?>? schema) =>
       schema == null ? null : jsonEncode(schema);

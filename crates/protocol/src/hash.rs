@@ -101,6 +101,7 @@ mod tests {
                     output_schema: None,
                     surface: ToolSurface::App,
                     page: None,
+                    background_tool: None,
                 },
                 ToolInfo {
                     name: "cart.checkout".into(),
@@ -113,6 +114,7 @@ mod tests {
                     output_schema: None,
                     surface: ToolSurface::App,
                     page: None,
+                    background_tool: None,
                 },
             ],
         }

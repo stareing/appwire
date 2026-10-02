@@ -136,7 +136,7 @@
 | `description` | string | 否 | 页面说明（给模型读） |
 | `route` | string | 否 | App 内路由（如 `/orders/:id`），供 App 与构建工具使用；Host 不解析 |
 | `params` | object | 否 | 导航参数的 JSON Schema，`type` 必须为 `"object"` |
-| `tools` | array | 否 | 页面内的工具，结构同 `ToolInfo`（通常 `surface: "view"`）；可写 `page`，写了必须等于所在页面名 |
+| `tools` | array | 否 | 页面内的工具，结构同 `ToolInfo`（通常 `surface: "view"`）；可写 `page`，写了必须等于所在页面名；可写 `backgroundTool`（后台替代，spec/protocol.md 3.4） |
 | `navigable` | boolean | 否 | 能否由 Agent 导航到该页面，缺省 `true`；`false` 时 Hub 不导航（只能由用户自己打开） |
 | `activation` | string | 否 | 导航到该页面需要的激活方式（`headless` / `background` / `foreground`），同 `ToolInfo.activation` |
 
@@ -149,6 +149,8 @@
 - `pages`：页面名满足 `[a-zA-Z0-9_.-]{1,64}` 且唯一；`description` 若给出不能为空字符串；`params` 若给出必须是 `type` 为 `"object"`
   的对象；页面内工具的 `page` 若给出必须等于所在页面名（以上违反为错误）。顶层工具的 `page` 指向未声明的页面给出警告。
 - 工具 `inputSchema` 必须是对象且 `type` 为 `"object"`；`outputSchema` 若给出必须是对象（根类型不限）。
+- 工具 `backgroundTool`（顶层与页面内工具相同）：名称不合法、指向自身、指向清单中 `surface` 不是 `app` 的工具为错误；指向清单中
+  未声明的工具（只在运行时注册）、或声明在 `surface` 为 `app` 的工具上（无意义，Hub 忽略）给出警告。
 - `annotations` 各字段类型不对（如 `readOnlyHint` 不是布尔、`audience` 取值不是 `user` / `assistant`）时清单解析失败。
 - `description` 不能为空字符串。
 - `overview.summary` 不能为空；`summary` 超过 100 字符、`body` 超过 2000 字符时给出警告（Host 会截断）。

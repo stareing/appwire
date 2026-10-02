@@ -82,6 +82,12 @@ def submit() -> ToolResult:
   `fn(page, params)` switches the UI and returns; raise `NavigationDenied("Finish the draft first")` to refuse, any
   other exception fails the navigation. Sync handlers run through `dispatcher` (use `qt_dispatcher()` /
   `tk_dispatcher(root)` for the UI thread). Set it before `start()`: the capability is announced in the handshake.
+- In the background: when the app is hidden, a navigation that needs the foreground is answered at once with
+  `USER_ACTION_REQUIRED` (reason `foreground`) unless `navigate_in_background` is on (`AppMcp(...,
+  navigate_in_background=True)` / `set_navigate_in_background(True)`; desktop default is on). With it on, the handler
+  decides and may raise `ToolCallError.user_action_required("…", UserActionReason.FOREGROUND, uri)` (e.g. after
+  posting a notification). Make features that must work in the background `app` tools, or give a view tool
+  `background_tool="<app tool>"` so the Hub calls that one instead. See `spec/protocol.md` §3.4 "后台与前台".
 
 ## Lifecycle and power
 

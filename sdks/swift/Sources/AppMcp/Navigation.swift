@@ -12,6 +12,27 @@ public enum NavigationResult: Sendable, Equatable {
     case denied(String)
     /// 页面不存在、参数不合法等 → `NAVIGATION_FAILED`。
     case failed(String)
+    /// 需要用户本人操作才能继续 → `USER_ACTION_REQUIRED`。典型是 App 在后台无法自行前置界面（`navigateInBackground`
+    /// 为 `true` 时由回调决定）：发通知请用户点开后以 `reason: UserActionReason.foreground`、`uri` = 该页面的 App 内入口回复
+    /// （spec/protocol.md 3.4「后台与前台」）。`reason` / `uri` 为 `nil` 时不出现在错误的 `data` 中。
+    /// 也可在回调里 `throw ToolCallError.userActionRequired(...)`，效果相同。
+    case userActionRequired(message: String, reason: String? = nil, uri: String? = nil)
+}
+
+/// 导航回调抛出的错误（已映射为错误类别）→ 导航结果。
+///
+/// @input detailsJSON `ToolCallError.details` 的 JSON 文本；`USER_ACTION_REQUIRED` 时从中取字符串 `reason` / `uri`
+/// @output `NAVIGATION_DENIED` → `.denied`；`USER_ACTION_REQUIRED` → `.userActionRequired`；其他 → `.failed`
+func navigationFailure(kind: String, message: String, detailsJSON: String?) -> NavigationResult {
+    switch kind {
+    case ErrorKind.navigationDenied:
+        return .denied(message)
+    case ErrorKind.userActionRequired:
+        let details = detailsJSON.flatMap { try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)) }
+        return .userActionRequired(message: message, reason: details?["reason"]?.stringValue, uri: details?["uri"]?.stringValue)
+    default:
+        return .failed(message)
+    }
 }
 
 /// 一次导航请求。
@@ -33,7 +54,7 @@ public struct NavigationRequest: Sendable, Equatable {
     }
 }
 
-/// 导航回调：在主 actor 上执行；抛出的错误按失败回复。
+/// 导航回调：在主 actor 上执行；抛出的错误按失败回复（`ToolCallError` 按其类别：拒绝、需要用户操作，见 `navigationFailure`）。
 public typealias NavigateFunction = @MainActor @Sendable (NavigationRequest) async throws -> NavigationResult
 
 /// `ToolHandle.update(_:)` 闭包里可改的工具声明；设为 `nil` 即清除该声明。
@@ -50,6 +71,8 @@ public struct ToolDeclaration {
     public var outputSchema: String?
     public var surface: ToolSurface
     public var page: String?
+    /// 后台替身（只对 `.view` 工具有意义）；`nil` = 未声明。
+    public var backgroundTool: String?
 
     init(_ spec: ToolSpec) {
         description = spec.description
@@ -61,6 +84,7 @@ public struct ToolDeclaration {
         outputSchema = spec.outputSchemaJson
         surface = spec.surface ?? .app
         page = spec.page
+        backgroundTool = spec.backgroundTool
     }
 
     func applied(to spec: ToolSpec) -> ToolSpec {
@@ -74,6 +98,7 @@ public struct ToolDeclaration {
         next.outputSchemaJson = outputSchema
         next.surface = surface == .app ? nil : surface
         next.page = page
+        next.backgroundTool = backgroundTool
         return next
     }
 }

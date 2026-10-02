@@ -68,6 +68,12 @@ impl Target<'_> {
         !self.is_app_sandboxed() && matches!(self.family, "unix" | "windows")
     }
 
+    /// 平台是否允许 App 自行把界面带到前台（spec/protocol.md 3.4，`navigate_in_background` 的平台缺省）：桌面可以恢复 / 激活
+    /// 自己的窗口；沙箱化的移动平台不可以（Android 10+ 限制后台启动 Activity，iOS、鸿蒙同理），WASM（浏览器标签页）也不可以。
+    pub fn allows_self_foreground(&self) -> bool {
+        !self.is_app_sandboxed() && matches!(self.family, "unix" | "windows")
+    }
+
     /// 平台默认 IPC 端点的种类；没有默认 IPC 端点（沙箱平台、WASM）时为 `None`，SDK 默认用回环 WebSocket。
     pub fn default_ipc_kind(&self) -> Option<IpcKind> {
         if !self.shares_host_filesystem() {
@@ -108,6 +114,7 @@ mod tests {
             assert_eq!(target.is_app_sandboxed(), sandboxed, "{triple}");
             assert_eq!(target.default_ipc_kind(), ipc, "{triple}");
             assert_eq!(target.shares_host_filesystem(), ipc.is_some(), "{triple}");
+            assert_eq!(target.allows_self_foreground(), ipc.is_some(), "{triple}：桌面可自行回到前台，沙箱平台 / WASM 不可");
         }
     }
 

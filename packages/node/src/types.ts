@@ -35,6 +35,8 @@ export interface NavigationRequest {
  * 在 Node 事件循环上调用；返回（或返回的 Promise 兑现）即导航完成——最好在新页面的工具注册之后再完成，Host 会等待目标工具出现。
  *
  * - 拒绝（如用户正在输入）：抛出 `ToolCallError.navigationDenied(message)` → `NAVIGATION_DENIED`；
+ * - 需要用户操作（如 App 在后台、已发通知请用户点开）：抛出
+ *   `ToolCallError.userActionRequired(message, { reason: 'foreground', uri })` → `USER_ACTION_REQUIRED`；
  * - 其他异常（页面不存在、参数不合法等，或 `ToolCallError.navigationFailed`）→ `NAVIGATION_FAILED`（`reason: "error"`）。
  */
 export type NavigationHandler = (request: NavigationRequest) => void | Promise<void>
@@ -334,6 +336,12 @@ export interface NodeAppMcpOptions {
    * 缺省不支持导航（Host 的导航请求以 `NAVIGATION_FAILED` / `unsupported` 回复）。之后可用 {@link AppMcp.setNavigationHandler} 替换。
    */
   onNavigate?: NavigationHandler
+  /**
+   * 实例不可见（`setVisibility('hidden' | 'frozen')`）时导航请求是否仍交给导航回调（spec/protocol.md 3.4）。
+   * 缺省按原生运行时的平台缺省：桌面 `true`（App 可自行把窗口带到前台）；为 `false` 时直接以
+   * `USER_ACTION_REQUIRED`（`reason: "foreground"`）回复、不调用回调。之后可用 {@link AppMcp.setNavigateInBackground} 修改。
+   */
+  navigateInBackground?: boolean
   /** 高级：注入原生模块（测试或自定义加载路径）。缺省按平台加载包内的 `.node` 文件。 */
   binding?: NativeBinding
 }
@@ -419,6 +427,11 @@ export interface ToolDefinition<I = unknown, O = unknown> {
   surface?: ToolSurface
   /** 所在页面名（`[a-zA-Z0-9_.-]{1,64}`）；Hub 在该工具未注册时据此先导航（{@link NodeAppMcpOptions.onNavigate}）。 */
   page?: string
+  /**
+   * 后台替代（spec/protocol.md 3.4，只对 `surface: 'view'` 有意义）：同一 App 中一个 `app` 工具的名称；
+   * 本工具因 App 在后台不可调用时 Hub 改调它。
+   */
+  backgroundTool?: string
   /** 网页中用于高亮的元素；Node 中忽略（保留字段以便与 @app-mcp/web 共用定义）。 */
   anchor?: unknown
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
@@ -448,7 +461,7 @@ export interface ToolHandle {
   readonly name: string
   /**
    * 更新描述、schema、风险、注解或启用状态；未提供的字段保持不变，显式给出 `undefined` 的字段恢复默认
-   * （`annotations` / `outputSchema` / `page` 为清除声明，`surface` 回到 `'app'`；旧版原生模块不支持清除，保持原声明）。
+   * （`annotations` / `outputSchema` / `page` / `backgroundTool` 为清除声明，`surface` 回到 `'app'`；旧版原生模块不支持清除，保持原声明）。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void
   /** 替换 handler（不产生协议消息）。 */
@@ -525,6 +538,8 @@ export interface AppMcp extends Registrar {
    * （或清除）的回调在下次连接时生效，之前到达的导航请求按当时的回调处理。旧版原生模块不支持时记一条警告、无效果。
    */
   setNavigationHandler(handler: NavigationHandler | null): void
+  /** 修改 {@link NodeAppMcpOptions.navigateInBackground}；只影响之后到达的导航请求。旧版原生模块不支持时记一条警告、无效果。 */
+  setNavigateInBackground(enabled: boolean): void
 
   // ---- 生命周期（spec/lifecycle.md 第 8 节）-------------------------------
 

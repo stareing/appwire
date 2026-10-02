@@ -29,6 +29,7 @@ fn tool(name: &str) -> ToolDef {
         output_schema: None,
         surface: ToolSurface::App,
         page: None,
+        background_tool: None,
     }
 }
 
@@ -881,6 +882,7 @@ fn tools_hash_fixed_vector() {
         output_schema: None,
         surface: ToolSurface::App,
         page: None,
+        background_tool: None,
     })
     .unwrap();
     let checkout = h
@@ -898,6 +900,7 @@ fn tools_hash_fixed_vector() {
             output_schema: None,
             surface: ToolSurface::App,
             page: None,
+            background_tool: None,
         })
         .unwrap();
     h.c.register_resource(ResourceDef {

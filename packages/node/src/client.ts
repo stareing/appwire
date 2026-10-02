@@ -126,6 +126,24 @@ function submitFailure(
   else target.fail(kind, message)
 }
 
+/**
+ * 导航回调的失败 → 原生导航句柄：`NAVIGATION_DENIED` 拒绝；`USER_ACTION_REQUIRED` 带详情中的 `reason` / `uri`；其他按失败。
+ * @compat 旧版原生模块没有 `failUserAction`：`USER_ACTION_REQUIRED` 按失败（`NAVIGATION_FAILED`）提交。
+ */
+function submitNavigationFailure(navigate: NativeNavigate, failure: ReturnType<typeof toFailure>): void {
+  const { kind, message, details } = failure
+  if (kind === 'NAVIGATION_DENIED') return navigate.deny(message)
+  if (kind === 'USER_ACTION_REQUIRED' && navigate.failUserAction) {
+    return navigate.failUserAction(message, detailText(details, 'reason'), detailText(details, 'uri'))
+  }
+  navigate.fail(message)
+}
+
+function detailText(details: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = details?.[key]
+  return typeof value === 'string' ? value : undefined
+}
+
 function stringifyJson(value: unknown): string {
   const text = JSON.stringify(value === undefined ? null : value)
   return text === undefined ? 'null' : text
@@ -203,6 +221,7 @@ class ToolEntry implements ToolHandle, Child, LazySlot {
     if (this.resolved?.outputSchemaJson !== undefined) spec.outputSchemaJson = this.resolved.outputSchemaJson
     if (d.surface !== undefined) spec.surface = d.surface
     if (d.page !== undefined) spec.page = d.page
+    if (d.backgroundTool !== undefined) spec.backgroundTool = d.backgroundTool
     return spec
   }
 
@@ -583,6 +602,7 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
     this.client = new binding.NativeClient(config, (event) => this.onEvent(event))
     this.currentState = mapState(this.client.state)
     if (options.onNavigate) this.setNavigationHandler(options.onNavigate)
+    if (options.navigateInBackground !== undefined) this.setNavigateInBackground(options.navigateInBackground)
     if (options.autoStart !== false) this.start()
   }
 
@@ -628,8 +648,19 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
     client.setNavigationHandler(handler ? (navigate) => this.onNavigate(handler, navigate) : null)
   }
 
+  setNavigateInBackground(enabled: boolean): void {
+    const client = this.lifecycleClient()
+    if (!client) return
+    if (!client.setNavigateInBackground) {
+      this.logger.warn('[app-mcp] 原生模块版本过旧，不支持 navigateInBackground（spec/protocol.md 3.4）')
+      return
+    }
+    client.setNavigateInBackground(enabled)
+  }
+
   /**
-   * 执行导航回调并提交结果：正常返回 → 完成；`NAVIGATION_DENIED` 类别的 ToolCallError → 拒绝；其他异常 → 失败。
+   * 执行导航回调并提交结果：正常返回 → 完成；`NAVIGATION_DENIED` 类别的 ToolCallError → 拒绝；
+   * `USER_ACTION_REQUIRED`（{@link ToolCallError.userActionRequired}）→ 需要用户操作；其他异常 → 失败。
    * @error 参数 JSON 无法解析时以失败完成（不调用回调）。
    */
   private onNavigate(handler: NavigationHandler, navigate: NativeNavigate): void {
@@ -654,8 +685,7 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
       .then(
         () => submit(() => navigate.complete()),
         (error: unknown) => {
-          const { kind, message } = toFailure(error)
-          submit(() => (kind === 'NAVIGATION_DENIED' ? navigate.deny(message) : navigate.fail(message)))
+          submit(() => submitNavigationFailure(navigate, toFailure(error)))
         },
       )
   }

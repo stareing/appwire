@@ -55,6 +55,36 @@ describe('能力声明', () => {
   })
 })
 
+describe('navigateInBackground（spec/protocol.md 3.4）', () => {
+  it('缺省 false：不调用核心设置（核心缺省 false）', async () => {
+    const h = await connected()
+    expect(h.core.callsOf('setNavigateInBackground')).toEqual([])
+    h.app.dispose()
+  })
+
+  it('选项为 true：核心加载时在启动前打开；setNavigateInBackground 随时生效', async () => {
+    const h = setup({ navigateInBackground: true }, true)
+    h.app.setNavigateInBackground?.(false)
+    h.app.setNavigateInBackground?.(true)
+    expect(h.core.callsOf('setNavigateInBackground')).toEqual([])
+    await h.load()
+    const methods = h.core.methods()
+    expect(methods.indexOf('setNavigateInBackground')).toBeLessThan(methods.indexOf('start'))
+    expect(h.core.callsOf('setNavigateInBackground')).toEqual([[true]])
+    h.app.setNavigateInBackground?.(false)
+    expect(h.core.callsOf('setNavigateInBackground')).toEqual([[true], [false]])
+    h.app.dispose()
+  })
+
+  it('加载前改为 false：不调用核心设置', async () => {
+    const h = setup({ navigateInBackground: true }, true)
+    h.app.setNavigateInBackground?.(false)
+    await h.load()
+    expect(h.core.callsOf('setNavigateInBackground')).toEqual([])
+    h.app.dispose()
+  })
+})
+
 describe('navigate 事件', () => {
   it('交给回调（页面与参数），完成后回复 {}', async () => {
     const h = setup({}, true)
@@ -104,6 +134,23 @@ describe('navigate 事件', () => {
     expect(outcome.error.kind).toBe(kind)
     expect(outcome.error.details.reason).toBe(reason)
     expect(outcome.error.message).toContain(text)
+    h.app.dispose()
+  })
+
+  it('回调抛出 userActionRequired：USER_ACTION_REQUIRED，详情只带给出的 reason / uri', async () => {
+    const h = await connected()
+    h.app.setNavigationHandler(({ page }) => {
+      if (page === 'bare') throw ToolCallError.userActionRequired('请切到前台')
+      throw ToolCallError.userActionRequired('已发通知，请点开', { reason: 'foreground', uri: 'shop://cart' })
+    })
+    h.socket().script({ type: 'navigate', navigate: 4, page: 'cart', params: null })
+    expect(await completion(h)).toEqual([
+      4,
+      { error: { kind: 'USER_ACTION_REQUIRED', message: '已发通知，请点开', details: { reason: 'foreground', uri: 'shop://cart' } } },
+    ])
+    h.core.calls.length = 0
+    h.socket().script({ type: 'navigate', navigate: 5, page: 'bare', params: null })
+    expect(await completion(h)).toEqual([5, { error: { kind: 'USER_ACTION_REQUIRED', message: '请切到前台', details: {} } }])
     h.app.dispose()
   })
 

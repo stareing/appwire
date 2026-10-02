@@ -262,6 +262,13 @@ export interface AppMcpOptions {
    * 否则发；`'always'`（如手机浏览器经 adb reverse 访问回环）/ `'off'` 强制。
    */
   heartbeat?: 'auto' | 'always' | 'off'
+  /**
+   * 页面不可见（标签页在后台、窗口最小化）时 Host 的导航请求是否仍交给导航回调（spec/protocol.md 3.4）。
+   * 默认 false：浏览器标签页无法自行回到前台，SDK 直接以 `USER_ACTION_REQUIRED`（`reason: "foreground"`）回复、不调用回调；
+   * 为 true 时由回调决定（如发通知请用户点开，并抛出 {@link ToolCallError.userActionRequired}）。
+   * 之后可用 {@link AppMcp.setNavigateInBackground} 修改。桥接实现（Electron / Tauri 页面侧）忽略：由主进程 / Rust 侧决定。
+   */
+  navigateInBackground?: boolean
 }
 
 export interface AppOverview {
@@ -373,6 +380,11 @@ export interface ToolDefinition<I = unknown, O = unknown> {
   surface?: ToolSurface
   /** 所在页面名（`[a-zA-Z0-9_.-]{1,64}`，与清单 `pages[].name` 同一命名空间），缺省继承所在 scope 的 `page`。 */
   page?: string
+  /**
+   * 后台替代（spec/protocol.md 3.4，只对 `view` 工具有意义）：同一 App 中一个 `app` 工具的名称；本工具因页面在后台
+   * 不可调用时 Hub 改调它。不继承 scope。
+   */
+  backgroundTool?: string
   /** `view` 工具的可见性门控，缺省继承所在 scope，再缺省 `auto`。 */
   visibility?: ViewVisibility
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
@@ -402,7 +414,7 @@ export interface ToolHandle {
   readonly name: string
   /**
    * 更新描述、schema、风险、注解、启用状态或界面声明（`surface` / `page` / `visibility` / `anchor`）；未提供的字段保持不变，
-   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` 为清除声明，`surface` / `page` / `visibility` 恢复为继承值）。
+   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` / `backgroundTool` 为清除声明，`surface` / `page` / `visibility` 恢复为继承值）。
    * `enabled` 是 App 的意愿：`view` 工具还要满足可见性门控才对 Host 可见。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void
@@ -579,12 +591,18 @@ export interface AppMcp extends Registrar {
   /**
    * 设置（`null` 清除）导航回调：Host 调用不在当前页面的工具时请求 App 切换到该页面（`app/navigate`）。
    * 回调切换界面后返回（可返回 Promise）；SDK 再等界面稳定（新页面的工具注册）后回复 Host。
-   * 抛出 {@link ToolCallError.navigationDenied} 拒绝、其他错误按导航失败回复。
+   * 抛出 {@link ToolCallError.navigationDenied} 拒绝、{@link ToolCallError.userActionRequired} 回复需要用户操作
+   * （如页面在后台：`{ reason: 'foreground' }`，见 {@link AppMcpOptions.navigateInBackground}），其他错误按导航失败回复。
    *
    * 能力在握手时声明：请在应用启动时设置（路由适配在根组件挂载时设置即可，早于连接建立）；连接建立后才设置的回调
    * 在下次连接时生效。桥接实现（Electron / Tauri 页面侧）可能不提供本方法。
    */
   setNavigationHandler?(handler: NavigationHandler | null, options?: NavigationOptions): void
+  /**
+   * 修改 {@link AppMcpOptions.navigateInBackground}；只影响之后到达的导航请求。桥接实现（Electron / Tauri 页面侧）不提供
+   * （由主进程 / Rust 侧决定）。
+   */
+  setNavigateInBackground?(enabled: boolean): void
 }
 
 /** 导航请求（`app/navigate` 的参数）。 */

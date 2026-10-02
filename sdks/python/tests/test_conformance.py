@@ -49,6 +49,8 @@ FEATURES = frozenset(
         "readFailure",
         "surface",
         "navigation",
+        "backgroundTool",
+        "backgroundNavigation",
     }
 )
 ROOT = Path(__file__).resolve().parents[3]
@@ -112,6 +114,7 @@ class CaseApp:
             output_schema=decl.get("outputSchema"),
             surface=decl.get("surface"),
             page=decl.get("page"),
+            background_tool=decl.get("backgroundTool"),
         )
         with self._lock:
             self.tools[decl["name"]] = handle
@@ -157,6 +160,7 @@ class CaseApp:
                 "outputSchema": "output_schema",
                 "surface": "surface",
                 "page": "page",
+                "backgroundTool": "background_tool",
             }
             changes = {keys[k]: v for k, v in op["set"].items() if k in keys}
             if "annotations" in op["set"]:
@@ -184,6 +188,10 @@ class CaseApp:
             raise NavigationDenied(spec["deny"])
         if "fail" in spec:
             raise RuntimeError(spec["fail"])
+        # 与工具 handler 同一惯用法：抛 user_action_required（封装层映射为 USER_ACTION_REQUIRED，不是 NAVIGATION_FAILED）
+        if spec.get("userAction") is not None:
+            u = spec["userAction"]
+            raise ToolCallError.user_action_required(u["message"], u.get("reason"), u.get("uri"))
         if spec.get("failParams") is True:
             raise RuntimeError("" if params is None else json.dumps(params, ensure_ascii=False))
 
@@ -246,6 +254,8 @@ def _config_kwargs(case: dict[str, Any]) -> dict[str, Any]:
         )
     if "maxConcurrentCalls" in c:
         kwargs["max_concurrent_calls"] = c["maxConcurrentCalls"]
+    if "navigateInBackground" in c:
+        kwargs["navigate_in_background"] = c["navigateInBackground"]
     return kwargs
 
 
@@ -273,6 +283,9 @@ def run_case(fake_host: Path, path: Path) -> dict[str, Any]:
                 if pages is not None:
                     nav_app = app
                     app.client.set_navigation_handler(lambda page, params: nav_app.navigate(pages, page, params))
+                visibility = case["app"].get("visibility")
+                if visibility is not None:
+                    app.client.set_visibility(visibility, focused=False)
                 app.client.start()
                 continue
             try:

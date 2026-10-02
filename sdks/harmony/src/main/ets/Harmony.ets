@@ -132,6 +132,8 @@ export class HarmonyAppMcp {
       heartbeat: options.heartbeat,
       callDedup: options.callDedup,
       onIdleExit: options.onIdleExit,
+      onNavigate: options.onNavigate,
+      navigateInBackground: options.navigateInBackground,
     };
     const client = createAppMcp(full);
     HarmonyAppMcp.instance = client;

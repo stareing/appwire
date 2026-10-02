@@ -228,6 +228,11 @@ export interface ToolDefinition<I, O> {
   surface?: ToolSurface;
   /** 所在页面名（`[a-zA-Z0-9_.-]{1,64}`）；Hub 在该工具未注册时据此先导航（{@link AppMcpOptions.onNavigate}）。 */
   page?: string;
+  /**
+   * 后台替代（spec/protocol.md 3.4，只对 `surface: 'view'` 有意义）：同一 App 中一个 `app` 工具的名称；
+   * 本工具因 App 在后台不可调用时 Hub 改调它。
+   */
+  backgroundTool?: string;
   handler: ToolHandler<I, O>;
 }
 
@@ -242,13 +247,15 @@ export interface NavigationRequest {
 /**
  * 导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）：切换到 `request.page`（如 `router.pushUrl` / `NavPathStack.pushPath`）。
  * 在创建客户端的 ArkTS 线程（UIAbility 中即主线程）上调用；返回（或 Promise 兑现）即导航完成——最好在新页面的工具注册之后。
- * 拒绝（如用户正在输入）：抛出 `ToolCallError.navigationDenied(message)`；其他异常（含 `navigationFailed`）→ `NAVIGATION_FAILED`。
+ * 拒绝（如用户正在输入）：抛出 `ToolCallError.navigationDenied(message)`；需要用户操作（如 App 在后台、已发通知请用户点开）：
+ * 抛出 `ToolCallError.userActionRequired(message, { reason: 'foreground', uri })` → `USER_ACTION_REQUIRED`；
+ * 其他异常（含 `navigationFailed`）→ `NAVIGATION_FAILED`。
  */
 export type NavigationHandler = (request: NavigationRequest) => void | Promise<void>;
 
 /**
  * `ToolHandle.update` 的变更：未提供（或 `undefined`）的字段保持不变；显式给出 `null` 清除该声明
- * （`title` / `annotations` / `outputSchema` / `activation` / `page` 删除，`inputSchema` 变为无参数，`risk` 恢复 `write`，
+ * （`title` / `annotations` / `outputSchema` / `activation` / `page` / `backgroundTool` 删除，`inputSchema` 变为无参数，`risk` 恢复 `write`，
  * `enabled` 恢复 true，`surface` 恢复 `app`）。`description` 不可清除，`null` 时保持不变。
  */
 export interface ToolChanges {
@@ -262,6 +269,7 @@ export interface ToolChanges {
   enabled?: boolean | null;
   surface?: ToolSurface | null;
   page?: string | null;
+  backgroundTool?: string | null;
 }
 
 export interface ToolHandle {
@@ -340,4 +348,10 @@ export interface AppMcpOptions {
    * `NAVIGATION_FAILED` / `unsupported` 回复）。之后可用 `AppMcp.setNavigationHandler` 替换。
    */
   onNavigate?: NavigationHandler;
+  /**
+   * App 在后台（`setVisibility('hidden' | 'frozen')`，`HarmonyAppMcp.create` 自动跟随前后台）时导航请求是否仍交给导航回调
+   * （spec/protocol.md 3.4）。缺省按原生运行时的平台缺省：鸿蒙 `false`（应用不能自行回到前台），直接以
+   * `USER_ACTION_REQUIRED`（`reason: "foreground"`）回复、不调用回调；为 true 时由回调决定（如发通知请用户点开）。
+   */
+  navigateInBackground?: boolean;
 }

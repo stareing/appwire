@@ -1990,6 +1990,7 @@ mod tests {
             state_resource: None,
             summary: None,
             annotations: None,
+            routed_to: None,
         }
         .into();
         assert_eq!(o.status, ResultStatus::Done);
@@ -2031,6 +2032,7 @@ mod tests {
                 priority: Some(0.5),
                 last_modified: None,
             }),
+            routed_to: None,
         }
         .into();
         assert_eq!(o.status, ResultStatus::Pending);

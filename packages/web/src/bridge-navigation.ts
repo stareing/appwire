@@ -30,7 +30,8 @@ function isNavigateEvent(event: unknown): event is NavigateEvent {
 /**
  * 让本页处理导航请求。`createAppMcp` 在桥接模式下的 `setNavigationHandler` 即用本函数；没有 AppMcp 实例时也可直接调用。
  *
- * @error 回调抛出 `kind` 为 `NAVIGATION_DENIED` 的错误 → 拒绝；其他 → 失败（消息为异常的 `message`）。
+ * @error 回调抛出 `kind` 为 `NAVIGATION_DENIED` 的错误 → 拒绝；`USER_ACTION_REQUIRED`（`ToolCallError.userActionRequired`）
+ *   → 需要用户操作（带 `reason` / `uri`）；其他 → 失败（消息为异常的 `message`）。
  */
 export function attachBridgeNavigation(
   bridge: AppMcpBridge,
@@ -47,7 +48,14 @@ export function attachBridgeNavigation(
         bridge.request(
           result.ok
             ? { op: 'navigate.result', navId: event.navId, ok: true }
-            : { op: 'navigate.result', navId: event.navId, ok: false, kind: result.kind, message: result.message },
+            : {
+                op: 'navigate.result',
+                navId: event.navId,
+                ok: false,
+                kind: result.kind,
+                message: result.message,
+                ...(result.kind === 'USER_ACTION_REQUIRED' && { details: result.details }),
+              },
         ),
       )
       .catch(() => {

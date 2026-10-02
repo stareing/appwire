@@ -56,6 +56,7 @@ export interface RawWasmClient {
   completeRead(read: number, outcomeJson: string): void
   completeNavigate(navigate: number, outcomeJson: string): void
   setNavigation(enabled: boolean): void
+  setNavigateInBackground(enabled: boolean): void
   pollEvent(): string | undefined
   pollTimeout(): number | undefined
   handleWake(args: string, now: number): boolean
@@ -154,6 +155,9 @@ class WasmCore implements CoreClient {
   }
   setNavigation(enabled: boolean): void {
     this.raw.setNavigation(enabled)
+  }
+  setNavigateInBackground(enabled: boolean): void {
+    this.raw.setNavigateInBackground(enabled)
   }
   pollEvent(): CoreEvent | undefined {
     const json = this.raw.pollEvent()

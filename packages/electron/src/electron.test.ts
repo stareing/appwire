@@ -610,17 +610,17 @@ describe('preload', () => {
 })
 
 describe('导航（spec/protocol.md 3.4）', () => {
-  function setupNav(navigation = true) {
+  function setupNav(navigation = true, raiseWindow?: (wc: WebContentsLike) => void) {
     const ipcMain = new FakeIpcMain()
     const appMcp: NodeAppMcp = createAppMcp({ appId: 'shop', appName: 'Shop', clientKind: 'hybrid', binding: fakeBinding, keepAlive: false })
     const native = FakeNativeClient.last as FakeNativeClient
     const logger = { warn: vi.fn(), error: vi.fn() }
-    const attachment = attachAppMcp({ appMcp, ipcMain, logger, navigation })
+    const attachment = attachAppMcp({ appMcp, ipcMain, logger, navigation, ...(raiseWindow && { raiseWindow }) })
     cleanups.push(() => {
       attachment.dispose()
       appMcp.dispose()
     })
-    return { ipcMain, native, attachment }
+    return { ipcMain, native, attachment, appMcp, logger }
   }
 
   it('navigation: true 时接入即声明；转给开启导航的页面并回传结果', async () => {
@@ -647,6 +647,53 @@ describe('导航（spec/protocol.md 3.4）', () => {
     nav.dispose()
     await flush()
     expect(await native.navigate('cart')).toMatchObject({ ok: false, kind: 'fail' })
+  })
+
+  it('页面回调抛出 userActionRequired → USER_ACTION_REQUIRED（带 reason / uri）', async () => {
+    const { ipcMain, native } = setupNav()
+    const wc = new FakeWebContents(5)
+    setupPage(ipcMain, wc)
+    const nav = attachBridgeNavigation(getBridge(ipcMain, wc), async ({ page }) => {
+      if (page === 'bare') throw RendererToolCallError.userActionRequired('请切到前台')
+      throw RendererToolCallError.userActionRequired('已发通知，请点开', { reason: 'foreground', uri: 'shop://cart' })
+    })
+    await nav.ready
+    expect(await native.navigate('cart')).toEqual({
+      ok: false, kind: 'userAction', message: '已发通知，请点开', reason: 'foreground', uri: 'shop://cart',
+    })
+    expect(await native.navigate('bare')).toEqual({ ok: false, kind: 'userAction', message: '请切到前台', reason: null, uri: null })
+  })
+
+  it('navigateInBackground：未给 raiseWindow 时为 false（后台导航立即 USER_ACTION_REQUIRED）', async () => {
+    const { ipcMain, native, appMcp } = setupNav()
+    expect(native.navigateInBackground).toBe(false)
+    const wc = new FakeWebContents(6)
+    setupPage(ipcMain, wc)
+    const handler = vi.fn()
+    const nav = attachBridgeNavigation(getBridge(ipcMain, wc), handler)
+    await nav.ready
+    appMcp.setVisibility('hidden', false)
+    expect(await native.navigate('cart')).toMatchObject({ ok: false, kind: 'userAction', reason: 'foreground' })
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('raiseWindow：navigateInBackground 为 true，转给页面前调用；抛错只记警告', async () => {
+    const raised: number[] = []
+    const raise = vi.fn((wc: WebContentsLike) => {
+      raised.push(wc.id)
+      if (raised.length === 2) throw new Error('窗口已销毁')
+    })
+    const { ipcMain, native, appMcp, logger } = setupNav(true, raise)
+    expect(native.navigateInBackground).toBe(true)
+    const wc = new FakeWebContents(7)
+    setupPage(ipcMain, wc)
+    const nav = attachBridgeNavigation(getBridge(ipcMain, wc), () => {})
+    await nav.ready
+    appMcp.setVisibility('hidden', false)
+    expect(await native.navigate('cart')).toEqual({ ok: true })
+    expect(await native.navigate('cart')).toEqual({ ok: true })
+    expect(raised).toEqual([7, 7])
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('带到前台'), expect.any(Error))
   })
 
   it('页面关闭时进行中的导航失败', async () => {
@@ -679,6 +726,17 @@ describe('导航（spec/protocol.md 3.4）', () => {
     expect(native.tools.get('cart.checkout')?.spec).toMatchObject({ surface: 'view', page: 'cart' })
     await bridge.request({ op: 'tool.update', id: 1, spec: { description: '结算' } } as never)
     expect(native.tools.get('cart.checkout')?.spec).not.toHaveProperty('page')
+  })
+
+  it('页面工具的 backgroundTool 转到主进程（update 缺省清除）', async () => {
+    const { ipcMain, native } = setupNav()
+    const wc = new FakeWebContents(8)
+    const bridge = getBridge(ipcMain, wc)
+    const spec = { description: '结算', surface: 'view', page: 'cart', backgroundTool: 'cart.checkoutBg' }
+    await bridge.request({ op: 'tool.register', id: 1, name: 'cart.checkout', spec } as never)
+    expect(native.tools.get('cart.checkout')?.spec).toMatchObject({ backgroundTool: 'cart.checkoutBg' })
+    await bridge.request({ op: 'tool.update', id: 1, spec: { description: '结算' } } as never)
+    expect(native.tools.get('cart.checkout')?.spec).not.toHaveProperty('backgroundTool')
   })
 })
 

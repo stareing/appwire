@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
   appConfig,
+  appVisibility,
   caseFiles,
   describeFailure,
   findFakeHost,
@@ -28,7 +29,7 @@ const SDK = 'node'
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
-  'surface', 'navigation',
+  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation',
 ]
 
 const pkgDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -49,6 +50,8 @@ function startApp(binding: NativeBinding, testCase: ConformanceCase, url: string
   })
   const { navigate } = registerJsApp(app, testCase, ToolCallError)
   if (navigate) app.setNavigationHandler(({ page, params }) => navigate(page, params))
+  const visibility = appVisibility(testCase)
+  if (visibility) app.setVisibility(visibility, false)
   app.start()
   return { handleWake: (arg) => void app.handleWake(arg), stop: () => app.dispose() }
 }

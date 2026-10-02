@@ -68,7 +68,14 @@
  *     capabilities.navigate）、am_navigate_page / am_navigate_params_json、am_navigate_complete / am_navigate_fail /
  *     am_navigate_deny（消费 AmNavigate）。未设置回调时 Host 的导航请求以 NAVIGATION_FAILED 回复。
  *   · 错误类别新增 "NAVIGATION_FAILED"、"NAVIGATION_DENIED"（-31001 / -31002）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v14 仍为 3。）
+ * - v15（第 4c 项后台导航，spec/protocol.md 3.4「后台与前台」）：只做新增，已有结构体布局与函数签名不变。
+ *   · AmToolOptions 末尾追加 background_tool（view 工具在 App 后台时由 Hub 改调的同 App app 工具本地名），
+ *     按 struct_size 读取。
+ *   · am_client_set_navigate_in_background：App 在后台时是否仍把导航交给回调（默认随平台：桌面 true，移动端
+ *     false；false 时直接以 USER_ACTION_REQUIRED、reason "foreground" 回复）。
+ *   · am_navigate_fail_user_action：导航以 USER_ACTION_REQUIRED 结束（消费 AmNavigate，语义同
+ *     am_call_fail_user_action）。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v15 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -338,6 +345,9 @@ typedef struct AmToolOptions {
     const char *page;
     /* v14：AmToolSurface（AM_SURFACE_APP 缺省 / AM_SURFACE_VIEW）。旧调用方的 struct_size 不含以下字段时为 APP。 */
     int surface;
+    /* v15：可为 NULL：未声明。只对 AM_SURFACE_VIEW 工具有意义：App 在后台、本工具不可调用时 Hub 改调的同 App
+     * app 工具的本地名（命名规则同工具名）。旧调用方的 struct_size 不含此字段时按 NULL 处理；更新时 NULL 表示清除。 */
+    const char *background_tool;
 } AmToolOptions;
 
 typedef struct AmResourceSpec {
@@ -398,6 +408,11 @@ AmStatus am_client_set_visibility(AmClient *client, AmVisibility visibility, boo
  * 调用旧的 free_user_data）。 */
 AmStatus am_client_set_navigation_handler(AmClient *client, AmNavigateFn handler, void *user_data,
                                           AmFreeFn free_user_data);
+/* v15：App 在后台（AM_HIDDEN / AM_FROZEN）时是否仍把导航请求交给导航回调（spec/protocol.md 3.4
+ * 「后台与前台」）。false 时直接以 USER_ACTION_REQUIRED（data.reason = "foreground"）回复、不调用回调；true 时由
+ * 回调决定（可自行把窗口提到前台，或用 am_navigate_fail_user_action 回复）。默认值随平台：桌面（Windows / Linux /
+ * macOS）为 true，Android / iOS / 鸿蒙为 false。对之后到达的请求生效。 */
+AmStatus am_client_set_navigate_in_background(AmClient *client, bool enabled);
 /* 当前状态；retry_in_ms、reason 可为 NULL。*reason 需用 am_string_free 释放（REJECTED / HOST_MISMATCH 时非 NULL；
  * v6 起 BACKOFF 有原因时也非 NULL；其他状态为 NULL）。 */
 AmStatus am_client_state(const AmClient *client, AmStateStatus *status, uint64_t *retry_in_ms, char **reason);
@@ -567,6 +582,10 @@ AmStatus am_navigate_complete(AmNavigate *navigate);
 AmStatus am_navigate_fail(AmNavigate *navigate, const char *message);
 /* 拒绝导航（NAVIGATION_DENIED，如用户正在输入）并消费 navigate。message 面向模型 / 用户，可为 NULL。 */
 AmStatus am_navigate_deny(AmNavigate *navigate, const char *message);
+/* v15：以 USER_ACTION_REQUIRED 结束导航并消费 navigate（如 App 在后台无法自行切到前台：发通知后以 reason
+ * "foreground" 与通知 / 深链接 uri 回复）。参数语义同 am_call_fail_user_action：message NULL 视为空串，reason / uri
+ * 为 NULL 时不出现在错误的 data 中，非法 UTF-8 按替换字符处理。navigate 为 NULL 时返回 AM_ERR_INVALID_ARGUMENT。 */
+AmStatus am_navigate_fail_user_action(AmNavigate *navigate, const char *message, const char *reason, const char *uri);
 
 #ifdef __cplusplus
 }

@@ -116,6 +116,7 @@ class ToolHandle internal constructor(private val inner: FfiTool, @Volatile priv
         outputSchema: JsonObject? = null,
         surface: ToolSurface? = null,
         page: String? = null,
+        backgroundTool: String? = null,
     ) = update {
         description?.let { this.description = it }
         inputSchema?.let { this.inputSchema = it }
@@ -125,6 +126,7 @@ class ToolHandle internal constructor(private val inner: FfiTool, @Volatile priv
         outputSchema?.let { this.outputSchema = it }
         surface?.let { this.surface = it }
         page?.let { this.page = it }
+        backgroundTool?.let { this.backgroundTool = it }
     }
 
     /**
@@ -182,6 +184,8 @@ abstract class AppMcpRegistrar internal constructor() {
      * @param surface `VIEW` = 依赖界面（spec/protocol.md 3.4），只在所在界面可见时启用（Android 用
      *   `dev.appmcp.android.enableWhile` / Compose `ViewToolEffect` 绑定生命周期）；缺省 `APP`。
      * @param page 所在页面名；Hub 在该工具未注册时据此导航（[AppMcp.setNavigationHandler]）。
+     * @param backgroundTool 后台替身（只对 `VIEW` 工具有意义）：同 App 内一个 `APP` 工具的名称；App 在后台、本工具不可调用时
+     *   Hub 改调该工具（spec/protocol.md 3.4「后台与前台」）。
      */
     fun tool(
         name: String,
@@ -195,6 +199,7 @@ abstract class AppMcpRegistrar internal constructor() {
         outputSchema: JsonObject? = null,
         surface: ToolSurface = ToolSurface.APP,
         page: String? = null,
+        backgroundTool: String? = null,
         handler: ToolFunction,
     ): ToolHandle {
         val spec = ToolSpec(
@@ -209,6 +214,7 @@ abstract class AppMcpRegistrar internal constructor() {
             outputSchemaJson = outputSchema?.toString(),
             surface = surface.takeIf { it != ToolSurface.APP },
             page = page,
+            backgroundTool = backgroundTool,
         )
         val o = owner
         val raw = registerRaw(spec, object : ToolHandler {
@@ -232,9 +238,10 @@ abstract class AppMcpRegistrar internal constructor() {
         outputSchema: JsonObject? = null,
         surface: ToolSurface = ToolSurface.APP,
         page: String? = null,
+        backgroundTool: String? = null,
         noinline handler: suspend (args: A, ctx: ToolContext) -> R,
     ): ToolHandle = typedToolImpl(
-        name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page,
+        name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool,
         serializer<A>(), serializer<R>(), handler,
     )
 
@@ -251,11 +258,12 @@ abstract class AppMcpRegistrar internal constructor() {
         outputSchema: JsonObject?,
         surface: ToolSurface,
         page: String?,
+        backgroundTool: String?,
         argSerializer: KSerializer<A>,
         resultSerializer: KSerializer<R>,
         handler: suspend (A, ToolContext) -> R,
     ): ToolHandle = tool(
-        name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page,
+        name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool,
     ) { args, ctx ->
         val decoded = try {
             AppMcpJson.decodeFromJsonElement(argSerializer, args)
@@ -356,6 +364,7 @@ class AppMcp private constructor(
             }
         }
         inner = AppMcpClient(config.toFfi(), listener)
+        config.navigateInBackground?.let { inner.setNavigateInBackground(it) }
         _state.value = inner.state()
     }
 
@@ -396,6 +405,13 @@ class AppMcp private constructor(
     fun stop() = inner.stop()
 
     fun setVisibility(visibility: Visibility, focused: Boolean = true) = inner.setVisibility(visibility, focused)
+
+    /**
+     * 后台时是否仍把导航请求交给导航回调（spec/protocol.md 3.4「后台与前台」），随时生效；初值见
+     * [AppMcpConfig.navigateInBackground]。为 false 时 App 不可见（`HIDDEN` / `FROZEN`）收到的导航立即以
+     * `USER_ACTION_REQUIRED`（reason `foreground`）回复，不调用回调。
+     */
+    fun setNavigateInBackground(enabled: Boolean) = inner.setNavigateInBackground(enabled)
 
     /**
      * 设置导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）；null 清除（之后的导航请求以 `NAVIGATION_FAILED`
@@ -560,9 +576,8 @@ class AppMcp private constructor(
             finishNavigate(request, NavigationResult.Failed("页面参数不合法：${e.message}"))
             return
         }
-        launchGuarded(label = "导航 ${request.page()}", fail = { kind, msg, _ ->
-            val result = if (kind == ErrorKind.NAVIGATION_DENIED) NavigationResult.Denied(msg) else NavigationResult.Failed(msg)
-            finishNavigate(request, result)
+        launchGuarded(label = "导航 ${request.page()}", fail = { kind, msg, details ->
+            finishNavigate(request, navigationFailure(kind, msg, details))
         }) {
             finishNavigate(request, handler(request.page(), params))
         }.start()
@@ -574,6 +589,7 @@ class AppMcp private constructor(
                 NavigationResult.Ok -> request.complete()
                 is NavigationResult.Denied -> request.deny(result.message)
                 is NavigationResult.Failed -> request.fail(result.message)
+                is NavigationResult.UserActionRequired -> request.failUserAction(result.message, result.reason, result.uri)
             }
         } catch (_: AppMcpException) {
             // 已完成或连接已断开：回复被丢弃（spec/protocol.md 3.4）。

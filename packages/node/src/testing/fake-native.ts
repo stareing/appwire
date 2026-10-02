@@ -51,7 +51,10 @@ interface ResourceRecord {
 
 /** {@link FakeNativeClient.progressReports} 的一条。 */
 /** {@link FakeNativeClient.navigate} 的结果。 */
-export type NavigateOutcome = { ok: true } | { ok: false; kind: 'fail' | 'deny' | 'unsupported'; message: string }
+export type NavigateOutcome =
+  | { ok: true }
+  | { ok: false; kind: 'fail' | 'deny' | 'unsupported'; message: string }
+  | { ok: false; kind: 'userAction'; message: string; reason: string | null; uri: string | null }
 
 export interface FakeProgress {
   callId: string
@@ -359,15 +362,29 @@ export class FakeNativeClient extends FakeRegistrarBase implements NativeClient 
     this.navigationHandler = handler ?? undefined
   }
 
+  /** 不可见时导航是否仍交给回调（`setNavigateInBackground`）；缺省同桌面原生运行时为 true。 */
+  navigateInBackground = true
+
+  setNavigateInBackground(enabled: boolean): void {
+    this.navigateInBackground = enabled
+  }
+
   /**
-   * 模拟 Host 的 `app/navigate`：没有回调时同真实原生层以 `unsupported` 失败。
-   * @output `{ ok: true }` / `{ ok: false, kind: 'fail' | 'deny' | 'unsupported', message }`。
+   * 模拟 Host 的 `app/navigate`：没有回调时同真实原生层以 `unsupported` 失败；不可见（`hidden` / `frozen`）且
+   * `navigateInBackground` 为 false 时同核心立即以 `userAction`（`reason: "foreground"`）回复、不调用回调。
+   * @output `{ ok: true }` / `{ ok: false, kind: 'fail' | 'deny' | 'unsupported', message }` /
+   *   `{ ok: false, kind: 'userAction', message, reason, uri }`。
    */
   navigate(page: string, params?: unknown): Promise<NavigateOutcome> {
     return new Promise((resolve) => {
       const handler = this.navigationHandler
       if (!handler) {
         resolve({ ok: false, kind: 'unsupported', message: `App 不支持由 Agent 导航（页面「${page}」）。` })
+        return
+      }
+      const hidden = this.visibility !== undefined && this.visibility[0] !== 'visible'
+      if (hidden && !this.navigateInBackground) {
+        resolve({ ok: false, kind: 'userAction', message: `App 在后台，无法切换到页面「${page}」`, reason: 'foreground', uri: null })
         return
       }
       let done = false
@@ -382,6 +399,8 @@ export class FakeNativeClient extends FakeRegistrarBase implements NativeClient 
         complete: () => finish({ ok: true }),
         fail: (message) => finish({ ok: false, kind: 'fail', message }),
         deny: (message) => finish({ ok: false, kind: 'deny', message }),
+        failUserAction: (message, reason, uri) =>
+          finish({ ok: false, kind: 'userAction', message, reason: reason ?? null, uri: uri ?? null }),
       })
     })
   }

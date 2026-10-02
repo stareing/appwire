@@ -9,7 +9,7 @@ import { toJsonValue } from './result'
 import type { NavigationHandler, NavigationOptions, NavigationRequest } from './types'
 import { openViewLayers, refreshViewTools, settleView } from './view'
 
-export type NavigationKind = 'NAVIGATION_FAILED' | 'NAVIGATION_DENIED'
+export type NavigationKind = 'NAVIGATION_FAILED' | 'NAVIGATION_DENIED' | 'USER_ACTION_REQUIRED'
 
 /** 导航结果；失败时 `details.reason` 见 spec/protocol.md 3.4。 */
 export type NavigationResult =
@@ -27,13 +27,21 @@ export function navigationFailure(kind: NavigationKind, message: string, reason:
   return { ok: false, kind, message, details: { reason } }
 }
 
+/** 各类别缺省的 `details.reason`（`USER_ACTION_REQUIRED` 没有缺省：`reason` / `uri` 只在回调给出时出现）。 */
+const DEFAULT_REASON: Readonly<Record<NavigationKind, string | undefined>> = {
+  NAVIGATION_FAILED: 'error',
+  NAVIGATION_DENIED: 'app',
+  USER_ACTION_REQUIRED: undefined,
+}
+
 function isNavigationKind(kind: unknown): kind is NavigationKind {
-  return kind === 'NAVIGATION_FAILED' || kind === 'NAVIGATION_DENIED'
+  return typeof kind === 'string' && Object.prototype.hasOwnProperty.call(DEFAULT_REASON, kind)
 }
 
 /**
- * 回调抛出的错误 → 结果：`kind` 为 `NAVIGATION_DENIED` / `NAVIGATION_FAILED` 的错误（按 `kind` 字段识别，跨包的
- * ToolCallError 同样适用）保留，缺省 `reason` 分别为 `app` / `error`；其他错误归为 `NAVIGATION_FAILED`（`error`）。
+ * 回调抛出的错误 → 结果：`kind` 为 `NAVIGATION_DENIED` / `NAVIGATION_FAILED` / `USER_ACTION_REQUIRED` 的错误（按 `kind`
+ * 字段识别，跨包的 ToolCallError 同样适用）保留，缺省 `reason` 见 {@link DEFAULT_REASON}；其他错误归为
+ * `NAVIGATION_FAILED`（`error`）。
  */
 export function navigationErrorResult(error: unknown): NavigationResult {
   const e = (typeof error === 'object' && error !== null ? error : {}) as { kind?: unknown; message?: unknown; details?: unknown }
@@ -46,7 +54,8 @@ export function navigationErrorResult(error: unknown): NavigationResult {
   } catch {
     details = {}
   }
-  return { ok: false, kind: e.kind, message, details: { reason: e.kind === 'NAVIGATION_DENIED' ? 'app' : 'error', ...details } }
+  const reason = DEFAULT_REASON[e.kind]
+  return { ok: false, kind: e.kind, message, details: reason === undefined ? details : { reason, ...details } }
 }
 
 /** 导航参数：只接受对象，其余（null、数组）视为没有参数。 */

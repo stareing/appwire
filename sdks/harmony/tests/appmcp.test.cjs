@@ -502,6 +502,47 @@ test('onNavigate：完成 / 拒绝 / 失败 / 同步抛出 / 参数', async () =
   assert.equal((await client.navigate('cart')).kind, 'unsupported');
 });
 
+test('backgroundTool 声明；update 以 null 清除', () => {
+  const { mcp, client } = create();
+  mcp.tool('cart.add', { description: '加入', handler: () => 1 });
+  assert.equal(client.tools.get('cart.add').spec.backgroundTool, undefined);
+  const t = mcp.tool('cart.viewAdd', { description: 'V', surface: 'view', page: 'cart', backgroundTool: 'cart.add', handler: () => 1 });
+  assert.equal(client.tools.get('cart.viewAdd').spec.backgroundTool, 'cart.add');
+  t.update({ description: 'V2' });
+  assert.equal(client.tools.get('cart.viewAdd').spec.backgroundTool, 'cart.add');
+  t.update({ backgroundTool: null });
+  assert.equal(client.tools.get('cart.viewAdd').spec.backgroundTool, undefined);
+});
+
+test('导航回调抛出 userActionRequired → USER_ACTION_REQUIRED（带 reason / uri）', async () => {
+  const { client } = create({
+    onNavigate: ({ page }) => {
+      if (page === 'bare') throw ToolCallError.userActionRequired('请切到前台');
+      throw ToolCallError.userActionRequired('已发通知，请点开', { reason: 'foreground', uri: 'shop://cart' });
+    },
+  });
+  assert.deepEqual(await client.navigate('cart'), {
+    ok: false, kind: 'userAction', message: '已发通知，请点开', reason: 'foreground', uri: 'shop://cart',
+  });
+  assert.deepEqual(await client.navigate('bare'), { ok: false, kind: 'userAction', message: '请切到前台', reason: null, uri: null });
+});
+
+test('navigateInBackground：缺省不调用原生设置（平台缺省 false，后台导航不调用回调）；选项与 setNavigateInBackground 传给原生', async () => {
+  let runs = 0;
+  const { mcp, client } = create({ onNavigate: () => { runs++; } });
+  assert.equal(client.calls.some((c) => c[0] === 'setNavigateInBackground'), false);
+  mcp.setVisibility('hidden', false);
+  assert.deepEqual(await client.navigate('cart'), {
+    ok: false, kind: 'userAction', message: 'App 在后台，无法切换到页面「cart」', reason: 'foreground', uri: null,
+  });
+  assert.equal(runs, 0);
+  mcp.setNavigateInBackground(true);
+  assert.deepEqual(await client.navigate('cart'), { ok: true });
+  assert.equal(runs, 1);
+  const other = create({ navigateInBackground: true });
+  assert.deepEqual(other.client.calls.filter((c) => c[0] === 'setNavigateInBackground'), [['setNavigateInBackground', true]]);
+});
+
 test('未设置导航回调时不声明', () => {
   const { client } = create();
   assert.equal(client.navigationHandler, undefined);

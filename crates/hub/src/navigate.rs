@@ -1,4 +1,5 @@
-//! 调用不在当前页面的工具时先导航（第 4c 项，spec/hub-api.md 3.14）：`app/navigate` → 等待目标工具注册。
+//! 调用不在当前页面的工具时先导航（第 4c 项，spec/hub-api.md 3.14）：`app/navigate` → 等待目标工具注册；
+//! App 在后台时改调 `view` 工具声明的后台替代（`backgroundTool`）。
 //!
 //! 与唤醒同构：复用 `HubConfig::wake_timeout`（导航回复与等待工具注册合计）与调用的取消信号；导航期间目标连接
 //! 记为有进行中的工作（`app/sleep` 被拒绝）。是否允许导航由 App 决定（拒绝时回 `NAVIGATION_DENIED`），Hub 不加确认。
@@ -6,14 +7,15 @@
 use std::sync::Arc;
 
 use app_mcp_protocol::{
-    ErrorKind, NavigateParams, NavigateResult, RpcError, ToolError, ToolInfo, method, navigation_reason,
+    ErrorKind, NavigateParams, NavigateResult, RpcError, ToolError, ToolInfo, method, navigation_reason, user_action_reason,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::time::Instant;
 
 use crate::call::CancelFut;
 use crate::hub::HubShared;
 use crate::pages;
+use crate::schema::{self, SchemaCheck};
 
 /// 页面目录中某个工具所在的页面（[`HubShared::page_of_tool`]）。
 #[derive(Debug, Clone)]
@@ -38,7 +40,44 @@ fn cancelled() -> ToolError {
     ToolError::new(ErrorKind::Cancelled, "调用已被取消。")
 }
 
+/// 失败是否因为 App 不能自行回到前台（`USER_ACTION_REQUIRED`，`reason: "foreground"`，spec/protocol.md 3.4）。
+pub(crate) fn needs_foreground(e: &ToolError) -> bool {
+    e.kind == ErrorKind::UserActionRequired
+        && e.details.as_ref().and_then(|d| d.get("reason")).and_then(Value::as_str) == Some(user_action_reason::FOREGROUND)
+}
+
 impl HubShared {
+    /// 后台替代（spec/hub-api.md 3.14）：`tool` 是没有实例注册、页面目录中有的 `view` 工具，且声明的 `backgroundTool`
+    /// 可用（同一 App 中已知、`surface` 为 app、`args` 符合其 inputSchema）时返回该工具名；声明不可用时记 warn 日志并返回 `None`。
+    pub(crate) fn background_alternative(&self, app_id: &str, tool: &str, args: &Value) -> Option<String> {
+        let view = self.page_of_tool(app_id, tool)?.tool;
+        let alt = view.background_tool.filter(|_| !view.surface.is_app())?;
+        let problem = if alt == tool {
+            Some("指向自身".to_owned())
+        } else {
+            match self.registry().app_tool(app_id, &alt) {
+                None => Some("App 中没有该工具".to_owned()),
+                Some(def) if !def.surface.is_app() => Some("不是 app 工具".to_owned()),
+                Some(def) => match schema::check(&def.input_schema, args) {
+                    SchemaCheck::Invalid(msg) => Some(format!("参数不符合其 inputSchema：{msg}")),
+                    _ => None,
+                },
+            }
+        };
+        match problem {
+            None => Some(alt),
+            Some(why) => {
+                tracing::warn!(app_id, tool, background_tool = %alt, "后台替代不可用，按导航处理：{why}");
+                None
+            }
+        }
+    }
+
+    /// 导航前是否已知 App 在后台：将被导航的实例不可见，或没有可导航的已连接实例（休眠 / 未运行 / 不支持导航）。
+    pub(crate) fn app_in_background(&self, app_id: &str, prefer: Option<&str>, strict: bool) -> bool {
+        !self.registry().navigation_target_in_foreground(app_id, prefer, strict)
+    }
+
     /// 没有已连接实例注册 `tool`、而页面目录中有时，返回它所在的页面。
     pub(crate) fn page_of_tool(&self, app_id: &str, tool: &str) -> Option<PageTool> {
         let reg = self.registry();
@@ -173,7 +212,7 @@ impl HubShared {
     }
 
     /// App 对 `app/navigate` 的错误回复：结果大小上限同工具结果；`-32601`（旧 SDK）按不支持；
-    /// `NAVIGATION_*` 原样；其他类别归为 `NAVIGATION_FAILED`（`error`）。
+    /// `NAVIGATION_*`、`USER_ACTION_REQUIRED`（如 App 在后台、需用户切到前台）原样；其他类别归为 `NAVIGATION_FAILED`（`error`）。
     fn navigation_error(&self, app_id: &str, page: &str, rpc: &RpcError) -> ToolError {
         if rpc.code == RpcError::METHOD_NOT_FOUND {
             return ToolError::navigation_failed(
@@ -183,7 +222,10 @@ impl HubShared {
         }
         let e = self.accept_error(app_id, method::NAVIGATE, rpc);
         match e.kind {
-            ErrorKind::NavigationFailed | ErrorKind::NavigationDenied | ErrorKind::PayloadTooLarge => e,
+            ErrorKind::NavigationFailed
+            | ErrorKind::NavigationDenied
+            | ErrorKind::UserActionRequired
+            | ErrorKind::PayloadTooLarge => e,
             _ => ToolError::navigation_failed(e.message, navigation_reason::ERROR),
         }
     }

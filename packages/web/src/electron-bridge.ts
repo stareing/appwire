@@ -52,8 +52,9 @@ import type {
 //
 // @compat 版本 1 内只做可选字段的新增，旧页面忽略、新页面缺省为 undefined，因此不升版本
 // （升版本会让 findElectronBridge 拒绝新旧混用）。已有新增：`HelloReply.connectionId`、`state` 事件的 `connectionId`、
-// `ToolSpecMessage.annotations` / `outputSchema` / `surface` / `page`、导航消息（`navigation.set`、`navigate`、
-// `navigate.result`，见 {@link NavigationOp}；旧主进程对未知 op 回复错误，页面据此得知不支持）、成功 `Outcome` 的 `status` / `stateResource` / `summary` / `annotations`、
+// `ToolSpecMessage.annotations` / `outputSchema` / `surface` / `page` / `backgroundTool`、导航消息（`navigation.set`、`navigate`、
+// `navigate.result`，见 {@link NavigationOp}；旧主进程对未知 op 回复错误，页面据此得知不支持；`navigate.result` 的
+// `USER_ACTION_REQUIRED` 与 `details`：旧主进程 / Rust 侧按失败处理）、成功 `Outcome` 的 `status` / `stateResource` / `summary` / `annotations`、
 // 失败 `Outcome` 的 `details`。
 
 /** preload 默认把桥接对象暴露为 `window.appMcpBridge`。 */
@@ -78,6 +79,8 @@ export interface ToolSpecMessage {
   surface?: ToolSurface
   /** 所在页面名（spec/protocol.md 3.4）。 */
   page?: string
+  /** 后台替代：同一 App 中一个 `app` 工具的名称（spec/protocol.md 3.4）；`tool.update` 时缺省表示清除。 */
+  backgroundTool?: string
 }
 
 /**
@@ -132,7 +135,15 @@ export type RendererOp =
 export type NavigationOp =
   | { op: 'navigation.set'; enabled: boolean }
   | { op: 'navigate.result'; navId: number; ok: true }
-  | { op: 'navigate.result'; navId: number; ok: false; kind: 'NAVIGATION_FAILED' | 'NAVIGATION_DENIED'; message: string }
+  | {
+      op: 'navigate.result'
+      navId: number
+      ok: false
+      kind: 'NAVIGATION_FAILED' | 'NAVIGATION_DENIED' | 'USER_ACTION_REQUIRED'
+      message: string
+      /** `USER_ACTION_REQUIRED` 的 `{ reason?, uri? }`；其他类别不带。 */
+      details?: Record<string, unknown>
+    }
 
 /** 主进程 / Rust 侧请求页面导航（Host 的 `app/navigate`）。`params` 缺省 = Host 没有给出参数。 */
 export interface NavigateEvent {
@@ -501,6 +512,7 @@ class ToolEntry implements ToolHandle, Detachable, LazySlot {
       ...((d.enabled !== undefined || this.decl?.gated) && { enabled: this.decl?.enabled ?? d.enabled }),
       ...(this.decl?.surface === 'view' && { surface: 'view' as const }),
       ...(this.decl?.page !== undefined && { page: this.decl.page }),
+      ...(d.backgroundTool !== undefined && { backgroundTool: d.backgroundTool }),
     }
   }
 

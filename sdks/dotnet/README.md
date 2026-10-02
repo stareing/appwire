@@ -78,6 +78,11 @@ client.Start();
   抛 `NavigationDeniedException` = 拒绝（`NAVIGATION_DENIED`，如用户正在输入），其他异常 = 失败（`NAVIGATION_FAILED`）。
   传 `null` 清除；能力在握手时声明，连接后才设置的在下次连接生效。
 - `ViewToolGate`：与框架无关的门控（可见 且 最上层 → 启用，否则禁用），可绑定到任意界面事件。
+- 后台时：需要前台的导航以 `USER_ACTION_REQUIRED`（reason `foreground`）返回；后台也要能用的能力做成 app 工具，或给 view 工具
+  声明 `ToolOptions.BackgroundTool`（后台时 Hub 改调的同 App app 工具）；详见 spec/protocol.md 3.4「后台与前台」。
+  `AppMcpClientOptions.NavigateInBackground` / `SetNavigateInBackground(bool)` 控制后台时是否仍调用导航回调（Windows 默认 true）：
+  `WpfNavigation.ForFrame` 先还原并激活窗口，系统不允许前置时回复 `USER_ACTION_REQUIRED`；自写回调可抛
+  `UserActionRequiredException(message, UserActionReason.Foreground, uri)`。
 - `AppMcp.Wpf`（`net9.0-windows`，WPF）与 `AppMcp.WinUI`（WindowsAppSDK）为独立项目，只能在 Windows 上构建，不在 `AppMcp.sln` 中。
 
 ## 进程内控件兜底（WPF，spec/ui-fallback.md）

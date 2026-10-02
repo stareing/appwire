@@ -48,6 +48,7 @@ export interface ToolDecl {
   enabled?: boolean
   surface?: 'app' | 'view'
   page?: string
+  backgroundTool?: string
   handler?: HandlerSpec
 }
 
@@ -56,11 +57,15 @@ export interface NavigationSpec {
   mutate?: MutationOp[]
   deny?: string
   fail?: string
+  userAction?: UserActionSpec
   throw?: string
   failParams?: boolean
 }
 
-export type NavigationOutcome = { kind: 'ok' } | { kind: 'deny' | 'fail' | 'throw'; message: string }
+export type NavigationOutcome =
+  | { kind: 'ok' }
+  | { kind: 'deny' | 'fail' | 'throw'; message: string }
+  | ({ kind: 'userAction' } & UserActionSpec)
 
 export interface ReadSpec {
   return?: Json
@@ -92,7 +97,9 @@ export interface ConformanceCase {
       lifecycle?: { mode?: 'persistent' | 'idle' | 'on-demand'; idleTimeoutMs?: number; graceMs?: number; mergeWindowMs?: number }
       callDedup?: { ttlMs?: number; maxEntries?: number }
       maxConcurrentCalls?: number
+      navigateInBackground?: boolean
     }
+    visibility?: 'visible' | 'hidden' | 'frozen'
     tools?: ToolDecl[]
     resources?: ResourceDecl[]
     navigation?: { [page: string]: NavigationSpec }
@@ -176,7 +183,10 @@ export declare function appConfig(testCase: ConformanceCase): {
   lifecycle?: NonNullable<ConformanceCase['app']['config']>['lifecycle']
   callDedup?: { ttlMs?: number; maxEntries?: number }
   maxConcurrentCalls?: number
+  navigateInBackground?: boolean
 }
+/** 用例 `app.visibility`；未给出时为 undefined。 */
+export declare function appVisibility(testCase: ConformanceCase): 'visible' | 'hidden' | 'frozen' | undefined
 export declare function defined<T extends object>(obj: T): Partial<T>
 
 /** `@app-mcp/node` / `@app-mcp/web` 实例的注册部分（两包同形，按结构取用）。 */

@@ -29,7 +29,7 @@ use crate::hub::{
 use crate::progress::{ProgressThrottle, ProgressUpdate};
 use crate::limits::{OutputValidation, Payload};
 use crate::mcp_convert::{self, OutputShape};
-use crate::navigate::PageTool;
+use crate::navigate::{self, PageTool};
 use crate::overview::Overview;
 use crate::schema::{self, SchemaCheck};
 use crate::types::{
@@ -109,6 +109,8 @@ pub(crate) struct Invocation {
     pub body: Body,
     /// App 工具声明的 `outputSchema` 决定的 `structuredContent` 形式。
     pub output_shape: OutputShape,
+    /// 改调了后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）。
+    pub routed_to: Option<String>,
 }
 
 impl Invocation {
@@ -124,6 +126,9 @@ impl Invocation {
         };
         if let Some(ov) = &self.overview {
             r.content.insert(0, ContentBlock::text(ov.render()));
+        }
+        if let Some(to) = &self.routed_to {
+            r.meta.get_or_insert_with(MetaObject::new).insert(mcp_convert::META_ROUTED_TO.to_owned(), json!(to));
         }
         Ok(r)
     }
@@ -160,6 +165,7 @@ impl Invocation {
             state_resource: r.state_resource.map(|n| resource_uri(&app_id, &n)),
             summary: r.summary,
             annotations: r.annotations,
+            routed_to: self.routed_to,
         })
     }
 }
@@ -281,6 +287,7 @@ impl HubShared {
             overview: None,
             body,
             output_shape: OutputShape::Undeclared,
+            routed_to: None,
         };
 
         // 策略：整体隐藏的 App / 上游与不存在的 appId 相同（spec/hub-api.md 3.13）。
@@ -356,18 +363,55 @@ impl HubShared {
         if let Err(e) = self.check_call_policy(app_id, tool) {
             return inv(Some(app_id), Body::App(Err(e)));
         }
-        if let Err(e) = self.guard_call(app_id, tool, &args) {
-            let mut out = inv(Some(app_id), Body::App(Err(e)));
-            out.overview = self.attach_overview(&ctx.session_key, app_id);
-            return out;
+        // 后台替代（spec/hub-api.md 3.14）：view 工具够不着且已知 App 在后台 → 直接改调声明的 app 工具；
+        // 否则照常（导航），导航因 App 不能自行回到前台被拒（USER_ACTION_REQUIRED / foreground）时再改调。
+        let prefer = ctx.instance_id.clone().or_else(|| self.selected_for(&ctx.session_key, app_id));
+        let mut routed_to = self
+            .background_alternative(app_id, tool, &args)
+            .filter(|_| self.app_in_background(app_id, prefer.as_deref(), ctx.instance_id.is_some()));
+        let fallback_args = routed_to.is_none().then(|| args.clone());
+        let mut run = match routed_to.clone() {
+            Some(alt) => self.run_routed_tool(call_id, app_id, &alt, args, &ctx, cancel.as_mut()).await,
+            None => {
+                if let Err(e) = self.guard_call(app_id, tool, &args) {
+                    let mut out = inv(Some(app_id), Body::App(Err(e)));
+                    out.overview = self.attach_overview(&ctx.session_key, app_id);
+                    return out;
+                }
+                self.invoke_tool(call_id, app_id, tool, args, &ctx, cancel.as_mut()).await
+            }
+        };
+        if let (Some(args), Err(e)) = (fallback_args, &run.result)
+            && navigate::needs_foreground(e)
+            && let Some(alt) = self.background_alternative(app_id, tool, &args)
+        {
+            run = self.run_routed_tool(call_id, app_id, &alt, args, &ctx, cancel.as_mut()).await;
+            routed_to = Some(alt);
         }
-        let run = self.invoke_tool(call_id, app_id, tool, args, &ctx, cancel).await;
         let mut out = inv(Some(app_id), Body::App(run.result));
         out.instance_id = run.instance_id;
         out.output_shape = run.output_shape;
+        out.routed_to = routed_to.map(|alt| format!("{app_id}.{alt}"));
         out.overview = self.attach_overview(&ctx.session_key, app_id);
         self.expose_in_session(&ctx, app_id);
         out
+    }
+
+    /// 改调后台替代（spec/hub-api.md 3.14）：策略 `call` 执行点与资源保护按被改调的工具执行，之后与直接调用它相同。
+    async fn run_routed_tool(
+        self: &Arc<Self>,
+        call_id: &str,
+        app_id: &str,
+        tool: &str,
+        args: Value,
+        ctx: &CallCtx,
+        cancel: CancelFut<'_>,
+    ) -> ToolRun {
+        tracing::info!(app_id, tool, "App 在后台，改调 view 工具声明的后台替代");
+        if let Err(e) = self.check_call_policy(app_id, tool).and_then(|()| self.guard_call(app_id, tool, &args)) {
+            return ToolRun { result: Err(e), instance_id: None, output_shape: OutputShape::Undeclared };
+        }
+        self.invoke_tool(call_id, app_id, tool, args, ctx, cancel).await
     }
 
     /// 渐进暴露：把 App 加入调用方会话的工具列表；列表因此变化时通知该 MCP 会话。
@@ -1572,6 +1616,31 @@ mod tests {
         assert_eq!(r.structured_content, None);
         assert_eq!(r.content[0].as_text().unwrap().text, "[1]");
         assert_eq!(r.meta, None);
+    }
+
+    /// 后台替代（spec/hub-api.md 3.14）：改调时 MCP 结果的 `_meta` 带实际调用的工具全名，Hub API 结果带 `routed_to`；
+    /// 与结果状态的键并存。
+    #[test]
+    fn routed_result_meta() {
+        let inv = |routed_to: Option<&str>, r: Result<ToolsInvokeResult, ToolError>| Invocation {
+            call_id: "c".into(),
+            app_id: Some("shop".into()),
+            instance_id: None,
+            overview: None,
+            body: Body::App(r),
+            output_shape: OutputShape::Undeclared,
+            routed_to: routed_to.map(str::to_owned),
+        };
+        let pending = ToolsInvokeResult { status: crate::ResultStatus::Pending, ..ToolsInvokeResult::default() };
+        let r = inv(Some("shop.cart.add"), Ok(pending.clone())).to_mcp().unwrap();
+        let meta = r.meta.unwrap();
+        assert_eq!(meta.get(mcp_convert::META_ROUTED_TO), Some(&json!("shop.cart.add")));
+        assert_eq!(meta.get(mcp_convert::META_STATUS), Some(&json!("pending")));
+        let r = inv(Some("shop.cart.add"), Err(ToolError::new(ErrorKind::HandlerError, "x"))).to_mcp().unwrap();
+        assert_eq!(r.meta.unwrap().get("app-mcp/routedTo"), Some(&json!("shop.cart.add")), "错误结果同样标出");
+        assert_eq!(inv(None, Ok(ToolsInvokeResult::default())).to_mcp().unwrap().meta, None);
+        let o = inv(Some("shop.cart.add"), Ok(pending)).into_outcome().unwrap();
+        assert_eq!(o.routed_to.as_deref(), Some("shop.cart.add"));
     }
 
     /// 第 19 项 R3：无返回值 → "已完成"、不填 structuredContent；有摘要时摘要代替。

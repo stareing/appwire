@@ -63,6 +63,7 @@ internal fun ViewEnabledEffect(
  *
  * @input name / description / inputSchema 等同 [AppMcpRegistrar.tool]；名称或注册入口变化时重新注册
  * @input enabled 见 [ViewToolEffect]（如弹窗打开时传 false 压制下层工具）
+ * @input backgroundTool 后台替身：同 App 内一个 `APP` 工具的名称，App 在后台时 Hub 改调它（spec/protocol.md 3.4「后台与前台」）
  */
 @Composable
 fun rememberViewTool(
@@ -75,6 +76,7 @@ fun rememberViewTool(
     title: String? = null,
     annotations: ToolAnnotations? = null,
     outputSchema: JsonObject? = null,
+    backgroundTool: String? = null,
     lifecycleOwner: LifecycleOwner = LocalLifecycleOwner.current,
     enabled: Boolean = true,
     handler: ToolFunction,
@@ -89,6 +91,7 @@ fun rememberViewTool(
             outputSchema = outputSchema,
             surface = ToolSurface.VIEW,
             page = page,
+            backgroundTool = backgroundTool,
         ) { args, ctx -> current(args, ctx) }
     }
     DisposableEffect(handle) {

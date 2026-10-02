@@ -249,6 +249,7 @@ interface ToolInfo {
   outputSchema?: object    // 结果的 JSON Schema（MCP outputSchema），根类型任意（3.2）
   surface?: ToolSurface    // 对界面的依赖（3.4），缺省 "app"，"app" 时不序列化
   page?: string            // 所在页面名（3.4），[a-zA-Z0-9_.-]{1,64}
+  backgroundTool?: string  // 后台替代（3.4）：只对 view 工具有意义，同一 App 中一个 app 工具的局部名
 }
 
 type ToolSurface = "app" | "view"
@@ -313,7 +314,7 @@ interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 
 // 导航（3.4）
 interface NavigateParams { page: string; params?: object }
-interface NavigateResult { ok: boolean }   // 成功为 { ok: true }；失败用 JSON-RPC 错误（NAVIGATION_FAILED / NAVIGATION_DENIED）
+interface NavigateResult { ok: boolean }   // 成功为 { ok: true }；失败用 JSON-RPC 错误（NAVIGATION_FAILED / NAVIGATION_DENIED / USER_ACTION_REQUIRED）
 ```
 
 ### 3.1 名称规则：局部名与全名
@@ -391,11 +392,29 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
 - **`app/navigate`（Host → SDK，请求）**：`{page, params?}` → `{ok: true}`。SDK 行为（`app-mcp-core` 实现，所有语言一致）：
   - 未完成握手 → `UNAUTHORIZED`（同 5.1 第 5 步）；参数无法解析或 `page` 不合法 → `-32602`。
   - 没有导航回调（`capabilities.navigate` 为 false）→ `NAVIGATION_FAILED`，`data.reason = "unsupported"`。
+  - 实例不可见（可见性 `hidden` / `frozen`）且 `navigateInBackground` 为 false → **立即**回复 `USER_ACTION_REQUIRED`
+    （`data.reason = "foreground"`，无 `uri`），不调用导航回调（见下文「后台与前台」）。
   - 否则交给导航回调（核心事件 `Navigate`），回调切换界面后完成：成功回复 `{ok: true}`；页面不存在 / 参数不合法等以
     `NAVIGATION_FAILED`（`reason: "error"`）失败；不愿切换（用户正在输入、页面需要登录等）以 `NAVIGATION_DENIED`
     （`reason: "app"`）拒绝，`message` 面向模型 / 用户。导航改变用户可见界面：是否允许由 App 决定，本库不加确认。
   - 进行中的导航阻止空闲休眠（与进行中的资源读取相同，spec/lifecycle.md 第 3 节）；连接断开时丢弃，不回复。
   - 导航后的工具注册 / 注销照常经 `tools/changed` 同步（5.2）；回调最好在新页面的工具注册之后再完成，Host 会等待目标工具出现。
+- **后台与前台**（本节与 spec/hub-api.md 3.14 后台替代的共同前提；选择工具 surface 的指引只在此处定义）：
+  - 平台大多不允许后台 App 自行回到前台（Android 10+ 限制后台启动 Activity，iOS、鸿蒙同理；浏览器标签页不能自行切到前台）。
+    `navigateInBackground`（SDK 设置项，核心 `ClientConfig.navigate_in_background`）声明实例不可见时导航请求是否仍交给导航回调：
+    `false` 时 SDK 按上文立即以 `USER_ACTION_REQUIRED`（`foreground`）回复，Agent 据此请用户打开 App，而不是等到超时
+    （`NAVIGATION_FAILED` / `timeout`）。缺省按平台：原生运行时在桌面（能恢复 / 激活自己的窗口）为 `true`，Android、iOS、鸿蒙为
+    `false`；网页（WASM 核心）为 `false`。App 随时可以改。
+  - App 要自己处理后台导航时（如发一条"点按继续"的通知、点开后打开目标页面）把它设为 `true`，在导航回调中按自己的界面状态处理，
+    并以 `USER_ACTION_REQUIRED`（`reason: "foreground"`，`uri` 为该页面的 App 内入口）完成——各 SDK 的导航句柄 / 回调支持与工具
+    handler 相同的"需要用户操作"写法。是否发通知、发什么是 App 的决定，本库只提供机制（Android 的可选辅助：app-mcp-android 的
+    `AppMcpContinueNotification`，Android 13+ 需 App 自行声明并申请 `POST_NOTIFICATIONS`）。
+  - **app 工具还是 view 工具**：后台也必须能用的能力（Agent 在用户不看 App 时调用，如加入购物车、查询订单）做成 `app` 工具——
+    后台可调、可唤醒；`view` 工具只用于离不开当前界面状态的操作（当前表单的输入、选中项、页面上的弹窗）。一个操作两种界面都需要时，
+    把业务逻辑放在 `app` 工具里，`view` 工具只做界面相关的部分，并用 `backgroundTool` 声明后台替代。
+  - **`backgroundTool`**（`ToolInfo`，可选，只对 `view` 工具有意义）：同一 App 中一个 `app` 工具的局部名。该 view 工具没有实例
+    注册、而 App 在后台（或导航因 `foreground` 被拒）时，Hub 改调这个 app 工具（规则见 spec/hub-api.md 3.14），结果标出实际调用的工具。
+    两个工具的 inputSchema 应兼容（Hub 按替代工具的 schema 校验参数，不符时不改调）。缺省时不序列化（`toolsHash` 不变）。
 - **`data.reason`**（`NAVIGATION_FAILED` / `NAVIGATION_DENIED`，第 4 节）：`unsupported`（不支持导航）、`error`（回调出错）、
   `timeout`（Host 在时限内没有收到回复）、`tool-not-registered`（导航完成但时限内目标工具没有注册）、`app`（App 拒绝）、
   `not-navigable`（清单声明该页面不可导航，Host 不发请求）。Host 产生的错误另带 `appId`、`page`。
@@ -405,6 +424,15 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
   `AmNavigate`、`AmToolOptions.page` / `surface`；uniffi `AppMcpClient.set_navigation_handler`、`NavigationHandler`、`Navigate`、
   `ToolSpec.surface` / `page`；Node 原生模块 `setNavigationHandler`、`Navigate`、`ToolSpecInit.surface` / `page`；WASM
   `setNavigation`、`navigate` 事件、`completeNavigate`、工具定义 `surface` / `page`。
+  后台导航与 `backgroundTool`：Rust `ClientConfig.navigate_in_background` / `Client::set_navigate_in_background`、`ToolDef.background_tool`；
+  原生运行时 `NativeClient::set_navigate_in_background`、`NavigateHandle::fail_user_action`、`ToolOptions.background_tool`；
+  C ABI v15 `am_client_set_navigate_in_background`、`am_navigate_fail_user_action`、`AmToolOptions.background_tool`；uniffi
+  `AppMcpClient.set_navigate_in_background`、`Navigate.fail_user_action`、`ToolSpec.background_tool`；Node 原生模块
+  `setNavigateInBackground`、`Navigate.failUserAction`、`ToolSpecInit.backgroundTool`；WASM `setNavigateInBackground`、工具定义
+  `backgroundTool`。各语言封装：设置项 `navigateInBackground`（Python `navigate_in_background`、C# `NavigateInBackground`，缺省 =
+  平台缺省）、工具声明 `backgroundTool`；导航回调里抛出 / 返回该 SDK 的"需要用户操作"（与工具 handler 相同）即回复
+  `USER_ACTION_REQUIRED`，其他异常仍为 `NAVIGATION_FAILED`。Electron 主进程 `attachAppMcp({ raiseWindow })` 给出时才在后台导航
+  （否则立即以 foreground 拒绝）；Tauri 插件在桌面先恢复并聚焦窗口；WPF 导航先恢复并激活窗口（WinUI 暂不能）。
 - 进程内控件兜底（第 4c 项 H）：没有声明工具的界面由 SDK 以 `ui.*` view 工具兜底，格式与行为见 spec/ui-fallback.md（协议不感知）。
 - 网页封装层（`@app-mcp/web`，第 4c 项 D；Electron / Tauri 页面侧的桥接实现相同）：
   - 入口：`ToolDefinition.surface` / `page` / `visibility`、`scope(name, { anchor, layer, page, surface, visibility })`（其下工具
@@ -440,7 +468,7 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
 | `RATE_LIMITED` | -32016 | Host 限流：对该（App, 工具）或该 App 的调用过于频繁，调用未转发。`data`：`retryAfterMs`（建议等待毫秒数）、`scope`（`tool` / `app`）、`perMinute`、`burst`、`appId`、`tool`（spec/hub-api.md 3.11） |
 | `PAYLOAD_TOO_LARGE` | -32017 | Host 大小上限：调用参数、调用结果或资源内容超过上限，未转发 / 未返回（不截断）。`data`：`part`（`arguments` / `result` / `resource`）、`sizeBytes`、`limitBytes`。`result` 超限时调用可能已在 App 内执行 |
 | `POLICY_DENIED` | -32018 | 调用被用户 / 厂商写的策略规则拒绝（`deny`，spec/hub-api.md 3.13），未转发、未唤醒；与 `USER_REJECTED`（用户当场拒绝）不同，重试不会改变结果。`data`：`ruleId`（命中规则的标识，不含规则内容）、`hook`（`call` / `wake`）、`appId`、`tool` |
-| `USER_ACTION_REQUIRED` | -32019 | 需要用户本人操作后才能继续：登录过期、系统权限未授予、需切到前台、需在 App 内确认等。由 App 的 handler 返回（各语言 SDK 提供构造方法）；调用未完成，用户操作后可重试。`message` 面向用户（Agent 应转告用户），`data`：`reason`（可选，建议取值 `login` / `permission` / `foreground` / `confirm`，其他字符串按原样展示）、`uri`（可选，App 内入口，如深链接）。Host 原样转为 MCP 错误结果，不据此做任何决定；错误消息与结果一样计入结果大小上限（spec/hub-api.md 3.11） |
+| `USER_ACTION_REQUIRED` | -32019 | 需要用户本人操作后才能继续：登录过期、系统权限未授予、需切到前台、需在 App 内确认等。由 App 的 handler 返回（各语言 SDK 提供构造方法），也是导航在后台无法完成时的回复（3.4，`reason: "foreground"`）；调用未完成，用户操作后可重试。`message` 面向用户（Agent 应转告用户），`data`：`reason`（可选，建议取值 `login` / `permission` / `foreground` / `confirm`，其他字符串按原样展示）、`uri`（可选，App 内入口，如深链接）。Host 原样转为 MCP 错误结果，不据此做任何决定；错误消息与结果一样计入结果大小上限（spec/hub-api.md 3.11） |
 | `NAVIGATION_FAILED` | -31001 | 导航没有完成（3.4）：App 不支持导航、导航回调出错、超时，或导航后时限内目标工具没有注册。调用未执行。`data`：`reason`（`unsupported` / `error` / `timeout` / `tool-not-registered`）、`appId`、`page` |
 | `NAVIGATION_DENIED` | -31002 | 导航被拒绝（3.4）：App 拒绝本次导航（`reason: "app"`，`message` 来自 App），或清单声明该页面不可由 Agent 导航（`reason: "not-navigable"`）。调用未执行；重试不会改变结果，应请用户自行打开该页面 |
 

@@ -499,6 +499,34 @@ impl Manifest {
         if tool.output_schema.as_ref().is_some_and(|s| !s.is_object()) {
             v.errors.push(Issue::new(format!("{path}.outputSchema"), "outputSchema 必须是对象（JSON Schema）"));
         }
+        if let Some(alt) = &tool.background_tool {
+            self.validate_background_tool(tool, alt, &format!("{path}.backgroundTool"), v);
+        }
+    }
+
+    /// `backgroundTool`（spec/manifest.md 2.3）：同一 App 中一个 app 工具的名称。
+    fn validate_background_tool(&self, tool: &ToolInfo, alt: &str, path: &str, v: &mut Validation) {
+        if !is_valid_name(alt) {
+            v.errors.push(Issue::new(path, format!("backgroundTool \"{alt}\" 不合法，应满足 [a-zA-Z0-9_.-]{{1,64}}")));
+            return;
+        }
+        if alt == tool.name {
+            v.errors.push(Issue::new(path, "backgroundTool 不能指向工具自身"));
+            return;
+        }
+        if tool.surface.is_app() {
+            v.warnings.push(Issue::new(path, "backgroundTool 只对 surface 为 view 的工具有意义，此处会被忽略"));
+        }
+        match self.tool(alt).or_else(|| self.page_tool(alt).map(|(_, t)| t)) {
+            Some(t) if !t.surface.is_app() => {
+                v.errors.push(Issue::new(path, format!("backgroundTool \"{alt}\" 必须是 surface 为 app 的工具")));
+            }
+            Some(_) => {}
+            None => v.warnings.push(Issue::new(
+                path,
+                format!("backgroundTool \"{alt}\" 未在清单中声明：只有 App 运行时注册了该工具后 Hub 才会改调"),
+            )),
+        }
     }
 
     /// 页面目录（spec/manifest.md 2.3）。
@@ -992,6 +1020,35 @@ mod tests {
         let v = with_pages(json!([{ "name": "a", "tools": [page_tool("shop.info")] }])).validate();
         assert!(v.is_ok());
         assert_eq!(v.warnings[0].path, "pages[0].tools[0].name");
+    }
+
+    #[test]
+    fn background_tool_rules() {
+        let view_named = |name: &str, alt: &str| json!({ "name": name, "description": "d", "inputSchema": { "type": "object" },
+            "surface": "view", "backgroundTool": alt });
+        let view = |alt: &str| view_named("v", alt);
+        // 指向顶层 app 工具：合法、无警告，往返不丢
+        let m = with_pages(json!([{ "name": "a", "tools": [view("orders.search")] }]));
+        let v = m.validate();
+        assert!(v.is_ok() && v.warnings.is_empty(), "{:?} {:?}", v.errors, v.warnings);
+        assert_eq!(m.page_tool("v").unwrap().1.background_tool.as_deref(), Some("orders.search"));
+        assert_eq!(serde_json::to_value(&m).unwrap()["pages"][0]["tools"][0]["backgroundTool"], "orders.search");
+        // 不合法的名称、指向自身、指向 view 工具：错误
+        let v = with_pages(json!([{ "name": "a", "tools": [view("x y"), view_named("v2", "v2")] }])).validate();
+        assert_eq!(error_paths(&v), vec!["pages[0].tools[0].backgroundTool", "pages[0].tools[1].backgroundTool"]);
+        let mut other = page_tool("w");
+        other["surface"] = json!("view");
+        let v = with_pages(json!([{ "name": "a", "tools": [view("w"), other] }])).validate();
+        assert_eq!(error_paths(&v), vec!["pages[0].tools[0].backgroundTool"]);
+        // 未在清单中声明：警告；app 工具上声明：警告
+        let v = with_pages(json!([{ "name": "a", "tools": [view("runtime.only")] }])).validate();
+        assert!(v.is_ok());
+        assert_eq!(v.warnings[0].path, "pages[0].tools[0].backgroundTool");
+        let mut m = with_pages(json!([]));
+        m.tools[0].background_tool = Some("x".into());
+        let v = m.validate();
+        assert!(v.is_ok());
+        assert_eq!(v.warnings.iter().filter(|w| w.path == "tools[0].backgroundTool").count(), 2, "{:?}", v.warnings);
     }
 
     #[test]

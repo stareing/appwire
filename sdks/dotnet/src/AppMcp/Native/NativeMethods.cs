@@ -114,6 +114,7 @@ internal struct AmToolOptions
     public nint OutputSchemaJson; // MCP outputSchema；0 = 未声明
     public nint Page;             // v14：所在页面名；0 = 未声明
     public int Surface;           // v14：AmToolSurface（0 = APP，1 = VIEW）
+    public nint BackgroundTool;   // v15：后台时代替本 view 工具的 app 工具本地名；0 = 未声明
 }
 
 /// <summary>v9：am_call_complete_ex 的调用结果。StructSize = sizeof(AmCallResult)。</summary>
@@ -212,6 +213,8 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)] internal static partial AmStatus am_navigate_complete(nint navigate);
     [LibraryImport(Lib)] internal static partial AmStatus am_navigate_fail(nint navigate, byte* message);
     [LibraryImport(Lib)] internal static partial AmStatus am_navigate_deny(nint navigate, byte* message);
+    [LibraryImport(Lib)] internal static partial AmStatus am_navigate_fail_user_action(nint navigate, byte* message, byte* reason, byte* uri);
+    [LibraryImport(Lib)] internal static partial AmStatus am_client_set_navigate_in_background(ClientSafeHandle client, [MarshalAs(UnmanagedType.U1)] bool enabled);
 
     [LibraryImport(Lib)] internal static partial nint am_read_resource_name(nint read);
     [LibraryImport(Lib)] internal static partial AmStatus am_read_complete(nint read, byte* contentsJson);

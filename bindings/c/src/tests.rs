@@ -342,6 +342,11 @@ fn navigate_null_pointers() {
         assert_eq!(am_navigate_complete(ptr::null_mut()), AmStatus::InvalidArgument);
         assert_eq!(am_navigate_fail(ptr::null_mut(), ptr::null()), AmStatus::InvalidArgument);
         assert_eq!(am_navigate_deny(ptr::null_mut(), ptr::null()), AmStatus::InvalidArgument);
+        assert_eq!(
+            am_navigate_fail_user_action(ptr::null_mut(), ptr::null(), ptr::null(), ptr::null()),
+            AmStatus::InvalidArgument
+        );
+        assert_eq!(am_client_set_navigate_in_background(ptr::null_mut(), true), AmStatus::InvalidArgument);
     }
 }
 
@@ -435,6 +440,9 @@ fn header_consistency() {
         "am_navigate_complete",
         "am_navigate_fail",
         "am_navigate_deny",
+        // v15
+        "am_client_set_navigate_in_background",
+        "am_navigate_fail_user_action",
     ];
     // 收集头文件中形如 `am_xxx(` 的声明。
     let mut declared = Vec::new();
@@ -1112,12 +1120,14 @@ fn tool_options_are_read_up_to_struct_size() {
     let ann = CString::new(r#"{"readOnlyHint":true,"title":"查询"}"#).unwrap_or_default();
     let schema = CString::new(r#"{"type":"object"}"#).unwrap_or_default();
     let page = CString::new("cart").unwrap_or_default();
+    let background = CString::new("cart.summary").unwrap_or_default();
     let full = AmToolOptions {
         struct_size: std::mem::size_of::<AmToolOptions>() as u32,
         annotations_json: ann.as_ptr(),
         output_schema_json: schema.as_ptr(),
         page: page.as_ptr(),
         surface: 1,
+        background_tool: background.as_ptr(),
     };
     let options = unsafe { read_tool_options(&full) }.ok();
     assert_eq!(
@@ -1131,8 +1141,13 @@ fn tool_options_are_read_up_to_struct_size() {
             output_schema_json: Some(r#"{"type":"object"}"#.into()),
             surface: app_mcp_native::ToolSurface::View,
             page: Some("cart".into()),
+            background_tool: Some("cart.summary".into()),
         })
     );
+    // v14 调用方（不含 background_tool）：按未声明处理
+    let v14 = AmToolOptions { struct_size: std::mem::offset_of!(AmToolOptions, background_tool) as u32, ..full };
+    let options = unsafe { read_tool_options(&v14) }.ok();
+    assert!(options.as_ref().is_some_and(|o| o.background_tool.is_none() && o.surface == app_mcp_native::ToolSurface::View));
     // v13 调用方（不含 page / surface）：按未声明处理
     let v13 = AmToolOptions { struct_size: std::mem::offset_of!(AmToolOptions, page) as u32, ..full };
     let options = unsafe { read_tool_options(&v13) }.ok();
@@ -1358,6 +1373,7 @@ fn tool_options_and_call_result_reach_host() {
         output_schema_json: schema.as_ptr(),
         page: ptr::null(),
         surface: 0,
+        background_tool: ptr::null(),
     };
     let mut tool: *mut AmTool = ptr::null_mut();
     assert_eq!(
@@ -1457,4 +1473,85 @@ fn tool_options_and_call_result_reach_host() {
         })
     );
     assert_eq!(out[8]["error"]["data"], serde_json::json!({ "kind": "USER_REJECTED", "quota": 0 }));
+}
+
+/// v15 导航回调：以 USER_ACTION_REQUIRED（foreground + uri）回复，随后关闭 navigateInBackground
+/// （user_data 为 AmClient；之后的导航不再进入回调，由核心直接回复）。
+unsafe extern "C" fn notify_navigate(ud: *mut c_void, navigate: *mut AmNavigate) {
+    let msg = CString::new("已发通知，请点开后继续").unwrap_or_default();
+    let reason = CString::new("foreground").unwrap_or_default();
+    let uri = CString::new("conf://cart").unwrap_or_default();
+    unsafe {
+        am_navigate_fail_user_action(navigate, msg.as_ptr(), reason.as_ptr(), uri.as_ptr());
+        am_client_set_navigate_in_background(ud.cast::<AmClient>(), false);
+    }
+}
+
+/// 端到端（v15）：后台 + navigateInBackground 时回调以 USER_ACTION_REQUIRED 回复；关闭后核心直接回复 foreground。
+#[test]
+fn background_navigation_through_c_abi() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let bin = app_mcp_native::test_support::fake_host_path().unwrap_or_else(|e| panic!("{e}"));
+    let Ok(mut child) = Command::new(bin)
+        .args(["--navigate", "cart", "--navigate", "home", "--timeout-ms", "8000"])
+        .stdout(Stdio::piped())
+        .spawn()
+    else {
+        panic!("无法启动 fake_host");
+    };
+    let Some(stdout) = child.stdout.take() else { panic!("fake_host 没有 stdout") };
+    let mut lines = BufReader::new(stdout).lines();
+    let first = lines.next().and_then(Result::ok).unwrap_or_default();
+    let addr = first.strip_prefix("LISTENING ").unwrap_or_default().to_owned();
+    assert!(!addr.is_empty(), "LISTENING 行：{first}");
+
+    let id = CString::new("c-abi-bg-nav").unwrap_or_default();
+    let name = CString::new("C ABI Background Navigation").unwrap_or_default();
+    let url = CString::new(format!("ws://{addr}")).unwrap_or_default();
+    let cfg = AmClientConfig {
+        app_id: id.as_ptr(),
+        app_name: name.as_ptr(),
+        instance_id: ptr::null(),
+        host_url: url.as_ptr(),
+        app_version: ptr::null(),
+        instance_title: ptr::null(),
+        token: ptr::null(),
+        launch_token: ptr::null(),
+        client_kind: 0,
+        max_concurrent_calls: 0,
+        overview_summary: ptr::null(),
+        overview_body: ptr::null(),
+        overview_locale: ptr::null(),
+    };
+    let mut client: *mut AmClient = ptr::null_mut();
+    assert_eq!(unsafe { am_client_new(&cfg, ptr::null(), &mut client) }, AmStatus::Ok);
+    unsafe {
+        assert_eq!(
+            am_client_set_navigation_handler(client, Some(notify_navigate), client.cast(), None),
+            AmStatus::Ok
+        );
+        assert_eq!(am_client_set_navigate_in_background(client, true), AmStatus::Ok);
+        assert_eq!(am_client_set_visibility(client, 1, false), AmStatus::Ok);
+        assert_eq!(am_client_start(client), AmStatus::Ok);
+    }
+
+    let out: Vec<serde_json::Value> =
+        lines.map_while(Result::ok).filter_map(|l| serde_json::from_str(&l).ok()).collect();
+    let ok = child.wait().is_ok_and(|s| s.success());
+    unsafe { am_client_free(client) };
+    assert!(ok, "fake_host 退出码非 0：{out:?}");
+    let navs: Vec<&serde_json::Value> = out.iter().filter(|l| l["type"] == "navigate").collect();
+    assert_eq!(navs.len(), 2, "{out:?}");
+    assert_eq!(
+        navs[0]["error"],
+        serde_json::json!({
+            "code": -32019, "message": "已发通知，请点开后继续",
+            "data": { "kind": "USER_ACTION_REQUIRED", "reason": "foreground", "uri": "conf://cart" }
+        })
+    );
+    assert_eq!(navs[1]["error"]["code"], serde_json::json!(-32019));
+    assert_eq!(navs[1]["error"]["data"]["reason"], serde_json::json!("foreground"));
+    assert!(navs[1]["error"]["data"].get("uri").is_none(), "{:?}", navs[1]);
 }

@@ -375,6 +375,28 @@ impl<R: Runtime> PageSink for WebviewSink<R> {
             .eval(format!("{DISPATCH_FN}&&{DISPATCH_FN}({event})"))
             .is_ok()
     }
+
+    /// @why 桌面窗口可以由 App 自行回到前台，原生运行时因此缺省 `navigate_in_background = true`；不在这里还原的话，
+    ///   后台时的导航会在看不见的窗口里完成。移动端（Android / iOS）不能自行回到前台，缺省 `false`，不会走到这里。
+    /// @error 窗口操作失败（如窗口正在销毁）忽略：导航照常送到页面。
+    fn raise(&self) {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            let window = self.0.window();
+            let minimized = window.is_minimized().unwrap_or(false);
+            let hidden = !window.is_visible().unwrap_or(true);
+            if !minimized && !hidden {
+                return; // 已可见：不抢焦点
+            }
+            if minimized {
+                let _ = window.unminimize();
+            }
+            if hidden {
+                let _ = window.show();
+            }
+            let _ = window.set_focus();
+        }
+    }
 }
 
 struct PluginListener {

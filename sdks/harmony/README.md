@@ -105,6 +105,11 @@ mcp.tool<OrderParams, Object | null>('order.submit', {
 - `onNavigate: (request) => { router.pushUrl(...) }`（或 `mcp.setNavigationHandler(handler | null)`，在连接前设置）：Hub 调用不在当前
   页面的工具时先请求切换页面；回调在创建客户端的 ArkTS 线程上执行，返回（或 Promise 兑现）即完成，抛出
   `ToolCallError.navigationDenied(message)` 拒绝，其他异常按失败回复。
+- 后台时：需要前台的导航立即以 `USER_ACTION_REQUIRED`（`reason: "foreground"`）返回、不调用回调（`navigateInBackground`
+  缺省 `false`：应用不能自行回到前台；置为 `true`（选项或 `mcp.setNavigateInBackground(true)`）时交给回调，回调可抛出
+  `ToolCallError.userActionRequired(message, { reason: 'foreground', uri })`，如发通知请用户点开）。后台也要能用的能力做成
+  `app` 工具，或给 `view` 工具声明 `backgroundTool`（同一 App 中一个 `app` 工具的名称，App 在后台时 Hub 改调它）；
+  详见 spec/protocol.md 3.4「后台与前台」。
 
 ### 线程
 

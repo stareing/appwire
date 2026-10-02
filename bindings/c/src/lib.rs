@@ -140,6 +140,8 @@ pub struct AmToolOptions {
     pub page: *const c_char,
     /// v14：`AmToolSurface`（0 = APP，1 = VIEW）。
     pub surface: c_int,
+    /// v15：App 在后台时代替本工具（view 工具）调用的同 App app 工具本地名；NULL = 未声明。
+    pub background_tool: *const c_char,
 }
 
 /// v9：`am_call_complete_ex` 的调用结果（带 `struct_size`，按调用方给出的大小读取；`status` 用 c_int 接收）。
@@ -480,6 +482,10 @@ unsafe fn read_tool_options(p: *const AmToolOptions) -> FfiResult<ToolOptions> {
             other => return Err(FfiError::invalid_argument(format!("options->surface 取值无效：{other}"))),
         };
     }
+    if has(offset_of!(AmToolOptions, background_tool)) {
+        let text = unsafe { std::ptr::addr_of!((*p).background_tool).read() };
+        options.background_tool = unsafe { opt_str(text, "options->background_tool") }?.map(str::to_owned);
+    }
     Ok(options)
 }
 
@@ -804,6 +810,16 @@ pub unsafe extern "C" fn am_client_set_navigation_handler(
         let c = unsafe { client_ref(client) }?;
         let handler = handler.map(|f| Arc::new(CNavigationHandler { f, user_data: ud }) as Arc<dyn app_mcp_native::NavigationHandler>);
         c.shared.client()?.set_navigation_handler(handler);
+        Ok(())
+    })
+}
+
+/// v15：App 在后台（Hidden / Frozen）时是否仍把导航请求交给导航回调；false 时直接以
+/// `USER_ACTION_REQUIRED`（reason "foreground"）回复。默认值随平台（桌面 true，移动端 false）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_client_set_navigate_in_background(client: *mut AmClient, enabled: bool) -> AmStatus {
+    guard(|| {
+        unsafe { client_ref(client) }?.shared.client()?.set_navigate_in_background(enabled);
         Ok(())
     })
 }
@@ -1657,6 +1673,20 @@ pub unsafe extern "C" fn am_navigate_fail(navigate: *mut AmNavigate, message: *c
 pub unsafe extern "C" fn am_navigate_deny(navigate: *mut AmNavigate, message: *const c_char) -> AmStatus {
     let message = unsafe { lossy_str(message) }.unwrap_or_default();
     unsafe { finish_navigate(navigate, |n| n.handle.deny(&message)) }
+}
+
+/// v15：以 `USER_ACTION_REQUIRED` 结束导航并消费 `navigate`；reason / uri 为 NULL 时不出现在错误的 data 中。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_navigate_fail_user_action(
+    navigate: *mut AmNavigate,
+    message: *const c_char,
+    reason: *const c_char,
+    uri: *const c_char,
+) -> AmStatus {
+    let message = unsafe { lossy_str(message) }.unwrap_or_default();
+    let reason = unsafe { lossy_str(reason) };
+    let uri = unsafe { lossy_str(uri) };
+    unsafe { finish_navigate(navigate, |n| n.handle.fail_user_action(&message, reason.as_deref(), uri.as_deref())) }
 }
 
 #[cfg(test)]

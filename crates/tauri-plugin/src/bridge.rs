@@ -15,7 +15,9 @@
 //!
 //! 导航（第 4c 项，spec/protocol.md 3.4，[`Bridge::enable_page_navigation`]）：页面 `navigation.set {enabled}` 声明本页处理导航
 //! （最近一次开启的 WebView 为目标），Host 的 `app/navigate` 以事件 `navigate {navId, page, params?}` 送到该页，页面以
-//! `navigate.result {navId, ok, kind?, message?}` 回复。消息类型定义在 `@app-mcp/web`（packages/web/src/electron-bridge.ts
+//! `navigate.result {navId, ok, kind?, message?, details?}` 回复（`kind` 为 `USER_ACTION_REQUIRED` 时 `details` 带
+//! `{reason?, uri?}`）。转给页面之前先把该页所在窗口带到前台（[`PageSink::raise`]），因此桌面上 App 在后台时导航仍交给页面
+//! （原生运行时的平台缺省 `navigate_in_background`：桌面 `true`、Android / iOS `false`）。消息类型定义在 `@app-mcp/web`（packages/web/src/electron-bridge.ts
 //! `NavigationOp` / `NavigateEvent`），协议版本不变；页面侧由桥接客户端的 `setNavigationHandler` / `attachBridgeNavigation` 处理。
 //!
 //! 本模块与 Tauri 无关（只依赖 [`PageSink`]），便于不启动 WebView 测试。
@@ -39,6 +41,9 @@ pub const BRIDGE_VERSION: u32 = 1;
 /// 把事件交给页面。返回 `false` 表示页面已不可达（会话随之注销）。
 pub(crate) trait PageSink: Send + Sync + 'static {
     fn deliver(&self, event: &Value) -> bool;
+    /// 把页面所在窗口带到前台（最小化则还原、隐藏则显示，并聚焦；已可见时不动）：Host 的导航请求送到页面之前调用（spec/protocol.md 3.4）。
+    /// 缺省什么也不做（移动端、测试）。
+    fn raise(&self) {}
 }
 
 /// 判断某个 WebView（按 label）是否允许登记。
@@ -73,6 +78,9 @@ struct ToolSpecMessage {
     /// 所在页面名；`tool.update` 时缺省表示清除。
     #[serde(default)]
     page: Option<String>,
+    /// 后台替代：同一 App 中一个 `app` 工具的局部名（spec/protocol.md 3.4）；`tool.update` 时缺省表示清除。
+    #[serde(default, rename = "backgroundTool")]
+    background_tool: Option<String>,
 }
 
 impl ToolSpecMessage {
@@ -83,6 +91,7 @@ impl ToolSpecMessage {
             output_schema_json: self.output_schema.take().map(|s| s.to_string()),
             surface: self.surface,
             page: self.page.take(),
+            background_tool: self.background_tool.take(),
         };
         (self.into_spec(name), options)
     }
@@ -194,7 +203,8 @@ enum PageOp {
     /// 本页开启 / 关闭导航处理（[`Bridge::enable_page_navigation`]）。
     #[serde(rename = "navigation.set")]
     NavigationSet { enabled: bool },
-    /// 页面对一次 `navigate` 事件的回复：`ok: false` 时 `kind` 为 `NAVIGATION_DENIED` 则拒绝，其他按失败。
+    /// 页面对一次 `navigate` 事件的回复：`ok: false` 时 `kind` 为 `NAVIGATION_DENIED` 则拒绝、`USER_ACTION_REQUIRED`
+    /// 则需要用户操作（`details` 的 `reason` / `uri`），其他按失败。
     #[serde(rename = "navigate.result")]
     NavigateResult {
         #[serde(rename = "navId")]
@@ -204,6 +214,8 @@ enum PageOp {
         kind: Option<String>,
         #[serde(default)]
         message: Option<String>,
+        #[serde(default)]
+        details: Option<Value>,
     },
 }
 
@@ -510,8 +522,9 @@ impl Bridge {
                 self.sessions.end_page(label);
                 reply_ok(None)
             }
-            PageOp::NavigateResult { nav_id, ok, kind, message } => {
-                self.sessions.finish_navigation(nav_id, ok, kind.as_deref(), message.as_deref());
+            PageOp::NavigateResult { nav_id, ok, kind, message, details } => {
+                let failure = NavigationFailure { kind: kind.as_deref(), message: message.as_deref(), details: details.as_ref() };
+                self.sessions.finish_navigation(nav_id, ok, failure);
                 reply_ok(None)
             }
             PageOp::NavigationSet { enabled } => match self.sessions.set_navigation_target(label, window, enabled, sink) {
@@ -546,6 +559,13 @@ impl Drop for Bridge {
     fn drop(&mut self) {
         self.sessions.detach_client();
     }
+}
+
+/// 页面 `navigate.result`（`ok: false`）的失败字段，均未经校验。
+struct NavigationFailure<'a> {
+    kind: Option<&'a str>,
+    message: Option<&'a str>,
+    details: Option<&'a Value>,
 }
 
 /// 处理导航的页面（[`Sessions::set_navigation_target`]）与等待其回复的导航。
@@ -717,6 +737,7 @@ impl Sessions {
         if let Some(params) = request.params_json().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
             event["params"] = params;
         }
+        target.sink.raise();
         if !target.sink.deliver(&event) {
             // 页面已不可达：结束其导航处理（含本次）。
             self.end_navigation(|p| p.label == target.page.label);
@@ -724,14 +745,16 @@ impl Sessions {
     }
 
     /// 页面回复一次导航；未知或已结束的 navId 忽略。
-    fn finish_navigation(&self, nav_id: u64, ok: bool, kind: Option<&str>, message: Option<&str>) {
+    fn finish_navigation(&self, nav_id: u64, ok: bool, failure: NavigationFailure<'_>) {
         let Some((_, request)) = lock(&self.navigation).pending.remove(&nav_id) else {
             return;
         };
-        let message = message.unwrap_or("页面导航失败");
-        let _ = match (ok, kind) {
+        let message = failure.message.unwrap_or("页面导航失败");
+        let detail = |key: &str| failure.details.and_then(|d| d.get(key)).and_then(Value::as_str);
+        let _ = match (ok, failure.kind) {
             (true, _) => request.complete(),
             (false, Some("NAVIGATION_DENIED")) => request.deny(message),
+            (false, Some("USER_ACTION_REQUIRED")) => request.fail_user_action(message, detail("reason"), detail("uri")),
             (false, _) => request.fail(message),
         };
     }
@@ -1186,5 +1209,21 @@ impl CancelListener for PageCancel {
         if let Some(session) = self.session.upgrade() {
             session.on_cancel(&self.call_id, reason);
         }
+    }
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use super::*;
+
+    /// 页面工具定义的 `backgroundTool`（spec/protocol.md 3.4）进入原生选项；缺省（`tool.update` 时即清除）为 `None`。
+    #[test]
+    fn tool_spec_background_tool() {
+        let parse = |v: Value| serde_json::from_value::<ToolSpecMessage>(v).map(|m| m.into_parts("cart.checkout".into()).1);
+        let options = parse(json!({ "description": "结算", "surface": "view", "backgroundTool": "cart.checkoutBg" }));
+        assert_eq!(options.ok().and_then(|o| o.background_tool).as_deref(), Some("cart.checkoutBg"));
+        let options = parse(json!({ "description": "结算" }));
+        assert_eq!(options.ok().map(|o| o.background_tool), Some(None));
+        assert!(parse(json!({ "description": "结算", "backgroundTool": 1 })).is_err());
     }
 }

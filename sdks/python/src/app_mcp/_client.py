@@ -618,9 +618,25 @@ def _finish_navigate(request: ffi.Navigate, deny: str | None = None, fail: str |
         pass  # 已完成或连接已断开：回复被丢弃（spec/protocol.md 3.4）
 
 
-def _fail_navigate(request: ffi.Navigate, kind: str, message: str, _details: Any = None) -> None:
+def _user_action_fields(details: Any) -> tuple[str | None, str | None]:
+    """``USER_ACTION_REQUIRED`` 详情中的字符串 ``reason`` / ``uri``（缺失或不是字符串时为 ``None``）。"""
+    if not isinstance(details, dict):
+        return None, None
+    reason, uri = details.get("reason"), details.get("uri")
+    return (reason if isinstance(reason, str) else None, uri if isinstance(uri, str) else None)
+
+
+def _fail_navigate(request: ffi.Navigate, kind: str, message: str, details: Any = None) -> None:
+    """导航回调抛出的异常（已映射为错误类别）→ 回复：``NAVIGATION_DENIED`` 拒绝，``USER_ACTION_REQUIRED`` 需要用户操作
+    （带 reason / uri），其他按失败（``NAVIGATION_FAILED``）。"""
     if kind == "NAVIGATION_DENIED":
         _finish_navigate(request, deny=message)
+    elif kind == "USER_ACTION_REQUIRED":
+        reason, uri = _user_action_fields(details)
+        try:
+            request.fail_user_action(message, reason, uri)
+        except ffi.AppMcpError:
+            pass  # 已完成或连接已断开：回复被丢弃（spec/protocol.md 3.4）
     else:
         _finish_navigate(request, fail=message)
 
@@ -721,11 +737,12 @@ class ToolHandle:
         output_schema: dict[str, Any] | str | None | _Unset = _UNSET,
         surface: SurfaceLike | None | _Unset = _UNSET,
         page: str | None | _Unset = _UNSET,
+        background_tool: str | None | _Unset = _UNSET,
     ) -> None:
         """修改定义：未给出的字段保持不变；显式传 ``None`` 清除该声明（恢复注册时的缺省）。
 
         ``input_schema=None`` 为无参数，``risk=None`` 为缺省风险，``surface=None`` 为 ``"app"``，``title`` /
-        ``activation`` / ``annotations`` / ``output_schema`` / ``page`` 为 ``None`` 时清除声明。``description`` 不可清除。
+        ``activation`` / ``annotations`` / ``output_schema`` / ``page`` / ``background_tool`` 为 ``None`` 时清除声明。``description`` 不可清除。
         """
         s = self._spec
         spec = _replace_spec(
@@ -739,6 +756,7 @@ class ToolHandle:
             output_schema_json=s.output_schema_json if output_schema is _UNSET else _schema_json(output_schema),
             surface=s.surface if surface is _UNSET else _surface(surface),
             page=s.page if page is _UNSET else page,
+            background_tool=s.background_tool if background_tool is _UNSET else background_tool,
         )
         self._inner.update(spec)
         self._spec = spec
@@ -761,6 +779,7 @@ def _replace_spec(spec: ffi.ToolSpec, **changes: Any) -> ffi.ToolSpec:
         "output_schema_json": spec.output_schema_json,
         "surface": spec.surface,
         "page": spec.page,
+        "background_tool": spec.background_tool,
     }
     fields.update(changes)
     return ffi.ToolSpec(**fields)
@@ -809,6 +828,7 @@ class _Registrar:
         output_schema: dict[str, Any] | str | None = None,
         surface: SurfaceLike | None = None,
         page: str | None = None,
+        background_tool: str | None = None,
     ) -> ToolHandle:
         """注册函数为工具，返回句柄。``input_schema`` 缺省时从函数签名生成。
 
@@ -818,7 +838,8 @@ class _Registrar:
 
         ``surface``：``"app"``（缺省，不依赖界面）/ ``"view"``（只在所在界面可见且在最上层时启用，spec/protocol.md 3.4；
         Qt 可用 :func:`app_mcp.qt.bind_view_tool` 按 show / hide 切换）；``page``：所在页面名，Hub 在该工具未注册时
-        据此导航（:meth:`AppMcp.set_navigation_handler`）。
+        据此导航（:meth:`AppMcp.set_navigation_handler`）；``background_tool``：后台替身（只对 ``"view"`` 工具有意义），
+        同 App 内一个 ``"app"`` 工具的名称，App 在后台、本工具不可调用时 Hub 改调该工具（spec/protocol.md 3.4「后台与前台」）。
         """
         binder = ArgumentBinder(fn, ToolContext)
         if input_schema is None:
@@ -837,6 +858,7 @@ class _Registrar:
             output_schema_json=_schema_json(output_schema),
             surface=_surface(surface),
             page=page,
+            background_tool=background_tool,
         )
         adapter = _ToolAdapter(_Registration(self._owner, fn, binder))
         return ToolHandle(self._raw().register_tool(spec, adapter), spec)
@@ -855,6 +877,7 @@ class _Registrar:
         output_schema: dict[str, Any] | str | None = None,
         surface: SurfaceLike | None = None,
         page: str | None = None,
+        background_tool: str | None = None,
     ) -> Callable[[F], F]:
         """装饰器形式的 :meth:`add_tool`。返回原函数；句柄可用 ``client.tools[name]`` 取得。"""
 
@@ -872,6 +895,7 @@ class _Registrar:
                 output_schema=output_schema,
                 surface=surface,
                 page=page,
+                background_tool=background_tool,
             )
             self._owner.tools[handle.name] = handle
             return fn
@@ -966,7 +990,8 @@ class AppMcp(_Registrar):
 
     ``lifecycle`` 为空时 ``persistent``（不休眠）；``heartbeat``：``"auto"``（默认，按传输：本地 IPC / 桌面回环不发）/
     ``"always"`` / ``"off"``（spec/lifecycle.md 第 11 节 A3）；``call_dedup``：调用去重（:class:`CallDedup`，
-    缺省 300 秒、64 条，``CallDedup.OFF`` 关闭）。
+    缺省 300 秒、64 条，``CallDedup.OFF`` 关闭）；``navigate_in_background``：后台时是否仍把导航交给导航回调
+    （:meth:`set_navigate_in_background`），``None`` 取平台默认（桌面为 ``True``）。
     """
 
     def __init__(
@@ -992,6 +1017,7 @@ class AppMcp(_Registrar):
         on_idle_exit: Callable[[], None] | None = None,
         heartbeat: Literal["auto", "always", "off"] | ffi.HeartbeatMode = "auto",
         call_dedup: CallDedup | None = None,
+        navigate_in_background: bool | None = None,
     ) -> None:
         self._owner = self
         self._on_idle_exit = on_idle_exit
@@ -1038,6 +1064,8 @@ class AppMcp(_Registrar):
             call_dedup=None if call_dedup is None else call_dedup._ffi(),
         )
         self._inner = ffi.AppMcpClient(config, _ClientListener(self))
+        if navigate_in_background is not None:
+            self._inner.set_navigate_in_background(navigate_in_background)
         self._state: ffi.StateInfo = self._inner.state()
 
     def _raw(self) -> ffi.AppMcpClient:
@@ -1154,7 +1182,9 @@ class AppMcp(_Registrar):
         """设置导航回调（Host 的 ``app/navigate``，spec/protocol.md 3.4）；``None`` 清除（之后的导航请求以
         ``NAVIGATION_FAILED`` 回复）。
 
-        ``fn(page, params)`` 切换到页面后正常返回即完成；抛 :class:`NavigationDenied` 拒绝；其他异常按失败回复。
+        ``fn(page, params)`` 切换到页面后正常返回即完成；抛 :class:`NavigationDenied` 拒绝；抛
+        :meth:`ToolCallError.user_action_required` 按需要用户操作回复（如 App 在后台、已发通知请用户点开：
+        ``reason=UserActionReason.FOREGROUND``、``uri`` 为该页面的 App 内入口）；其他异常按失败回复。
         同步函数经 ``dispatcher`` 执行（传 :func:`~app_mcp.qt_dispatcher` / :func:`~app_mcp.tk_dispatcher` 即在 UI 线程），
         ``async`` 函数在事件循环上执行；``dispatch_timeout`` 内未开始执行时以失败回复。
 
@@ -1166,6 +1196,12 @@ class AppMcp(_Registrar):
         """装饰器形式的 :meth:`set_navigation_handler`。"""
         self.set_navigation_handler(fn)
         return fn
+
+    def set_navigate_in_background(self, enabled: bool) -> None:
+        """后台时是否仍把导航请求交给导航回调（spec/protocol.md 3.4「后台与前台」），随时生效。为 ``False`` 时
+        App 不可见（``hidden`` / ``frozen``）收到的导航立即以 ``USER_ACTION_REQUIRED``（reason ``foreground``）回复，
+        不调用回调。缺省取平台默认（桌面为 ``True``）。"""
+        self._inner.set_navigate_in_background(enabled)
 
     def set_visibility(self, visibility: str | ffi.Visibility, focused: bool = True) -> None:
         if isinstance(visibility, str):

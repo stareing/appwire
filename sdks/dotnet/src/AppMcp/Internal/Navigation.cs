@@ -29,6 +29,14 @@ internal sealed unsafe class PendingNavigate(nint navigate)
         else NativeMethods.am_navigate_fail(n, msg);
     }
 
+    public void FailUserAction(string message, string? reason, string? uri)
+    {
+        var n = Take();
+        if (n == 0) return;
+        using var strings = new Utf8Strings();
+        NativeMethods.am_navigate_fail_user_action(n, strings.AddPtr(message), strings.AddPtr(reason), strings.AddPtr(uri));
+    }
+
     internal static void FailRaw(nint navigate, string message) => new PendingNavigate(navigate).Fail(message);
 }
 
@@ -54,6 +62,10 @@ internal sealed class NavigationInvoker(Func<NavigationRequest, Task> handler, S
         catch (NavigationDeniedException e)
         {
             pending.Deny(e.Message);
+        }
+        catch (UserActionRequiredException e)
+        {
+            pending.FailUserAction(e.Message, e.Reason, e.Uri);
         }
         catch (Exception e)
         {

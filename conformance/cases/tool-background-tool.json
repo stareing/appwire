@@ -1,0 +1,27 @@
+{
+  "id": "tool-background-tool",
+  "title": "view 工具的 backgroundTool 声明原样到达 Host；缺省不序列化；更新可清除",
+  "spec": ["protocol.md 3.4"],
+  "requires": ["surface", "backgroundTool", "mutate"],
+  "app": {
+    "tools": [
+      { "name": "cart.add", "description": "加入购物车（后台可用）", "handler": { "return": {} } },
+      { "name": "cart.viewAdd", "description": "在当前页加入购物车", "surface": "view", "page": "cart",
+        "backgroundTool": "cart.add", "handler": { "return": {} } },
+      { "name": "home.clear", "description": "清除声明", "handler": {
+          "mutate": [{ "op": "update", "name": "cart.viewAdd", "set": { "backgroundTool": null } }] } }
+    ]
+  },
+  "host": { "ops": [{ "catalog": 0 }, { "invoke": "home.clear" }, { "catalog": 200 }] },
+  "expect": [
+    { "type": "catalog", "tools": {
+        "cart.add": { "backgroundTool": { "$absent": true } },
+        "cart.viewAdd": { "surface": "view", "page": "cart", "backgroundTool": "cart.add" },
+        "home.clear": { "$any": true } } },
+    { "type": "invoke", "name": "home.clear" },
+    { "type": "catalog", "tools": {
+        "cart.add": { "$any": true },
+        "cart.viewAdd": { "surface": "view", "page": "cart", "backgroundTool": { "$absent": true } },
+        "home.clear": { "$any": true } } }
+  ]
+}

@@ -74,6 +74,8 @@ fn tool_names(hub: &Hub, app_id: &str) -> Vec<String> {
 struct FakePage {
     events: Mutex<Vec<Value>>,
     gone: AtomicBool,
+    /// [`PageSink::raise`] 的调用次数。
+    raised: std::sync::atomic::AtomicUsize,
 }
 
 impl FakePage {
@@ -105,6 +107,10 @@ impl PageSink for Sink {
             .unwrap_or_else(|p| p.into_inner())
             .push(event.clone());
         true
+    }
+
+    fn raise(&self) {
+        self.0.raised.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -1000,6 +1006,46 @@ async fn navigation_is_forwarded_to_page() {
     assert!(message.contains("没有页面处理导航"), "{message}");
     // 迟到 / 未知的回复：忽略
     assert_eq!(fx.op(&page, "main", "main", json!({ "op": "navigate.result", "navId": 999, "ok": true })), json!({ "ok": true }));
+    drop(fx.bridge);
+    shutdown(fx.hub).await;
+}
+
+/// 页面回调以 USER_ACTION_REQUIRED 回复（如已发通知请用户点开）：原样带 `reason` / `uri` 到 Hub；转给页面前先把窗口带到前台。
+/// 页面工具的 `backgroundTool` 随注册转到原生客户端。
+#[tokio::test(flavor = "multi_thread")]
+async fn navigation_user_action_and_raise() {
+    let fx = Fixture::new("nav-ua", None).await;
+    fx.bridge.enable_page_navigation();
+    let page = Arc::new(FakePage::default());
+    fx.op(&page, "main", "main", json!({ "op": "hello" }));
+    let checkout = json!({ "op": "tool.register", "id": 1, "name": "cart.checkout",
+        "spec": { "description": "结算", "surface": "view", "page": "cart", "backgroundTool": "cart.checkoutBg" } });
+    assert_eq!(fx.op(&page, "main", "main", checkout), json!({ "ok": true }));
+    assert_eq!(fx.op(&page, "main", "main", json!({ "op": "navigation.set", "enabled": true })), json!({ "ok": true }));
+    fx.connected("nav-ua").await;
+    eventually("Hub 看到页面工具", || tool_names(&fx.hub, "nav-ua") == vec!["cart.checkout"]).await;
+    fx.op(&page, "main", "main", json!({ "op": "tool.dispose", "id": 1 }));
+    eventually("工具注销", || tool_names(&fx.hub, "nav-ua").is_empty()).await;
+
+    let hub = fx.hub.clone();
+    let pending = tokio::spawn(async move { hub.call_tool(CallRequest::new("nav-ua.cart.checkout", json!({}))).await });
+    let nav = wait_event(&page, "navigate").await;
+    assert_eq!(page.raised.load(Ordering::SeqCst), 1);
+    fx.op(
+        &page,
+        "main",
+        "main",
+        json!({ "op": "navigate.result", "navId": nav["navId"], "ok": false, "kind": "USER_ACTION_REQUIRED",
+                "message": "已发通知，请点开", "details": { "reason": "foreground", "uri": "shop://cart" } }),
+    );
+    let err = match pending.await.expect("join") {
+        Ok(out) => out.result.expect_err("调用应失败"),
+        Err(e) => panic!("应为工具错误：{e:?}"),
+    };
+    assert_eq!(err.kind, ErrorKind::UserActionRequired, "{}", err.message);
+    assert!(err.message.contains("已发通知"), "{}", err.message);
+    let details = err.details.expect("带详情");
+    assert_eq!((details["reason"].as_str(), details["uri"].as_str()), (Some("foreground"), Some("shop://cart")));
     drop(fx.bridge);
     shutdown(fx.hub).await;
 }

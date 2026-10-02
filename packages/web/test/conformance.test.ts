@@ -17,6 +17,7 @@ import { pathToFileURL } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
   appConfig,
+  appVisibility,
   caseFiles,
   describeFailure,
   findFakeHost,
@@ -35,7 +36,7 @@ const SDK = 'web'
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
-  'surface', 'navigation',
+  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation',
 ]
 const PAGE_URL = 'http://localhost:5173/conformance'
 const WAKE_PREFIX = 'app-mcp-wake:'
@@ -65,12 +66,37 @@ class FakePage extends EventTarget {
   }
 }
 
+/**
+ * 用例给出 `app.visibility` 时的最小文档：只提供可见性（`visibilityState`、`hasFocus`、事件），`freeze` 用 Page Lifecycle
+ * 事件进入。未给出时不传文档（与之前相同）。
+ */
+class FakeDocument extends EventTarget {
+  readonly visibilityState: 'visible' | 'hidden'
+  constructor(visibility: 'visible' | 'hidden' | 'frozen') {
+    super()
+    this.visibilityState = visibility === 'visible' ? 'visible' : 'hidden'
+  }
+  hasFocus(): boolean {
+    return false
+  }
+}
+
+function fakeDocument(visibility: 'visible' | 'hidden' | 'frozen' | undefined): Document | undefined {
+  if (!visibility) return undefined
+  const doc = new FakeDocument(visibility)
+  return doc as unknown as Document
+}
+
 function startApp(loadCore: () => Promise<CoreFactory>, testCase: ConformanceCase, url: string): Session {
   const page = new FakePage()
+  const visibility = appVisibility(testCase)
+  const document = fakeDocument(visibility)
   const app = createDriver(
     { appId: 'conf', appName: 'Conformance', hostUrl: url, sharedConnection: false, logger: silentLogger, ...appConfig(testCase) },
-    { loadCore, window: page as unknown as Window },
+    { loadCore, window: page as unknown as Window, ...(document && { document }) },
   )
+  // frozen：Page Lifecycle 的 freeze 事件（visibilityState 已为 hidden）
+  if (visibility === 'frozen') document?.dispatchEvent(new Event('freeze'))
   const { navigate } = registerJsApp(app, testCase, ToolCallError)
   // 导航回调在 start 之前设置（核心加载时打开导航能力，首次握手即声明）
   if (navigate) app.setNavigationHandler?.(({ page, params }) => navigate(page, params))

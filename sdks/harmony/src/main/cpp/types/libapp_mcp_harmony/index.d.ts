@@ -97,6 +97,8 @@ export interface ToolSpecInit {
   surface?: string;
   /** 所在页面名；Hub 在该工具未注册时据此导航。 */
   page?: string;
+  /** 后台替代（spec/protocol.md 3.4）：同一 App 中一个 `app` 工具的局部名；本工具因 App 在后台不可调用时 Hub 改调它。 */
+  backgroundTool?: string;
 }
 
 export interface ToolAnnotationsInit {
@@ -173,6 +175,8 @@ export class Navigate {
   fail(message: string): void;
   /** 拒绝导航（`NAVIGATION_DENIED`）。 */
   deny(message: string): void;
+  /** 需要用户操作（`USER_ACTION_REQUIRED`，如 App 在后台、已发通知请用户点开）；`reason` / `uri` 缺省不出现。 */
+  failUserAction(message: string, reason?: string | null, uri?: string | null): void;
 }
 
 export class Tool {
@@ -216,6 +220,11 @@ export class NativeClient {
   setVisibility(visibility: string, focused: boolean): void;
   /** 设置导航回调（spec/protocol.md 3.4）；null 清除。握手时声明能力，应在 `start()` 之前设置。 */
   setNavigationHandler(handler: ((navigate: Navigate) => void) | null): void;
+  /**
+   * 不可见时导航请求是否仍交给导航回调（spec/protocol.md 3.4）。缺省按平台：鸿蒙 `false`（直接以 `USER_ACTION_REQUIRED`
+   * （`foreground`）回复）。随时生效，只影响之后到达的请求。
+   */
+  setNavigateInBackground(enabled: boolean): void;
   registerTool(spec: ToolSpecInit, handler: (call: Call) => void): Tool;
   registerResource(spec: ResourceSpecInit, reader: (read: Read) => void): Resource;
   createScope(name: string): Scope;

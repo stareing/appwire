@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use app_mcp_native::{
     CallDedupPolicy, CallHandle, CallResult, ErrorKind, NativeClient, NativeConfig, NavigateHandle, NavigationHandler,
     ReadHandle, ResourceOptions, ResourceReader, ResourceSpec, ToolHandle, ToolHandler, ToolOptions, ToolSpec,
+    Visibility,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -25,7 +26,7 @@ const SDK: &str = "rust";
 /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md。
 const FEATURES: &[&str] = &[
     "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
-    "readFailure", "surface", "navigation",
+    "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation",
 ];
 
 fn repo_root() -> PathBuf {
@@ -54,6 +55,7 @@ fn tool_spec(decl: &Value) -> (ToolSpec, ToolOptions) {
         output_schema_json: (!decl["outputSchema"].is_null()).then(|| decl["outputSchema"].to_string()),
         surface: parse(&decl["surface"]).unwrap_or_default(),
         page: text(&decl["page"]),
+        background_tool: text(&decl["backgroundTool"]),
     };
     (spec, options)
 }
@@ -143,6 +145,9 @@ impl NavigationHandler for CaseNavigation {
                 request.deny(msg)
             } else if let Some(msg) = spec["fail"].as_str() {
                 request.fail(msg)
+            } else if let Some(u) = spec["userAction"].as_object() {
+                let text = |k: &str| u.get(k).and_then(Value::as_str);
+                request.fail_user_action(text("message").unwrap_or_default(), text("reason"), text("uri"))
             } else if spec["failParams"].as_bool() == Some(true) {
                 request.fail(&request.params_json().unwrap_or_default())
             } else {
@@ -306,6 +311,12 @@ fn run_case(bin: &Path, path: &Path, report_dir: &Path) -> Value {
             if case["app"]["navigation"].is_object() {
                 let nav = CaseNavigation { app: Arc::downgrade(&a), pages: case["app"]["navigation"].clone() };
                 a.client.set_navigation_handler(Some(Arc::new(nav)));
+            }
+            if let Some(b) = case["app"]["config"]["navigateInBackground"].as_bool() {
+                a.client.set_navigate_in_background(b);
+            }
+            if let Some(v) = parse::<Visibility>(&case["app"]["visibility"]) {
+                a.client.set_visibility(v, false);
             }
             a.client.start();
             app = Some(a);

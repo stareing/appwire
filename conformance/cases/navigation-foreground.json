@@ -1,0 +1,30 @@
+{
+  "id": "navigation-foreground",
+  "title": "不可见且不能自行回到前台（navigateInBackground: false）：app/navigate 立即以 USER_ACTION_REQUIRED（foreground）回复，不调用导航回调",
+  "spec": ["protocol.md 3.4", "protocol.md 4"],
+  "requires": ["navigation", "backgroundNavigation", "mutate"],
+  "app": {
+    "config": { "navigateInBackground": false },
+    "visibility": "hidden",
+    "tools": [{ "name": "home.ping", "description": "首页工具", "handler": { "return": { "pong": true } } }],
+    "navigation": {
+      "cart": { "mutate": [{ "op": "register", "tool": {
+          "name": "cart.checkout", "description": "结算", "surface": "view", "page": "cart",
+          "handler": { "return": { "paid": true } } } }] }
+    }
+  },
+  "host": { "timeoutMs": 5000, "ops": [{ "navigate": "cart" }, { "navigate": "bad page!" }, { "invoke": "home.ping" }] },
+  "expect": [
+    { "type": "recv", "method": "app/hello", "params": { "capabilities": { "navigate": true } } },
+    { "type": "navigate", "name": "cart", "error": { "code": -32019, "message": { "$contains": "cart" },
+        "data": { "kind": "USER_ACTION_REQUIRED", "reason": "foreground", "uri": { "$absent": true } } } },
+    { "type": "navigate", "name": "bad page!", "error": { "code": -32602 } },
+    { "type": "invoke", "name": "home.ping", "result": { "data": { "pong": true } } }
+  ],
+  "contains": [
+    { "type": "recv", "method": "app/visibility", "params": { "visibility": "hidden" } }
+  ],
+  "absent": [
+    { "type": "recv", "method": "tools/changed" }
+  ]
+}

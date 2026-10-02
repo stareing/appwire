@@ -764,6 +764,27 @@ impl Registry {
             .map(|i| (i.instance_id.clone(), i.conn.clone()))
     }
 
+    /// 导航目标（[`Registry::navigation_target`] 选出的实例；`strict` 时只能是 `prefer`）是否在前台：可见，或尚未上报可见性。
+    /// 没有可导航的实例时为 `false`（spec/hub-api.md 3.14 后台替代）。
+    pub fn navigation_target_in_foreground(&self, app_id: &str, prefer: Option<&str>, strict: bool) -> bool {
+        let Some(entry) = self.apps.get(app_id) else { return false };
+        entry
+            .ordered(prefer, |i| i.navigate && i.ready && i.visibility != Some(Visibility::Frozen))
+            .into_iter()
+            .next()
+            .filter(|i| !strict || Some(i.instance_id.as_str()) == prefer)
+            .is_some_and(|i| i.visibility != Some(Visibility::Hidden))
+    }
+
+    /// App 的某个工具的已知定义：已连接实例注册的（按路由优先级）→ 休眠实例快照 → 清单。不含页面目录。
+    pub fn app_tool(&self, app_id: &str, name: &str) -> Option<ToolInfo> {
+        let entry = self.apps.get(app_id)?;
+        let registered = entry.ordered(None, |i| i.tools.contains_key(name)).into_iter().next().and_then(|i| i.tools.get(name));
+        let dormant =
+            || entry.dormant_ordered(None, |d| d.tools.contains_key(name)).into_iter().next().and_then(|d| d.tools.get(name));
+        registered.or_else(dormant).or_else(|| entry.manifest.as_ref()?.tool(name)).cloned()
+    }
+
     /// App 没有已连接实例时的唤醒计划（不针对具体工具）：最近活跃（或选定）的休眠实例，否则按清单冷启动。
     /// 已有连接时为 `None`。
     pub fn wake_plan_app(&self, app_id: &str, selected: Option<&str>) -> Option<WakePlan> {

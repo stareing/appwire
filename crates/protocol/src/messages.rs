@@ -488,6 +488,10 @@ pub struct ToolInfo {
     /// 工具所在页面（页面目录的键，[`NavigateParams::page`]）；Hub 据此在工具未注册时先导航再派发。未声明时不序列化。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<String>,
+    /// 后台替代（spec/protocol.md 3.4）：只对 `view` 工具有意义，为同一 App 中一个 `app` 工具的局部名。该工具因 App 在后台
+    /// 而不可调用时，Hub 改为调用这个工具（spec/hub-api.md 3.14）。未声明时不序列化（`toolsHash` 不变）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_tool: Option<String>,
 }
 
 /// 工具对界面的依赖（spec/protocol.md 3.4）。
@@ -1056,6 +1060,11 @@ mod tests {
         let t = ToolInfo { surface: ToolSurface::View, page: Some("cart".into()), ..t };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!((v["surface"].as_str(), v["page"].as_str()), (Some("view"), Some("cart")));
+        assert_eq!(serde_json::from_value::<ToolInfo>(v).unwrap(), t);
+        assert!(serde_json::to_value(&t).unwrap().get("backgroundTool").is_none());
+        let t = ToolInfo { background_tool: Some("cart.add".into()), ..t };
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!(v["backgroundTool"], "cart.add");
         assert_eq!(serde_json::from_value::<ToolInfo>(v).unwrap(), t);
 
         // 能力协商：缺省不序列化

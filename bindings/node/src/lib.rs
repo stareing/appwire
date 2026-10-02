@@ -425,6 +425,8 @@ pub struct ToolSpecInit {
     pub surface: Option<String>,
     /// 所在页面名；Hub 在该工具未注册时据此导航。
     pub page: Option<String>,
+    /// 后台替代（spec/protocol.md 3.4）：同一 App 中一个 `app` 工具的局部名；本工具因 App 在后台不可调用时 Hub 改调它。
+    pub background_tool: Option<String>,
 }
 
 /// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。
@@ -506,6 +508,7 @@ impl ToolSpecInit {
             output_schema_json: self.output_schema_json.take(),
             surface: self.surface.take().as_deref().map(parse_surface).transpose()?.unwrap_or_default(),
             page: self.page.take(),
+            background_tool: self.background_tool.take(),
         };
         Ok((self.into_spec()?, options))
     }
@@ -819,6 +822,13 @@ impl Navigate {
     pub fn deny(&self, message: String) -> Result<(), String> {
         self.inner.deny(&message).map_err(to_js_error)
     }
+
+    /// 需要用户操作（`USER_ACTION_REQUIRED`）：如 App 在后台、已发通知请用户点开（`reason` 常为 `foreground`，
+    /// `uri` 为 App 内入口）。
+    #[napi]
+    pub fn fail_user_action(&self, message: String, reason: Option<String>, uri: Option<String>) -> Result<(), String> {
+        self.inner.fail_user_action(&message, reason.as_deref(), uri.as_deref()).map_err(to_js_error)
+    }
 }
 
 /// 已注册的工具。
@@ -1002,6 +1012,13 @@ impl JsNativeClient {
     pub fn set_navigation_handler(&self, handler: Option<WeakTsfn<Navigate>>) {
         let handler = handler.map(|tsfn| Arc::new(JsNavigationHandler { tsfn }) as Arc<dyn native::NavigationHandler>);
         self.inner.set_navigation_handler(handler);
+    }
+
+    /// 不可见时导航请求是否仍交给导航回调（spec/protocol.md 3.4）。缺省按平台：桌面 `true`，Android / iOS / 鸿蒙 `false`
+    /// （直接以 `USER_ACTION_REQUIRED`（`foreground`）回复）。随时生效，只影响之后到达的请求。
+    #[napi]
+    pub fn set_navigate_in_background(&self, enabled: bool) {
+        self.inner.set_navigate_in_background(enabled);
     }
 
     /// 停止：取消所有调用、断开连接、不再重连，并释放监听器的 ThreadsafeFunction。

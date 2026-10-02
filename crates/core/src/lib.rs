@@ -93,6 +93,11 @@ pub struct ClientConfig {
     /// [`Event::Navigate`]。默认 `false`：不声明，收到的导航请求直接以 `NAVIGATION_FAILED`（`unsupported`）回复。
     /// 驱动层在 App 设置了导航回调时置为 `true`（[`Client::set_navigation`]）。
     pub navigation: bool,
+    /// 实例不可见（[`Visibility::Hidden`] / [`Visibility::Frozen`]）时导航请求是否仍交给导航回调（spec/protocol.md 3.4）。
+    /// 默认 `false`：直接以 `USER_ACTION_REQUIRED`（`reason: "foreground"`）回复、不产生 [`Event::Navigate`]——平台不允许
+    /// App 自行回到前台（Android 10+、iOS、浏览器标签页）时不必等到超时。能把自己的窗口带到前台的平台（桌面）或要自行处理
+    /// 后台导航的 App（如发通知请用户点开）由驱动层 / App 置为 `true`（[`Client::set_navigate_in_background`]）。
+    pub navigate_in_background: bool,
 }
 
 impl ClientConfig {
@@ -126,6 +131,7 @@ impl ClientConfig {
             transport: TransportKind::Unknown,
             call_dedup: CallDedupPolicy::default(),
             navigation: false,
+            navigate_in_background: false,
         }
     }
 }
@@ -280,6 +286,9 @@ pub struct ToolDef {
     pub surface: ToolSurface,
     /// 所在页面（`[a-zA-Z0-9_.-]{1,64}`）；Hub 在该工具未注册时据此先导航。`None` = 未声明。
     pub page: Option<String>,
+    /// 后台替代（spec/protocol.md 3.4）：同一 App 中一个 `app` 工具的局部名；本工具因 App 在后台不可调用时 Hub 改调它。
+    /// 只对 `View` 工具有意义。`None` = 未声明。
+    pub background_tool: Option<String>,
     /// 为 false 时不同步给 Host（等同于从 Host 的角度看不存在）。
     pub enabled: bool,
     /// 所属 scope；scope 被销毁时工具自动注销。
@@ -302,6 +311,8 @@ pub struct ToolUpdate {
     pub surface: Option<ToolSurface>,
     /// `Some(None)` 清除声明的页面。
     pub page: Option<Option<String>>,
+    /// `Some(None)` 清除声明的后台替代。
+    pub background_tool: Option<Option<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -826,6 +837,11 @@ impl Client {
     /// 关闭后新到的导航请求以 `NAVIGATION_FAILED`（`unsupported`）回复，进行中的不受影响。
     pub fn set_navigation(&mut self, enabled: bool) {
         self.config.navigation = enabled;
+    }
+
+    /// 不可见时导航请求是否仍交给导航回调（[`ClientConfig::navigate_in_background`]）。随时生效，只影响之后到达的请求。
+    pub fn set_navigate_in_background(&mut self, enabled: bool) {
+        self.config.navigate_in_background = enabled;
     }
 
     /// 调试用：正在执行的调用数。

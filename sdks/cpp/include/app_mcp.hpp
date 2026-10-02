@@ -32,6 +32,10 @@
 // - Client::set_navigation_handler(handler)：Host 的 app/navigate 交给 handler(Navigate)，在分发线程上调用；
 //   handler 把 Navigate 移动到 UI 线程，切换页面（新页面的工具注册之后）再 complete()，不愿切换时 deny(message)，
 //   出错时 fail(message)。handler 抛出 NavigationDenied → 拒绝，其他异常 → 失败。能力在握手时声明，start() 之前设置。
+// - 后台时（app_mcp.h v15，spec/protocol.md 3.4「后台与前台」）：需要前台的导航立即以 USER_ACTION_REQUIRED
+//   （reason "foreground"）返回；后台也要能用的能力做成 app 工具，或给 view 工具声明 ToolOptions::background_tool。
+//   Client::set_navigate_in_background(true)（桌面默认）时后台导航仍交给 handler：可自行把窗口提到前台，或
+//   Navigate::fail_user_action / 抛出 UserActionRequired 回复 USER_ACTION_REQUIRED。
 #ifndef APP_MCP_HPP
 #define APP_MCP_HPP
 
@@ -99,7 +103,8 @@ public:
     explicit NavigationDenied(const std::string& message) : std::runtime_error(message) {}
 };
 
-/// handler 中抛出，以 USER_ACTION_REQUIRED 失败（app_mcp.h v11；reader 中抛出同样带 reason / uri，v12）：需要用户本人操作后才能继续。
+/// handler 中抛出，以 USER_ACTION_REQUIRED 失败（app_mcp.h v11；reader 中抛出同样带 reason / uri，v12；导航回调中抛出同样，v15）：
+/// 需要用户本人操作后才能继续。
 /// message 面向用户；reason（见 user_action_reason）与 uri（App 内入口，如深链接）可选，缺省时不出现在错误的 data 中。
 class UserActionRequired : public ToolCallError {
 public:
@@ -248,6 +253,8 @@ struct ToolOptions {
     Surface surface = Surface::App;
     /// 所在页面名 [a-zA-Z0-9_.-]{1,64}；为空表示不声明。Hub 在该工具未注册时据此导航（v14）。
     std::optional<std::string> page;
+    /// 只对 Surface::View 有意义：App 在后台、本工具不可调用时 Hub 改调的同 App app 工具本地名；为空表示不声明（v15）。
+    std::optional<std::string> background_tool;
 };
 
 /// 内容面向谁（MCP 内容注解 audience）。
@@ -472,6 +479,7 @@ inline AmToolOptions tool_options(const ToolOptions& options, const std::optiona
     o.output_schema_json = c_str_or_null(options.output_schema_json);
     o.page = c_str_or_null(options.page);
     o.surface = static_cast<int>(options.surface);
+    o.background_tool = c_str_or_null(options.background_tool);
     return o;
 }
 
@@ -793,6 +801,13 @@ public:
     void fail(const std::string& message) { detail::check(am_navigate_fail(take(), message.c_str())); }
     /// 拒绝导航（NAVIGATION_DENIED）：如用户正在输入。message 面向模型 / 用户。
     void deny(const std::string& message) { detail::check(am_navigate_deny(take(), message.c_str())); }
+    /// 以 USER_ACTION_REQUIRED 结束导航（v15）：如 App 在后台无法自行切到前台，发通知后以 reason "foreground"
+    /// 与通知 / 深链接 uri 回复。reason 与 uri 缺省时不出现在错误的 data 中。
+    void fail_user_action(const std::string& message, const std::optional<std::string>& reason = std::nullopt,
+                          const std::optional<std::string>& uri = std::nullopt) {
+        detail::check(am_navigate_fail_user_action(take(), message.c_str(), detail::c_str_or_null(reason),
+                                                   detail::c_str_or_null(uri)));
+    }
 
 private:
     AmNavigate* take() {
@@ -862,13 +877,16 @@ inline void read_trampoline(void* ud, AmRead* raw) {
     run_with_failure(state, ops, [&] { (*static_cast<ResourceReader*>(ud))(Read(state)); });
 }
 
-/// 运行导航回调；抛出 NavigationDenied → 拒绝，其他异常 → 失败（未完成时）。
+/// 运行导航回调；抛出 NavigationDenied → 拒绝，UserActionRequired → USER_ACTION_REQUIRED，其他异常 → 失败（未完成时）。
 inline void navigate_trampoline(void* ud, AmNavigate* raw) {
     auto state = std::make_shared<Pending<AmNavigate>>(raw);
     try {
         (*static_cast<NavigationHandler*>(ud))(Navigate(state));
     } catch (const NavigationDenied& e) {
         if (AmNavigate* n = state->take()) am_navigate_deny(n, e.what());
+    } catch (const UserActionRequired& e) {
+        if (AmNavigate* n = state->take())
+            am_navigate_fail_user_action(n, e.what(), c_str_or_null(e.reason()), c_str_or_null(e.uri()));
     } catch (const std::exception& e) {
         if (AmNavigate* n = state->take()) am_navigate_fail(n, e.what());
     } catch (...) {
@@ -1120,6 +1138,9 @@ public:
     void set_visibility(Visibility visibility, bool focused) {
         detail::check(am_client_set_visibility(h_, visibility, focused));
     }
+    /// App 在后台（Hidden / Frozen）时是否仍把导航交给导航回调（app_mcp.h v15）；false 时直接以
+    /// USER_ACTION_REQUIRED（reason "foreground"）回复。默认随平台：桌面 true，Android / iOS / 鸿蒙 false。
+    void set_navigate_in_background(bool enabled) { detail::check(am_client_set_navigate_in_background(h_, enabled)); }
 
     /// 设置导航回调（spec/protocol.md 3.4）；传空的 std::function 清除（之后的导航请求以 NAVIGATION_FAILED 回复）。
     /// 能力在握手时声明：建议在 start() 之前设置，连接后才设置的在下次连接时生效。handler 在分发线程上调用。

@@ -304,6 +304,8 @@ final class AmToolOptions extends Struct {
   /// v14：AmToolSurface（0 = APP，1 = VIEW）。
   @Int32()
   external int surface;
+  /// v15：后台时代替本 view 工具调用的同 App app 工具本地名；NULL = 未声明。
+  external Pointer<Utf8> background_tool;
 }
 
 /// v9：`am_call_complete_ex` 的调用结果。
@@ -605,6 +607,13 @@ final class AppMcpBindings {
   late final am_navigate_deny = library.lookupFunction<
       Int32 Function(Pointer<AmNavigate>, Pointer<Utf8>),
       int Function(Pointer<AmNavigate>, Pointer<Utf8>)>('am_navigate_deny');
+  // v15
+  late final am_navigate_fail_user_action = library.lookupFunction<
+      Int32 Function(Pointer<AmNavigate>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>),
+      int Function(Pointer<AmNavigate>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>)>('am_navigate_fail_user_action');
+  late final am_client_set_navigate_in_background = library.lookupFunction<
+      Int32 Function(Pointer<AmClient>, Bool),
+      int Function(Pointer<AmClient>, bool)>('am_client_set_navigate_in_background');
 }
 
 /// 原生库默认文件名。

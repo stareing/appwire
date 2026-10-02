@@ -290,6 +290,9 @@ pub struct CallOutcome {
     /// App 对结果内容的标注（MCP 内容注解），原样。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<ContentAnnotations>,
+    /// App 在后台、改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed_to: Option<String>,
 }
 
 /// Hub 操作失败：[`ToolError`] 的包装（同一套错误码，spec/protocol.md §4）。
@@ -762,9 +765,11 @@ mod tests {
             state_resource: None,
             status: Default::default(),
             summary: None,
+            routed_to: None,
         };
         let v = serde_json::to_value(&o).unwrap();
         assert_eq!(v["result"]["error"]["kind"], "USER_REJECTED");
+        assert!(v.get("routedTo").is_none(), "未改调时不序列化");
         let back: CallOutcome = serde_json::from_value(v).unwrap();
         assert_eq!(back, o);
     }

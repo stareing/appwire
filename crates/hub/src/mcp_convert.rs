@@ -145,6 +145,8 @@ pub(crate) fn status_note(status: ResultStatus, state_resource: Option<&str>) ->
 pub const META_STATUS: &str = "app-mcp/status";
 /// `pending` 时可读取后续状态的资源 URI 在 `_meta` 中的键。
 pub const META_STATE_RESOURCE: &str = "app-mcp/stateResource";
+/// 改调了后台替代时实际调用的工具全名在 `_meta` 中的键（spec/hub-api.md 3.14）。
+pub const META_ROUTED_TO: &str = "app-mcp/routedTo";
 
 #[cfg(test)]
 mod tests {

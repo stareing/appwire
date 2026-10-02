@@ -752,9 +752,26 @@ App 决定（拒绝即 `NAVIGATION_DENIED`），Hub 不经 `ApprovalHandler` 另
    会话选定的实例优先）。没有 → `NAVIGATION_FAILED`（`unsupported`）。
 5. 发 `app/navigate {page}`（自动导航不带 `params`），等待回复；回复后等待该实例注册目标工具（`tools/sync` / `tools/changed`）。
    回复与等待合计受 `HubConfig::wake_timeout` 约束（超时分别为 `timeout` / `tool-not-registered`），调用取消（3.12）随时结束等待；
-   期间该连接记为有进行中的工作（`app/sleep` 被拒绝）。旧 SDK 回 `-32601` 按 `unsupported`；App 回 `NAVIGATION_*` 原样；其他
-   错误归为 `NAVIGATION_FAILED`（`error`）。错误另带 `appId`、`page`。
+   期间该连接记为有进行中的工作（`app/sleep` 被拒绝）。旧 SDK 回 `-32601` 按 `unsupported`；App 回 `NAVIGATION_*` 与
+   `USER_ACTION_REQUIRED`（实例在后台、不能自行回到前台，spec/protocol.md 3.4）原样；其他错误归为 `NAVIGATION_FAILED`（`error`）。
+   错误另带 `appId`、`page`。
 6. 路由到该实例并派发（不再审批）。
+
+**后台替代**（`ToolInfo.backgroundTool`，声明与选择指引见 spec/protocol.md 3.4「后台与前台」）：调用的工具没有实例注册、页面目录中
+有它且它是 `view` 工具、声明了 `backgroundTool`，并且替代**可用**——同一 App 中已知（已连接实例注册的、休眠快照或清单中的）、
+`surface` 为 `app`、参数符合其 inputSchema（未启用 schema-validation 时不校验）——时：
+
+- 名称解析与策略 `call` 执行点先按被调用的 view 工具执行（`hide` / `deny` 照常，不改调）。
+- **已知在后台**：将被导航的实例（第 4 步的选法）不可见，或没有可导航的已连接实例（App 休眠、未运行、不支持导航）→ 不导航，直接改调。
+- 否则照常走上面的导航；导航以 `USER_ACTION_REQUIRED`（`reason: "foreground"`）失败（SDK 发现实例不可见，或 App 的导航回调自行如此回复）
+  → 再改调（被调用工具的资源保护已计过一次）。
+- 改调 = 对替代工具执行一次 App 工具调用：策略 `call` 执行点、资源保护（3.11）、唤醒、审批（3.3，按替代工具的定义）都按替代工具执行，
+  之后与直接调用它相同（不再改调）。
+- 结果标出改调：Hub API `CallOutcome.routed_to`（`routedTo`，实际调用的工具全名，未改调时不出现）；MCP 结果 `_meta` 的
+  `app-mcp/routedTo`（同值，成功与失败结果都有）。各 Hub 绑定按 JSON 透传 `CallOutcome` 的（hub-c、hub-node、`@app-mcp/hub`）带
+  `routedTo`；hub-uniffi 的 `CallOutcome` 记录暂不含该字段（需要时经 MCP 出口或 JSON 结果获取）。
+- 替代不可用（不存在、不是 app 工具、指向自身、参数不符）时不改调、记 warn 日志，按上面的导航规则处理（在后台时即得到
+  `USER_ACTION_REQUIRED` / `foreground`）。实现：`crates/hub/src/navigate.rs`（判定）、`crates/hub/src/call.rs`（改调）。
 
 **绑定**：内置工具与结果形状对所有入口一致（MCP 出口、Hub API、各格式导出与分派、hub-c / hub-uniffi / hub-node），各绑定无需新增
 接口；导出名按全部内置工具（含 `apps.tools`、`apps.page`）计算，展开前后稳定。`HubTool` 结构不变（`surface` / `page` 暂不进入

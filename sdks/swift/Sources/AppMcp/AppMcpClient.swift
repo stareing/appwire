@@ -174,8 +174,8 @@ final class NavigationBridge: NavigationHandler, @unchecked Sendable {
     func navigate(request: Navigate) {
         let req = NavigationRequest(page: request.page(), paramsJSON: request.paramsJson())
         let body = self.body
-        _ = launch(on: .mainActor, timeout: timeout, fail: { kind, message, _ in
-            finishNavigate(request, kind == ErrorKind.navigationDenied ? .denied(message) : .failed(message))
+        _ = launch(on: .mainActor, timeout: timeout, fail: { kind, message, details in
+            finishNavigate(request, navigationFailure(kind: kind, message: message, detailsJSON: details))
         }) {
             finishNavigate(request, try await body(req))
         }
@@ -188,6 +188,8 @@ private func finishNavigate(_ request: Navigate, _ result: NavigationResult) {
         case .ok: try request.complete()
         case let .denied(message): try request.deny(message: message)
         case let .failed(message): try request.fail(message: message)
+        case let .userActionRequired(message, reason, uri):
+            try request.failUserAction(message: message, reason: reason, uri: uri)
         }
     } catch {
         // 已完成或连接已断开：回复被丢弃（spec/protocol.md 3.4）
@@ -263,7 +265,8 @@ public final class ToolHandle: @unchecked Sendable {
         annotations: ToolAnnotations? = nil,
         outputSchema: String? = nil,
         surface: ToolSurface? = nil,
-        page: String? = nil
+        page: String? = nil,
+        backgroundTool: String? = nil
     ) throws {
         try update { d in
             if let description { d.description = description }
@@ -274,6 +277,7 @@ public final class ToolHandle: @unchecked Sendable {
             if let outputSchema { d.outputSchema = outputSchema }
             if let surface { d.surface = surface }
             if let page { d.page = page }
+            if let backgroundTool { d.backgroundTool = backgroundTool }
         }
     }
 
@@ -308,14 +312,14 @@ public class ToolRegistrar: @unchecked Sendable {
     func register(
         _ name: String, _ description: String, _ inputSchema: String?, _ risk: Risk, _ activation: Activation?,
         _ title: String?, _ enabled: Bool, _ annotations: ToolAnnotations?, _ outputSchema: String?,
-        _ surface: ToolSurface, _ page: String?,
+        _ surface: ToolSurface, _ page: String?, _ backgroundTool: String?,
         _ target: ExecutionTarget, _ body: @escaping ErasedTool
     ) throws -> ToolHandle {
         let spec = ToolSpec(
             name: name, description: description, inputSchemaJson: inputSchema, risk: risk,
             activation: activation, title: title, enabled: enabled,
             annotations: annotations, outputSchemaJson: outputSchema,
-            surface: surface == .app ? nil : surface, page: page
+            surface: surface == .app ? nil : surface, page: page, backgroundTool: backgroundTool
         )
         let raw = try registerRaw(spec, ToolBridge(target: target, timeout: dispatchTimeout, body: body))
         return ToolHandle(inner: raw, spec: spec)
@@ -335,6 +339,8 @@ public class ToolRegistrar: @unchecked Sendable {
     /// `outputSchema` 为结果的 JSON Schema 文本（MCP `outputSchema`）。返回 `ToolResult` 见下方重载。
     /// `surface: .view` = 依赖界面（spec/protocol.md 3.4），只在所在界面可见时启用（SwiftUI 用 `.viewTool(handle)`）；
     /// `page` 为所在页面名，Hub 在该工具未注册时据此导航（`setNavigationHandler`）。
+    /// `backgroundTool` 为后台替身（只对 `.view` 工具有意义）：同 App 内一个 `.app` 工具的名称，App 在后台、本工具不可调用时
+    /// Hub 改调该工具（spec/protocol.md 3.4「后台与前台」）。
     @discardableResult
     public func tool<Args: Decodable, Output: Encodable>(
         _ name: String,
@@ -348,9 +354,10 @@ public class ToolRegistrar: @unchecked Sendable {
         outputSchema: String? = nil,
         surface: ToolSurface = .app,
         page: String? = nil,
+        backgroundTool: String? = nil,
         handler: @escaping @MainActor (Args, ToolContext) async throws -> Output
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             let output = try await handler(args, ctx)
             return plainResult(try encodeJSON(output))
@@ -371,9 +378,10 @@ public class ToolRegistrar: @unchecked Sendable {
         outputSchema: String? = nil,
         surface: ToolSurface = .app,
         page: String? = nil,
+        backgroundTool: String? = nil,
         handler: @escaping @MainActor (Args, ToolContext) async throws -> ToolResult<Output>
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return try await handler(args, ctx).ffi()
         }
@@ -393,9 +401,10 @@ public class ToolRegistrar: @unchecked Sendable {
         outputSchema: String? = nil,
         surface: ToolSurface = .app,
         page: String? = nil,
+        backgroundTool: String? = nil,
         handler: @escaping @MainActor (Args, ToolContext) async throws -> Void
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             try await handler(args, ctx)
             return plainResult(nil)
@@ -416,9 +425,10 @@ public class ToolRegistrar: @unchecked Sendable {
         outputSchema: String? = nil,
         surface: ToolSurface = .app,
         page: String? = nil,
+        backgroundTool: String? = nil,
         handler: @escaping @Sendable (Args, ToolContext) async throws -> Output
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, .background) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, .background) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return plainResult(try encodeJSON(try await handler(args, ctx)))
         }
@@ -438,9 +448,10 @@ public class ToolRegistrar: @unchecked Sendable {
         outputSchema: String? = nil,
         surface: ToolSurface = .app,
         page: String? = nil,
+        backgroundTool: String? = nil,
         handler: @escaping @Sendable (Args, ToolContext) async throws -> ToolResult<Output>
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, .background) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, .background) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return try await handler(args, ctx).ffi()
         }
@@ -530,6 +541,9 @@ public final class AppMcpClient: ToolRegistrar, @unchecked Sendable {
     public init(config: AppMcpConfig) throws {
         let lifecycle = config.lifecycle ?? .platformDefault
         inner = try AppMcpBindings.AppMcpClient(config: config.ffi(lifecycle: lifecycle), listener: ListenerBridge(config))
+        if let navigateInBackground = config.navigateInBackground {
+            inner.setNavigateInBackground(enabled: navigateInBackground)
+        }
         self.lifecycle = lifecycle
         super.init(dispatchTimeout: config.dispatchTimeout)
     }
@@ -567,9 +581,16 @@ public final class AppMcpClient: ToolRegistrar, @unchecked Sendable {
         inner.setVisibility(visibility: visibility, focused: focused)
     }
 
+    /// 后台时是否仍把导航请求交给导航回调（spec/protocol.md 3.4「后台与前台」），随时生效；初值见
+    /// `AppMcpConfig.navigateInBackground`。为 `false` 时 App 不可见（`.hidden` / `.frozen`）收到的导航立即以
+    /// `USER_ACTION_REQUIRED`（reason `foreground`）回复，不调用回调。
+    public func setNavigateInBackground(_ enabled: Bool) {
+        inner.setNavigateInBackground(enabled: enabled)
+    }
+
     /// 设置导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）；`nil` 清除（之后的导航请求以 `NAVIGATION_FAILED`
     /// 回复）。回调在**主 actor** 上执行，可直接改 `NavigationPath` 等界面状态；抛出的错误按失败回复
-    /// （`ToolCallError` 的类别为 `NAVIGATION_DENIED` 时按拒绝）。
+    /// （`ToolCallError` 的类别为 `NAVIGATION_DENIED` 时按拒绝，`ToolCallError.userActionRequired` 按需要用户操作）。
     ///
     /// 能力在握手时声明：建议在 `start()` 之前设置；连接后才设置的回调在下次连接（回连 / 唤醒）时生效。
     /// SwiftUI 的 `NavigationStack` 适配见 `NavigationRouter`。

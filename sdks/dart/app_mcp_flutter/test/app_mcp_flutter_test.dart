@@ -267,16 +267,20 @@ void main() {
     final enabled = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>('fake_tool_enabled');
     final view = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>), Pointer<Utf8> Function(Pointer<Utf8>)>(
         'fake_tool_view');
+    final background = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>), Pointer<Utf8> Function(Pointer<Utf8>)>(
+        'fake_tool_background');
     final stringFree =
         lib.lookupFunction<Void Function(Pointer<Utf8>), void Function(Pointer<Utf8>)>('am_string_free');
     int on(String name) => using((a) => enabled(name.toNativeUtf8(allocator: a)));
-    String? viewOf(String name) {
-      final p = using((a) => view(name.toNativeUtf8(allocator: a)));
+    String? take(Pointer<Utf8> p) {
       if (p == nullptr) return null;
       final s = p.toDartString();
       stringFree(p);
       return s;
     }
+
+    String? viewOf(String name) => take(using((a) => view(name.toNativeUtf8(allocator: a))));
+    String? backgroundOf(String name) => take(using((a) => background(name.toNativeUtf8(allocator: a))));
 
     final client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path);
     addTearDown(client.dispose);
@@ -294,6 +298,7 @@ void main() {
                 description: '结算',
                 surface: ToolSurface.view,
                 page: 'cart',
+                backgroundTool: 'cart.count',
                 handler: (a, c) => null),
             McpTool(name: 'cart.count', description: '件数（不依赖界面）', handler: (a, c) => 1),
             McpViewGate(
@@ -325,6 +330,7 @@ void main() {
     expect((on('cart.checkout'), on('cart.count'), on('cart.tab'), on('cart.routeAware')), (1, 1, 1, 1));
     expect(viewOf('cart.checkout'), '1|cart');
     expect(viewOf('cart.count'), '0|null');
+    expect((backgroundOf('cart.checkout'), backgroundOf('cart.count')), ('cart.count', null));
 
     // 推入新页面：下层 view 工具禁用，app 工具不受影响。
     unawaited(navigatorKey.currentState!.pushNamed('/orders'));

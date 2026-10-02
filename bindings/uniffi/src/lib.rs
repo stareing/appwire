@@ -691,6 +691,10 @@ pub struct ToolSpec {
     /// 所在页面名；Hub 在该工具未注册时据此导航（[`AppMcpClient::set_navigation_handler`]）。
     #[uniffi(default = None)]
     pub page: Option<String>,
+    /// 后台替身（只对 `View` 工具有意义）：同 App 内一个 `App` 工具的名称；App 在后台、本工具不可调用时
+    /// Hub 改调该工具（spec/protocol.md 3.4「后台与前台」）。为空 = 未声明。
+    #[uniffi(default = None)]
+    pub background_tool: Option<String>,
 }
 
 /// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。均可选，为空 = 未声明。
@@ -741,6 +745,7 @@ impl From<ToolSpec> for (native::ToolSpec, native::ToolOptions) {
             output_schema_json: s.output_schema_json,
             surface: s.surface.map(Into::into).unwrap_or_default(),
             page: s.page,
+            background_tool: s.background_tool,
         };
         (n, options)
     }
@@ -1137,6 +1142,18 @@ impl Navigate {
     pub fn deny(&self, message: String) -> Result<(), AppMcpError> {
         Ok(self.inner.deny(&message)?)
     }
+    /// 以 `USER_ACTION_REQUIRED` 失败完成，如 App 在后台无法自行前置界面、已发通知请用户点开
+    /// （`reason` 取 `foreground`，`uri` 为该页面的 App 内入口）；语义同 [`Call::fail_user_action`]。
+    pub fn fail_user_action(
+        &self,
+        message: String,
+        reason: Option<String>,
+        uri: Option<String>,
+    ) -> Result<(), AppMcpError> {
+        Ok(self
+            .inner
+            .fail_user_action(&message, reason.as_deref(), uri.as_deref())?)
+    }
 }
 
 /// 已注册的工具。`dispose` 幂等；丢弃对象**不会**注销工具。
@@ -1271,6 +1288,12 @@ impl AppMcpClient {
     }
     pub fn set_visibility(&self, visibility: Visibility, focused: bool) {
         self.inner.set_visibility(visibility.into(), focused)
+    }
+    /// 后台时是否仍把导航请求交给导航回调（spec/protocol.md 3.4「后台与前台」）。为 `false` 时
+    /// App 不可见（`Hidden` / `Frozen`）收到的导航立即以 `USER_ACTION_REQUIRED`（reason `foreground`）回复，
+    /// 不调用回调。缺省取平台默认：桌面为 `true`，Android / iOS / 鸿蒙为 `false`。随时生效。
+    pub fn set_navigate_in_background(&self, enabled: bool) {
+        self.inner.set_navigate_in_background(enabled)
     }
     /// 在根作用域注册工具。
     pub fn register_tool(
@@ -1427,6 +1450,7 @@ mod tests {
             output_schema_json: None,
             surface: None,
             page: None,
+            background_tool: None,
         };
         let (n, options): (native::ToolSpec, native::ToolOptions) = spec.clone().into();
         assert_eq!(n.risk, native::Risk::Write);
@@ -1443,11 +1467,13 @@ mod tests {
             output_schema_json: Some(r#"{"type":"object"}"#.into()),
             surface: Some(ToolSurface::View),
             page: Some("cart".into()),
+            background_tool: Some("cart.add_bg".into()),
             ..spec
         }
         .into();
         assert_eq!(n.risk, native::Risk::OsSensitive);
         assert_eq!((options.surface, options.page.as_deref()), (native::ToolSurface::View, Some("cart")));
+        assert_eq!(options.background_tool.as_deref(), Some("cart.add_bg"));
         let a = options.annotations.expect("annotations");
         assert_eq!((a.read_only_hint, a.idempotent_hint, a.destructive_hint), (Some(false), Some(true), None));
         assert_eq!(options.output_schema_json.as_deref(), Some(r#"{"type":"object"}"#));
@@ -1649,41 +1675,11 @@ mod tests {
     /// 端到端：资源读取失败的详情与 USER_ACTION_REQUIRED（reason / uri）经 uniffi 层到达 Host（fake_host）。
     #[test]
     fn read_and_call_failures_reach_host() {
-        use std::io::{BufRead, BufReader};
-        use std::process::{Command, Stdio};
+        let (mut child, lines, addr) = spawn_fake_host(&[
+            "--invoke", "login", "--invoke", "front", "--read", "session", "--read", "quota", "--timeout-ms", "8000",
+        ]);
 
-        let bin = native::test_support::fake_host_path().unwrap_or_else(|e| panic!("{e}"));
-        let mut child = Command::new(bin)
-            .args([
-                "--invoke", "login", "--invoke", "front", "--read", "session", "--read", "quota", "--timeout-ms", "8000",
-            ])
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("启动 fake_host");
-        let stdout = child.stdout.take().expect("stdout");
-        let mut lines = BufReader::new(stdout).lines();
-        let first = lines.next().and_then(Result::ok).unwrap_or_default();
-        let addr = first.strip_prefix("LISTENING ").unwrap_or_default().to_owned();
-        assert!(!addr.is_empty(), "LISTENING 行：{first}");
-
-        let cfg = ClientConfig {
-            app_id: "uniffi-read".into(),
-            app_name: "uniffi read".into(),
-            instance_id: None,
-            client_kind: None,
-            host_url: Some(format!("ws://{addr}")),
-            app_version: None,
-            instance_title: None,
-            token: None,
-            launch_token: None,
-            max_concurrent_calls: 1,
-            overview: None,
-            lifecycle: None,
-            connect_timeout_ms: None,
-            heartbeat: None,
-            call_dedup: None,
-        };
-        let client = AppMcpClient::new(cfg, None).expect("client");
+        let client = AppMcpClient::new(fake_host_config("uniffi-read", &addr), None).expect("client");
         let mut keep = Vec::new();
         for n in ["login", "front"] {
             let spec = ToolSpec {
@@ -1698,6 +1694,7 @@ mod tests {
                 output_schema_json: None,
                 surface: None,
                 page: None,
+                background_tool: None,
             };
             keep.push(client.register_tool(spec, Arc::new(UserActionTool)).expect("tool"));
         }
@@ -1732,6 +1729,92 @@ mod tests {
             })
         );
         assert_eq!(out[4]["error"]["data"], serde_json::json!({ "kind": "USER_REJECTED", "quota": 0 }));
+    }
+
+    /// 连接 fake_host（`addr`）的最小配置。
+    fn fake_host_config(app_id: &str, addr: &str) -> ClientConfig {
+        ClientConfig {
+            app_id: app_id.into(),
+            app_name: app_id.into(),
+            instance_id: None,
+            client_kind: None,
+            host_url: Some(format!("ws://{addr}")),
+            app_version: None,
+            instance_title: None,
+            token: None,
+            launch_token: None,
+            max_concurrent_calls: 1,
+            overview: None,
+            lifecycle: None,
+            connect_timeout_ms: None,
+            heartbeat: None,
+            call_dedup: None,
+        }
+    }
+
+    /// 启动 fake_host，返回进程、其 stdout 行迭代器与监听地址。
+    fn spawn_fake_host(
+        args: &[&str],
+    ) -> (std::process::Child, std::io::Lines<std::io::BufReader<std::process::ChildStdout>>, String) {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+
+        let bin = native::test_support::fake_host_path().unwrap_or_else(|e| panic!("{e}"));
+        let mut child = Command::new(bin).args(args).stdout(Stdio::piped()).spawn().expect("启动 fake_host");
+        let stdout = child.stdout.take().expect("stdout");
+        let mut lines = BufReader::new(stdout).lines();
+        let first = lines.next().and_then(Result::ok).unwrap_or_default();
+        let addr = first.strip_prefix("LISTENING ").unwrap_or_default().to_owned();
+        assert!(!addr.is_empty(), "LISTENING 行：{first}");
+        (child, lines, addr)
+    }
+
+    /// 后台导航：`front` 页发通知后以 USER_ACTION_REQUIRED（foreground + uri）回复，其他页正常完成。
+    struct BackgroundNavigator;
+
+    impl NavigationHandler for BackgroundNavigator {
+        fn navigate(&self, request: Arc<Navigate>) {
+            if request.page() == "front" {
+                let _ = request.fail_user_action(
+                    "已发通知，请点开 App 继续".into(),
+                    Some("foreground".into()),
+                    Some("shop://front".into()),
+                );
+                return;
+            }
+            let _ = request.complete();
+        }
+    }
+
+    /// 端到端：后台可见性下，`navigate_in_background` 决定导航是由 SDK 立即回复还是交给回调。
+    #[test]
+    fn background_navigation_reaches_host() {
+        for enabled in [false, true] {
+            let (mut child, lines, addr) =
+                spawn_fake_host(&["--navigate", "front", "--navigate", "home", "--timeout-ms", "8000"]);
+            let client = AppMcpClient::new(fake_host_config("uniffi-nav", &addr), None).expect("client");
+            client.set_navigation_handler(Some(Arc::new(BackgroundNavigator)));
+            client.set_visibility(Visibility::Hidden, false);
+            client.set_navigate_in_background(enabled);
+            client.start();
+            let out: Vec<serde_json::Value> =
+                lines.map_while(Result::ok).filter_map(|l| serde_json::from_str(&l).ok()).collect();
+            let ok = child.wait().is_ok_and(|s| s.success());
+            client.stop();
+            assert!(ok, "fake_host 退出码非 0：{out:?}");
+            let errors: Vec<&serde_json::Value> = out.iter().map(|v| &v["error"]["data"]).skip(1).collect();
+            if enabled {
+                assert_eq!(
+                    *errors[0],
+                    serde_json::json!({ "kind": "USER_ACTION_REQUIRED", "reason": "foreground", "uri": "shop://front" }),
+                    "{out:?}"
+                );
+                assert!(errors[1].is_null(), "{out:?}");
+            } else {
+                let fg = serde_json::json!({ "kind": "USER_ACTION_REQUIRED", "reason": "foreground" });
+                assert_eq!((errors[0], errors[1]), (&fg, &fg), "{out:?}");
+            }
+        }
     }
 
     #[test]

@@ -34,7 +34,7 @@ class ConformanceTest {
         /** 本 runner 支持的用例能力（`requires`），见 conformance/README.md 第 4 节。 */
         val FEATURES = setOf(
             "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
-            "readFailure", "surface", "navigation",
+            "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation",
         )
         val VERDICT_OK = setOf("pass", "xfail", "xpass", "skip")
         val repoRoot: File = FakeHostSupport.repoRoot.canonicalFile
@@ -98,6 +98,7 @@ class ConformanceTest {
         app?.get("tools")?.jsonArray.orEmpty().forEach { registerTool(client, tools, it.jsonObject) }
         app?.get("resources")?.jsonArray.orEmpty().forEach { registerResource(client, it.jsonObject) }
         app?.obj("navigation")?.let { pages -> client.setNavigationHandler { page, params -> navigate(client, tools, pages, page, params) } }
+        app?.str("visibility")?.let { client.setVisibility(Visibility.valueOf(enumName(it)), focused = false) }
         return client.start()
     }
 
@@ -114,6 +115,8 @@ class ConformanceTest {
         spec.str("throw")?.let { error(it) }
         spec.str("deny")?.let { return NavigationResult.Denied(it) }
         spec.str("fail")?.let { return NavigationResult.Failed(it) }
+        // 与工具 handler 同一惯用法：抛 userActionRequired（封装层映射为 USER_ACTION_REQUIRED，不是 NAVIGATION_FAILED）
+        spec.obj("userAction")?.let { throw ToolCallException.userActionRequired(it.str("message")!!, it.str("reason"), it.str("uri")) }
         if (spec.bool("failParams") == true) return NavigationResult.Failed(params?.toString().orEmpty())
         return NavigationResult.Ok
     }
@@ -145,6 +148,7 @@ class ConformanceTest {
             "activation" -> u.activation = str?.let { Activation.valueOf(it.uppercase()) }
             "surface" -> u.surface = str?.let(::surface) ?: ToolSurface.APP
             "page" -> u.page = str
+            "backgroundTool" -> u.backgroundTool = str
             else -> error("未知的工具字段 $key")
         }
     }
@@ -174,6 +178,7 @@ class ConformanceTest {
             lifecycle = lifecycle,
             callDedup = dedup,
             maxConcurrentCalls = c?.long("maxConcurrentCalls")?.toInt() ?: 1,
+            navigateInBackground = c?.bool("navigateInBackground"),
         )
     }
 
@@ -192,6 +197,7 @@ class ConformanceTest {
             outputSchema = decl.obj("outputSchema"),
             surface = decl.str("surface")?.let(::surface) ?: ToolSurface.APP,
             page = decl.str("page"),
+            backgroundTool = decl.str("backgroundTool"),
         ) { args, ctx -> runHandler(client, tools, handler, runs.incrementAndGet(), args, ctx) }
     }
 

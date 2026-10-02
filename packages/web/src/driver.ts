@@ -260,6 +260,8 @@ export class AppMcpDriver implements AppMcp {
   /** 导航回调（spec/protocol.md 3.4）。 */
   private navHandler: NavigationHandler | null = null
   private navOptions: NavigationOptions = {}
+  /** 不可见时导航是否仍交给回调（{@link AppMcpOptions.navigateInBackground}）；核心加载时同步，核心缺省 false。 */
+  private navigateInBackground: boolean
   /** 最近一次握手时是否声明了导航能力。 */
   private navDeclared = false
 
@@ -307,6 +309,7 @@ export class AppMcpDriver implements AppMcp {
     this.options = Object.freeze({ ...options })
     this.deps = deps
     this.log = options.logger ?? defaultLogger
+    this.navigateInBackground = options.navigateInBackground ?? false
     this.hostUrls = options.hostUrl !== undefined ? [options.hostUrl] : DEFAULT_HOST_URLS
     this.now = deps.now ?? (() => (typeof performance !== 'undefined' ? performance.now() : Date.now()))
     this.wallNow = deps.wallNow ?? (() => Date.now())
@@ -405,6 +408,12 @@ export class AppMcpDriver implements AppMcp {
       this.log.warn(`${this.tag} 导航回调在连接建立后才设置：本次连接未声明导航能力，下次连接时生效`)
     }
     this.input((c) => c.setNavigation(handler !== null))
+  }
+
+  setNavigateInBackground(enabled: boolean): void {
+    if (this.disposed) return
+    this.navigateInBackground = enabled
+    if (this.core) this.input((c) => c.setNavigateInBackground(enabled))
   }
 
   wake(): void {
@@ -512,6 +521,7 @@ export class AppMcpDriver implements AppMcp {
     try {
       // 核心缺省不声明导航能力；加载前设置了导航回调时在首次握手前打开
       if (this.navHandler) core.setNavigation(true)
+      if (this.navigateInBackground) core.setNavigateInBackground(true)
     } catch (e) {
       this.log.error(`${this.tag} 设置导航能力失败`, e)
     }
@@ -1309,6 +1319,7 @@ export class AppMcpDriver implements AppMcp {
       if (def.activation !== undefined) coreDef.activation = def.activation
       if (decl.surface === 'view') coreDef.surface = 'view'
       if (decl.page !== undefined) coreDef.page = decl.page
+      if (def.backgroundTool !== undefined) coreDef.backgroundTool = def.backgroundTool
       rec.coreEnabled = this.effectiveEnabled(rec)
       if (!rec.coreEnabled || def.enabled !== undefined) coreDef.enabled = rec.coreEnabled
       if (scope) {
@@ -1385,6 +1396,7 @@ export class AppMcpDriver implements AppMcp {
         if ('title' in changes) update.title = changes.title ?? null
         if ('activation' in changes) update.activation = changes.activation ?? null
         if ('annotations' in changes) update.annotations = changes.annotations ?? null
+        if ('backgroundTool' in changes) update.backgroundTool = changes.backgroundTool ?? null
         if ('outputSchema' in changes && changes.outputSchema === undefined) update.outputSchema = null
         const schema = 'input' in changes ? this.convertSchema(rec.name, changes.input) : undefined
         const output =

@@ -41,8 +41,10 @@ runner（各语言）                         fake_host --case <用例> --sdk <�
     "config": {                         // 可选
       "lifecycle": { "mode": "idle", "idleTimeoutMs": 300, "graceMs": …, "mergeWindowMs": … },
       "callDedup": { "ttlMs": …, "maxEntries": … },
-      "maxConcurrentCalls": 1
+      "maxConcurrentCalls": 1,
+      "navigateInBackground": false    // 给出时调用 SDK 的对应设置（spec/protocol.md 3.4）；缺省用 SDK 的平台缺省
     },
+    "visibility": "hidden",             // 可选：启动前把实例可见性设为该值（visible / hidden / frozen）
     "tools": [ <工具声明> ],
     "resources": [ <资源声明> ],
     "navigation": { "<页面>": <导航行为> }   // 可选：给出时设置导航回调（2.4），缺省不设置
@@ -64,7 +66,7 @@ App 固定为 `appId: "conf"`、`appName: "Conformance"`；runner 连接 fake_ho
 ### 2.1 工具声明
 
 `name`、`description`（必填）；`inputSchema`、`risk`、`activation`、`title`、`annotations`、`outputSchema`、`surface`、`page`、
-`enabled`（缺省 true）按协议同名字段原样传给 SDK 的注册 API。未给出的字段不传（SDK 用自己的缺省值）。`handler` 描述 handler 的行为：
+`backgroundTool`、`enabled`（缺省 true）按协议同名字段原样传给 SDK 的注册 API。未给出的字段不传（SDK 用自己的缺省值）。`handler` 描述 handler 的行为：
 
 | 键 | 含义 |
 |---|---|
@@ -110,6 +112,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `mutate: [<变更>]` | 先修改注册表（2.3，如注册新页面的工具），再按下列结果完成 |
 | `deny: "消息"` | 拒绝（`NAVIGATION_DENIED`） |
 | `fail: "消息"` | 失败（`NAVIGATION_FAILED`） |
+| `userAction: {message, reason?, uri?}` | 需要用户操作（`USER_ACTION_REQUIRED`，SDK 导航句柄的对应构造） |
 | `throw: "消息"` | 以该语言最普通的方式在回调里出错（抛异常 / panic），期望封装层转为 `NAVIGATION_FAILED` |
 | `failParams: true` | 失败，消息为收到的页面参数（JSON 文本，可被重新序列化；没有参数时为空） |
 | 都没有 | 完成（`{ok: true}`） |
@@ -163,6 +166,8 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `wake` | `handleWake(arg)` |
 | `surface` | 工具 `surface` / `page` |
 | `navigation` | 设置导航回调（2.4） |
+| `backgroundTool` | 工具 `backgroundTool` |
+| `backgroundNavigation` | `app.visibility`、`app.config.navigateInBackground`、导航行为 `userAction` |
 
 ## 5. 各 SDK 的 runner
 
