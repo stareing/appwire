@@ -35,6 +35,9 @@ pub enum PolicyCommand {
         /// 同时禁止唤醒（App 未运行 / 休眠时不启动它）。
         #[arg(long)]
         wake: bool,
+        /// 只拒绝该 Agent（agent add 登记的名字，末尾可用 *）；省略时对所有调用方生效。
+        #[arg(long, value_name = "NAME")]
+        agent: Option<String>,
     },
     /// 按 id 删除规则。
     Remove {

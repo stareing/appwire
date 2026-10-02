@@ -91,6 +91,11 @@ pub(crate) struct CallCtx {
 pub(crate) type ProgressSink = mpsc::UnboundedSender<ProgressUpdate>;
 
 impl CallCtx {
+    /// 发起方 Agent 名（第 16 项 N5；按 Agent 的策略规则）；本机主体与 Hub API 为 `None`。
+    pub(crate) fn agent(&self) -> Option<&str> {
+        self.caller.agent().map(crate::agents::AgentName::as_str)
+    }
+
     pub(crate) fn from_request(req: CallRequest) -> Self {
         Self {
             mcp_session: None,

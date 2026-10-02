@@ -35,7 +35,7 @@ pub(crate) async fn read_resource(
         return read_upstream_resource(shared, app_id, name, uri, peer).await;
     }
     let (info, result) = shared
-        .read_app_resource(app_id, name, shared.selected_for(caller, app_id))
+        .read_app_resource(app_id, name, shared.selected_for(caller, app_id), caller.agent().map(crate::agents::AgentName::as_str))
         .await
         .map_err(|e| to_mcp_error(&e))?;
     let contents = resource_contents(uri, info.mime_type.as_deref(), result);

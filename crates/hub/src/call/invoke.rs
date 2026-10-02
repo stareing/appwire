@@ -71,7 +71,7 @@ impl HubShared {
             if !self.wake_reachable(&plan) {
                 return (Err(self.registry().disconnected_error(app_id)), plan.instance_id.clone());
             }
-            if let Err(e) = self.check_wake_policy(app_id, Some(tool_name)) {
+            if let Err(e) = self.check_wake_policy(app_id, Some(tool_name), ctx.agent()) {
                 return (Err(e), plan.instance_id.clone());
             }
             if let Some(tool) = &plan.tool {

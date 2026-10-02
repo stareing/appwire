@@ -876,7 +876,7 @@ App 报告进度的消息与 SDK 行为见 spec/protocol.md 3.3（唯一定义�
 ### 3.13 策略挂点（第 16 项 P2、第 18 项 L5）
 
 类比 LSM：本库只提供**执行点**，不内置任何判断；规则由用户（常驻 Host）或厂商（嵌入式 Hub）写。**没有规则时所有执行点直接放行，
-行为与没有策略时完全一致**。按 Agent 区分的规则依赖 Agent 任务对象（docs/plans/16-agent-os.md P1），尚未支持。
+行为与没有策略时完全一致**。`deny` 可按发起方 Agent 区分（下表 `agent`，第 16 项 P2 / N5）。
 实现：`crates/hub/src/policy.rs`（纯数据与匹配）。
 
 **执行点**（`PolicyHook`）：
@@ -904,7 +904,8 @@ App 报告进度的消息与 SDK 行为见 spec/protocol.md 3.3（唯一定义�
   { "id": "hide-notes", "action": "hide", "app": "notes" },
   { "id": "no-admin",   "action": "hide", "app": "shop", "tool": "admin.*" },
   { "id": "no-destroy", "action": "deny", "app": "*", "annotations": { "destructiveHint": true } },
-  { "id": "no-wake-music", "action": "deny", "app": "music", "hooks": ["wake"] }
+  { "id": "no-wake-music", "action": "deny", "app": "music", "hooks": ["wake"] },
+  { "id": "no-pay-cursor", "action": "deny", "app": "shop", "tool": "pay", "agent": "cursor" }
 ] }
 ```
 
@@ -915,6 +916,7 @@ App 报告进度的消息与 SDK 行为见 spec/protocol.md 3.3（唯一定义�
 | `app` | appId（或上游名）：精确名，或以 `*` 结尾的前缀（`shop*`）；`*` 匹配全部。`*` 只能在末尾 |
 | `tool` | 可选，工具局部名（不含 appId），规则同 `app` |
 | `annotations` | 可选，`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` 的布尔值（至少一项）：每项都与工具的注解（`HubTool.annotations`，Agent 实际看到的）相等才命中；工具**没有声明**该项时不命中（本库不按 MCP 缺省值推断）。这是用户的规则引用 App 的声明，本库不推断风险、不改写声明 |
+| `agent` | 可选，只用于 `deny`：发起方 Agent 名（3.6「Agent 身份」登记的名字），规则同 `app`（`bot-*`）。只匹配出示该 Agent 令牌的调用 / 唤醒（经 MCP 出口；legacy 会话按建立时的身份），本机主体与 Hub API 调用方不匹配。`hide` 不能写（列表对所有 Agent 相同）。`app-mcp-host policy deny <app> --agent <名>`；绑定：uniffi `PolicyRule.agent: String?`（最后一个字段，缺省空）、`@app-mcp/hub` `agent?`、C# `HubPolicyRule.Agent` / `HubPolicyRuleStatus.Agent`、Python 字典键 `agent` |
 | `hooks` | 只用于 `deny`：`call` / `wake` 的非空子集，缺省 `["call"]`。`hide` 不能写 |
 
 - 作用范围：`tool` 与 `annotations` 都缺省 → 整个 App（`hide` 时连同资源、`apps.list` 中的条目；不针对具体工具的唤醒——资源读取——只匹配这类规则）；

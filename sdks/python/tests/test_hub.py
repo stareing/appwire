@@ -596,6 +596,10 @@ def test_policy_hide_deny_and_set_policy() -> None:
             assert hub.call_tool_sync("notes.add", {"text": "x"}).data == {"saved": "x"}
             out = hub.call_tool_sync("notes.clear")
             assert out.error is not None and out.error.kind == "POLICY_DENIED"
+            # 按 Agent 的规则（字典键 agent）：Hub API 调用方没有 Agent 身份，不匹配
+            hub.set_policy({"rules": [{"id": "no-add-cursor", "action": "deny", "app": "notes", "agent": "cursor"}]})
+            assert hub.policy().rules[0].rule.agent == "cursor"
+            assert hub.call_tool_sync("notes.add", {"text": "x"}).data == {"saved": "x"}
             hub.set_policy({})
             assert hub.call_tool_sync("notes.clear").data == {"cleared": True}
             assert hub.policy().rules == []

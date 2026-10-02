@@ -7,7 +7,7 @@
 //! - **动作**（[`PolicyAction`]）：`hide`（不出现在任何列表中，调用按 `TOOL_NOT_FOUND`，全局生效）与
 //!   `deny`（可见，在指定执行点以 `POLICY_DENIED` 拒绝，附命中规则的 `id`，不附规则内容）。
 //! - **匹配**：App（`appId` 或上游名）、工具局部名（都支持 `*` 后缀通配）、App 声明的 MCP 注解（Agent 实际看到的注解，
-//!   只有声明了的值参与匹配）。按 Agent 区分的规则依赖任务对象（P1），尚未支持。
+//!   只有声明了的值参与匹配）、发起调用的 Agent（第 16 项 N5 登记的名字；只用于 `deny`——`hide` 改变列表，只能全局生效）。
 //!
 //! 本模块是纯数据与纯函数（不做 I/O、不读时钟）；执行点的调用在 [`crate::call`] 与 [`crate::hub`]。
 
@@ -114,6 +114,10 @@ pub struct PolicyRule {
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<AnnotationMatch>,
+    /// Agent 名模式（规则同 `app`；第 16 项 N5 登记的 Agent）：规则只对出示该 Agent 令牌的请求生效，本机主体、Hub API
+    /// 与 legacy 会话以外的无身份调用方都不匹配。只能用于 `deny`（`hide` 改变列表，MCP 2026-07-28 要求列表不随连接变化）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// `deny` 的执行点：`call` / `wake` 的非空子集，缺省 `["call"]`。`hide` 不能写（列表与调用总是一起生效）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<Vec<PolicyHook>>,
@@ -130,9 +134,15 @@ impl PolicyRule {
             && self.hooks.as_deref().map_or(hook == PolicyHook::Call, |h| h.contains(&hook))
     }
 
-    /// 是否匹配（App, 工具）。`tool` 为 `None`（不针对具体工具，如资源读取触发的唤醒）时只有 App 级规则匹配。
-    fn matches(&self, app_id: &str, tool: Option<(&str, Option<&ToolAnnotations>)>) -> bool {
+    /// 是否匹配（App, 工具, 发起方 Agent）。`tool` 为 `None`（不针对具体工具，如资源读取触发的唤醒）时只有 App 级规则匹配；
+    /// 写了 `agent` 的规则只匹配该 Agent 发起的操作（`agent` 为 `None` = 本机主体 / Hub API，不匹配）。
+    fn matches(&self, app_id: &str, tool: Option<(&str, Option<&ToolAnnotations>)>, agent: Option<&str>) -> bool {
         if !pattern_matches(&self.app, app_id) {
+            return false;
+        }
+        if let Some(p) = &self.agent
+            && !agent.is_some_and(|a| pattern_matches(p, a))
+        {
             return false;
         }
         let Some((name, annotations)) = tool else {
@@ -153,6 +163,14 @@ impl PolicyRule {
         validate_pattern(&self.app).map_err(|e| format!("规则「{id}」的 app {e}"))?;
         if let Some(t) = &self.tool {
             validate_pattern(t).map_err(|e| format!("规则「{id}」的 tool {e}"))?;
+        }
+        if let Some(a) = &self.agent {
+            validate_pattern(a).map_err(|e| format!("规则「{id}」的 agent {e}"))?;
+            if self.action == PolicyAction::Hide {
+                return Err(format!(
+                    "规则「{id}」：hide 不能按 Agent 区分（列表对所有 Agent 相同）；只拒绝某个 Agent 调用请用 deny"
+                ));
+            }
         }
         if self.annotations.as_ref().is_some_and(AnnotationMatch::is_empty) {
             return Err(format!("规则「{id}」的 annotations 为空：至少写一项（readOnlyHint / destructiveHint / idempotentHint / openWorldHint），或去掉该字段"));
@@ -198,7 +216,7 @@ fn validate_pattern(p: &str) -> Result<(), String> {
 
 /// 规则集（`HubConfig.policy`、`Hub::set_policy`、`<home>/policy.json` 与各绑定共用的 JSON 形式）：
 /// `{"rules": [{"id", "action": "hide"|"deny", "app", "tool"?, "annotations"?: {"destructiveHint": true, …},
-/// "hooks"?: ["call", "wake"]}]}`。未知字段报错；规则按顺序匹配，`deny` 取第一条命中的规则。
+/// "agent"?, "hooks"?: ["call", "wake"]}]}`。未知字段报错；规则按顺序匹配，`deny` 取第一条命中的规则。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyConfig {
@@ -239,24 +257,26 @@ impl PolicyConfig {
     pub(crate) fn app_hidden(&self, app_id: &str) -> Option<usize> {
         self.rules
             .iter()
-            .position(|r| r.action == PolicyAction::Hide && r.matches(app_id, None))
+            .position(|r| r.action == PolicyAction::Hide && r.matches(app_id, None, None))
     }
 
     /// 隐藏该工具的第一条规则（含 App 级 `hide`）。
     pub(crate) fn tool_hidden(&self, app_id: &str, tool: &str, annotations: Option<&ToolAnnotations>) -> Option<usize> {
         self.rules
             .iter()
-            .position(|r| r.action == PolicyAction::Hide && r.matches(app_id, Some((tool, annotations))))
+            .position(|r| r.action == PolicyAction::Hide && r.matches(app_id, Some((tool, annotations)), None))
     }
 
-    /// 在执行点 `hook` 拒绝的第一条规则。`tool` 为 `None` 时只有 App 级规则匹配。
+    /// 在执行点 `hook` 拒绝的第一条规则。`tool` 为 `None` 时只有 App 级规则匹配；`agent` 为发起方 Agent 名（本机主体 /
+    /// Hub API 为 `None`）。
     pub(crate) fn denied(
         &self,
         hook: PolicyHook,
         app_id: &str,
         tool: Option<(&str, Option<&ToolAnnotations>)>,
+        agent: Option<&str>,
     ) -> Option<usize> {
-        self.rules.iter().position(|r| r.denies_at(hook) && r.matches(app_id, tool))
+        self.rules.iter().position(|r| r.denies_at(hook) && r.matches(app_id, tool, agent))
     }
 
     /// 是否有 `hide` 规则（没有时列表不必过滤）。
@@ -391,8 +411,31 @@ mod tests {
         assert!(p.is_empty() && !p.has_hide());
         assert_eq!(p.app_hidden("shop"), None);
         assert_eq!(p.tool_hidden("shop", "cart.add", None), None);
-        assert_eq!(p.denied(PolicyHook::Call, "shop", Some(("cart.add", None))), None);
+        assert_eq!(p.denied(PolicyHook::Call, "shop", Some(("cart.add", None)), None), None);
         assert_eq!(PolicyConfig::from_json("{}").unwrap(), p);
+    }
+
+    /// N5 / P2：按 Agent 拒绝只对该 Agent（及通配匹配的 Agent）生效；本机主体与 Hub API（`None`）不匹配。
+    #[test]
+    fn deny_by_agent() {
+        let p = PolicyConfig::from_json(
+            r#"{"rules": [
+                {"id": "no-pay-cursor", "action": "deny", "app": "shop", "tool": "pay", "agent": "cursor"},
+                {"id": "no-wake-bots", "action": "deny", "app": "*", "agent": "bot-*", "hooks": ["wake"]}
+            ]}"#,
+        )
+        .unwrap();
+        let pay = Some(("pay", None));
+        assert_eq!(p.denied(PolicyHook::Call, "shop", pay, Some("cursor")), Some(0));
+        assert_eq!(p.denied(PolicyHook::Call, "shop", pay, Some("claude")), None);
+        assert_eq!(p.denied(PolicyHook::Call, "shop", pay, None), None, "本机主体不匹配按 Agent 的规则");
+        assert_eq!(p.denied(PolicyHook::Wake, "music", None, Some("bot-1")), Some(1));
+        assert_eq!(p.denied(PolicyHook::Wake, "music", None, Some("bo")), None);
+        assert_eq!(p.denied(PolicyHook::Call, "music", Some(("play", None)), Some("bot-1")), None, "只拒绝唤醒");
+        let bad = |rule: serde_json::Value| PolicyConfig::from_json(&json!({"rules": [rule]}).to_string()).unwrap_err();
+        assert!(bad(json!({"id": "h", "action": "hide", "app": "shop", "agent": "cursor"})).contains("不能按 Agent"));
+        assert!(bad(json!({"id": "d", "action": "deny", "app": "shop", "agent": "a*b"})).contains("agent"));
+        assert!(bad(json!({"id": "d", "action": "deny", "app": "shop", "agent": ""})).contains("agent"));
     }
 
     #[test]
@@ -422,7 +465,7 @@ mod tests {
         assert_eq!(p.tool_hidden("shop", "cart.clear", Some(&ann(Some(false)))), None);
         assert_eq!(p.tool_hidden("shop", "cart.clear", Some(&ann(None))), None, "未声明的注解不匹配");
         // hide 规则不产生 deny。
-        assert_eq!(p.denied(PolicyHook::Call, "shop", Some(("admin.reset", None))), None);
+        assert_eq!(p.denied(PolicyHook::Call, "shop", Some(("admin.reset", None)), None), None);
     }
 
     #[test]
@@ -432,16 +475,16 @@ mod tests {
             {"id": "no-wake", "action": "deny", "app": "music", "hooks": ["wake"]},
             {"id": "both", "action": "deny", "app": "shop", "hooks": ["call", "wake"]},
         ]}));
-        assert_eq!(p.denied(PolicyHook::Call, "shop", Some(("pay", None))), Some(0));
-        assert_eq!(p.denied(PolicyHook::Call, "shop", Some(("cart.add", None))), Some(2));
+        assert_eq!(p.denied(PolicyHook::Call, "shop", Some(("pay", None)), None), Some(0));
+        assert_eq!(p.denied(PolicyHook::Call, "shop", Some(("cart.add", None)), None), Some(2));
         // 缺省只作用于 call。
-        assert_eq!(p.denied(PolicyHook::Wake, "shop", Some(("pay", None))), Some(2));
-        assert_eq!(p.denied(PolicyHook::Call, "music", Some(("play", None))), None);
-        assert_eq!(p.denied(PolicyHook::Wake, "music", Some(("play", None))), Some(1));
+        assert_eq!(p.denied(PolicyHook::Wake, "shop", Some(("pay", None)), None), Some(2));
+        assert_eq!(p.denied(PolicyHook::Call, "music", Some(("play", None)), None), None);
+        assert_eq!(p.denied(PolicyHook::Wake, "music", Some(("play", None)), None), Some(1));
         // 不针对工具的唤醒（资源读取）只匹配 App 级规则。
-        assert_eq!(p.denied(PolicyHook::Wake, "music", None), Some(1));
+        assert_eq!(p.denied(PolicyHook::Wake, "music", None, None), Some(1));
         let tool_only = rules(json!({"rules": [{"id": "t", "action": "deny", "app": "a", "tool": "x", "hooks": ["wake"]}]}));
-        assert_eq!(tool_only.denied(PolicyHook::Wake, "a", None), None);
+        assert_eq!(tool_only.denied(PolicyHook::Wake, "a", None, None), None);
     }
 
     #[test]
@@ -455,7 +498,7 @@ mod tests {
         assert!(bad(json!({"rules": [{"id": "x", "action": "deny", "app": "a", "hooks": ["list"]}]})).contains("hide"));
         assert!(bad(json!({"rules": [{"id": "x", "action": "deny", "app": "a", "hooks": ["handle"]}]})).contains("尚未实现"));
         assert!(bad(json!({"rules": [{"id": "x", "action": "deny", "app": "a", "annotations": {}}]})).contains("annotations"));
-        assert!(bad(json!({"rules": [{"id": "x", "action": "deny", "app": "a", "agent": "claude"}]})).contains("JSON"));
+        assert!(bad(json!({"rules": [{"id": "x", "action": "deny", "app": "a", "principal": "local"}]})).contains("JSON"), "未知字段");
         assert!(bad(json!({"rules": [{"id": "x", "action": "block", "app": "a"}]})).contains("JSON"));
         assert!(bad(json!({"rules": [
             {"id": "x", "action": "hide", "app": "a"}, {"id": "x", "action": "deny", "app": "b"}
@@ -481,7 +524,7 @@ mod tests {
         st.hit(&cfg, 7);
         assert_eq!(st.status().rules[0].hits, 1);
         let bad = PolicyConfig { rules: vec![PolicyRule {
-            id: "".into(), action: PolicyAction::Hide, app: "x".into(), tool: None, annotations: None, hooks: None,
+            id: "".into(), action: PolicyAction::Hide, app: "x".into(), tool: None, annotations: None, agent: None, hooks: None,
         }] };
         assert!(st.replace(bad, 2).is_err());
         let s = st.status();

@@ -134,8 +134,8 @@ impl HubShared {
     }
 
     /// 调用执行点：`hide` → `TOOL_NOT_FOUND`（与不存在的工具相同，隐藏的东西不暴露）；`deny`（call）→ `POLICY_DENIED`。
-    /// 无规则时直接放行。App 整体隐藏由调用方按 appId 未知处理（[`Self::app_hidden`]）。
-    pub(crate) fn check_call_policy(&self, app_id: &str, tool: &str) -> Result<(), ToolError> {
+    /// 无规则时直接放行。App 整体隐藏由调用方按 appId 未知处理（[`Self::app_hidden`]）。`agent`：发起方 Agent（按 Agent 的规则）。
+    pub(crate) fn check_call_policy(&self, app_id: &str, tool: &str, agent: Option<&str>) -> Result<(), ToolError> {
         let policy = self.policy();
         if policy.is_empty() {
             return Ok(());
@@ -149,7 +149,7 @@ impl HubShared {
                 format!("工具「{app_id}.{tool}」不存在。可调用 apps.tools 查看该 App 的工具。"),
             ));
         }
-        match policy.denied(PolicyHook::Call, app_id, Some((tool, annotations))) {
+        match policy.denied(PolicyHook::Call, app_id, Some((tool, annotations)), agent) {
             None => Ok(()),
             Some(i) => {
                 self.policy_hit(&policy, i);
@@ -160,12 +160,12 @@ impl HubShared {
 
     /// 调用执行点的 App 级检查（不针对具体工具的操作，如 `apps.navigate`）：只有不带 `tool` / `annotations` 的 `deny`（call）
     /// 规则匹配 → `POLICY_DENIED`。App 整体隐藏由调用方按 appId 未知处理。
-    pub(crate) fn check_app_call_policy(&self, app_id: &str) -> Result<(), ToolError> {
+    pub(crate) fn check_app_call_policy(&self, app_id: &str, agent: Option<&str>) -> Result<(), ToolError> {
         let policy = self.policy();
         if policy.is_empty() {
             return Ok(());
         }
-        match policy.denied(PolicyHook::Call, app_id, None) {
+        match policy.denied(PolicyHook::Call, app_id, None, agent) {
             None => Ok(()),
             Some(i) => {
                 self.policy_hit(&policy, i);
@@ -175,7 +175,7 @@ impl HubShared {
     }
 
     /// 唤醒执行点：`deny`（wake）→ `POLICY_DENIED`。`tool` 为 `None`（资源读取触发的唤醒）时只有 App 级规则匹配。
-    pub(crate) fn check_wake_policy(&self, app_id: &str, tool: Option<&str>) -> Result<(), ToolError> {
+    pub(crate) fn check_wake_policy(&self, app_id: &str, tool: Option<&str>, agent: Option<&str>) -> Result<(), ToolError> {
         let policy = self.policy();
         if policy.is_empty() {
             return Ok(());
@@ -185,7 +185,7 @@ impl HubShared {
             _ => None,
         };
         let target = tool.map(|t| (t, annotations.as_ref()));
-        match policy.denied(PolicyHook::Wake, app_id, target) {
+        match policy.denied(PolicyHook::Wake, app_id, target, agent) {
             None => Ok(()),
             Some(i) => {
                 self.policy_hit(&policy, i);

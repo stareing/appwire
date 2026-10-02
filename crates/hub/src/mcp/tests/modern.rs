@@ -129,7 +129,8 @@ async fn modern_listen_delivers_list_changes_and_resource_updates() {
     let ack = sub.acknowledged().clone();
     assert_eq!((ack.tools_list_changed, ack.resources_list_changed), (Some(true), Some(true)));
     assert_eq!(ack.resource_subscriptions, Some(vec![BOARD_STATE.to_owned()]), "只接受本 Hub 的资源 URI");
-    assert_eq!(listen_streams(&hub), Some(1));
+    // 确认由 rmcp 在 Hub 登记该流之前发出（spec/hub-api.md 3.6「通知」）：等登记完成再看流数。
+    eventually("listen 流登记", || listen_streams(&hub) == Some(1)).await;
     assert_eq!(hub.status().mcp_sessions, 0, "listen 流不是会话");
     assert!(!tool_list(&modern).await.contains(&"board.note".to_owned()));
 

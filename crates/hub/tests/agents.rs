@@ -24,6 +24,8 @@ const T: Duration = Duration::from_secs(10);
 const LOCAL: &str = "local-0123456789abcdef0123456789abcdef";
 const CLAUDE: &str = "claude-0123456789abcdef0123456789abcdef";
 const CURSOR: &str = "cursor-0123456789abcdef0123456789abcdef";
+/// 未配置本机令牌的 Hub 上出示的未知令牌：按未携带处理（本机主体）。
+const LOCAL_UNCONFIGURED: &str = "unknown-0123456789abcdef0123456789abcdef";
 
 fn agents(list: &[(&str, &str)]) -> AgentsConfig {
     AgentsConfig {
@@ -279,4 +281,56 @@ async fn invalid_agents_config_rejected_at_start() {
     })
     .await;
     assert_eq!(r.err().map(|e| e.kind()), Some(std::io::ErrorKind::InvalidInput));
+}
+
+struct Echo;
+impl app_mcp_native::ToolHandler for Echo {
+    fn invoke(&self, call: app_mcp_native::CallHandle) {
+        let _ = call.complete(Some(r#"{"ok":true}"#), vec![]);
+    }
+}
+
+/// 第 16 项 P2：按 Agent 的 `deny` 规则只拒绝该 Agent 的调用（`POLICY_DENIED` 带规则 id），其他 Agent 与本机主体照常；
+/// 工具对所有 Agent 都列出（`deny` 不改变列表）。
+#[tokio::test(flavor = "multi_thread")]
+async fn deny_rule_applies_only_to_named_agent() {
+    let policy = app_mcp_hub::PolicyConfig::from_json(
+        r#"{"rules": [{"id": "no-cart-cursor", "action": "deny", "app": "shop", "tool": "cart.*", "agent": "cursor"}]}"#,
+    )
+    .unwrap();
+    let hub = Hub::start(HubConfig {
+        listen: Some("127.0.0.1:0".into()),
+        listen_alternates: Vec::new(),
+        ipc_endpoint: None,
+        mcp_http: true,
+        agents: agents(&[("claude", CLAUDE), ("cursor", CURSOR)]),
+        policy,
+        ..Default::default()
+    })
+    .await
+    .expect("hub");
+    let addr = hub.listen_addr().unwrap();
+    let mut c = app_mcp_native::NativeConfig::new("shop", "商城");
+    c.host_url = format!("ws://{addr}/app");
+    c.lifecycle.mode = app_mcp_native::LifecycleMode::Persistent;
+    let app = app_mcp_native::NativeClient::new(c, None).expect("client");
+    app.register_tool(app_mcp_native::ToolSpec::new("cart.add", "加入购物车"), std::sync::Arc::new(Echo)).expect("tool");
+    app.start();
+    let deadline = std::time::Instant::now() + T;
+    while !hub.status().apps.iter().any(|a| a.app_id == "shop" && a.tools.len() == 1) {
+        assert!(std::time::Instant::now() < deadline, "App 未注册工具");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let denied = modern_call(addr, Some(CURSOR), "shop.cart.add", json!({})).await.json();
+    let err = &denied["result"]["structuredContent"]["error"];
+    assert_eq!((err["kind"].as_str(), err["details"]["ruleId"].as_str()), (Some("POLICY_DENIED"), Some("no-cart-cursor")), "{denied}");
+    for token in [Some(CLAUDE), Some(LOCAL_UNCONFIGURED), None] {
+        let r = modern_call(addr, token, "shop.cart.add", json!({})).await.json();
+        assert_ne!(r["result"]["isError"], true, "{token:?}: {r}");
+    }
+    let hits = hub.policy().rules[0].hits;
+    assert_eq!(hits, 1, "只有 cursor 的调用命中");
+    app.stop();
+    hub.shutdown().await;
 }

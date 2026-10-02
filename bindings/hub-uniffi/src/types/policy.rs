@@ -37,7 +37,7 @@ pub struct AnnotationMatch {
     pub open_world_hint: Option<bool>,
 }
 
-/// 一条策略规则（与 JSON 形式 `{"id","action","app","tool"?,"annotations"?,"hooks"?}` 同构）。
+/// 一条策略规则（与 JSON 形式 `{"id","action","app","tool"?,"annotations"?,"agent"?,"hooks"?}` 同构）。
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct PolicyRule {
     /// 规则标识：`[A-Za-z0-9_.-]{1,64}`，在规则集中唯一；`POLICY_DENIED` 的 `details.ruleId`。
@@ -53,6 +53,9 @@ pub struct PolicyRule {
     /// `Deny` 的执行点：`Call` / `Wake` 的非空子集，为空时为 `[Call]`。`Hide` 不能给出。
     #[uniffi(default = None)]
     pub hooks: Option<Vec<PolicyHook>>,
+    /// 只对该 Agent（第 16 项 N5 登记的名字，规则同 `app`）发起的操作生效；只能用于 `Deny`。放在最后：已有的位置参数写法不变。
+    #[uniffi(default = None)]
+    pub agent: Option<String>,
 }
 
 /// 策略规则集；按顺序匹配，`Deny` 取第一条命中的规则。空规则集 = 不做任何限制（默认）。
@@ -92,6 +95,7 @@ impl From<PolicyRule> for hub::PolicyRule {
             app: r.app,
             tool: r.tool,
             annotations: r.annotations.map(Into::into),
+            agent: r.agent,
             hooks: r.hooks.map(|h| h.into_iter().map(Into::into).collect()),
         }
     }
@@ -105,6 +109,7 @@ impl From<hub::PolicyRule> for PolicyRule {
             app: r.app,
             tool: r.tool,
             annotations: r.annotations.map(Into::into),
+            agent: r.agent,
             hooks: r.hooks.map(|h| h.into_iter().map(Into::into).collect()),
         }
     }

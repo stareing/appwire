@@ -112,7 +112,12 @@
   - **可观测**：`doctor` 列出生效规则与每条的命中次数；命中计数在 `reload` 时清零，`hide` 过滤列表不计命中；命中记入第 11 项调用日志。
   - **已知局限**：Hub 不改写 App 总览文本，被隐藏的工具仍可能在总览中被提到（调用仍按 `TOOL_NOT_FOUND`）。
   - **后续执行点**：4e B2 自适应租约定位为可替换的缺省策略（`--fixed-lease` 可关；Agent 显式 `apps.release` 优先），后续可经本挂点替换（4f）。
-  - **实施（fe622b9，2026-10-02）**：按 App / 工具 / 注解匹配、`hide` / `deny` 已完成；按 Agent 匹配待 P1。
+  - **实施（fe622b9，2026-10-02）**：按 App / 工具 / 注解匹配、`hide` / `deny` 已完成。
+  - **按 Agent 匹配（2026-10-03，随 N5）**：规则字段 `agent`（Agent 名模式，只用于 `deny`；`hide` + `agent` 校验报错），调用 / App 级调用 /
+    唤醒执行点按调用方的 Agent（`CallCtx::agent`、资源读取按调用方键）匹配，本机主体与 Hub API 不匹配；Host `policy deny --agent`，
+    默认 id `deny-<app>-<tool>-for-<agent>`；各绑定的规则类型加 `agent`。测试：hub `policy.rs deny_by_agent`、`tests/agents.rs
+    deny_rule_applies_only_to_named_agent`（让规则忽略 `agent` 时两者都失败）、Host `agent_registry_cli_and_tokens`、Python、C#。
+    未验证：Kotlin / Swift 封装（只靠生成的记录带缺省值，未跑其测试）。
 - **P3 按 Agent 记账与配额**：调用次数、唤醒次数、传输字节按任务对象 / Agent 身份累计，可配置上限，超限返回 `RATE_LIMITED`（与第 14 项 S3 同一错误码）；
   `status` / `doctor` 能回答"谁唤醒了这个 App 多少次"。
 - **P4 持久信箱**：N3 事件到达而无存活任务时进入信箱（TTL、条数上限），下次接触时投递（U10）。

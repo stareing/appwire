@@ -53,8 +53,9 @@ fn write(path: &Path, config: &PolicyConfig) -> anyhow::Result<()> {
     std::fs::rename(&tmp, path).with_context(|| format!("替换 {} 失败", path.display()))
 }
 
-/// 由动作与目标生成规则 id（`hide-shop`、`deny-shop-cart.add`）：只保留 id 允许的字符，`*` 写作 `any`。
-pub fn default_id(action: PolicyAction, app: &str, tool: Option<&str>) -> String {
+/// 由动作与目标生成规则 id（`hide-shop`、`deny-shop-cart.add`、按 Agent 时 `deny-shop-cart.add-for-cursor`）：
+/// 只保留 id 允许的字符，`*` 写作 `any`。
+pub fn default_id(action: PolicyAction, app: &str, tool: Option<&str>, agent: Option<&str>) -> String {
     let verb = match action {
         PolicyAction::Hide => "hide",
         PolicyAction::Deny => "deny",
@@ -65,10 +66,13 @@ pub fn default_id(action: PolicyAction, app: &str, tool: Option<&str>) -> String
             .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
             .collect()
     };
-    let id = match tool {
+    let mut id = match tool {
         Some(t) => format!("{verb}-{}-{}", part(app), part(t)),
         None => format!("{verb}-{}", part(app)),
     };
+    if let Some(a) = agent {
+        id.push_str(&format!("-for-{}", part(a)));
+    }
     id.chars().take(64).collect()
 }
 
@@ -108,6 +112,9 @@ pub fn describe_rule(rule: &PolicyRule) -> String {
     }
     if let Some(a) = &rule.annotations {
         target.push_str(&format!(" annotations={}", serde_json::to_string(a).unwrap_or_default()));
+    }
+    if let Some(a) = &rule.agent {
+        target.push_str(&format!(" agent={a}"));
     }
     let hooks = match (&rule.hooks, rule.action) {
         (Some(h), _) => format!("（{}）", h.iter().map(|h| h.as_str()).collect::<Vec<_>>().join(", ")),
@@ -244,18 +251,18 @@ pub async fn cmd(command: crate::cli::PolicyCommand) -> anyhow::Result<ExitCode>
         }
         C::Hide(args) => {
             let home = AppHome::resolve(args.home.home.as_deref())?;
-            let id = args.id.unwrap_or_else(|| default_id(PolicyAction::Hide, &args.app, args.tool.as_deref()));
-            let rule = PolicyRule { id, action: PolicyAction::Hide, app: args.app, tool: args.tool, annotations: None, hooks: None };
+            let id = args.id.unwrap_or_else(|| default_id(PolicyAction::Hide, &args.app, args.tool.as_deref(), None));
+            let rule = PolicyRule { id, action: PolicyAction::Hide, app: args.app, tool: args.tool, annotations: None, agent: None, hooks: None };
             let line = describe_rule(&rule);
             add_rule(&home.policy_file(), rule)?;
             println!("已添加 {line}");
             push_after_edit(&home).await
         }
-        C::Deny { rule: args, wake } => {
+        C::Deny { rule: args, wake, agent } => {
             let home = AppHome::resolve(args.home.home.as_deref())?;
-            let id = args.id.unwrap_or_else(|| default_id(PolicyAction::Deny, &args.app, args.tool.as_deref()));
+            let id = args.id.unwrap_or_else(|| default_id(PolicyAction::Deny, &args.app, args.tool.as_deref(), agent.as_deref()));
             let hooks = wake.then(|| vec![PolicyHook::Call, PolicyHook::Wake]);
-            let rule = PolicyRule { id, action: PolicyAction::Deny, app: args.app, tool: args.tool, annotations: None, hooks };
+            let rule = PolicyRule { id, action: PolicyAction::Deny, app: args.app, tool: args.tool, annotations: None, agent, hooks };
             let line = describe_rule(&rule);
             add_rule(&home.policy_file(), rule)?;
             println!("已添加 {line}");
@@ -309,14 +316,20 @@ mod tests {
     fn edit_rules() {
         let home = temp_home("edit");
         let path = home.policy_file();
-        let id = default_id(PolicyAction::Hide, "shop", Some("admin.*"));
+        let id = default_id(PolicyAction::Hide, "shop", Some("admin.*"), None);
         assert_eq!(id, "hide-shop-admin.any");
+        assert_eq!(default_id(PolicyAction::Deny, "shop", Some("pay"), Some("bot-*")), "deny-shop-pay-for-bot-any");
+        let by_agent = PolicyRule {
+            id: "d".into(), action: PolicyAction::Deny, app: "shop".into(), tool: Some("pay".into()), annotations: None,
+            agent: Some("cursor".into()), hooks: None,
+        };
+        assert!(describe_rule(&by_agent).contains("deny（call） app=shop tool=pay agent=cursor"), "{}", describe_rule(&by_agent));
         let rule = |id: &str| PolicyRule {
-            id: id.into(), action: PolicyAction::Hide, app: "shop".into(), tool: Some("admin.*".into()), annotations: None, hooks: None,
+            id: id.into(), action: PolicyAction::Hide, app: "shop".into(), tool: Some("admin.*".into()), annotations: None, agent: None, hooks: None,
         };
         add_rule(&path, rule(&id)).unwrap();
         assert!(add_rule(&path, rule(&id)).unwrap_err().to_string().contains("已有"));
-        let bad = PolicyRule { id: "bad".into(), action: PolicyAction::Hide, app: "a b".into(), tool: None, annotations: None, hooks: None };
+        let bad = PolicyRule { id: "bad".into(), action: PolicyAction::Hide, app: "a b".into(), tool: None, annotations: None, agent: None, hooks: None };
         assert!(add_rule(&path, bad).is_err());
         let c = load(&home).unwrap();
         assert_eq!(c.rules.len(), 1, "不合法的规则不写入");
@@ -324,7 +337,7 @@ mod tests {
         assert!(remove_rule(&path, &id).unwrap());
         assert!(!remove_rule(&path, &id).unwrap());
         assert!(load(&home).unwrap().is_empty());
-        assert_eq!(default_id(PolicyAction::Deny, "*", None), "deny-any");
+        assert_eq!(default_id(PolicyAction::Deny, "*", None, None), "deny-any");
         let _ = std::fs::remove_dir_all(&home.dir);
     }
 }

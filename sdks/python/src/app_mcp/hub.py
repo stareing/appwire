@@ -151,7 +151,7 @@ _LIMIT_KEYS = {
     "maxResourceBytes": "max_resource_bytes",
 }
 # 策略规则的 JSON 键 → PolicyRule / AnnotationMatch 字段（与 app-mcp-host 的 policy.json 相同；也接受 snake_case）。
-_RULE_KEYS = {"id": "id", "action": "action", "app": "app", "tool": "tool", "annotations": "annotations", "hooks": "hooks"}
+_RULE_KEYS = {"id": "id", "action": "action", "app": "app", "tool": "tool", "annotations": "annotations", "agent": "agent", "hooks": "hooks"}
 _ANNOTATION_KEYS = {
     "readOnlyHint": "read_only_hint",
     "destructiveHint": "destructive_hint",

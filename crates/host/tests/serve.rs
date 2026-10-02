@@ -678,6 +678,17 @@ async fn agent_registry_cli_and_tokens() {
     let report: Value = serde_json::from_slice(&doctor.stdout).unwrap();
     let check = report["checks"].as_array().unwrap().iter().find(|c| c["id"] == "agents").cloned().expect("agents 检查");
     assert_eq!(check["summary"], "claude（1 个任务）", "{check}");
+
+    // P2：只拒绝 claude 的规则——claude 的调用 POLICY_DENIED，本机主体照常
+    let (code, out, err) = policy_cli(&home.0, &["deny", "calc", "--tool", "math.*", "--agent", "claude"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("agent=claude"), "{out}");
+    let r = add(&client, 1, 2).await;
+    let e = &r.structured_content.as_ref().unwrap()["error"];
+    assert_eq!((e["kind"].as_str(), e["details"]["ruleId"].as_str()), (Some("POLICY_DENIED"), Some("deny-calc-math.any-for-claude")));
+    let local = mcp(serve.addr, None).await;
+    assert_ne!(add(&local, 1, 2).await.is_error, Some(true), "本机主体不受按 Agent 的规则影响");
+    let _ = local.cancel().await;
     let _ = client.cancel().await;
 
     let (code, _, err) = agent_cli(&home.0, &["remove", "claude"]);

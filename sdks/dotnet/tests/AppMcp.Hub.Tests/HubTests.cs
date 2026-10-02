@@ -161,13 +161,14 @@ public class HubBasicTests
                     Action = HubPolicyAction.Deny,
                     App = "*",
                     Annotations = new HubAnnotationMatch { DestructiveHint = true },
+                    Agent = "cursor",
                     Hooks = [HubPolicyHook.Call, HubPolicyHook.Wake],
                 },
             },
         };
         var json = JsonNode.Parse(new HubOptions { Policy = policy }.ToConfigJson())!["policy"]!["rules"]!.AsArray();
         Assert.Equal("""{"id":"hide-x","action":"hide","app":"shop*"}""", json[0]!.ToJsonString());
-        Assert.Equal("""{"id":"no-destructive","action":"deny","app":"*","annotations":{"destructiveHint":true},"hooks":["call","wake"]}""",
+        Assert.Equal("""{"id":"no-destructive","action":"deny","app":"*","annotations":{"destructiveHint":true},"agent":"cursor","hooks":["call","wake"]}""",
             json[1]!.ToJsonString());
         Assert.False(JsonNode.Parse(new HubOptions().ToConfigJson())!.AsObject().ContainsKey("policy"));
 
@@ -178,6 +179,7 @@ public class HubBasicTests
             Assert.Equal(HubPolicyAction.Deny, st.Rules[1].Action);
             Assert.Equal([HubPolicyHook.Call, HubPolicyHook.Wake], st.Rules[1].Hooks!);
             Assert.True(st.Rules[1].Annotations!.DestructiveHint);
+            Assert.Equal("cursor", st.Rules[1].Agent);
             Assert.Equal(0UL, st.Rules[0].Hits);
             Assert.Null(st.LastError);
         }

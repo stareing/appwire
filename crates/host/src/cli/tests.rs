@@ -201,8 +201,11 @@ fn parses_subcommands_and_legacy() {
     let cli = Cli::try_parse_from(["app-mcp-host", "status"]).unwrap();
     assert!(matches!(cli.command, Some(Command::Status(_))));
     let cli = Cli::try_parse_from(["app-mcp-host", "policy", "deny", "shop", "--tool", "pay*", "--wake"]).unwrap();
-    let Some(Command::Policy { action: PolicyCommand::Deny { rule, wake: true } }) = cli.command else { panic!() };
+    let Some(Command::Policy { action: PolicyCommand::Deny { rule, wake: true, agent: None } }) = cli.command else { panic!() };
     assert_eq!((rule.app.as_str(), rule.tool.as_deref()), ("shop", Some("pay*")));
+    let cli = Cli::try_parse_from(["app-mcp-host", "policy", "deny", "shop", "--agent", "cursor"]).unwrap();
+    let Some(Command::Policy { action: PolicyCommand::Deny { agent: Some(agent), .. } }) = cli.command else { panic!() };
+    assert_eq!(agent, "cursor");
     let cli = Cli::try_parse_from(["app-mcp-host", "policy", "reload", "--home", "/tmp/x"]).unwrap();
     assert!(matches!(cli.command, Some(Command::Policy { action: PolicyCommand::Reload(_) })));
 

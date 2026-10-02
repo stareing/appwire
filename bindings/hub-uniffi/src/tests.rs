@@ -764,7 +764,7 @@ fn limits_annotations_and_structured_result() {
 }
 
 fn rule(id: &str, action: PolicyAction, tool: &str) -> PolicyRule {
-    PolicyRule { id: id.into(), action, app: "notes".into(), tool: Some(tool.into()), annotations: None, hooks: None }
+    PolicyRule { id: id.into(), action, app: "notes".into(), tool: Some(tool.into()), annotations: None, hooks: None, agent: None }
 }
 
 /// 调用的错误类别：工具层面的失败在 `CallOutcome.error`，名称无法解析时为 `HubError::Tool`。
