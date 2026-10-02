@@ -154,6 +154,154 @@ pub mod dbus {
     }
 }
 
+/// Windows：每 App 每用户命名管道（spec/naming.md 4.3）。
+pub mod pipe {
+    use super::Address;
+
+    /// 管道完整名前缀（含 `\\.\pipe\`）；与 Host 自己的管道 `\\.\pipe\app-mcp-<SID>` 不同。
+    pub const PIPE_PREFIX: &str = r"\\.\pipe\appmcp-";
+    /// 激活参数：与 D-Bus 激活文件的 `Exec` 相同（`exec` / `aumid` 激活时追加），SDK 据此知道自己由名字服务激活。
+    pub const ACTIVATION_ARG: &str = super::dbus::ACTIVATION_ARG;
+    /// App 拒绝一条通道时写给 Hub 的一行（`<CODE>：<说明>\n`）的最大字节数；之后 App 断开。
+    pub const MAX_REFUSAL_LINE: usize = 512;
+
+    /// 地址 → 管道完整名：`\\.\pipe\appmcp-<SID>-<appId>`、`\\.\pipe\appmcp-<SID>-<appId>.<instance>`。
+    ///
+    /// @input `sid` 为当前用户 SID 字符串（`S-1-5-21-…`）。实例分隔符为 `.`（appId / instance 都可含 `-`，用 `-` 有歧义）。
+    pub fn pipe_name(sid: &str, address: &Address) -> String {
+        match &address.instance {
+            Some(i) => format!("{PIPE_PREFIX}{sid}-{}.{i}", address.app_id),
+            None => format!("{PIPE_PREFIX}{sid}-{}", address.app_id),
+        }
+    }
+
+    /// App 拒绝通道时写出的一行（不含换行）：`<CODE>：<说明>`，与 Android Binder 回复的写法相同（spec/naming.md 4.2）。
+    pub fn refusal_line(code: &str, detail: &str) -> String {
+        let mut line = format!("{code}：{}", detail.replace(['\r', '\n'], " "));
+        if line.len() >= MAX_REFUSAL_LINE {
+            let mut end = MAX_REFUSAL_LINE - 1;
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            line.truncate(end);
+        }
+        line
+    }
+
+    /// 解析 App 的拒绝行：返回（错误码，说明）；码不是本规范的码时按 `ACTIVATION_DENIED`。
+    pub fn parse_refusal(line: &str) -> (&'static str, String) {
+        let line = line.trim_end_matches(['\r', '\n']);
+        let (code, detail) = match line.split_once('：').or_else(|| line.split_once(':')) {
+            Some((c, d)) => (c.trim(), d.trim()),
+            None => (line.trim(), ""),
+        };
+        let code = super::codes::lookup(code).unwrap_or(super::codes::ACTIVATION_DENIED);
+        (code, detail.to_owned())
+    }
+
+    /// 两个 Windows 可执行文件路径是否指同一文件（纯字符串比较）：去掉 `\\?\` 前缀、`/` 视为 `\`、不区分大小写。
+    ///
+    /// @why `std::fs::canonicalize` 在 Windows 上返回 `\\?\C:\…`，而 `QueryFullProcessImageNameW` 返回 `C:\…`。
+    pub fn same_executable(a: &str, b: &str) -> bool {
+        normalize_executable(a) == normalize_executable(b)
+    }
+
+    /// [`same_executable`] 的比较形式（小写）。
+    pub fn normalize_executable(path: &str) -> String {
+        strip_verbatim(&path.replace('/', "\\")).to_lowercase()
+    }
+
+    /// 去掉 Windows 扩展长度前缀：`\\?\C:\…` → `C:\…`、`\\?\UNC\srv\…` → `\\srv\…`（登记文件按此写出）。
+    pub fn strip_verbatim(path: &str) -> String {
+        match path.strip_prefix(r"\\?\UNC\") {
+            Some(rest) => format!(r"\\{rest}"),
+            None => path.strip_prefix(r"\\?\").unwrap_or(path).to_owned(),
+        }
+    }
+}
+
+/// App 登记文件（spec/naming.md 5.3）：桌面平台共用的 JSON，由安装程序 / `app-mcp-host app install` / SDK 自报写入，
+/// Hub 只读（Windows 上是发现的唯一来源，4.3）。
+pub mod registration {
+    use serde::{Deserialize, Serialize};
+
+    /// 当前格式版本。
+    pub const REGISTRATION_VERSION: u32 = 1;
+
+    /// 激活方式（`activation.kind`）。
+    pub mod kinds {
+        /// Linux D-Bus 服务激活（`target` = 总线名）。
+        pub const DBUS: &str = "dbus";
+        /// Windows 未打包 App：Hub 直接运行 `target`（缺省为 `executable`）并追加 `--app-mcp-activation`（4.3，2026-10-02 加入）。
+        pub const EXEC: &str = "exec";
+        /// 协议激活（`target` = URI scheme），沿用 WakeDescriptor `uri`。
+        pub const URI: &str = "uri";
+        /// Windows 打包 App：`IApplicationActivationManager::ActivateApplication`（`target` = AUMID，参数 `--app-mcp-activation`）。
+        pub const AUMID: &str = "aumid";
+        /// 不可激活：只在 App 运行时可拨号。
+        pub const NONE: &str = "none";
+    }
+
+    /// 登记文件内容。路径字段为字符串（JSON 中的原文）。
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Registration {
+        pub registration_version: u32,
+        pub app_id: String,
+        #[serde(default)]
+        pub name: String,
+        /// `install` | `manual` | `self-report`。
+        pub source: String,
+        /// 静态清单的绝对路径。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub manifest: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub manifest_sha256: Option<String>,
+        /// 用于判断"已不存在"与核对通道对端（4.3：管道服务端进程映像）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub executable: Option<String>,
+        pub activation: Activation,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Activation {
+        /// [`kinds`] 之一；其他值按不可激活处理。
+        pub kind: String,
+        #[serde(default)]
+        pub target: String,
+    }
+
+    /// 登记文件名：`<appId>.json`。
+    pub fn file_name(app_id: &str) -> String {
+        format!("{app_id}.json")
+    }
+
+    /// 登记目录：`<数据目录>/app-mcp/apps`（Linux `$XDG_DATA_HOME`，Windows `%LOCALAPPDATA%`，5.3）。
+    pub fn apps_dir(data_root: &std::path::Path) -> std::path::PathBuf {
+        data_root.join("app-mcp").join("apps")
+    }
+
+    /// 解析并校验登记文件（5.3）：版本为 [`REGISTRATION_VERSION`]、`appId` 合法且与文件名中的 `expected_app_id` 一致。
+    ///
+    /// @error 返回中文说明（调用方记录后忽略该文件）。保留名由调用方另行拒绝（依赖清单 crate）。
+    pub fn parse(text: &str, expected_app_id: &str) -> Result<Registration, String> {
+        let reg: Registration = serde_json::from_str(text).map_err(|e| format!("登记文件不是有效的 JSON：{e}"))?;
+        if reg.registration_version != REGISTRATION_VERSION {
+            return Err(format!(
+                "不支持的 registrationVersion {}（本实现只支持 {REGISTRATION_VERSION}）",
+                reg.registration_version
+            ));
+        }
+        if !crate::is_valid_app_id(&reg.app_id) {
+            return Err(format!("appId「{}」不合法", reg.app_id));
+        }
+        if reg.app_id != expected_app_id {
+            return Err(format!("内容中的 appId「{}」与文件名「{expected_app_id}.json」不一致", reg.app_id));
+        }
+        Ok(reg)
+    }
+}
+
 /// 名字服务相关的错误码（spec/naming.md 第 12 节）。
 ///
 /// @compat 这些码尚未并入 [`crate::ConnectionErrorCode`]（spec/protocol.md 10.1 的表与各语言 SDK 的枚举共用），
@@ -189,6 +337,11 @@ pub mod codes {
         ACTIVATION_BLOCKED,
         HUB_UNSUPPORTED,
     ];
+
+    /// 错误码字符串 → 本模块的常量；不是本规范的码时为 `None`。
+    pub fn lookup(code: &str) -> Option<&'static str> {
+        ALL.iter().copied().find(|c| *c == code)
+    }
 }
 
 #[cfg(test)]
@@ -255,6 +408,63 @@ mod tests {
         ] {
             assert_eq!(dbus::parse_bus_name(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn pipe_names_use_dot_for_instance() {
+        let sid = "S-1-5-21-1-2-3-1001";
+        let d = Address::parse("appmcp://my-shop").unwrap();
+        assert_eq!(pipe::pipe_name(sid, &d), r"\\.\pipe\appmcp-S-1-5-21-1-2-3-1001-my-shop");
+        let i = Address::parse("appmcp://my-shop/w-2").unwrap();
+        assert_eq!(pipe::pipe_name(sid, &i), r"\\.\pipe\appmcp-S-1-5-21-1-2-3-1001-my-shop.w-2");
+        // 最长的地址仍在管道名上限内（spec/naming.md 4.3）。
+        let long = Address::new(&format!("a{}", "b".repeat(62)), Some(&format!("c{}", "d".repeat(31)))).unwrap();
+        let sid_max = "S-1-5-21-4294967295-4294967295-4294967295-4294967295";
+        assert!(crate::endpoint::check_pipe_name(&pipe::pipe_name(sid_max, &long)).is_ok());
+    }
+
+    #[test]
+    fn refusal_lines_round_trip() {
+        let line = pipe::refusal_line(codes::CHANNEL_LIMIT, "App 已有连接\n第二行");
+        assert_eq!(line, "CHANNEL_LIMIT：App 已有连接 第二行");
+        assert_eq!(pipe::parse_refusal(&format!("{line}\n")), (codes::CHANNEL_LIMIT, "App 已有连接 第二行".to_owned()));
+        assert_eq!(pipe::parse_refusal("ACTIVATION_DENIED: stopped"), (codes::ACTIVATION_DENIED, "stopped".to_owned()));
+        assert_eq!(pipe::parse_refusal("WHATEVER：x").0, codes::ACTIVATION_DENIED);
+        assert_eq!(pipe::parse_refusal("").0, codes::ACTIVATION_DENIED);
+        let long = pipe::refusal_line(codes::CHANNEL_LIMIT, &"长".repeat(400));
+        assert!(long.len() < pipe::MAX_REFUSAL_LINE && long.starts_with("CHANNEL_LIMIT："));
+        assert_eq!(codes::lookup("HUB_NOT_TRUSTED"), Some(codes::HUB_NOT_TRUSTED));
+        assert_eq!(codes::lookup("nope"), None);
+    }
+
+    #[test]
+    fn executable_paths_compare_canonically() {
+        assert!(pipe::same_executable(r"\\?\C:\Apps\Shop.exe", r"c:\apps\shop.EXE"));
+        assert!(pipe::same_executable("C:/Apps/Shop.exe", r"C:\Apps\Shop.exe"));
+        assert!(pipe::same_executable(r"\\?\UNC\srv\share\a.exe", r"\\srv\share\a.exe"));
+        assert!(!pipe::same_executable(r"C:\Apps\Shop.exe", r"C:\Apps\Other.exe"));
+        assert_eq!(pipe::strip_verbatim(r"\\?\C:\Apps\Shop.exe"), r"C:\Apps\Shop.exe");
+        assert_eq!(pipe::strip_verbatim("/opt/shop"), "/opt/shop");
+    }
+
+    #[test]
+    fn registration_parse_validates() {
+        let ok = r#"{"registrationVersion":1,"appId":"shop","name":"店","source":"manual",
+            "executable":"C:\\a\\shop.exe","activation":{"kind":"exec","target":""}}"#;
+        let reg = registration::parse(ok, "shop").unwrap();
+        assert_eq!(reg.activation.kind, registration::kinds::EXEC);
+        assert_eq!(reg.executable.as_deref(), Some(r"C:\a\shop.exe"));
+        assert_eq!(reg.manifest, None);
+        // 序列化往返（app install 写出、Hub 读入同一类型）。
+        let text = serde_json::to_string(&reg).unwrap();
+        assert!(!text.contains("manifest"), "{text}");
+        assert_eq!(registration::parse(&text, "shop").unwrap(), reg);
+        assert!(registration::parse(ok, "other").is_err(), "文件名不一致");
+        assert!(registration::parse(&ok.replace(":1,", ":2,"), "shop").is_err(), "版本");
+        assert!(registration::parse(&ok.replace("\"shop\"", "\"Shop\""), "Shop").is_err(), "appId 格式");
+        assert!(registration::parse("{", "shop").is_err());
+        assert!(registration::parse(r#"{"registrationVersion":1,"appId":"shop","source":"x"}"#, "shop").is_err(), "缺 activation");
+        assert_eq!(registration::file_name("shop"), "shop.json");
     }
 
     #[test]
