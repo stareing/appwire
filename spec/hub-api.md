@@ -339,17 +339,18 @@ pub struct Health {                          // serde camelCase
   旧 Host 不报告时为空。`app-mcp-host status` 的一行摘要与 doctor「App 实例」检查显示 listen 流数（旧 Host 不报告时省略）。
 - **调用方与 Agent 任务**（第 12 项 S4、第 16 项 P1；`crates/hub/src/task.rs`）：调用方的跨请求状态（`apps.select` 选择、已附带总览、
   租约、渐进暴露已列出的 App）记在该调用方的 **Agent 任务**上，任务按**调用方键**寻址，不挂在传输会话上。每个调用方键至多一个任务，
-  任务 ID 为 Hub 签发的 `task-<128 位随机数十六进制>`（当前只在内部与 debug 日志中使用；第 12 项 S8 作为显式句柄对外）。
+  任务 ID 为 Hub 签发的 `task-<128 位随机数十六进制>`（`/status` 只读展示；无会话请求可另开任务并以其 ID 为句柄，见下方「任务句柄」）。
 
   | 调用方 | 调用方键 | 任务寿命 |
   |---|---|---|
   | legacy MCP：处理过 `initialize` 的连接（stdio / `serve_mcp_stream` 的一条流，HTTP 的一个 `Mcp-Session-Id`），请求未在 `_meta` 声明 2026-07-28 及以后的版本 | `mcp:<n>` | 会话结束（行为与之前相同） |
   | 无会话 MCP 请求：不经 `initialize`、每请求自带协议 `_meta`（rmcp `server/discover` 生命周期），HTTP、IPC、stdio 一律如此 | `principal:<主体>` | 请求流空闲达 `task_idle_ttl` 后回收 |
   | Hub API（`CallRequest.session`、`ToolFilter.session`、`dispatch_in_session`） | `api` / `api:<session>` | `reset_session` |
+  | 无会话 MCP 请求出示任务句柄（参数 `taskId` / `_meta` `dev.appwire/taskId`，第 12 项 S8） | `principal:<主体>/<任务 ID>` | 同上一行的空闲回收，或 `apps.task.end` |
 
   主体只取自传输层凭据，不取自 `clientInfo`：TCP 上的本机令牌（及允许不带令牌的回环请求）、IPC 的同一用户、stdio 的父进程现在都是
-  `principal:local`（第 16 项 N5 按 Agent 发令牌后细分）。因此**所有无会话请求共用一个任务**（一个 Agent 的 `apps.select` /
-  `apps.release` 影响另一个，docs/plans/12-mcp-stateless.md R1）。无会话请求不登记 peer、处理器析构无副作用（rmcp 无状态 HTTP 路径
+  `principal:local`（第 16 项 N5 按 Agent 发令牌后细分）。因此**不带任务句柄的无会话请求共用一个任务**（一个 Agent 的 `apps.select` /
+  `apps.release` 影响另一个，docs/plans/12-mcp-stateless.md R1；需要隔离时用下方「任务句柄」）。无会话请求不登记 peer、处理器析构无副作用（rmcp 无状态 HTTP 路径
   每请求构造一次处理器），通知经 `subscriptions/listen`（上方「通知」）。无会话请求可协商 2026-07-28（上方「协议版本」），也可以
   2025-11-25 及以前的版本经 `server/discover` 到达；其列表与总览按 3.7「无会话请求的列表与总览」（第 12 项 S5）。
   **主体级 `apps.select`**（第 12 项 S6）：无会话请求的选择记在主体任务上，对该主体的所有无会话客户端生效，**不改变工具列表**；
@@ -359,6 +360,33 @@ pub struct Health {                          // serde camelCase
   `HubConfig.task_idle_ttl: Duration`（默认 `DEFAULT_TASK_IDLE_TTL` = 10 分钟，`0` = 不因空闲回收）：无会话调用方没有进行中的请求、
   距最近一次请求活动（与 3.5 租约的请求流空闲判定共用一份记录）达此时长时，回收其任务——收回仍未到期的租约（`ttlMs: 0`，其他调用方的
   未到期租约随后补发；已到期的不再发消息）、删除其租约统计与状态。没有按空闲回收的任务时 Hub 不设定时器。
+- **任务句柄**（第 12 项 S8、第 16 项 P1；`crates/hub/src/task_handle.rs`；名称见 3.15 名称表）：同一无会话主体经句柄同时运行多个互相隔离的
+  任务（各自的 `apps.select` 选择与租约）。只提供机制：开几个、何时结束由 Agent 决定。
+  - **签发** `apps.task.begin {}` → `{taskId, idleTtlMs, message}`：为请求主体创建一个新任务，`taskId` 即其任务 ID（≥128 位随机，
+    SEP-2567 的不可猜测要求），归该主体所有（其他主体出示与不存在相同）；`idleTtlMs` 为 `task_idle_ttl` 的毫秒数（`0` 时为 `null`）。
+    不读任何句柄通道（总是新开）。每个主体同时存在的句柄至多 `HubConfig.max_task_handles`（默认 `DEFAULT_MAX_TASK_HANDLES` = 32，B-07），
+    达到上限 → `RATE_LIMITED`（`data.limit`；与 listen 流上限相同，不带 `retryAfterMs`：释放靠 `apps.task.end` 或空闲回收）。
+    `max_task_handles = 0` 关闭句柄：`apps.task.*` 不列出，签发与出示句柄 → `INVALID_INPUT`（`task-handle-unsupported`）。
+  - **出示**（两条通道，取值相同可并存，不同 → `INVALID_INPUT`，不执行）：工具参数 `taskId`（模型可写，主通道）只在 `apps.list`、
+    `apps.select`、`apps.navigate`、`apps.activate`、`apps.release`、`apps.task.end`（必填）上；请求 `_meta` `dev.appwire/taskId` 对任何
+    `tools/call` 生效（含 App 工具与上游工具——App 工具的参数由 App 定义，Hub 不占用其 `taskId`，只能经此通道按任务路由；供自己实现客户端的
+    Agent 宿主，通用客户端不会填写，docs/plans/12-mcp-stateless.md 3.4）。出示后该调用的调用方即 `principal:<主体>/<任务 ID>`：选择、
+    租约、请求活动（空闲判定）、审批的 `ApprovalRequest.session` 都按该任务；`apps.overview` / `apps.tools` / `apps.page` 不持有按任务
+    区分的状态，不接受参数。资源读取（`resources/read`）不读句柄。
+  - **句柄任务的语义**与主体任务相同（列表与总览按无会话规则，3.7），差别只有：`apps.select` 选择只属于该任务、**不另设**
+    `principal_select_ttl`（随任务结束清除），结果文本写明任务 ID 与作用范围。
+  - **结束**：空闲达 `task_idle_ttl`（与主体任务同一回收循环；`0` 时不因空闲回收，只能 `apps.task.end`），或 `apps.task.end {taskId}`
+    → `{taskId, ended: true, released, message}`（收回其全部租约——其他调用方的未到期租约随后补发——并清除选择；`released` = 仍未到期的
+    租约数）；句柄已不存在时 `ended: false`（幂等）。
+  - **错误**（工具错误，MCP 结果 `isError: true`）：参数 / `_meta` 不是字符串、格式不是 `task-<32 位小写十六进制>`、两通道冲突 → `INVALID_INPUT`；
+    句柄不存在 / 已回收 / 属于其他主体 → `INVALID_INPUT`，`data.reason: "task-expired"`、`data.taskId`，消息说明回收原因并要求
+    `apps.task.begin` 取新句柄后重试、在新任务中重新 `apps.select`（可恢复；不新增错误类别，spec/protocol.md 第 4 节不变）；legacy MCP 会话
+    与 Hub API 出示句柄或调用 `apps.task.begin` → `INVALID_INPUT`，`data.reason: "task-handle-unsupported"`（它们已一会话一任务，
+    Hub API 用 `CallRequest.session` 区分；不静默忽略）。
+  - **列表**：`apps.task.begin` / `apps.task.end` 与上述工具 inputSchema 中的可选 `taskId` 只出现在无会话请求的 `tools/list`（且
+    `max_task_handles > 0`）；legacy 会话、`Hub::tools` / `export_tools` 的内置工具定义与之前逐字节相同。
+  - **`/status`**：句柄任务出现在 `tasks`，`caller` 为 `principal:<主体>/<任务 ID>`、`kind` 为 `principal`（`CallerKind` 不新增变体）。
+  - `HubConfig.max_task_handles` 暂未经 `app-mcp-host` 配置与各语言绑定暴露（取默认值）。
 - 校验顺序（`/mcp`、`/healthz`）：`Origin`（与 App 连接相同的允许列表，不通过 403）→ 路径 → 令牌（仅 `/mcp`）。
   令牌规则：`Authorization: Bearer <令牌>`；带 `Origin` 的请求必须携带；不带 `Origin` 的请求在
   `require_token_without_origin` 时必须携带；携带了错误令牌一律 401（带 `WWW-Authenticate: Bearer`）；空令牌视为未携带。常量时间比较。
@@ -575,6 +603,7 @@ pub const TOOL_APPS_TOOLS: &str = "apps.tools";    // app_mcp_hub::mcp
   （`Hub::select_instance`）、策略 `hide`、请求主体与 Hub 配置的函数，**不读**调用方任务上的展开记录与 `apps.select` 选择——
   两次 `tools/list` 之间夹任意 `apps.tools` / 工具调用 / `apps.select` / `apps.overview`，结果逐字节相同（MCP 2026-07-28：列表不随
   其他请求的副作用变化，SEP-2567）。列表顺序确定：内置工具在前，App 按 appId、上游按名称（均为有序表）。
+  内置工具另含 `apps.task.begin` / `apps.task.end` 与可选 `taskId` 参数（3.6「任务句柄」；`max_task_handles = 0` 时不含）。
   已知例外：同一 App 有多个已连接实例且都未聚焦时，`view` 工具取首选实例界面上的，而首选实例的"最近活跃"含"最近一次完成调用"
   （routing.rs，全局实例状态），调用可能改变列出哪个实例的 `view` 工具（docs/plans/12-mcp-stateless.md S5 记录 U8）。
 - **暴露方式**：`HubConfig.stateless_tool_exposure: ToolExposure`，**默认 `All`**（全部列出，不含 `apps.tools`）。设为
@@ -956,6 +985,8 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `apps.navigate` | 内置工具 | 显式导航（下文） |
 | `apps.activate` | 内置工具 | 只唤醒不调用（下文） |
 | `apps.release` | 内置工具 | 收回本会话在该 App 上的租约（下文） |
+| `apps.task.begin` / `apps.task.end` | 内置工具（只对无会话请求列出） | 签发 / 结束任务句柄（3.6「任务句柄」） |
+| `taskId` | 内置工具参数（`apps.list` / `select` / `navigate` / `activate` / `release` 可选，`apps.task.end` 必填） | 任务句柄（3.6「任务句柄」） |
 | `dev.appwire/status`、`dev.appwire/stateResource` | 结果 `_meta` | 结果状态（spec/protocol.md 3.2，3.2） |
 | `dev.appwire/routedTo` | 结果 `_meta` | 改调后台替代时实际调用的工具全名（3.14） |
 | `dev.appwire/callId` | 结果 `_meta`（每个工具调用结果） | 本次调用的 callId：即转交 App 的 `tools/invoke` 参数 `callId`（App handler 所见，如原生 `CallHandle::call_id()`）与 Hub 日志「转发工具调用」记录的 `call_id` 字段（同一记录带该 App 连接的 `cid`，spec/protocol.md 10.3）；Hub API 为 `CallOutcome.call_id` |
@@ -964,6 +995,7 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `dev.appwire/woke` | 结果 `_meta`（只在 App 工具结果中） | 本次调用是否经历了唤醒：调用时目标未连接（休眠实例、按清单冷启动、页面工具所在 App 未运行），唤醒回连后才送达；并发调用合并到同一次唤醒时各自为 `true`；Hub API 为 `CallOutcome.woke`（内置 / 上游工具恒为 `false`，`apps.activate` / `apps.navigate` 的结果自带 `woke`） |
 | `dev.appwire/timeoutMs` | 请求 `_meta`（`tools/call`） | Agent 的截止时间（下文） |
 | `dev.appwire/idempotencyKey` | 请求 `_meta`（`tools/call`） | Agent 的幂等键（下文） |
+| `dev.appwire/taskId` | 请求 `_meta`（`tools/call`，可选） | 任务句柄，与参数 `taskId` 等价、对任何工具调用生效（3.6「任务句柄」）；无旧前缀键 |
 
 **调用元信息**（第 19 项 R4）：`callId`、`durationMs` 在每个工具调用结果（含错误结果、内置与上游工具）的 `_meta` 中；`instanceId`、
 `woke` 见上表。只增字段：各 Hub 绑定按 JSON 透传 `CallOutcome` 的（hub-c v14、hub-node、`@app-mcp/hub`）带 `durationMs`、`woke`；

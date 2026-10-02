@@ -8,7 +8,10 @@
 //! | legacy MCP 会话（`initialize` 握手过的连接 / `Mcp-Session-Id`） | `mcp:<n>` | 会话结束（[`TaskLifetime::UntilEnd`]） |
 //! | 无会话（modern）MCP 请求：HTTP、IPC、stdio 一律如此 | `principal:<主体>` | 请求流空闲 `HubConfig::task_idle_ttl`（[`TaskLifetime::UntilIdle`]） |
 //! | Hub API（`CallRequest.session` 等） | `api` / `api:<session>` | `Hub::reset_session`（[`TaskLifetime::UntilEnd`]） |
+//! | 无会话请求带任务句柄（工具参数 `taskId` / `_meta` `dev.appwire/taskId`，第 12 项 S8） | `principal:<主体>/<任务 ID>` | 同主体（`apps.task.end` 可提前结束） |
 //!
+//! 任务句柄即 [`AgentTask::id`]：由 `apps.task.begin` 签发（[`TaskTable::begin_handle`]），归签发时的主体所有，
+//! 其他主体出示同一 ID 时与不存在相同。
 //! 本模块是纯状态（不做 I/O、不读时钟）。租约的发出与收回在 [`crate::lifecycle`]，空闲判定复用租约的请求流活动
 //! （[`crate::lease::LeaseBook`]，16 U9）。
 //!
@@ -71,19 +74,37 @@ pub enum CallerKind {
 pub(crate) struct CallerKey {
     key: String,
     kind: CallerKind,
+    /// 任务句柄的调用方（`principal:<主体>/<任务 ID>`）：种类仍为 [`CallerKind::Principal`]（无会话请求），任务 ID 来自句柄。
+    handle: bool,
+}
+
+/// 任务 ID 的前缀（[`AgentTask::id`]）。
+const TASK_ID_PREFIX: &str = "task-";
+/// 任务 ID 中随机数的十六进制位数（128 位）。
+const TASK_ID_HEX_LEN: usize = 32;
+
+/// 签发一个任务 ID：`task-` + 128 位随机数的十六进制（SEP-2567：无鉴权时句柄 ≥128 bit 随机，不可猜测）。
+fn new_task_id() -> String {
+    format!("{TASK_ID_PREFIX}{:0width$x}", rand::random::<u128>(), width = TASK_ID_HEX_LEN)
+}
+
+/// `id` 是否具有 Hub 签发的任务 ID 的格式（不代表该任务存在）。
+pub(crate) fn is_task_id(id: &str) -> bool {
+    id.strip_prefix(TASK_ID_PREFIX)
+        .is_some_and(|hex| hex.len() == TASK_ID_HEX_LEN && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
 }
 
 impl CallerKey {
     /// legacy MCP 会话。
     #[cfg(feature = "mcp-server")]
     pub(crate) fn mcp_session(id: u64) -> Self {
-        Self { key: format!("mcp:{id}"), kind: CallerKind::McpSession }
+        Self { key: format!("mcp:{id}"), kind: CallerKind::McpSession, handle: false }
     }
 
     /// 无会话的 MCP 请求：按主体。
     #[cfg(feature = "mcp-server")]
     pub(crate) fn principal(p: Principal) -> Self {
-        Self { key: format!("principal:{}", p.as_str()), kind: CallerKind::Principal }
+        Self { key: format!("principal:{}", p.as_str()), kind: CallerKind::Principal, handle: false }
     }
 
     /// Hub API 的会话（`None` = 默认会话）。
@@ -92,7 +113,35 @@ impl CallerKey {
             Some(s) => format!("api:{s}"),
             None => "api".to_owned(),
         };
-        Self { key, kind: CallerKind::Api }
+        Self { key, kind: CallerKind::Api, handle: false }
+    }
+
+    /// 主体名下的任务句柄 `task_id`（`owner` 为无会话主体的调用方键）。
+    ///
+    /// @input task_id 已通过 [`is_task_id`]（键中不会出现 `/` 等分隔字符）。
+    pub(crate) fn task_handle(owner: &CallerKey, task_id: &str) -> Self {
+        debug_assert!(owner.can_own_handles() && is_task_id(task_id));
+        Self { key: format!("{}/{task_id}", owner.key), kind: owner.kind, handle: true }
+    }
+
+    /// 可以签发 / 使用任务句柄的调用方：无会话主体本身（legacy 会话与 Hub API 已各有自己的任务，句柄不嵌套）。
+    pub(crate) fn can_own_handles(&self) -> bool {
+        self.kind == CallerKind::Principal && !self.handle
+    }
+
+    /// 任务句柄的调用方。
+    pub(crate) fn is_task_handle(&self) -> bool {
+        self.handle
+    }
+
+    /// 任务句柄的任务 ID；不是句柄时为 `None`。
+    pub(crate) fn handle_task_id(&self) -> Option<&str> {
+        self.handle.then(|| self.key.rsplit_once('/').map_or("", |(_, id)| id))
+    }
+
+    /// 本调用方键是否为 `owner` 名下的任务句柄。
+    fn is_handle_of(&self, owner: &CallerKey) -> bool {
+        self.handle && self.key.strip_prefix(owner.key.as_str()).is_some_and(|rest| rest.starts_with('/'))
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -125,7 +174,7 @@ impl fmt::Display for CallerKey {
 /// 一个 Agent 任务：调用方的跨请求状态。
 ///
 /// 后续项挂在这里，不另立对象：N5 Agent 身份、P2 按 Agent 匹配、P3 按 Agent 记账、N6 对象锁、第 17 项句柄、
-/// 第 12 项 S8 任务句柄（[`AgentTask::id`] 即句柄，经工具参数 / 结果传递）。
+/// 第 12 项 S8 任务句柄（[`AgentTask::id`] 即句柄，经工具参数 / 结果传递，[`CallerKey::task_handle`]）。
 #[derive(Debug)]
 pub(crate) struct AgentTask {
     /// Hub 签发的任务 ID：`task-` + 128 位随机数的十六进制（S8 作为显式句柄时满足 SEP-2567 的不可猜测要求）。
@@ -141,9 +190,9 @@ pub(crate) struct AgentTask {
 }
 
 impl AgentTask {
-    fn new() -> Self {
+    fn new(id: String) -> Self {
         Self {
-            id: format!("task-{:032x}", rand::random::<u128>()),
+            id,
             selected: HashMap::new(),
             delivered: HashMap::new(),
             leases: HashMap::new(),
@@ -213,12 +262,33 @@ impl TaskTable {
     }
 
     /// 调用方的任务；没有时创建（第一次写入状态时）。
+    ///
+    /// @why 句柄调用方的任务 ID 取自句柄：句柄在一次调用进行中被 `apps.task.end` 结束时，该调用随后写入的状态（如租约）
+    /// 重建的任务仍是同一 ID，且没有请求活动记录，下一轮空闲回收即收回（不会以另一个 ID 泄漏）。
     pub(crate) fn entry(&mut self, key: &CallerKey) -> &mut AgentTask {
         self.tasks.entry(key.clone()).or_insert_with(|| {
-            let task = AgentTask::new();
+            let task = AgentTask::new(key.handle_task_id().map_or_else(new_task_id, str::to_owned));
             tracing::debug!(caller = %key, task = %task.id, "创建 Agent 任务");
             task
         })
+    }
+
+    /// 为 `owner` 签发一个任务句柄并创建其任务。
+    ///
+    /// @error `owner` 名下已有 `max` 个句柄（B-07）→ `Err(max)`。
+    pub(crate) fn begin_handle(&mut self, owner: &CallerKey, max: usize) -> Result<CallerKey, usize> {
+        if self.handle_count(owner) >= max {
+            return Err(max);
+        }
+        let key = CallerKey::task_handle(owner, &new_task_id());
+        tracing::debug!(caller = %key, "签发 Agent 任务句柄");
+        self.entry(&key);
+        Ok(key)
+    }
+
+    /// `owner` 名下现有的任务句柄数。
+    pub(crate) fn handle_count(&self, owner: &CallerKey) -> usize {
+        self.tasks.keys().filter(|k| k.is_handle_of(owner)).count()
     }
 
     /// 结束任务（返回被移除的任务）。
@@ -273,6 +343,55 @@ mod tests {
         }
         let set: HashSet<&CallerKey> = keys.iter().map(|(k, _, _, _)| k).collect();
         assert_eq!(set.len(), keys.len());
+        assert!(keys.iter().all(|(k, _, _, _)| !k.is_task_handle()));
+        assert_eq!(keys.iter().filter(|(k, _, _, _)| k.can_own_handles()).count(), 1, "只有无会话主体可持有句柄");
+    }
+
+    #[test]
+    fn task_id_format() {
+        let id = new_task_id();
+        assert!(is_task_id(&id), "{id}");
+        for bad in ["", "task-", "task-0123", "TASK-0123456789abcdef0123456789abcdef", "task-0123456789ABCDEF0123456789abcdef",
+            "task-0123456789abcdef0123456789abcdeg", "task-0123456789abcdef0123456789abcdef0", "principal:local/task-0"] {
+            assert!(!is_task_id(bad), "{bad}");
+        }
+    }
+
+    /// 句柄：每个句柄一个独立任务（任务 ID = 句柄），归签发主体；数量上限；结束后同一句柄不复存在。
+    #[test]
+    fn task_handles_are_separate_tasks_with_cap() {
+        let mut t = TaskTable::default();
+        let p = CallerKey::principal(Principal::Local);
+        let a = t.begin_handle(&p, 2).expect("a");
+        let b = t.begin_handle(&p, 2).expect("b");
+        assert_eq!(t.begin_handle(&p, 2), Err(2), "超过上限");
+        assert_eq!(t.handle_count(&p), 2);
+        for k in [&a, &b] {
+            let id = k.handle_task_id().expect("id").to_owned();
+            assert!(is_task_id(&id) && k.as_str() == format!("principal:local/{id}"), "{k}");
+            assert_eq!(t.get(k).map(|x| x.id.clone()), Some(id));
+            assert!(k.is_task_handle() && k.is_stateless() && !k.can_own_handles());
+            assert_eq!((k.kind(), k.lifetime()), (CallerKind::Principal, TaskLifetime::UntilIdle));
+        }
+        assert_ne!(a, b);
+        // 主体自己的任务不是句柄，不计数；句柄的选择互不影响
+        t.entry(&p).select("shop", "p", Instant::now());
+        t.entry(&a).select("shop", "x", Instant::now());
+        assert_eq!(t.handle_count(&p), 2);
+        assert!(t.get(&b).is_some_and(|x| x.selected.is_empty()));
+        // 其他调用方名下没有句柄；与主体同前缀但不是句柄的键不计
+        assert_eq!(t.handle_count(&CallerKey::mcp_session(1)), 0);
+        let mut idle = t.idle_lifetime_keys();
+        idle.sort_by(|x, y| x.as_str().cmp(y.as_str()));
+        assert_eq!(idle.len(), 3, "句柄任务与主体任务都按空闲回收");
+        assert!(t.remove(&a).is_some());
+        assert!(t.get(&a).is_none());
+        assert_eq!(t.handle_count(&p), 1);
+        assert!(t.begin_handle(&p, 2).is_ok(), "结束一个后可再签发");
+        // 句柄键重建任务时沿用句柄的 ID
+        let id_b = t.get(&b).map(|x| x.id.clone());
+        t.remove(&b);
+        assert_eq!(Some(t.entry(&b).id.clone()), id_b);
     }
 
     #[test]

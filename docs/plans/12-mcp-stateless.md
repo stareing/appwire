@@ -1,6 +1,6 @@
 # 12 MCP 无状态协议：会话状态迁移、`_meta` 键名与错误码分区（方案）
 
-> 状态：方案（2026-10-02）；S1–S7 已实施（S2 的空结果问题在 S7 核实为不出现），剩 S8（见第 6 节各记录）。
+> 状态：方案（2026-10-02）；S1–S8 已实施（S2 的空结果问题在 S7 核实为不出现；S8 于 2026-10-03），见第 6 节各记录。
 > 与 `docs/plans/12-mcp-2026-07-28.md`（下称「12 迁移计划」）的分工：变更全表（M1–M9、m1–m10）、rmcp 能力核查、传输与版本路由
 > 以 12 迁移计划为准，本文件不重复定义；本文件只负责**依赖 MCP 会话的行为如何迁移**、`_meta` 键名、错误码分区三件事。
 > 本文件第 3 节与 12 迁移计划 3.2 表不一致处（见 3.6），以本文件为准，建议主会话在 12 迁移计划 3.2 / m10 加指向本文件的说明。
@@ -215,7 +215,7 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 | S5 | modern 列表规则（3.3）与总览改经 discover / `apps.tools`；`ttlMs` / `cacheScope` | S4；与 4c F 合并 | modern 下两次 `tools/list` 之间夹任意 `apps.tools` / 调用 / `apps.select`，结果逐字节相同；`server/discover.instructions` 含 App 简介。**已完成（2026-10-02）**，见下方 S5 记录 |
 | S6 | `apps.select` 主体级语义与 TTL；审批 `principal` 与 `client_name`；`/status` 新字段 | S4 | modern `apps.select` 后路由命中所选实例、列表不变；TTL 到期后回到默认路由。**已完成（2026-10-02）**，见下方 S6 记录 |
 | S7 | `subscriptions/listen`（12 迁移计划 M4）+ 默认放开 2026-07-28 | S1–S6 | Claude Code 2.1.281 实测：Host 日志无 `Mcp-Session-Id`、调用成功、App 上下线后列表刷新；回退开关恢复 legacy。**已完成（2026-10-02）**，见下方 S7 记录 |
-| S8 | P1 任务句柄（3.4）：`taskId` 工具参数 + 可选 `_meta` 通道 | 16 P1、N5 | 两个任务句柄各自的选择 / 租约互不影响；过期句柄返回可恢复错误 |
+| S8 | P1 任务句柄（3.4）：`taskId` 工具参数 + 可选 `_meta` 通道 | 16 P1、N5 | 两个任务句柄各自的选择 / 租约互不影响；过期句柄返回可恢复错误。**已完成（2026-10-03）**，见下方 S8 记录 |
 
 **S2 记录（2026-10-02，rmcp 锁定版本 3.5.0，源码 `~/.cargo/registry/src/*/rmcp-3.5.0`，未升级）**
 
@@ -374,6 +374,42 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 - 未做 / 未知：Host 配置与绑定接入 `mcp_protocol_mode` / `max_listen_*`（主会话）；`notifications/resources/updated` 未经 Claude Code 实测
   （Claude Code 本次未在 listen 中订阅资源 URI）；`/status` 一行摘要与 doctor 未显示 listen 流数（`crates/host` 不在本次范围）；
   调用中断开流 → App 收到 `call/cancel`（12 迁移计划 m-cancel）仍未专门验证；U2（客户端是否透传厂商 `_meta` 键）未验证。
+
+**S8 记录（2026-10-03）**
+
+- 决定（契约见 `spec/hub-api.md` 3.6「任务句柄」、3.15 名称表；名称只在 `crates/hub/src/names.rs` 定义）：
+  - **取得句柄**：新内置工具 `apps.task.begin {}` → `{taskId, idleTtlMs, message}`；`apps.task.end {taskId}` 提前结束（收回租约、清除选择，
+    句柄已不存在时 `ended: false`，幂等）。只为无会话主体签发，`taskId` 即 `AgentTask.id`（`task-<128 位十六进制>`），归签发主体；
+    调用方键 `principal:<主体>/<任务 ID>`（`CallerKind` 仍为 `Principal`，未加公开枚举变体——hub-uniffi 对它是穷举匹配）。
+  - **出示**：参数 `taskId`（`apps.list` / `select` / `navigate` / `activate` / `release` 可选，`apps.task.end` 必填）为主通道；
+    `_meta` `dev.appwire/taskId` 对任何 `tools/call` 生效（含 App / 上游工具）。两者同值可并存、不同 → `INVALID_INPUT`。`apps.overview` /
+    `apps.tools` / `apps.page` 对无会话调用方不持有按任务的状态，不接受；`resources/read` 不读句柄。
+  - **寿命与上限**：复用 `task_idle_ttl` 与同一空闲回收循环（签发时记一次请求活动），不新增定时器；每主体至多
+    `HubConfig.max_task_handles`（默认 32，`0` = 关闭）→ 超出 `RATE_LIMITED`（`data.limit`，与 listen 流上限同一先例）。
+    句柄任务的 `apps.select` 不另设 `principal_select_ttl`（隔离已由句柄提供）。
+  - **过期 / 不存在**：`INVALID_INPUT` + `data.reason: "task-expired"`、`data.taskId`，消息写明回收原因与"`apps.task.begin` 取新句柄、
+    重新 `apps.select`"。选 `INVALID_INPUT`：出示的参数值已无效；`RESOURCE_NOT_FOUND` 指 MCP 资源，新增类别需改 spec/protocol.md
+    第 4 节契约，不值得。其他主体出示同一 ID 与不存在相同（不泄露存在性）。
+  - **legacy 会话 / Hub API**：出示句柄或调用 `apps.task.begin` → `INVALID_INPUT`（`reason: task-handle-unsupported`）；不带句柄时行为
+    不变，且它们的内置工具列表与 inputSchema 逐字节不变（`apps.task.*` 与 `taskId` 只出现在无会话请求的 `tools/list`）。
+  - 竞态：解析句柄时先核对存在、再取请求活动守卫、再核对一次（守卫持有期间任务不会被空闲回收）；`apps.task.end` 与同一句柄上进行中的
+    调用并发时，该调用之后写入的租约会以同一 ID 重建任务，因无活动记录在下一轮回收循环即被收回（`TaskTable::entry` 注释）。
+- 实现：`crates/hub/src/task_handle.rs`（新：`enter_task`、`apps.task.begin` / `end`）；`task.rs`（`CallerKey::task_handle`、`is_task_id`、
+  `TaskTable::begin_handle` / `handle_count`，句柄任务 ID 取自句柄）；`call.rs`（`HubShared::call` 先 `enter_task`、`Invocation::bare`、
+  内置工具定义按 `with_tasks` 取舍）；`hub.rs`（`max_task_handles`、`selection_ttl` 只给主体本身、`task_handles_for`）；`request_meta.rs`
+  （`_meta` 键校验）；`mcp.rs`（`_meta` 传入 `CallCtx.task_id`）。
+- 测试：`mcp::tests::task_handles_isolate_selections_and_leases`（rmcp 2026-07-28 客户端：两个句柄的选择经参数与 `_meta` 两条通道分开、
+  `apps.list` 各自显示、App 工具经 `_meta` 按任务路由、租约各自持有、release / end 一个不影响另一个与主体任务、结束后的句柄得可恢复错误、
+  再次 end 幂等、legacy 列表无 `apps.task.*` 与 `taskId`）、`task_handle_expiry_cap_conflict_and_legacy`（上限 `RATE_LIMITED`、两通道冲突、
+  格式 / 类型错误、legacy 出示与签发被拒且其选择照旧、空闲回收后可恢复错误并释放上限、`max_task_handles = 0` 不列出）；单测
+  `task::tests::{task_id_format, task_handles_are_separate_tasks_with_cap}`、`task_handle::tests::*`（通道表）、
+  `request_meta::tests::task_id_must_be_string`。e2e `m1.test.ts`：modern 列表 = legacy 列表 + `apps.task.*`；两个标签页用例中经真实 HTTP
+  开两个句柄分别选定 A / B、各自 `apps.list` 正确、结束一个后得 `task-expired`、legacy 出示句柄得 `task-handle-unsupported`。
+  T-10：去掉调用方替换、去掉上限核对，对应测试分别失败（1 / 2 个），恢复后通过。
+- 未做 / 未知：Claude Code 是否会把 `taskId` 当作普通参数稳定回传未实测（U2 仍未验证 `_meta` 透传）；通用客户端的 App 工具调用无法按
+  任务路由（App 工具 schema 由 App 定义，只能经 `_meta`，3.4 已预见）——对 Claude Code 等通用客户端，句柄目前只隔离内置工具上的选择与
+  租约；`max_task_handles` 未接入 `app-mcp-host` 配置与各绑定；N5（按 Agent 细分主体）、P2 按 Agent 匹配、P3 记账、N6 锁、第 17 项
+  句柄归属仍挂在任务对象上待做。
 
 顺序：S3（独立缺陷修复，可立即做）→ S1 → S2 → S4 → S5、S6（可并行）→ S7 → S8（随第 16 项 P1）。
 总验收：`cargo test -p app-mcp-hub -p app-mcp-host`、`cargo clippy --workspace --all-targets` 0 警告；默认配置（S7 前）e2e 不变；

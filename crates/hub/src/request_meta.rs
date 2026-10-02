@@ -1,4 +1,4 @@
-//! MCP `tools/call` 请求 `_meta` 中 Agent 给出的调用控制（spec/hub-api.md 3.15）：截止时间与幂等键。
+//! MCP `tools/call` 请求 `_meta` 中 Agent 给出的调用控制（spec/hub-api.md 3.15）：截止时间、幂等键与任务句柄（3.6）。
 //!
 //! 纯函数：只解析与校验（信任边界，G-02），不读时钟、不依赖 rmcp 类型。
 
@@ -7,7 +7,9 @@ use std::time::Duration;
 use app_mcp_protocol::{ErrorKind, MAX_IDEMPOTENCY_KEY_LEN, ToolError};
 use serde_json::{Map, Value};
 
-use crate::names::{LEGACY_META_IDEMPOTENCY_KEY, LEGACY_META_TIMEOUT_MS, META_IDEMPOTENCY_KEY, META_TIMEOUT_MS};
+use crate::names::{
+    LEGACY_META_IDEMPOTENCY_KEY, LEGACY_META_TIMEOUT_MS, META_IDEMPOTENCY_KEY, META_TASK_ID, META_TIMEOUT_MS,
+};
 
 /// Agent 给出的调用控制。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -16,6 +18,8 @@ pub(crate) struct AgentCallMeta {
     pub timeout: Option<Duration>,
     /// [`META_IDEMPOTENCY_KEY`]：原样转交 App。
     pub idempotency_key: Option<String>,
+    /// [`META_TASK_ID`]：任务句柄（只校验是字符串；格式与是否有效在解析调用方时判定，[`crate::task_handle`]）。
+    pub task_id: Option<String>,
 }
 
 fn invalid(message: String) -> ToolError {
@@ -52,7 +56,7 @@ fn pick<'a>(meta: &'a Map<String, Value>, key: &str, legacy: &str) -> Result<Opt
 /// 从请求 `_meta` 取出调用控制；键缺省时为 `None`。
 ///
 /// @error `INVALID_INPUT`：`dev.appwire/timeoutMs` 不是正整数；`dev.appwire/idempotencyKey` 不是 1..=256 个字符的字符串；
-/// 新旧键取值冲突（见 [`pick`]）。
+/// 新旧键取值冲突（见 [`pick`]）；`dev.appwire/taskId` 不是字符串。
 #[cfg_attr(not(feature = "mcp-server"), allow(dead_code))]
 pub(crate) fn parse(meta: &Map<String, Value>) -> Result<AgentCallMeta, ToolError> {
     let timeout = match pick(meta, META_TIMEOUT_MS, LEGACY_META_TIMEOUT_MS)? {
@@ -70,7 +74,12 @@ pub(crate) fn parse(meta: &Map<String, Value>) -> Result<AgentCallMeta, ToolErro
         }
         Some(_) => return Err(invalid_idempotency_key()),
     };
-    Ok(AgentCallMeta { timeout, idempotency_key })
+    let task_id = match meta.get(META_TASK_ID) {
+        None => None,
+        Some(Value::String(id)) => Some(id.clone()),
+        Some(v) => return Err(invalid(format!("_meta「{META_TASK_ID}」必须是字符串（apps.task.begin 返回的 taskId），收到 {v}。"))),
+    };
+    Ok(AgentCallMeta { timeout, idempotency_key, task_id })
 }
 
 /// 本次调用的等待上限：Agent 的截止时间与配置值取较小者；Agent 没给时为 `None`（用配置值）。
@@ -122,6 +131,18 @@ mod tests {
     fn keys_use_reverse_domain_prefix() {
         assert_eq!(META_TIMEOUT_MS, "dev.appwire/timeoutMs");
         assert_eq!(META_IDEMPOTENCY_KEY, "dev.appwire/idempotencyKey");
+        assert_eq!(META_TASK_ID, "dev.appwire/taskId");
+    }
+
+    #[test]
+    fn task_id_must_be_string() {
+        let id = "task-0123456789abcdef0123456789abcdef";
+        assert_eq!(parse(&meta(json!({ META_TASK_ID: id }))).unwrap().task_id.as_deref(), Some(id));
+        for bad in [json!(7), json!(null), json!({"id": id})] {
+            let e = parse(&meta(json!({ META_TASK_ID: bad }))).unwrap_err();
+            assert_eq!(e.kind, ErrorKind::InvalidInput);
+            assert!(e.message.contains(META_TASK_ID), "{}", e.message);
+        }
     }
 
     #[test]

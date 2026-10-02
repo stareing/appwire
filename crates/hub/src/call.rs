@@ -44,8 +44,9 @@ use crate::upstream::decode_uri_component;
 /// 内置工具名（唯一定义在 [`crate::names`]）。
 pub use crate::names::{
     BUILTIN_APP_ID, TOOL_APPS_ACTIVATE, TOOL_APPS_LIST, TOOL_APPS_NAVIGATE, TOOL_APPS_OVERVIEW, TOOL_APPS_PAGE,
-    TOOL_APPS_RELEASE, TOOL_APPS_SELECT, TOOL_APPS_TOOLS,
+    TOOL_APPS_RELEASE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN, TOOL_APPS_TASK_END, TOOL_APPS_TOOLS,
 };
+use crate::names::{ARG_TASK_ID, TASK_SCOPED_TOOLS};
 
 /// 静态工具在 App 已连接但没有实例注册时的描述前缀（spec/manifest.md 第 5 节）。
 pub const UNAVAILABLE_PREFIX: &str = "[当前不可用] ";
@@ -72,6 +73,8 @@ pub(crate) struct CallCtx {
     pub principal: Option<String>,
     /// MCP 出口：客户端自报的名称，仅供显示（[`ApprovalRequest::client_name`]）。
     pub client_name: Option<String>,
+    /// MCP 请求 `_meta` 出示的任务句柄（`dev.appwire/taskId`）；调用开始时与参数 `taskId` 一并解析为调用方（[`crate::task_handle`]）。
+    pub task_id: Option<String>,
 }
 
 /// 合并后的进度出口（[`CallCtx::progress`]）。
@@ -92,6 +95,7 @@ impl CallCtx {
             idempotency_key: req.idempotency_key,
             principal: None,
             client_name: None,
+            task_id: None,
         }
     }
 }
@@ -124,6 +128,21 @@ pub(crate) struct Invocation {
 }
 
 impl Invocation {
+    /// 未路由到实例的结果（内置工具、名称无法解析、调用开始前即失败）；其余字段由调用方补填。
+    fn bare(call_id: &str, app_id: Option<&str>, body: Body) -> Self {
+        Self {
+            call_id: call_id.to_owned(),
+            app_id: app_id.map(str::to_owned),
+            instance_id: None,
+            overview: None,
+            body,
+            output_shape: OutputShape::Undeclared,
+            routed_to: None,
+            duration_ms: 0,
+            woke: false,
+        }
+    }
+
     /// MCP 出口的结果：总览在内容最前面。
     pub(crate) fn to_mcp(&self) -> Result<CallToolResult, McpError> {
         let mut r = match &self.body {
@@ -276,7 +295,16 @@ impl HubShared {
     ) -> Invocation {
         let started = tokio::time::Instant::now();
         let call_id = ctx.call_id.clone().unwrap_or_else(|| self.new_call_id());
-        let _activity = self.session_request(&ctx.caller);
+        // 任务句柄（参数 taskId / _meta）决定调用方；活动守卫持有到调用结束（进行中的任务不被空闲回收）。
+        let args = ctx.arguments.clone();
+        let (ctx, _activity) = match self.enter_task(ctx, &args) {
+            Ok(entered) => entered,
+            Err(body) => {
+                let mut inv = Invocation::bare(&call_id, None, Body::Builtin(body));
+                inv.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                return inv;
+            }
+        };
         let (tx, rx) = oneshot::channel::<()>();
         let token = self.next_id();
         lock(&self.calls).insert(call_id.clone(), (token, tx));
@@ -308,17 +336,7 @@ impl HubShared {
         } else {
             ctx.arguments.clone()
         };
-        let inv = |app_id: Option<&str>, body: Body| Invocation {
-            call_id: call_id.to_owned(),
-            app_id: app_id.map(str::to_owned),
-            instance_id: None,
-            overview: None,
-            body,
-            output_shape: OutputShape::Undeclared,
-            routed_to: None,
-            duration_ms: 0,
-            woke: false,
-        };
+        let inv = |app_id: Option<&str>, body: Body| Invocation::bare(call_id, app_id, body);
 
         if let Some(Err(e)) = ctx.idempotency_key.as_deref().map(crate::request_meta::check_idempotency_key) {
             return inv(None, Body::Builtin(Err(e)));
@@ -1046,6 +1064,12 @@ impl HubShared {
                     self.notify_session_tools_changed(id);
                 }
                 let message = match self.selection_ttl(key) {
+                    // 任务句柄（S8）：选择只属于该任务。
+                    None if key.is_task_handle() => format!(
+                        "在任务 {} 中，之后对 {app_id} 的调用将优先路由到实例 {instance_id}（该实例注册了对应工具且仍连接时）。只影响\
+                         出示同一 taskId 的调用，随任务结束或空闲回收清除；工具列表不变。",
+                        key.handle_task_id().unwrap_or_default()
+                    ),
                     // 主体级选择（S6）：说明作用范围与有效期，工具列表不变。
                     Some(ttl) => format!(
                         "之后对 {app_id} 的调用将优先路由到实例 {instance_id}（该实例注册了对应工具且仍连接时）。该选择对本机所有\
@@ -1143,6 +1167,8 @@ impl HubShared {
                     }
                 })
             }
+            TOOL_APPS_TASK_BEGIN => self.builtin_task_begin(ctx),
+            TOOL_APPS_TASK_END => self.builtin_task_end(ctx),
             _ => return None,
         })
     }
@@ -1303,15 +1329,49 @@ fn obj(v: Value) -> Map<String, Value> {
 }
 
 /// 内置工具（MCP 形式）。`with_apps_tools`：是否包含 `apps.tools`（只在渐进暴露生效时列出）；`with_apps_page`：是否包含
-/// `apps.page` 与 `apps.navigate`（只在有页面目录时列出）。不列出时也都可调用。
-pub(crate) fn builtin_tools(with_apps_tools: bool, with_apps_page: bool) -> Vec<Tool> {
+/// `apps.page` 与 `apps.navigate`（只在有页面目录时列出）。不列出时也都可调用。`with_tasks`：是否包含 `apps.task.*` 与各工具的
+/// `taskId` 参数（只对可用任务句柄的无会话请求列出，[`HubShared::task_handles_for`]）；不列出时 legacy 会话与 Hub API 的定义与
+/// 句柄出现之前逐字节相同。
+pub(crate) fn builtin_tools(with_apps_tools: bool, with_apps_page: bool, with_tasks: bool) -> Vec<Tool> {
     let mut tools = all_builtin_tools();
     let page_tool = |n: &str| n == TOOL_APPS_PAGE || n == TOOL_APPS_NAVIGATE;
-    tools.retain(|t| (with_apps_tools || t.name != TOOL_APPS_TOOLS) && (with_apps_page || !page_tool(&t.name)));
+    let task_tool = |n: &str| n == TOOL_APPS_TASK_BEGIN || n == TOOL_APPS_TASK_END;
+    tools.retain(|t| {
+        (with_apps_tools || t.name != TOOL_APPS_TOOLS) && (with_apps_page || !page_tool(&t.name)) && (with_tasks || !task_tool(&t.name))
+    });
+    if !with_tasks {
+        for t in &mut tools {
+            let mut schema = (*t.input_schema).clone();
+            if let Some(Value::Object(props)) = schema.get_mut("properties")
+                && props.remove(ARG_TASK_ID).is_some()
+            {
+                t.input_schema = Arc::new(schema);
+            }
+        }
+    }
     tools
 }
 
+/// 全部内置工具；[`TASK_SCOPED_TOOLS`] 的 inputSchema 带可选 `taskId`（`apps.task.end` 中必填）。
 fn all_builtin_tools() -> Vec<Tool> {
+    let mut tools = base_builtin_tools();
+    for t in tools.iter_mut().filter(|t| TASK_SCOPED_TOOLS.contains(&&*t.name)) {
+        let mut schema = (*t.input_schema).clone();
+        if let Some(Value::Object(props)) = schema.get_mut("properties") {
+            props.insert(
+                ARG_TASK_ID.to_owned(),
+                json!({
+                    "type": "string",
+                    "description": "任务句柄（apps.task.begin 返回）：在该任务中操作，实例选择与租约与其他任务互不影响。省略 = 不带任务的默认调用方"
+                }),
+            );
+        }
+        t.input_schema = Arc::new(schema);
+    }
+    tools
+}
+
+fn base_builtin_tools() -> Vec<Tool> {
     vec![
         Tool::new(
             TOOL_APPS_LIST,
@@ -1421,6 +1481,29 @@ fn all_builtin_tools() -> Vec<Tool> {
         .with_annotations(
             ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
         ),
+        Tool::new(
+            TOOL_APPS_TASK_BEGIN,
+            "开始一个独立的任务，返回任务句柄 taskId。同时进行多件互不相关的事（如分别操作同一 App 的两个实例）时，在 apps.select / \
+             apps.list / apps.activate / apps.release / apps.navigate 的参数中带各自的 taskId，实例选择与保活（租约）按任务分开、\
+             互不影响。任务空闲一段时间后自动回收，用完可调用 apps.task.end。",
+            obj(json!({ "type": "object", "properties": {}, "additionalProperties": false })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(false).open_world(false),
+        ),
+        Tool::new(
+            TOOL_APPS_TASK_END,
+            "结束 apps.task.begin 开始的任务：收回它对 App 的保活（租约）并清除它的实例选择，句柄随后失效。任务不存在时什么也不做。",
+            obj(json!({
+                "type": "object",
+                "properties": {},
+                "required": [ARG_TASK_ID],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
+        ),
     ]
 }
 
@@ -1431,8 +1514,8 @@ fn builtin_schema(name: &str) -> Option<Value> {
         .map(|t| Value::Object((*t.input_schema).clone()))
 }
 
-pub(crate) fn builtin_hub_tools(with_apps_tools: bool, with_apps_page: bool) -> Vec<HubTool> {
-    builtin_tools(with_apps_tools, with_apps_page)
+pub(crate) fn builtin_hub_tools(with_apps_tools: bool, with_apps_page: bool, with_tasks: bool) -> Vec<HubTool> {
+    builtin_tools(with_apps_tools, with_apps_page, with_tasks)
         .into_iter()
         .map(|t| {
             let name = t.name.to_string();
@@ -1984,7 +2067,7 @@ mod tests {
 
     #[test]
     fn builtins_and_upstream_risk() {
-        let b = builtin_hub_tools(false, false);
+        let b = builtin_hub_tools(false, false, false);
         let names: Vec<&str> = b.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release"]);
         assert_eq!(b[0].tool, "list");
@@ -1992,11 +2075,11 @@ mod tests {
         // apps.activate / apps.release 改变 App 状态：非只读，风险按注解推导为 write
         assert_eq!((b[3].risk, b[3].annotations.read_only_hint, b[3].annotations.idempotent_hint), (Risk::Write, Some(false), Some(true)));
         assert!(b.iter().all(|t| t.surface.is_none() && t.page.is_none()));
-        let b = builtin_hub_tools(true, false);
+        let b = builtin_hub_tools(true, false, false);
         assert_eq!(b.len(), 6);
         assert_eq!(b[3].name, "apps.tools");
         // 有页面目录时另有 apps.page 与 apps.navigate
-        let names: Vec<String> = builtin_hub_tools(false, true).into_iter().map(|t| t.name).collect();
+        let names: Vec<String> = builtin_hub_tools(false, true, false).into_iter().map(|t| t.name).collect();
         assert!(names.contains(&"apps.page".to_owned()) && names.contains(&"apps.navigate".to_owned()));
         assert!(builtin_schema("apps.navigate").is_some(), "未列出时也可调用");
         assert!(builtin_schema("apps.select").is_some());

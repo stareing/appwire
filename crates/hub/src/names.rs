@@ -20,6 +20,16 @@ pub const TOOL_APPS_NAVIGATE: &str = "apps.navigate";
 pub const TOOL_APPS_ACTIVATE: &str = "apps.activate";
 /// 收回本会话在某个 App 上的租约（spec/hub-api.md 3.15）。
 pub const TOOL_APPS_RELEASE: &str = "apps.release";
+/// 签发一个 Agent 任务句柄（spec/hub-api.md 3.6「任务句柄」，第 12 项 S8）。
+pub const TOOL_APPS_TASK_BEGIN: &str = "apps.task.begin";
+/// 结束一个 Agent 任务句柄：收回其租约、清除其选择（spec/hub-api.md 3.6「任务句柄」）。
+pub const TOOL_APPS_TASK_END: &str = "apps.task.end";
+
+/// 任务句柄的工具参数名（与 [`META_TASK_ID`] 等价）。
+pub const ARG_TASK_ID: &str = "taskId";
+/// 接受 [`ARG_TASK_ID`] 参数的内置工具（持有按任务区分的状态：选择、租约；[`TOOL_APPS_TASK_END`] 中为必填）。
+pub const TASK_SCOPED_TOOLS: [&str; 6] =
+    [TOOL_APPS_LIST, TOOL_APPS_SELECT, TOOL_APPS_NAVIGATE, TOOL_APPS_ACTIVATE, TOOL_APPS_RELEASE, TOOL_APPS_TASK_END];
 
 // ---- MCP 结果 `_meta`（Hub → Agent）----
 
@@ -45,6 +55,10 @@ pub const META_WOKE: &str = "dev.appwire/woke";
 pub const META_TIMEOUT_MS: &str = "dev.appwire/timeoutMs";
 /// Agent 的幂等键：原样进入 `ToolsInvokeParams.idempotencyKey`（spec/protocol.md 3.3）。
 pub const META_IDEMPOTENCY_KEY: &str = "dev.appwire/idempotencyKey";
+
+/// 可选的任务句柄通道：与工具参数 [`ARG_TASK_ID`] 等价，且对任何工具调用（含 App 工具）生效
+/// （供自己实现客户端的 Agent 宿主；模型写不进 `_meta`，见 spec/hub-api.md 3.6「任务句柄」）。
+pub const META_TASK_ID: &str = "dev.appwire/taskId";
 
 /// 弃用期内仍接受的旧请求键（[`META_TIMEOUT_MS`] 的旧名；与新键同时出现且取值不同时显式失败）。
 pub const LEGACY_META_TIMEOUT_MS: &str = "app-mcp/timeoutMs";

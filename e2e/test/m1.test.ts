@@ -18,6 +18,16 @@ let tabB: Page | undefined
 let modern: McpClient
 
 const STATIC_TOOLS = ['shop.catalog.search', 'shop.info', 'shop.deliveryEstimate']
+/** 只对无会话（modern）请求列出的内置工具：任务句柄（docs/plans/12-mcp-stateless.md S8，spec/hub-api.md 3.6）。 */
+const MODERN_ONLY_TOOLS = ['apps.task.begin', 'apps.task.end']
+
+/** modern 的工具列表 = legacy 的列表 + 任务句柄工具。 */
+async function expectModernToolsMatch(legacyNames: string[]): Promise<void> {
+  const names = await modern.toolNames()
+  for (const n of MODERN_ONLY_TOOLS) expect(names).toContain(n)
+  expect(names.filter((n) => !MODERN_ONLY_TOOLS.includes(n))).toEqual(legacyNames)
+  for (const n of MODERN_ONLY_TOOLS) expect(legacyNames).not.toContain(n)
+}
 
 beforeAll(async () => {
   // M1 行为：Host 不唤醒（--waker none），App 未打开时调用返回 APP_DISCONNECTED + 启动地址（自动唤醒见 lifecycle.test.ts）
@@ -122,7 +132,7 @@ describe('M1 验收', () => {
     await waitFor(() => modern.countSince('notifications/tools/list_changed', modernSince) > 0, 'modern 收到 tools/list_changed')
     const note = modern.notifications.slice(modernSince).find((n) => n.method === 'notifications/tools/list_changed')!
     expect(note.params?._meta?.['io.modelcontextprotocol/subscriptionId']).toBe(modern.subscriptionId)
-    expect(await modern.toolNames()).toEqual(await mcp().toolNames())
+    await expectModernToolsMatch(await mcp().toolNames())
     expect(JSON.stringify(ok(await modern.callTool('shop.catalog.search', { keyword: '耳机' })))).toContain('耳机')
   })
 
@@ -250,6 +260,31 @@ describe('M1 验收', () => {
     expect((await shopApp()).selectedInstanceId).toBe(idB)
     expect(await addAndLocate('选定 B')).toBe('b')
 
+    // modern 任务句柄（S8）：同一主体的两个任务各自选择不同实例，互不影响，也不影响不带 taskId 的调用；结束后的句柄得到可恢复错误
+    const begin = async () => ok(await modern.callTool('apps.task.begin')).taskId as string
+    const t1 = await begin()
+    const t2 = await begin()
+    expect(t1).toMatch(/^task-[0-9a-f]{32}$/)
+    expect(t2).not.toBe(t1)
+    ok(await modern.callTool('apps.select', { appId: 'shop', instanceId: idA, taskId: t1 }))
+    ok(await modern.callTool('apps.select', { appId: 'shop', instanceId: idB, taskId: t2 }))
+    const selectedIn = async (taskId?: string) =>
+      ok(await modern.callTool('apps.list', taskId ? { taskId } : {})).apps.find((a: any) => a.appId === 'shop').selectedInstanceId
+    expect(await selectedIn(t1)).toBe(idA)
+    expect(await selectedIn(t2)).toBe(idB)
+    expect(await selectedIn()).toBeFalsy()
+    expect(ok(await modern.callTool('apps.task.end', { taskId: t2 })).ended).toBe(true)
+    const gone = await modern.callTool('apps.list', { taskId: t2 })
+    expect(gone.isError).toBe(true)
+    expect(gone.structuredContent.error).toMatchObject({ kind: 'INVALID_INPUT', details: { reason: 'task-expired', taskId: t2 } })
+    expect(texts(gone).join('\n')).toContain('apps.task.begin')
+    expect(await selectedIn(t1)).toBe(idA)
+    ok(await modern.callTool('apps.task.end', { taskId: t1 }))
+    // legacy 会话出示句柄被显式拒绝，其选择不变
+    const legacyWithTask = await mcp().callTool('apps.list', { taskId: t1 })
+    expect(legacyWithTask.structuredContent.error).toMatchObject({ kind: 'INVALID_INPUT', details: { reason: 'task-handle-unsupported' } })
+    expect((await shopApp()).selectedInstanceId).toBe(idB)
+
     // 选定的标签页关闭后回到默认规则（A）
     await tabB.close()
     tabB = undefined
@@ -262,7 +297,7 @@ describe('M1 验收', () => {
     await tabA.close()
     const names = await waitTools((n) => !n.includes('shop.todos.add'), '运行时工具移除')
     await waitFor(() => modern.countSince('notifications/tools/list_changed', modernSince) > 0, 'modern 收到 tools/list_changed')
-    expect(await modern.toolNames()).toEqual(names)
+    await expectModernToolsMatch(names)
     expect(modern.sessionIdsSeen).toEqual([])
     for (const n of STATIC_TOOLS) expect(names).toContain(n)
     const r = await mcp().callTool('shop.catalog.search', { keyword: '' })

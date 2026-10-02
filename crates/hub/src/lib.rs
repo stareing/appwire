@@ -45,6 +45,7 @@ pub mod routing;
 pub mod schema;
 mod subscribers;
 mod task;
+mod task_handle;
 pub mod tool_def;
 pub mod types;
 pub mod upstream;
@@ -67,7 +68,7 @@ pub use policy::{
 };
 pub use connector::{BlockedTarget, ConnectorError, Connector, DialedChannel, DiscoveredName, NameEvent};
 pub use hub::{
-    DEFAULT_CHANNEL_GRACE, DEFAULT_MAX_LISTEN_RESOURCES, DEFAULT_MAX_LISTEN_STREAMS, DEFAULT_NAVIGATE_TIMEOUT, DEFAULT_PRINCIPAL_SELECT_TTL, DEFAULT_PROGRESS_INTERVAL, DEFAULT_STATELESS_LIST_TTL, DEFAULT_TASK_IDLE_TTL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
+    DEFAULT_CHANNEL_GRACE, DEFAULT_MAX_LISTEN_RESOURCES, DEFAULT_MAX_LISTEN_STREAMS, DEFAULT_MAX_TASK_HANDLES, DEFAULT_NAVIGATE_TIMEOUT, DEFAULT_PRINCIPAL_SELECT_TTL, DEFAULT_PROGRESS_INTERVAL, DEFAULT_STATELESS_LIST_TTL, DEFAULT_TASK_IDLE_TTL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
     load_manifests, parse_resource_uri, resource_uri,
 };
 #[cfg(feature = "mcp-server")]

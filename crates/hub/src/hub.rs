@@ -220,7 +220,16 @@ pub struct HubConfig {
     pub max_listen_streams: usize,
     /// 一个 listen 流接受的资源 URI 数上限（超出的不接受，确认通知中只列出接受的部分）。默认 [`DEFAULT_MAX_LISTEN_RESOURCES`]。
     pub max_listen_resources: usize,
+    /// 每个主体同时存在的任务句柄数上限（`apps.task.begin`，spec/hub-api.md 3.6「任务句柄」，B-07）；达到上限时签发以
+    /// `RATE_LIMITED` 失败。`0` = 不提供任务句柄（`apps.task.*` 不列出，`taskId` 一律无效）。默认 [`DEFAULT_MAX_TASK_HANDLES`]。
+    pub max_task_handles: usize,
 }
+
+/// [`HubConfig::max_task_handles`] 的默认值。
+///
+/// @why 32：一个 Agent 通常同时只有一到几个并行任务；N5 之前本机所有无会话 Agent 共用一个主体，32 足够多个 Agent 并存，
+/// 又限制了异常 Agent 反复签发句柄占用的任务表与租约（每个句柄任务空闲 `task_idle_ttl` 后回收）。
+pub const DEFAULT_MAX_TASK_HANDLES: usize = 32;
 
 /// [`HubConfig::max_listen_streams`] 的默认值。
 ///
@@ -320,6 +329,7 @@ impl Default for HubConfig {
             mcp_protocol_mode: McpProtocolMode::Auto,
             max_listen_streams: DEFAULT_MAX_LISTEN_STREAMS,
             max_listen_resources: DEFAULT_MAX_LISTEN_RESOURCES,
+            max_task_handles: DEFAULT_MAX_TASK_HANDLES,
         }
     }
 }
@@ -851,10 +861,16 @@ impl HubShared {
         out
     }
 
-    /// 调用方 `apps.select` 选择的空闲有效期：只有无会话调用方（主体级选择）有（[`HubConfig::principal_select_ttl`]）。
+    /// 调用方 `apps.select` 选择的空闲有效期：只有无会话主体本身（主体级选择）有（[`HubConfig::principal_select_ttl`]）。
+    /// 任务句柄的选择只属于该任务，随任务结束 / 空闲回收清除，不另设有效期。
     pub(crate) fn selection_ttl(&self, key: &CallerKey) -> Option<Duration> {
         let ttl = self.config.principal_select_ttl;
-        (key.is_stateless() && !ttl.is_zero()).then_some(ttl)
+        (key.can_own_handles() && !ttl.is_zero()).then_some(ttl)
+    }
+
+    /// 该调用方是否可签发 / 列出任务句柄（`apps.task.*` 与 `taskId` 参数）：无会话主体本身，且 [`HubConfig::max_task_handles`] > 0。
+    pub(crate) fn task_handles_for(&self, key: &CallerKey) -> bool {
+        key.can_own_handles() && self.config.max_task_handles > 0
     }
 
     /// 路由用：调用方的 `apps.select` 优先（无会话调用方的选择过期即移除、未过期则续期），其次 [`Hub::select_instance`]。
@@ -1020,7 +1036,7 @@ impl HubShared {
         let exposed = self.exposed_apps(key);
         let listed = |app_id: &str| exposed.as_ref().is_none_or(|e| e.contains(app_id));
         let policy = self.policy();
-        let mut tools = call::builtin_tools(exposed.is_some(), self.has_pages());
+        let mut tools = call::builtin_tools(exposed.is_some(), self.has_pages(), self.task_handles_for(key));
         self.registry().visit_tools(listed, |app_id, t, availability| {
             if policy.tool_hidden(app_id, &t.name, Some(&t.effective_annotations())).is_none() {
                 tools.push(call::to_mcp_tool(app_id, t, availability));
@@ -1634,7 +1650,7 @@ impl HubShared {
     /// `with_apps_tools`：内置工具是否包含 `apps.tools`（渐进暴露生效时才列出）。
     /// `app`：只取 appId（或上游名）满足条件的 App / 上游工具（先过滤再构造，构造会解析 schema）；内置工具总是包含。
     pub(crate) fn all_tools(&self, with_apps_tools: bool, with_apps_page: bool, app: impl Fn(&str) -> bool) -> Vec<(HubTool, bool)> {
-        let mut out: Vec<(HubTool, bool)> = call::builtin_hub_tools(with_apps_tools, with_apps_page)
+        let mut out: Vec<(HubTool, bool)> = call::builtin_hub_tools(with_apps_tools, with_apps_page, false)
             .into_iter()
             .map(|t| (t, true))
             .collect();
@@ -1662,7 +1678,7 @@ impl HubShared {
 
     /// 全部工具的全名（顺序同 [`Self::all_tools`]，只取名称，不构造定义）。
     fn all_tool_names(&self) -> Vec<String> {
-        let mut out: Vec<String> = call::builtin_hub_tools(true, true).into_iter().map(|t| t.name).collect();
+        let mut out: Vec<String> = call::builtin_hub_tools(true, true, false).into_iter().map(|t| t.name).collect();
         self.registry().visit_tools(|_| true, |app_id, t, _| out.push(format!("{app_id}.{}", t.name)));
         for (name, st) in lock(&self.upstreams).iter() {
             out.extend(st.tools.iter().map(|t| format!("{name}.{}", t.name)));
@@ -2308,6 +2324,7 @@ impl Hub {
             idempotency_key: None,
             principal: None,
             client_name: None,
+            task_id: None,
         };
         let inv = self.shared.call(ctx, std::future::pending()).await;
         let r = match inv.to_mcp() {
