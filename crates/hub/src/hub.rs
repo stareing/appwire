@@ -29,6 +29,7 @@ use crate::types::{AppOverviewInfo, ApprovalHandler, DiagnosticReport, HubEvent,
 use crate::upstream::UpstreamState;
 use crate::wake::Waker;
 
+mod accounting;
 mod api;
 mod catalog;
 mod config;
@@ -139,6 +140,8 @@ pub struct HubShared {
     pub(crate) lease_changed: Notify,
     /// 调用限流状态与每 App 的拒绝计数（spec/hub-api.md 3.11）。
     pub(crate) rates: Mutex<RateBook>,
+    /// 按调用方记账（第 16 项 P3，[`crate::usage`]）。
+    pub(crate) usage: Mutex<crate::usage::UsageBook>,
     /// 生效的策略规则、命中计数与最近的加载错误（spec/hub-api.md 3.13）。
     pub(crate) policy: Mutex<PolicyState>,
     /// 已登记 Agent 的令牌（[`HubConfig::agents`]，运行中由 [`Hub::set_agents`] 整体替换）。
@@ -229,6 +232,7 @@ impl HubShared {
             persist,
             lease_changed: Notify::new(),
             rates: Mutex::new(RateBook::default()),
+            usage: Mutex::new(crate::usage::UsageBook::default()),
             policy: Mutex::new(policy),
             agents: Mutex::new(agents),
             tools_rev: tokio::sync::watch::Sender::new(0),

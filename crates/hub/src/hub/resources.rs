@@ -21,7 +21,7 @@ impl HubShared {
         app_id: &str,
         name: &str,
         selected: Option<String>,
-        agent: Option<&str>,
+        caller: &crate::task::CallerKey,
     ) -> Result<(ResourceInfo, ResourcesReadResult), ToolError> {
         // 只有休眠实例提供该资源：先唤醒（spec/lifecycle.md §9）。
         let plan = self
@@ -29,7 +29,7 @@ impl HubShared {
             .wake_plan_resource(app_id, name, selected.as_deref());
         let selected = match plan {
             Some(plan) => {
-                self.check_wake_policy(app_id, None, agent)?;
+                self.admit_wake(app_id, None, caller)?;
                 Some(self.wake_and_wait(&plan, std::pin::pin!(std::future::pending::<()>())).await?)
             }
             None => selected,

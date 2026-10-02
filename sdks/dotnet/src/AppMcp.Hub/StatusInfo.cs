@@ -47,7 +47,31 @@ public sealed record HubStatusInfo(
     public IReadOnlyList<AgentTaskStatusInfo>? Tasks { get; init; }
     /// <summary>进行中的 subscriptions/listen 流数（spec/hub-api.md 3.6「通知」；McpSessions 只计 legacy 会话）；旧 Hub 为 null。</summary>
     public int? McpListenStreams { get; init; }
+    /// <summary>已登记的 Agent 名（第 16 项 N5，不含令牌）；旧 Hub 为 null。</summary>
+    public IReadOnlyList<string>? Agents { get; init; }
+    /// <summary>按调用方记账（第 16 项 P3），按 Subject 排序；旧 Hub 为 null。</summary>
+    public IReadOnlyList<UsageStatusInfo>? Usage { get; init; }
 }
+
+/// <summary>
+/// 一个记账主体的用量（第 16 项 P3）。Subject：agent:&lt;名&gt; / local / api / other；Wakes：为该主体发起的唤醒
+/// （与进行中的唤醒合并的也计入）；Apps：按 App 细分；AppsTruncated：细分条目达上限后新 App 只计入合计。
+/// </summary>
+public sealed record UsageStatusInfo(
+    string Subject,
+    ulong Calls,
+    ulong Wakes,
+    ulong RateLimited,
+    ulong ArgumentsBytes,
+    ulong ResultBytes,
+    IReadOnlyList<AppUsageStatusInfo> Apps)
+{
+    public string? Agent { get; init; }
+    public bool AppsTruncated { get; init; }
+}
+
+/// <summary>一个 App 上的用量（UsageStatusInfo.Apps 的一项）。</summary>
+public sealed record AppUsageStatusInfo(string AppId, ulong Calls, ulong Wakes, ulong RateLimited, ulong ArgumentsBytes, ulong ResultBytes);
 
 /// <summary>
 /// 一个 Agent 任务（AgentTaskStatus）。Id：Hub 签发的 "task-&lt;128 位十六进制&gt;"；Caller：调用方键 "mcp:&lt;n&gt;" /
@@ -64,6 +88,8 @@ public sealed record AgentTaskStatusInfo(
 {
     /// <summary>距最近一次请求活动的毫秒数；没有活动记录时为 null。</summary>
     public ulong? IdleMs { get; init; }
+    /// <summary>发起方 Agent 名（第 16 项 N5）；本机主体与 Hub API 为 null。</summary>
+    public string? Agent { get; init; }
 }
 
 /// <summary>一项 apps.select 选择；ExpiresInMs：距失效的毫秒数（主体级选择），不单独过期时为 null。</summary>

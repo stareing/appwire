@@ -94,6 +94,10 @@
  *   · JSON 中新增：HubStatus.mcpListenStreams（进行中的 subscriptions/listen 流数）。
  * - v17（任务句柄，spec/hub-api.md 3.6「任务句柄」）：只做新增，AM_HUB_API_VERSION 仍为 3。
  *   · am_hub_start 配置新增可选字段 maxTaskHandles。
+ * - v18（按 Agent 的策略与记账，第 16 项 P2 / P3，spec/hub-api.md 3.11 / 3.13）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · limits 新增可选字段 agentRatePerMinute / agentRateBurst（每个已登记 Agent 一级限流，缺省不限）；
+ *     policy 规则新增可选字段 agent（只用于 deny）。
+ *   · JSON 中新增：HubStatus.agents（已登记的 Agent 名）、HubStatus.usage（按调用方记账）、tasks[].agent。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H

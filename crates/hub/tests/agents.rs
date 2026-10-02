@@ -290,6 +290,22 @@ impl app_mcp_native::ToolHandler for Echo {
     }
 }
 
+/// 在线的商城 App（工具 `cart.add`），等到 Hub 注册了它的工具。
+async fn start_shop(hub: &Hub) -> app_mcp_native::NativeClient {
+    let mut c = app_mcp_native::NativeConfig::new("shop", "商城");
+    c.host_url = format!("ws://{}/app", hub.listen_addr().unwrap());
+    c.lifecycle.mode = app_mcp_native::LifecycleMode::Persistent;
+    let app = app_mcp_native::NativeClient::new(c, None).expect("client");
+    app.register_tool(app_mcp_native::ToolSpec::new("cart.add", "加入购物车"), std::sync::Arc::new(Echo)).expect("tool");
+    app.start();
+    let deadline = std::time::Instant::now() + T;
+    while !hub.status().apps.iter().any(|a| a.app_id == "shop" && a.tools.len() == 1) {
+        assert!(std::time::Instant::now() < deadline, "App 未注册工具");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    app
+}
+
 /// 第 16 项 P2：按 Agent 的 `deny` 规则只拒绝该 Agent 的调用（`POLICY_DENIED` 带规则 id），其他 Agent 与本机主体照常；
 /// 工具对所有 Agent 都列出（`deny` 不改变列表）。
 #[tokio::test(flavor = "multi_thread")]
@@ -310,17 +326,7 @@ async fn deny_rule_applies_only_to_named_agent() {
     .await
     .expect("hub");
     let addr = hub.listen_addr().unwrap();
-    let mut c = app_mcp_native::NativeConfig::new("shop", "商城");
-    c.host_url = format!("ws://{addr}/app");
-    c.lifecycle.mode = app_mcp_native::LifecycleMode::Persistent;
-    let app = app_mcp_native::NativeClient::new(c, None).expect("client");
-    app.register_tool(app_mcp_native::ToolSpec::new("cart.add", "加入购物车"), std::sync::Arc::new(Echo)).expect("tool");
-    app.start();
-    let deadline = std::time::Instant::now() + T;
-    while !hub.status().apps.iter().any(|a| a.app_id == "shop" && a.tools.len() == 1) {
-        assert!(std::time::Instant::now() < deadline, "App 未注册工具");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    let app = start_shop(&hub).await;
 
     let denied = modern_call(addr, Some(CURSOR), "shop.cart.add", json!({})).await.json();
     let err = &denied["result"]["structuredContent"]["error"];
@@ -331,6 +337,50 @@ async fn deny_rule_applies_only_to_named_agent() {
     }
     let hits = hub.policy().rules[0].hits;
     assert_eq!(hits, 1, "只有 cursor 的调用命中");
+    app.stop();
+    hub.shutdown().await;
+}
+
+/// 第 16 项 P3：每 Agent 一级限流（跨所有 App 合计，`scope: agent`）只作用于该 Agent；`/status` 的 `usage` 按主体记调用、
+/// 被限流次数与字节数，按 App 细分。
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_quota_and_usage_accounting() {
+    let mut limits = app_mcp_hub::LimitPolicy::unlimited();
+    limits.agent_rate = app_mcp_hub::RateLimit { per_minute: 1, burst: 2 };
+    let hub = Hub::start(HubConfig {
+        listen: Some("127.0.0.1:0".into()),
+        listen_alternates: Vec::new(),
+        ipc_endpoint: None,
+        mcp_http: true,
+        agents: agents(&[("claude", CLAUDE), ("cursor", CURSOR)]),
+        limits,
+        ..Default::default()
+    })
+    .await
+    .expect("hub");
+    let addr = hub.listen_addr().unwrap();
+    let app = start_shop(&hub).await;
+
+    for _ in 0..2 {
+        let r = modern_call(addr, Some(CLAUDE), "shop.cart.add", json!({"n": 1})).await.json();
+        assert_ne!(r["result"]["isError"], true, "{r}");
+    }
+    let r = modern_call(addr, Some(CLAUDE), "shop.cart.add", json!({"n": 1})).await.json();
+    let e = &r["result"]["structuredContent"]["error"];
+    assert_eq!((e["kind"].as_str(), e["details"]["scope"].as_str()), (Some("RATE_LIMITED"), Some("agent")), "{r}");
+    for token in [Some(CURSOR), None, None, None] {
+        let r = modern_call(addr, token, "shop.cart.add", json!({})).await.json();
+        assert_ne!(r["result"]["isError"], true, "其他 Agent 与本机不受 claude 的配额影响：{r}");
+    }
+
+    let usage = hub.status().usage.expect("usage");
+    let of = |subject: &str| usage.iter().find(|u| u.subject == subject).cloned().unwrap_or_else(|| panic!("{subject}: {usage:?}"));
+    let claude = of("agent:claude");
+    assert_eq!((claude.agent.as_deref(), claude.total.calls, claude.total.rate_limited), (Some("claude"), 2, 1));
+    assert_eq!(claude.total.arguments_bytes, 2 * r#"{"n":1}"#.len() as u64);
+    assert!(claude.total.result_bytes > 0);
+    assert_eq!((claude.apps.len(), claude.apps[0].app_id.as_str(), claude.apps[0].counts.calls), (1, "shop", 2));
+    assert_eq!((of("agent:cursor").total.calls, of("local").total.calls, of("local").agent.clone()), (1, 3, None));
     app.stop();
     hub.shutdown().await;
 }

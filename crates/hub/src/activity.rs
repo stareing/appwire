@@ -286,7 +286,8 @@ mod tests {
         waiter.await.unwrap();
     }
 
-    #[tokio::test]
+    /// @why 暂停时钟：真实时间下倒计时与断言之间的调度延迟取决于机器负载（满载时偶发失败）。
+    #[tokio::test(start_paused = true)]
     async fn gate_waits_for_in_progress_accept_and_counts_admitted_connection() {
         let a = Activity::default();
         // 一个接受循环正持有许可（accept 刚返回、尚未登记连接）

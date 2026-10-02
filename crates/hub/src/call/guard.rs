@@ -6,27 +6,39 @@ use serde_json::{Value, json};
 use crate::hub::{HubShared, lock};
 use crate::limits::{OutputValidation, Payload};
 use crate::schema::{self, SchemaCheck};
+use crate::task::CallerKey;
 use crate::tool_def::ToolDef;
+use crate::usage::UsageEvent;
 use crate::types::{ApprovalRequest, HubTool};
 
 use super::{CallCtx, CancelFut, cancelled};
 
 impl HubShared {
-    /// 转发前的资源保护（spec/hub-api.md 3.11）：参数大小上限，然后（App, 工具）与 App 两级限流。
-    /// 超出时计入该 App 的拒绝计数，返回 `PAYLOAD_TOO_LARGE` / `RATE_LIMITED`。
-    pub(crate) fn guard_call(&self, app_id: &str, tool: &str, args: &Value) -> Result<(), ToolError> {
+    /// 转发前的资源保护（spec/hub-api.md 3.11）：参数大小上限，然后（App, 工具）、App 与（发起方为已登记 Agent 时）每 Agent
+    /// 三级限流。超出时计入该 App 的拒绝计数，返回 `PAYLOAD_TOO_LARGE` / `RATE_LIMITED`。通过的调用与被限流的调用为 `caller`
+    /// 记账（第 16 项 P3）。
+    pub(crate) fn guard_call(&self, app_id: &str, tool: &str, args: &Value, caller: &CallerKey) -> Result<(), ToolError> {
         let limits = &self.config.limits;
-        if limits.max_arguments_bytes > 0 {
-            let size = serde_json::to_vec(args).map_or(0, |v| v.len());
-            if let Err(e) = Payload::Arguments.check(size, limits.max_arguments_bytes, &format!("工具「{app_id}.{tool}」")) {
-                lock(&self.rates).record_too_large(app_id);
-                return Err(e);
-            }
+        let size = serde_json::to_vec(args).map_or(0, |v| v.len());
+        if limits.max_arguments_bytes > 0
+            && let Err(e) = Payload::Arguments.check(size, limits.max_arguments_bytes, &format!("工具「{app_id}.{tool}」"))
+        {
+            lock(&self.rates).record_too_large(app_id);
+            return Err(e);
         }
         let now = tokio::time::Instant::now();
-        lock(&self.rates)
-            .acquire(limits, app_id, tool, now)
-            .map_err(|r| r.to_error(app_id, tool))
+        let agent = caller.agent().map(crate::agents::AgentName::as_str);
+        let acquired = lock(&self.rates).acquire(limits, app_id, tool, agent, now);
+        match acquired {
+            Ok(()) => {
+                self.record_usage(caller, app_id, UsageEvent::Call { arguments_bytes: size as u64 });
+                Ok(())
+            }
+            Err(r) => {
+                self.record_usage(caller, app_id, UsageEvent::RateLimited);
+                Err(r.to_error(app_id, tool))
+            }
+        }
     }
 
     /// 结果 / 资源内容的大小上限；超出时计入该 App 的拒绝计数。
@@ -94,9 +106,17 @@ impl HubShared {
         }
     }
 
-    /// 结果到达后的处理：大小上限 → 解析 → 按 [`OutputValidation`] 核对 `outputSchema`。
-    pub(super) fn accept_result(&self, app_id: &str, tool: &str, info: &ToolDef, v: Value) -> Result<ToolsInvokeResult, ToolError> {
+    /// 结果到达后的处理：为调用方记结果字节 → 大小上限 → 解析 → 按 [`OutputValidation`] 核对 `outputSchema`。
+    pub(super) fn accept_result(
+        &self,
+        app_id: &str,
+        tool: &str,
+        info: &ToolDef,
+        v: Value,
+        caller: &CallerKey,
+    ) -> Result<ToolsInvokeResult, ToolError> {
         let size = serde_json::to_vec(&v).map_or(0, |b| b.len());
+        self.record_usage(caller, app_id, UsageEvent::Result { bytes: size as u64 });
         self.guard_payload(app_id, Payload::Result, size, &format!("工具「{app_id}.{tool}」"))?;
         let r = match serde_json::from_value::<ToolsInvokeResult>(v.clone()) {
             Ok(r) => r,
@@ -129,9 +149,12 @@ impl HubShared {
     }
 
     /// App 返回的错误：与结果一样受结果大小上限约束（`USER_ACTION_REQUIRED` 等错误的说明来自 App，spec/protocol.md 第 4 节），
-    /// 超出时返回 `PAYLOAD_TOO_LARGE`；否则原样转为 [`ToolError`]。
-    pub(crate) fn accept_error(&self, app_id: &str, tool: &str, rpc: &app_mcp_protocol::RpcError) -> ToolError {
+    /// 超出时返回 `PAYLOAD_TOO_LARGE`；否则原样转为 [`ToolError`]。`caller`：工具调用的调用方（记结果字节）；导航等内置操作为 `None`。
+    pub(crate) fn accept_error(&self, app_id: &str, tool: &str, rpc: &app_mcp_protocol::RpcError, caller: Option<&CallerKey>) -> ToolError {
         let size = serde_json::to_vec(rpc).map_or(0, |b| b.len());
+        if let Some(c) = caller {
+            self.record_usage(c, app_id, UsageEvent::Result { bytes: size as u64 });
+        }
         match self.guard_payload(app_id, Payload::Result, size, &format!("工具「{app_id}.{tool}」")) {
             Err(e) => e,
             Ok(()) => rpc.to_tool_error(),

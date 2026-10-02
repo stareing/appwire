@@ -118,7 +118,7 @@ fn parses_limits() {
     assert!(parse_output_validation("strict").is_err());
     let cli = Cli::try_parse_from([
         "app-mcp-host", "serve", "--tool-rate-limit", "10", "--app-rate-burst", "3", "--max-arguments-bytes", "0",
-        "--max-resource-bytes", "99", "--output-validation", "off",
+        "--max-resource-bytes", "99", "--output-validation", "off", "--agent-rate-limit", "30", "--agent-rate-burst", "5",
     ])
     .unwrap();
     let Some(Command::Serve(s)) = cli.command else {
@@ -132,6 +132,8 @@ fn parses_limits() {
             app_rate_burst: Some(3),
             max_arguments_bytes: Some(0),
             max_resource_bytes: Some(99),
+            agent_rate_per_minute: Some(30),
+            agent_rate_burst: Some(5),
             ..Default::default()
         }
     );

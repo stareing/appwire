@@ -270,7 +270,7 @@ impl HubShared {
                 navigation_reason::UNSUPPORTED,
             );
         }
-        let e = self.accept_error(app_id, method::NAVIGATE, rpc);
+        let e = self.accept_error(app_id, method::NAVIGATE, rpc, None);
         match e.kind {
             ErrorKind::NavigationFailed
             | ErrorKind::NavigationDenied

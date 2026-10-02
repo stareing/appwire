@@ -170,6 +170,7 @@ impl HubShared {
             dormant_store: self.persist.as_ref().map(crate::lifecycle::Persist::status),
             tasks: Some(tasks),
             agents: Some(lock(&self.agents).names()),
+            usage: Some(lock(&self.usage).status()),
         }
     }
 

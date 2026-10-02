@@ -2,7 +2,6 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
 use app_mcp_protocol::{ErrorKind, ToolError};
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
@@ -14,6 +13,7 @@ use crate::hub::{HubShared, lock};
 use crate::limits::Payload;
 use crate::mcp_convert::OutputShape;
 use crate::navigate;
+use crate::usage::UsageEvent;
 
 use super::{Body, CallCtx, CancelFut, Invocation, ToolRun, cancelled, unknown_app};
 use super::builtin_defs::builtin_schema;
@@ -93,7 +93,7 @@ impl HubShared {
             && let Some(peer) = self.upstream_peer(app_id)
         {
             let guard = if args.is_object() {
-                self.check_call_policy(app_id, tool, ctx.agent()).and_then(|()| self.guard_call(app_id, tool, &args))
+                self.check_call_policy(app_id, tool, ctx.agent()).and_then(|()| self.guard_call(app_id, tool, &args, &ctx.caller))
             } else {
                 Ok(())
             };
@@ -114,7 +114,7 @@ impl HubShared {
                     match approval {
                         Err(e) => Ok(error_result(&e)),
                         Ok(()) => {
-                            self.call_upstream(app_id, tool, map, peer, ctx.timeout, cancel.as_mut())
+                            self.call_upstream(app_id, tool, map, peer, &ctx, cancel.as_mut())
                                 .await
                         }
                     }
@@ -166,7 +166,7 @@ impl HubShared {
         let mut run = match routed_to.clone() {
             Some(alt) => self.run_routed_tool(call_id, app_id, &alt, args, &ctx, cancel.as_mut()).await,
             None => {
-                if let Err(e) = self.guard_call(app_id, tool, &args) {
+                if let Err(e) = self.guard_call(app_id, tool, &args, &ctx.caller) {
                     let mut out = inv(Some(app_id), Body::App(Err(e)));
                     out.overview = self.attach_overview(&ctx.caller, app_id);
                     return out;
@@ -204,7 +204,7 @@ impl HubShared {
         cancel: CancelFut<'_>,
     ) -> ToolRun {
         tracing::info!(app_id, tool, "App 在后台，改调 view 工具声明的后台替代");
-        if let Err(e) = self.check_call_policy(app_id, tool, ctx.agent()).and_then(|()| self.guard_call(app_id, tool, &args)) {
+        if let Err(e) = self.check_call_policy(app_id, tool, ctx.agent()).and_then(|()| self.guard_call(app_id, tool, &args, &ctx.caller)) {
             return ToolRun { result: Err(e), instance_id: None, output_shape: OutputShape::Undeclared, woke: false };
         }
         self.invoke_tool(call_id, app_id, tool, args, ctx, cancel).await
@@ -227,7 +227,7 @@ impl HubShared {
         tool: &str,
         args: Map<String, Value>,
         peer: Option<Peer<RoleClient>>,
-        timeout: Option<Duration>,
+        ctx: &CallCtx,
         cancel: CancelFut<'_>,
     ) -> Result<CallToolResult, McpError> {
         let Some(peer) = peer else {
@@ -239,11 +239,12 @@ impl HubShared {
             )));
         };
         let params = CallToolRequestParams::new(tool.to_owned()).with_arguments(args);
-        let timeout = timeout.unwrap_or(self.config.response_timeout);
+        let timeout = ctx.timeout.unwrap_or(self.config.response_timeout);
         tokio::select! {
             r = tokio::time::timeout(timeout, peer.call_tool(params)) => match r {
                 Ok(Ok(result)) => {
                     let size = serde_json::to_vec(&result).map_or(0, |v| v.len());
+                    self.record_usage(&ctx.caller, name, UsageEvent::Result { bytes: size as u64 });
                     match self.guard_payload(name, Payload::Result, size, &format!("工具「{name}.{tool}」")) {
                         Ok(()) => Ok(result),
                         Err(e) => Ok(error_result(&e)),

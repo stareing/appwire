@@ -7,7 +7,6 @@
   "crates/core/src/lib.rs": 1013,
   "crates/core/tests/client.rs": 1679,
   "crates/core/tests/lifecycle.rs": 1261,
-  "crates/hub/tests/lifecycle.rs": 1257,
   "crates/manifest/src/lib.rs": 1547,
   "crates/native/examples/fake_host.rs": 1056,
   "crates/native/src/lib.rs": 1787,
@@ -21,6 +20,6 @@
   "sdks/dart/app_mcp/lib/src/client.dart": 1308,
   "sdks/harmony/src/main/ets/AppMcp.ets": 969,
   "sdks/python/src/app_mcp/_client.py": 1316,
-  "sdks/python/src/app_mcp/hub.py": 949,
+  "sdks/python/src/app_mcp/hub.py": 865,
   "sdks/python/src/app_mcp/uifallback/_qt_elements.py": 829
 }

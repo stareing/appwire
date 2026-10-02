@@ -67,6 +67,8 @@ pub struct LimitPolicy {
     pub tool_rate: RateLimit,
     /// 每 App（所有工具合计）的调用频率。
     pub app_rate: RateLimit,
+    /// 每个已登记 Agent（所有 App 合计，第 16 项 P3）的调用频率；本机主体与 Hub API 不受此限。
+    pub agent_rate: RateLimit,
     /// 调用参数（JSON）的字节上限；0 = 不限。
     pub max_arguments_bytes: u64,
     /// 调用结果（App 回给 Hub 的整个结果 JSON，含摘要）的字节上限；0 = 不限。
@@ -86,6 +88,8 @@ impl Default for LimitPolicy {
         Self {
             tool_rate: RateLimit { per_minute: 120, burst: 30 },
             app_rate: RateLimit { per_minute: 600, burst: 60 },
+            // @why 默认不限：配额是用户对各 Agent 的取舍（策略），本库只提供机制；不限时行为与 P3 之前相同。
+            agent_rate: RateLimit::UNLIMITED,
             max_arguments_bytes: MIB,
             max_result_bytes: 4 * MIB,
             max_resource_bytes: 4 * MIB,
@@ -99,6 +103,7 @@ impl LimitPolicy {
         Self {
             tool_rate: RateLimit::UNLIMITED,
             app_rate: RateLimit::UNLIMITED,
+            agent_rate: RateLimit::UNLIMITED,
             max_arguments_bytes: 0,
             max_result_bytes: 0,
             max_resource_bytes: 0,
@@ -107,7 +112,7 @@ impl LimitPolicy {
 
     /// 校验配置（`Hub::start` 调用）；不合法时返回中文说明。
     pub fn validate(&self) -> Result<(), String> {
-        for (name, r) in [("tool", self.tool_rate), ("app", self.app_rate)] {
+        for (name, r) in [("tool", self.tool_rate), ("app", self.app_rate), ("agent", self.agent_rate)] {
             if !r.is_unlimited() && r.burst == 0 {
                 return Err(format!("limits.{name}RateBurst 必须 ≥ 1（{name}RatePerMinute 为 0 时表示不限）"));
             }
@@ -117,8 +122,8 @@ impl LimitPolicy {
 }
 
 /// [`LimitPolicy`] 的 JSON 配置形式（各绑定与 `app-mcp-host` 配置文件共用，spec/hub-api.md 3.11）：
-/// `{"toolRatePerMinute", "toolRateBurst", "appRatePerMinute", "appRateBurst", "maxArgumentsBytes", "maxResultBytes",
-/// "maxResourceBytes"}`，缺省字段取默认值；`/status` 的 `limits` 也是这一形式（全部字段给出）。
+/// `{"toolRatePerMinute", "toolRateBurst", "appRatePerMinute", "appRateBurst", "agentRatePerMinute", "agentRateBurst",
+/// "maxArgumentsBytes", "maxResultBytes", "maxResourceBytes"}`，缺省字段取默认值；`/status` 的 `limits` 也是这一形式（全部字段给出）。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct LimitOverrides {
@@ -130,6 +135,10 @@ pub struct LimitOverrides {
     pub app_rate_per_minute: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_rate_burst: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_rate_per_minute: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_rate_burst: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_arguments_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -155,6 +164,8 @@ impl LimitOverrides {
         set32(&mut p.tool_rate.burst, self.tool_rate_burst);
         set32(&mut p.app_rate.per_minute, self.app_rate_per_minute);
         set32(&mut p.app_rate.burst, self.app_rate_burst);
+        set32(&mut p.agent_rate.per_minute, self.agent_rate_per_minute);
+        set32(&mut p.agent_rate.burst, self.agent_rate_burst);
         set64(&mut p.max_arguments_bytes, self.max_arguments_bytes);
         set64(&mut p.max_result_bytes, self.max_result_bytes);
         set64(&mut p.max_resource_bytes, self.max_resource_bytes);
@@ -170,6 +181,8 @@ impl LimitOverrides {
             tool_rate_burst,
             app_rate_per_minute,
             app_rate_burst,
+            agent_rate_per_minute,
+            agent_rate_burst,
             max_arguments_bytes,
             max_result_bytes,
             max_resource_bytes
@@ -183,6 +196,8 @@ impl LimitOverrides {
             tool_rate_burst: Some(p.tool_rate.burst),
             app_rate_per_minute: Some(p.app_rate.per_minute),
             app_rate_burst: Some(p.app_rate.burst),
+            agent_rate_per_minute: Some(p.agent_rate.per_minute),
+            agent_rate_burst: Some(p.agent_rate.burst),
             max_arguments_bytes: Some(p.max_arguments_bytes),
             max_result_bytes: Some(p.max_result_bytes),
             max_resource_bytes: Some(p.max_resource_bytes),
@@ -195,6 +210,8 @@ impl LimitOverrides {
 pub(crate) enum RateScope {
     Tool,
     App,
+    /// 每个已登记 Agent（第 16 项 P3）。
+    Agent,
 }
 
 impl RateScope {
@@ -202,6 +219,7 @@ impl RateScope {
         match self {
             RateScope::Tool => "tool",
             RateScope::App => "app",
+            RateScope::Agent => "agent",
         }
     }
 }
@@ -222,6 +240,7 @@ impl RateLimited {
         let target = match self.scope {
             RateScope::Tool => format!("工具「{app_id}.{tool}」"),
             RateScope::App => format!("App「{app_id}」"),
+            RateScope::Agent => "所有 App（本 Agent 合计）".to_owned(),
         };
         ToolError::new(
             ErrorKind::RateLimited,
@@ -262,7 +281,23 @@ pub(crate) struct LimitCounters {
     pub too_large: u64,
 }
 
-type BucketKey = (String, Option<String>);
+/// 令牌桶的键：每一级限流各自的命名空间（appId 与 Agent 名不会互相冲突）。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum BucketKey {
+    Tool(String, String),
+    App(String),
+    Agent(String),
+}
+
+impl BucketKey {
+    fn limit<'a>(&self, policy: &'a LimitPolicy) -> &'a RateLimit {
+        match self {
+            BucketKey::Tool(..) => &policy.tool_rate,
+            BucketKey::App(_) => &policy.app_rate,
+            BucketKey::Agent(_) => &policy.agent_rate,
+        }
+    }
+}
 
 /// 限流状态与拒绝计数。
 #[derive(Debug, Default)]
@@ -272,12 +307,23 @@ pub(crate) struct RateBook {
 }
 
 impl RateBook {
-    /// 尝试为一次调用取得令牌（两级都通过才扣）。拒绝时计入该 App 的 `rate_limited`。
-    pub fn acquire(&mut self, policy: &LimitPolicy, app_id: &str, tool: &str, now: Instant) -> Result<(), RateLimited> {
-        let levels = [
-            (RateScope::Tool, policy.tool_rate, (app_id.to_owned(), Some(tool.to_owned()))),
-            (RateScope::App, policy.app_rate, (app_id.to_owned(), None)),
+    /// 尝试为一次调用取得令牌（各级都通过才扣）：（App, 工具）、App，以及发起方为已登记 Agent 时的每 Agent 一级（`agent`）。
+    /// 拒绝时计入该 App 的 `rate_limited`。
+    pub fn acquire(
+        &mut self,
+        policy: &LimitPolicy,
+        app_id: &str,
+        tool: &str,
+        agent: Option<&str>,
+        now: Instant,
+    ) -> Result<(), RateLimited> {
+        let mut levels = vec![
+            (RateScope::Tool, policy.tool_rate, BucketKey::Tool(app_id.to_owned(), tool.to_owned())),
+            (RateScope::App, policy.app_rate, BucketKey::App(app_id.to_owned())),
         ];
+        if let Some(a) = agent {
+            levels.push((RateScope::Agent, policy.agent_rate, BucketKey::Agent(a.to_owned())));
+        }
         let mut denied: Option<RateLimited> = None;
         for (scope, limit, key) in &levels {
             if limit.is_unlimited() {
@@ -335,8 +381,8 @@ impl RateBook {
         if self.buckets.len() < MAX_RATE_BUCKETS {
             return;
         }
-        self.buckets.retain(|(_, tool), b| {
-            let limit = if tool.is_some() { &policy.tool_rate } else { &policy.app_rate };
+        self.buckets.retain(|key, b| {
+            let limit = key.limit(policy);
             b.level(limit, now) < limit.capacity()
         });
         if self.buckets.len() >= MAX_RATE_BUCKETS {
@@ -422,19 +468,19 @@ mod tests {
         let p = policy((60, 2), (0, 0));
         let mut b = RateBook::default();
         let t0 = Instant::now();
-        assert!(b.acquire(&p, "a", "x", t0).is_ok());
-        assert!(b.acquire(&p, "a", "x", t0).is_ok());
-        let e = b.acquire(&p, "a", "x", t0).unwrap_err();
+        assert!(b.acquire(&p, "a", "x", None, t0).is_ok());
+        assert!(b.acquire(&p, "a", "x", None, t0).is_ok());
+        let e = b.acquire(&p, "a", "x", None, t0).unwrap_err();
         assert_eq!((e.scope, e.retry_after), (RateScope::Tool, Duration::from_secs(1)));
         // 每秒补 1 个
-        assert!(b.acquire(&p, "a", "x", t0 + Duration::from_secs(1)).is_ok());
-        assert!(b.acquire(&p, "a", "x", t0 + Duration::from_secs(1)).is_err());
+        assert!(b.acquire(&p, "a", "x", None, t0 + Duration::from_secs(1)).is_ok());
+        assert!(b.acquire(&p, "a", "x", None, t0 + Duration::from_secs(1)).is_err());
         // 其他工具不受影响；攒满后不超过 burst
-        assert!(b.acquire(&p, "a", "y", t0).is_ok());
+        assert!(b.acquire(&p, "a", "y", None, t0).is_ok());
         let later = t0 + Duration::from_secs(3600);
-        assert!(b.acquire(&p, "a", "x", later).is_ok());
-        assert!(b.acquire(&p, "a", "x", later).is_ok());
-        assert!(b.acquire(&p, "a", "x", later).is_err());
+        assert!(b.acquire(&p, "a", "x", None, later).is_ok());
+        assert!(b.acquire(&p, "a", "x", None, later).is_ok());
+        assert!(b.acquire(&p, "a", "x", None, later).is_err());
         assert_eq!(b.counters("a"), LimitCounters { rate_limited: 3, too_large: 0 });
     }
 
@@ -443,15 +489,36 @@ mod tests {
         let p = policy((60, 5), (60, 2));
         let mut b = RateBook::default();
         let t0 = Instant::now();
-        assert!(b.acquire(&p, "a", "x", t0).is_ok());
-        assert!(b.acquire(&p, "a", "y", t0).is_ok());
-        let e = b.acquire(&p, "a", "z", t0).unwrap_err();
+        assert!(b.acquire(&p, "a", "x", None, t0).is_ok());
+        assert!(b.acquire(&p, "a", "y", None, t0).is_ok());
+        let e = b.acquire(&p, "a", "z", None, t0).unwrap_err();
         assert_eq!(e.scope, RateScope::App);
         // 被拒的调用没有扣工具级令牌：z 仍有 5 个
         let t1 = t0 + Duration::from_secs(1);
-        assert!(b.acquire(&p, "a", "z", t1).is_ok());
+        assert!(b.acquire(&p, "a", "z", None, t1).is_ok());
         // 其他 App 不受影响
-        assert!(b.acquire(&p, "b", "x", t0).is_ok());
+        assert!(b.acquire(&p, "b", "x", None, t0).is_ok());
+    }
+
+    /// P3：每 Agent 一级跨所有 App 计数，只作用于已登记 Agent（`None` = 本机 / Hub API 不受限）；不同 Agent 各自一桶。
+    #[test]
+    fn agent_level_limits_across_apps() {
+        let p = LimitPolicy { agent_rate: RateLimit { per_minute: 60, burst: 2 }, ..LimitPolicy::unlimited() };
+        let mut b = RateBook::default();
+        let t0 = Instant::now();
+        assert!(b.acquire(&p, "a", "x", Some("claude"), t0).is_ok());
+        assert!(b.acquire(&p, "b", "y", Some("claude"), t0).is_ok());
+        let e = b.acquire(&p, "c", "z", Some("claude"), t0).unwrap_err();
+        assert_eq!(e.scope, RateScope::Agent);
+        let err = e.to_error("c", "z");
+        assert_eq!(err.details.as_ref().map(|d| d["scope"].clone()), Some(json!("agent")));
+        assert!(b.acquire(&p, "c", "z", Some("cursor"), t0).is_ok(), "其他 Agent 各自一桶");
+        for _ in 0..5 {
+            assert!(b.acquire(&p, "c", "z", None, t0).is_ok(), "本机主体不受每 Agent 限流");
+        }
+        assert!(b.acquire(&p, "c", "z", Some("claude"), t0 + Duration::from_secs(1)).is_ok(), "按速率补充");
+        let bad = LimitPolicy { agent_rate: RateLimit { per_minute: 10, burst: 0 }, ..LimitPolicy::default() };
+        assert!(bad.validate().unwrap_err().contains("agentRateBurst"));
     }
 
     #[test]
@@ -460,13 +527,13 @@ mod tests {
         let p = policy((60, 1), (30, 1));
         let mut b = RateBook::default();
         let t0 = Instant::now();
-        assert!(b.acquire(&p, "a", "x", t0).is_ok());
-        let e = b.acquire(&p, "a", "x", t0).unwrap_err();
+        assert!(b.acquire(&p, "a", "x", None, t0).is_ok());
+        let e = b.acquire(&p, "a", "x", None, t0).unwrap_err();
         assert_eq!((e.scope, e.retry_after), (RateScope::App, Duration::from_secs(2)));
         let mut b = RateBook::default();
         let unlimited = LimitPolicy::unlimited();
         for _ in 0..1000 {
-            assert!(b.acquire(&unlimited, "a", "x", t0).is_ok());
+            assert!(b.acquire(&unlimited, "a", "x", None, t0).is_ok());
         }
         assert_eq!(b.bucket_count(), 0);
     }
@@ -491,14 +558,14 @@ mod tests {
         let mut b = RateBook::default();
         let t0 = Instant::now();
         for i in 0..MAX_RATE_BUCKETS {
-            assert!(b.acquire(&p, "a", &format!("t{i}"), t0).is_ok());
+            assert!(b.acquire(&p, "a", &format!("t{i}"), None, t0).is_ok());
         }
         assert_eq!(b.bucket_count(), MAX_RATE_BUCKETS);
         // 都未攒满：移除最久未用的一个
-        assert!(b.acquire(&p, "a", "new", t0).is_ok());
+        assert!(b.acquire(&p, "a", "new", None, t0).is_ok());
         assert_eq!(b.bucket_count(), MAX_RATE_BUCKETS);
         // 一小时后都已攒满（与新建等价）：全部移除
-        assert!(b.acquire(&p, "a", "later", t0 + Duration::from_secs(3600)).is_ok());
+        assert!(b.acquire(&p, "a", "later", None, t0 + Duration::from_secs(3600)).is_ok());
         assert_eq!(b.bucket_count(), 1);
     }
 

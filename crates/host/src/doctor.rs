@@ -20,6 +20,7 @@ use crate::probe;
 mod checks_apps;
 mod checks_host;
 mod checks_policy;
+mod checks_usage;
 pub(crate) mod command;
 mod naming;
 mod port_scan;
@@ -28,6 +29,7 @@ mod report;
 use checks_apps::{apps_check, dormant_store_check, lease_check, limits_check, reports_check, tools_check, wake_check};
 use checks_host::{adb_check, auth_check, excluded_check, ipc_check, run_dir_check};
 use checks_policy::{agents_check, policy_check, read_agents_file, validate_policy_file};
+use checks_usage::usage_check;
 pub(crate) use checks_apps::callers_text;
 pub(crate) use checks_host::find_in_path;
 pub use port_scan::{PortPreflight, PortState, candidate_addrs, describe_port_state, port_owner, port_preflight, port_state};
@@ -229,6 +231,7 @@ pub async fn run(home: &AppHome, s: &Settings) -> Report {
     checks.push(limits_check(status.as_ref()));
     checks.push(policy_check(validate_policy_file(home), status.as_ref()));
     checks.push(agents_check(&read_agents_file(home), status.as_ref()));
+    checks.push(usage_check(status.as_ref()));
 
     // 10. 网页拦截上报
     checks.push(reports_check(status.as_ref()));

@@ -328,6 +328,12 @@ pub struct HubStatus {
     /// Agent 任务（调用方的跨请求状态，spec/hub-api.md 3.6），按调用方键排序；旧 Host 为空。
     #[uniffi(default = None)]
     pub tasks: Option<Vec<AgentTaskStatus>>,
+    /// 已登记的 Agent 名（第 16 项 N5，不含令牌）；旧 Host 为空。
+    #[uniffi(default = None)]
+    pub agents: Option<Vec<String>>,
+    /// 按调用方记账（第 16 项 P3），按主体排序；旧 Host 为空。
+    #[uniffi(default = None)]
+    pub usage: Option<Vec<super::UsageStatus>>,
 }
 
 /// 调用方的种类（spec/hub-api.md 3.6）。
@@ -368,6 +374,9 @@ pub struct AgentTaskStatus {
     /// 距最近一次请求活动的毫秒数；没有活动记录时为空。
     #[uniffi(default = None)]
     pub idle_ms: Option<u64>,
+    /// 发起方 Agent 名（第 16 项 N5）；本机主体与 Hub API 为空。
+    #[uniffi(default = None)]
+    pub agent: Option<String>,
 }
 
 /// `AgentTaskStatus.selections` 的一项。
@@ -407,6 +416,7 @@ impl From<hub::AgentTaskStatus> for AgentTaskStatus {
                 .collect(),
             inflight: t.inflight,
             idle_ms: t.idle_ms,
+            agent: t.agent,
         }
     }
 }
@@ -527,6 +537,8 @@ impl From<hub::HubStatus> for HubStatus {
             policy: s.policy.map(Into::into),
             dormant_store: s.dormant_store.map(Into::into),
             tasks: s.tasks.map(|t| t.into_iter().map(Into::into).collect()),
+            agents: s.agents,
+            usage: s.usage.map(|u| u.into_iter().map(Into::into).collect()),
         }
     }
 }

@@ -291,6 +291,12 @@ pub struct LimitsConfig {
     /// 资源内容字节上限（默认 4 MiB）；`0` 不限。
     #[uniffi(default = None)]
     pub max_resource_bytes: Option<u64>,
+    /// 每个已登记 Agent（所有 App 合计）每分钟调用数（默认 `0` 不限，第 16 项 P3）；本机主体与 Hub API 不受此限。
+    #[uniffi(default = None)]
+    pub agent_rate_per_minute: Option<u32>,
+    /// 每个已登记 Agent 允许的突发调用数；限流时须 ≥ 1。
+    #[uniffi(default = None)]
+    pub agent_rate_burst: Option<u32>,
 }
 
 impl From<LimitsConfig> for hub::LimitOverrides {
@@ -300,6 +306,8 @@ impl From<LimitsConfig> for hub::LimitOverrides {
             tool_rate_burst: c.tool_rate_burst,
             app_rate_per_minute: c.app_rate_per_minute,
             app_rate_burst: c.app_rate_burst,
+            agent_rate_per_minute: c.agent_rate_per_minute,
+            agent_rate_burst: c.agent_rate_burst,
             max_arguments_bytes: c.max_arguments_bytes,
             max_result_bytes: c.max_result_bytes,
             max_resource_bytes: c.max_resource_bytes,
@@ -317,6 +325,8 @@ impl From<hub::LimitOverrides> for LimitsConfig {
             max_arguments_bytes: c.max_arguments_bytes,
             max_result_bytes: c.max_result_bytes,
             max_resource_bytes: c.max_resource_bytes,
+            agent_rate_per_minute: c.agent_rate_per_minute,
+            agent_rate_burst: c.agent_rate_burst,
         }
     }
 }

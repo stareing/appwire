@@ -44,7 +44,7 @@ impl HubShared {
             let req = self.approval_request(call_id, &hub_tool, arguments, ctx);
             self.approve(req, cancel.as_mut()).await?;
         }
-        let page_woken = self.wake_app_if_disconnected(app_id, selected, Some(tool_name), ctx.agent(), cancel.as_mut()).await?;
+        let page_woken = self.wake_app_if_disconnected(app_id, selected, Some(tool_name), &ctx.caller, cancel.as_mut()).await?;
         let woke = page_woken.is_some();
         let woken = page_woken.or(woken);
         // 唤醒后实例可能已停在该页面。

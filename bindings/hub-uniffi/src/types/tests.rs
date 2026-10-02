@@ -519,6 +519,7 @@ fn diagnostic_mapping() {
             leases: vec![TaskLeaseStatus { connection_id: "abc123-1".into(), expires_in_ms: 500 }],
             inflight: 2,
             idle_ms: Some(3),
+            agent: None,
         }
     );
     assert_eq!(tasks[2].selections[0].expires_in_ms, None);
@@ -563,4 +564,27 @@ fn other_event_fallback_keeps_type_and_json() {
     assert_eq!(kind, "resourceUpdated");
     let v: Value = serde_json::from_str(&json).expect("json");
     assert_eq!(v["uri"], "u://x");
+}
+
+/// 第 16 项 N5 / P3：`agents`、`tasks[].agent` 与 `usage` 原样转换；旧 Host 不报告时为空。
+#[test]
+fn status_agents_and_usage() {
+    let st: hub::HubStatus = serde_json::from_value(serde_json::json!({
+        "service": "app-mcp", "version": "0", "pid": 1, "startedAtMs": 0, "mcpHttp": true,
+        "auth": {"tokenConfigured": false, "tokenRequiredWithoutOrigin": false}, "mcpSessions": 0,
+        "apps": [], "reports": [], "agents": ["claude"],
+        "tasks": [{"id": "task-1", "caller": "principal:agent:claude", "kind": "principal", "agent": "claude",
+                   "selections": [], "leases": [], "inflight": 0}],
+        "usage": [{"subject": "agent:claude", "agent": "claude", "calls": 3, "wakes": 1, "rateLimited": 2,
+                   "argumentsBytes": 10, "resultBytes": 20, "appsTruncated": true,
+                   "apps": [{"appId": "shop", "calls": 3, "wakes": 1, "rateLimited": 2, "argumentsBytes": 10, "resultBytes": 20}]}]
+    }))
+    .unwrap();
+    let s = HubStatus::from(st);
+    assert_eq!(s.agents, Some(vec!["claude".to_owned()]));
+    assert_eq!(s.tasks.unwrap()[0].agent.as_deref(), Some("claude"));
+    let u = &s.usage.unwrap()[0];
+    let counts = UsageCounts { calls: 3, wakes: 1, rate_limited: 2, arguments_bytes: 10, result_bytes: 20 };
+    assert_eq!((u.subject.as_str(), u.agent.as_deref(), u.total, u.apps_truncated), ("agent:claude", Some("claude"), counts, true));
+    assert_eq!(u.apps, vec![AppUsageStatus { app_id: "shop".into(), counts }]);
 }

@@ -678,6 +678,9 @@ async fn agent_registry_cli_and_tokens() {
     let report: Value = serde_json::from_slice(&doctor.stdout).unwrap();
     let check = report["checks"].as_array().unwrap().iter().find(|c| c["id"] == "agents").cloned().expect("agents 检查");
     assert_eq!(check["summary"], "claude（1 个任务）", "{check}");
+    // P3：用量按调用方记账
+    let usage = report["checks"].as_array().unwrap().iter().find(|c| c["id"] == "usage").cloned().expect("usage 检查");
+    assert_eq!(usage["summary"], "agent:claude 调用 1 次", "{usage}");
 
     // P2：只拒绝 claude 的规则——claude 的调用 POLICY_DENIED，本机主体照常
     let (code, out, err) = policy_cli(&home.0, &["deny", "calc", "--tool", "math.*", "--agent", "claude"]);

@@ -278,6 +278,22 @@ public class HubBasicTests
         Assert.Equal(("task-1", "principal:local", "principal", 2U, (ulong?)3), (task.Id, task.Caller, task.Kind, task.Inflight, task.IdleMs));
         Assert.Equal(new TaskSelectionStatusInfo("shop", "a") { ExpiresInMs = 900 }, Assert.Single(task.Selections));
         Assert.Equal(new TaskLeaseStatusInfo("c-1", 500), Assert.Single(task.Leases));
+        Assert.Null(task.Agent);
+        Assert.Null(status.Usage);
+        // 第 16 项 N5 / P3：agents、tasks[].agent 与 usage
+        var withUsage = JsonSerializer.Deserialize<HubStatusInfo>("""
+            {"service":"app-mcp","version":"0","pid":1,"startedAtMs":0,"mcpHttp":true,
+             "auth":{"tokenConfigured":false,"tokenRequiredWithoutOrigin":false},"mcpSessions":0,"apps":[],"reports":[],
+             "agents":["claude"],
+             "tasks":[{"id":"task-2","caller":"principal:agent:claude","kind":"principal","agent":"claude","selections":[],"leases":[],"inflight":0}],
+             "usage":[{"subject":"agent:claude","agent":"claude","calls":3,"wakes":1,"rateLimited":2,"argumentsBytes":10,"resultBytes":20,
+                       "apps":[{"appId":"shop","calls":3,"wakes":1,"rateLimited":2,"argumentsBytes":10,"resultBytes":20}]}]}
+            """, AppMcpHub.WireOptions)!;
+        Assert.Equal(["claude"], withUsage.Agents!);
+        Assert.Equal("claude", Assert.Single(withUsage.Tasks!).Agent);
+        var usage = Assert.Single(withUsage.Usage!);
+        Assert.Equal(("agent:claude", "claude", 3UL, 1UL, 2UL, false), (usage.Subject, usage.Agent, usage.Calls, usage.Wakes, usage.RateLimited, usage.AppsTruncated));
+        Assert.Equal(new AppUsageStatusInfo("shop", 3, 1, 2, 10, 20), Assert.Single(usage.Apps));
         var approval = JsonSerializer.Deserialize<ApprovalRequest>("""
             {"callId":"c","appId":"a","appName":"A","tool":"t","title":null,"description":"d","risk":"write","arguments":{},
              "session":"principal:local","principal":"local","clientName":"claude-code"}

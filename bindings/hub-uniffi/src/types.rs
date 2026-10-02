@@ -28,6 +28,7 @@ mod error;
 mod events;
 mod policy;
 mod status;
+mod usage;
 
 pub use annotations::*;
 pub use apps::*;
@@ -39,6 +40,7 @@ pub use error::*;
 pub use events::*;
 pub use policy::*;
 pub use status::*;
+pub use usage::*;
 
 #[cfg(test)]
 mod tests;

@@ -368,6 +368,13 @@ fn limit_settings_from_file_and_cli() {
     let bad: FileConfig = serde_json::from_str(r#"{"limits":{"appRateBurst":0}}"#).unwrap();
     let e = Settings::resolve(&bad, &Overrides::default(), &home()).unwrap_err().to_string();
     assert!(e.contains("appRateBurst"), "{e}");
+    // 第 16 项 P3：每 Agent 配额经配置文件给出（默认不限）
+    assert!(LimitPolicy::default().agent_rate.is_unlimited());
+    let quota: FileConfig = serde_json::from_str(r#"{"limits":{"agentRatePerMinute":30,"agentRateBurst":5}}"#).unwrap();
+    let s = Settings::resolve(&quota, &Overrides::default(), &home()).unwrap();
+    assert_eq!((s.limits.agent_rate.per_minute, s.limits.agent_rate.burst), (30, 5));
+    let bad: FileConfig = serde_json::from_str(r#"{"limits":{"agentRatePerMinute":30,"agentRateBurst":0}}"#).unwrap();
+    assert!(Settings::resolve(&bad, &Overrides::default(), &home()).unwrap_err().to_string().contains("agentRateBurst"));
     assert!(serde_json::from_str::<FileConfig>(r#"{"limits":{"bogus":1}}"#).is_err());
 }
 

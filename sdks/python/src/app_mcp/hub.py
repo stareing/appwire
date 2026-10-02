@@ -46,6 +46,17 @@ except ImportError as e:  # pragma: no cover - 取决于是否已生成
 
 _log = logging.getLogger("app_mcp.hub")
 
+from ._hub_config import (  # noqa: E402  字典形式的配置 → 生成的记录类型
+    LimitsLike as LimitsLike,
+    OutputValidationLike as OutputValidationLike,
+    PolicyLike,
+    RiskLike,
+    _limits,
+    _output_validation,
+    _policy,
+    _risk,
+)
+
 # 直接复用生成的数据类型。
 HubConfig = ffi.HubConfig
 UpstreamSpec = ffi.UpstreamSpec
@@ -135,29 +146,6 @@ PolicyRuleStatus = ffi.PolicyRuleStatus
 PolicyLoadError = ffi.PolicyLoadError
 
 FormatLike = Union[ToolFormat, str]
-RiskLike = Union[Risk, str]
-LimitsLike = Union[LimitsConfig, dict[str, int]]
-OutputValidationLike = Union[OutputValidation, str]
-PolicyLike = Union[PolicyConfig, dict[str, Any]]
-
-# LimitsConfig 字段 ← JSON 配置键（与 app-mcp-host 配置文件 ``limits`` 相同；也接受 snake_case）。
-_LIMIT_KEYS = {
-    "toolRatePerMinute": "tool_rate_per_minute",
-    "toolRateBurst": "tool_rate_burst",
-    "appRatePerMinute": "app_rate_per_minute",
-    "appRateBurst": "app_rate_burst",
-    "maxArgumentsBytes": "max_arguments_bytes",
-    "maxResultBytes": "max_result_bytes",
-    "maxResourceBytes": "max_resource_bytes",
-}
-# 策略规则的 JSON 键 → PolicyRule / AnnotationMatch 字段（与 app-mcp-host 的 policy.json 相同；也接受 snake_case）。
-_RULE_KEYS = {"id": "id", "action": "action", "app": "app", "tool": "tool", "annotations": "annotations", "agent": "agent", "hooks": "hooks"}
-_ANNOTATION_KEYS = {
-    "readOnlyHint": "read_only_hint",
-    "destructiveHint": "destructive_hint",
-    "idempotentHint": "idempotent_hint",
-    "openWorldHint": "open_world_hint",
-}
 Dispatcher = Callable[[Callable[[], None]], None]
 
 __all__ = [
@@ -256,78 +244,6 @@ def parse_format(value: FormatLike) -> ToolFormat:
     if isinstance(value, ToolFormat):
         return value
     return ffi.parse_tool_format(value)
-
-
-def _risk(value: RiskLike | None) -> Risk | None:
-    if value is None or isinstance(value, Risk):
-        return value
-    return Risk[value.strip().upper().replace("-", "_")]
-
-
-def _limits(value: LimitsLike | None) -> LimitsConfig | None:
-    """``LimitsConfig`` 或字典（JSON 配置键 ``toolRatePerMinute`` 等，或 snake_case）；未知键抛 ``ValueError``。"""
-    if value is None or isinstance(value, LimitsConfig):
-        return value
-    fields = set(_LIMIT_KEYS.values())
-    kwargs: dict[str, int] = {}
-    for key, v in value.items():
-        name = _LIMIT_KEYS.get(key, key)
-        if name not in fields:
-            raise ValueError(f"未知的 limits 字段：{key!r}（可选 {sorted(_LIMIT_KEYS)}）")
-        kwargs[name] = v
-    return LimitsConfig(**kwargs)
-
-
-def _output_validation(value: OutputValidationLike | None) -> OutputValidation | None:
-    if value is None or isinstance(value, OutputValidation):
-        return value
-    try:
-        return OutputValidation[value.strip().upper()]
-    except KeyError:
-        raise ValueError(f"未知的 output_validation：{value!r}（可选 off、log、reject）") from None
-
-
-def _enum(cls: Any, value: Any, what: str) -> Any:
-    if isinstance(value, cls):
-        return value
-    try:
-        return cls[str(value).strip().upper()]
-    except KeyError:
-        raise ValueError(f"未知的 {what}：{value!r}（可选 {', '.join(m.name.lower() for m in cls)}）") from None
-
-
-def _fields(value: dict[str, Any], keys: dict[str, str], what: str) -> dict[str, Any]:
-    """JSON 键（或 snake_case 字段名）→ 字段名；未知键抛 ``ValueError``。"""
-    fields = set(keys.values())
-    out: dict[str, Any] = {}
-    for key, v in value.items():
-        name = keys.get(key, key)
-        if name not in fields:
-            raise ValueError(f"未知的 {what} 字段：{key!r}（可选 {sorted(keys)}）")
-        out[name] = v
-    return out
-
-
-def _policy_rule(value: PolicyRule | dict[str, Any]) -> PolicyRule:
-    if isinstance(value, PolicyRule):
-        return value
-    kw = _fields(value, _RULE_KEYS, "策略规则")
-    kw["action"] = _enum(PolicyAction, kw.get("action"), "action")
-    ann = kw.get("annotations")
-    if isinstance(ann, dict):
-        kw["annotations"] = AnnotationMatch(**_fields(ann, _ANNOTATION_KEYS, "annotations"))
-    if kw.get("hooks") is not None:
-        kw["hooks"] = [_enum(PolicyHook, h, "hook") for h in kw["hooks"]]
-    return PolicyRule(**kw)
-
-
-def _policy(value: PolicyLike) -> PolicyConfig:
-    """``PolicyConfig`` 或字典（JSON 形式 ``{"rules": [{"id", "action": "hide"|"deny", "app", ...}]}``）；
-    未知键 / 取值抛 ``ValueError``（规则本身的校验由 Hub 完成）。"""
-    if isinstance(value, PolicyConfig):
-        return value
-    kw = _fields(value, {"rules": "rules"}, "policy")
-    return PolicyConfig(rules=[_policy_rule(r) for r in kw.get("rules", [])])
 
 
 def init_logging(filter: str | None = None) -> bool:

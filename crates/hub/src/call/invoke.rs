@@ -71,7 +71,7 @@ impl HubShared {
             if !self.wake_reachable(&plan) {
                 return (Err(self.registry().disconnected_error(app_id)), plan.instance_id.clone());
             }
-            if let Err(e) = self.check_wake_policy(app_id, Some(tool_name), ctx.agent()) {
+            if let Err(e) = self.admit_wake(app_id, Some(tool_name), &ctx.caller) {
                 return (Err(e), plan.instance_id.clone());
             }
             if let Some(tool) = &plan.tool {
@@ -234,8 +234,8 @@ impl HubShared {
         };
         drop(progress);
         let result = match outcome {
-            Ok(Ok(Ok(v))) => self.accept_result(app_id, tool_name, &target.tool, v),
-            Ok(Ok(Err(rpc))) => Err(self.accept_error(app_id, tool_name, &rpc)),
+            Ok(Ok(Ok(v))) => self.accept_result(app_id, tool_name, &target.tool, v, &ctx.caller),
+            Ok(Ok(Err(rpc))) => Err(self.accept_error(app_id, tool_name, &rpc, Some(&ctx.caller))),
             Ok(Err(_)) => return (Err(disconnected()), instance),
             Err(_) => {
                 send_cancel("timeout");

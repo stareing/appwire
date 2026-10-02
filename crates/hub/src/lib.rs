@@ -49,6 +49,7 @@ mod task;
 mod task_handle;
 pub mod tool_def;
 pub mod types;
+pub mod usage;
 pub mod upstream;
 pub mod wake;
 

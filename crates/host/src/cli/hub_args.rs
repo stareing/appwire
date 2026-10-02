@@ -127,6 +127,14 @@ pub struct HubArgs {
     #[arg(long, value_name = "N")]
     pub app_rate_burst: Option<u32>,
 
+    /// 每个已登记 Agent（agent add，所有 App 合计）每分钟最多调用次数，默认 0（不限）；本机主体不受此限。
+    #[arg(long, value_name = "N")]
+    pub agent_rate_limit: Option<u32>,
+
+    /// 每个已登记 Agent 允许的突发调用数（设置了 --agent-rate-limit 时必须 ≥ 1）。
+    #[arg(long, value_name = "N")]
+    pub agent_rate_burst: Option<u32>,
+
     /// 调用参数（JSON）的字节上限，默认 1048576；0 不限。超出返回 PAYLOAD_TOO_LARGE。
     #[arg(long, value_name = "BYTES")]
     pub max_arguments_bytes: Option<u64>,
@@ -229,6 +237,8 @@ impl HubArgs {
                 tool_rate_burst: self.tool_rate_burst,
                 app_rate_per_minute: self.app_rate_limit,
                 app_rate_burst: self.app_rate_burst,
+                agent_rate_per_minute: self.agent_rate_limit,
+                agent_rate_burst: self.agent_rate_burst,
                 max_arguments_bytes: self.max_arguments_bytes,
                 max_result_bytes: self.max_result_bytes,
                 max_resource_bytes: self.max_resource_bytes,

@@ -136,6 +136,30 @@ export interface HubStatus {
   dormantStore?: DormantStoreStatus
   /** Agent 任务（调用方的跨请求状态，spec/hub-api.md 3.6），按 `caller` 排序；旧 Hub 缺省。 */
   tasks?: AgentTaskStatus[]
+  /** 已登记的 Agent 名（第 16 项 N5，不含令牌）；旧 Hub 不报告。 */
+  agents?: string[]
+  /** 按调用方记账（第 16 项 P3），按主体排序；旧 Hub 不报告。 */
+  usage?: UsageStatus[]
+}
+
+/** 计数（主体合计与每 App 共用）。`wakes`：为该主体发起的唤醒（与进行中的唤醒合并的也计入）。 */
+export interface UsageCounts {
+  calls: number
+  wakes: number
+  rateLimited: number
+  argumentsBytes: number
+  resultBytes: number
+}
+
+/** 一个记账主体的用量：`subject` 为 `agent:<名>` / `local` / `api` / `other`（主体数达上限后）。 */
+export interface UsageStatus extends UsageCounts {
+  subject: string
+  /** 主体为已登记 Agent 时的名字。 */
+  agent?: string
+  /** 按 App 细分，按 appId 排序。 */
+  apps: Array<UsageCounts & { appId: string }>
+  /** 细分条目达到上限后，新 App 的用量只计入合计。 */
+  appsTruncated?: boolean
 }
 
 /** 调用方的种类：legacy MCP 会话 / 无会话 MCP 请求的主体 / Hub API 会话。 */
@@ -156,6 +180,8 @@ export interface AgentTaskStatus {
   inflight: number
   /** 距最近一次请求活动的毫秒数；没有活动记录时缺省。 */
   idleMs?: number
+  /** 发起方 Agent 名（第 16 项 N5）；本机主体与 Hub API 缺省。 */
+  agent?: string
 }
 
 export interface TaskSelectionStatus {

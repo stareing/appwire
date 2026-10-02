@@ -62,7 +62,7 @@ impl HubShared {
         app_id: &str,
         selected: Option<&str>,
         tool: Option<&str>,
-        agent: Option<&str>,
+        caller: &crate::task::CallerKey,
         cancel: CancelFut<'_>,
     ) -> Result<Option<String>, ToolError> {
         if self.registry().has_connected(app_id) {
@@ -74,7 +74,7 @@ impl HubShared {
         let Some(plan) = plan.filter(|p| self.wake_reachable(p)) else {
             return Err(self.registry().disconnected_error(app_id));
         };
-        self.check_wake_policy(app_id, tool, agent)?;
+        self.admit_wake(app_id, tool, caller)?;
         self.wake_and_wait(&plan, cancel).await.map(Some)
     }
 
@@ -116,9 +116,9 @@ impl HubShared {
             }
         }
         self.check_app_call_policy(app_id, ctx.agent())?;
-        self.guard_call(app_id, TOOL_APPS_NAVIGATE, args)?;
+        self.guard_call(app_id, TOOL_APPS_NAVIGATE, args, &ctx.caller)?;
         let selected = self.selected_for(&ctx.caller, app_id);
-        let woken = self.wake_app_if_disconnected(app_id, selected.as_deref(), None, ctx.agent(), cancel.as_mut()).await?;
+        let woken = self.wake_app_if_disconnected(app_id, selected.as_deref(), None, &ctx.caller, cancel.as_mut()).await?;
         let prefer = woken.as_deref().or(selected.as_deref());
         let instance_id = self.navigate_to_page(app_id, &page_name, params, prefer, cancel).await?;
         Ok(json_result(json!({
@@ -143,7 +143,7 @@ impl HubShared {
     ) -> Result<CallToolResult, ToolError> {
         self.control_target(app_id)?;
         let selected = self.selected_for(&ctx.caller, app_id);
-        let woken = self.wake_app_if_disconnected(app_id, selected.as_deref(), None, ctx.agent(), cancel).await?;
+        let woken = self.wake_app_if_disconnected(app_id, selected.as_deref(), None, &ctx.caller, cancel).await?;
         let prefer = woken.as_deref().or(selected.as_deref());
         let target = self.registry().preferred_instance(app_id, prefer);
         let Some((instance_id, conn)) = target else {

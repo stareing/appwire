@@ -53,6 +53,9 @@ pub struct HubStatus {
     /// 已登记的 Agent 名（第 16 项 N5，不含令牌），按名字排序。旧 Host 没有时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents: Option<Vec<String>>,
+    /// 按调用方记账（第 16 项 P3）：各主体的调用 / 唤醒 / 被限流次数与字节数，按 App 细分，按主体排序。旧 Host 没有时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Vec<crate::usage::UsageStatus>>,
 }
 
 /// 一个 Agent 任务（[`HubStatus::tasks`]）。

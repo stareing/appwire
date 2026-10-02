@@ -174,6 +174,15 @@ impl CallerKey {
         self.agent.as_ref()
     }
 
+    /// 记账主体（第 16 项 P3，[`crate::usage`]）：已登记 Agent → `agent:<名>`，Hub API → `api`，其余 MCP 调用方 → `local`。
+    pub(crate) fn usage_subject(&self) -> String {
+        match (&self.agent, self.kind) {
+            (Some(a), _) => format!("agent:{a}"),
+            (None, CallerKind::Api) => "api".to_owned(),
+            (None, _) => "local".to_owned(),
+        }
+    }
+
     /// 无会话（modern）调用方：列表只随服务器状态与主体变化（S5），`apps.select` 带空闲有效期（S6）。
     pub(crate) fn is_stateless(&self) -> bool {
         self.kind == CallerKind::Principal

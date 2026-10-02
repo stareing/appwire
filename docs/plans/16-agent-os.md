@@ -120,6 +120,16 @@
     未验证：Kotlin / Swift 封装（只靠生成的记录带缺省值，未跑其测试）。
 - **P3 按 Agent 记账与配额**：调用次数、唤醒次数、传输字节按任务对象 / Agent 身份累计，可配置上限，超限返回 `RATE_LIMITED`（与第 14 项 S3 同一错误码）；
   `status` / `doctor` 能回答"谁唤醒了这个 App 多少次"。
+  - **实施（2026-10-03）**：契约见 `spec/hub-api.md` 3.11「按调用方记账」与 `limits.agent_rate`。
+    - 事实：记账按 Agent 身份（`CallerKey::usage_subject`：`agent:<名>` / `local` / `api`），不按任务对象——任务会过期回收，按 Agent 累计才能回答
+      "谁唤醒了多少次"；记账点为调用守卫（`guard_call`：调用、参数字节、被限流）、结果接收（App 结果 / 错误、上游结果字节）与唤醒准入
+      （`admit_wake` = 唤醒策略 + 唤醒计数，取代分散的策略检查调用）。配额为限流的第三级（每个已登记 Agent，跨所有 App），默认不限。
+    - 测试：`usage.rs` 单元（含两张表的上限）、`limits.rs agent_level_limits_across_apps`、`tests/agents.rs agent_quota_and_usage_accounting`
+      （配额只拦 claude、各主体计数与字节）、`tests/lifecycle.rs` 唤醒计数（Hub API 主体两次唤醒）；Host doctor「调用方用量」单元与
+      `serve.rs agent_registry_cli_and_tokens`；`@app-mcp/hub` 38、C# Hub 25、Python 16、hub-uniffi 30。
+    - 未知 / 未做：计数不持久化（Host 重启清零）；按 Agent 的唤醒次数上限（只有调用频率上限，唤醒由第 4e 项按 App 的唤醒速率限制）；
+      传输字节不含 MCP 出口对 Agent 的序列化开销；Kotlin / Swift 封装未跑测试。
+    - 风险：每次调用都序列化一次参数计字节（之前只在设置了参数上限时序列化，默认即设置，开销不变）。
 - **P4 持久信箱**：N3 事件到达而无存活任务时进入信箱（TTL、条数上限），下次接触时投递（U10）。
 - **P5 调用对象与后台作业控制**：每次调用是一个可查询的对象，状态为 `pending / running / completed / failed / cancelled / timeout`（2026-10-02 由 4f b 并入）；调用可转为脱离请求的作业，支持列出 / 取消 / 等待 / 重新挂接；与 O2 共用取消路径，载体对齐 MCP tasks 扩展（第 12 项 M6）；第 19 项 R1 的 `pending` 结果可引用调用对象。
   - **调用状态机**（4f i）：`CREATED → ACTIVATING → RUNNING → 结果`，写入 `spec/protocol.md`；平台相关状态（前台 / 后台 / 挂起）只作诊断字段 `platform_state`（`status` / `doctor`），不进核心状态。

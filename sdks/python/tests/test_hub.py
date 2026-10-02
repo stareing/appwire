@@ -535,6 +535,8 @@ def test_limits_annotations_and_structured_result() -> None:
                 max_arguments_bytes=64,
                 max_result_bytes=4 * 1024 * 1024,
                 max_resource_bytes=4 * 1024 * 1024,
+                agent_rate_per_minute=0,
+                agent_rate_burst=0,
             )
             assert st.output_validation == OutputValidation.REJECT
             orders = next(a for a in st.apps if a.app_id == "orders")

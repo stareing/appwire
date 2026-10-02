@@ -826,22 +826,34 @@ rmcp 的 `server` / `client` 始终开启（模型类型与 `Peer`）。
 |---|---|---|---|---|
 | `limits.tool_rate: RateLimit` | 每分钟 120 次、突发 30 | 每（App, 工具）的令牌桶：每分钟补充 `per_minute` 个，最多攒 `burst` 个；`per_minute = 0` 不限 | `--tool-rate-limit`、`--tool-rate-burst` / `limits.toolRatePerMinute`、`toolRateBurst` | `limits.toolRatePerMinute`、`toolRateBurst` |
 | `limits.app_rate: RateLimit` | 每分钟 600 次、突发 60 | 每 App（所有工具合计）的令牌桶 | `--app-rate-limit`、`--app-rate-burst` / `limits.appRatePerMinute`、`appRateBurst` | 同左 |
+| `limits.agent_rate: RateLimit` | 不限（`0`） | 每个已登记 Agent（3.6「Agent 身份」，所有 App 合计）的令牌桶（第 16 项 P3）；本机主体与 Hub API 不受此限；超出 → `RATE_LIMITED`，`data.scope: "agent"` | `--agent-rate-limit`、`--agent-rate-burst` / `limits.agentRatePerMinute`、`agentRateBurst` | 同左（hub-c 头文件 v18）；uniffi `LimitsConfig.agent_rate_per_minute` / `agent_rate_burst`、C# `HubLimits.AgentRatePerMinute` / `AgentRateBurst` |
 | `limits.max_arguments_bytes: u64` | 1 MiB | 调用参数序列化后的字节上限；0 不限 | `--max-arguments-bytes` / `limits.maxArgumentsBytes` | 同左 |
 | `limits.max_result_bytes: u64` | 4 MiB | App 回给 Hub 的整个结果（含 `summary`）序列化后的字节上限；上游结果同样适用；0 不限 | `--max-result-bytes` / `limits.maxResultBytes` | 同左 |
 | `limits.max_resource_bytes: u64` | 4 MiB | 资源内容（文本 / base64）的字节上限；0 不限 | `--max-resource-bytes` / `limits.maxResourceBytes` | 同左 |
 | `output_validation: OutputValidation` | `Log` | App 工具的结果与声明的 `outputSchema` 不符时（上游工具不核对）：`Off` 不校验 / `Log` 只记 warn 日志、照常返回 / `Reject` 调用以 `HANDLER_ERROR` 结束（`details.outputSchemaError`）。无返回值不校验；未启用 `schema-validation` 时不校验 | `--output-validation off\|log\|reject` / `tools.outputValidation` | `outputValidation` |
 
-- JSON 形式 `LimitOverrides`（`{toolRatePerMinute, toolRateBurst, appRatePerMinute, appRateBurst, maxArgumentsBytes, maxResultBytes,
-  maxResourceBytes}`，缺省字段取默认，未知字段报错）为各绑定与配置文件共用；`per_minute > 0` 而 `burst = 0` 时 `Hub::start` 返回
+- JSON 形式 `LimitOverrides`（`{toolRatePerMinute, toolRateBurst, appRatePerMinute, appRateBurst, agentRatePerMinute, agentRateBurst,
+  maxArgumentsBytes, maxResultBytes, maxResourceBytes}`，缺省字段取默认，未知字段报错）为各绑定与配置文件共用；`per_minute > 0` 而 `burst = 0` 时 `Hub::start` 返回
   `InvalidInput`（host：配置无效；hub-c：`AM_HUB_ERR_INVALID_CONFIG`）。默认值宽松：只拦失控循环与异常数据，均低于 WebSocket
   单条消息 64 MiB 的上限（tungstenite 默认，超过时连接被断开而不是返回错误）。
-- 检查顺序：参数大小 → 两级限流（两级都有令牌才各扣一个；任一级不足都不扣，`retryAfterMs` 取较长的等待）→ 路由 / 审批 / 唤醒
+- 检查顺序：参数大小 → 限流（（App, 工具）、App，发起方为已登记 Agent 时再加每 Agent 一级；各级都有令牌才各扣一个；任一级不足都不扣，
+  `retryAfterMs` 取最长的等待）→ 路由 / 审批 / 唤醒
   （被限流的调用不会唤醒 App、不会触发审批）→ 转发 → 结果大小 → `outputSchema` 核对（只对 App 工具；上游工具的结果只检查大小）。`result` 超限时调用可能已在 App 内执行（错误信息如实说明）。
 - 计数：`AppStatus.rate_limited` / `too_large`（Hub 启动以来被拒绝的次数）；`HubStatus.limits`（`LimitOverrides`，全部字段给出）与
   `HubStatus.output_validation`。令牌桶表最多 4096 个、计数表最多 1024 个 App（超出时淘汰，见 `crates/hub/src/limits.rs`）。
 - `app-mcp-host doctor`：「资源保护」检查显示策略与各 App 被拒绝次数（有拒绝时为注意）；「工具声明」检查逐个列出每个工具的
   `risk` 与 Agent 实际看到的注解（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` / `title`，注明是声明的还是按
   `risk` 推导的、是否有 `outputSchema`），`--json` 的 `details` 原样给出 `AppStatus.tools`（`ToolDeclaration { name, risk, annotations?, effective, output_schema }`）。
+- **按调用方记账**（第 16 项 P3；`crates/hub/src/usage.rs`）：`HubStatus.usage: Option<Vec<UsageStatus>>`，按主体排序。主体为已登记 Agent
+  `agent:<名>`（含其任务句柄与以其令牌建立的 legacy 会话）、其余 MCP 调用方 `local`、Hub API `api`。每个主体
+  `{subject, agent?, calls, wakes, rateLimited, argumentsBytes, resultBytes, apps: [{appId, …同上计数}], appsTruncated?}`：`calls` 为通过资源保护的
+  App / 上游工具调用（含 `apps.navigate`）、`rateLimited` 为被限流拒绝的调用、`argumentsBytes` / `resultBytes` 为参数与结果（含 App 返回的错误）
+  序列化后的字节数、`wakes` 为该主体的调用 / 资源读取 / `apps.activate` 通过唤醒策略后发起的唤醒（与进行中的唤醒合并的也计入）。计数自 Hub
+  启动起累计，不持久化、不重置。上限（B-07）：主体至多 512 个（超出的计入 `other`），每主体按 App 细分至多 256 个（超出的只计入合计，
+  `appsTruncated: true`）。`app-mcp-host doctor`「调用方用量」逐个主体列出调用、唤醒（按 App）与被限流次数（有被限流时为注意）。
+  绑定：hub-c / hub-node JSON 原样（头文件 v18）；`@app-mcp/hub` `HubStatus.usage?: UsageStatus[]`；hub-uniffi `HubStatus.usage: [UsageStatus]?`
+  （`total: UsageCounts`、`apps: [AppUsageStatus]`）；C# `HubStatusInfo.Usage`（`UsageStatusInfo`、`AppUsageStatusInfo`）。同批：`HubStatus.agents`、
+  `AgentTaskStatus.agent` 在各绑定可读。
 
 ### 3.12 进度与取消（第 16 项 O2）
 

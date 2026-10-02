@@ -502,6 +502,11 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     const task = hub.status().tasks?.find((t) => t.caller === 'api:conv-1')
     expect(task).toMatchObject({ kind: 'api', inflight: 0, selections: [] })
     expect(task?.id).toMatch(/^task-[0-9a-f]+$/)
+    // 第 16 项 P3：Hub API 的调用记在主体 api 名下
+    const api = hub.status().usage?.find((u) => u.subject === 'api')
+    expect(api).toMatchObject({ calls: 1, wakes: 0, rateLimited: 0, apps: [{ appId: 'shop', calls: 1 }] })
+    expect(api?.agent).toBeUndefined()
+    expect(hub.status().agents).toEqual([])
   })
 
   it('无会话 MCP 请求的配置：合法取值透传，非法取值启动失败', async () => {

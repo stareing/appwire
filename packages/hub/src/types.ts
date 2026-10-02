@@ -157,6 +157,10 @@ export interface LimitsConfig {
   appRatePerMinute?: number
   /** 每 App 的突发量，缺省 60。 */
   appRateBurst?: number
+  /** 每个已登记 Agent（所有 App 合计）每分钟调用数，缺省 0（不限）；本机主体与 Hub API 不受此限。 */
+  agentRatePerMinute?: number
+  /** 每个已登记 Agent 的突发量（限流时须 ≥ 1）。 */
+  agentRateBurst?: number
   /** 调用参数（JSON）上限，缺省 1 MiB。 */
   maxArgumentsBytes?: number
   /** 调用结果上限，缺省 4 MiB。 */

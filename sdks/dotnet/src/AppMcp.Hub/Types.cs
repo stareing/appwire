@@ -93,6 +93,9 @@ public sealed class HubLimits
     public uint? ToolRateBurst { get; set; }
     public uint? AppRatePerMinute { get; set; }
     public uint? AppRateBurst { get; set; }
+    /// <summary>每个已登记 Agent（所有 App 合计）每分钟调用数；null / 0 不限。本机主体与 Hub API 不受此限。</summary>
+    public uint? AgentRatePerMinute { get; set; }
+    public uint? AgentRateBurst { get; set; }
     public ulong? MaxArgumentsBytes { get; set; }
     public ulong? MaxResultBytes { get; set; }
     public ulong? MaxResourceBytes { get; set; }
@@ -104,6 +107,8 @@ public sealed class HubLimits
         if (ToolRateBurst is { } b) o["toolRateBurst"] = b;
         if (AppRatePerMinute is { } c) o["appRatePerMinute"] = c;
         if (AppRateBurst is { } d) o["appRateBurst"] = d;
+        if (AgentRatePerMinute is { } h) o["agentRatePerMinute"] = h;
+        if (AgentRateBurst is { } i) o["agentRateBurst"] = i;
         if (MaxArgumentsBytes is { } e) o["maxArgumentsBytes"] = e;
         if (MaxResultBytes is { } f) o["maxResultBytes"] = f;
         if (MaxResourceBytes is { } g) o["maxResourceBytes"] = g;
