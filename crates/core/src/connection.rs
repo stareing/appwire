@@ -126,6 +126,10 @@ impl Client {
     }
 
     pub(crate) fn set_state(&mut self, state: ConnectionState) {
+        // @invariant 名字服务通道标记只在连接建立中 / 已连接期间有效（停止、拒绝、休眠等任何离开连接的路径都清除）。
+        if !state.is_link_up() {
+            self.life.inbound = false;
+        }
         if self.state != state {
             self.state = state.clone();
             self.events.push_back(Event::StateChanged(state));
@@ -246,6 +250,9 @@ impl Client {
     /// `idle` / `on-demand` 下连续 `host_absent_retries` 次以"Host 不在"失败时改为进入 `Dormant`
     /// （spec/lifecycle.md 第 11 节 A2），等可见、App 主动唤醒或 Host 唤醒再连接。
     pub(crate) fn enter_backoff(&mut self, now: Millis, issue: Option<ConnectionIssue>) {
+        if self.inbound_closed() {
+            return;
+        }
         let absent = issue.as_ref().is_some_and(|i| i.code.means_host_absent());
         self.life.host_absent_failures = if absent { self.life.host_absent_failures.saturating_add(1) } else { 0 };
         let limit = self.config.lifecycle.host_absent_retries;

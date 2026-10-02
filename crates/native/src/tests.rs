@@ -84,7 +84,7 @@ fn explicit_launch_token_is_used() {
     let mut c = config();
     c.launch_token = Some("lt".to_owned());
     c.host_url = "ws://127.0.0.1:7717".to_owned();
-    let (core, endpoint) = build_core_config(c).unwrap();
+    let (core, endpoint, _) = build_core_config(c).unwrap();
     assert_eq!(core.launch_token.as_deref(), Some("lt"));
     assert_eq!(endpoint.to_string(), "ws://127.0.0.1:7717");
     assert_eq!(core.max_concurrent_calls, 1);
@@ -296,7 +296,7 @@ fn host_mismatch_state_and_expected_user() {
     assert_eq!(info.code.as_deref(), Some("HOST_NOT_APP_MCP"));
     assert_eq!(info.reason.as_deref(), Some("不是 app-mcp"));
     // 桌面平台核对 Host 用户（spec/protocol.md 1.6）
-    let (core, _) = build_core_config(config()).unwrap();
+    let (core, _, _) = build_core_config(config()).unwrap();
     assert_eq!(core.expected_host_user, app_mcp_protocol::identity::expected_host_user());
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     assert!(core.expected_host_user.is_some());
@@ -308,7 +308,7 @@ fn transport_follows_endpoint() {
     let kind = |url: &str| {
         let mut c = config();
         c.host_url = url.to_owned();
-        build_core_config(c).map(|(cfg, _)| cfg.transport)
+        build_core_config(c).map(|(cfg, _, _)| cfg.transport)
     };
     let loopback = if Target::CURRENT.is_app_sandboxed() { TransportKind::Remote } else { TransportKind::Loopback };
     assert_eq!(kind("ws://127.0.0.1:7717/app").ok(), Some(loopback));
@@ -318,5 +318,5 @@ fn transport_follows_endpoint() {
     // 心跳策略原样传给核心
     let mut c = config();
     c.heartbeat = HeartbeatMode::Always;
-    assert_eq!(build_core_config(c).map(|(cfg, _)| cfg.heartbeat.mode).ok(), Some(HeartbeatMode::Always));
+    assert_eq!(build_core_config(c).map(|(cfg, _, _)| cfg.heartbeat.mode).ok(), Some(HeartbeatMode::Always));
 }

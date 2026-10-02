@@ -191,6 +191,25 @@ struct AppEntry {
     dormant: Vec<DormantInstance>,
     /// SDK 上报过的页面工具（页面目录的运行时部分，随 App 记录保留）。
     learned_pages: LearnedPages,
+    /// 名字服务发现记录（spec/naming.md 第 5 节）：有记录时 Hub 可按名拨号。
+    named: Option<NamedEntry>,
+}
+
+/// 名字服务发现到的 App（spec/naming.md 5.4，`source: "name-service"` / 激活文件即 `install`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedEntry {
+    /// 发现它的连接器（[`crate::connector::Connector::kind`]，如 `"dbus"`）。
+    pub source: String,
+    /// 连接器在 [`crate::HubConfig::connectors`] 中的位置。
+    pub connector: usize,
+    /// 平台名字（如 D-Bus 总线名）。
+    pub detail: String,
+    /// 可被系统激活（有激活文件）。
+    pub activatable: bool,
+    /// 名字的所有者正在运行。
+    pub running: bool,
+    pub first_seen: SystemTime,
+    pub last_seen: SystemTime,
 }
 
 impl AppEntry {
@@ -203,7 +222,7 @@ impl AppEntry {
     }
 
     fn is_empty(&self) -> bool {
-        self.instances.is_empty() && self.manifest.is_none() && self.dormant.is_empty()
+        self.instances.is_empty() && self.manifest.is_none() && self.dormant.is_empty() && self.named.is_none()
     }
 
     /// 休眠实例按优先级排列：选定的优先，其次最近活跃。
@@ -342,6 +361,60 @@ impl Registry {
         self.apps.get(app_id)?.manifest.as_ref()
     }
 
+    /// 名字服务发现记录。
+    pub fn named(&self, app_id: &str) -> Option<&NamedEntry> {
+        self.apps.get(app_id)?.named.as_ref()
+    }
+
+    /// 记下（`Some`）或移除（`None`）名字服务发现记录；首次见到时间沿用旧记录。返回列表是否因此变化。
+    pub fn set_named(&mut self, app_id: &str, named: Option<NamedEntry>) -> bool {
+        match named {
+            Some(mut n) => {
+                let entry = self.apps.entry(app_id.to_owned()).or_default();
+                if let Some(old) = &entry.named {
+                    n.first_seen = old.first_seen;
+                }
+                let changed = entry.named.as_ref().is_none_or(|o| (o.activatable, o.running) != (n.activatable, n.running));
+                entry.named = Some(n);
+                changed
+            }
+            None => {
+                let Some(entry) = self.apps.get_mut(app_id) else { return false };
+                let changed = entry.named.take().is_some();
+                if entry.is_empty() {
+                    self.apps.remove(app_id);
+                }
+                changed
+            }
+        }
+    }
+
+    /// 名字的运行状态变化（`NameOwnerChanged`）。名字消失不删除记录（spec/naming.md 5.4）；没有记录时按需新建
+    /// （运行中的、没有激活文件的 App）。返回列表是否因此变化。
+    pub fn set_named_running(&mut self, app_id: &str, running: bool, make: impl FnOnce() -> NamedEntry) -> bool {
+        let entry = self.apps.entry(app_id.to_owned()).or_default();
+        match &mut entry.named {
+            Some(n) => {
+                let changed = n.running != running;
+                n.running = running;
+                if running {
+                    n.last_seen = SystemTime::now();
+                }
+                changed
+            }
+            None if running => {
+                entry.named = Some(make());
+                true
+            }
+            None => {
+                if entry.is_empty() {
+                    self.apps.remove(app_id);
+                }
+                false
+            }
+        }
+    }
+
     fn next_seq(&mut self) -> u64 {
         self.seq += 1;
         self.seq
@@ -431,6 +504,19 @@ impl Registry {
             recency: inst.last_active_seq.unwrap_or(inst.connected_seq),
         });
         Some(id)
+    }
+
+    /// Hub 关闭按名拨入的通道（或对端死亡）：实例转为休眠快照（spec/naming.md 第 3、7.5 节）。恢复令牌由 Hub 生成但
+    /// 不下发（SDK 下次握手不带令牌，按完整同步），`toolsHash` 取快照摘要。返回 instanceId。
+    pub fn make_dormant_by_hub(&mut self, app_id: &str, conn_id: u64, resume_token: String) -> Option<String> {
+        let entry = self.apps.get(app_id)?;
+        let inst = entry.instances.iter().find(|i| i.conn.id == conn_id)?;
+        let wake = inst.wake.clone();
+        let hash = app_mcp_protocol::tools_hash(
+            &ToolsSyncParams { tools: inst.tools.values().map(|t| t.to_info()).collect() },
+            &ResourcesSyncParams { resources: inst.resources.values().cloned().collect() },
+        );
+        self.make_dormant(app_id, conn_id, resume_token, hash, wake)
     }
 
     pub fn dormant(&self, app_id: &str, instance_id: &str) -> Option<&DormantInstance> {
@@ -887,7 +973,9 @@ impl Registry {
         if let Some(d) = entry.dormant_ordered(selected, |_| true).first() {
             return Some(self.plan_for(app_id, d, None));
         }
-        entry.manifest.as_ref()?;
+        if entry.manifest.is_none() && entry.named.is_none() {
+            return None;
+        }
         Some(WakePlan { app_id: app_id.to_owned(), instance_id: None, descriptor: None, tool: None })
     }
 
@@ -1292,6 +1380,14 @@ impl Registry {
                     "staticToolCount": m.map(|m| m.tools().len()).unwrap_or(0),
                     "pageCount": pages::catalog(m, &entry.learned_pages).len(),
                     "launchUrl": m.and_then(|m| m.meta().web_url()),
+                    "nameService": entry.named.as_ref().map(|n| json!({
+                        "source": n.source,
+                        "name": n.detail,
+                        "activatable": n.activatable,
+                        "running": n.running,
+                        "firstSeenAt": unix_ms(n.first_seen),
+                        "lastSeenAt": unix_ms(n.last_seen),
+                    })),
                 })
             })
             .collect();

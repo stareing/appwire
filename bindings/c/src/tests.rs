@@ -810,7 +810,16 @@ fn options_are_read_up_to_struct_size() {
         sleep_on_background: true,
         call_dedup_ttl_ms: 1000,
         call_dedup_max_entries: -1,
+        register_name: true,
+        name_instance: c"w2".as_ptr(),
     };
+    let v = unsafe { read_options(&o) }.ok();
+    assert!(v.as_ref().is_some_and(|v| v.register_name && !v.name_instance.is_null()));
+    // v13–v16 调用方（到 call_dedup_max_entries 为止）：v17 名字服务字段取默认值。
+    o.struct_size = std::mem::offset_of!(AmClientOptions, register_name) as u32;
+    let v = unsafe { read_options(&o) }.ok();
+    assert!(v.as_ref().is_some_and(|v| v.call_dedup_max_entries == -1 && !v.register_name && v.name_instance.is_null()));
+    o.struct_size = std::mem::size_of::<AmClientOptions>() as u32;
     let v = unsafe { read_options(&o) }.ok();
     assert!(v.as_ref().is_some_and(|v| std::ptr::eq(v.lifecycle, &lc)
         && v.connect_timeout_ms == 1234
@@ -943,6 +952,8 @@ fn lifecycle_through_c_abi() {
         sleep_on_background: false,
         call_dedup_ttl_ms: 0,
         call_dedup_max_entries: 0,
+        register_name: false,
+        name_instance: ptr::null(),
     };
     let mut client: *mut AmClient = ptr::null_mut();
     assert_eq!(

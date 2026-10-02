@@ -65,6 +65,13 @@ pub enum Command {
         #[command(subcommand)]
         action: PolicyCommand,
     },
+    /// 按名寻址的 App 登记（spec/naming.md 4.1、5.3）：生成名字服务激活文件（Linux：
+    /// `$XDG_DATA_HOME/dbus-1/services/dev.appmcp.App.<appId>.service`）与 App 登记文件，Hub（`serve --name-service`）
+    /// 不启动 App 即可发现它，调用时由系统按需激活。
+    App {
+        #[command(subcommand)]
+        action: AppAction,
+    },
     /// 打印本地访问令牌（不存在时生成），供 MCP 客户端配置 `Authorization: Bearer <令牌>`。
     Token {
         #[command(flatten)]
@@ -125,6 +132,52 @@ pub struct PolicyRuleArgs {
     /// 规则 id，默认由动作与目标生成（如 hide-shop-cart.add）。
     #[arg(long)]
     pub id: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AppAction {
+    /// 登记（幂等，覆盖同一 appId 的旧登记）：写激活文件、App 登记文件；给出 --manifest 时复制到 <home>/manifests。
+    Install(AppInstallArgs),
+    /// 撤销登记：删除 install 写入的文件。
+    Uninstall(AppUninstallArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct AppInstallArgs {
+    /// App 的 appId（`[a-z][a-z0-9-]{0,62}`）。
+    #[arg(long, value_name = "ID")]
+    pub app_id: String,
+    /// 被激活时运行的程序（绝对路径；激活时追加参数 --app-mcp-activation）。
+    #[arg(long, value_name = "PROGRAM")]
+    pub exec: PathBuf,
+    /// 显示名称（缺省取清单的 name，再缺省为 appId）。
+    #[arg(long)]
+    pub name: Option<String>,
+    /// 静态清单 app-mcp.json：复制到 <home>/manifests/<appId>.json（Host 启动时加载，未运行也能列出工具）。
+    #[arg(long, value_name = "FILE")]
+    pub manifest: Option<PathBuf>,
+    #[command(flatten)]
+    pub target: AppTargetArgs,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct AppUninstallArgs {
+    #[arg(long, value_name = "ID")]
+    pub app_id: String,
+    #[command(flatten)]
+    pub target: AppTargetArgs,
+}
+
+#[derive(Debug, Clone, Default, Args)]
+pub struct AppTargetArgs {
+    #[command(flatten)]
+    pub home: HomeArg,
+    /// 数据目录（激活文件与登记文件的根），默认 $XDG_DATA_HOME 或 ~/.local/share。
+    #[arg(long, value_name = "DIR")]
+    pub data_home: Option<PathBuf>,
+    /// 写入后不调用 D-Bus ReloadConfig（默认调用：dbus-broker 是否自动发现新文件未确认，spec/naming.md U-05）。
+    #[arg(long)]
+    pub no_reload: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -316,6 +369,15 @@ pub struct HubArgs {
     #[arg(long, value_name = "off|log|reject", value_parser = parse_output_validation)]
     pub output_validation: Option<OutputValidation>,
 
+    /// 按名寻址（spec/naming.md）：经系统名字服务发现 App（只读，不启动进程），调用时按名拨号、未运行由系统激活，
+    /// 宽限后关闭通道。Linux 为 D-Bus 会话总线（App 用 `app install` 生成激活文件）；其他平台暂不支持（忽略并提示）。
+    #[arg(long)]
+    pub name_service: bool,
+
+    /// 按名拨入的通道在最后一次调用后保持的时间（毫秒，spec/naming.md 7.2），默认 15000。
+    #[arg(long, value_name = "MS")]
+    pub channel_grace_ms: Option<u64>,
+
     /// 日志级别（trace / debug / info / warn / error），默认 info。设置 RUST_LOG 时以 RUST_LOG 为准。
     #[arg(long, value_name = "LEVEL")]
     pub log_level: Option<String>,
@@ -372,6 +434,8 @@ impl HubArgs {
             },
             output_validation: self.output_validation,
             log_level: self.log_level.clone(),
+            name_service: self.name_service.then_some(true),
+            channel_grace_ms: self.channel_grace_ms,
             ..Default::default()
         })
     }

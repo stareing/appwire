@@ -27,6 +27,7 @@ use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
+use crate::names::{self, ChannelInbox, Registration};
 use crate::{Action, Job, LogLevel, Shared, epoch, lock_ignore_poison, now_ms};
 
 /// 底层字节流：TCP、Unix 域套接字或命名管道客户端。
@@ -193,6 +194,11 @@ async fn drive(
     let mut connecting: Option<ConnectFuture> = None;
     let mut closing: Vec<JoinHandle<()>> = Vec::new();
     let mut initial = Some(initial);
+    // 名字服务登记（spec/naming.md）：存在期间不释放运行时。登记失败只报告一次，不重试（不轮询）。
+    let mut registration: Option<Box<dyn Registration>> = None;
+    let mut registration_failed = false;
+    // 当前连接是否为 Hub 拨入的通道（日志用）。
+    let mut inbound = false;
 
     loop {
         let mut batch = shared.drain();
@@ -206,7 +212,16 @@ async fn drive(
                     if let Some(old) = conn.take() {
                         closing.push(old.close());
                     }
-                    connecting = Some(connect(target.endpoint.clone(), target.connect_timeout));
+                    connecting = Some(match shared.take_channel() {
+                        Some(channel) => {
+                            inbound = true;
+                            accept(channel, target.connect_timeout)
+                        }
+                        None => {
+                            inbound = false;
+                            connect(target.endpoint.clone(), target.connect_timeout)
+                        }
+                    });
                 }
                 Action::Send(text) => {
                     if let Some(c) = &conn {
@@ -215,6 +230,7 @@ async fn drive(
                 }
                 Action::Disconnect => {
                     connecting = None;
+                    drop(shared.take_channel());
                     if let Some(old) = conn.take() {
                         closing.push(old.close());
                     }
@@ -228,7 +244,25 @@ async fn drive(
         if batch.shutdown {
             break;
         }
-        if batch.dormant && conn.is_none() && connecting.is_none() {
+        match shared.name_request() {
+            Some(request) if registration.is_none() && !registration_failed => {
+                match register_names(&shared, &request, target.connect_timeout).await {
+                    Ok(r) => {
+                        log(&shared, &jobs, LogLevel::Info, format!("已在名字服务登记：{}", r.names().join("、")));
+                        registration = Some(r);
+                    }
+                    Err(e) => {
+                        registration_failed = true;
+                        log(&shared, &jobs, LogLevel::Warn, format!("未能在名字服务登记，Hub 无法按名拨号：{e}"));
+                    }
+                }
+                // 登记期间可能已有拨入：重新取事件。
+                continue;
+            }
+            None if registration.is_some() => registration = None,
+            _ => {}
+        }
+        if batch.dormant && conn.is_none() && connecting.is_none() && registration.is_none() {
             // 休眠：等 Close 帧发出后释放运行时。
             for h in closing {
                 let _ = tokio::time::timeout(CLOSE_GRACE, h).await;
@@ -273,7 +307,7 @@ async fn drive(
             }
             Wakeup::Connected(Err(e)) => {
                 connecting = None;
-                let issue = connect_issue(&host_url, &e);
+                let issue = connect_issue(peer_label(&host_url, inbound), &e);
                 log(&shared, &jobs, LogLevel::Info, issue.to_string());
                 shared.lock().client.handle_connect_failed(issue, now_ms());
             }
@@ -284,19 +318,19 @@ async fn drive(
                 if let Some(old) = conn.take() {
                     closing.push(old.close());
                 }
-                lost_connection(&shared, &jobs, closed_issue(&host_url, frame.as_ref()));
+                lost_connection(&shared, &jobs, closed_issue(peer_label(&host_url, inbound), frame.as_ref(), inbound));
             }
             Wakeup::Incoming(None) => {
                 if let Some(old) = conn.take() {
                     closing.push(old.close());
                 }
-                lost_connection(&shared, &jobs, closed_issue(&host_url, None));
+                lost_connection(&shared, &jobs, closed_issue(peer_label(&host_url, inbound), None, inbound));
             }
             Wakeup::Incoming(Some(Err(e))) => {
                 if let Some(old) = conn.take() {
                     closing.push(old.close());
                 }
-                lost_connection(&shared, &jobs, lost_issue(&host_url, &e));
+                lost_connection(&shared, &jobs, lost_issue(peer_label(&host_url, inbound), &e, inbound));
             }
             // 二进制帧、ping / pong 由 tungstenite 处理或忽略。
             Wakeup::Incoming(Some(Ok(_))) => {}
@@ -311,6 +345,52 @@ async fn drive(
         let _ = tokio::time::timeout(CLOSE_GRACE, h).await;
     }
     Exit::Shutdown
+}
+
+/// 日志中的对端：拨出时为 Host 端点，拨入时为名字服务通道。
+fn peer_label(host_url: &str, inbound: bool) -> &str {
+    if inbound { "名字服务通道" } else { host_url }
+}
+
+/// 在名字服务登记（超时按失败处理）。
+async fn register_names(
+    shared: &Arc<Shared>,
+    request: &names::NameRequest,
+    timeout: Duration,
+) -> Result<Box<dyn Registration>, String> {
+    let Some(server) = names::platform() else {
+        return Err("本平台（或本构建）不支持名字服务登记".to_owned());
+    };
+    let sink = Arc::new(ChannelInbox(Arc::downgrade(shared)));
+    match tokio::time::timeout(timeout, server.register(request, sink)).await {
+        Ok(r) => r,
+        Err(_) => Err(format!("{} ms 内未完成登记", timeout.as_millis())),
+    }
+}
+
+/// 在 Hub 拨入的通道上完成 WebSocket 握手（SDK 仍是 WebSocket 客户端，spec/naming.md 第 3 节），超时按失败处理。
+#[cfg(unix)]
+fn accept(channel: names::Channel, timeout: Duration) -> ConnectFuture {
+    Box::pin(async move {
+        let io = async {
+            channel.set_nonblocking(true)?;
+            let stream = tokio::net::UnixStream::from_std(channel)?;
+            let io: Box<dyn Io> = Box::new(stream);
+            tokio_tungstenite::client_async_tls(app_mcp_protocol::endpoint::IPC_WS_URL, io).await.map(|(ws, _)| ws)
+        };
+        match tokio::time::timeout(timeout, io).await {
+            Ok(result) => result,
+            Err(_) => Err(WsError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{} ms 内未能在名字服务通道上完成握手", timeout.as_millis()),
+            ))),
+        }
+    })
+}
+
+#[cfg(not(unix))]
+fn accept(channel: names::Channel, _timeout: Duration) -> ConnectFuture {
+    match channel {}
 }
 
 /// 建立连接并完成 WebSocket 握手，超时按失败处理。
@@ -455,18 +535,23 @@ fn lost_connection(shared: &Shared, jobs: &Sender<Job>, issue: ConnectionIssue) 
 }
 
 /// 对端正常关闭（Close 帧或读到连接结束）的原因（spec/protocol.md 10.1 `CONNECTION_CLOSED`）。
-fn closed_issue(host_url: &str, frame: Option<&CloseFrame>) -> ConnectionIssue {
+fn closed_issue(host_url: &str, frame: Option<&CloseFrame>, inbound: bool) -> ConnectionIssue {
     let detail = match frame {
         Some(f) if !f.reason.is_empty() => format!("（关闭码 {}：{}）", u16::from(f.code), f.reason),
         Some(f) => format!("（关闭码 {}）", u16::from(f.code)),
         None => String::new(),
     };
-    ConnectionIssue::new(ConnectionErrorCode::ConnectionClosed, format!("Host 关闭了连接 {host_url}{detail}，稍后重连"))
+    ConnectionIssue::new(ConnectionErrorCode::ConnectionClosed, format!("Host 关闭了连接 {host_url}{detail}{}", next_step(inbound)))
 }
 
 /// 连接因错误中断（未经关闭握手）的原因（spec/protocol.md 10.1 `CONNECTION_LOST`）。
-fn lost_issue(host_url: &str, e: &WsError) -> ConnectionIssue {
-    ConnectionIssue::new(ConnectionErrorCode::ConnectionLost, format!("与 {host_url} 的连接中断：{e}，稍后重连"))
+fn lost_issue(host_url: &str, e: &WsError, inbound: bool) -> ConnectionIssue {
+    ConnectionIssue::new(ConnectionErrorCode::ConnectionLost, format!("与 {host_url} 的连接中断：{e}{}", next_step(inbound)))
+}
+
+/// 断开后的去向：名字服务通道断开后等 Hub 下次拨入（spec/naming.md 第 3 节），拨出的连接按退避重连。
+fn next_step(inbound: bool) -> &'static str {
+    if inbound { "，等待 Hub 下次拨入" } else { "，稍后重连" }
 }
 
 /// 记录日志；连接期间以 `[连接 ID] ` 开头。调用时不得持有 `shared` 的锁。

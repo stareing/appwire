@@ -606,7 +606,7 @@ uniffi 的 `HubStatus` 把 `identity` 展开为 `service` / `version` / `user` /
 
 ### 3.10 cargo features（能力裁剪）
 
-`app-mcp-hub` 默认 `["mcp-server", "upstream", "schema-validation"]`，与此前行为、公开 API 完全一致。关闭某项时 `HubConfig`
+`app-mcp-hub` 默认 `["mcp-server", "upstream", "schema-validation", "dbus"]`，与此前行为、公开 API 完全一致。关闭某项时 `HubConfig`
 字段与方法签名保留（各绑定源码不需改动），用到该能力时返回明确错误；检查在 `Hub::start` 开头（`features` 模块，常量
 `features::{MCP_SERVER, UPSTREAM, SCHEMA_VALIDATION}`）。
 
@@ -614,6 +614,7 @@ uniffi 的 `HubStatus` 把 `identity` 展开为 `service` / `version` / `user` /
 |---|---|---|
 | `mcp-server` | MCP 出口：`/mcp`（Streamable HTTP）、`serve_http(_with)`、`serve_stdio`、`McpSession` | `mcp_http = true` / `serve_http(_with)` → `ErrorKind::Unsupported`（说明缺哪个 feature）；`/mcp` 404；`mcp` 模块、`McpSession`、`Hub::mcp_session`、`Hub::serve_stdio` 不编译 |
 | `upstream` | 上游聚合：以子进程启动其他 MCP 服务器并汇入工具 | `upstreams` 非空 → `Unsupported`；`UpstreamConfig` 与配置解析保留 |
+| `dbus` | Linux 名字服务连接器 `connector::DbusConnector`（zbus，3.16）；鸿蒙（`*-linux-ohos`）与非 Linux 平台不编译 | `DbusConnector` 不存在；`HubConfig::connectors` 仍可放自定义连接器 |
 | `schema-validation` | 调用前按 inputSchema 校验参数（jsonschema） | `schema::check` 返回 `SchemaCheck::Unchecked`，参数原样交给 App（由 App 的处理函数报参数错误；与 spec/protocol.md 第 6 节"Host 校验参数"不同） |
 
 各绑定把 `ErrorKind::Unsupported` 映射为**专门的错误类别**（不与其他 I/O 错误混在一起；说明文字含缺少的 feature 名，重试无效）：
@@ -878,6 +879,58 @@ Hub 以 min(该值, `response_timeout`) 作为本次调用等待 App 结果的�
 `idempotencyKey`，hub-uniffi `CallRequest.idempotency_key`，C# `CallRequest.IdempotencyKey`，Kotlin / Swift / Python 的调用方法可选参数（`idempotencyKey` /
 `idempotency_key`）。`HubConfig.navigate_timeout`：hub-c / hub-node JSON `navigateTimeoutMs`、`@app-mcp/hub` `navigateTimeoutMs`、
 hub-uniffi `HubConfig.navigate_timeout_ms`、C# `HubOptions.NavigateTimeout`。
+
+### 3.16 按名寻址：名字服务连接器（第 4d 项，spec/naming.md）
+
+行为契约以 spec/naming.md 为准，本节只定义 Hub API。实现状态（2026-10-02）：Linux D-Bus 全链路；其他平台的连接器待 4d D / E / F。
+
+```rust
+pub struct HubConfig {
+    // ...
+    /// 名字服务连接器；默认空（不按名寻址）。
+    pub connectors: Vec<Arc<dyn Connector>>,
+    /// 按名拨入的通道在最后一次调用后保持的时间（spec/naming.md 7.2 graceMs），默认 DEFAULT_CHANNEL_GRACE = 15 s。
+    pub channel_grace: Duration,
+}
+
+#[async_trait]
+pub trait Connector: Send + Sync + Debug + 'static {
+    fn kind(&self) -> &'static str;                                         // 来源名，如 "dbus"
+    async fn discover(&self) -> Result<Vec<DiscoveredName>, ConnectorError>; // 一次性枚举，只读、不激活
+    async fn watch(&self) -> Result<BoxStream<'static, NameEvent>, ConnectorError>; // 名字出现 / 消失
+    async fn dial(&self, address: &Address, timeout: Duration) -> Result<DialedChannel, ConnectorError>;
+}
+pub struct DiscoveredName { pub address: Address, pub activatable: bool, pub running: bool, pub detail: String }
+pub enum NameEvent { Appeared(Address), Vanished(Address) }
+pub struct DialedChannel { pub stream: Box<dyn ChannelIo>, pub pid: Option<u32> }
+pub struct ConnectorError { pub code: &'static str, pub message: String }   // code ∈ spec/naming.md 第 12 节
+```
+
+- **平台实现**：`connector::DbusConnector::new(address: Option<String>)`（Linux，cargo feature `dbus`，默认开启；`None` = 当前用户的
+  会话总线）。另有 `DbusConnector::reload_config()`（写 / 删激活文件后调用，spec/naming.md 4.1）。`Address` 为
+  `app_mcp_protocol::naming::Address`。
+- **发现**：`Hub::start` 为每个连接器起一个任务——先订阅 `watch`，再 `discover` 一次，之后只随事件更新发现记录；没有定时器、不轮询、
+  不为发现启动进程。事件流结束（总线断开）后任务结束，不重试。名字消失只把记录的运行状态改为否，不删除记录（spec/naming.md 5.4）。
+- **路由**（每次调用 / 资源读取 / `apps.activate`，spec/naming.md 9.2）：已有活连接 → 按名拨号（发现记录可激活或正在运行）→
+  唤醒描述（`HubConfig::waker`）→ `APP_DISCONNECTED`。按名拨号不需要唤醒器（`waker: None` 时也可用）；与唤醒共用去重、等待
+  （`wake_timeout`，同时是 `dial` 的超时）与速率上限（`wake_rate_limit`）。同一 App 只拨默认名字（`appmcp://<appId>`；按实例地址拨号未实现）。
+- **认领**：在 Hub 自己拨出的通道上 `app/ready` 的实例认领该 App 经拨号发起的全部等待中的唤醒，不需要令牌。
+- **关闭**：通道上不做无消息断开（SDK 声明 `heartbeatMs: 0`）；没有进行中调用与待派唤醒时，于
+  `max(最后一条消息 + channel_grace, 该连接上各会话租约的最晚到期)` 关闭通道（忙时每隔一个宽限复查）。通道关闭或对端 EOF 后实例转为
+  休眠快照（`HubEvent::AppDormant`；快照的恢复令牌不下发，下次握手按完整同步），Hub 不再持有该 App 的任何连接、fd 或定时器
+  （7.1 不变式，`crates/hub/tests/naming.rs` 断言 fd / 线程数回到基线）。
+- **错误**：拨号失败 → `LAUNCH_FAILED`，系统确认未安装（`NAME_NOT_FOUND`：没有所有者且没有激活文件、激活文件指向的程序不存在）→
+  `APP_NOT_INSTALLED` 并移除发现记录；两者 `details.code` 为名字服务错误码，同时记入该 App 的 `last_error`。
+- **`apps.list`**：每个 App 增加 `nameService`（无发现记录时为 `null`）：`{source, name, activatable, running, firstSeenAt, lastSeenAt}`。
+  只有发现记录、没有清单与快照的 App 也会列出（`connected: false`），可用 `apps.activate` 拨号后获得工具。发现记录变化时发
+  `tools/list_changed`。`AppInfo`（Hub API）暂无对应字段。
+- **未做**（spec/naming.md 第 14 节）：App 登记文件（5.3）的读取与目录监视、签名指纹 / 名字所有者与登记程序的核对（10.3，当前只核对
+  通道对端 uid）、`maxBoundApps` LRU（7.3）、内存压力关闭（7.4）、`app/hold`（7.2）、各语言 Hub 绑定的配置项。
+
+`app-mcp-host`：`serve --name-service`（配置 `lifecycle.nameService: true`）在 Linux 上加入 `DbusConnector::new(None)`，
+`--channel-grace-ms` / `lifecycle.channelGraceMs` 设置宽限；默认关闭。`app-mcp-host app install --app-id <id> --exec <程序>
+[--manifest app-mcp.json] [--name …]` 写 D-Bus 激活文件与 App 登记文件（spec/naming.md 4.1、5.3，`source: "manual"`）并调用
+`ReloadConfig`，清单复制到 `<home>/manifests/<appId>.json`（Host 启动时加载）；`app uninstall --app-id <id>` 删除这些文件。
 
 ## 4. 进程内 App（可选，M2）
 

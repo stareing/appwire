@@ -105,6 +105,10 @@ pub struct AmClientOptions {
     pub call_dedup_ttl_ms: i64,
     /// v13：最多保留的结果数；0 = 默认（64），负数 = 关闭去重。
     pub call_dedup_max_entries: i32,
+    /// v17（spec/naming.md）：在系统名字服务登记（Linux：D-Bus `dev.appmcp.App.<appId>`），由 Hub 按名拨入。
+    pub register_name: bool,
+    /// v17：登记实例名（`[a-z][a-z0-9-]{0,31}`，不能是 `default`）；NULL = 只登记默认名字。
+    pub name_instance: *const c_char,
 }
 
 /// v8：`am_resource_register_ex` 的资源选项（带 `struct_size`，按调用方给出的大小读取）。
@@ -313,7 +317,6 @@ unsafe fn convert_lifecycle(l: &AmLifecycle) -> FfiResult<LifecyclePolicy> {
 }
 
 /// 从调用方给出的 `AmClientOptions` 中读出的字段（按 `struct_size` 截断）。
-#[derive(Default)]
 struct OptionsView {
     lifecycle: *const AmLifecycle,
     connect_timeout_ms: u32,
@@ -325,15 +328,33 @@ struct OptionsView {
     sleep_on_background: bool,
     call_dedup_ttl_ms: i64,
     call_dedup_max_entries: i32,
+    register_name: bool,
+    name_instance: *const c_char,
+}
+
+impl Default for OptionsView {
+    fn default() -> Self {
+        Self {
+            lifecycle: std::ptr::null(),
+            connect_timeout_ms: 0,
+            on_idle_exit: None,
+            heartbeat: 0,
+            host_absent_retries: 0,
+            legacy_timers: false,
+            merge_window_ms: 0,
+            sleep_on_background: false,
+            call_dedup_ttl_ms: 0,
+            call_dedup_max_entries: 0,
+            register_name: false,
+            name_instance: std::ptr::null(),
+        }
+    }
 }
 
 /// 按 `struct_size` 读取扩展选项：只读取完整包含在调用方结构体中的字段。
 unsafe fn read_options(p: *const AmClientOptions) -> FfiResult<OptionsView> {
     use std::mem::{offset_of, size_of};
-    let mut view = OptionsView {
-        lifecycle: std::ptr::null(),
-        ..OptionsView::default()
-    };
+    let mut view = OptionsView::default();
     if p.is_null() {
         return Ok(view);
     }
@@ -383,6 +404,12 @@ unsafe fn read_options(p: *const AmClientOptions) -> FfiResult<OptionsView> {
     }
     if has(offset_of!(AmClientOptions, call_dedup_max_entries), size_of::<i32>()) {
         view.call_dedup_max_entries = unsafe { std::ptr::addr_of!((*p).call_dedup_max_entries).read() };
+    }
+    if has(offset_of!(AmClientOptions, register_name), size_of::<bool>()) {
+        view.register_name = unsafe { std::ptr::addr_of!((*p).register_name).read() };
+    }
+    if has(offset_of!(AmClientOptions, name_instance), size_of::<*const c_char>()) {
+        view.name_instance = unsafe { std::ptr::addr_of!((*p).name_instance).read() };
     }
     Ok(view)
 }
@@ -739,6 +766,9 @@ pub unsafe extern "C" fn am_client_new_ex(
         }
         cfg.lifecycle.sleep_on_background = opts.sleep_on_background;
         cfg.call_dedup = call_dedup_from(cfg.call_dedup, opts.call_dedup_ttl_ms, opts.call_dedup_max_entries);
+        cfg.register_name = opts.register_name;
+        // SAFETY: name_instance 为 NULL 或指向以 NUL 结尾的字符串。
+        cfg.name_instance = unsafe { opt_str(opts.name_instance, "options->name_instance") }?.map(str::to_owned);
         let listener: Option<Arc<dyn ClientListener>> = match listener {
             Some(l) if l.has_any() => Some(Arc::new(l)),
             _ => None,

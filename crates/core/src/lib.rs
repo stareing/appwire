@@ -98,6 +98,9 @@ pub struct ClientConfig {
     /// App 自行回到前台（Android 10+、iOS、浏览器标签页）时不必等到超时。能把自己的窗口带到前台的平台（桌面）或要自行处理
     /// 后台导航的 App（如发通知请用户点开）由驱动层 / App 置为 `true`（[`Client::set_navigate_in_background`]）。
     pub navigate_in_background: bool,
+    /// 本进程由系统名字服务激活启动（spec/naming.md 4.1：D-Bus 激活文件的 `Exec` 带 `--app-mcp-activation`）。
+    /// 与配置了 `launch_token` 一样算"由唤醒冷启动"，影响 [`Residency::ExitWhenIdle`]。默认 `false`。
+    pub launched_by_activation: bool,
 }
 
 impl ClientConfig {
@@ -132,6 +135,7 @@ impl ClientConfig {
             call_dedup: CallDedupPolicy::default(),
             navigation: false,
             navigate_in_background: false,
+            launched_by_activation: false,
         }
     }
 }
@@ -531,7 +535,10 @@ pub struct Client {
 
 impl Client {
     pub fn new(config: ClientConfig) -> Self {
-        let life = lifecycle::Life { launched_by_wake: config.launch_token.is_some(), ..Default::default() };
+        let life = lifecycle::Life {
+            launched_by_wake: config.launch_token.is_some() || config.launched_by_activation,
+            ..Default::default()
+        };
         Self {
             life,
             token: config.token.clone(),
@@ -910,6 +917,22 @@ impl Client {
         self.on_wake(WakeReason::App, now)
     }
 
+    /// Hub 经系统名字服务拨入了一条通道（spec/naming.md 第 3 节，"被连接方"）：驱动层已持有该通道、尚未在其上
+    /// 收发任何数据。产生 [`Event::Connect`]，驱动层在这条通道上（而不是拨号到 Host 端点）完成连接后照常调用
+    /// [`Client::handle_connected`]——之后与 App 拨出的连接走同一个状态机：SDK 先发 `app/hello`（`wakeReason:
+    /// "os-activation"`），握手方向不变。
+    ///
+    /// 这条通道上（直到断开）：不发心跳、不做 App 端空闲计时（关闭时机由 Hub 决定；App 仍可 [`Client::sleep`]
+    /// 请 Hub 提前关闭）；断开后不重连——`persistent` 回到 `Backoff` 照常重连 Host 端点，其余模式进入 `Dormant`
+    /// （[`Residency`] 规则同休眠）。
+    ///
+    /// 只在 `Dormant`、`Backoff`、`HostMismatch` 状态下接受；尚未 `start`、已停止 / 被拒绝、已有连接（含建立中）时
+    /// 返回 `false`，驱动层应拒绝这次拨号（spec/naming.md 9.1 `CHANNEL_LIMIT`）。
+    pub fn accept_channel(&mut self, now: Millis) -> bool {
+        self.life.last_now = now;
+        self.on_accept_channel()
+    }
+
     /// App 主动请求休眠（原因 `app`），等同于 `sleep_with_reason(SleepReason::App, now)`。
     pub fn sleep(&mut self, now: Millis) -> bool {
         self.sleep_with_reason(SleepReason::App, now)
@@ -979,6 +1002,8 @@ impl Client {
                 HeartbeatMode::Off => false,
                 HeartbeatMode::Auto => !matches!(self.config.transport, TransportKind::Ipc | TransportKind::Loopback),
             };
+        // 名字服务通道是本地传输，存活由 EOF 与系统对端死亡通知判断（spec/naming.md 第 3 节）。
+        let on = on && !self.life.inbound;
         Some(hb.interval_ms).filter(|ms| on && *ms > 0)
     }
 

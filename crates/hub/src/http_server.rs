@@ -483,7 +483,7 @@ impl Router {
 /// 大消息按帧头中的长度临时扩容（不受此值限制，上限仍是消息 / 帧大小上限），所以取 8 KiB。
 pub(crate) const APP_WS_READ_BUFFER: usize = 8 * 1024;
 
-fn app_ws_config() -> WebSocketConfig {
+pub(crate) fn app_ws_config() -> WebSocketConfig {
     WebSocketConfig::default().read_buffer_size(APP_WS_READ_BUFFER)
 }
 

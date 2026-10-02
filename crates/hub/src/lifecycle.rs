@@ -29,6 +29,8 @@ pub(crate) struct PendingWake {
     /// 等待回连的截止时刻。
     deadline: Instant,
     waiters: Vec<oneshot::Sender<WakeResult>>,
+    /// 经按名拨号激活（spec/naming.md 第 3 节）：在 Hub 自己拨出的通道上就绪的实例直接认领，不需要令牌。
+    dialed: bool,
 }
 
 impl PendingWake {
@@ -78,6 +80,14 @@ impl LeaseEntry {
     }
 }
 
+/// 一次激活的方式（spec/naming.md 9.2 的路由顺序）。
+enum Activation {
+    /// 按名拨号（名字服务激活）。
+    Dial(Arc<dyn crate::connector::Connector>, app_mcp_protocol::naming::Address),
+    /// 唤醒描述（后备）。
+    Waker(Arc<dyn crate::wake::Waker>, WakeDescriptor),
+}
+
 /// 收回会话租约的范围。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Revoke {
@@ -111,6 +121,17 @@ impl HubShared {
         })
     }
 
+    /// 唤醒计划能否执行：可按名拨号，或配置了唤醒器且（休眠实例 / 有唤醒描述）。
+    pub(crate) fn wake_reachable(&self, plan: &WakePlan) -> bool {
+        self.named_route(&plan.app_id).is_some()
+            || (self.wake_enabled() && (plan.instance_id.is_some() || self.resolve_wake_descriptor(plan).is_some()))
+    }
+
+    /// 某连接上全部会话租约中最晚的有效截止（按名拨入的通道据此决定关闭时刻，spec/naming.md 7.2）。
+    pub(crate) fn lease_expiry(&self, conn_id: u64) -> Option<Instant> {
+        self.session_state().values().filter_map(|s| s.leases.get(&conn_id)).filter_map(LeaseEntry::expires).max()
+    }
+
     /// 是否配置了唤醒器（`waker: none` 时为 `false`）。
     pub(crate) fn wake_enabled(&self) -> bool {
         lock(&self.waker).is_some()
@@ -136,11 +157,14 @@ impl HubShared {
         cancel: std::pin::Pin<&mut (dyn std::future::Future<Output = ()> + Send + '_)>,
     ) -> WakeResult {
         let app_id = plan.app_id.clone();
-        // 不唤醒（`waker: none`）：按未连接处理，带清单的启动提示（launchUrl）。
-        let Some(waker) = lock(&self.waker).clone() else {
+        // 路由顺序（spec/naming.md 9.2）：按名拨号优先于唤醒描述。
+        let named = self.named_route(&app_id);
+        let waker = lock(&self.waker).clone();
+        // 不唤醒（`waker: none`）且不能按名拨号：按未连接处理，带清单的启动提示（launchUrl）。
+        if named.is_none() && waker.is_none() {
             return Err(self.registry().disconnected_error(&app_id));
-        };
-        let descriptor = self.resolve_wake_descriptor(plan);
+        }
+        let descriptor = if named.is_some() { None } else { self.resolve_wake_descriptor(plan) };
         let now = Instant::now();
         let (tx, rx) = oneshot::channel();
         let (trigger, deadline) = {
@@ -164,23 +188,28 @@ impl HubShared {
                         return Ok(id);
                     }
                     WakeTargetPresence::Handshaking => None,
-                    WakeTargetPresence::Absent => match descriptor {
-                        Some(d) => {
-                            // 唤醒速率上限（spec/lifecycle.md 第 12 节）：只对真正要发出的激活计数。
-                            let limit = self.config.wake_rate_limit;
-                            match lock(&self.power).reserve_wake(&app_id, limit, now) {
-                                Ok(at) => Some((d, at)),
-                                Err(limited) => {
-                                    drop(wakes);
-                                    let err = rate_limited(&app_id, limit, limited.retry_after);
-                                    tracing::warn!(app_id, limit, "唤醒次数达到上限，不再唤醒");
-                                    self.record_app_error(&app_id, Some(WAKE_RATE_LIMITED), &err.message);
-                                    return Err(err);
-                                }
+                    WakeTargetPresence::Absent => {
+                        let how = match (named.clone(), descriptor) {
+                            (Some((connector, address)), _) => Activation::Dial(connector, address),
+                            (None, Some(d)) => match waker.clone() {
+                                Some(w) => Activation::Waker(w, d),
+                                None => return Err(self.registry().disconnected_error(&app_id)),
+                            },
+                            (None, None) => return Err(not_wakeable(&app_id, plan.instance_id.is_some())),
+                        };
+                        // 唤醒速率上限（spec/lifecycle.md 第 12 节；按名拨号同样计数，spec/naming.md R-14）：只对真正要发出的激活计数。
+                        let limit = self.config.wake_rate_limit;
+                        match lock(&self.power).reserve_wake(&app_id, limit, now) {
+                            Ok(at) => Some((how, at)),
+                            Err(limited) => {
+                                drop(wakes);
+                                let err = rate_limited(&app_id, limit, limited.retry_after);
+                                tracing::warn!(app_id, limit, "唤醒次数达到上限，不再唤醒");
+                                self.record_app_error(&app_id, Some(WAKE_RATE_LIMITED), &err.message);
+                                return Err(err);
                             }
                         }
-                        None => return Err(not_wakeable(&app_id, plan.instance_id.is_some())),
-                    },
+                    }
                 };
                 let token = wake::new_token();
                 let deadline = now + self.config.wake_timeout;
@@ -191,42 +220,64 @@ impl HubShared {
                     token_expires: now + self.config.wake_token_ttl,
                     deadline,
                     waiters: vec![tx],
+                    dialed: matches!(activation, Some((Activation::Dial(..), _))),
                 });
-                (activation.map(|d| (token, d)), deadline)
+                (activation.map(|a| (token, a)), deadline)
             }
         };
-        if let Some((token, (descriptor, reserved))) = trigger {
-            tracing::info!(app_id, instance_id = ?plan.instance_id, kind = wake::kind_str(descriptor.kind), "唤醒 App");
-            self.emit(HubEvent::AppWaking {
-                app_id: app_id.clone(),
-                instance_id: plan.instance_id.clone(),
-            });
-            let req = WakeRequest {
-                app_id: app_id.clone(),
-                instance_id: plan.instance_id.clone(),
-                descriptor,
-                activation_arg: format!("app-mcp-wake:{token}"),
-                token: token.clone(),
-            };
+        if let Some((token, (how, reserved))) = trigger {
             let shared = self.clone();
-            // 独立任务：调用方取消不影响已发出的激活。
-            tokio::spawn(async move {
-                // 激活前实例已被其他原因的回连认领（令牌已作废）：不再激活。
-                if !shared.wake_token_pending(&token) {
-                    tracing::debug!(app_id = %app_id, "唤醒已被回连认领，跳过激活");
-                    lock(&shared.power).cancel_wake(&app_id, reserved);
-                    return;
+            let instance_id = plan.instance_id.clone();
+            match how {
+                Activation::Dial(connector, address) => {
+                    tracing::info!(app_id, ?instance_id, %address, connector = connector.kind(), "按名拨号 App");
+                    self.emit(HubEvent::AppWaking { app_id: app_id.clone(), instance_id: instance_id.clone() });
+                    // 独立任务：调用方取消不影响已发出的拨号（通道建立后照常握手、宽限后关闭）。
+                    tokio::spawn(async move {
+                        if !shared.wake_token_pending(&token) {
+                            tracing::debug!(app_id = %app_id, "唤醒已被回连认领，跳过拨号");
+                            lock(&shared.power).cancel_wake(&app_id, reserved);
+                            return;
+                        }
+                        lock(&shared.power).wake_activated(&app_id, instance_id.as_deref(), Instant::now());
+                        if let Err(err) = shared.dial_and_serve(connector, address).await {
+                            tracing::warn!(app_id = %app_id, error = %err.message, "按名拨号失败");
+                            let code = err.details.as_ref().and_then(|d| d["code"].as_str()).map(str::to_owned);
+                            shared.record_app_error(&app_id, code.as_deref(), &err.message);
+                            shared.finish_wake(|w| w.token == token, Err(err));
+                        }
+                    });
                 }
-                lock(&shared.power).wake_activated(&app_id, req.instance_id.as_deref(), Instant::now());
-                if let Err(e) = waker.wake(req).await {
-                    tracing::warn!(app_id = %app_id, error = %e, "唤醒失败");
-                    let mut err = e.0;
-                    err.message = format!("唤醒 App「{app_id}」失败：{}", err.message);
-                    err.details = Some(json!({ "appId": app_id }));
-                    shared.record_app_error(&app_id, Some(err.kind.as_str()), &err.message);
-                    shared.finish_wake(|w| w.token == token, Err(err));
+                Activation::Waker(waker, descriptor) => {
+                    tracing::info!(app_id, ?instance_id, kind = wake::kind_str(descriptor.kind), "唤醒 App");
+                    self.emit(HubEvent::AppWaking { app_id: app_id.clone(), instance_id: instance_id.clone() });
+                    let req = WakeRequest {
+                        app_id: app_id.clone(),
+                        instance_id,
+                        descriptor,
+                        activation_arg: format!("app-mcp-wake:{token}"),
+                        token: token.clone(),
+                    };
+                    // 独立任务：调用方取消不影响已发出的激活。
+                    tokio::spawn(async move {
+                        // 激活前实例已被其他原因的回连认领（令牌已作废）：不再激活。
+                        if !shared.wake_token_pending(&token) {
+                            tracing::debug!(app_id = %app_id, "唤醒已被回连认领，跳过激活");
+                            lock(&shared.power).cancel_wake(&app_id, reserved);
+                            return;
+                        }
+                        lock(&shared.power).wake_activated(&app_id, req.instance_id.as_deref(), Instant::now());
+                        if let Err(e) = waker.wake(req).await {
+                            tracing::warn!(app_id = %app_id, error = %e, "唤醒失败");
+                            let mut err = e.0;
+                            err.message = format!("唤醒 App「{app_id}」失败：{}", err.message);
+                            err.details = Some(json!({ "appId": app_id }));
+                            shared.record_app_error(&app_id, Some(err.kind.as_str()), &err.message);
+                            shared.finish_wake(|w| w.token == token, Err(err));
+                        }
+                    });
                 }
-            });
+            }
         }
         tokio::select! {
             r = tokio::time::timeout_at(deadline, rx) => match r {
@@ -270,7 +321,9 @@ impl HubShared {
     /// - 被唤醒的休眠实例已没有记录（被新实例 ID 替换 / 过期）时，该 App 的任何实例。
     ///
     /// @invariant 认领即从等待表移除，令牌随之作废：之后携带它的握手按普通连接处理（不再匹配任何唤醒）。
-    pub(crate) fn wake_arrived(&self, app_id: &str, instance_id: &str, launch_token: Option<&str>) {
+    ///
+    /// `dialed`：该实例在 Hub 按名拨出的通道上就绪——认领该 App 经拨号激活的全部唤醒（spec/naming.md 第 3 节"认领"）。
+    pub(crate) fn wake_arrived(&self, app_id: &str, instance_id: &str, launch_token: Option<&str>, dialed: bool) {
         let now = Instant::now();
         let targets: Vec<String> = lock(&self.wakes)
             .iter()
@@ -284,7 +337,8 @@ impl HubShared {
         self.finish_wake(
             |w| {
                 w.app_id == app_id
-                    && (launch_token.is_some_and(|t| t == w.token && now < w.token_expires)
+                    && ((dialed && w.dialed)
+                        || launch_token.is_some_and(|t| t == w.token && now < w.token_expires)
                         || w.instance_id
                             .as_deref()
                             .is_none_or(|i| i == instance_id || superseded.iter().any(|s| s == i)))

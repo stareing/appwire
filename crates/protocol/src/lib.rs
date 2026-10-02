@@ -12,6 +12,7 @@
 //! - [`identity`]：Host 身份（`service` / `version` / `user` / `pid`）与 SDK 侧核对（1.6）。
 //! - [`registry`]：单实例锁与登记文件 `~/.app-mcp/run/endpoints.json`（1.7）。
 //! - [`diagnostic`]：连接级错误码与 `app/diagnostic` 上报（第 10 节）。
+//! - [`naming`]：按名寻址的地址格式与各平台名字映射（spec/naming.md）。
 
 pub mod diagnostic;
 pub mod endpoint;
@@ -21,6 +22,7 @@ pub mod identity;
 pub mod jsonrpc;
 pub mod messages;
 pub mod mux;
+pub mod naming;
 pub mod platform;
 pub mod registry;
 

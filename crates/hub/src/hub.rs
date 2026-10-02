@@ -47,6 +47,7 @@ use crate::types::{
     InstanceState, InstanceStatus, LastError, PairingHandler, ResourceContent, ToolExposure, ToolFilter,
 };
 use crate::upstream::{UpstreamConfig, UpstreamState, encode_uri_component};
+use crate::connector::Connector;
 use crate::wake::{Waker, WakerConfig};
 
 /// 资源 URI 前缀：`app-mcp://<appId>/<resourceName>`。
@@ -179,7 +180,18 @@ pub struct HubConfig {
     /// 策略规则（spec/hub-api.md 3.13）：`hide` 从所有列表中去掉 App / 工具（调用按不存在），`deny` 在调用 / 唤醒执行点拒绝
     /// （`POLICY_DENIED`）。默认无规则：行为与没有策略时完全一致。运行中可用 [`Hub::set_policy`] 替换。
     pub policy: PolicyConfig,
+    /// 名字服务连接器（spec/naming.md、spec/hub-api.md 3.16）：Hub 经它们发现 App（只读名字列表与事件，从不为发现而
+    /// 启动进程），调用时按名拨号（未运行由系统激活），通道在宽限后关闭。路由顺序：已有活连接 → 按名拨号 →
+    /// 唤醒描述（[`HubConfig::waker`]）。默认空（不按名寻址）；Linux 上 `app-mcp-host serve --name-service` 加入
+    /// D-Bus 会话总线连接器（[`crate::connector::DbusConnector`]）。
+    pub connectors: Vec<Arc<dyn Connector>>,
+    /// 按名拨入的通道在最后一次调用完成后保持的时间（spec/naming.md 7.2 `graceMs`）：关闭时刻为
+    /// `max(最后一条消息 + 本值, 租约到期)`，宽限内到来的调用合并进同一通道。默认 [`DEFAULT_CHANNEL_GRACE`]。
+    pub channel_grace: Duration,
 }
+
+/// [`HubConfig::channel_grace`] 的默认值（spec/naming.md 7.2）。
+pub const DEFAULT_CHANNEL_GRACE: Duration = Duration::from_secs(15);
 
 /// [`HubConfig::progress_interval`] 的默认值。
 pub const DEFAULT_PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
@@ -238,6 +250,8 @@ impl Default for HubConfig {
             output_validation: OutputValidation::default(),
             progress_interval: DEFAULT_PROGRESS_INTERVAL,
             policy: PolicyConfig::default(),
+            connectors: Vec::new(),
+            channel_grace: DEFAULT_CHANNEL_GRACE,
         }
     }
 }
@@ -1668,6 +1682,10 @@ impl Hub {
             .collect();
         for (name, cfg) in upstreams {
             tasks.push(tokio::spawn(crate::upstream::run(shared.clone(), name, cfg)));
+        }
+        // 名字服务发现（spec/naming.md 第 5 节）：每个连接器一个事件驱动的任务。
+        for index in 0..shared.config.connectors.len() {
+            tasks.push(tokio::spawn(shared.clone().naming_loop(index)));
         }
         lock(&hub.tasks).extend(tasks);
         match listen_addr {

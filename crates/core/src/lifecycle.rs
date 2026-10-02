@@ -42,6 +42,8 @@ pub(crate) struct Life {
     /// 待恢复订阅（B3）：上次连接断开时 Host 订阅的资源名；`pending` = 之后变化过。Host 重新订阅时移除（变化过则补发）。
     /// @why 与 `Session::subscriptions` 同类型，复用同一份单态化代码（WASM 体积）。
     pub carried_subscriptions: VecMap<String, Subscription>,
+    /// 当前（或建立中的）连接是 Hub 经名字服务拨入的通道（[`Client::accept_channel`]），断开时清除。
+    pub inbound: bool,
 }
 
 impl Life {
@@ -219,6 +221,41 @@ impl Client {
         }
     }
 
+    pub(crate) fn on_accept_channel(&mut self) -> bool {
+        let accept = matches!(
+            self.state,
+            ConnectionState::Dormant | ConnectionState::Backoff { .. } | ConnectionState::HostMismatch { .. }
+        );
+        if !accept {
+            return false;
+        }
+        self.life.inbound = true;
+        self.life.pending_wake = None;
+        self.life.wake_reason = Some(WakeReason::OsActivation);
+        self.events.push_back(Event::Connect);
+        self.set_state(ConnectionState::Connecting);
+        true
+    }
+
+    /// 名字服务通道断开（或未能建立）：`persistent` 回到普通重连，其余模式进入 `Dormant`，不重连。
+    /// 调用前已 `teardown`。返回是否已处理（`false` = 不是名字服务通道，由调用方照常进入 `Backoff`）。
+    pub(crate) fn inbound_closed(&mut self) -> bool {
+        if !std::mem::take(&mut self.life.inbound) || self.mode() == LifecycleMode::Persistent {
+            return false;
+        }
+        self.retry_count = 0;
+        self.set_state(ConnectionState::Dormant);
+        let exit = match self.config.lifecycle.residency {
+            Residency::Keep => false,
+            Residency::ExitWhenIdle => self.life.launched_by_wake,
+            Residency::ExitAlways => true,
+        };
+        if exit {
+            self.events.push_back(Event::IdleExit);
+        }
+        true
+    }
+
     pub(crate) fn on_sleep_requested(&mut self, reason: SleepReason, now: Millis) -> bool {
         match self.state {
             ConnectionState::Connected => {
@@ -393,7 +430,8 @@ impl Client {
         if self.session.forced_sleep.is_some() {
             return self.session.sleep_retry_at;
         }
-        if self.mode() == LifecycleMode::Persistent || self.session.sleep_unsupported {
+        // 名字服务通道：关闭时机只由 Hub 决定（spec/naming.md 第 3 节）。
+        if self.mode() == LifecycleMode::Persistent || self.session.sleep_unsupported || self.life.inbound {
             return None;
         }
         let anchor = self.session.idle_anchor?;
@@ -525,6 +563,7 @@ impl Client {
             self.warn("Host 接受休眠但未返回 resumeToken，回连时将完整同步");
         }
         self.life.resume_token = resume_token;
+        self.life.inbound = false;
         self.teardown(CancelReason::Disconnected, true);
         self.events.push_back(Event::Disconnect);
         self.retry_count = 0;

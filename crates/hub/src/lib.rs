@@ -14,6 +14,7 @@ mod agent_control;
 pub mod app_server;
 pub mod call;
 pub mod connection;
+pub mod connector;
 pub mod dormant_store;
 pub mod features;
 pub mod format;
@@ -28,6 +29,7 @@ mod limits;
 mod mcp_convert;
 mod navigate;
 pub mod names;
+mod naming;
 pub mod pages;
 pub mod policy;
 mod power;
@@ -59,8 +61,9 @@ pub use policy::{
     AnnotationMatch, MAX_POLICY_RULES, PolicyAction, PolicyConfig, PolicyHook, PolicyLoadError, PolicyRule, PolicyRuleStatus,
     PolicyStatus,
 };
+pub use connector::{ConnectorError, Connector, DialedChannel, DiscoveredName, NameEvent};
 pub use hub::{
-    DEFAULT_NAVIGATE_TIMEOUT, DEFAULT_PROGRESS_INTERVAL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
+    DEFAULT_CHANNEL_GRACE, DEFAULT_NAVIGATE_TIMEOUT, DEFAULT_PROGRESS_INTERVAL, DEFAULT_TOOL_EXPOSURE_THRESHOLD, DEFAULT_WAKE_RATE_LIMIT, Hub, HubConfig, LocalAppChannel, RESOURCE_URI_SCHEME,
     load_manifests, parse_resource_uri, resource_uri,
 };
 #[cfg(feature = "mcp-server")]

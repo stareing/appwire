@@ -77,7 +77,11 @@
  *     am_call_fail_user_action）。
  * - v16（第 4f 项 j，spec/protocol.md 3.3「idempotencyKey」）：只新增函数 am_call_idempotency_key（Agent 给出的
  *   幂等键，原样；没有时为 NULL）。已有结构体布局与函数签名不变。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v16 仍为 3。）
+ * - v17（第 4d 项，spec/naming.md）：只在 AmClientOptions 末尾追加 register_name 与 name_instance（按 struct_size 读取，
+ *   旧调用方不受影响）：App 在系统名字服务登记名字，Hub 按名拨号时接受通道（握手方向不变：SDK 先发 app/hello，
+ *   wakeReason 为 "os-activation"）；通道关闭后 on-demand / idle 回到 DORMANT、不重连。由 D-Bus 激活启动的进程
+ *   （命令行带 --app-mcp-activation）按"由唤醒冷启动"处理（AM_RESIDENCY_EXIT_WHEN_IDLE 生效）。
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v17 仍为 3。）
  *
  * 端点（AmClientConfig.host_url）
  *   "unix:<绝对路径>"（Linux / macOS）、"pipe:\\.\pipe\<名称>"（Windows，C 字符串中需转义）、
@@ -321,6 +325,11 @@ typedef struct AmClientOptions {
     /* v13（调用去重，spec/protocol.md 3.3）：旧调用方的 struct_size 不含以下字段时取默认值。 */
     int64_t call_dedup_ttl_ms;       /* 同一 callId 首次结果的保留时长；0 = 默认 300000，负数 = 关闭去重 */
     int32_t call_dedup_max_entries;  /* 最多保留的结果数（超出淘汰最早的）；0 = 默认 64，负数 = 关闭去重 */
+    /* v17（按名寻址，spec/naming.md）：旧调用方的 struct_size 不含以下字段时取默认值。 */
+    bool register_name;              /* true：start 后在系统名字服务登记（Linux：D-Bus dev.appmcp.App.<appId>），Hub 按名拨入；
+                                        通常与 AM_LIFECYCLE_ON_DEMAND 同用。本平台不支持时经 on_log 报告，其余照常 */
+    const char *name_instance;       /* 可为 NULL：登记实例名（[a-z][a-z0-9-]{0,31}，不能是 "default"），另登记
+                                        dev.appmcp.App.<appId>.<instance>；不合法时 am_client_new_ex 返回 AM_ERR_INVALID_CONFIG */
 } AmClientOptions;
 
 typedef struct AmToolSpec {

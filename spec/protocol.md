@@ -149,6 +149,24 @@ SDK 核心在处理握手结果之前核对（`app_mcp_protocol::identity::check
 （登记文件 + `/healthz` 进程号一致才算"本配置目录的实例在运行"）、测试（监听端口 0，从登记文件取实际地址）。
 实现：`app_mcp_protocol::registry`（路径与读取）、`crates/hub/src/instance.rs`（加锁与写入）。
 
+### 1.8 名字服务通道（按名寻址，spec/naming.md）
+
+除 SDK 拨号到 1.2 的端点之外，Hub 也可以经系统名字服务**拨入** App（Linux：向会话总线名 `dev.appmcp.App.<appId>` 调用
+`dev.appmcp.App1.Open() → h`，得到 socketpair 的一端；地址、映射与发现见 spec/naming.md）。这条通道上：
+
+- **帧与角色不变**：仍是 1.1 的 HTTP/1.1 + WebSocket，SDK 发送 `ws://localhost/app` 的升级请求、是 WebSocket 客户端，Hub 是服务端；
+  连接建立后 SDK 先发 `app/hello`，`wakeReason` 为 `"os-activation"`，握手、同步、调用全部按本规范。
+- **鉴权**：两端都核对对端为同一操作系统用户（App 在 `Open()` 中查调用方 uid，Hub 用通道对端的 `SO_PEERCRED`），与 1.4 相同的信任边界。
+- **心跳与关闭**：SDK 声明 `heartbeatMs: 0`（不论端点是何种传输），Hub 也不发 `ping`、不做无消息断开；SDK 不做空闲计时、不发自动的
+  `app/sleep`（`app/sleep { reason: "app" }` 仍可用），关闭时机由 Hub 决定（spec/naming.md 7.2）。通道断开后 SDK 不重连：
+  `persistent` 回到 5.6 的重连，其余模式进入 `Dormant`（`Residency` 规则同 8.5）。
+- **同时只接受一条**：App 已有连接（含建立中）时拒绝拨入（D-Bus 错误 `org.freedesktop.DBus.Error.LimitsExceeded`，说明以
+  `CHANNEL_LIMIT` 开头；spec/naming.md U-16）。
+- **错误码**：名字服务相关的错误码（spec/naming.md 第 12 节，`app_mcp_protocol::naming::codes`）暂不并入 10.1 的连接级错误码表，
+  只出现在工具错误的 `details.code`（`LAUNCH_FAILED` / `APP_NOT_INSTALLED`）、Hub `last_error` 与日志中；并入时字符串不变。
+- 实现：`app_mcp_core::Client::accept_channel`（核心）、`app_mcp_native::NativeConfig::register_name`（原生运行时登记与接受）、
+  `app_mcp_hub::connector`（Hub 拨号）。
+
 ## 2. 消息一览
 
 | 方向 | 方法 | 类型 | 参数 → 结果 |

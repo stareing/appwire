@@ -22,7 +22,15 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 futures.workspace = true
 rand.workspace = true
 
+# 名字服务（spec/naming.md 4.1）：Linux 会话总线上的 D-Bus 名字登记与 `Open() → fd`。纯 Rust 实现，跑在运行时线程的 tokio 上。
+# @why 鸿蒙（`*-linux-ohos`）也是 target_os = "linux"，但没有 D-Bus 会话总线：排除。
+[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
+
 [features]
+default = ["dbus"]
+# Linux D-Bus 名字服务（NativeConfig::register_name）。关闭后 register_name 在 Linux 上也按"不支持"处理。
+dbus = ["dep:zbus"]
 # 仅供本仓库测试：`test_support::fake_host_path()` 构建并定位 examples/fake_host（bindings/c 的测试也用）。
 test-support = []
 

@@ -1,4 +1,4 @@
-//! 测试支持（feature `test-support`，只供本仓库的测试使用）：构建并定位 `examples/fake_host`。
+//! 测试支持（feature `test-support`，只供本仓库的测试使用）：构建并定位示例程序（`examples/fake_host` 等）。
 //!
 //! @why `cargo test` 只以测试模式（libtest 入口、带哈希的文件名）构建示例，不刷新
 //! `target/<profile>/examples/fake_host`；直接用该路径会拿到旧版本（协议更新后测试莫名失败）。
@@ -19,13 +19,15 @@ pub const FAKE_HOST_ENV: &str = "APP_MCP_FAKE_HOST";
 /// @error 无法确定 target 目录、无法运行 cargo 或构建失败时返回说明（含 cargo 的 stderr）。
 pub fn fake_host_path() -> Result<PathBuf, String> {
     static PATH: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-    PATH.get_or_init(build_fake_host).clone()
+    PATH.get_or_init(|| match std::env::var_os(FAKE_HOST_ENV) {
+        Some(explicit) => Ok(PathBuf::from(explicit)),
+        None => example_path("fake_host"),
+    })
+    .clone()
 }
 
-fn build_fake_host() -> Result<PathBuf, String> {
-    if let Some(explicit) = std::env::var_os(FAKE_HOST_ENV) {
-        return Ok(PathBuf::from(explicit));
-    }
+/// 用调用它的 cargo 构建本 crate 的示例 `name`，返回可执行文件路径（布局与 [`fake_host_path`] 相同）。
+pub fn example_path(name: &str) -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("无法确定测试可执行文件路径：{e}"))?;
     let profile_dir = exe
         .parent()
@@ -42,7 +44,7 @@ fn build_fake_host() -> Result<PathBuf, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut cmd = Command::new(cargo);
     cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["build", "-q", "-p", "app-mcp-native", "--example", "fake_host", "--target-dir"])
+        .args(["build", "-q", "-p", "app-mcp-native", "--example", name, "--target-dir"])
         .arg(target_dir);
     match profile {
         "debug" => {}
@@ -53,17 +55,17 @@ fn build_fake_host() -> Result<PathBuf, String> {
             cmd.args(["--profile", other]);
         }
     }
-    let out = cmd.output().map_err(|e| format!("无法运行 cargo 构建 fake_host：{e}"))?;
+    let out = cmd.output().map_err(|e| format!("无法运行 cargo 构建 {name}：{e}"))?;
     if !out.status.success() {
         return Err(format!(
-            "cargo 构建 fake_host 失败（{}）：{}",
+            "cargo 构建 {name} 失败（{}）：{}",
             out.status,
             String::from_utf8_lossy(&out.stderr)
         ));
     }
     let path = profile_dir
         .join("examples")
-        .join(format!("fake_host{}", std::env::consts::EXE_SUFFIX));
+        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     if path.exists() {
         Ok(path)
     } else {

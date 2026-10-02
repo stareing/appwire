@@ -73,6 +73,20 @@ pub struct NativeConfig {
     pub heartbeat: HeartbeatMode,
     /// 调用去重（spec/protocol.md 3.3）：同一 `callId` 在有效期内只执行一次。默认保留 5 分钟、最多 64 条。
     pub call_dedup: CallDedupPolicy,
+    /// 在系统名字服务登记本 App（spec/naming.md，"按名寻址"）：Hub 按名拨号时由本客户端接受通道（App 不必常驻、
+    /// 不必主动连接 Hub；进程未运行时由系统激活）。Linux：D-Bus 会话总线名 `dev.appmcp.App.<appId>`（需要激活文件，
+    /// `app-mcp-host app install` 生成）。默认 `false`。
+    ///
+    /// 登记在 [`NativeClient::start`] 之后进行、[`NativeClient::stop`] / 客户端被丢弃时注销；登记期间运行时线程保持
+    /// 与名字服务的连接（阻塞等待，无定时器）。本平台不支持或登记失败时经 [`ClientListener::on_log`] 报告，其余照常。
+    /// 通常与 `lifecycle.mode = OnDemand` 同用：App 不主动连接，只在 Hub 拨入时连接。
+    pub register_name: bool,
+    /// 登记实例名（spec/naming.md 2.1，`[a-z][a-z0-9-]{0,31}`，不能是 `default`）：`Some` 时另登记实例名字
+    /// （D-Bus `dev.appmcp.App.<appId>.<instance>`），供 `appmcp://<appId>/<instance>` 寻址。默认 `None`。
+    pub name_instance: Option<String>,
+    /// 名字服务地址（Linux：D-Bus 地址，如 `unix:path=/run/user/1000/bus`）。`None`（默认）按环境：由名字服务激活时用
+    /// `DBUS_STARTER_ADDRESS`，否则 `DBUS_SESSION_BUS_ADDRESS`。测试用私有总线时设置。
+    pub name_service_address: Option<String>,
 }
 
 impl NativeConfig {
@@ -93,6 +107,9 @@ impl NativeConfig {
             connect_timeout_ms: 5_000,
             heartbeat: HeartbeatMode::Auto,
             call_dedup: CallDedupPolicy::default(),
+            register_name: false,
+            name_instance: None,
+            name_service_address: None,
         }
     }
 }
@@ -734,7 +751,7 @@ impl NativeClient {
         listener: Option<Arc<dyn ClientListener>>,
     ) -> Result<Self, NativeError> {
         let connect_timeout = std::time::Duration::from_millis(u64::from(config.connect_timeout_ms.max(1)));
-        let (core_config, host_url) = build_core_config(config)?;
+        let (core_config, host_url, name_request) = build_core_config(config)?;
         let instance_id = core_config.instance_id.clone();
         let shared = Arc::new(Shared {
             state: Mutex::new(CoreState {
@@ -746,6 +763,8 @@ impl NativeClient {
                 scopes: HashMap::new(),
                 calls: HashMap::new(),
                 navigation: None,
+                name_request,
+                channel: None,
             }),
             wake: tokio::sync::Notify::new(),
             park: Mutex::new(0),
@@ -959,11 +978,16 @@ impl std::fmt::Debug for NativeClient {
 // 锁顺序：`CoreState` 锁 → `CallInner` 锁（运行时标记取消时）；任何地方都不会在持有 `CallInner`
 // 锁时再去拿 `CoreState` 锁，也不会在持锁时调用用户回调。
 
+mod names;
 mod runtime;
 /// 测试支持（只供本仓库测试，不属于公开 API 契约）。
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod test_support;
+/// 测试支持：临时私有 D-Bus 会话总线（只供本仓库测试，不属于公开 API 契约）。
+#[cfg(all(feature = "test-support", target_os = "linux"))]
+#[doc(hidden)]
+pub mod test_bus;
 
 use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
@@ -1023,8 +1047,20 @@ fn parse_endpoint(text: &str) -> Result<app_mcp_protocol::Endpoint, NativeError>
 /// 校验配置并转换为核心配置；同时返回 Host 端点。
 fn build_core_config(
     config: NativeConfig,
-) -> Result<(ClientConfig, app_mcp_protocol::Endpoint), NativeError> {
+) -> Result<(ClientConfig, app_mcp_protocol::Endpoint, Option<names::NameRequest>), NativeError> {
     let endpoint = parse_endpoint(&config.host_url)?;
+    if let Some(inst) = &config.name_instance
+        && !app_mcp_protocol::naming::is_valid_instance(inst)
+    {
+        return Err(NativeError::InvalidConfig(format!(
+            "name_instance 必须匹配 [a-z][a-z0-9-]{{0,31}} 且不是 default：{inst:?}"
+        )));
+    }
+    let name_request = config.register_name.then(|| names::NameRequest {
+        app_id: config.app_id.clone(),
+        instance: config.name_instance.clone(),
+        address: config.name_service_address.clone().filter(|a| !a.is_empty()),
+    });
     if !app_mcp_protocol::is_valid_app_id(&config.app_id) {
         return Err(NativeError::InvalidConfig(format!(
             "app_id 必须匹配 [a-z][a-z0-9-]{{0,62}}：{:?}",
@@ -1068,7 +1104,9 @@ fn build_core_config(
     inner.max_concurrent_calls = usize::try_from(config.max_concurrent_calls).unwrap_or(usize::MAX);
     inner.call_dedup = config.call_dedup;
     inner.navigate_in_background = app_mcp_protocol::platform::Target::CURRENT.allows_self_foreground();
-    Ok((inner, endpoint))
+    inner.launched_by_activation = name_request.is_some()
+        && std::env::args().any(|a| a == app_mcp_protocol::naming::dbus::ACTIVATION_ARG);
+    Ok((inner, endpoint, name_request))
 }
 
 /// 核心错误 → 原生错误。未知句柄一律视为已注销，未知调用 / 读取视为已完成。
@@ -1223,6 +1261,10 @@ struct CoreState {
     calls: HashMap<String, Arc<CallInner>>,
     /// 导航回调（[`NativeClient::set_navigation_handler`]）；`None` = 不支持导航。
     navigation: Option<Arc<dyn NavigationHandler>>,
+    /// 要在名字服务登记的名字（[`NativeConfig::register_name`]）；`None` = 不登记。
+    name_request: Option<names::NameRequest>,
+    /// Hub 拨入、等待运行时取走的通道（[`Client::accept_channel`] 已接受，下一个 `Connect` 动作在其上连接）。
+    channel: Option<names::Channel>,
 }
 
 /// 运行时线程取出事件后要执行的动作。
@@ -1289,6 +1331,21 @@ impl Shared {
         *lock_ignore_poison(&self.park) += 1;
         self.park_cv.notify_all();
     }
+
+    /// 是否应在名字服务登记：配置了登记、已 `start` 且未停止。
+    fn name_request(&self) -> Option<names::NameRequest> {
+        let st = self.lock();
+        let started = *st.client.state() != ConnectionState::Idle;
+        st.name_request.clone().filter(|_| started && !st.stopped)
+    }
+
+    /// 取走待连接的拨入通道。
+    fn take_channel(&self) -> Option<names::Channel> {
+        self.lock().channel.take()
+    }
+}
+
+impl Shared {
 
     fn register_tool(
         self: &Arc<Self>,

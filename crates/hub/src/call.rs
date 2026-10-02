@@ -593,14 +593,15 @@ impl HubShared {
             selected.as_deref(),
             ctx.instance_id.is_some(),
         );
-        let plan =
-            plan.filter(|p| p.instance_id.is_some() || self.resolve_wake_descriptor(p).is_some());
+        let plan = plan.filter(|p| {
+            p.instance_id.is_some() || self.named_route(&p.app_id).is_some() || self.resolve_wake_descriptor(p).is_some()
+        });
         let mut woken = None;
         // 已按快照 / 目录定义审批过（之后路由到实例时不再审批）。
         let mut approved = false;
         if let Some(plan) = plan {
             // 不唤醒（`waker: none`）：不做审批，直接按未连接返回（带 launchUrl）。
-            if !self.wake_enabled() {
+            if !self.wake_reachable(&plan) {
                 return (Err(self.registry().disconnected_error(app_id)), plan.instance_id.clone());
             }
             if let Err(e) = self.check_wake_policy(app_id, Some(tool_name)) {

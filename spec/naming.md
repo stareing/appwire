@@ -30,6 +30,7 @@
 11. 调试
 12. 错误码（新增，待合入）
 13. 事实 / 未知 / 风险
+14. 实现状态
 
 ## 1. 术语
 
@@ -173,6 +174,12 @@ flowchart TD
   与自身不同则返回 D-Bus 错误 `org.freedesktop.DBus.Error.AccessDenied`；Hub 拨号前用 `GetConnectionCredentials` 查询名字所有者的
   uid 与进程号，uid 不同则不拨（`PEER_IDENTITY_MISMATCH`），进程号用于取可执行文件路径（`/proc/<pid>/exe`）并与登记文件核对。
   默认会话总线策略允许同一用户的任何连接拥有任何名字（先到先得），**名字本身不证明身份**（10.3）。
+- **`Open()` 的错误**（App 侧返回、Hub 侧映射为第 12 节的码）：调用方不是同一用户 → `AccessDenied`（`BIND_PERMISSION_DENIED`）；
+  App 已有连接 → `LimitsExceeded`，说明以 `CHANNEL_LIMIT` 开头（`CHANNEL_LIMIT`）。总线自身的错误：`ServiceUnknown` / `NameHasNoOwner`
+  （没有所有者也没有激活文件）、`Spawn.ExecFailed` / `Spawn.FileInvalid` / `Spawn.ServiceNotFound`（激活文件指向的程序不存在或文件无效）
+  → `NAME_NOT_FOUND`（调用 `APP_NOT_INSTALLED`）；`NoReply` / 超时 → `ACTIVATION_TIMEOUT`；其余 `Spawn.*` 等 → `ACTIVATION_DENIED`。
+- **激活启动的进程**：`Exec` 追加的 `--app-mcp-activation` 让 SDK 把本进程视为"由唤醒冷启动"（`Residency::ExitWhenIdle` 在通道关闭后
+  发出 idle-exit）；SDK 连接总线时优先用激活方给出的 `DBUS_STARTER_ADDRESS`。
 - **接入**：Rust（`crates/native` 的 `NameServer` 实现）、Python（GApplication / dbus 库）、Qt、C / C++。
 
 ### 4.2 Android：绑定式 Service
@@ -592,6 +599,11 @@ Android 冻结状态：`adb shell dumpsys activity | grep -A 20 "Apps frozen:"`�
 
 ## 12. 错误码（新增，待合入）
 
+（2026-10-02，4d 第一段）这些码的字符串已定义在 `app_mcp_protocol::naming::codes`，Linux 实现用到其中的 `NAME_NOT_FOUND`、
+`ACTIVATION_DENIED`、`ACTIVATION_TIMEOUT`、`BIND_PERMISSION_DENIED`、`PEER_IDENTITY_MISMATCH`、`CHANNEL_LIMIT`（工具错误 `details.code`、
+Hub `last_error`）；并入 `ConnectionErrorCode` 与 spec/protocol.md 10.1 仍待做（该枚举与各语言 SDK 的镜像、文档表格由测试互相核对，
+改动面超出本段，spec/protocol.md 1.8）。
+
 以下连接级错误码**待 4d 实现时加入 spec/protocol.md 第 10.1 节**（当前不改该表，以免与进行中的 4e 冲突；`ConnectionErrorCode` 与
 `reason()` / `hint()` 届时同步）。在合入之前，实现不得假定这些码已存在。
 
@@ -738,3 +750,38 @@ macOS / iOS（developer.apple.com、Xcode man pages）：
 | R-13 | 未覆盖的平台（iOS、鸿蒙、沙盒 macOS）行为不一致 | 兼容 | 明确列为"不支持按名寻址"，沿用现有路径，不做部分实现 |
 | R-14 | 未知的未知（如系统名字服务异常、激活风暴） | 稳定性 | 每 App 唤醒 / 拨号速率上限（复用 4e O4）；拨号去重；所有失败带错误码进入 `last_error` 与 `doctor` |
 | R-15 | codegen 的 App Intents 扩展 / 可选输出与真实 SDK 不符（未编译验证），或需要界面的工具落到扩展进程执行 | 兼容 | 选项默认关闭、关闭时输出与快照一致；桩类型检查（`crates/codegen/scripts/verify.sh`）；`allowedExecutionTargets` 只在 iOS 27 起以 `@available` 声明；扩展布局下 foreground 工具给出警告（U-22） |
+
+## 14. 实现状态
+
+### 14.1 第一段：Linux 全链路（2026-10-02）
+
+| 部分 | 已实现 | 位置 |
+|---|---|---|
+| 地址与映射 | `Address`（2.1 解析，显式失败）、D-Bus 名 / 对象路径映射与反向解析、激活文件内容 | `app_mcp_protocol::naming` |
+| 核心（被连接方） | `Client::accept_channel`：只在 `Dormant` / `Backoff` / `HostMismatch` 接受（上限 1，U-16）；hello 带 `wakeReason: "os-activation"`；通道上不发心跳、不做 App 端空闲计时；断开后非 `persistent` 进入 `Dormant` 不重连；`ClientConfig::launched_by_activation` | `crates/core`（`tests/inbound.rs`） |
+| 原生运行时 | `NativeConfig::{register_name, name_instance, name_service_address}`；`start` 后登记默认名字（已被同 App 的其他进程拥有时只登记实例名字）与实例名字，`stop` / 丢弃时注销；`Open()` 核对调用方 uid、创建 socketpair，通道上跑同一 WebSocket 帧（SDK 为客户端）；登记期间运行时线程阻塞在总线连接上（无定时器、不额外起线程） | `crates/native/src/names/`（`tests/names.rs`）；示例 `examples/named_app.rs` |
+| C ABI | `AmClientOptions` 末尾追加 `register_name`、`name_instance`（v17，按 `struct_size` 读取） | `bindings/c/include/app_mcp.h` |
+| Hub | `Connector` 抽象 + `DbusConnector`；启动扫描（`ListActivatableNames` / `ListNames`）+ `NameOwnerChanged`；路由顺序 9.2；拨号与唤醒共用去重 / 等待 / 速率上限；在自己拨出的通道上就绪即认领；宽限关闭（7.2，租约参与）；关闭或对端 EOF → 休眠快照；`apps.list` 的 `nameService` | `crates/hub/src/connector/`、`naming.rs`、`app_server.rs`（spec/hub-api.md 3.16） |
+| Host | `serve --name-service`、`--channel-grace-ms`；`app install` / `app uninstall`（激活文件 + App 登记文件 + `ReloadConfig`，清单复制到 `<home>/manifests`） | `crates/host/src/app_install.rs` |
+| e2e | 私有 `dbus-daemon`：发现不激活 → 调用激活冷启动 → 宽限后关闭（Hub fd / 线程回到基线、App 退出、名字消失）→ 再次调用再激活；程序不存在 → `APP_NOT_INSTALLED` | `crates/hub/tests/naming.rs` |
+
+与本文件前文的差异（实现时的决定，已在对应小节注明或在此说明）：
+
+- **身份核对时机**（3.1 / 4.1 / 10.3）：Hub 不在拨号**前**查询名字所有者，而是在拿到通道后核对 socketpair 对端（`SO_PEERCRED`，即
+  创建通道的进程）的 uid，不同即 `PEER_IDENTITY_MISMATCH` 并关闭；对端进程号进入实例的 `pid`。理由：激活场景下拨号前没有所有者可查，
+  通道对端凭据由内核给出、不可伪造。"所有者可执行文件与登记文件 `executable` 一致"的核对未做。
+- **只拨默认名字**：Hub 一律拨 `appmcp://<appId>`；"地址 ↔ instanceId"的记录与按实例地址拨号未做（App 侧已能登记实例名字）。
+- **租约**：Hub 仍在通道上发 `app/lease`（SDK 在通道上不据此计时），租约到期时刻参与 Hub 的关闭时刻（7.2）。
+- **快速恢复**：Hub 关闭通道时生成的恢复令牌不下发（没有承载它的消息），下次握手按完整同步；`app/sleep { reason: "app" }` 路径照常带令牌。
+
+### 14.2 未做（后续段落）
+
+- 发现：App 登记文件（5.3）的读取与目录监视（Host 的 `app install` 已写入）、自报登记 `app/register`（5.5）、签名指纹与
+  `fingerprintChanged`（5.4）、发现记录持久化 `discovery.json`。
+- 结束与回收：`maxBoundApps` LRU（7.3）、内存压力（7.4）、`app/hold` 与 `maxHoldMs`（7.2）、调用中对端死亡的 `outcome: "unknown"` 与
+  `read` 工具自动重试（7.5，当前按现有断线错误返回）、9.2 竞态"App 发起的连接优先"的显式处理（同一 SDK 的核心同时只允许一条连接，
+  实际不会出现）。
+- 多 Hub：App 同时接受多条通道（9.1，当前上限 1）。
+- 绑定：uniffi / node / 各语言 SDK 的登记选项、Hub 各语言绑定的 `connectors` / `channel_grace`；`doctor` 的 `naming.*` 检查（第 11 节）。
+- Host 默认开启按名寻址（当前需 `--name-service`）；dbus-broker 上的实测（U-05）。
+

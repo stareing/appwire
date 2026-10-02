@@ -147,6 +147,12 @@ pub struct LifecycleSection {
     /// `"system"`（默认）/ `"none"` / `{"exec": [program, ...args]}`（spec/hub-api.md 3.5）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waker: Option<WakerConfig>,
+    /// 按名寻址（spec/naming.md）：经系统名字服务发现 App、调用时按名拨号（Linux：D-Bus 会话总线），默认 `false`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_service: Option<bool>,
+    /// 按名拨入的通道在最后一次调用后保持的时间（毫秒，spec/naming.md 7.2），默认 15000。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_grace_ms: Option<u64>,
 }
 
 /// 工具列表（spec/hub-api.md 3.7）。
@@ -280,6 +286,8 @@ pub struct Overrides {
     pub output_validation: Option<OutputValidation>,
     pub log_level: Option<String>,
     pub log_file: Option<bool>,
+    pub name_service: Option<bool>,
+    pub channel_grace_ms: Option<u64>,
 }
 
 impl FileConfig {
@@ -312,6 +320,8 @@ impl FileConfig {
             self.lifecycle.lease.get_or_insert_with(LeaseOverrides::default).merge(&o.lease);
         }
         set(&mut self.lifecycle.waker, &o.waker);
+        set(&mut self.lifecycle.name_service, &o.name_service);
+        set(&mut self.lifecycle.channel_grace_ms, &o.channel_grace_ms);
         set(&mut self.tools.exposure, &o.tool_exposure);
         set(&mut self.tools.threshold, &o.tool_exposure_threshold);
         set(&mut self.tools.output_validation, &o.output_validation);
@@ -373,6 +383,9 @@ pub struct Settings {
     pub legacy_heartbeat: bool,
     pub lease: LeasePolicy,
     pub waker: WakerConfig,
+    /// 按名寻址（Linux：D-Bus 会话总线连接器）。
+    pub name_service: bool,
+    pub channel_grace_ms: u64,
     pub tool_exposure: ToolExposure,
     pub tool_exposure_threshold: usize,
     pub limits: LimitPolicy,
@@ -467,6 +480,11 @@ impl Settings {
             legacy_heartbeat: c.lifecycle.legacy_heartbeat.unwrap_or(false),
             lease,
             waker: c.lifecycle.waker.unwrap_or_default(),
+            name_service: c.lifecycle.name_service.unwrap_or(false),
+            channel_grace_ms: c
+                .lifecycle
+                .channel_grace_ms
+                .unwrap_or(app_mcp_hub::DEFAULT_CHANNEL_GRACE.as_millis() as u64),
             tool_exposure: c.tools.exposure.unwrap_or_default(),
             tool_exposure_threshold: c
                 .tools
@@ -501,6 +519,19 @@ mod tests {
     }
 
     #[test]
+    fn name_service_overrides() {
+        let o = Overrides { name_service: Some(true), channel_grace_ms: Some(500), ..Default::default() };
+        let s = Settings::resolve(&FileConfig::default(), &o, &home()).unwrap();
+        assert!(s.name_service);
+        assert_eq!(s.channel_grace_ms, 500);
+        let file: FileConfig =
+            serde_json::from_str(r#"{"lifecycle":{"nameService":true,"channelGraceMs":2000}}"#).unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home()).unwrap();
+        assert!(s.name_service);
+        assert_eq!(s.channel_grace_ms, 2000);
+    }
+
+    #[test]
     fn defaults() {
         let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home()).unwrap();
         assert_eq!(s.listen, "127.0.0.1:7717");
@@ -513,6 +544,8 @@ mod tests {
             vec![(PathBuf::from("/h/.app-mcp/manifests"), false)]
         );
         assert!(s.log_file);
+        assert!(!s.name_service, "按名寻址默认关闭");
+        assert_eq!(s.channel_grace_ms, 15_000);
         assert_eq!(s.lease_ms, 60_000);
         assert_eq!(
             (s.wake_token_ttl_ms, s.wake_rate_limit, s.legacy_heartbeat),

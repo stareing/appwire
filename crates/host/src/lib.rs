@@ -12,6 +12,7 @@
 //!
 //! stdout 在 stdio 模式下专用于 MCP 协议，所有日志写 stderr（常驻模式另写 `<home>/logs/`）。
 
+pub mod app_install;
 pub mod cli;
 pub mod config;
 pub mod doctor;
@@ -92,6 +93,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Setup(args)) => setup_cmd(args).await,
         Some(Command::Uninstall(args)) => uninstall_cmd(args).await,
         Some(Command::Policy { action }) => policy::cmd(action).await,
+        Some(Command::App { action }) => app_install::cmd(action).await,
         Some(Command::Token { home, regenerate }) => {
             let home = AppHome::resolve(home.home.as_deref())?;
             let t = if regenerate {
@@ -149,7 +151,25 @@ fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
         limits: s.limits.clone(),
         output_validation: s.output_validation,
         progress_interval: Duration::from_millis(s.progress_interval_ms),
+        connectors: name_service_connectors(s.name_service),
+        channel_grace: Duration::from_millis(s.channel_grace_ms),
         ..defaults
+    }
+}
+
+/// `--name-service` / `lifecycle.nameService`：本平台的名字服务连接器（spec/naming.md 4.0）。
+fn name_service_connectors(enabled: bool) -> Vec<std::sync::Arc<dyn app_mcp_hub::Connector>> {
+    if !enabled {
+        return Vec::new();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        vec![std::sync::Arc::new(app_mcp_hub::connector::DbusConnector::new(None))]
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        tracing::warn!("本平台尚未实现按名寻址（spec/naming.md 4.0），忽略 nameService");
+        Vec::new()
     }
 }
 

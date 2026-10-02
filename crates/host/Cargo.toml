@@ -36,6 +36,8 @@ doc = false
 [dependencies]
 app-mcp-hub.workspace = true
 app-mcp-protocol.workspace = true
+# `app install`：校验静态清单（appId 一致）后复制到 <home>/manifests。
+app-mcp-manifest.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

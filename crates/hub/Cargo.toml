@@ -18,13 +18,15 @@ path = "src/lib.rs"
 # 可选能力（spec/hub-api.md「cargo features」）。默认全开，与拆分前行为相同；移动端绑定按需关闭以缩小体积。
 # 关闭后公开配置字段与方法保持不变，请求被关闭的能力时返回 `ErrorKind::Unsupported`（见 src/features.rs）。
 [features]
-default = ["mcp-server", "upstream", "schema-validation"]
+default = ["mcp-server", "upstream", "schema-validation", "dbus"]
 # MCP 出口：`/mcp`（Streamable HTTP，`HubConfig::mcp_http`、`Hub::serve_http(_with)`）、`Hub::serve_stdio`、`McpSession`。
 mcp-server = ["rmcp/transport-io", "rmcp/transport-streamable-http-server"]
 # 上游聚合：以子进程启动其他 MCP 服务器并汇入工具（`HubConfig::upstreams`）。
 upstream = ["rmcp/transport-child-process"]
 # 调用前按工具的 inputSchema 校验参数（jsonschema 及其正则引擎）；关闭时参数原样交给 App。
 schema-validation = ["dep:jsonschema"]
+# 名字服务连接器（spec/naming.md 4.1）：Linux D-Bus 会话总线上的发现与按名拨号（`connector::DbusConnector`）。
+dbus = ["dep:zbus"]
 
 [dependencies]
 app-mcp-protocol.workspace = true
@@ -54,6 +56,11 @@ sha2 = "0.10"
 # 审批 / 配对回调（spec/hub-api.md 3.3）：dyn 兼容的 async trait。
 async-trait = "0.1"
 
+# D-Bus 连接器（feature `dbus`）：纯 Rust，跑在 Hub 的 tokio 运行时上。
+# @why 鸿蒙（`*-linux-ohos`）也是 target_os = "linux"，但没有 D-Bus 会话总线：排除。
+[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
+
 # 单实例锁（instance.rs）：Unix flock。
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -65,7 +72,8 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dev-dependencies]
-app-mcp-native.workspace = true
+# test-support：tests/naming.rs 用私有 D-Bus 会话总线（test_bus）与示例程序构建（test_support::example_path）。
+app-mcp-native = { workspace = true, features = ["test-support"] }
 tokio-tungstenite.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-io"] }
 # tests/mcp_ipc.rs：经本地 IPC 发 HTTP 请求（/status、Windows 上的 /mcp）。

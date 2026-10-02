@@ -69,9 +69,8 @@ impl HubShared {
         }
         let plan = self
             .registry()
-            .wake_plan_app(app_id, selected)
-            .filter(|p| p.instance_id.is_some() || self.resolve_wake_descriptor(p).is_some());
-        let Some(plan) = plan.filter(|_| self.wake_enabled()) else {
+            .wake_plan_app(app_id, selected);
+        let Some(plan) = plan.filter(|p| self.wake_reachable(p)) else {
             return Err(self.registry().disconnected_error(app_id));
         };
         self.check_wake_policy(app_id, tool)?;

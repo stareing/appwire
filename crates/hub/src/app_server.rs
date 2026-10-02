@@ -40,14 +40,20 @@ pub(crate) enum Peer {
     Tcp(SocketAddr),
     /// 本地 IPC（Unix 域套接字 / 命名管道），对端已确认是同一用户；`pid` 为对端进程号。
     Ipc { pid: Option<u32> },
+    /// Hub 按名拨出的通道（spec/naming.md 第 3 节），对端已由连接器确认是同一用户；关闭时机由 Hub 决定（7.2）。
+    Dialed { pid: Option<u32> },
 }
 
 impl Peer {
     pub(crate) fn pid(self) -> Option<u32> {
         match self {
             Peer::Tcp(_) => None,
-            Peer::Ipc { pid } => pid,
+            Peer::Ipc { pid } | Peer::Dialed { pid } => pid,
         }
+    }
+
+    fn dialed(self) -> bool {
+        matches!(self, Peer::Dialed { .. })
     }
 }
 
@@ -57,6 +63,8 @@ impl std::fmt::Display for Peer {
             Peer::Tcp(addr) => write!(f, "tcp {addr}"),
             Peer::Ipc { pid: Some(pid) } => write!(f, "ipc pid {pid}"),
             Peer::Ipc { pid: None } => f.write_str("ipc"),
+            Peer::Dialed { pid: Some(pid) } => write!(f, "dialed pid {pid}"),
+            Peer::Dialed { pid: None } => f.write_str("dialed"),
         }
     }
 }
@@ -69,6 +77,8 @@ struct Registered {
     launch_token: Option<String>,
     /// `app/hello.heartbeatMs`：SDK 的心跳声明（spec/lifecycle.md 第 11 节）；`None` = 旧 SDK。
     heartbeat_ms: Option<u64>,
+    /// 在 Hub 按名拨出的通道上（spec/naming.md 第 3 节）。
+    dialed: bool,
 }
 
 /// 声明了 `heartbeatMs > 0` 的 SDK：无消息断开至少等待的心跳间隔数。
@@ -171,6 +181,47 @@ pub(crate) async fn handle_websocket<S>(
     let inbound = futures::stream::once(std::future::ready(first)).chain(frames);
     run_session(shared, conn, inbound, origin, peer).await;
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await;
+}
+
+/// Hub 按名拨出的通道（[`crate::connector::Connector::dial`]）：SDK 在其上发 WebSocket 升级请求（`/app`，
+/// spec/naming.md 第 3 节"帧不变"），完成升级后与其他 App 连接走同一个会话。
+pub(crate) async fn handle_dialed_channel(shared: Arc<HubShared>, channel: crate::connector::DialedChannel) {
+    use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request as WsRequest, Response as WsResponse};
+    let peer = Peer::Dialed { pid: channel.pid };
+    let check_path = |req: &WsRequest, resp: WsResponse| -> Result<WsResponse, ErrorResponse> {
+        let path = req.uri().path();
+        if path == app_mcp_protocol::APP_PATH || path == "/" {
+            return Ok(resp);
+        }
+        let mut err = ErrorResponse::new(Some(format!("通道上只接受 {} 的升级请求", app_mcp_protocol::APP_PATH)));
+        *err.status_mut() = http::StatusCode::NOT_FOUND;
+        Err(err)
+    };
+    let accept = tokio_tungstenite::accept_hdr_async_with_config(
+        channel.stream,
+        check_path,
+        Some(crate::http_server::app_ws_config()),
+    );
+    match tokio::time::timeout(shared.config.idle_timeout, accept).await {
+        Ok(Ok(ws)) => handle_websocket(shared, ws, None, peer).await,
+        Ok(Err(e)) => tracing::info!(%peer, "按名拨出的通道上 WebSocket 升级失败：{e}"),
+        Err(_) => tracing::info!(%peer, "按名拨出的通道上没有及时收到升级请求，关闭"),
+    }
+}
+
+/// 按名拨入的通道何时检查关闭（spec/naming.md 7.2）：有进行中调用或待派唤醒时隔一个宽限再查；否则为
+/// `max(最后一条消息 + 宽限, 租约到期)`。
+fn channel_close_at(shared: &HubShared, conn: &Connection, reg: &Registered, last_rx: Instant) -> Instant {
+    let grace = shared.config.channel_grace;
+    if channel_busy(shared, conn, reg) {
+        return Instant::now() + grace;
+    }
+    let lease = shared.lease_expiry(conn.id);
+    (last_rx + grace).max(lease.unwrap_or(last_rx))
+}
+
+fn channel_busy(shared: &HubShared, conn: &Connection, reg: &Registered) -> bool {
+    conn.inflight() > 0 || shared.has_pending_wake(&reg.app_id, &reg.instance_id)
 }
 
 /// WebSocket 消息流 → 文本消息流：Close 帧或读取出错时结束，二进制帧记录警告后忽略。
@@ -403,6 +454,7 @@ where
             Some(m) => m.idle_timeout(configured),
         };
         let hub_pings = mode.is_some_and(HeartbeatMode::hub_pings);
+        let close_at = registered.as_ref().filter(|r| r.dialed).map(|r| channel_close_at(&shared, &conn, r, last_rx));
         tokio::select! {
             text = inbound.next() => {
                 let Some(text) = text else { break };
@@ -464,12 +516,29 @@ where
                 tracing::debug!(cid = %conn.cid, "连接被关闭（被新连接替换）");
                 break;
             }
+            _ = sleep_until(close_at.unwrap_or_else(Instant::now)), if close_at.is_some() => {
+                // 到期时复查：期间可能有调用开始（不经本循环）。
+                let Some(reg) = registered.as_ref() else { continue };
+                if channel_busy(&shared, &conn, reg) || channel_close_at(&shared, &conn, reg, last_rx) > Instant::now() {
+                    continue;
+                }
+                tracing::info!(cid = %conn.cid, app_id = %reg.app_id, instance_id = %reg.instance_id, "宽限到期，关闭按名拨入的通道");
+                break;
+            }
         }
     }
 
     // 清理
     if let Some(reg) = &registered {
         lock(&shared.power).disconnected(&reg.app_id, &reg.instance_id, conn.id, Instant::now());
+    }
+    // 按名拨入的通道（Hub 关闭或对端死亡）：实例转为休眠快照，名字保留，下次调用再拨号（spec/naming.md 第 3、7.5 节）。
+    if let Some(reg) = registered.as_ref().filter(|r| r.dialed)
+        && shared.registry().make_dormant_by_hub(&reg.app_id, conn.id, random_token()).is_some()
+    {
+        tracing::info!(cid = %conn.cid, app_id = %reg.app_id, instance_id = %reg.instance_id, "通道关闭，实例转为休眠");
+        shared.mark_dormant_dirty(&reg.app_id);
+        shared.emit(HubEvent::AppDormant { app_id: reg.app_id.clone(), instance_id: reg.instance_id.clone() });
     }
     if let Some(reg) = registered {
         let removed = shared.registry().remove_instance(&reg.app_id, conn.id);
@@ -872,6 +941,7 @@ fn register_instance_with(
         instance_id: hello.instance_id,
         launch_token: hello.launch_token.filter(|t| !t.is_empty()),
         heartbeat_ms: hello.heartbeat_ms,
+        dialed: peer.dialed(),
     }
 }
 
@@ -1058,7 +1128,7 @@ fn handle_notification(
             }
             // 回连后重新订阅仍被订阅的资源（spec/lifecycle.md 第 13 节 B3）；同步时已订阅的不重复发送。
             shared.ensure_subscriptions(app_id);
-            shared.wake_arrived(app_id, &reg.instance_id, reg.launch_token.as_deref());
+            shared.wake_arrived(app_id, &reg.instance_id, reg.launch_token.as_deref(), reg.dialed);
         }
         other => tracing::warn!(cid = %conn.cid, method = other, "未知通知，忽略"),
     }
