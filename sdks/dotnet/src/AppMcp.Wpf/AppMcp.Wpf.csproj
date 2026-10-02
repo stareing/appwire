@@ -7,13 +7,19 @@
   <PropertyGroup>
     <TargetFramework>net9.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <!-- 控件兜底：user32 IsWindowEnabled（LibraryImport 生成代码需要） -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>AppMcp.Wpf</RootNamespace>
     <AssemblyName>AppMcp.Wpf</AssemblyName>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
-    <Description>AppWire WPF bindings: enable view-surface MCP tools while their element is visible and its window is active; Frame navigation adapter</Description>
+    <Description>AppWire WPF bindings: enable view-surface MCP tools while their element is visible and its window is active; Frame navigation adapter; opt-in in-process control fallback (ui.outline / click / fill) via AutomationPeer</Description>
     <PackageTags>mcp;model-context-protocol;ai-agent;wpf;appwire</PackageTags>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AppMcp.Wpf.Tests" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../AppMcp/AppMcp.csproj" />

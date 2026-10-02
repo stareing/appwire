@@ -405,6 +405,7 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
   `AmNavigate`、`AmToolOptions.page` / `surface`；uniffi `AppMcpClient.set_navigation_handler`、`NavigationHandler`、`Navigate`、
   `ToolSpec.surface` / `page`；Node 原生模块 `setNavigationHandler`、`Navigate`、`ToolSpecInit.surface` / `page`；WASM
   `setNavigation`、`navigate` 事件、`completeNavigate`、工具定义 `surface` / `page`。
+- 进程内控件兜底（第 4c 项 H）：没有声明工具的界面由 SDK 以 `ui.*` view 工具兜底，格式与行为见 spec/ui-fallback.md（协议不感知）。
 - 网页封装层（`@app-mcp/web`，第 4c 项 D；Electron / Tauri 页面侧的桥接实现相同）：
   - 入口：`ToolDefinition.surface` / `page` / `visibility`、`scope(name, { anchor, layer, page, surface, visibility })`（其下工具
     未声明时继承，最近的 scope 优先）、`createViewLayer(name)`、`AppMcp.setNavigationHandler(handler, options)`；`@app-mcp/react`

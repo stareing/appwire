@@ -14,6 +14,10 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="AppMcp.Tests" />
+    <!-- 控件兜底的大纲格式（UiFallback/）由各 UI 框架绑定共用 -->
+    <InternalsVisibleTo Include="AppMcp.Wpf" />
+    <InternalsVisibleTo Include="AppMcp.Wpf.Tests" />
+    <InternalsVisibleTo Include="AppMcp.WinUI" />
   </ItemGroup>
 
 </Project>

@@ -63,6 +63,26 @@ client.setNavigationHandler(mcpNavigatorHandler(navKey, routes: {'cart': '/cart'
   （`IndexedStack`、`TabBarView`）不改变路由，用 `McpViewGate(active: index == current)` 标出；`McpRouteGate(observer: …)`
   （`RouteAware`，观察者 `McpRouteObserver` 放进 `navigatorObservers`）在路由被盖住 / 恢复时另外回调 `onChanged`。
 
+## 进程内控件兜底（Flutter，spec/ui-fallback.md）
+
+没有声明工具的界面，可显式开启兜底工具 `ui.outline` / `click` / `fill` / `press` / `scroll` / `read`：模型拿到"短引用 + 角色 + 名称 +
+状态"的控件大纲，动作经语义树（`SemanticsOwner.performAction`）直接作用于控件，不截图、不按坐标。默认关闭，建议只在开发环境或
+用户明确开启时使用。需要 Flutter 3.35 及以上。
+
+```dart
+final fallback = McpUiFallback.enable(client);   // fallback.dispose() 注销
+// 已有声明工具的控件：大纲中标出 [已声明：cart.clear]，提示模型优先调用该工具
+McpDeclared(tool: 'cart.clear', child: TextButton(onPressed: clear, child: const Text('清空')))
+```
+
+- 工具以 `surface: view` 注册，只在 `AppLifecycleState` 为 resumed / inactive（有可见窗口）时启用；`outline` / `read` 声明
+  `readOnlyHint: true`，其余为 `false`。
+- 语义树（`SemanticsBinding.ensureSemantics()`）只在启用且已连接 Host 时开启，其余时间没有开销。
+- 引用带指纹（角色 + 名称 + 所在分组）：语义节点被重建时按指纹沿用引用，节点被复用给别的控件时旧引用作废。
+- 每个动作重新取节点并核对可见、启用；文本框先聚焦、等一帧再 `setText`；按键支持 Enter、Escape、Tab / Shift+Tab、Space。
+- `obscureText` 的文本框：只显示 `••••`（不泄露长度），拒绝 `fill` 与按键。
+- 对话框打开时下层控件被框架移出语义树，其引用在对话框关闭前按失效处理。
+
 ## 生命周期（休眠与唤醒，spec/lifecycle.md）
 
 ```dart

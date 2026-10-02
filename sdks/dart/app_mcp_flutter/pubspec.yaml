@@ -8,8 +8,9 @@ version: 0.1.0
 publish_to: none
 
 environment:
-  sdk: ^3.4.0
-  flutter: ">=3.22.0"
+  sdk: ^3.9.0
+  # 控件兜底用 SemanticsData.flagsCollection（Flutter 3.35 起）
+  flutter: ">=3.35.0"
 
 dependencies:
   flutter:

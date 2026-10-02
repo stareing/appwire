@@ -80,6 +80,26 @@ client.Start();
 - `ViewToolGate`：与框架无关的门控（可见 且 最上层 → 启用，否则禁用），可绑定到任意界面事件。
 - `AppMcp.Wpf`（`net9.0-windows`，WPF）与 `AppMcp.WinUI`（WindowsAppSDK）为独立项目，只能在 Windows 上构建，不在 `AppMcp.sln` 中。
 
+## 进程内控件兜底（WPF，spec/ui-fallback.md）
+
+没有声明工具的窗口，可显式开启兜底工具 `ui.outline` / `click` / `fill` / `press` / `scroll` / `read`：模型拿到"短引用 + 角色 + 名称 +
+状态"的控件大纲，动作经 AutomationPeer 直接作用于控件（Invoke / Toggle / SelectionItem / ExpandCollapse / Value / RangeValue / Scroll），
+不截图、不按坐标。默认关闭，建议只在开发环境或用户明确开启时使用。
+
+```csharp
+#if DEBUG
+_fallback = AppMcp.Wpf.UiFallback.WpfUiFallback.Enable(client);   // 在 UI 线程调用；_fallback.Dispose() 注销
+#endif
+```
+
+- 工具以 `Surface = View` 注册，只在应用有可见（未最小化）窗口时启用；`outline` / `read` 声明 `ReadOnlyHint = true`，其余为 `false`。
+- 每个动作在 UI 线程上按引用重新取控件，核对仍在界面上、可见（不在屏外、所在窗口未被模态对话框禁用）、启用后再执行；
+  按钮 Invoke 是异步投递的，执行后先让出调度器到空闲再取变化摘要。文本框写入后调用 `UpdateSource()`（默认 LostFocus 绑定也写回）。
+- `PasswordBox`：大纲与 `read` 只显示 `••••`（不泄露长度），拒绝 `fill` 与按键。
+- 经 `WpfViewTools.Bind(控件, 工具)` 绑定了工具的控件在大纲中标出 `[已声明：…]`，提示模型优先调用该工具。
+- 选项：`WpfUiFallbackOptions { Prefix = "ui", MaxItems = 60, SettleDelay = 50 ms }`。WinUI 3 尚未提供。
+- 测试：`tests/AppMcp.Wpf.Tests`（真实 WPF 窗口，只能在 Windows 上运行，不在 `AppMcp.sln` 中）。
+
 ## Hub SDK（Agent 端）：`AppMcp.Hub`
 
 `src/AppMcp.Hub` 是 `bindings/hub-c`（`app_mcp_hub.h`）的 P/Invoke 封装，供助手厂商在自己的进程里嵌入 Hub：

@@ -64,32 +64,15 @@ e1 链接「示例商城」→ /
     e32 复选框「同意条款」 unchecked
 ```
 
-- 只列可交互或有意义的元素：按钮、链接、输入类控件、带交互 role 的元素、可聚焦 / 可点击（`cursor:pointer`）元素、提示区（`role=status/alert`、`aria-live`）；h1–h3 作为分组标题；`nav` / `main` / `form` / `dialog`（及对应 role）作为分组（`»` 开头，带引用，可用于 `within`）。
-- 名称依次取 aria-labelledby、aria-label、label、文本、title、placeholder，截断到 40 字；密码只显示 `••••`。
+大纲、引用、操作结果与错误的格式是各平台兜底（网页、Flutter、WPF 等）共用的契约，唯一定义在
+[spec/ui-fallback.md](../../spec/ui-fallback.md)：行格式与 `items` 字段（第 4 节）、角色与状态（第 5、6 节）、引用失效 / 不可见 /
+禁用的错误（第 3 节、7.1）、操作后只返回变化的 `{ok, changes, url?, hint?}`（7.2）。以下只列网页实现的取舍：
+
+- 只列可交互或有意义的元素：按钮、链接、输入类控件、带交互 role 的元素、可聚焦 / 可点击（`cursor:pointer`）元素、提示区（`role=status/alert`、`aria-live`）；h1–h3 作为分组标题；`nav` / `main` / `form` / `dialog`（及对应 role）作为分组。
+- 名称依次取 aria-labelledby、aria-label、label、文本、title、placeholder；`items` 另带 `href`（链接目标）；密码框只显示 `••••`。
 - 跳过不可见元素：`display:none`、`visibility:hidden`、零尺寸（有布局时）、`hidden`、`inert`、`aria-hidden`、未打开的 `<dialog>`、未展开的 `<details>`。
-- `query` 按名称与所在分组模糊过滤（空格分隔多个词）；`within` 限定到某个引用的子树；超过 `limit` 时截断并说明剩余数量。
-- 结果同时给出 `text`（上面的行文本）与 `items`（结构化数组：`ref`、`role`、`name`、`value`、`href`、`states`、`required`、`declared`、`group`）。
-- 引用在同一页面生命周期内稳定（WeakMap 元素 → 引用）；元素移除后引用失效，调用时返回
-  `INVALID_INPUT: 引用 e12 已失效，请重新调用 ui.outline`。
-
-### 操作结果只返回变化
-
-操作执行后等待页面稳定（一帧 + 50ms），对大纲范围内的元素做前后对比，只返回变化摘要：
-
-```json
-{
-  "ok": true,
-  "changes": [
-    "e21 结算 变为 disabled",
-    "新增对话框「确认支付」(e40)，含 2 个可交互元素（可用 ui.outline({ within: \"e40\" }) 查看）",
-    "按钮「删除商品」(e15) 已消失"
-  ],
-  "url": "https://shop.example.com/orders"
-}
-```
-
-`url` 只在变化时出现；变化超过 15 条时截断并提示重新调用 `ui.outline`。操作禁用元素时返回
-`INVALID_INPUT: e21 按钮「结算」已禁用，当前无法操作`（`details.reason = 'TOOL_DISABLED'`）。
+- 引用：WeakMap 元素 → 引用、WeakRef 引用 → 元素，在同一页面生命周期内稳定；元素移除后失效。
+- 操作后等待页面稳定（一帧 + 50ms），对大纲范围内的元素做前后对比；`url` 只在地址变化时出现。
 
 ## 与 chrome-devtools MCP 的对比
 
