@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use crate::hub::{DEFAULT_MIME, HubShared, parse_resource_uri};
 use crate::limits::Payload;
+use crate::names::BUILTIN_APP_ID;
 use crate::task::CallerKey;
 use crate::types::ResourceContent;
 use crate::upstream::decode_uri_component;
@@ -28,6 +29,9 @@ pub(crate) async fn read_resource(
         ));
     };
     let _activity = shared.session_request(caller);
+    if app_id == BUILTIN_APP_ID {
+        return crate::hub_state::read_hub_state(shared, name, uri, caller);
+    }
     if shared.app_hidden_hit(app_id) {
         return Err(McpError::resource_not_found(format!("资源「{uri}」不存在"), Some(json!({ "kind": ErrorKind::ResourceNotFound }))));
     }

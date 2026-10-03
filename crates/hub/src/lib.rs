@@ -23,6 +23,7 @@ pub mod format;
 mod heap;
 pub mod http_server;
 pub mod hub;
+pub mod hub_state;
 mod instance;
 mod ipc;
 mod lease;

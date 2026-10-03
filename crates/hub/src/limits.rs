@@ -363,6 +363,16 @@ impl RateBook {
         self.counters.get(app_id).copied().unwrap_or_default()
     }
 
+    /// Agent 一级在 `now` 时可用的令牌数（向下取整，不修改桶）；该级不限时为 `None`。
+    pub fn agent_available(&self, policy: &LimitPolicy, agent: &str, now: Instant) -> Option<u32> {
+        let limit = &policy.agent_rate;
+        if limit.is_unlimited() {
+            return None;
+        }
+        let level = self.buckets.get(&BucketKey::Agent(agent.to_owned())).map_or(limit.capacity(), |b| b.level(limit, now));
+        Some(level.max(0.0).floor() as u32)
+    }
+
     fn counter(&mut self, app_id: &str) -> &mut LimitCounters {
         if !self.counters.contains_key(app_id) && self.counters.len() >= MAX_COUNTED_APPS {
             let least = self
@@ -506,8 +516,12 @@ mod tests {
         let p = LimitPolicy { agent_rate: RateLimit { per_minute: 60, burst: 2 }, ..LimitPolicy::unlimited() };
         let mut b = RateBook::default();
         let t0 = Instant::now();
+        assert_eq!(b.agent_available(&p, "claude", t0), Some(2), "未用过的桶是满的");
+        assert_eq!(b.agent_available(&LimitPolicy::unlimited(), "claude", t0), None);
         assert!(b.acquire(&p, "a", "x", Some("claude"), t0).is_ok());
+        assert_eq!(b.agent_available(&p, "claude", t0), Some(1));
         assert!(b.acquire(&p, "b", "y", Some("claude"), t0).is_ok());
+        assert_eq!(b.agent_available(&p, "claude", t0), Some(0));
         let e = b.acquire(&p, "c", "z", Some("claude"), t0).unwrap_err();
         assert_eq!(e.scope, RateScope::Agent);
         let err = e.to_error("c", "z");

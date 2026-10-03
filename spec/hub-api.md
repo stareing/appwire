@@ -456,6 +456,19 @@ pub struct Health {                          // serde camelCase
   - **绑定中的状态与错误**：hub-c / hub-node JSON 原样（`locks`、错误类别 `"LOCKED"`）；`@app-mcp/hub` `HubStatus.locks?: LockStatus[]`、
     `ErrorKind` 含 `'LOCKED'`；hub-uniffi `HubStatus.locks: [LockStatus]?`（Kotlin / Swift typealias、Python `app_mcp.hub.LockStatus`）；
     C# `HubStatusInfo.Locks`（`LockStatusInfo`）、`HubError.Locked`。
+- **Hub 状态资源**（第 16 项 P7；`crates/hub/src/hub_state.rs`；资源名见 3.15 名称表）：Hub 自身状态以只读 MCP 资源暴露，Agent 用
+  `resources/read` 自查（`/status` 只对本机令牌开放，Agent 读不到）。读取时现算，内容为 JSON（`application/json`），不缓存。
+  - `app-mcp://apps/hub` → `HubStateView {apps: [{appId, name, kind, state, connected, dormant}], locks: [LockView]}`：各 App（含上游，
+    按 appId 排序）的状态与已连接 / 休眠（含正在唤醒的）实例数；未到期的对象锁 `LockView {appId, key?, holder, expiresInMs}`
+    （`holder` 只给记账主体，同 `LOCKED`）。被 `hide` 整体隐藏的 App 及其上的锁不出现。
+  - `app-mcp://apps/self` → `SelfStateView {subject, agent?, tasks, locks, usage, quota}`：只含**读取方自己的**状态——
+    `tasks`：读取方的任务及其名下的任务句柄（`[{handle, selections, leases, inflight, idleMs?}]`，自身任务在前），**不含任务 ID**
+    （句柄是凭据）与调用方键；`locks`：这些任务持有的锁；`usage`：读取方记账主体的累计用量（3.11 `UsageStatus`，同一 Agent 的所有
+    会话 / 句柄合计；无记录为 `null`）；`quota`：读取方为已登记 Agent 且 `limits.agent_rate` 限流时为 `{perMinute, burst, available}`
+    （`available` = 此刻还可发起的调用数，向下取整），否则 `null`。资源读取不读任务句柄（同其他资源），句柄的状态经其主体读取。
+    Hub API `read_resource` 的读取方为 Hub API 默认会话（`subject: "api"`）。
+  - 出现在 MCP `resources/list`（App 资源与上游资源之后），不在 Hub API `resources()` 中（嵌入方直接用 `status()`）。不可订阅：
+    `resources/subscribe` / `Hub::subscribe` → `INVALID_INPUT`，`subscriptions/listen` 不接受这两个 URI。`apps` 下的其他名字 → 资源不存在。
 - 校验顺序（`/mcp`、`/healthz`）：`Origin`（与 App 连接相同的允许列表，不通过 403）→ 路径 → 令牌（仅 `/mcp`）。
   令牌规则：`Authorization: Bearer <令牌>`；带 `Origin` 的请求必须携带；不带 `Origin` 的请求在
   `require_token_without_origin` 时必须携带；携带了错误令牌一律 401（带 `WWW-Authenticate: Bearer`）；空令牌视为未携带。常量时间比较。
@@ -1070,6 +1083,7 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `apps.release` | 内置工具 | 收回本会话在该 App 上的租约（下文） |
 | `apps.task.begin` / `apps.task.end` | 内置工具（只对无会话请求列出） | 签发 / 结束任务句柄（3.6「任务句柄」） |
 | `apps.lock` / `apps.unlock` | 内置工具（`max_locks > 0` 时列出） | 加锁 / 解锁（3.6「对象锁」） |
+| `app-mcp://apps/hub` / `app-mcp://apps/self` | 只读资源（MCP `resources/list`） | Hub 状态 / 读取方自己的状态（3.6「Hub 状态资源」） |
 | `taskId` | 内置工具参数（`apps.list` / `select` / `navigate` / `activate` / `release` / `lock` / `unlock` 可选，`apps.task.end` 必填） | 任务句柄（3.6「任务句柄」） |
 | `dev.appwire/status`、`dev.appwire/stateResource` | 结果 `_meta` | 结果状态（spec/protocol.md 3.2，3.2） |
 | `dev.appwire/routedTo` | 结果 `_meta` | 改调后台替代时实际调用的工具全名（3.14） |

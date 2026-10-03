@@ -747,8 +747,8 @@ async fn resources_read_subscribe_update() {
     wait_tools(&client, |n| n.contains(&"shop.echo".to_string())).await;
 
     let resources = client.list_all_resources().await.unwrap();
-    assert_eq!(resources.len(), 1);
-    assert_eq!(resources[0].uri, "app-mcp://shop/cart.state");
+    let uris: Vec<&str> = resources.iter().map(|r| r.uri.as_str()).collect();
+    assert_eq!(uris, ["app-mcp://shop/cart.state", "app-mcp://apps/hub", "app-mcp://apps/self"], "App 资源在前，其后为 Hub 状态资源");
     assert_eq!(resources[0].mime_type.as_deref(), Some("application/json"));
 
     let r = client

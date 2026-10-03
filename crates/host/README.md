@@ -256,6 +256,10 @@ doctor「App 实例」检查另显示 listen 流数（旧 Host 不报告时省�
 `apps.lock` / `apps.unlock` 不列出）。Agent 用 `apps.lock` 锁住一个 App 后，其他 Agent 对它的写调用收到 `LOCKED`（只读工具不受影响），
 锁在 `ttlMs` 到期或持有者的任务结束时释放。`status` 摘要与 doctor「App 实例」检查列出持有中的锁（App 与持有者）。
 
+Hub 状态资源（spec/hub-api.md 3.6「Hub 状态资源」）：Agent 不能访问 `/status`，可读两个只读 MCP 资源自查——`app-mcp://apps/hub`
+（各 App 的连接状态、在线 / 休眠实例数与当前的锁）与 `app-mcp://apps/self`（自己的任务、选择、租约、持有的锁、累计用量与配额余量，
+不含任务 ID）。无需配置。
+
 `limits`（资源保护，spec/hub-api.md 3.11）：保护 App 与设备，超出时返回明确错误，不静默丢弃、不截断（错误码见 spec/protocol.md 第 4 节）。
 上表中的值即默认值，缺省字段取默认，`0` 表示不限；未知字段报错，`*PerMinute > 0` 而对应 `*Burst = 0` 时配置无效、启动失败。
 

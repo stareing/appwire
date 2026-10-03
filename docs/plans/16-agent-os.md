@@ -136,6 +136,19 @@
   - **作业状态归属**（4f h）：脱离请求的作业状态由 App 持久化，Hub 只转发作业 ID 与状态查询、不在内存保存作业状态（App 进程被系统回收后状态不丢）；进行中调用的状态（状态机）由 Hub 持有，调用结束即释放。
 - **P6 交互优先 QoS**：调用可带优先级与截止时间；截止时间由 Agent 在 MCP 请求 `_meta` 中以相对毫秒 `dev.appwire/timeoutMs` 给出，Hub 取其与 `response_timeout` 的较小者、只限制等待 App 结果（4f c，已实施 7f587d8；键名随第 19 项 R4）；用户在场的交互调用优先于后台作业，冲突时后台排队或让路。
 - **P7 Hub 自身状态作为资源**：已连接 App、任务、句柄、配额余量以只读 MCP 资源暴露（K13），Agent 用 `read` 自查。
+  - **实施（2026-10-03）**：契约见 `spec/hub-api.md` 3.6「Hub 状态资源」；`crates/hub/src/hub_state.rs`。
+    - 事实：两个资源 `app-mcp://apps/hub`（App 概况 + 所有未到期锁，持有者只给记账主体）与 `app-mcp://apps/self`（读取方自己的任务
+      及其句柄、锁、用量、配额余量）。`apps` 是保留 appId（`RESERVED_APP_IDS`），不会与 App 资源冲突；读取复用 `status()`、
+      `task_statuses()`、`lock_status()` 与记账表，配额余量由新增的 `RateBook::agent_available` 只读计算（不扣令牌）。
+      "自己"按调用方键判定（自身 + `<键>/<任务 ID>` 句柄），不按记账主体——同一 `local` 主体下的其他 legacy 会话互不可见。
+    - 取舍：不含任务 ID 与调用方键（句柄是凭据，`object_lock.rs` 的 @security 约定）；不可订阅（状态随每次调用变化，推送会给 Hub
+      增加流量，与原则 4 不符，Agent 需要时再读）；不进 Hub API `resources()`（嵌入方有 `status()`），各语言绑定无需改动。
+    - 测试：`tests/agents.rs hub_state_resources_show_own_view`（列表、self 只含自己且不含任务 ID、其他 Agent / 本机主体的视图、
+      配额余量、hub 视图的锁不含调用方键、未知名字、Hub API 读取、不可订阅；把归属判定改为恒真时失败）；`hub_state` 单元
+      （归属前缀边界）；`limits` 单元（余量）；`host_e2e resources_read_subscribe_update` 列表顺序。
+    - 未知 / 未做：句柄自身的视图（资源读取不带句柄，只能经主体读取全部句柄）；Claude Code 是否会主动读这两个资源（取决于模型，
+      资源描述已写明用途）；"句柄"（第 17 项）、订阅数尚未进入 self 视图（实施第 17 项时加）。
+    - 风险：每次读取 `hub` 都构建一次完整 `status()`（含工具声明），只在 Agent 读取时发生，无常驻开销。
 
 N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），否则崩溃的 Agent 会永久锁住 App。
 

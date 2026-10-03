@@ -87,29 +87,33 @@ async fn http(addr: SocketAddr, method: &str, path: &str, headers: &[(&str, &str
     Reply { status, headers, body: body.to_owned() }
 }
 
-/// 无会话（2026-07-28）`tools/call`；`token` 为 `None` 时不带 `Authorization`。
-async fn modern_call(addr: SocketAddr, token: Option<&str>, tool: &str, args: Value) -> Reply {
-    let req = json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": tool, "arguments": args, "_meta": {
-            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-            "io.modelcontextprotocol/clientCapabilities": {},
-            "io.modelcontextprotocol/clientInfo": {"name": "spoofed-claude", "version": "1"}
-        }}
-    })
-    .to_string();
+/// 无会话（2026-07-28）请求；`token` 为 `None` 时不带 `Authorization`。`name`：`Mcp-Name` 头（工具名 / 资源 URI）。
+async fn modern_request(addr: SocketAddr, token: Option<&str>, method: &str, name: &str, mut params: Value) -> Reply {
+    params["_meta"] = json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "spoofed-claude", "version": "1"}
+    });
+    let req = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).to_string();
     let auth = token.map(|t| format!("Bearer {t}"));
     let mut headers = vec![
         ("content-type", "application/json"),
         ("accept", "application/json, text/event-stream"),
         ("mcp-protocol-version", "2026-07-28"),
-        ("mcp-method", "tools/call"),
-        ("mcp-name", tool),
+        ("mcp-method", method),
     ];
+    if !name.is_empty() {
+        headers.push(("mcp-name", name));
+    }
     if let Some(a) = &auth {
         headers.push(("authorization", a));
     }
     http(addr, "POST", "/mcp", &headers, &req).await
+}
+
+/// 无会话 `tools/call`。
+async fn modern_call(addr: SocketAddr, token: Option<&str>, tool: &str, args: Value) -> Reply {
+    modern_request(addr, token, "tools/call", tool, json!({"name": tool, "arguments": args})).await
 }
 
 /// `apps.task.begin` → 任务 ID。
@@ -412,6 +416,74 @@ async fn app_lock_is_held_per_agent() {
     assert_eq!(r["result"]["structuredContent"]["released"], true, "{r}");
     let r = modern_call(addr, Some(CURSOR), "shop.cart.add", json!({})).await.json();
     assert_ne!(r["result"]["isError"], true, "{r}");
+    app.stop();
+    hub.shutdown().await;
+}
+
+/// 第 16 项 P7：Hub 状态资源。`app-mcp://apps/self` 只含读取方自己的任务、锁、用量与配额余量（不含任务 ID），
+/// `app-mcp://apps/hub` 列出 App 概况与所有锁（持有者只给主体）；两者出现在 `resources/list`、不可订阅。
+#[tokio::test(flavor = "multi_thread")]
+async fn hub_state_resources_show_own_view() {
+    let mut limits = app_mcp_hub::LimitPolicy::unlimited();
+    // 每分钟补 1 个：测试期间的补充不足以改变取整后的余量。
+    limits.agent_rate = app_mcp_hub::RateLimit { per_minute: 1, burst: 5 };
+    let hub = Hub::start(HubConfig {
+        listen: Some("127.0.0.1:0".into()),
+        listen_alternates: Vec::new(),
+        ipc_endpoint: None,
+        mcp_http: true,
+        agents: agents(&[("claude", CLAUDE), ("cursor", CURSOR)]),
+        limits,
+        ..Default::default()
+    })
+    .await
+    .expect("hub");
+    let addr = hub.listen_addr().unwrap();
+    let app = start_shop(&hub).await;
+    let read = |token: &'static str, uri: &'static str| async move {
+        let r = modern_request(addr, Some(token), "resources/read", uri, json!({"uri": uri})).await.json();
+        let text = r["result"]["contents"][0]["text"].as_str().unwrap_or_else(|| panic!("{r}")).to_owned();
+        serde_json::from_str::<Value>(&text).unwrap()
+    };
+
+    let r = modern_request(addr, Some(CLAUDE), "resources/list", "", json!({})).await.json();
+    let uris: Vec<&str> = r["result"]["resources"].as_array().unwrap().iter().filter_map(|x| x["uri"].as_str()).collect();
+    assert!(uris.contains(&"app-mcp://apps/hub") && uris.contains(&"app-mcp://apps/self"), "{r}");
+
+    let task = begin(addr, Some(CLAUDE)).await;
+    let r = modern_call(addr, Some(CLAUDE), "apps.lock", json!({"appId": "shop"})).await.json();
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    let r = modern_call(addr, Some(CLAUDE), "shop.cart.add", json!({})).await.json();
+    assert_ne!(r["result"]["isError"], true, "{r}");
+
+    let me = read(CLAUDE, "app-mcp://apps/self").await;
+    assert_eq!((me["subject"].as_str(), me["agent"].as_str()), (Some("agent:claude"), Some("claude")), "{me}");
+    let tasks = me["tasks"].as_array().unwrap();
+    assert_eq!(tasks.iter().map(|t| t["handle"].as_bool()).collect::<Vec<_>>(), [Some(false), Some(true)], "主体任务在前：{me}");
+    assert!(!me.to_string().contains(&task), "不含任务 ID：{me}");
+    assert_eq!((me["locks"][0]["appId"].as_str(), me["locks"][0]["holder"].as_str()), (Some("shop"), Some("agent:claude")), "{me}");
+    // begin、lock、cart.add 中只有 App 工具经过资源保护：用掉 1 个令牌。
+    assert_eq!((me["usage"]["calls"].as_u64(), me["quota"]["burst"].as_u64()), (Some(1), Some(5)), "{me}");
+    assert_eq!(me["quota"]["available"].as_u64(), Some(4), "{me}");
+
+    let other = read(CURSOR, "app-mcp://apps/self").await;
+    assert_eq!((other["tasks"].as_array().map(Vec::len), other["locks"].as_array().map(Vec::len)), (Some(0), Some(0)), "{other}");
+    assert!(other["usage"].is_null() && other["quota"]["available"].as_u64() == Some(5), "{other}");
+    let local = read(LOCAL_UNCONFIGURED, "app-mcp://apps/self").await;
+    assert!(local["subject"] == "local" && local["quota"].is_null(), "本机主体不受每 Agent 配额：{local}");
+
+    let st = read(CURSOR, "app-mcp://apps/hub").await;
+    let shop = st["apps"].as_array().unwrap().iter().find(|a| a["appId"] == "shop").cloned().unwrap_or_else(|| panic!("{st}"));
+    assert_eq!((shop["state"].as_str(), shop["connected"].as_u64(), shop["dormant"].as_u64()), (Some("connected"), Some(1), Some(0)));
+    assert_eq!((st["locks"][0]["holder"].as_str(), st["locks"][0].get("caller")), (Some("agent:claude"), None), "{st}");
+
+    let r = modern_request(addr, Some(CLAUDE), "resources/read", "app-mcp://apps/nope", json!({"uri": "app-mcp://apps/nope"})).await.json();
+    assert!(r["error"].is_object(), "未知的 Hub 状态资源：{r}");
+    let api = hub.read_resource("app-mcp://apps/self").await.expect("Hub API 读取");
+    let api: Value = serde_json::from_str(api.text.as_deref().unwrap_or_default()).unwrap();
+    assert_eq!(api["subject"], "api", "{api}");
+    let e = hub.subscribe("app-mcp://apps/hub").expect_err("不可订阅");
+    assert_eq!(e.0.kind, app_mcp_hub::ErrorKind::InvalidInput, "{e:?}");
     app.stop();
     hub.shutdown().await;
 }

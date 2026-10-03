@@ -67,6 +67,9 @@ impl HubShared {
         if self.app_hidden(app_id) {
             return Err(ToolError::new(ErrorKind::ResourceNotFound, format!("资源「{uri}」不存在")));
         }
+        if crate::hub_state::is_hub_state_uri(uri) {
+            return Err(ToolError::new(ErrorKind::InvalidInput, format!("Hub 状态资源「{uri}」不支持订阅，需要时直接读取。")));
+        }
         lock(&self.resource_subs)
             .entry(uri.to_owned())
             .or_default()

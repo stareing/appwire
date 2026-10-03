@@ -188,7 +188,7 @@ impl HubShared {
     }
 
     /// `/status` 的 `tasks`（只读快照，按调用方键排序）。
-    fn task_statuses(&self) -> Vec<AgentTaskStatus> {
+    pub(crate) fn task_statuses(&self) -> Vec<AgentTaskStatus> {
         let now = tokio::time::Instant::now();
         let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
         // 先取请求活动再锁任务表：与空闲回收（lifecycle::task_expiries）相同的加锁顺序，不同时持有两把锁。
