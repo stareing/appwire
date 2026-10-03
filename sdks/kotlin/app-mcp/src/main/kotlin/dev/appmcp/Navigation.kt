@@ -135,6 +135,10 @@ class ToolUpdate internal constructor() {
     var page: String? by field { s, v -> s.copy(page = v) }
     /** null = 清除。 */
     var backgroundTool: String? by field { s, v -> s.copy(backgroundTool = v) }
+    /** 本工具并发上限；0 = 不单独限制（spec/protocol.md 5.3）。 */
+    var concurrency: Int by field { s, v -> s.copy(concurrency = v.coerceAtLeast(0).toUInt()) }
+    /** 互斥组名；null = 清除（spec/protocol.md 5.3）。 */
+    var exclusive: String? by field { s, v -> s.copy(exclusive = v) }
 
     private fun <T> field(patch: (FfiToolSpec, T) -> FfiToolSpec) =
         object : kotlin.properties.ReadWriteProperty<ToolUpdate, T> {

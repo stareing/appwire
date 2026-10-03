@@ -46,6 +46,7 @@ final class AppMcp {
     String? launchToken,
     ClientKind clientKind = ClientKind.native,
     int maxConcurrentCalls = 1,
+    int maxQueuedCalls = 64,
     AppOverview? overview,
     LifecyclePolicy? lifecycle,
     Duration? connectTimeout,
@@ -113,7 +114,8 @@ final class AppMcp {
           ..call_dedup_ttl_ms = dedupTtlToNative(callDedup.ttl)
           ..call_dedup_max_entries = dedupMaxEntriesToNative(callDedup.maxEntries)
           ..register_name = registerName
-          ..name_instance = _optStr(nameInstance, arena);
+          ..name_instance = _optStr(nameInstance, arena)
+          ..max_queued_calls = maxQueuedCallsToNative(maxQueuedCalls);
         final out = arena<Pointer<AmClient>>();
         rt.check(b.am_client_new_ex(config, callbacks, options, out));
         client._ptr = out.value;
@@ -334,6 +336,8 @@ final class AppMcp {
     ToolSurface surface = ToolSurface.app,
     String? page,
     String? backgroundTool,
+    int concurrency = 0,
+    String? exclusive,
     required ToolHandler handler,
   }) =>
       _root.tool(name,
@@ -348,6 +352,8 @@ final class AppMcp {
           surface: surface,
           page: page,
           backgroundTool: backgroundTool,
+          concurrency: concurrency,
+          exclusive: exclusive,
           handler: handler);
 
   /// 在根作用域注册资源。见 [McpScope.resource]。

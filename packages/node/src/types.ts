@@ -285,6 +285,11 @@ export interface NodeAppMcpOptions {
   /** 同时执行的调用上限，默认 1。 */
   maxConcurrentCalls?: number
   /**
+   * 排队中的调用上限（spec/protocol.md 5.3），默认 64，0 = 不限。新调用需要排队而队列已满时以 `RATE_LIMITED`
+   * 拒绝（`data` 为 `{ scope: 'queue', limit }`）。
+   */
+  maxQueuedCalls?: number
+  /**
    * App 总览：握手时发给 Host，模型在会话中首次接触本 App 时由 Host 附带（spec/protocol.md 第 7 节）。
    * 静态总览、不含动态状态（当前页面、登录状态等请用资源提供）。
    */
@@ -453,6 +458,16 @@ export interface ToolDefinition<I = unknown, O = unknown> {
    * 本工具因 App 在后台不可调用时 Hub 改调它。
    */
   backgroundTool?: string
+  /**
+   * 本工具同时执行的调用上限（spec/protocol.md 5.3）；缺省 / 0 = 不单独限制（只受 `maxConcurrentCalls` 约束）。
+   * 只在 SDK 内调度，不发给 Host。
+   */
+  concurrency?: number
+  /**
+   * 互斥组（`[a-zA-Z0-9_.-]{1,64}`，spec/protocol.md 5.3）：同组的工具同一时刻至多一个在执行（如操作同一份文档的写工具）。
+   * 只在 SDK 内调度，不发给 Host。
+   */
+  exclusive?: string
   /** 网页中用于高亮的元素；Node 中忽略（保留字段以便与 @app-mcp/web 共用定义）。 */
   anchor?: unknown
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
@@ -482,7 +497,7 @@ export interface ToolHandle {
   readonly name: string
   /**
    * 更新描述、schema、风险、注解或启用状态；未提供的字段保持不变，显式给出 `undefined` 的字段恢复默认
-   * （`annotations` / `outputSchema` / `page` / `backgroundTool` 为清除声明，`surface` 回到 `'app'`；旧版原生模块不支持清除，保持原声明）。
+   * （`annotations` / `outputSchema` / `page` / `backgroundTool` / `exclusive` 为清除声明，`concurrency` 回到不限，`surface` 回到 `'app'`；旧版原生模块不支持清除，保持原声明）。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void
   /** 替换 handler（不产生协议消息）。 */

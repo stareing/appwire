@@ -13,6 +13,7 @@ final class ConformanceTests: XCTestCase {
     private static let features: Set<String> = [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
         "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
+        "callScheduling",
     ]
     private static let verdictOK: Set<String> = ["pass", "xfail", "xpass", "skip"]
 
@@ -164,7 +165,8 @@ private final class CaseApp {
             appId: "conf", appName: "Conformance", hostURL: url,
             maxConcurrentCalls: Int(c?["maxConcurrentCalls"]?.doubleValue ?? 1),
             lifecycle: lifecycle ?? .persistent, callDedup: dedup,
-            navigateInBackground: c?["navigateInBackground"]?.boolValue
+            navigateInBackground: c?["navigateInBackground"]?.boolValue,
+            maxQueuedCalls: c?["maxQueuedCalls"]?.doubleValue.map { Int($0) }
         )
     }
 
@@ -184,7 +186,9 @@ private final class CaseApp {
             outputSchema: try decl["outputSchema"].map(text),
             surface: decl["surface"]?.stringValue == "view" ? .view : .app,
             page: decl["page"]?.stringValue,
-            backgroundTool: decl["backgroundTool"]?.stringValue
+            backgroundTool: decl["backgroundTool"]?.stringValue,
+            concurrency: Int(decl["concurrency"]?.doubleValue ?? 0),
+            exclusive: decl["exclusive"]?.stringValue
         ) { [weak self] (args: JSONValue, ctx: ToolContext) async throws -> ToolResult<JSONValue> in
             runs += 1
             return try await self?.run(spec, count: runs, args: args, ctx: ctx) ?? ToolResult(data: nil)
@@ -252,6 +256,8 @@ private final class CaseApp {
         case "surface": d.surface = v?.stringValue == "view" ? .view : .app
         case "page": d.page = v?.stringValue
         case "backgroundTool": d.backgroundTool = v?.stringValue
+        case "concurrency": d.concurrency = Int(v?.doubleValue ?? 0)
+        case "exclusive": d.exclusive = v?.stringValue
         default: break
         }
     }

@@ -103,6 +103,11 @@ struct ToolOptions {
     std::optional<std::string> page;
     /// 只对 Surface::View 有意义：App 在后台、本工具不可调用时 Hub 改调的同 App app 工具本地名；为空表示不声明（v15）。
     std::optional<std::string> background_tool;
+    /// 本工具同时执行的调用上限；0 = 不单独限制，只受 ClientConfig::max_concurrent_calls 约束（v18，spec/protocol.md 5.3）。
+    /// 只在 SDK 内调度，不同步给 Host。
+    uint32_t concurrency = 0;
+    /// 互斥组名 [a-zA-Z0-9_.-]{1,64}：同组的工具同一时刻至多一个在执行；为空表示不互斥（v18）。
+    std::optional<std::string> exclusive;
 };
 
 /// 内容面向谁（MCP 内容注解 audience）。
@@ -167,6 +172,9 @@ struct ClientConfig {
     std::optional<std::string> launch_token;
     ClientKind client_kind = AM_CLIENT_NATIVE;
     uint32_t max_concurrent_calls = 1;
+    /// 排队中（等并发名额 / 互斥组）的调用上限；超出时新调用以 RATE_LIMITED（details scope "queue"）拒绝。
+    /// 0 = 不限（spec/protocol.md 5.3，app_mcp.h v18）。
+    uint32_t max_queued_calls = 64;
     std::optional<AppOverview> overview;
     Lifecycle lifecycle;
     /// 建立连接的超时；0 表示默认 5000ms。
@@ -244,6 +252,8 @@ inline int32_t encode_dedup_max_entries(uint32_t n) noexcept {
     if (n == 0) return -1;
     return n > static_cast<uint32_t>(INT32_MAX) ? INT32_MAX : static_cast<int32_t>(n);
 }
+/// @compat C ABI 的 max_queued_calls：0 = 默认 64、负数 = 不限；封装层 0 = 不限。
+inline int32_t encode_max_queued_calls(uint32_t n) noexcept { return encode_dedup_max_entries(n); }
 
 /// ClientConfig → AmLifecycle + AmClientOptions（不含回调）。
 /// @invariant opts->lifecycle 指向 *lc，lc.wake_target 与 opts->name_instance 借用 config 的字符串；二者都不能比 config 活得久。
@@ -272,6 +282,7 @@ inline void fill_client_options(const ClientConfig& config, AmLifecycle* lc, AmC
     opts->call_dedup_max_entries = encode_dedup_max_entries(config.call_dedup.max_entries);
     opts->register_name = config.register_name;
     opts->name_instance = c_str_or_null(config.name_instance);
+    opts->max_queued_calls = encode_max_queued_calls(config.max_queued_calls);
 }
 
 /// 逐个追加 JSON 对象成员（跳过未设置的可选值）。
@@ -338,6 +349,8 @@ inline AmToolOptions tool_options(const ToolOptions& options, const std::optiona
     o.page = c_str_or_null(options.page);
     o.surface = static_cast<int>(options.surface);
     o.background_tool = c_str_or_null(options.background_tool);
+    o.concurrency = options.concurrency;
+    o.exclusive = c_str_or_null(options.exclusive);
     return o;
 }
 

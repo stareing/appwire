@@ -68,6 +68,8 @@ export interface NativeClientConfig {
   token?: string
   launchToken?: string
   maxConcurrentCalls?: number
+  /** 排队中的调用上限（spec/protocol.md 5.3），缺省 64，0 = 不限（旧版原生模块忽略）。 */
+  maxQueuedCalls?: number
   overview?: { summary: string; body?: string; locale?: string }
   lifecycle?: NativeLifecycleConfig
   connectTimeoutMs?: number
@@ -98,6 +100,10 @@ export interface NativeToolSpec {
   page?: string
   /** 后台替代：同一 App 中一个 `app` 工具的局部名（spec/protocol.md 3.4；旧版原生模块忽略）。 */
   backgroundTool?: string
+  /** 本工具同时执行的调用上限（spec/protocol.md 5.3）；缺省 / 0 = 不单独限制（旧版原生模块忽略）。 */
+  concurrency?: number
+  /** 互斥组（spec/protocol.md 5.3）：同组的工具同一时刻至多一个在执行（旧版原生模块忽略）。 */
+  exclusive?: string
 }
 
 export interface NativeToolAnnotations {

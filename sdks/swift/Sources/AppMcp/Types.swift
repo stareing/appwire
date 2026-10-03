@@ -342,6 +342,9 @@ public struct AppMcpConfig {
     /// 登记实例名（`[a-z][a-z0-9-]{0,31}`，不能是 `default`）：另登记 `dev.appmcp.App.<appId>.<instance>`，
     /// 供 `appmcp://<appId>/<instance>` 寻址。不合法时创建客户端抛 `AppMcpError.InvalidConfig`。
     public var nameInstance: String?
+    /// 排队中的调用上限（spec/protocol.md 5.3）：满后新到的调用以 `RATE_LIMITED`（`scope = "queue"`）拒绝。
+    /// 为 `nil` 时 64，`0` = 不限。
+    public var maxQueuedCalls: Int?
 
     public init(
         appId: String,
@@ -365,7 +368,8 @@ public struct AppMcpConfig {
         callDedup: CallDedupPolicy? = nil,
         navigateInBackground: Bool? = nil,
         registerName: Bool = false,
-        nameInstance: String? = nil
+        nameInstance: String? = nil,
+        maxQueuedCalls: Int? = nil
     ) {
         self.appId = appId
         self.appName = appName
@@ -389,6 +393,7 @@ public struct AppMcpConfig {
         self.navigateInBackground = navigateInBackground
         self.registerName = registerName
         self.nameInstance = nameInstance
+        self.maxQueuedCalls = maxQueuedCalls
     }
 }
 
@@ -412,7 +417,8 @@ extension AppMcpConfig {
             heartbeat: heartbeat,
             callDedup: callDedup,
             registerName: registerName,
-            nameInstance: nameInstance
+            nameInstance: nameInstance,
+            maxQueuedCalls: maxQueuedCalls.map { UInt32(clamping: max(0, $0)) }
         )
     }
 }

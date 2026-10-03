@@ -119,6 +119,7 @@ export class HarmonyAppMcp {
       enabled: options.enabled,
       hostUrl: options.hostUrl,
       maxConcurrentCalls: options.maxConcurrentCalls,
+      maxQueuedCalls: options.maxQueuedCalls,
       overview: options.overview,
       logger: options.logger ?? new HilogLogger(),
       instanceId: options.instanceId,

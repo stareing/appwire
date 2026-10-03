@@ -87,6 +87,7 @@ export class AppMcp extends RegistrarBase {
     config.token = options.token;
     config.launchToken = options.launchToken;
     config.maxConcurrentCalls = options.maxConcurrentCalls;
+    config.maxQueuedCalls = options.maxQueuedCalls;
     config.connectTimeoutMs = options.connectTimeoutMs;
     config.heartbeat = options.heartbeat;
     if (options.callDedup !== undefined) {

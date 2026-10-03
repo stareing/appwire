@@ -17,8 +17,10 @@
  * v13：am_client_new_ex 记录调用去重（fake_call_dedup："<ttl_ms>|<max_entries>"）；am_resource_register_ex 记录
  * 资源内容标注（fake_resource_annotations；annotations_json 为 "{bad" 时返回 AM_ERR_INVALID_JSON）。
  * v17：am_client_new_ex 记录按名寻址（fake_name_service："<register_name 0/1>|<name_instance 或 ->"）。
+ * v18：am_client_new_ex 记录 max_queued_calls（fake_max_queued_calls）；工具记录 concurrency / exclusive（fake_tool_schedule）。
+ * 结构体布局探针 fake_sizeof 在 fake_layout.c。
  *
- * 编译：cc -shared -fPIC -o libfake_app_mcp.so fake_app_mcp.c -lpthread
+ * 编译：cc -shared -fPIC -o libfake_app_mcp.so fake_app_mcp.c fake_layout.c -lpthread
  * Windows（MSVC）：cl /c /utf-8 编译后按 dumpbin /symbols 中的外部函数生成 .def 再 link /DLL
  * （与 cc 默认导出全部非 static 函数一致，见 test/support/fake_native.dart）。
  */
@@ -82,6 +84,7 @@ typedef struct ToolRec {
     char *page;          /* v14 */
     int surface;         /* v14 */
     char *background_tool; /* v15 */
+    uint32_t concurrency; char *exclusive; /* v18 */
 } ToolRec;
 
 typedef struct ResRec {
@@ -228,6 +231,7 @@ void am_string_free(char *s) {
 static char *g_lifecycle = NULL; /* 最近一次配置的生命周期，见 am_client_new_ex */
 static char *g_call_dedup = NULL; /* v13：最近一次配置的调用去重，见 am_client_new_ex */
 static char *g_name_service = NULL; /* v17：最近一次配置的按名寻址，见 am_client_new_ex */
+static int32_t g_max_queued = 0;     /* v18：最近一次 am_client_new_ex 的 max_queued_calls */
 static AmStatus client_new(const AmClientConfig *config, const AmClientCallbacks *callbacks, AmClient **out) {
     if (!config || !out || !config->app_id || !config->app_name) {
         set_error("缺少必填参数");
@@ -290,6 +294,7 @@ AmStatus am_client_new_ex(const AmClientConfig *config, const AmClientCallbacks 
         snprintf(naming, sizeof naming, "%d|%s", options->register_name ? 1 : 0,
                  options->name_instance ? options->name_instance : "-");
         g_name_service = dup_str(naming);
+        g_max_queued = options->max_queued_calls;
         char dedup[64];
         snprintf(dedup, sizeof dedup, "%lld|%d", (long long)options->call_dedup_ttl_ms,
                  (int)options->call_dedup_max_entries);
@@ -513,6 +518,8 @@ char *fake_lifecycle(void) { return dup_str(g_lifecycle); }
 char *fake_call_dedup(void) { return dup_str(g_call_dedup); }
 /* v17：最近一次 am_client_new_ex 的按名寻址，"<0/1>|<name_instance 或 ->"（需 am_string_free）；没有 options 时 NULL。 */
 char *fake_name_service(void) { return dup_str(g_name_service); }
+/* v18：最近一次 am_client_new_ex 的 max_queued_calls（原样）。 */
+int32_t fake_max_queued_calls(void) { return g_max_queued; }
 /* 最近一次 sleep 的原因（需 am_string_free）。 */
 char *fake_last_sleep(void) {
     lock_global();
@@ -640,6 +647,7 @@ static void apply_tool_options(ToolRec *t, const AmToolOptions *o) {
     free(t->output_schema);
     free(t->page);
     free(t->background_tool);
+    free(t->exclusive);
     t->annotations = o ? dup_str(o->annotations_json) : NULL;
     t->output_schema = o ? dup_str(o->output_schema_json) : NULL;
     /* v14：按 struct_size 读取（旧调用方不含 page / surface）。 */
@@ -649,6 +657,9 @@ static void apply_tool_options(ToolRec *t, const AmToolOptions *o) {
     /* v15：按 struct_size 读取（旧调用方不含 background_tool）。 */
     int v15 = o && o->struct_size >= offsetof(AmToolOptions, background_tool) + sizeof o->background_tool;
     t->background_tool = v15 ? dup_str(o->background_tool) : NULL;
+    int v18 = o && o->struct_size >= offsetof(AmToolOptions, exclusive) + sizeof o->exclusive;
+    t->concurrency = v18 ? o->concurrency : 0;
+    t->exclusive = v18 ? dup_str(o->exclusive) : NULL;
 }
 AmStatus am_tool_register_ex(AmScope *scope, const AmToolSpec *spec, const AmToolOptions *options,
                              AmToolFn handler, void *user_data, AmFreeFn free_user_data, AmTool **out) {
@@ -1148,37 +1159,13 @@ char *fake_tool_background(const char *name) {
     ToolRec *t = find_tool(g_client, name);
     return t ? dup_str(t->background_tool) : NULL;
 }
+/* v18：工具当前的调度声明 "<concurrency>|<exclusive 或 ->"（需 am_string_free）；工具不存在时返回 NULL。 */
+char *fake_tool_schedule(const char *name) {
+    ToolRec *t = find_tool(g_client, name);
+    char buf[96];
+    if (t) snprintf(buf, sizeof buf, "%u|%s", (unsigned)t->concurrency, t->exclusive ? t->exclusive : "-");
+    return t ? dup_str(buf) : NULL;
+}
 
 /* 最近一次 am_client_new 的总览（需 am_string_free）；没有时返回 NULL。 */
 char *fake_overview(void) { return dup_str(g_overview); }
-/* 结构体布局，供 Dart 测试核对。 */
-size_t fake_sizeof(int which) {
-    switch (which) {
-    case 0: return sizeof(AmClientConfig);
-    case 1: return sizeof(AmClientCallbacks);
-    case 2: return sizeof(AmToolSpec);
-    case 3: return sizeof(AmResourceSpec);
-    case 4: return offsetof(AmClientConfig, overview_locale);
-    case 5: return offsetof(AmToolSpec, enabled);
-    case 6: return sizeof(AmLifecycle);
-    case 7: return sizeof(AmClientOptions);
-    case 8: return offsetof(AmLifecycle, wake_target);
-    case 9: return offsetof(AmClientOptions, on_idle_exit);
-    case 10: return offsetof(AmClientOptions, heartbeat);
-    case 11: return offsetof(AmClientOptions, legacy_timers);
-    case 12: return offsetof(AmClientOptions, merge_window_ms);
-    case 13: return offsetof(AmClientOptions, sleep_on_background);
-    case 14: return sizeof(AmResourceOptions);
-    case 15: return offsetof(AmResourceOptions, realtime);
-    case 16: return sizeof(AmToolOptions);
-    case 17: return sizeof(AmCallResult);
-    case 18: return offsetof(AmCallResult, status);
-    case 19: return offsetof(AmCallResult, annotations_json);
-    case 20: return offsetof(AmClientOptions, call_dedup_ttl_ms);
-    case 21: return offsetof(AmClientOptions, call_dedup_max_entries);
-    case 22: return offsetof(AmResourceOptions, annotations_json);
-    case 23: return offsetof(AmClientOptions, register_name);
-    case 24: return offsetof(AmClientOptions, name_instance);
-    default: return 0;
-    }
-}

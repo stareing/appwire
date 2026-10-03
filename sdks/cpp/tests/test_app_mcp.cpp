@@ -245,6 +245,14 @@ void test_power_options() {
     // 调用去重（v13）：默认 5 分钟 / 64 条，原样传给 C ABI。
     EXPECT(config.call_dedup.ttl_ms == 300000 && config.call_dedup.max_entries == 64);
     EXPECT(opts.call_dedup_ttl_ms == 300000 && opts.call_dedup_max_entries == 64);
+    // 排队上限（v18）：默认 64 原样传给 C ABI；0 = 不限 → C ABI 负数。
+    EXPECT(config.max_queued_calls == 64 && opts.max_queued_calls == 64);
+    config.max_queued_calls = 0;
+    app_mcp::detail::fill_client_options(config, &lc, &opts);
+    EXPECT(opts.max_queued_calls < 0);
+    config.max_queued_calls = 3;
+    app_mcp::detail::fill_client_options(config, &lc, &opts);
+    EXPECT(opts.max_queued_calls == 3);
 
     // 显式值逐项映射；0 = 一直重连 / 不留窗口 → C ABI 负数。
     config.heartbeat = AM_HEARTBEAT_OFF;
@@ -436,6 +444,17 @@ void test_navigation() {
     app_mcp::ToolOptions bad_bg = options;
     bad_bg.background_tool = "bad tool!";
     EXPECT(status_of([&] { t.update("结算", bad_bg); }) != AM_OK);
+    // v18：concurrency / exclusive 随声明传给 C 接口；互斥组名非法时更新失败。
+    const AmToolOptions plain = app_mcp::detail::tool_options(app_mcp::ToolOptions{}, std::nullopt);
+    EXPECT(plain.concurrency == 0 && plain.exclusive == nullptr);
+    options.concurrency = 2;
+    options.exclusive = "doc";
+    const AmToolOptions scheduled = app_mcp::detail::tool_options(options, std::nullopt);
+    EXPECT(scheduled.concurrency == 2 && std::strcmp(scheduled.exclusive, "doc") == 0);
+    EXPECT(status_of([&] { t.update("结算", options); }) == AM_OK);
+    app_mcp::ToolOptions bad_group = options;
+    bad_group.exclusive = "bad group!";
+    EXPECT(status_of([&] { t.update("结算", bad_group); }) != AM_OK);
     EXPECT(status_of([&] { client.set_navigate_in_background(false); }) == AM_OK);
     EXPECT(status_of([&] { client.set_navigate_in_background(true); }) == AM_OK);
 

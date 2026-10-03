@@ -79,6 +79,16 @@ final class LifecycleUnitTests: XCTestCase {
         _ = try AppMcpClient(config: off)
     }
 
+    func testMaxQueuedCallsMapsToFfiConfig() throws {
+        var c = AppMcpConfig(appId: "swift-unit", appName: "排队", hostURL: "ws://127.0.0.1:9")
+        XCTAssertNil(c.ffi(lifecycle: .persistent).maxQueuedCalls, "为 nil 时交给核心缺省（64）")
+        c.maxQueuedCalls = 0
+        XCTAssertEqual(c.ffi(lifecycle: .persistent).maxQueuedCalls, 0)
+        c.maxQueuedCalls = 8
+        XCTAssertEqual(c.ffi(lifecycle: .persistent).maxQueuedCalls, 8)
+        _ = try AppMcpClient(config: c)
+    }
+
     func testRegisterNameMapsToFfiConfig() throws {
         let base = AppMcpConfig(appId: "swift-unit", appName: "按名", hostURL: "ws://127.0.0.1:9")
         XCTAssertFalse(base.ffi(lifecycle: .persistent).registerName)

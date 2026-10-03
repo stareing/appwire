@@ -20,6 +20,7 @@ const _sdk = 'dart';
 const _features = {
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', //
   'readFailure', 'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey',
+  'callScheduling',
 };
 
 final String _repoRoot = Directory('${Directory.current.path}/../../..').absolute.path;
@@ -120,6 +121,8 @@ final class _CaseApp {
         surface: decl['surface'] == 'view' ? ToolSurface.view : ToolSurface.app,
         page: decl['page'] as String?,
         backgroundTool: decl['backgroundTool'] as String?,
+        concurrency: (decl['concurrency'] as num?)?.toInt() ?? 0,
+        exclusive: decl['exclusive'] as String?,
         handler: (args, ctx) => _runHandler(spec, ++runs, args, ctx));
   }
 
@@ -245,6 +248,7 @@ AppMcp _client(String addr, Map<String, Object?> c) {
     hostUrl: tcp ? 'ws://$addr/app' : addr,
     libraryPath: _nativePath,
     maxConcurrentCalls: (c['maxConcurrentCalls'] as num?)?.toInt() ?? 1,
+    maxQueuedCalls: (c['maxQueuedCalls'] as num?)?.toInt() ?? 64,
     lifecycle: LifecyclePolicy(
       mode: _mode(l['mode']),
       idleTimeout: _ms(l['idleTimeoutMs']) ?? defaults.idleTimeout,

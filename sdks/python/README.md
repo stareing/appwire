@@ -93,6 +93,15 @@ def submit() -> ToolResult:
   posting a notification). Make features that must work in the background `app` tools, or give a view tool
   `background_tool="<app tool>"` so the Hub calls that one instead. See `spec/protocol.md` §3.4 "后台与前台".
 
+### Call scheduling (optional, `spec/protocol.md` §5.3)
+
+- `add_tool(..., concurrency=1)` caps how many calls of this tool run at once (`0`, the default, means only
+  `max_concurrent_calls` applies); `exclusive="doc"` puts tools in a mutual-exclusion group so at most one call of
+  the group runs at a time. Calls that cannot start wait in arrival order; other tools are not blocked. Both stay
+  inside the SDK and are not sent to the Host. `handle.update(concurrency=..., exclusive=None)` changes them later.
+- `AppMcp(..., max_queued_calls=N)` bounds the wait queue (default 64, `0` = unlimited); a call arriving at a full
+  queue fails with `RATE_LIMITED` (`data.scope == "queue"`).
+
 ### Control fallback for Qt Widgets (optional, `spec/ui-fallback.md`)
 
 For screens without declared tools, an opt-in fallback registers `ui.outline` / `ui.click` / `ui.fill` /

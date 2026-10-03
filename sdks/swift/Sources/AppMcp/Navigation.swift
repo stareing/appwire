@@ -73,6 +73,10 @@ public struct ToolDeclaration {
     public var page: String?
     /// 后台替身（只对 `.view` 工具有意义）；`nil` = 未声明。
     public var backgroundTool: String?
+    /// 本工具并发上限；`0` = 不单独限制（spec/protocol.md 5.3）。
+    public var concurrency: Int
+    /// 互斥组名；`nil` = 未声明（spec/protocol.md 5.3）。
+    public var exclusive: String?
 
     init(_ spec: ToolSpec) {
         description = spec.description
@@ -85,6 +89,8 @@ public struct ToolDeclaration {
         surface = spec.surface ?? .app
         page = spec.page
         backgroundTool = spec.backgroundTool
+        concurrency = Int(spec.concurrency)
+        exclusive = spec.exclusive
     }
 
     func applied(to spec: ToolSpec) -> ToolSpec {
@@ -99,6 +105,8 @@ public struct ToolDeclaration {
         next.surface = surface == .app ? nil : surface
         next.page = page
         next.backgroundTool = backgroundTool
+        next.concurrency = UInt32(clamping: max(0, concurrency))
+        next.exclusive = exclusive
         return next
     }
 }

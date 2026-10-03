@@ -37,10 +37,12 @@ test('配置映射：生命周期新字段、heartbeat 透传；未给出时不�
   const { client } = create({
     heartbeat: 'always',
     callDedup: { ttlMs: 1000, maxEntries: 0 },
+    maxQueuedCalls: 0,
     lifecycle: { mode: 'on-demand', hostAbsentRetries: 0, legacyTimers: true, mergeWindowMs: 0, sleepOnBackground: true },
   });
   assert.equal(client.config.heartbeat, 'always');
   assert.deepEqual(client.config.callDedup, { ttlMs: 1000, maxEntries: 0 });
+  assert.equal(client.config.maxQueuedCalls, 0);
   const l = client.config.lifecycle;
   assert.equal(l.mode, 'on-demand');
   // 0 = 一直重连（napi 与 spec 同义，不做编码转换）。
@@ -52,6 +54,7 @@ test('配置映射：生命周期新字段、heartbeat 透传；未给出时不�
   const plain = create({ lifecycle: { mode: 'idle' } }).client.config;
   assert.equal(plain.heartbeat, undefined);
   assert.equal(plain.callDedup, undefined);
+  assert.equal(plain.maxQueuedCalls, undefined);
   for (const key of ['hostAbsentRetries', 'legacyTimers', 'mergeWindowMs', 'sleepOnBackground']) {
     assert.equal(plain.lifecycle[key], undefined, key);
   }
@@ -519,6 +522,21 @@ test('backgroundTool 声明；update 以 null 清除', () => {
   assert.equal(client.tools.get('cart.viewAdd').spec.backgroundTool, 'cart.add');
   t.update({ backgroundTool: null });
   assert.equal(client.tools.get('cart.viewAdd').spec.backgroundTool, undefined);
+});
+
+test('调用调度声明 concurrency / exclusive；update 以 null 清除', () => {
+  const { mcp, client } = create();
+  mcp.tool('plain', { description: 'P', handler: () => 1 });
+  assert.equal(client.tools.get('plain').spec.concurrency, undefined);
+  assert.equal(client.tools.get('plain').spec.exclusive, undefined);
+  const t = mcp.tool('doc.edit', { description: '改', concurrency: 2, exclusive: 'doc', handler: () => 1 });
+  assert.equal(client.tools.get('doc.edit').spec.concurrency, 2);
+  assert.equal(client.tools.get('doc.edit').spec.exclusive, 'doc');
+  t.update({ description: '改2' });
+  assert.equal(client.tools.get('doc.edit').spec.exclusive, 'doc');
+  t.update({ concurrency: null, exclusive: null });
+  assert.equal(client.tools.get('doc.edit').spec.concurrency, undefined);
+  assert.equal(client.tools.get('doc.edit').spec.exclusive, undefined);
 });
 
 test('导航回调抛出 userActionRequired → USER_ACTION_REQUIRED（带 reason / uri）', async () => {

@@ -92,6 +92,10 @@ mcp.tool<OrderParams, Object | null>('order.submit', {
 - `annotations`（`ToolAnnotations`：`title` / `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`）是标准 MCP
   工具注解，原样转发给 Agent；与旧写法 `risk` 同时给出时声明的字段逐个优先，缺少的按 `risk` 推导。AppWire 不据此拦截或放行调用。
 - `outputSchema`：结果的 JSON Schema 文本；根类型不是 `object` 时 Hub 包装为 `{result: …}`。
+- 调用调度（spec/protocol.md 5.3，只在 SDK 内生效、不发给 Host）：`AppMcpOptions.maxConcurrentCalls`（同时执行的调用数，缺省 1）与
+  `maxQueuedCalls`（排队中的调用数，缺省 64，0 = 不限；队列满时新调用以 `RATE_LIMITED` 拒绝，`data` 为 `{ scope: 'queue', limit }`）；
+  工具可声明 `concurrency`（本工具同时执行的上限，缺省 / 0 = 不单独限制）与 `exclusive`（互斥组名，同组工具同一时刻至多一个在执行，
+  如操作同一份文档的写工具），`update` 中给出 `null` 清除。
 - 返回普通数据即 `done` 结果；需要业务状态、摘要或内容标注（`ContentAnnotations`：`audience` / `priority` / `lastModified`）时返回
   `new ToolResult(data, stateHints, options)`（`ToolResultOptions`）。无返回值（`data` 为 `null` / `undefined` 且无 `summary`、
   状态 `done`）时 Hub 对模型输出固定文本"已完成"。

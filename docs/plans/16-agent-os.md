@@ -197,11 +197,28 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
     status 摘要与 doctor 列出持有中的锁。
     - 事实：内置工具经 `call_builtin` 分派、参数按 inputSchema 校验；写调用的准入顺序统一为 `admit_call`（策略 → 锁 → 资源保护），
       `apps.navigate` 单独检查；工具只读与否取 `tool_annotations`（App 声明 / 快照 / 页面目录 / 上游缓存），取不到按写处理。
-    - 未知 / 未做：工具声明 `concurrency` / `exclusive` 与 SDK 侧按声明排队（4f k）未做——SDK 已有 `maxConcurrentCalls`（默认 1，FIFO）；
+    - 未知 / 未做：工具声明 `concurrency` / `exclusive` 与 SDK 侧按声明排队（4f k）已于同日实施（见下条）；
       `busy()`；人与 Agent 之间的仲裁（用户在 App 内的直接操作不经 Hub，锁拦不住，由 App 自己决定）；同一主体下不带句柄的多个客户端
       视为同一持有者（需互斥时各自 `apps.task.begin`）；锁不持久化（Hub 重启即全部释放）。
     - 风险：异常 Agent 反复加锁占住 App——每把锁至多 10 分钟、每持有者至多 `max_locks` 把，任务空闲回收即释放；内置工具多了两个
       （列表变长，`max_locks = 0` 可关闭）。
+    - 补充（2026-10-03）：持有者与被拒绝方同属一个主体（如主体任务与其任务句柄）时 `LOCKED` 消息单独说明"同一主体的另一个任务"
+      并指引用持有锁的句柄调用（`data` 不变）。
+  - 已实施（2026-10-03，SDK 侧调度，4f k）：工具声明 `concurrency`（本工具同时执行的调用上限，0 = 不单独限制）与 `exclusive`
+    （互斥组）、客户端配置 `maxQueuedCalls`（默认 64，0 = 不限），契约见 spec/protocol.md 5.3。
+    - 事实：调度在 sans-IO 核心的调用队列（`crates/core/src/calls.rs` `can_start`、`connection/requests.rs` `pump_calls`）：按到达顺序
+      扫描，因本工具 / 互斥组正忙而不能开始的调用留在原位，其后能开始的先开始（不被队头阻塞）；新到的调用需要排队且队列超限 →
+      `RATE_LIMITED`（`data {scope: "queue", limit}`，不带 `retryAfterMs`），未开始、不进去重表。声明只在 SDK 内，不进
+      `tools/sync` 与 `toolsHash`；只改声明不发 `tools/changed`，放宽后立即重新调度。复用已有错误类别，未新增 `CoreError` 变体
+      （`concurrency` 用 0 表示不限、互斥组名按工具名规则校验）。
+    - 接入：native `ToolOptions.concurrency / exclusive`、`NativeConfig.max_queued_calls`；C ABI v18（`AmToolOptions` / `AmClientOptions`
+      末尾追加，按 struct_size 读取）；uniffi `ToolSpec` / `ClientConfig` 末字段；napi `ToolSpecInit` / 配置；WASM JSON 字段；tauri 插件
+      页面消息。一致性：fake_host 新增 `--no-wait`（用例 `noWait`），用例 `call-scheduling` / `call-queue-limit`（能力 `callScheduling`）。
+    - 测试：核心单元（`can_start`）与 `tests/client/calls.rs` 4 个（按工具上限不阻塞其他工具、互斥组跨工具串行且按序、队列超限、
+      不限与放宽后开始）；wasm / C 转换单元；Rust runner 两个用例通过。变异：去掉互斥判断、去掉并发判断、去掉超限拒绝分别被检出。
+    - 未知 / 未做：`busy()`（App 声明"用户正在操作"，人与 Agent 的仲裁）——语义未定（拒绝还是排队、只读工具是否受影响），
+      待定是 App 策略还是 SDK 机制；Hub 不知道 App 的调度声明（Agent 只在被拒绝时得知）。
+    - 风险：扫描队列为 O(排队数 × 执行中数)，排队上限默认 64，开销可忽略。
 
 ### 第四部分：场景扩展
 

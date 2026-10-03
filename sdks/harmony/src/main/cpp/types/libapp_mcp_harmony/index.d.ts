@@ -50,6 +50,8 @@ export interface ClientConfig {
   token?: string;
   launchToken?: string;
   maxConcurrentCalls?: number;
+  /** 排队中的调用上限（spec/protocol.md 5.3）；缺省 64，0 = 不限。 */
+  maxQueuedCalls?: number;
   overview?: OverviewInit;
   lifecycle?: LifecycleInit;
   connectTimeoutMs?: number;
@@ -99,6 +101,10 @@ export interface ToolSpecInit {
   page?: string;
   /** 后台替代（spec/protocol.md 3.4）：同一 App 中一个 `app` 工具的局部名；本工具因 App 在后台不可调用时 Hub 改调它。 */
   backgroundTool?: string;
+  /** 本工具同时执行的调用上限（spec/protocol.md 5.3）；缺省 / 0 = 不单独限制。 */
+  concurrency?: number;
+  /** 互斥组（spec/protocol.md 5.3）：同组的工具同一时刻至多一个在执行。 */
+  exclusive?: string;
 }
 
 export interface ToolAnnotationsInit {

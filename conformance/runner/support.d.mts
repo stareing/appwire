@@ -98,6 +98,7 @@ export interface ConformanceCase {
       lifecycle?: { mode?: 'persistent' | 'idle' | 'on-demand'; idleTimeoutMs?: number; graceMs?: number; mergeWindowMs?: number }
       callDedup?: { ttlMs?: number; maxEntries?: number }
       maxConcurrentCalls?: number
+      maxQueuedCalls?: number
       navigateInBackground?: boolean
     }
     visibility?: 'visible' | 'hidden' | 'frozen'
@@ -186,6 +187,7 @@ export declare function appConfig(testCase: ConformanceCase): {
   lifecycle?: NonNullable<ConformanceCase['app']['config']>['lifecycle']
   callDedup?: { ttlMs?: number; maxEntries?: number }
   maxConcurrentCalls?: number
+  maxQueuedCalls?: number
   navigateInBackground?: boolean
 }
 /** 用例 `app.visibility`；未给出时为 undefined。 */

@@ -109,6 +109,12 @@ the process itself).
   line. Usually combined with `lifecycle: { mode: 'on-demand', residency: 'exit-when-idle' }` and an `onIdleExit` that
   exits. `nameInstance` (`[a-z][a-z0-9-]{0,31}`, not `'default'`) additionally registers `appmcp://<appId>/<instance>`;
   an invalid value throws).
+- Call scheduling (spec/protocol.md 5.3, local to the SDK, not sent to the Host): `maxConcurrentCalls` (default 1) caps
+  calls running at once and `maxQueuedCalls` (default 64, 0 = unlimited) caps calls waiting; when the queue is full a new
+  call fails with `RATE_LIMITED` (`data: { scope: 'queue', limit }`). Tool options `concurrency` (per-tool limit; absent
+  / 0 = only `maxConcurrentCalls` applies) and `exclusive` (a group name; tools in the same group run one at a time, e.g.
+  write tools on the same document) add per-tool rules; `update({ concurrency: undefined, exclusive: undefined })`
+  clears them.
 - Handler context: `callId`, `signal`, `hold()`, `progress()`, and `idempotencyKey` (the agent's idempotency key, passed
   through verbatim and stable across retries; absent when the agent gave none - see spec/protocol.md 3.3). Use it as a
   business-level dedup key or forward it to your backend.

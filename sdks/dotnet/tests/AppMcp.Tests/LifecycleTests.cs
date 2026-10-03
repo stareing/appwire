@@ -28,7 +28,7 @@ public class LifecycleUnitTests : IDisposable
     public void NativeStructLayoutsMatchHeader()
     {
         // 与 app_mcp.h 一致（64 位）：AmLifecycle = int, 3×u64, int, int, ptr, bool；
-        // AmClientOptions = u32, ptr, u32, ptr, (v7) int, i32, bool, (v8) i64, bool, (v13) i64, i32, (v17) bool, ptr；
+        // AmClientOptions = u32, ptr, u32, ptr, (v7) int, i32, bool, (v8) i64, bool, (v13) i64, i32, (v17) bool, ptr, (v18) i32；
         // AmResourceOptions = u32, bool, ptr。
         if (IntPtr.Size != 8) return;
         Assert.Equal(56, Marshal.SizeOf<AmLifecycle>());
@@ -36,7 +36,7 @@ public class LifecycleUnitTests : IDisposable
         Assert.Equal(32, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.Residency)));
         Assert.Equal(40, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.WakeTarget)));
         Assert.Equal(48, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.WakeBackground)));
-        Assert.Equal(88, Marshal.SizeOf<AmClientOptions>());
+        Assert.Equal(96, Marshal.SizeOf<AmClientOptions>());
         Assert.Equal(8, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.Lifecycle)));
         Assert.Equal(24, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.OnIdleExit)));
         Assert.Equal(32, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.Heartbeat)));
@@ -48,6 +48,7 @@ public class LifecycleUnitTests : IDisposable
         Assert.Equal(72, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.CallDedupMaxEntries)));
         Assert.Equal(76, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.RegisterName)));
         Assert.Equal(80, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.NameInstance)));
+        Assert.Equal(88, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.MaxQueuedCalls)));
         Assert.Equal(16, Marshal.SizeOf<AmResourceOptions>());
         Assert.Equal(4, (int)Marshal.OffsetOf<AmResourceOptions>(nameof(AmResourceOptions.Realtime)));
         Assert.Equal(8, (int)Marshal.OffsetOf<AmResourceOptions>(nameof(AmResourceOptions.AnnotationsJson)));
@@ -88,6 +89,19 @@ public class LifecycleUnitTests : IDisposable
         Assert.Equal(64, n.CallDedupMaxEntries);
         Assert.Equal(0, n.RegisterName);
         Assert.Equal(0, n.NameInstance);
+        Assert.Equal(64, BaseOptions().MaxQueuedCalls);
+        Assert.Equal(64, n.MaxQueuedCalls);
+    }
+
+    [Fact]
+    public void MaxQueuedCallsMapsToCAbi()
+    {
+        // v18（spec/protocol.md 5.3）：托管层 0 = 不限 → C ABI 负数；正数原样；负数在封装层拒绝。
+        AmClientOptions Native(int n) => AppMcpClient.ToNativeOptions(
+            new AppMcpClientOptions { AppId = "dotnet-queue", AppName = "Queue", MaxQueuedCalls = n }, new LifecycleOptions(), _strings);
+        Assert.Equal(3, Native(3).MaxQueuedCalls);
+        Assert.True(Native(0).MaxQueuedCalls < 0);
+        Assert.Throws<ArgumentOutOfRangeException>(() => Native(-1));
     }
 
     [Fact]

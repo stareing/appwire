@@ -10,6 +10,7 @@ final class UnitTests: XCTestCase {
             ErrorKind.instanceFrozen, ErrorKind.resourceNotFound, ErrorKind.unauthorized,
             ErrorKind.unsupportedProtocol, ErrorKind.rateLimited, ErrorKind.payloadTooLarge,
             ErrorKind.policyDenied, ErrorKind.userActionRequired, ErrorKind.navigationFailed, ErrorKind.navigationDenied,
+            ErrorKind.locked,
         ]
         XCTAssertEqual(ErrorKind.all, declared)
     }
@@ -88,6 +89,14 @@ final class UnitTests: XCTestCase {
         try h.update(description: "新描述")
         h.dispose()
         try client.tool("cart.add", description: "注销后可重新注册") { (_: NoArguments, _) in }
+
+        let edit = try client.tool("doc.edit", description: "改文档", concurrency: 1, exclusive: "doc") { (_: NoArguments, _) in }
+        try edit.update(concurrency: 2, exclusive: "doc2")
+        try edit.update { $0.exclusive = nil }
+        try client.backgroundTool("doc.save", description: "保存", exclusive: "doc") { (_: NoArguments, _) in 1 }
+        XCTAssertThrowsError(try client.tool("doc.bad", description: "非法组名", exclusive: "bad group") { (_: NoArguments, _) in 1 }) { err in
+            guard case AppMcpError.InvalidName = err else { return XCTFail("期望 InvalidName，得到 \(err)") }
+        }
 
         let scope = try client.scope("page")
         try scope.tool("page.one", description: "页内工具") { (_: NoArguments, _) in "x" }

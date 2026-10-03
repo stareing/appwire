@@ -92,7 +92,18 @@ int mergeWindowToNative(Duration window) => window.inMilliseconds <= 0 ? -1 : wi
 int dedupTtlToNative(Duration ttl) => ttl.inMilliseconds <= 0 ? -1 : ttl.inMilliseconds;
 
 /// 调用去重的条数 → C ABI（0 = 默认、负数 = 关闭）；封装层 0 = 关闭，超出 int32 截断。
-int dedupMaxEntriesToNative(int n) => n <= 0 ? -1 : (n > 0x7FFFFFFF ? 0x7FFFFFFF : n);
+int dedupMaxEntriesToNative(int n) => _zeroOffToInt32(n);
+
+/// 排队中的调用上限 → C ABI（0 = 默认 64、负数 = 不限，v18）；封装层 0 = 不限，超出 int32 截断。
+int maxQueuedCallsToNative(int n) => _zeroOffToInt32(n);
+
+/// @compat 封装层 0（或负数）= 关闭 / 不限 → C ABI 的 -1（C ABI 的 0 表示默认值）。
+int _zeroOffToInt32(int n) => n <= 0 ? -1 : (n > 0x7FFFFFFF ? 0x7FFFFFFF : n);
+
+/// 工具的并发上限 → C ABI uint32（v18）。
+/// @error 负数或超出 uint32 时抛 [ArgumentError]。
+int toolConcurrencyToNative(int n) =>
+    n >= 0 && n <= 0xFFFFFFFF ? n : throw ArgumentError.value(n, 'concurrency', '应为 0（不单独限制）或正整数');
 
 /// 未知值按 [ConnectionStatus.idle] 处理（不应发生）。
 ConnectionStatus statusFromNative(int status) => switch (status) {

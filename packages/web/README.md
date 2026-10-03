@@ -60,6 +60,11 @@ appMcp.tool('order.cancel', {
   可作为业务层去重键或传给后端。Electron / Tauri 页面经桥接同样拿到。
 - **资源的内容标注**：`appMcp.resource(name, { description, annotations: { audience: ['user'], priority: 0.5 }, read })`，
   Hub 放到 MCP `resources/list` 的资源注解上；缺省不声明。
+- **调用调度**（spec/protocol.md 5.3，只在 SDK 内生效、不发给 Host）：`createAppMcp({ maxConcurrentCalls, maxQueuedCalls })`
+  控制同时执行的调用数（缺省 1）与排队中的调用数（缺省 64，0 = 不限；队列满时新调用以 `RATE_LIMITED` 拒绝，`data` 为
+  `{ scope: 'queue', limit }`）。工具可声明 `concurrency`（本工具同时执行的上限，缺省 / 0 = 不单独限制）与 `exclusive`
+  （互斥组名，同组工具同一时刻至多一个在执行，如操作同一份文档的写工具）；不继承 scope，`update` 中给出 `undefined` 即清除。
+  Electron / Tauri 页面经桥接同样声明（Electron 由主进程转给 `@app-mcp/node`）。
 - Host 还会对调用限流、限制参数 / 结果 / 资源大小，超出时 Agent 收到 `RATE_LIMITED` / `PAYLOAD_TOO_LARGE`
   （参数超限与被限流的调用不会转发到页面；结果超限时 handler 已执行，结果不返回）。上限见 crates/host/README.md。
 - **需要用户操作**（登录过期、系统权限未授予、需切到前台、需在 App 内确认）时抛出

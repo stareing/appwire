@@ -21,6 +21,7 @@ describe('创建与加载', () => {
     const h = setup({
       appVersion: '1.2.3',
       maxConcurrentCalls: 3,
+      maxQueuedCalls: 5,
       callDedup: { ttlMs: 60_000 },
       overview: { summary: '演示商城', body: '## 能力范围', locale: 'zh-CN' },
     })
@@ -32,6 +33,7 @@ describe('创建与加载', () => {
       clientKind: 'web',
       appVersion: '1.2.3',
       maxConcurrentCalls: 3,
+      maxQueuedCalls: 5,
       callDedup: { ttlMs: 60_000 },
       token: 'tk-1',
       overview: { summary: '演示商城', body: '## 能力范围', locale: 'zh-CN' },
@@ -127,6 +129,23 @@ describe('注册缓存与回放', () => {
     t.dispose()
     t.dispose()
     expect(h.core.methods()).toEqual(['registerTool', 'updateTool', 'unregisterTool'])
+  })
+
+  it('调用调度声明 concurrency / exclusive：注册时传给核心（缺省不带）；update 修改与清除', async () => {
+    const h = setup()
+    await settle()
+    h.app.tool('plain', { description: '', handler: () => {} })
+    const t = h.app.tool('doc.edit', { description: '', concurrency: 2, exclusive: 'doc', handler: () => {} })
+    const defs = h.core.callsOf('registerTool').map((c) => c[0] as Record<string, unknown>)
+    expect(defs[0]).not.toHaveProperty('concurrency')
+    expect(defs[0]).not.toHaveProperty('exclusive')
+    expect(defs[1]).toMatchObject({ concurrency: 2, exclusive: 'doc' })
+    t.update({ concurrency: 1, exclusive: 'doc2' })
+    t.update({ concurrency: undefined, exclusive: undefined })
+    expect(h.core.callsOf('updateTool').map((c) => c[1])).toEqual([
+      { concurrency: 1, exclusive: 'doc2' },
+      { concurrency: 0, exclusive: null },
+    ])
   })
 
   it('空更新不产生核心调用', async () => {

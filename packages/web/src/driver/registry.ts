@@ -218,6 +218,8 @@ export abstract class DriverRegistry extends DriverTransport {
       if (decl.surface === 'view') coreDef.surface = 'view'
       if (decl.page !== undefined) coreDef.page = decl.page
       if (def.backgroundTool !== undefined) coreDef.backgroundTool = def.backgroundTool
+      if (def.concurrency !== undefined) coreDef.concurrency = def.concurrency
+      if (def.exclusive !== undefined) coreDef.exclusive = def.exclusive
       rec.coreEnabled = this.effectiveEnabled(rec)
       if (!rec.coreEnabled || def.enabled !== undefined) coreDef.enabled = rec.coreEnabled
       if (scope) {
@@ -295,6 +297,8 @@ export abstract class DriverRegistry extends DriverTransport {
         if ('activation' in changes) update.activation = changes.activation ?? null
         if ('annotations' in changes) update.annotations = changes.annotations ?? null
         if ('backgroundTool' in changes) update.backgroundTool = changes.backgroundTool ?? null
+        if ('concurrency' in changes) update.concurrency = changes.concurrency ?? 0
+        if ('exclusive' in changes) update.exclusive = changes.exclusive ?? null
         if ('outputSchema' in changes && changes.outputSchema === undefined) update.outputSchema = null
         const schema = 'input' in changes ? this.convertSchema(rec.name, changes.input) : undefined
         const output =

@@ -1,4 +1,4 @@
-// 编译并加载 test/fake_native/fake_app_mcp.c（Linux / macOS 用 cc；Windows 用 MSVC 生成工具）。
+// 编译并加载 test/fake_native/*.c（Linux / macOS 用 cc；Windows 用 MSVC 生成工具）。
 import 'dart:ffi';
 import 'dart:io';
 
@@ -6,13 +6,22 @@ import 'package:ffi/ffi.dart';
 
 /// 编译假库，返回路径；没有可用的 C 编译器时返回 null。
 String? buildFakeLibrary() {
-  final src = File('test/fake_native/fake_app_mcp.c').absolute.path;
+  final sources = _fakeSources();
   final dir = Directory.systemTemp.createTempSync('app_mcp_fake_');
-  if (Platform.isWindows) return _buildWithMsvc(src, dir);
+  if (Platform.isWindows) return _buildWithMsvc(sources, dir);
   if (!Platform.isLinux && !Platform.isMacOS) return null;
   final out = '${dir.path}/${Platform.isMacOS ? 'libfake_app_mcp.dylib' : 'libfake_app_mcp.so'}';
-  return _run('cc', ['-shared', '-fPIC', '-o', out, src, '-lpthread']) ? out : null;
+  return _run('cc', ['-shared', '-fPIC', '-o', out, ...sources, '-lpthread']) ? out : null;
 }
+
+/// 假库的全部源文件（test/fake_native/*.c 的绝对路径，按名称排序）。
+List<String> _fakeSources() => Directory('test/fake_native')
+    .listSync()
+    .whereType<File>()
+    .where((f) => f.path.endsWith('.c'))
+    .map((f) => f.absolute.path)
+    .toList()
+  ..sort();
 
 /// 运行命令，成功时返回 stdout；失败时把输出写到 stderr 并返回 null。
 String? _runOutput(String exe, List<String> args, {String? workingDirectory}) {
@@ -33,7 +42,7 @@ bool _run(String exe, List<String> args) => _runOutput(exe, args) != null;
 /// @why MSVC 不像 cc 那样默认导出全部非 static 函数，而 app_mcp.h 的声明不带 dllexport（定义处再加会
 ///      报 C2375）。因此先 `cl /c` 编译，从 `dumpbin /symbols` 取出已定义的 am_* / fake_* 外部函数生成 .def，再 `link /DLL`，
 ///      导出集合与 Linux 一致，源文件无需维护导出表。
-String? _buildWithMsvc(String src, Directory dir) {
+String? _buildWithMsvc(List<String> sources, Directory dir) {
   final vcvars = _findVcvars64();
   if (vcvars == null) return null;
   // cl.exe / link.exe 依赖 vcvars 设置的 INCLUDE / LIB / PATH：每步写一个 .cmd，先 call 再执行。
@@ -44,9 +53,11 @@ String? _buildWithMsvc(String src, Directory dir) {
     return _runOutput('cmd.exe', ['/c', script.path], workingDirectory: dir.path);
   }
 
-  // /utf-8：源文件含中文注释（UTF-8 无 BOM）。
-  if (msvc('compile', 'cl /nologo /c /utf-8 /W3 /Fo:fake_app_mcp.obj "$src"') == null) return null;
-  final symbols = msvc('symbols', 'dumpbin /nologo /symbols fake_app_mcp.obj');
+  // /utf-8：源文件含中文注释（UTF-8 无 BOM）。不指定 /Fo 时各源文件的 .obj 按文件名写到工作目录（dir）。
+  final quoted = sources.map((s) => '"$s"').join(' ');
+  final objects = sources.map((s) => '${File(s).uri.pathSegments.last.replaceAll(RegExp(r'\.c$'), '')}.obj').join(' ');
+  if (msvc('compile', 'cl /nologo /c /utf-8 /W3 $quoted') == null) return null;
+  final symbols = msvc('symbols', 'dumpbin /nologo /symbols $objects');
   if (symbols == null) return null;
   // 形如 `01A 00000000 SECT5  notype ()    External     | am_version`：已定义（SECTn）的外部函数。
   final exported = RegExp(r'^\S+ \S+ SECT\w+\s+notype \(\)\s+External\s+\| (\w+)\s*$', multiLine: true)
@@ -62,7 +73,7 @@ String? _buildWithMsvc(String src, Directory dir) {
   File('${dir.path}\\fake_app_mcp.def').writeAsStringSync('EXPORTS\r\n${exported.join('\r\n')}\r\n');
   final out = '${dir.path}\\fake_app_mcp.dll';
   final linked =
-      msvc('link', 'link /nologo /DLL /DEF:fake_app_mcp.def "/OUT:$out" fake_app_mcp.obj');
+      msvc('link', 'link /nologo /DLL /DEF:fake_app_mcp.def "/OUT:$out" $objects');
   return linked == null ? null : out;
 }
 
@@ -129,6 +140,9 @@ final class FakeNative {
 
   /// v17：最近一次 am_client_new_ex 的按名寻址 `registerName(0/1)|nameInstance 或 -`。
   String? nameService() => _take(_nameService());
+
+  /// v18：最近一次 am_client_new_ex 的 max_queued_calls（原样）。
+  late final maxQueuedCalls = lib.lookupFunction<Int32 Function(), int Function()>('fake_max_queued_calls');
   late final _toolEnabled = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>(
       'fake_tool_enabled');
   late final _toolDescription = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
@@ -236,6 +250,12 @@ final class FakeNative {
   late final _toolBackground = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
       Pointer<Utf8> Function(Pointer<Utf8>)>('fake_tool_background');
   String? toolBackground(String name) => _take(using((a) => _toolBackground(name.toNativeUtf8(allocator: a))));
+
+  late final _toolSchedule = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
+      Pointer<Utf8> Function(Pointer<Utf8>)>('fake_tool_schedule');
+
+  /// v18：`<concurrency>|<exclusive 或 ->`；工具不存在时为 null。
+  String? toolSchedule(String name) => _take(using((a) => _toolSchedule(name.toNativeUtf8(allocator: a))));
 
   String? toolDescription(String name) {
     final p = using((a) => _toolDescription(name.toNativeUtf8(allocator: a)));

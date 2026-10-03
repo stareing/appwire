@@ -19,7 +19,7 @@ const SDK = 'harmony';
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
-  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey',
+  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey', 'callScheduling',
 ];
 
 const build = process.env.APP_MCP_HARMONY_BUILD;
@@ -53,6 +53,8 @@ function toolFields(decl) {
     surface: decl.surface,
     page: decl.page,
     backgroundTool: decl.backgroundTool,
+    concurrency: decl.concurrency,
+    exclusive: decl.exclusive,
   });
 }
 
@@ -84,6 +86,12 @@ async function readResource(spec) {
   throw new Error(spec.throw ?? '读取失败');
 }
 
+/** 用例 `app.config` 中调用调度的选项（callScheduling；support.appConfig 不含）。 */
+function schedulingConfig(testCase) {
+  const c = (testCase.app && testCase.app.config) || {};
+  return typeof c.maxQueuedCalls === 'number' ? { maxQueuedCalls: c.maxQueuedCalls } : {};
+}
+
 function startApp(support, native, testCase, url) {
   const app = new AppMcp(
     {
@@ -93,6 +101,7 @@ function startApp(support, native, testCase, url) {
       autoStart: false,
       logger: silentLogger,
       ...support.appConfig(testCase),
+      ...schedulingConfig(testCase),
     },
     (config, listener) => new native.NativeClient(config, listener),
   );

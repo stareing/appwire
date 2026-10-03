@@ -246,6 +246,10 @@ var client = AppMcpClient.Create(new AppMcpClientOptions
 `AppMcpClientOptions.CallDedup = new CallDedupOptions { Ttl = TimeSpan.FromMinutes(5), MaxEntries = 64 }`（为 null 时即此默认值；
 `CallDedupOptions.Off` 或任一项为 0 关闭）。命中时 SDK 记一条警告日志。
 
+调用调度（spec/protocol.md 5.3，只在 SDK 内生效、不同步给 Host）：`ToolOptions.Concurrency`（本工具同时执行的调用上限，0 = 不单独限制，
+只受 `MaxConcurrentCalls` 约束）与 `ToolOptions.Exclusive`（互斥组名，同组工具同一时刻至多一个在执行）。暂不能执行的调用按到达顺序排队，
+`AppMcpClientOptions.MaxQueuedCalls`（默认 64，0 = 不限）为排队上限，超出时新调用以 `RATE_LIMITED`（details `{"scope": "queue", "limit": N}`）拒绝。
+
 幂等键（spec/protocol.md 3.3「idempotencyKey」）：`ToolContext.IdempotencyKey`（`string?`）是 Agent 给出的幂等键，原样提供，没有时为 null；
 同一工具同一键的重复调用已按首次结果重放（同上，去重关闭时只透传），App 可另作业务去重键或传给后端。
 

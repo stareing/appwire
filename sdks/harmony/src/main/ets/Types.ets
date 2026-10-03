@@ -240,6 +240,16 @@ export interface ToolDefinition<I, O> {
    * 本工具因 App 在后台不可调用时 Hub 改调它。
    */
   backgroundTool?: string;
+  /**
+   * 本工具同时执行的调用上限（spec/protocol.md 5.3）；缺省 / 0 = 不单独限制（只受 `maxConcurrentCalls` 约束）。
+   * 只在 SDK 内调度，不发给 Host。
+   */
+  concurrency?: number;
+  /**
+   * 互斥组（`[a-zA-Z0-9_.-]{1,64}`，spec/protocol.md 5.3）：同组的工具同一时刻至多一个在执行（如操作同一份文档的写工具）。
+   * 只在 SDK 内调度，不发给 Host。
+   */
+  exclusive?: string;
   handler: ToolHandler<I, O>;
 }
 
@@ -262,7 +272,7 @@ export type NavigationHandler = (request: NavigationRequest) => void | Promise<v
 
 /**
  * `ToolHandle.update` 的变更：未提供（或 `undefined`）的字段保持不变；显式给出 `null` 清除该声明
- * （`title` / `annotations` / `outputSchema` / `activation` / `page` / `backgroundTool` 删除，`inputSchema` 变为无参数，`risk` 恢复 `write`，
+ * （`title` / `annotations` / `outputSchema` / `activation` / `page` / `backgroundTool` / `exclusive` 删除，`concurrency` 恢复不限，`inputSchema` 变为无参数，`risk` 恢复 `write`，
  * `enabled` 恢复 true，`surface` 恢复 `app`）。`description` 不可清除，`null` 时保持不变。
  */
 export interface ToolChanges {
@@ -277,6 +287,8 @@ export interface ToolChanges {
   surface?: ToolSurface | null;
   page?: string | null;
   backgroundTool?: string | null;
+  concurrency?: number | null;
+  exclusive?: string | null;
 }
 
 export interface ToolHandle {
@@ -328,6 +340,11 @@ export interface AppMcpOptions {
   /** Host 端点；缺省由原生层按 spec/protocol.md 1.3 解析，鸿蒙上为 `ws://127.0.0.1:7717/app`（开发机用 `hdc rport tcp:7717 tcp:7717`）。 */
   hostUrl?: string;
   maxConcurrentCalls?: number;
+  /**
+   * 排队中的调用上限（spec/protocol.md 5.3），默认 64，0 = 不限。新调用需要排队而队列已满时以 `RATE_LIMITED`
+   * 拒绝（`data` 为 `{ scope: 'queue', limit }`）。
+   */
+  maxQueuedCalls?: number;
   overview?: AppOverview;
   logger?: Logger;
   instanceId?: string;

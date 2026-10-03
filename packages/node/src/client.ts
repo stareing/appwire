@@ -143,6 +143,7 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
       ...(options.token !== undefined && { token: options.token }),
       ...(options.launchToken !== undefined && { launchToken: options.launchToken }),
       ...(options.maxConcurrentCalls !== undefined && { maxConcurrentCalls: options.maxConcurrentCalls }),
+      ...(options.maxQueuedCalls !== undefined && { maxQueuedCalls: options.maxQueuedCalls }),
       ...(options.overview !== undefined && { overview: options.overview }),
       ...(options.lifecycle !== undefined && { lifecycle: { ...options.lifecycle } }),
       ...(options.connectTimeoutMs !== undefined && { connectTimeoutMs: options.connectTimeoutMs }),

@@ -120,7 +120,8 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
 
     /// <summary>托管选项 → AmClientOptions（不含 Lifecycle 指针与回调；NameInstance 字符串分配在 <paramref name="strings"/> 中）。</summary>
     /// <remarks>@compat C ABI 的 host_absent_retries 0 = 默认 3、负数 = 一直重连；merge_window_ms 0 = 默认 2000、负数 = 不留窗口；
-    /// call_dedup_* 0 = 默认、负数 = 关闭；托管层 0 表示"一直重连 / 不留窗口 / 关闭去重"，在此转换。</remarks>
+    /// call_dedup_* 0 = 默认、负数 = 关闭；max_queued_calls 0 = 默认 64、负数 = 不限；
+    /// 托管层 0 表示"一直重连 / 不留窗口 / 关闭去重 / 不限排队"，在此转换。</remarks>
     internal static unsafe AmClientOptions ToNativeOptions(AppMcpClientOptions options, LifecycleOptions l, Utf8Strings strings)
     {
         if (l.HostAbsentRetries < 0) throw new ArgumentOutOfRangeException(nameof(l.HostAbsentRetries), "HostAbsentRetries 不能为负数（0 = 一直重连）");
@@ -129,6 +130,7 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         var dedup = options.CallDedup ?? new CallDedupOptions();
         if (dedup.MaxEntries < 0) throw new ArgumentOutOfRangeException(nameof(dedup.MaxEntries), "CallDedup.MaxEntries 不能为负数（0 = 关闭）");
         var dedupTtl = ToMillis(dedup.Ttl, nameof(dedup.Ttl));
+        if (options.MaxQueuedCalls < 0) throw new ArgumentOutOfRangeException(nameof(options.MaxQueuedCalls), "MaxQueuedCalls 不能为负数（0 = 不限）");
         return new AmClientOptions
         {
             StructSize = (uint)sizeof(AmClientOptions),
@@ -142,6 +144,7 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
             CallDedupMaxEntries = dedup.MaxEntries == 0 ? -1 : dedup.MaxEntries,
             RegisterName = options.RegisterName ? (byte)1 : (byte)0,
             NameInstance = strings.Add(options.NameInstance),
+            MaxQueuedCalls = options.MaxQueuedCalls == 0 ? -1 : options.MaxQueuedCalls,
         };
     }
 

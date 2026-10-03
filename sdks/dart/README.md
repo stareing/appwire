@@ -133,6 +133,10 @@ client.onIdleExit.listen((_) { /* residency 允许时：App 自行决定是否�
   `McpResource(annotations: ...)`：资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；缺省不声明。
 - 调用去重（spec/protocol.md 3.3）：`AppMcp(callDedup: CallDedupPolicy(ttl: Duration(minutes: 5), maxEntries: 64))`（即默认值）——
   同一 callId 在有效期内重复到达时重放首次结果、不再执行 handler；`CallDedupPolicy.off` 或任一项为 0 关闭。命中时 SDK 记一条警告日志。
+- 调用调度（spec/protocol.md 5.3，只在 SDK 内生效、不同步给 Host）：工具声明 `concurrency`（本工具同时执行的调用上限，0 = 不单独限制，
+  只受 `maxConcurrentCalls` 约束）与 `exclusive`（互斥组名，同组工具同一时刻至多一个在执行），`tool(...)` / `ToolSpec` /
+  `McpTool` / `useMcpTool` 均可传；暂不能执行的调用按到达顺序排队，`AppMcp(maxQueuedCalls: 64)`（默认值，0 = 不限）为排队上限，
+  超出时新调用以 `RATE_LIMITED`（details `{"scope": "queue", "limit": N}`）拒绝。
 - 幂等键（spec/protocol.md 3.3「idempotencyKey」）：`ctx.idempotencyKey`（`String?`）是 Agent 给出的幂等键，原样提供，没有时为 null；
   同一工具同一键的重复调用已按首次结果重放（去重关闭时只透传），App 可另作业务去重键或传给后端。
 - handler 内的长任务用 `ctx.hold()` 延长持有（必须在调用完成前获取）；调用进行中本身就视为非空闲。

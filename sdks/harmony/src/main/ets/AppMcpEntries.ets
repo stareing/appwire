@@ -58,6 +58,8 @@ export class ToolEntry<I, O> implements ToolHandle, Child {
     spec.surface = d.surface;
     spec.page = d.page;
     spec.backgroundTool = d.backgroundTool;
+    spec.concurrency = d.concurrency;
+    spec.exclusive = d.exclusive;
     return spec;
   }
 
@@ -78,6 +80,8 @@ export class ToolEntry<I, O> implements ToolHandle, Child {
       surface: patchField<ToolSurface>(changes.surface, d.surface),
       page: patchField<string>(changes.page, d.page),
       backgroundTool: patchField<string>(changes.backgroundTool, d.backgroundTool),
+      concurrency: patchField<number>(changes.concurrency, d.concurrency),
+      exclusive: patchField<string>(changes.exclusive, d.exclusive),
       handler: d.handler,
     };
     this.def = next;

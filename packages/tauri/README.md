@@ -75,6 +75,9 @@ Identity and connection are owned by the Rust side: `appId`, `appName` and `host
   `ToolCallError.userActionRequired(message, { reason, uri })` itself. Capabilities that must work in the background
   should be `app` tools, or `view` tools with `backgroundTool` (the name of an `app` tool the Hub calls instead); see
   spec/protocol.md 3.4 ("background and foreground").
+- Call scheduling (spec/protocol.md 5.3): page tool options `concurrency` / `exclusive` are forwarded to the plugin and
+  scheduled by the native runtime (the limits `max_concurrent_calls` / `max_queued_calls` are set in the plugin's
+  `NativeConfig` on the Rust side).
 - `TAURI_OP_COMMAND` (`'plugin:app-mcp|op'`), `TAURI_DISPATCH_FN`, `BRIDGE_VERSION` - protocol constants.
 - Types: `TauriAppMcpOptions`, `AppMcpBridge`, `HelloReply`, `MainEvent`, `OpReply`, `RendererOp`, `NavigationOp`, `NavigateEvent`.
 

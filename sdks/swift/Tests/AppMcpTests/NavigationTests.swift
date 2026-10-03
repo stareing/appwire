@@ -3,7 +3,6 @@ import AppMcpBindings
 import XCTest
 
 /// 导航表、工具补丁更新与 surface / page（spec/protocol.md 3.4）。
-/// @compat 本机没有 Swift 工具链，未运行过。
 final class NavigationTests: XCTestCase {
     @MainActor
     func testPageRouterDispatchesByName() async throws {
@@ -49,6 +48,22 @@ final class NavigationTests: XCTestCase {
         XCTAssertNil(decl.applied(to: base).backgroundTool)
         decl.surface = .app
         XCTAssertNil(decl.applied(to: base).surface, "app 为缺省，不序列化")
+    }
+
+    func testToolDeclarationKeepsCallScheduling() {
+        let base = ToolSpec(name: "t", description: "旧", concurrency: 2, exclusive: "doc")
+        var decl = ToolDeclaration(base)
+        XCTAssertEqual(decl.concurrency, 2)
+        XCTAssertEqual(decl.exclusive, "doc")
+        decl.description = "新"
+        let kept = decl.applied(to: base)
+        XCTAssertEqual(kept.concurrency, 2, "补丁型 update 不得重置调度声明")
+        XCTAssertEqual(kept.exclusive, "doc")
+        decl.concurrency = 0
+        decl.exclusive = nil
+        let cleared = decl.applied(to: base)
+        XCTAssertEqual(cleared.concurrency, 0)
+        XCTAssertNil(cleared.exclusive)
     }
 
     func testThrownErrorsMapToNavigationResults() throws {

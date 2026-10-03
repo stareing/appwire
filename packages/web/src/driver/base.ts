@@ -226,6 +226,7 @@ export abstract class DriverBase {
         ...(this.options.appVersion !== undefined && { appVersion: this.options.appVersion }),
         ...pageInfo(),
         ...(this.options.maxConcurrentCalls !== undefined && { maxConcurrentCalls: this.options.maxConcurrentCalls }),
+        ...(this.options.maxQueuedCalls !== undefined && { maxQueuedCalls: this.options.maxQueuedCalls }),
         ...(this.options.callDedup !== undefined && { callDedup: this.options.callDedup }),
         ...(this.options.overview !== undefined && { overview: this.options.overview }),
         ...tokenField(loadToken(this.options.appId)),

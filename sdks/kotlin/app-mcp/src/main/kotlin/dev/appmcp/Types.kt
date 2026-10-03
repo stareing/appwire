@@ -201,6 +201,11 @@ data class AppMcpConfig(
      * `AppMcpException.InvalidConfig`。
      */
     val nameInstance: String? = null,
+    /**
+     * 排队中的调用上限（spec/protocol.md 5.3）：满后新到的调用以 `RATE_LIMITED`（`scope = "queue"`）拒绝。
+     * 为空时 64，`0` = 不限。
+     */
+    val maxQueuedCalls: Int? = null,
 ) {
     internal fun toFfi() = dev.appmcp.ffi.ClientConfig(
         appId = appId,
@@ -219,5 +224,6 @@ data class AppMcpConfig(
         callDedup = callDedup,
         registerName = registerName,
         nameInstance = nameInstance,
+        maxQueuedCalls = maxQueuedCalls?.coerceAtLeast(0)?.toUInt(),
     )
 }

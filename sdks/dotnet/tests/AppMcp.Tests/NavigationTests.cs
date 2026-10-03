@@ -11,10 +11,11 @@ namespace AppMcp.Tests;
 public class NavigationTests(ITestOutputHelper output)
 {
     [Fact]
-    public void ToolOptionsUseV15Layout()
+    public void ToolOptionsUseV18Layout()
     {
-        // @why 回归：v13 的 AmToolOptions 没有 page / surface、v14 没有 background_tool，struct_size 按旧布局传入时库不读取这些字段。
-        Assert.Equal(IntPtr.Size == 8 ? 48 : 24, Unsafe.SizeOf<AmToolOptions>());
+        // @why 回归：v13 的 AmToolOptions 没有 page / surface、v14 没有 background_tool、v17 没有 concurrency / exclusive，
+        //      struct_size 按旧布局传入时库不读取这些字段。
+        Assert.Equal(IntPtr.Size == 8 ? 64 : 32, Unsafe.SizeOf<AmToolOptions>());
         using var strings = new Utf8Strings();
         var o = ToolScope.BuildOptions(strings, new ToolOptions { Surface = ToolSurface.View, Page = "cart" });
         Assert.Equal((uint)Unsafe.SizeOf<AmToolOptions>(), o.StructSize);
@@ -24,6 +25,26 @@ public class NavigationTests(ITestOutputHelper output)
         Assert.Equal((0, (nint)0, (nint)0), (d.Surface, d.Page, d.BackgroundTool));
         var bg = ToolScope.BuildOptions(strings, new ToolOptions { Surface = ToolSurface.View, BackgroundTool = "cart.summary" });
         Assert.Equal("cart.summary", NativeMethods.PtrToString(bg.BackgroundTool));
+        Assert.Equal((0u, (nint)0), (d.Concurrency, d.Exclusive));
+        var sched = ToolScope.BuildOptions(strings, new ToolOptions { Concurrency = 2, Exclusive = "doc" });
+        Assert.Equal(2u, sched.Concurrency);
+        Assert.Equal("doc", NativeMethods.PtrToString(sched.Exclusive));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ToolScope.BuildOptions(strings, new ToolOptions { Concurrency = -1 }));
+    }
+
+    [Fact]
+    public void InvalidExclusiveGroupIsRejectedByNativeLibrary()
+    {
+        // 互斥组名的规则只在原生库定义（同工具名，spec/protocol.md 5.3），封装层原样传递。
+        using var client = AppMcpClient.Create(new AppMcpClientOptions
+        {
+            AppId = "dotnet-sched", AppName = "Sched", HostUrl = "ws://127.0.0.1:1", Dispatcher = null,
+        });
+        using var tool = client.RegisterTool("doc.edit", "改文档", (_, _) => Task.FromResult<object?>(null),
+            new ToolOptions { Concurrency = 1, Exclusive = "doc" });
+        tool.Update("改文档", new ToolOptions { Exclusive = "doc.other" });
+        var ex = Assert.Throws<AppMcpException>(() => tool.Update("改文档", new ToolOptions { Exclusive = "bad group!" }));
+        Assert.NotEqual(AppMcpStatus.Ok, ex.Status);
     }
 
     [Fact]

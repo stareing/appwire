@@ -48,7 +48,7 @@ namespace fs = std::filesystem;
 const std::vector<std::string> kFeatures = {"toolOptions", "mutate",      "lifecycle",       "wake",       "richResult",
                                             "userAction",  "progress",    "resourceOptions", "readFailure",
                                             "surface",     "navigation",  "backgroundTool",  "backgroundNavigation",
-                                            "idempotencyKey"};
+                                            "idempotencyKey", "callScheduling"};
 
 // ---------------------------------------------------------------------------
 // 用例字段 → SDK 枚举（协议同名字符串，spec/protocol.md 第 3 节）
@@ -291,6 +291,8 @@ app_mcp::ToolOptions cpp_tool_options(const Json& decl) {
     o.surface = parse_surface(decl["surface"]) == AM_SURFACE_VIEW ? app_mcp::Surface::View : app_mcp::Surface::App;
     o.page = decl["page"].str();
     o.background_tool = decl["backgroundTool"].str();
+    o.concurrency = static_cast<uint32_t>(to_u64(decl["concurrency"], 0));
+    o.exclusive = decl["exclusive"].str();
     return o;
 }
 
@@ -474,6 +476,7 @@ app_mcp::ClientConfig cpp_config(const std::string& url, const Json& c) {
     cfg.call_dedup.ttl_ms = to_u64(d["ttlMs"], cfg.call_dedup.ttl_ms);
     cfg.call_dedup.max_entries = static_cast<uint32_t>(to_u64(d["maxEntries"], cfg.call_dedup.max_entries));
     cfg.max_concurrent_calls = static_cast<uint32_t>(to_u64(c["maxConcurrentCalls"], cfg.max_concurrent_calls));
+    cfg.max_queued_calls = static_cast<uint32_t>(to_u64(c["maxQueuedCalls"], cfg.max_queued_calls));
     return cfg;
 }
 
@@ -488,7 +491,7 @@ void check_c(AmStatus s, const char* what) {
 /// 工具声明 → AmToolSpec + AmToolOptions；指针借用 decl 派生的字符串（由 holder 保持存活）。
 struct CToolDecl {
     std::string name, description;
-    std::optional<std::string> input_schema, title, annotations, output_schema, page, background_tool;
+    std::optional<std::string> input_schema, title, annotations, output_schema, page, background_tool, exclusive;
     AmToolSpec spec{};
     AmToolOptions options{};
 
@@ -500,7 +503,8 @@ struct CToolDecl {
           annotations(json_text(decl["annotations"])),
           output_schema(json_text(decl["outputSchema"])),
           page(decl["page"].str()),
-          background_tool(decl["backgroundTool"].str()) {
+          background_tool(decl["backgroundTool"].str()),
+          exclusive(decl["exclusive"].str()) {
         spec.name = name.c_str();
         spec.description = description.c_str();
         spec.input_schema_json = input_schema ? input_schema->c_str() : nullptr;
@@ -514,6 +518,8 @@ struct CToolDecl {
         options.page = page ? page->c_str() : nullptr;
         options.surface = parse_surface(decl["surface"]);
         options.background_tool = background_tool ? background_tool->c_str() : nullptr;
+        options.concurrency = static_cast<uint32_t>(to_u64(decl["concurrency"], 0));
+        options.exclusive = exclusive ? exclusive->c_str() : nullptr;
     }
     CToolDecl(const CToolDecl&) = delete;
     CToolDecl& operator=(const CToolDecl&) = delete;
@@ -624,6 +630,7 @@ public:
         const Json& d = c["callDedup"];
         if (auto ms = d["ttlMs"].number()) options.call_dedup_ttl_ms = *ms == 0 ? -1 : static_cast<int64_t>(*ms);
         if (auto n = d["maxEntries"].number()) options.call_dedup_max_entries = *n == 0 ? -1 : static_cast<int32_t>(*n);
+        if (auto n = c["maxQueuedCalls"].number()) options.max_queued_calls = *n == 0 ? -1 : static_cast<int32_t>(*n);
         check_c(am_client_new_ex(&config, nullptr, &options, &client_), "am_client_new_ex");
         check_c(am_client_root_scope(client_, &root_), "am_client_root_scope");
     }

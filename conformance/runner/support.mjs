@@ -208,6 +208,7 @@ export function appConfig(testCase) {
   if (c.lifecycle) out.lifecycle = { ...c.lifecycle };
   if (c.callDedup) out.callDedup = { ...c.callDedup };
   if (typeof c.maxConcurrentCalls === 'number') out.maxConcurrentCalls = c.maxConcurrentCalls;
+  if (typeof c.maxQueuedCalls === 'number') out.maxQueuedCalls = c.maxQueuedCalls;
   if (typeof c.navigateInBackground === 'boolean') out.navigateInBackground = c.navigateInBackground;
   return out;
 }
@@ -239,6 +240,8 @@ function jsToolFields(decl) {
     surface: decl.surface,
     page: decl.page,
     backgroundTool: decl.backgroundTool,
+    concurrency: decl.concurrency,
+    exclusive: decl.exclusive,
   });
 }
 

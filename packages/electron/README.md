@@ -79,7 +79,7 @@ descriptor, as in the `attachLifecycle` example in `main.ts`.
     requests to the renderer that enabled navigation most recently (`appMcp.setNavigationHandler` in the page, or
     `attachBridgeNavigation`; without `navigation: true`, the main process may call
     `appMcp.setNavigationHandler` itself, e.g. to switch windows). Renderer tool `surface` / `page` / `backgroundTool`
-    are forwarded, and a page handler throwing `ToolCallError.userActionRequired(message, { reason?, uri? })` replies
+    and the call-scheduling options `concurrency` / `exclusive` (spec/protocol.md 5.3) are forwarded, and a page handler throwing `ToolCallError.userActionRequired(message, { reason?, uri? })` replies
     `USER_ACTION_REQUIRED`. In the background: with `navigation: true` the attachment sets `navigateInBackground` to
     whether `raiseWindow` is given. Pass
     `raiseWindow: (wc) => { const w = BrowserWindow.fromWebContents(wc); if (w?.isMinimized()) w.restore(); w?.show(); w?.focus() }`

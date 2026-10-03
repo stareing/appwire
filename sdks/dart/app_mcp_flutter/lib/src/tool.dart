@@ -21,6 +21,7 @@ void _report(Object e, StackTrace st, String what) {
 /// [surface] 为 [ToolSurface.view] 时只在所在界面可见且处于最上层时启用（[McpViewGate.isActive]：最近的
 /// [McpViewGate] / [McpRouteGate]，否则所在路由是否为栈顶），否则禁用；[page] 声明所在页面，Hub 据此导航；
 /// [backgroundTool] 声明 App 在后台时 Hub 改调的同 App app 工具（spec/protocol.md 3.4「后台与前台」）。
+/// [concurrency] / [exclusive] 为 SDK 内的调用调度声明（spec/protocol.md 5.3，见 [ToolSpec.concurrency]、[ToolSpec.exclusive]）。
 ///
 /// ```dart
 /// McpTool(
@@ -46,6 +47,8 @@ class McpTool extends StatefulWidget {
     this.surface = ToolSurface.app,
     this.page,
     this.backgroundTool,
+    this.concurrency = 0,
+    this.exclusive,
     required this.handler,
     this.child,
   });
@@ -74,6 +77,12 @@ class McpTool extends StatefulWidget {
 
   /// 只对 [ToolSurface.view] 有意义：App 在后台时 Hub 改调的同 App app 工具本地名；为 null 时不声明。
   final String? backgroundTool;
+
+  /// 本工具同时执行的调用上限；0 = 不单独限制。
+  final int concurrency;
+
+  /// 互斥组名：同组的工具同一时刻至多一个在执行；为 null 时不互斥。
+  final String? exclusive;
   final ToolHandler handler;
   final Widget? child;
 
@@ -90,6 +99,8 @@ class McpTool extends StatefulWidget {
         surface: surface,
         page: page,
         backgroundTool: backgroundTool,
+        concurrency: concurrency,
+        exclusive: exclusive,
       );
 
   @override
@@ -311,6 +322,8 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
     ToolSurface surface = ToolSurface.app,
     String? page,
     String? backgroundTool,
+    int concurrency = 0,
+    String? exclusive,
     required ToolHandler handler,
   }) {
     final scope = AppMcpScope.scopeOf(context);
@@ -336,7 +349,9 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
         outputSchema: outputSchema,
         surface: surface,
         page: page,
-        backgroundTool: backgroundTool);
+        backgroundTool: backgroundTool,
+        concurrency: concurrency,
+        exclusive: exclusive);
     final existing = _mcpTools[name];
     try {
       if (existing != null && !existing.isDisposed) {

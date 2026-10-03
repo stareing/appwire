@@ -89,6 +89,8 @@ class _Registrar:
         surface: SurfaceLike | None = None,
         page: str | None = None,
         background_tool: str | None = None,
+        concurrency: int = 0,
+        exclusive: str | None = None,
     ) -> ToolHandle:
         """注册函数为工具，返回句柄。``input_schema`` 缺省时从函数签名生成。
 
@@ -100,6 +102,10 @@ class _Registrar:
         Qt 可用 :func:`app_mcp.qt.bind_view_tool` 按 show / hide 切换）；``page``：所在页面名，Hub 在该工具未注册时
         据此导航（:meth:`AppMcp.set_navigation_handler`）；``background_tool``：后台替身（只对 ``"view"`` 工具有意义），
         同 App 内一个 ``"app"`` 工具的名称，App 在后台、本工具不可调用时 Hub 改调该工具（spec/protocol.md 3.4「后台与前台」）。
+
+        ``concurrency``：本工具同时执行的调用上限（``0`` 缺省 = 不单独限制，只受 ``max_concurrent_calls`` 约束）；
+        ``exclusive``：互斥组名（命名规则同工具名），同组工具同一时刻最多执行一个调用。两者只在 SDK 内排队生效，
+        不发给 Host（spec/protocol.md 5.3）。
         """
         binder = ArgumentBinder(fn, ToolContext)
         if input_schema is None:
@@ -119,6 +125,8 @@ class _Registrar:
             surface=_surface(surface),
             page=page,
             background_tool=background_tool,
+            concurrency=concurrency,
+            exclusive=exclusive,
         )
         adapter = _ToolAdapter(_Registration(self._owner, fn, binder))
         return ToolHandle(self._raw().register_tool(spec, adapter), spec)
@@ -138,6 +146,8 @@ class _Registrar:
         surface: SurfaceLike | None = None,
         page: str | None = None,
         background_tool: str | None = None,
+        concurrency: int = 0,
+        exclusive: str | None = None,
     ) -> Callable[[F], F]:
         """装饰器形式的 :meth:`add_tool`。返回原函数；句柄可用 ``client.tools[name]`` 取得。"""
 
@@ -156,6 +166,8 @@ class _Registrar:
                 surface=surface,
                 page=page,
                 background_tool=background_tool,
+                concurrency=concurrency,
+                exclusive=exclusive,
             )
             self._owner.tools[handle.name] = handle
             return fn
@@ -252,6 +264,8 @@ class AppMcp(_Registrar):
     ``"always"`` / ``"off"``（spec/lifecycle.md 第 11 节 A3）；``call_dedup``：调用去重（:class:`CallDedup`，
     缺省 300 秒、64 条，``CallDedup.OFF`` 关闭）；``navigate_in_background``：后台时是否仍把导航交给导航回调
     （:meth:`set_navigate_in_background`），``None`` 取平台默认（桌面为 ``True``）。
+    ``max_queued_calls``：排队中的调用上限，满后新到的调用以 ``RATE_LIMITED``（``scope = "queue"``）拒绝；
+    ``None`` 取核心缺省 64，``0`` 不限（spec/protocol.md 5.3）。
 
     ``register_name``：按名寻址（spec/naming.md）——``start()`` 后在系统名字服务登记，Hub 按名拨入、进程未运行时由系统
     激活（Linux：D-Bus 会话总线名 ``dev.appmcp.App.<app_id>``；Windows：命名管道；都需先 ``app-mcp-host app install``
@@ -272,6 +286,7 @@ class AppMcp(_Registrar):
         token: str | None = None,
         launch_token: str | None = None,
         max_concurrent_calls: int = 1,
+        max_queued_calls: int | None = None,
         overview: ffi.AppOverview | str | None = None,
         dispatcher: Dispatcher | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
@@ -325,6 +340,7 @@ class AppMcp(_Registrar):
             token=token,
             launch_token=launch_token,
             max_concurrent_calls=max_concurrent_calls,
+            max_queued_calls=max_queued_calls,
             overview=ffi.AppOverview(summary=overview) if isinstance(overview, str) else overview,
             lifecycle=None if lifecycle is None else _lifecycle_to_ffi(lifecycle),
             connect_timeout_ms=None if connect_timeout is None else max(1, _ms(connect_timeout)),

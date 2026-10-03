@@ -347,6 +347,8 @@ function toolDefinition(spec: ToolSpecMessage) {
     surface: spec.surface,
     page: spec.page,
     backgroundTool: spec.backgroundTool,
+    concurrency: spec.concurrency,
+    exclusive: spec.exclusive,
   }
 }
 

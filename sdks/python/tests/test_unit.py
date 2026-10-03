@@ -617,3 +617,31 @@ def test_surface_and_page(client):
     assert bg._spec.background_tool is None
     with pytest.raises(ValueError):
         client.add_tool(lambda: None, "bad.tool", "非法", surface="modal")
+
+
+def test_call_scheduling_options(client):
+    # concurrency / exclusive 原样进入 ToolSpec（spec/protocol.md 5.3），缺省为不限制
+    plain = client.add_tool(lambda: None, "s.plain", "缺省")
+    assert (plain._spec.concurrency, plain._spec.exclusive) == (0, None)
+    handle = client.add_tool(lambda: None, "s.edit", "改文档", concurrency=2, exclusive="doc")
+    assert (handle._spec.concurrency, handle._spec.exclusive) == (2, "doc")
+    handle.update(description="新")
+    assert (handle._spec.concurrency, handle._spec.exclusive) == (2, "doc"), "补丁型 update 不得重置调度声明"
+    handle.update(concurrency=0, exclusive=None)
+    assert (handle._spec.concurrency, handle._spec.exclusive) == (0, None)
+
+    @client.tool("s.deco", "装饰器", concurrency=1, exclusive="doc")
+    def deco() -> None:
+        return None
+
+    assert client.tools["s.deco"]._spec.concurrency == 1
+    assert client.tools["s.deco"]._spec.exclusive == "doc"
+    with pytest.raises(app_mcp.AppMcpError.InvalidName):
+        client.add_tool(lambda: None, "s.bad", "非法组名", exclusive="bad group")
+
+
+def test_max_queued_calls_option():
+    for queued in (None, 0, 1):
+        c = AppMcp(app_id="unit-queue", app_name="Unit", host_url="ws://127.0.0.1:9", max_queued_calls=queued)
+        c.close()
+    assert ffi.ClientConfig(app_id="a", app_name="A").max_queued_calls is None, "绑定默认交给核心（64）"

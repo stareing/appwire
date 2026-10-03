@@ -187,6 +187,16 @@ describe('createBridgeAppMcp', () => {
     expect(ops.find((o) => o.op === 'tool.update')).toEqual({ op: 'tool.update', id: 1, spec: { description: '提交订单' } })
   })
 
+  it('调用调度声明 concurrency / exclusive 随定义发送；update 缺省即清除', async () => {
+    const { app, ops } = page()
+    const t = app.tool('doc.edit', { description: '改', concurrency: 2, exclusive: 'doc', handler: () => null })
+    await settle()
+    expect(ops.find((o) => o.op === 'tool.register')).toMatchObject({ spec: { concurrency: 2, exclusive: 'doc' } })
+    t.update({ concurrency: undefined, exclusive: undefined })
+    await settle()
+    expect(ops.find((o) => o.op === 'tool.update')).toEqual({ op: 'tool.update', id: 1, spec: { description: '改' } })
+  })
+
   it('惰性 handler：首次调用加载并缓存，失败返回 HANDLER_ERROR 并可重试', async () => {
     const { app, emit, results, ops } = page()
     let attempt = 0

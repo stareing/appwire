@@ -54,11 +54,14 @@ class ToolHandle:
         surface: SurfaceLike | None | _Unset = _UNSET,
         page: str | None | _Unset = _UNSET,
         background_tool: str | None | _Unset = _UNSET,
+        concurrency: int | _Unset = _UNSET,
+        exclusive: str | None | _Unset = _UNSET,
     ) -> None:
         """修改定义：未给出的字段保持不变；显式传 ``None`` 清除该声明（恢复注册时的缺省）。
 
         ``input_schema=None`` 为无参数，``risk=None`` 为缺省风险，``surface=None`` 为 ``"app"``，``title`` /
-        ``activation`` / ``annotations`` / ``output_schema`` / ``page`` / ``background_tool`` 为 ``None`` 时清除声明。``description`` 不可清除。
+        ``activation`` / ``annotations`` / ``output_schema`` / ``page`` / ``background_tool`` /
+        ``exclusive`` 为 ``None`` 时清除声明。``description`` 不可清除；``concurrency=0`` 为不单独限制。
         """
         s = self._spec
         spec = _replace_spec(
@@ -73,6 +76,8 @@ class ToolHandle:
             surface=s.surface if surface is _UNSET else _surface(surface),
             page=s.page if page is _UNSET else page,
             background_tool=s.background_tool if background_tool is _UNSET else background_tool,
+            concurrency=s.concurrency if concurrency is _UNSET else concurrency,
+            exclusive=s.exclusive if exclusive is _UNSET else exclusive,
         )
         self._inner.update(spec)
         self._spec = spec
@@ -96,6 +101,8 @@ def _replace_spec(spec: ffi.ToolSpec, **changes: Any) -> ffi.ToolSpec:
         "surface": spec.surface,
         "page": spec.page,
         "background_tool": spec.background_tool,
+        "concurrency": spec.concurrency,
+        "exclusive": spec.exclusive,
     }
     fields.update(changes)
     return ffi.ToolSpec(**fields)

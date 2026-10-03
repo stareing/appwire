@@ -85,6 +85,8 @@ internal struct AmClientOptions
     // v17（按名寻址，spec/naming.md）
     public byte RegisterName;      // C bool
     public nint NameInstance;      // const char*，可为 0
+    // v18（调用调度，spec/protocol.md 5.3）
+    public int MaxQueuedCalls;     // 0 = 默认 64，负数 = 不限
 }
 
 /// <summary>v8：am_resource_register_ex 的资源选项。StructSize = sizeof(AmResourceOptions)。</summary>
@@ -118,6 +120,8 @@ internal struct AmToolOptions
     public nint Page;             // v14：所在页面名；0 = 未声明
     public int Surface;           // v14：AmToolSurface（0 = APP，1 = VIEW）
     public nint BackgroundTool;   // v15：后台时代替本 view 工具的 app 工具本地名；0 = 未声明
+    public uint Concurrency;      // v18：本工具同时执行的调用上限；0 = 不单独限制
+    public nint Exclusive;        // v18：互斥组名；0 = 不互斥
 }
 
 /// <summary>v9：am_call_complete_ex 的调用结果。StructSize = sizeof(AmCallResult)。</summary>

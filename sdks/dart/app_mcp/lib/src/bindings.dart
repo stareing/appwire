@@ -273,6 +273,10 @@ final class AmClientOptions extends Struct {
 
   /// 可为 nullptr：登记实例名。
   external Pointer<Utf8> name_instance;
+  // v18（调用调度，spec/protocol.md 5.3）
+  /// 排队中的调用上限；0 = 默认 64，负数 = 不限。
+  @Int32()
+  external int max_queued_calls;
 }
 
 /// v8：`am_resource_register_ex` 的资源选项。
@@ -312,6 +316,11 @@ final class AmToolOptions extends Struct {
   external int surface;
   /// v15：后台时代替本 view 工具调用的同 App app 工具本地名；NULL = 未声明。
   external Pointer<Utf8> background_tool;
+  /// v18：本工具同时执行的调用上限；0 = 不单独限制。
+  @Uint32()
+  external int concurrency;
+  /// v18：互斥组名；NULL = 不互斥。
+  external Pointer<Utf8> exclusive;
 }
 
 /// v9：`am_call_complete_ex` 的调用结果。

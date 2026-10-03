@@ -37,6 +37,8 @@ final class McpScope {
     ToolSurface surface = ToolSurface.app,
     String? page,
     String? backgroundTool,
+    int concurrency = 0,
+    String? exclusive,
     required ToolHandler handler,
   }) =>
       registerTool(
@@ -52,7 +54,9 @@ final class McpScope {
               outputSchema: outputSchema,
               surface: surface,
               page: page,
-              backgroundTool: backgroundTool),
+              backgroundTool: backgroundTool,
+              concurrency: concurrency,
+              exclusive: exclusive),
           handler);
 
   /// 用 [ToolSpec] 注册工具。
@@ -207,6 +211,8 @@ Pointer<AmToolOptions> _toolOptions(ToolSpec spec, Allocator arena) {
     ..output_schema_json = _optStr(encodeSchema(spec.outputSchema), arena)
     ..page = _optStr(spec.page, arena)
     ..surface = surfaceToNative(spec.surface)
-    ..background_tool = _optStr(spec.backgroundTool, arena);
+    ..background_tool = _optStr(spec.backgroundTool, arena)
+    ..concurrency = toolConcurrencyToNative(spec.concurrency)
+    ..exclusive = _optStr(spec.exclusive, arena);
   return o;
 }

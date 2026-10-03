@@ -754,6 +754,18 @@ describe('导航（spec/protocol.md 3.4）', () => {
     await bridge.request({ op: 'tool.update', id: 1, spec: { description: '结算' } } as never)
     expect(native.tools.get('cart.checkout')?.spec).not.toHaveProperty('backgroundTool')
   })
+
+  it('页面工具的 concurrency / exclusive 转到主进程（update 缺省清除）', async () => {
+    const { ipcMain, native } = setupNav()
+    const wc = new FakeWebContents(9)
+    const bridge = getBridge(ipcMain, wc)
+    const spec = { description: '改文档', concurrency: 2, exclusive: 'doc' }
+    await bridge.request({ op: 'tool.register', id: 1, name: 'doc.edit', spec } as never)
+    expect(native.tools.get('doc.edit')?.spec).toMatchObject({ concurrency: 2, exclusive: 'doc' })
+    await bridge.request({ op: 'tool.update', id: 1, spec: { description: '改文档' } } as never)
+    expect(native.tools.get('doc.edit')?.spec).not.toHaveProperty('concurrency')
+    expect(native.tools.get('doc.edit')?.spec).not.toHaveProperty('exclusive')
+  })
 })
 
 function getBridge(ipcMain: FakeIpcMain, wc: FakeWebContents) {

@@ -246,6 +246,9 @@ public sealed class AppMcpClientOptions
     public ClientKind ClientKind { get; init; } = ClientKind.Native;
     /// <summary>同时执行的调用上限。</summary>
     public int MaxConcurrentCalls { get; init; } = 1;
+    /// <summary>排队中（等并发名额 / 互斥组）的调用上限；超出时新调用以 RATE_LIMITED（details scope "queue"）拒绝。
+    /// 0 = 不限；不能为负数（spec/protocol.md 5.3）。</summary>
+    public int MaxQueuedCalls { get; init; } = 64;
     public AppOverview? Overview { get; init; }
 
     /// <summary>生命周期策略（spec/lifecycle.md）。为 null 时 persistent（不休眠）。</summary>
@@ -324,6 +327,11 @@ public sealed class ToolOptions
     /// <summary>只对 <see cref="ToolSurface.View"/> 有意义：App 在后台、本工具不可调用时 Hub 改调的同 App app 工具本地名；
     /// 为 null 时不声明（spec/protocol.md 3.4「后台与前台」）。</summary>
     public string? BackgroundTool { get; init; }
+    /// <summary>本工具同时执行的调用上限；0 = 不单独限制，只受 <see cref="AppMcpClientOptions.MaxConcurrentCalls"/> 约束；不能为负数。
+    /// 只在 SDK 内调度，不同步给 Host（spec/protocol.md 5.3）。</summary>
+    public int Concurrency { get; init; }
+    /// <summary>互斥组名（<c>[a-zA-Z0-9_.-]{1,64}</c>）：同组的工具同一时刻至多一个在执行；为 null 时不互斥（spec/protocol.md 5.3）。</summary>
+    public string? Exclusive { get; init; }
 }
 
 /// <summary>工具对界面的依赖（spec/protocol.md 3.4）。</summary>

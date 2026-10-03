@@ -109,6 +109,23 @@ describe('useTool 的 surface / page', () => {
   })
 })
 
+describe('useTool 的调用调度声明', () => {
+  it('concurrency / exclusive 随定义注册，变化时 update（移除即清除）', () => {
+    function T({ exclusive }: { exclusive?: string }) {
+      useTool('t', { description: 't', concurrency: 2, ...(exclusive && { exclusive }), handler: () => null })
+      return null
+    }
+    const { app, rerender } = setup(<T exclusive="doc" />)
+    expect(app.getTool('t')).toMatchObject({ concurrency: 2, exclusive: 'doc' })
+    rerender(<T exclusive="doc" />)
+    expect(app.count('tool.update', 't')).toBe(0)
+    rerender(<T />)
+    expect(app.getTool('t')?.exclusive).toBeUndefined()
+    expect(app.getTool('t')).toMatchObject({ concurrency: 2 })
+    expect(app.count('tool.update', 't')).toBe(1)
+  })
+})
+
 describe('路由导航适配', () => {
   it('useRouterNavigation：页面表 → navigate(地址)；参数填入路由，其余进查询串', async () => {
     const navigate = vi.fn()

@@ -52,6 +52,7 @@ FEATURES = frozenset(
         "backgroundTool",
         "backgroundNavigation",
         "idempotencyKey",
+        "callScheduling",
     }
 )
 ROOT = Path(__file__).resolve().parents[3]
@@ -116,6 +117,8 @@ class CaseApp:
             surface=decl.get("surface"),
             page=decl.get("page"),
             background_tool=decl.get("backgroundTool"),
+            concurrency=decl.get("concurrency", 0),
+            exclusive=decl.get("exclusive"),
         )
         with self._lock:
             self.tools[decl["name"]] = handle
@@ -162,6 +165,8 @@ class CaseApp:
                 "surface": "surface",
                 "page": "page",
                 "backgroundTool": "background_tool",
+                "concurrency": "concurrency",
+                "exclusive": "exclusive",
             }
             changes = {keys[k]: v for k, v in op["set"].items() if k in keys}
             if "annotations" in op["set"]:
@@ -257,6 +262,8 @@ def _config_kwargs(case: dict[str, Any]) -> dict[str, Any]:
         )
     if "maxConcurrentCalls" in c:
         kwargs["max_concurrent_calls"] = c["maxConcurrentCalls"]
+    if "maxQueuedCalls" in c:
+        kwargs["max_queued_calls"] = c["maxQueuedCalls"]
     if "navigateInBackground" in c:
         kwargs["navigate_in_background"] = c["navigateInBackground"]
     return kwargs

@@ -33,6 +33,7 @@ describe('createAppMcp', () => {
       hostUrl: 'ws://127.0.0.1:1',
       token: 't0',
       maxConcurrentCalls: 2,
+      maxQueuedCalls: 8,
       overview: { summary: '演示', locale: 'zh-CN' },
     })
     expect(native.config).toMatchObject({
@@ -42,6 +43,7 @@ describe('createAppMcp', () => {
       hostUrl: 'ws://127.0.0.1:1',
       token: 't0',
       maxConcurrentCalls: 2,
+      maxQueuedCalls: 8,
       overview: { summary: '演示', locale: 'zh-CN' },
     })
     expect(native.started).toBe(1)
@@ -832,6 +834,20 @@ describe('surface / page 与导航（spec/protocol.md 3.4）', () => {
     expect(native.tools.get('cart.viewAdd')?.spec).toMatchObject({ backgroundTool: 'cart.add' })
     t.update({ backgroundTool: undefined })
     expect(native.tools.get('cart.viewAdd')?.spec).not.toHaveProperty('backgroundTool')
+  })
+
+  it('调用调度声明 concurrency / exclusive：注册时声明（缺省不带），update 显式 undefined 清除', () => {
+    const { app, native } = setup()
+    app.tool('plain', { description: '', handler: () => 1 })
+    expect(native.tools.get('plain')?.spec).not.toHaveProperty('concurrency')
+    expect(native.tools.get('plain')?.spec).not.toHaveProperty('exclusive')
+    const t = app.tool('doc.edit', { description: '改', concurrency: 2, exclusive: 'doc', handler: () => 1 })
+    expect(native.tools.get('doc.edit')?.spec).toMatchObject({ concurrency: 2, exclusive: 'doc' })
+    t.update({ description: '改2' })
+    expect(native.tools.get('doc.edit')?.spec).toMatchObject({ concurrency: 2, exclusive: 'doc' })
+    t.update({ concurrency: undefined, exclusive: undefined })
+    expect(native.tools.get('doc.edit')?.spec).not.toHaveProperty('concurrency')
+    expect(native.tools.get('doc.edit')?.spec).not.toHaveProperty('exclusive')
   })
 
   it('导航回调抛出 userActionRequired → USER_ACTION_REQUIRED（带 reason / uri）', async () => {

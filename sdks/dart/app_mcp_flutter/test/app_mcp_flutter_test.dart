@@ -1,7 +1,6 @@
 // 需要 Flutter SDK（flutter test）。McpTool 测试使用 app_mcp 的假原生库（需要 cc）。
 import 'dart:async';
 import 'dart:ffi';
-import 'dart:io';
 
 import 'package:app_mcp_flutter/app_mcp_flutter.dart';
 import 'package:ffi/ffi.dart';
@@ -9,18 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-String? _buildFake() {
-  if (!Platform.isLinux && !Platform.isMacOS) return null;
-  final src = File('../app_mcp/test/fake_native/fake_app_mcp.c').absolute.path;
-  final dir = Directory.systemTemp.createTempSync('app_mcp_flutter_fake_');
-  final out = '${dir.path}/libfake_app_mcp${Platform.isMacOS ? '.dylib' : '.so'}';
-  try {
-    final r = Process.runSync('cc', ['-shared', '-fPIC', '-o', out, src, '-lpthread']);
-    return r.exitCode == 0 ? out : null;
-  } on ProcessException {
-    return null;
-  }
-}
+import 'support/fake_library.dart';
 
 void main() {
   group('visibilityForLifecycle', () {
@@ -57,7 +45,7 @@ void main() {
     expect(becameVisible(AppVisibility.visible, AppVisibility.frozen), isFalse);
   });
 
-  final path = _buildFake();
+  final path = buildFakeLibrary();
 
   testWidgets('AppMcpScope：onDemand 首次进入前台回连；焦点变化不回连，从后台回到可见时回连', (tester) async {
     final client = AppMcp(
@@ -260,6 +248,40 @@ void main() {
     expect(toolOptions('order.submit'), '{"openWorldHint":true}|{"type":"object"}');
     await tester.pumpWidget(app(null));
     expect(toolOptions('order.submit'), 'null|{"type":"object"}');
+  }, skip: path == null);
+
+  testWidgets('McpTool：concurrency / exclusive 传入注册，变化时整体替换（v18）', (tester) async {
+    final lib = DynamicLibrary.open(path!);
+    final schedule = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
+        Pointer<Utf8> Function(Pointer<Utf8>)>('fake_tool_schedule');
+    final stringFree = lib.lookupFunction<Void Function(Pointer<Utf8>),
+        void Function(Pointer<Utf8>)>('am_string_free');
+    String? toolSchedule(String name) {
+      final p = using((a) => schedule(name.toNativeUtf8(allocator: a)));
+      if (p == nullptr) return null;
+      final s = p.toDartString();
+      stringFree(p);
+      return s;
+    }
+
+    final client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path);
+    addTearDown(client.dispose);
+
+    Widget app(int concurrency, String? exclusive) => AppMcpScope(
+          client: client,
+          trackLifecycle: false,
+          child: McpTool(
+              name: 'doc.edit',
+              description: '改文档',
+              concurrency: concurrency,
+              exclusive: exclusive,
+              handler: (a, c) => null),
+        );
+
+    await tester.pumpWidget(app(2, 'doc'));
+    expect(toolSchedule('doc.edit'), '2|doc');
+    await tester.pumpWidget(app(0, null));
+    expect(toolSchedule('doc.edit'), '0|-');
   }, skip: path == null);
 
   testWidgets('view 工具（v14）：路由栈顶时启用，被新页面 / 对话框盖住时禁用；McpViewGate 显式门控；声明 surface / page', (tester) async {

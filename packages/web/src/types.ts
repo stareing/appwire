@@ -246,6 +246,11 @@ export interface AppMcpOptions {
   /** 同时执行的调用上限，默认 1。 */
   maxConcurrentCalls?: number
   /**
+   * 排队中的调用上限（spec/protocol.md 5.3），默认 64，0 = 不限。新调用需要排队而队列已满时以 `RATE_LIMITED`
+   * 拒绝（`data` 为 `{ scope: 'queue', limit }`）。
+   */
+  maxQueuedCalls?: number
+  /**
    * 调用去重（spec/protocol.md 3.3）：同一 `callId` 在有效期内只执行一次，重复请求得到首次结果。
    * 缺省保留 5 分钟、最多 64 条。
    */
@@ -392,6 +397,16 @@ export interface ToolDefinition<I = unknown, O = unknown> {
    * 不可调用时 Hub 改调它。不继承 scope。
    */
   backgroundTool?: string
+  /**
+   * 本工具同时执行的调用上限（spec/protocol.md 5.3）；缺省 / 0 = 不单独限制（只受 `maxConcurrentCalls` 约束）。
+   * 只在 SDK 内调度，不发给 Host；不继承 scope。
+   */
+  concurrency?: number
+  /**
+   * 互斥组（`[a-zA-Z0-9_.-]{1,64}`，spec/protocol.md 5.3）：同组的工具同一时刻至多一个在执行（如操作同一份文档的写工具）。
+   * 只在 SDK 内调度，不发给 Host；不继承 scope。
+   */
+  exclusive?: string
   /** `view` 工具的可见性门控，缺省继承所在 scope，再缺省 `auto`。 */
   visibility?: ViewVisibility
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
@@ -421,7 +436,7 @@ export interface ToolHandle {
   readonly name: string
   /**
    * 更新描述、schema、风险、注解、启用状态或界面声明（`surface` / `page` / `visibility` / `anchor`）；未提供的字段保持不变，
-   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` / `backgroundTool` 为清除声明，`surface` / `page` / `visibility` 恢复为继承值）。
+   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` / `backgroundTool` / `exclusive` 为清除声明，`concurrency` 恢复为不限，`surface` / `page` / `visibility` 恢复为继承值）。
    * `enabled` 是 App 的意愿：`view` 工具还要满足可见性门控才对 Host 可见。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void

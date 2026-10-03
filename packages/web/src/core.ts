@@ -35,6 +35,8 @@ export interface CoreConfig {
   reconnect?: { initialDelayMs?: number; maxDelayMs?: number; multiplier?: number }
   heartbeat?: { mode?: 'auto' | 'always' | 'off'; intervalMs?: number; timeoutMs?: number; hiddenTimeoutMs?: number }
   maxConcurrentCalls?: number
+  /** 排队中的调用上限（spec/protocol.md 5.3），缺省 64，0 = 不限。 */
+  maxQueuedCalls?: number
   resourceUpdateThrottleMs?: number
   /** App 总览，随 `app/hello` 发送。 */
   overview?: AppOverview
@@ -86,11 +88,15 @@ export interface CoreToolDef {
   page?: string
   /** 后台替代：同一 App 中一个 `app` 工具的名称（spec/protocol.md 3.4）。 */
   backgroundTool?: string
+  /** 本工具同时执行的调用上限（spec/protocol.md 5.3）；缺省 / 0 = 不单独限制。 */
+  concurrency?: number
+  /** 互斥组（spec/protocol.md 5.3）：同组的工具同一时刻至多一个在执行。 */
+  exclusive?: string
 }
 
 /**
- * 部分更新；缺省字段不变，`activation` / `title` / `annotations` / `outputSchema` / `page` / `backgroundTool`
- * 为 null 表示清除。
+ * 部分更新；缺省字段不变，`activation` / `title` / `annotations` / `outputSchema` / `page` / `backgroundTool` /
+ * `exclusive` 为 null 表示清除；`concurrency` 为 0 表示不单独限制。
  */
 export interface CoreToolUpdate {
   description?: string
@@ -104,6 +110,8 @@ export interface CoreToolUpdate {
   surface?: ToolSurface
   page?: string | null
   backgroundTool?: string | null
+  concurrency?: number
+  exclusive?: string | null
 }
 
 export interface CoreResourceDef {

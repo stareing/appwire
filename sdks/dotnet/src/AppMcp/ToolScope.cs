@@ -126,12 +126,16 @@ public sealed class ToolScope : IDisposable
 
     internal static unsafe AmToolOptions BuildOptions(Utf8Strings strings, ToolOptions options) => new()
     {
+        Concurrency = options.Concurrency >= 0
+            ? (uint)options.Concurrency
+            : throw new ArgumentOutOfRangeException(nameof(options), "Concurrency 不能为负数（0 = 不单独限制）"),
         StructSize = (uint)sizeof(AmToolOptions),
         AnnotationsJson = strings.Add(AnnotationsJson.Serialize(options.Annotations)),
         OutputSchemaJson = strings.Add(options.OutputSchemaJson),
         Page = strings.Add(options.Page),
         Surface = (int)options.Surface,
         BackgroundTool = strings.Add(options.BackgroundTool),
+        Exclusive = strings.Add(options.Exclusive),
     };
 
     /// <summary>注册资源。reader 返回的对象序列化为资源内容。</summary>

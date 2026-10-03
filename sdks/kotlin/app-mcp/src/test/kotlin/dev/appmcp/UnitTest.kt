@@ -219,4 +219,33 @@ class UnitTest {
         assertEquals(null, ToolCallException.userActionRequired("切到前台").details)
         assertTrue(ErrorKind.POLICY_DENIED in ErrorKind.all && ErrorKind.USER_ACTION_REQUIRED in ErrorKind.all)
     }
+
+    @Test
+    fun callSchedulingOptionsReachSpec() {
+        val plain = client.tool("s.plain", "缺省") { _, _ -> null }
+        assertEquals(0u, plain.specForTest().concurrency)
+        assertEquals(null, plain.specForTest().exclusive)
+        val handle = client.tool("s.edit", "改文档", concurrency = 2, exclusive = "doc") { _, _ -> null }
+        assertEquals(2u, handle.specForTest().concurrency)
+        assertEquals("doc", handle.specForTest().exclusive)
+        handle.update(description = "新")
+        assertEquals("doc", handle.specForTest().exclusive, "补丁型 update 不得重置调度声明")
+        handle.update { concurrency = 0; exclusive = null }
+        assertEquals(0u, handle.specForTest().concurrency)
+        assertEquals(null, handle.specForTest().exclusive)
+        handle.update(concurrency = 1, exclusive = "doc2")
+        assertEquals(1u, handle.specForTest().concurrency)
+        assertEquals("doc2", handle.specForTest().exclusive)
+        val typed = client.typedTool<Unit, Unit>("s.typed", "带类型", concurrency = 3, exclusive = "doc") { _, _ -> }
+        assertEquals(3u, typed.specForTest().concurrency)
+        assertFailsWith<AppMcpException.InvalidName> { client.tool("s.bad", "非法组名", exclusive = "bad group") { _, _ -> null } }
+    }
+
+    @Test
+    fun maxQueuedCallsMapsToFfi() {
+        assertEquals(null, AppMcpConfig("kotlin-unit", "排队").toFfi().maxQueuedCalls, "为空时交给核心缺省（64）")
+        assertEquals(0u, AppMcpConfig("kotlin-unit", "排队", maxQueuedCalls = 0).toFfi().maxQueuedCalls)
+        assertEquals(8u, AppMcpConfig("kotlin-unit", "排队", maxQueuedCalls = 8).toFfi().maxQueuedCalls)
+        AppMcp.create(AppMcpConfig("kotlin-unit", "排队", hostUrl = "ws://127.0.0.1:9", maxQueuedCalls = 1)).close()
+    }
 }

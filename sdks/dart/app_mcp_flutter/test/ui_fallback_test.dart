@@ -1,24 +1,12 @@
 // 进程内控件兜底（spec/ui-fallback.md）：执行引擎在 widget 测试中直接驱动；注册与门控用 app_mcp 的假原生库（需要 cc）。
 import 'dart:ffi';
-import 'dart:io';
 
 import 'package:app_mcp_flutter/app_mcp_flutter.dart';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-String? _buildFake() {
-  if (!Platform.isLinux && !Platform.isMacOS) return null;
-  final src = File('../app_mcp/test/fake_native/fake_app_mcp.c').absolute.path;
-  final dir = Directory.systemTemp.createTempSync('app_mcp_flutter_ui_fake_');
-  final out = '${dir.path}/libfake_app_mcp${Platform.isMacOS ? '.dylib' : '.so'}';
-  try {
-    final r = Process.runSync('cc', ['-shared', '-fPIC', '-o', out, src, '-lpthread']);
-    return r.exitCode == 0 ? out : null;
-  } on ProcessException {
-    return null;
-  }
-}
+import 'support/fake_library.dart';
 
 /// 测试页面：按钮、禁用按钮、已声明按钮、复选框、文本框、密码框、打开对话框、可移除按钮、长列表。
 class _Page extends StatefulWidget {
@@ -248,7 +236,7 @@ void main() {
     expect(short['text'], endsWith('…'));
   });
 
-  final path = _buildFake();
+  final path = buildFakeLibrary();
 
   testWidgets('McpUiFallback：view 工具、注解如实声明、随可见窗口启用、连接时才开启语义树', (tester) async {
     final lib = DynamicLibrary.open(path!);

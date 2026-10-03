@@ -35,6 +35,7 @@ class ConformanceTest {
         val FEATURES = setOf(
             "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
             "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
+            "callScheduling",
         )
         val VERDICT_OK = setOf("pass", "xfail", "xpass", "skip")
         val repoRoot: File = FakeHostSupport.repoRoot.canonicalFile
@@ -149,6 +150,8 @@ class ConformanceTest {
             "surface" -> u.surface = str?.let(::surface) ?: ToolSurface.APP
             "page" -> u.page = str
             "backgroundTool" -> u.backgroundTool = str
+            "concurrency" -> u.concurrency = str?.toIntOrNull() ?: 0
+            "exclusive" -> u.exclusive = str
             else -> error("未知的工具字段 $key")
         }
     }
@@ -179,6 +182,7 @@ class ConformanceTest {
             callDedup = dedup,
             maxConcurrentCalls = c?.long("maxConcurrentCalls")?.toInt() ?: 1,
             navigateInBackground = c?.bool("navigateInBackground"),
+            maxQueuedCalls = c?.long("maxQueuedCalls")?.toInt(),
         )
     }
 
@@ -198,6 +202,8 @@ class ConformanceTest {
             surface = decl.str("surface")?.let(::surface) ?: ToolSurface.APP,
             page = decl.str("page"),
             backgroundTool = decl.str("backgroundTool"),
+            concurrency = decl.long("concurrency")?.toInt() ?: 0,
+            exclusive = decl.str("exclusive"),
         ) { args, ctx -> runHandler(client, tools, handler, runs.incrementAndGet(), args, ctx) }
     }
 

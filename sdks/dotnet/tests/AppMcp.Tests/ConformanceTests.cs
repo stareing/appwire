@@ -20,6 +20,7 @@ public class ConformanceTests(ITestOutputHelper output)
     [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure",
         "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
+        "callScheduling",
     ];
 
     private static readonly IReadOnlyDictionary<string, ToolRisk> Risks = new Dictionary<string, ToolRisk>
@@ -170,6 +171,7 @@ public class ConformanceTests(ITestOutputHelper output)
             Lifecycle = lifecycle,
             CallDedup = dedup,
             MaxConcurrentCalls = Get(c, "maxConcurrentCalls").ValueKind == JsonValueKind.Number ? Get(c, "maxConcurrentCalls").GetInt32() : 1,
+            MaxQueuedCalls = Get(c, "maxQueuedCalls").ValueKind == JsonValueKind.Number ? Get(c, "maxQueuedCalls").GetInt32() : 64,
             NavigateInBackground = Get(c, "navigateInBackground").ValueKind switch
             {
                 JsonValueKind.True => true,
@@ -217,6 +219,8 @@ public class ConformanceTests(ITestOutputHelper output)
         Surface = Text(Get(decl, "surface")) == "view" ? ToolSurface.View : ToolSurface.App,
         Page = Text(Get(decl, "page")),
         BackgroundTool = Text(Get(decl, "backgroundTool")),
+        Concurrency = Get(decl, "concurrency").ValueKind == JsonValueKind.Number ? Get(decl, "concurrency").GetInt32() : 0,
+        Exclusive = Text(Get(decl, "exclusive")),
     };
 
     private static string? FindRepoRoot()

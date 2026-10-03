@@ -59,6 +59,20 @@ void main() {
     }
   });
 
+  test('v18 字段偏移与 C 一致（AmClientOptions.max_queued_calls、AmToolOptions.exclusive）', () {
+    final client = calloc<AmClientOptions>();
+    final tool = calloc<AmToolOptions>();
+    try {
+      client.ref.max_queued_calls = -7;
+      expect(Pointer<Int32>.fromAddress(client.address + fake.sizeOf(25)).value, -7);
+      tool.ref.exclusive = Pointer<Utf8>.fromAddress(0x5678);
+      expect(Pointer<IntPtr>.fromAddress(tool.address + fake.sizeOf(26)).value, 0x5678);
+    } finally {
+      calloc.free(client);
+      calloc.free(tool);
+    }
+  });
+
   test('surface / page 经 AmToolOptions（v14）传入；update 未提供保持、null 清除', () {
     final t = client.tool('cart.checkout',
         description: '结算', surface: ToolSurface.view, page: 'cart', handler: (args, ctx) => null);
@@ -92,6 +106,26 @@ void main() {
     expect(ToolSpec(name: 'a', description: 'b').copyWith(backgroundTool: 'x').backgroundTool, 'x');
     client.tool('plain.app2', description: '普通', handler: (args, ctx) => null);
     expect(fake.toolBackground('plain.app2'), isNull);
+  });
+
+  test('concurrency / exclusive 经 AmToolOptions（v18）传入；update 未提供保持、null 恢复缺省', () {
+    final t = client.tool('doc.edit',
+        description: '改文档', concurrency: 2, exclusive: 'doc', handler: (args, ctx) => null);
+    expect(fake.toolSchedule('doc.edit'), '2|doc');
+    t.update(description: '改文档（新）');
+    expect(fake.toolSchedule('doc.edit'), '2|doc');
+    t.update(concurrency: null, exclusive: null);
+    expect(fake.toolSchedule('doc.edit'), '0|-');
+    expect(t.spec.concurrency, 0);
+    expect(() => t.update(concurrency: 'x'), throwsArgumentError);
+    expect(() => t.update(concurrency: -1), throwsArgumentError);
+    expect(fake.toolSchedule('doc.edit'), '0|-');
+    expect(ToolSpec(name: 'a', description: 'b', concurrency: 1), isNot(ToolSpec(name: 'a', description: 'b')));
+    expect(ToolSpec(name: 'a', description: 'b', exclusive: 'g'), isNot(ToolSpec(name: 'a', description: 'b')));
+    expect(ToolSpec(name: 'a', description: 'b').copyWith(concurrency: 3, exclusive: 'g'),
+        ToolSpec(name: 'a', description: 'b', concurrency: 3, exclusive: 'g'));
+    client.tool('plain.app3', description: '普通', handler: (args, ctx) => null);
+    expect(fake.toolSchedule('plain.app3'), '0|-');
   });
 
   group('工具声明与结构化结果（v9）', () {
@@ -273,6 +307,17 @@ void main() {
       client.dispose();
       client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path, registerName: true, nameInstance: 'w2');
       expect(fake.nameService(), '1|w2');
+    });
+
+    test('排队上限经 am_client_new_ex 传入（v18）', () {
+      // 默认 64 原样传递；0 = 不限 → C ABI 负数。
+      expect(fake.maxQueuedCalls(), 64);
+      client.dispose();
+      client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path, maxQueuedCalls: 0);
+      expect(fake.maxQueuedCalls(), -1);
+      client.dispose();
+      client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path, maxQueuedCalls: 3);
+      expect(fake.maxQueuedCalls(), 3);
     });
   });
 

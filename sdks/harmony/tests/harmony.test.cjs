@@ -56,6 +56,8 @@ test('显式生命周期整体生效，不与平台默认合并；新字段与 h
   const { mcp, client } = create({
     heartbeat: 'off',
     callDedup: { ttlMs: 5, maxEntries: 2 },
+    maxConcurrentCalls: 3,
+    maxQueuedCalls: 7,
     lifecycle: { mode: 'idle', hostAbsentRetries: 0, legacyTimers: true, mergeWindowMs: 500, sleepOnBackground: false },
   });
   const l = client.config.lifecycle;
@@ -69,6 +71,8 @@ test('显式生命周期整体生效，不与平台默认合并；新字段与 h
   assert.equal(l.wake.target, 'shopapp://app-mcp/wake');
   assert.equal(client.config.heartbeat, 'off');
   assert.deepEqual(client.config.callDedup, { ttlMs: 5, maxEntries: 2 });
+  assert.equal(client.config.maxConcurrentCalls, 3);
+  assert.equal(client.config.maxQueuedCalls, 7);
   mcp.dispose();
 });
 
