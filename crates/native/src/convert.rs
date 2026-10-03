@@ -79,6 +79,7 @@ pub(crate) fn build_core_config(
     inner.expected_host_user = app_mcp_protocol::identity::expected_host_user();
     inner.max_concurrent_calls = usize::try_from(config.max_concurrent_calls).unwrap_or(usize::MAX);
     inner.max_queued_calls = usize::try_from(config.max_queued_calls).unwrap_or(usize::MAX);
+    inner.busy_policy = config.busy_policy;
     inner.call_dedup = config.call_dedup;
     inner.navigate_in_background = app_mcp_protocol::platform::Target::CURRENT.allows_self_foreground();
     inner.launched_by_activation = name_request.is_some()

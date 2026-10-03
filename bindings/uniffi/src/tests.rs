@@ -51,6 +51,7 @@ fn config_defaults_follow_native() {
         register_name: false,
         name_instance: None,
         max_queued_calls: None,
+        busy_policy: None,
     };
     let n: native::NativeConfig = cfg.clone().into();
     assert_eq!(n, native::NativeConfig::new("shop", "Shop"));
@@ -103,6 +104,7 @@ fn register_name_passes_through_and_instance_is_validated() {
         register_name: true,
         name_instance: Some("w2".into()),
         max_queued_calls: None,
+        busy_policy: None,
     };
     let n: native::NativeConfig = cfg.clone().into();
     assert!(n.register_name);
@@ -313,6 +315,7 @@ fn client_lifecycle_api() {
         register_name: false,
         name_instance: None,
         max_queued_calls: None,
+        busy_policy: None,
     };
     let client = AppMcpClient::new(cfg, None).expect("client");
     assert!(!client.handle_wake("not-a-wake".into()));
@@ -484,6 +487,7 @@ fn fake_host_config(app_id: &str, addr: &str) -> ClientConfig {
         register_name: false,
         name_instance: None,
         max_queued_calls: None,
+        busy_policy: None,
     }
 }
 

@@ -7,7 +7,7 @@ use app_mcp_native::{ClientListener, NativeClient};
 
 use crate::callbacks::{AmFreeFn, AmNavigateFn, AmStateStatus, CClientListener, CNavigationHandler, UserData};
 use crate::convert::{
-    call_dedup_from, convert_config, max_queued_from, convert_lifecycle, heartbeat_mode_from, prepare_out, read_options,
+    busy_policy_from, call_dedup_from, convert_config, max_queued_from, convert_lifecycle, heartbeat_mode_from, prepare_out, read_options,
     sleep_reason_from, visibility_from, wake_reason_from,
 };
 use crate::ffi_types::{AmClientCallbacks, AmClientConfig, AmClientOptions, AmLifecycle};
@@ -168,6 +168,35 @@ pub unsafe extern "C" fn am_client_set_navigation_handler(
 pub unsafe extern "C" fn am_client_set_navigate_in_background(client: *mut AmClient, enabled: bool) -> AmStatus {
     guard(|| {
         unsafe { client_ref(client) }?.shared.client()?.set_navigate_in_background(enabled);
+        Ok(())
+    })
+}
+
+/// v19：声明用户正在 / 不再在 App 内操作（spec/protocol.md 5.3）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_client_set_busy(client: *mut AmClient, busy: bool) -> AmStatus {
+    guard(|| {
+        unsafe { client_ref(client) }?.shared.client()?.set_busy(busy);
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_client_is_busy(client: *const AmClient, out: *mut bool) -> AmStatus {
+    guard(|| {
+        let busy = unsafe { client_ref(client) }?.shared.client()?.is_busy();
+        // SAFETY: out 为 NULL 或指向可写的 bool。
+        *unsafe { out.as_mut() }.ok_or_else(|| FfiError::null("out"))? = busy;
+        Ok(())
+    })
+}
+
+/// v19：用户正在操作期间写调用的处理方式（`AmBusyPolicy`）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_client_set_busy_policy(client: *mut AmClient, policy: c_int) -> AmStatus {
+    guard(|| {
+        let policy = busy_policy_from(policy)?;
+        unsafe { client_ref(client) }?.shared.client()?.set_busy_policy(policy);
         Ok(())
     })
 }

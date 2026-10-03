@@ -15,6 +15,7 @@ impl Client {
             let verdict = match self.registry.tool(tool) {
                 None => Err((ErrorKind::ToolNotFound, "在排队期间已被注销。请重新获取工具列表。")),
                 Some(def) if !def.enabled => Err((ErrorKind::ToolDisabled, "在排队期间已被禁用，当前不可用。")),
+                Some(def) if self.busy_blocks(def) => Ok(None),
                 Some(def) => Ok(self.calls.can_start(tool, def.concurrency, def.exclusive.as_deref()).then(|| def.exclusive.clone())),
             };
             match verdict {
@@ -40,6 +41,34 @@ impl Client {
                 }
             }
         }
+    }
+
+    /// 用户正在操作（[`Client::set_busy`]）时 `def` 的调用不能开始：写工具（生效注解不是 `readOnlyHint: true`）。
+    fn busy_blocks(&self, def: &ToolDef) -> bool {
+        self.busy && ToolAnnotations::effective(def.risk, def.annotations.as_ref()).read_only_hint != Some(true)
+    }
+
+    /// 用户正在操作且策略为拒绝时，以 `RATE_LIMITED`（`details.scope = "busy"`）拒绝排队中的写调用（未开始，不进去重表）；
+    /// 之后按队列重新调度。
+    pub(crate) fn settle_busy(&mut self) {
+        if self.config.busy_policy == BusyPolicy::Reject {
+            let mut index = 0;
+            while let Some(tool) = self.calls.queued_at(index).map(|c| c.tool) {
+                if !self.registry.tool(tool).is_some_and(|def| self.busy_blocks(def)) {
+                    index += 1;
+                    continue;
+                }
+                let Some(call) = self.calls.remove_queued(index) else { break };
+                let err = ToolError::new(
+                    ErrorKind::RateLimited,
+                    format!("用户正在操作 App，写操作暂不执行：工具 {} 未执行。请稍后重试，或先告知用户。", call.name),
+                )
+                .with_details(serde_json::json!({ "scope": "busy" }))
+                .into();
+                self.respond_call(call, Err(err), false);
+            }
+        }
+        self.pump_calls();
     }
 
     /// 刚到达的调用 `call_id` 仍在排队且队列超过 `maxQueuedCalls` → 移出并以 `RATE_LIMITED` 拒绝（未开始，不进去重表）。
@@ -127,7 +156,7 @@ impl Client {
             waiters: Vec::new(),
             exclusive: None,
         });
-        self.pump_calls();
+        self.settle_busy();
         self.reject_overflow(&call_id);
     }
 

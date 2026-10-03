@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 pub use app_mcp_core::{
-    Activation, AppOverview, Audience, CallDedupPolicy, ClientKind, ContentAnnotations, HeartbeatMode, LifecycleMode, LifecyclePolicy,
+    Activation, AppOverview, Audience, BusyPolicy, CallDedupPolicy, ClientKind, ContentAnnotations, HeartbeatMode, LifecycleMode, LifecyclePolicy,
     Residency, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolSurface, TransportKind, Visibility, WakeDescriptor,
     WakeKind, WakeReason, parse_wake_token,
 };
@@ -64,6 +64,8 @@ pub struct NativeConfig {
     pub max_concurrent_calls: u32,
     /// 排队中的调用上限（spec/protocol.md 5.3），默认 64；0 表示不限。超出时新调用以 `RATE_LIMITED` 拒绝。
     pub max_queued_calls: u32,
+    /// 用户正在操作（[`NativeClient::set_busy`]）期间写调用的处理方式，默认 [`BusyPolicy::Reject`]（spec/protocol.md 5.3）。
+    pub busy_policy: BusyPolicy,
     /// App 总览：握手时发给 Host，模型在会话中首次接触本 App 时由 Host 附带（spec/protocol.md 第 7 节）。
     pub overview: Option<AppOverview>,
     /// 生命周期策略（spec/lifecycle.md）。默认 `persistent`（不休眠）。
@@ -107,6 +109,7 @@ impl NativeConfig {
             launch_token: None,
             max_concurrent_calls: 1,
             max_queued_calls: app_mcp_core::DEFAULT_MAX_QUEUED_CALLS as u32,
+            busy_policy: BusyPolicy::Reject,
             overview: None,
             lifecycle: LifecyclePolicy::default(),
             connect_timeout_ms: 5_000,

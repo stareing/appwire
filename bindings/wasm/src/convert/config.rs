@@ -81,6 +81,15 @@ fn parse_heartbeat_mode(s: &str) -> Option<HeartbeatMode> {
     }
 }
 
+/// `'reject' | 'queue'`（[`BusyPolicy`]）。
+pub(crate) fn parse_busy_policy(s: &str) -> Option<BusyPolicy> {
+    match s {
+        "reject" => Some(BusyPolicy::Reject),
+        "queue" => Some(BusyPolicy::Queue),
+        _ => None,
+    }
+}
+
 /// `'ipc' | 'loopback' | 'remote'`：驱动层按 Host 地址判定的传输类别（spec/lifecycle.md 第 11 节）。
 fn parse_transport(s: &str) -> Option<TransportKind> {
     match s {
@@ -214,6 +223,8 @@ pub struct JsConfig {
     pub max_concurrent_calls: Option<usize>,
     /// 排队中的调用上限（spec/protocol.md 5.3），缺省 64；0 表示不限。
     pub max_queued_calls: Option<u64>,
+    /// 用户正在操作（`setBusy`）期间写调用的处理方式（spec/protocol.md 5.3）：`'reject'`（缺省）| `'queue'`。
+    pub busy_policy: Option<BusyPolicy>,
     pub resource_update_throttle_ms: Option<u64>,
     /// App 总览，随 `app/hello` 发送（spec/protocol.md 第 7 节）。
     pub overview: Option<AppOverview>,
@@ -253,6 +264,7 @@ impl FromJson for JsConfig {
             heartbeat: f.object("heartbeat"),
             max_concurrent_calls,
             max_queued_calls: f.u64("maxQueuedCalls"),
+            busy_policy: f.keyword("busyPolicy", "无效的 busyPolicy", parse_busy_policy),
             resource_update_throttle_ms: f.u64("resourceUpdateThrottleMs"),
             overview: f.protocol("overview"),
             handshake_timeout_ms: f.u64("handshakeTimeoutMs"),
@@ -303,6 +315,9 @@ impl JsConfig {
         }
         if let Some(n) = self.max_queued_calls {
             c.max_queued_calls = usize::try_from(n).unwrap_or(usize::MAX);
+        }
+        if let Some(p) = self.busy_policy {
+            c.busy_policy = p;
         }
         if let Some(ms) = self.resource_update_throttle_ms {
             c.resource_update_throttle_ms = ms;

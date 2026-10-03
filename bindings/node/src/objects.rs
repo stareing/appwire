@@ -28,6 +28,8 @@ pub struct ClientConfig {
     pub max_concurrent_calls: Option<u32>,
     /// 排队中的调用上限（spec/protocol.md 5.3），缺省 64；0 表示不限。
     pub max_queued_calls: Option<u32>,
+    /// 用户正在操作（`setBusy`）期间写调用的处理方式（spec/protocol.md 5.3）：`'reject'`（默认）| `'queue'`。
+    pub busy_policy: Option<String>,
     /// App 总览（spec/protocol.md 第 7 节）。
     pub overview: Option<OverviewInit>,
     /// 生命周期策略（spec/lifecycle.md 第 3 节）。缺省 `persistent`。

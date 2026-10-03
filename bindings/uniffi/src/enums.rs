@@ -166,6 +166,24 @@ impl From<HeartbeatMode> for native::HeartbeatMode {
     }
 }
 
+/// 用户正在操作（`set_busy`）期间写调用的处理方式（spec/protocol.md 5.3）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum BusyPolicy {
+    /// 以 `RATE_LIMITED`（details `scope: "busy"`）拒绝（默认）。
+    Reject,
+    /// 排队，用户操作结束后按到达顺序执行（仍受排队上限与调用超时约束）。
+    Queue,
+}
+
+impl From<BusyPolicy> for native::BusyPolicy {
+    fn from(v: BusyPolicy) -> Self {
+        match v {
+            BusyPolicy::Reject => native::BusyPolicy::Reject,
+            BusyPolicy::Queue => native::BusyPolicy::Queue,
+        }
+    }
+}
+
 /// 休眠后的进程驻留策略。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum Residency {

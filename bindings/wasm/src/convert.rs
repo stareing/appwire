@@ -5,7 +5,7 @@
 //! `WakeDescriptor`、各枚举）仍用其 serde 定义，保持单一来源。输出（状态、事件）用 serde 序列化。
 
 use app_mcp_core::{
-    CallDedupPolicy, CallOutput, CancelReason, ClientConfig, ClientKind, ConnectionState, Event, HeartbeatMode,
+    BusyPolicy, CallDedupPolicy, CallOutput, CancelReason, ClientConfig, ClientKind, ConnectionState, Event, HeartbeatMode,
     HeartbeatPolicy, LifecycleMode, LifecyclePolicy, ReconnectPolicy, Residency, ResourceDef, ScopeId, SleepReason, ToolDef, ToolError,
     ToolSurface, ToolUpdate, TransportKind, Visibility, WakeReason,
 };

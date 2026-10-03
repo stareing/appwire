@@ -5,7 +5,7 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr;
 
 use app_mcp_native::{
-    Activation, CallDedupPolicy, CallResult, ClientKind, ContentAnnotations, ErrorKind, HeartbeatMode, LifecycleMode,
+    Activation, BusyPolicy, CallDedupPolicy, CallResult, ClientKind, ContentAnnotations, ErrorKind, HeartbeatMode, LifecycleMode,
     LifecyclePolicy, NativeConfig, Residency, ResourceOptions, ResultStatus, Risk, SleepReason, ToolAnnotations,
     ToolOptions, Visibility, WakeDescriptor, WakeKind, WakeReason,
 };
@@ -13,7 +13,7 @@ use app_mcp_native::{
 use super::*;
 use crate::callbacks::UserData;
 use crate::convert::{
-    activation_from, call_dedup_from, max_queued_from, client_kind_from, convert_config, convert_lifecycle, error_kind_from,
+    activation_from, busy_policy_from, call_dedup_from, max_queued_from, client_kind_from, convert_config, convert_lifecycle, error_kind_from,
     heartbeat_mode_from, lifecycle_mode_from, read_call_result, read_hints, read_options, read_resource_options,
     read_tool_options, residency_from, result_status_from, risk_from, sleep_reason_from, visibility_from,
     wake_kind_from, wake_reason_from,
@@ -363,6 +363,8 @@ fn navigate_null_pointers() {
             AmStatus::InvalidArgument
         );
         assert_eq!(am_client_set_navigate_in_background(ptr::null_mut(), true), AmStatus::InvalidArgument);
+        assert_eq!(am_client_set_busy(ptr::null_mut(), true), AmStatus::InvalidArgument);
+        assert_eq!(am_client_set_busy_policy(ptr::null_mut(), 0), AmStatus::InvalidArgument);
     }
 }
 
@@ -461,6 +463,10 @@ fn header_consistency() {
         "am_navigate_fail_user_action",
         // v16
         "am_call_idempotency_key",
+        // v19
+        "am_client_set_busy",
+        "am_client_is_busy",
+        "am_client_set_busy_policy",
     ];
     // 收集头文件中形如 `am_xxx(` 的声明。
     let mut declared = Vec::new();
@@ -525,6 +531,8 @@ fn header_consistency() {
         ("AM_RESULT_PARTIAL = 2", result_status_from(2).ok() == Some(ResultStatus::Partial)),
         ("AM_RESULT_NOOP = 3", result_status_from(3).ok() == Some(ResultStatus::Noop)),
         ("AM_SURFACE_VIEW = 1", true),
+        ("AM_BUSY_REJECT = 0", busy_policy_from(0).ok() == Some(BusyPolicy::Reject)),
+        ("AM_BUSY_QUEUE = 1", busy_policy_from(1).ok() == Some(BusyPolicy::Queue)),
         (
             "AM_SLEEP_REASON_APP = 3",
             sleep_reason_from(3).ok() == Some(SleepReason::App),
@@ -588,6 +596,17 @@ fn runtime_through_c_abi() {
     assert!(!iid.is_null());
     unsafe { am_string_free(iid) };
     assert!(unsafe { am_client_token(client) }.is_null());
+
+    // v19：用户正在操作
+    let mut busy = true;
+    assert_eq!(unsafe { am_client_is_busy(client, &mut busy) }, AmStatus::Ok);
+    assert!(!busy);
+    assert_eq!(unsafe { am_client_set_busy(client, true) }, AmStatus::Ok);
+    assert_eq!(unsafe { am_client_is_busy(client, &mut busy) }, AmStatus::Ok);
+    assert!(busy);
+    assert_eq!(unsafe { am_client_set_busy_policy(client, 1) }, AmStatus::Ok);
+    assert_eq!(unsafe { am_client_set_busy_policy(client, 2) }, AmStatus::InvalidArgument);
+    assert_eq!(unsafe { am_client_is_busy(client, ptr::null_mut()) }, AmStatus::InvalidArgument);
 
     // v14：设置 / 清除导航回调；被替换的回调释放其 user_data
     let nav_before = freed();

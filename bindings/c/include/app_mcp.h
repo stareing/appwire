@@ -81,12 +81,14 @@
  *   旧调用方不受影响）：App 在系统名字服务登记名字，Hub 按名拨号时接受通道（握手方向不变：SDK 先发 app/hello，
  *   wakeReason 为 "os-activation"）；通道关闭后 on-demand / idle 回到 DORMANT、不重连。由 D-Bus 激活启动的进程
  *   （命令行带 --app-mcp-activation）按"由唤醒冷启动"处理（AM_RESIDENCY_EXIT_WHEN_IDLE 生效）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v18 仍为 3。）
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v19 仍为 3。）
  * - v18（第 4f 项 k / 第 16 项 N6，spec/protocol.md 5.3）：只在结构体末尾追加字段（按 struct_size 读取，旧调用方不受影响）。
  *   · AmToolOptions 末尾追加 concurrency（本工具同时执行的调用上限，0 = 不单独限制）与 exclusive（互斥组名，同组工具
  *     同一时刻至多一个在执行；NULL = 不互斥）。只在 SDK 内调度，不同步给 Host。
  *   · AmClientOptions 末尾追加 max_queued_calls（排队中的调用上限；0 = 默认 64，负数 = 不限）。排队已满时新到的调用以
  *     RATE_LIMITED（details {"scope":"queue","limit":N}）拒绝。
+ * - v19（第 16 项 N6，spec/protocol.md 5.3「用户正在操作」）：新增 am_client_set_busy / am_client_is_busy /
+ *   am_client_set_busy_policy 与枚举 AmBusyPolicy；结构体不变。
  * - 第 16 项 N6（spec/hub-api.md 3.6「对象锁」）：am_call_fail 认可的错误类别新增 "LOCKED"（-31003，由 Host 的对象锁产生，
  *   App 一般不用）；函数与结构体不变。
  *
@@ -187,6 +189,12 @@ typedef enum AmHeartbeatMode {
     AM_HEARTBEAT_ALWAYS = 1,
     AM_HEARTBEAT_OFF = 2
 } AmHeartbeatMode;
+
+/* v19：用户正在操作（am_client_set_busy）期间写调用的处理方式（spec/protocol.md 5.3）。 */
+typedef enum AmBusyPolicy {
+    AM_BUSY_REJECT = 0,            /* 以 RATE_LIMITED（details {"scope":"busy"}）拒绝（默认） */
+    AM_BUSY_QUEUE = 1              /* 排队，用户操作结束后按到达顺序执行（仍受 max_queued_calls 与调用超时约束） */
+} AmBusyPolicy;
 
 /* v9：调用结果的业务状态（AmCallResult.status，spec/protocol.md 3.2）。 */
 typedef enum AmResultStatus {
@@ -440,6 +448,12 @@ AmStatus am_client_set_navigation_handler(AmClient *client, AmNavigateFn handler
  * 回调决定（可自行把窗口提到前台，或用 am_navigate_fail_user_action 回复）。默认值随平台：桌面（Windows / Linux /
  * macOS）为 true，Android / iOS / 鸿蒙为 false。对之后到达的请求生效。 */
 AmStatus am_client_set_navigate_in_background(AmClient *client, bool enabled);
+/* v19：声明用户正在 / 不再在 App 内操作（spec/protocol.md 5.3）。期间写调用（生效注解不是 readOnlyHint: true 的工具）
+ * 按 am_client_set_busy_policy 拒绝或排队；只读调用与已开始的调用不受影响。何时算"正在操作"由 App 决定。随时生效。 */
+AmStatus am_client_set_busy(AmClient *client, bool busy);
+AmStatus am_client_is_busy(const AmClient *client, bool *out);
+/* v19：用户正在操作期间写调用的处理方式（默认 AM_BUSY_REJECT），随即对排队中的调用生效。 */
+AmStatus am_client_set_busy_policy(AmClient *client, AmBusyPolicy policy);
 /* 当前状态；retry_in_ms、reason 可为 NULL。*reason 需用 am_string_free 释放（REJECTED / HOST_MISMATCH 时非 NULL；
  * v6 起 BACKOFF 有原因时也非 NULL；其他状态为 NULL）。 */
 AmStatus am_client_state(const AmClient *client, AmStateStatus *status, uint64_t *retry_in_ms, char **reason);

@@ -31,6 +31,8 @@ pub struct ClientConfig {
     /// 排队中的调用上限（B-07）：新到的调用需要排队且队列已满时以 `RATE_LIMITED`（`details.scope = "queue"`）拒绝。
     /// 默认 [`DEFAULT_MAX_QUEUED_CALLS`]；0 表示不限。
     pub max_queued_calls: usize,
+    /// App 声明"用户正在操作"（[`Client::set_busy`]）期间写调用的处理方式（spec/protocol.md 5.3）。默认 [`BusyPolicy::Reject`]。
+    pub busy_policy: BusyPolicy,
     /// 同一资源两次 `resources/updated` 通知之间的最小间隔。默认 100ms。
     pub resource_update_throttle_ms: Millis,
     /// 发送 `app/hello` 后等待结果的最长时间，超时断开并重连。默认 10s；0 表示不限。
@@ -92,6 +94,7 @@ impl ClientConfig {
             heartbeat: HeartbeatPolicy::default(),
             max_concurrent_calls: 1,
             max_queued_calls: DEFAULT_MAX_QUEUED_CALLS,
+            busy_policy: BusyPolicy::Reject,
             resource_update_throttle_ms: 100,
             handshake_timeout_ms: 10_000,
             lifecycle: LifecyclePolicy::default(),
@@ -103,6 +106,19 @@ impl ClientConfig {
             launched_by_activation: false,
         }
     }
+}
+
+/// 用户正在操作（[`Client::set_busy`]）期间，写调用（生效注解不是 `readOnlyHint: true` 的工具）如何处理；只读调用不受影响。
+///
+/// @why 默认拒绝：Agent 立即得知原因、可转告用户或改做只读操作；排队则在用户停手后立刻执行，可能覆盖用户刚做的修改，
+/// 且用户操作时间长时调用方只会等到 `TIMEOUT`。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum BusyPolicy {
+    /// 写调用以 `RATE_LIMITED`（`details.scope = "busy"`）拒绝，未开始、不进去重表。
+    #[default]
+    Reject,
+    /// 写调用留在队列中（仍受 `max_queued_calls` 与调用超时约束），用户操作结束后按到达顺序开始。
+    Queue,
 }
 
 /// 休眠后的进程驻留策略。

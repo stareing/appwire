@@ -215,6 +215,26 @@ impl WasmClient {
         self.inner.set_navigate_in_background(enabled);
     }
 
+    /// 声明用户正在 / 不再在 App 内操作（spec/protocol.md 5.3）：期间写调用按 `busyPolicy` 拒绝或排队，只读调用与已开始的调用
+    /// 不受影响。随时生效（产生的回复由驱动层在下一次取消息时发出）。
+    #[wasm_bindgen(js_name = setBusy)]
+    pub fn set_busy(&mut self, busy: bool) {
+        self.inner.set_busy(busy);
+    }
+
+    #[wasm_bindgen(js_name = isBusy)]
+    pub fn is_busy(&self) -> bool {
+        self.inner.is_busy()
+    }
+
+    /// 修改用户正在操作期间写调用的处理方式（`'reject'` | `'queue'`），随即对排队中的调用生效。
+    #[wasm_bindgen(js_name = setBusyPolicy)]
+    pub fn set_busy_policy(&mut self, policy: &str) -> Result<(), JsError> {
+        let policy = convert::parse_busy_policy(policy).ok_or_else(|| JsError::new(&format!("无效的 busyPolicy：{policy:?}")))?;
+        self.inner.set_busy_policy(policy);
+        Ok(())
+    }
+
     // ---- 驱动层输出 -----------------------------------------------------
 
     /// 取出下一个事件（带 `type` 字段的对象的 JSON）；没有事件时返回 `undefined`。

@@ -6,7 +6,7 @@ use app_mcp_native as native;
 
 use crate::callbacks::{ClientListener, ClientListenerAdapter, NavigationHandler, NavigationHandlerAdapter, ResourceReader, ResourceReaderAdapter, ToolHandler, ToolHandlerAdapter};
 use crate::config::ClientConfig;
-use crate::enums::{SleepReason, Visibility, WakeReason};
+use crate::enums::{BusyPolicy, SleepReason, Visibility, WakeReason};
 use crate::error::AppMcpError;
 use crate::handles::{Hold, Resource, Scope, Tool};
 use crate::records::{ResourceSpec, StateInfo, ToolSpec};
@@ -66,6 +66,18 @@ impl AppMcpClient {
     /// 不调用回调。缺省取平台默认：桌面为 `true`，Android / iOS / 鸿蒙为 `false`。随时生效。
     pub fn set_navigate_in_background(&self, enabled: bool) {
         self.inner.set_navigate_in_background(enabled)
+    }
+    /// 声明用户正在 / 不再在 App 内操作（spec/protocol.md 5.3）：期间写调用按 `busy_policy` 拒绝或排队，
+    /// 只读调用与已开始的调用不受影响。何时算"正在操作"由 App 决定。随时生效。
+    pub fn set_busy(&self, busy: bool) {
+        self.inner.set_busy(busy)
+    }
+    pub fn is_busy(&self) -> bool {
+        self.inner.is_busy()
+    }
+    /// 修改用户正在操作期间写调用的处理方式，随即对排队中的调用生效。
+    pub fn set_busy_policy(&self, policy: BusyPolicy) {
+        self.inner.set_busy_policy(policy.into())
     }
     /// 在根作用域注册工具。
     pub fn register_tool(

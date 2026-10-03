@@ -43,9 +43,11 @@ runner（各语言）                         fake_host --case <用例> --sdk <�
       "callDedup": { "ttlMs": …, "maxEntries": … },
       "maxConcurrentCalls": 1,
       "maxQueuedCalls": 64,             // 需能力 callScheduling
+      "busyPolicy": "reject",           // 需能力 busy：'reject' | 'queue'（spec/protocol.md 5.3「用户正在操作」）
       "navigateInBackground": false    // 给出时调用 SDK 的对应设置（spec/protocol.md 3.4）；缺省用 SDK 的平台缺省
     },
     "visibility": "hidden",             // 可选：启动前把实例可见性设为该值（visible / hidden / frozen）
+    "busy": true,                       // 可选（需能力 busy）：启动前调用 setBusy(true)
     "tools": [ <工具声明> ],
     "resources": [ <资源声明> ],
     "navigation": { "<页面>": <导航行为> }   // 可选：给出时设置导航回调（2.4），缺省不设置
@@ -102,6 +104,7 @@ spec/protocol.md 5.3，需能力 `callScheduling`）同样传给注册 API。未
 | `{op: "update", name, set: {字段: 值}}` | 更新声明：`set` 中的字段替换，**值为 `null` 表示清除该声明**（如 `annotations: null`），未列出的字段不变 |
 | `{op: "remove", name}` | 注销 |
 | `{op: "disable" / "enable", name}` | 禁用 / 启用 |
+| `{op: "busy", value: bool}` | 调用 SDK 的 `setBusy(value)`（需能力 `busy`） |
 
 runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整体更新；补丁型 API 直接传 `null`）。
 
@@ -173,6 +176,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `backgroundNavigation` | `app.visibility`、`app.config.navigateInBackground`、导航行为 `userAction` |
 | `idempotencyKey` | handler 上下文中的幂等键（handler 结果 `returnIdempotencyKey`） |
 | `callScheduling` | 工具 `concurrency` / `exclusive`、`app.config.maxQueuedCalls`，且 handler 能并发执行（`delayMs` 不独占分发线程） |
+| `busy` | `app.busy`、`app.config.busyPolicy`、变更 `{op: "busy"}`（spec/protocol.md 5.3「用户正在操作」） |
 
 ## 5. 各 SDK 的 runner
 

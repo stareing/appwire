@@ -46,6 +46,19 @@ impl Sessions {
         if let Some(session) = removed {
             session.dispose();
         }
+        self.sync_busy();
+    }
+
+    /// 把各页 `busy.set` 之或同步给客户端（汇总值变化时）；页面注销后其声明随之失效。
+    pub(super) fn sync_busy(&self) {
+        use std::sync::atomic::Ordering;
+        let sessions: Vec<Arc<Session>> = lock(&self.map).values().cloned().collect();
+        let busy = sessions.iter().any(|s| s.busy());
+        if self.pages_busy.swap(busy, Ordering::SeqCst) != busy
+            && let Some(client) = lock(&self.client).as_ref()
+        {
+            client.set_busy(busy);
+        }
     }
 
     /// 页面卸载（`reset`、页面开始加载）：注销登记，并结束该页的导航处理（进行中的导航失败）。
@@ -71,6 +84,7 @@ impl Sessions {
         for session in removed {
             session.dispose();
         }
+        self.sync_busy();
         self.end_navigation(|p| p.window == window);
     }
 
@@ -80,6 +94,7 @@ impl Sessions {
         for session in removed {
             session.dispose();
         }
+        self.sync_busy();
         self.end_navigation(|_| true);
     }
 
@@ -179,6 +194,7 @@ impl Sessions {
         };
         session.dispose();
         drop(removed);
+        self.sync_busy();
         self.end_navigation(|p| p.label == session.label);
     }
 

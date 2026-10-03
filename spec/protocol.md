@@ -584,6 +584,13 @@ docs/plans/12-mcp-2026-07-28.md m10），本协议不使用；此后新增的类
   - 新到的调用需要排队而排队中的调用数已达 `maxQueuedCalls`（默认 64，0 = 不限）→ `RATE_LIMITED`，`data` 带
     `{"scope": "queue", "limit": N}`（不带 `retryAfterMs`：何时空出取决于正在执行的调用）。被拒绝的调用未开始，不记入去重表，
     同一 `callId` 稍后可重发。
+  - **用户正在操作**（第 16 项 N6）：App 用 `setBusy(true / false)` 声明用户此刻正在 App 内操作（何时算由 App 决定，如编辑框
+    获得焦点、拖拽中；本库不推断）。期间**写调用**（生效注解不是 `readOnlyHint: true` 的工具，按 `risk` 推导规则）按客户端配置
+    `busyPolicy` 处理：`reject`（默认）→ `RATE_LIMITED`，`data` 带 `{"scope": "busy"}`（不带 `retryAfterMs`），未开始、不记入
+    去重表，同一 `callId` 稍后可重发；`queue` → 留在调用队列中（不被其阻塞的调用照常先开始；仍受 `maxQueuedCalls` 与 `timeoutMs`
+    约束），`setBusy(false)` 后按到达顺序开始。只读调用与已开始的调用不受影响；`setBusy(true)` 时策略为 `reject` 则排队中的写调用
+    随即被拒绝。`busyPolicy` 可在运行时修改（`setBusyPolicy`，如由用户在 App 设置中选择），随即对排队中的调用生效。busy 状态只在
+    SDK 内，不发给 Host；`app/navigate`、资源读取不受影响。
 - `timeoutMs` 从收到请求时开始计时（包含排队时间）。超时后取消 handler，返回 `TIMEOUT`。
 - 收到 `tools/cancel`：取消对应调用（排队中的直接移出），返回 `CANCELLED`。
 - handler 完成后返回 `ToolsInvokeResult`；handler 出错返回其错误（缺省类别 `HANDLER_ERROR`）。

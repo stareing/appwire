@@ -1,7 +1,7 @@
 //! 错误与枚举转换：原生错误 → JS 错误（`code` 为大写代码），JS 字符串 → 原生枚举，原生枚举 → JS 字符串。
 
 use app_mcp_native::{
-    Activation, Audience, CancelReason, ClientKind, ErrorKind, HeartbeatMode, LifecycleMode, LogLevel, NativeError,
+    Activation, Audience, BusyPolicy, CancelReason, ClientKind, ErrorKind, HeartbeatMode, LifecycleMode, LogLevel, NativeError,
     Residency, ResultStatus, Risk, SleepReason, StateStatus, ToolSurface, Visibility, WakeKind, WakeReason,
 };
 
@@ -113,6 +113,14 @@ pub(super) fn parse_heartbeat(s: &str) -> Result<HeartbeatMode, String> {
         "always" => HeartbeatMode::Always,
         "off" => HeartbeatMode::Off,
         other => return Err(invalid_arg(format!("未知的 heartbeat：{other:?}"))),
+    })
+}
+
+pub(super) fn parse_busy_policy(s: &str) -> Result<BusyPolicy, String> {
+    Ok(match s {
+        "reject" => BusyPolicy::Reject,
+        "queue" => BusyPolicy::Queue,
+        other => return Err(invalid_arg(format!("未知的 busyPolicy：{other:?}"))),
     })
 }
 

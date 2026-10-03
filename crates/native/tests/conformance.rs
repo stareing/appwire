@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use app_mcp_native::{
-    CallDedupPolicy, CallHandle, CallResult, ErrorKind, NativeClient, NativeConfig, NavigateHandle, NavigationHandler,
+    BusyPolicy, CallDedupPolicy, CallHandle, CallResult, ErrorKind, NativeClient, NativeConfig, NavigateHandle, NavigationHandler,
     ReadHandle, ResourceOptions, ResourceReader, ResourceSpec, ToolHandle, ToolHandler, ToolOptions, ToolSpec,
     Visibility,
 };
@@ -27,6 +27,7 @@ const SDK: &str = "rust";
 const FEATURES: &[&str] = &[
     "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
     "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey", "callScheduling",
+    "busy",
 ];
 
 fn repo_root() -> PathBuf {
@@ -111,6 +112,7 @@ impl App {
                     handle.dispose();
                 }
             }
+            "busy" => self.client.set_busy(op["value"].as_bool().expect("busy 的 value 应为布尔")),
             op_name @ ("enable" | "disable") => {
                 let tools = self.tools.lock().unwrap();
                 tools[name].0.set_enabled(op_name == "enable").expect("启用 / 禁用");
@@ -283,6 +285,12 @@ fn config(addr: &str, case: &Value) -> NativeConfig {
     if let Some(n) = c["maxQueuedCalls"].as_u64() {
         cfg.max_queued_calls = n as u32;
     }
+    match c["busyPolicy"].as_str() {
+        Some("queue") => cfg.busy_policy = BusyPolicy::Queue,
+        Some("reject") => cfg.busy_policy = BusyPolicy::Reject,
+        Some(other) => panic!("未知的 busyPolicy {other}"),
+        None => {}
+    }
     cfg
 }
 
@@ -322,6 +330,9 @@ fn run_case(bin: &Path, path: &Path, report_dir: &Path) -> Value {
             }
             if let Some(b) = case["app"]["config"]["navigateInBackground"].as_bool() {
                 a.client.set_navigate_in_background(b);
+            }
+            if let Some(b) = case["app"]["busy"].as_bool() {
+                a.client.set_busy(b);
             }
             if let Some(v) = parse::<Visibility>(&case["app"]["visibility"]) {
                 a.client.set_visibility(v, false);

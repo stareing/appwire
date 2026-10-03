@@ -453,3 +453,25 @@ async fn rejects_bad_ops_and_filtered_webviews() {
     );
     shutdown(fx.hub).await;
 }
+
+/// `busy.set`：客户端的 busy 为各页之或；页面刷新（hello）或关闭后其声明失效。
+#[tokio::test(flavor = "multi_thread")]
+async fn page_busy_is_aggregated_and_cleared_on_unload() {
+    let fx = Fixture::new("busy", None).await;
+    let (a, b) = (Arc::new(FakePage::default()), Arc::new(FakePage::default()));
+    let busy = |v: bool| json!({ "op": "busy.set", "busy": v });
+    assert_eq!(fx.op(&a, "a", "main", busy(true))["ok"], true);
+    assert_eq!(fx.op(&b, "b", "main", busy(true))["ok"], true);
+    assert!(fx.bridge.client().is_busy());
+    fx.op(&a, "a", "main", busy(false));
+    assert!(fx.bridge.client().is_busy(), "另一页仍在操作");
+    fx.op(&b, "b", "main", json!({ "op": "hello" }));
+    assert!(!fx.bridge.client().is_busy(), "页面刷新后声明失效");
+    fx.op(&a, "a", "main", busy(true));
+    fx.sessions.end_window("main");
+    assert!(!fx.bridge.client().is_busy(), "窗口关闭后声明失效");
+    let Fixture { hub, bridge, sessions } = fx;
+    drop(bridge);
+    drop(sessions);
+    shutdown(hub).await;
+}

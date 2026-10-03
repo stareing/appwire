@@ -184,6 +184,9 @@ enum PageOp {
         #[serde(rename = "holdId")]
         hold_id: u64,
     },
+    /// 本页声明用户正在 / 不再操作（spec/protocol.md 5.3）；客户端的 busy 为各页之或（[`Sessions::sync_busy`]）。
+    #[serde(rename = "busy.set")]
+    BusySet { busy: bool },
     /// 本页开启 / 关闭导航处理（[`Bridge::enable_page_navigation`]）。
     #[serde(rename = "navigation.set")]
     NavigationSet { enabled: bool },
@@ -392,6 +395,9 @@ pub(crate) struct Sessions {
     navigation: Mutex<NavigationState>,
     /// [`Bridge::enable_page_navigation`] 已调用。
     navigation_enabled: std::sync::atomic::AtomicBool,
+    /// 上次同步给客户端的"有页面正在被用户操作"（[`Sessions::sync_busy`]）。
+    /// @why 只在汇总值变化时调用 `set_busy`：Rust 侧代码也可直接设置客户端的 busy，没有页面声明时不覆盖它。
+    pages_busy: std::sync::atomic::AtomicBool,
     /// 广播状态时读取连接 ID 用。
     /// @why 状态回调（`PluginListener`）在客户端创建之前就要构造，`StateInfo` 不带连接 ID，只能回头问客户端；
     /// 客户端持有监听器、监听器持有本结构，因此这里是一个引用环，由 [`Bridge`] 的 `Drop` 断开。
@@ -410,6 +416,8 @@ struct SessionState {
     reads: HashMap<u64, ReadHandle>,
     holds: HashMap<u64, HoldHandle>,
     next_read_id: u64,
+    /// 本页声明用户正在操作（`busy.set`）。
+    busy: bool,
 }
 
 /// 一个 WebView 的登记。

@@ -5,7 +5,7 @@ use std::ffi::{c_char, c_int};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use app_mcp_native::{
-    Activation, AppOverview, CallDedupPolicy, CallResult, ClientKind, ContentAnnotations, ErrorKind, HeartbeatMode,
+    Activation, AppOverview, BusyPolicy, CallDedupPolicy, CallResult, ClientKind, ContentAnnotations, ErrorKind, HeartbeatMode,
     LifecycleMode, LifecyclePolicy, NativeConfig, Residency, ResourceOptions, ResourceSpec, ResultStatus,
     Risk, SleepReason, ToolAnnotations, ToolOptions, ToolSpec, ToolSurface, Visibility, WakeDescriptor, WakeKind,
     WakeReason,
@@ -133,6 +133,14 @@ pub(crate) fn sleep_reason_from(v: c_int) -> FfiResult<SleepReason> {
         _ => Err(FfiError::invalid_argument(format!(
             "非法的 sleep reason：{v}"
         ))),
+    }
+}
+
+pub(crate) fn busy_policy_from(v: c_int) -> FfiResult<BusyPolicy> {
+    match v {
+        0 => Ok(BusyPolicy::Reject),
+        1 => Ok(BusyPolicy::Queue),
+        _ => Err(FfiError::invalid_argument(format!("非法的 busy policy：{v}"))),
     }
 }
 

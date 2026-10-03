@@ -1,0 +1,26 @@
+{
+  "id": "call-busy-reject",
+  "title": "用户正在操作（busy）且策略为拒绝（缺省）：写调用以 RATE_LIMITED（details.scope = busy）拒绝、未执行；只读调用照常；取消 busy 后同一 callId 照常执行",
+  "spec": ["protocol.md 5.3"],
+  "requires": ["busy"],
+  "app": {
+    "busy": true,
+    "tools": [
+      { "name": "b.edit", "description": "写操作", "risk": "write", "handler": { "counter": true } },
+      { "name": "b.peek", "description": "只读", "risk": "read", "handler": { "return": { "ok": true } } },
+      { "name": "b.done", "description": "用户停手", "risk": "read", "handler": { "mutate": [{ "op": "busy", "value": false }], "return": { "ok": true } } }
+    ]
+  },
+  "host": { "timeoutMs": 15000, "ops": [
+    { "invoke": "b.edit", "callId": "e1" },
+    { "invoke": "b.peek" },
+    { "invoke": "b.done" },
+    { "invoke": "b.edit", "callId": "e1" }
+  ] },
+  "expect": [
+    { "type": "invoke", "name": "b.edit", "error": { "code": -32016, "data": { "kind": "RATE_LIMITED", "scope": "busy" } } },
+    { "type": "invoke", "name": "b.peek", "result": { "data": { "ok": true } } },
+    { "type": "invoke", "name": "b.done", "result": { "data": { "ok": true } } },
+    { "type": "invoke", "name": "b.edit", "result": { "data": { "count": 1 } } }
+  ]
+}

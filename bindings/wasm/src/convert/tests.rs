@@ -7,7 +7,7 @@ fn config_defaults_and_overrides() {
     let c: JsConfig = JsConfig::from_json(json!({
         "appId": "shop", "appName": "商城", "instanceId": "i1",
         "sdkVersion": "9.9.9", "token": "t", "maxConcurrentCalls": 0, "maxQueuedCalls": 5,
-        "heartbeat": { "timeoutMs": 5 }
+        "busyPolicy": "queue", "heartbeat": { "timeoutMs": 5 }
     }))
     .unwrap();
     let c = c.into_core();
@@ -16,12 +16,16 @@ fn config_defaults_and_overrides() {
     assert_eq!(c.token.as_deref(), Some("t"));
     assert_eq!(c.max_concurrent_calls, 1);
     assert_eq!(c.max_queued_calls, 5);
+    assert_eq!(c.busy_policy, BusyPolicy::Queue);
     assert_eq!(c.heartbeat.timeout_ms, 5);
     assert_eq!(c.heartbeat.interval_ms, HeartbeatPolicy::default().interval_ms);
     assert_eq!(c.reconnect, ReconnectPolicy::default());
     assert_eq!(c.resource_update_throttle_ms, 100);
     assert_eq!(c.overview, None);
     assert_eq!(c.call_dedup, CallDedupPolicy::default());
+    let d = JsConfig::from_json(json!({ "appId": "shop", "appName": "商城", "instanceId": "i1" })).unwrap().into_core();
+    assert_eq!(d.busy_policy, BusyPolicy::Reject);
+    assert!(JsConfig::from_json(json!({ "appId": "shop", "appName": "商城", "instanceId": "i1", "busyPolicy": "wait" })).is_err());
 }
 
 #[test]

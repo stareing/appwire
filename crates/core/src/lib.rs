@@ -72,6 +72,8 @@ pub struct Client {
     session: connection::Session,
     visibility: Visibility,
     focused: bool,
+    /// App 声明用户正在操作（[`Client::set_busy`]）。
+    busy: bool,
     next_request_id: i64,
     next_read_id: u64,
     next_navigate_id: u64,
@@ -102,6 +104,7 @@ impl Client {
             session: connection::Session::default(),
             visibility: Visibility::Visible,
             focused: true,
+            busy: false,
             next_request_id: 0,
             next_read_id: 0,
             next_navigate_id: 0,
@@ -209,7 +212,7 @@ impl Client {
     /// 更新工具。放宽了并发声明（`concurrency` / `exclusive`）时排队中的调用随即可能开始。
     pub fn update_tool(&mut self, tool: ToolId, update: ToolUpdate) -> Result<(), CoreError> {
         self.registry.update_tool(tool, update)?;
-        self.pump_calls();
+        self.settle_busy();
         Ok(())
     }
 
@@ -403,6 +406,24 @@ impl Client {
     /// 不可见时导航请求是否仍交给导航回调（[`ClientConfig::navigate_in_background`]）。随时生效，只影响之后到达的请求。
     pub fn set_navigate_in_background(&mut self, enabled: bool) {
         self.config.navigate_in_background = enabled;
+    }
+
+    /// 声明用户正在 / 不再在 App 内操作（第 16 项 N6，spec/protocol.md 5.3）：期间写调用按 [`ClientConfig::busy_policy`]
+    /// 拒绝或排队，只读调用与已开始的调用不受影响。设为 `busy` 且策略为拒绝时，排队中的写调用随即被拒绝；取消后排队中的调用随即开始。
+    /// 何时算"正在操作"由 App 决定（如编辑框获得焦点、拖拽中），本库不推断。
+    pub fn set_busy(&mut self, busy: bool) {
+        self.busy = busy;
+        self.settle_busy();
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    /// 修改 [`ClientConfig::busy_policy`]，随即对排队中的调用生效。
+    pub fn set_busy_policy(&mut self, policy: BusyPolicy) {
+        self.config.busy_policy = policy;
+        self.settle_busy();
     }
 
     /// 调试用：正在执行的调用数。

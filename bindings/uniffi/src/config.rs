@@ -2,7 +2,7 @@
 
 use app_mcp_native as native;
 
-use crate::enums::{ClientKind, HeartbeatMode, LifecycleMode, Residency, WakeKind};
+use crate::enums::{BusyPolicy, ClientKind, HeartbeatMode, LifecycleMode, Residency, WakeKind};
 
 /// 客户端配置。可选字段为空时使用原生运行时的默认值。
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -61,6 +61,9 @@ pub struct ClientConfig {
     /// 排队中的调用上限（spec/protocol.md 5.3）。为空时为 64；0 表示不限。超出时新调用以 `RATE_LIMITED` 拒绝。
     #[uniffi(default = None)]
     pub max_queued_calls: Option<u32>,
+    /// 用户正在操作（`set_busy`）期间写调用的处理方式（spec/protocol.md 5.3）。为空时为 `Reject`。
+    #[uniffi(default = None)]
+    pub busy_policy: Option<BusyPolicy>,
 }
 
 /// 调用去重策略（spec/protocol.md 3.3）：已开始执行的 `callId` 的首次结果在有效期内重放。任一字段为 0 关闭去重。
@@ -203,6 +206,9 @@ impl From<ClientConfig> for native::NativeConfig {
         n.max_concurrent_calls = c.max_concurrent_calls;
         if let Some(q) = c.max_queued_calls {
             n.max_queued_calls = q;
+        }
+        if let Some(p) = c.busy_policy {
+            n.busy_policy = p.into();
         }
         n.overview = c.overview.map(Into::into);
         if let Some(lifecycle) = c.lifecycle {

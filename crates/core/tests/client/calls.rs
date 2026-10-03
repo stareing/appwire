@@ -386,3 +386,57 @@ fn unlimited_queue_and_relaxing_declaration_starts_queued_calls() {
     assert_eq!(invoked(&ev), vec!["c2"]);
     assert!(!methods(&sends(&ev)).contains(&"tools/changed"), "调度声明只在 SDK 内");
 }
+
+fn write_tool(name: &str) -> ToolDef {
+    ToolDef { risk: Risk::Write, ..tool(name) }
+}
+
+/// 用户正在操作（`set_busy`）且策略为拒绝（默认）：新到与排队中的写调用以 `RATE_LIMITED`（`scope = "busy"`）拒绝、不进去重表；
+/// 只读调用照常执行；取消后同一 callId 照常执行。
+#[test]
+fn busy_rejects_write_calls_by_default() {
+    let mut h = Harness::new();
+    h.c.register_tool(write_tool("w")).unwrap();
+    h.c.register_tool(tool("r")).unwrap();
+    h.connect();
+    assert_eq!(invoked(&h.invoke(1, "c1", "r", None)), vec!["c1"]);
+    assert!(sends(&h.invoke(2, "c2", "w", None)).is_empty(), "串行：排在只读调用之后");
+    h.c.set_busy(true);
+    assert!(h.c.is_busy());
+    let msgs = sends(&h.drain());
+    assert_eq!((msgs.len(), msgs[0]["id"].as_i64(), error_kind(&msgs[0])), (1, Some(2), "RATE_LIMITED"), "排队中的写调用随即被拒绝");
+    assert_eq!(msgs[0]["error"]["data"]["scope"].as_str(), Some("busy"), "{}", msgs[0]);
+    let msgs = sends(&h.invoke(3, "c3", "w", None));
+    assert_eq!((msgs.len(), error_kind(&msgs[0])), (1, "RATE_LIMITED"), "新到的写调用");
+    h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
+    h.drain();
+    assert_eq!(invoked(&h.invoke(4, "c4", "r", None)), vec!["c4"], "只读调用不受影响");
+    h.c.complete_call("c4", Ok(CallOutput::default()), h.now).unwrap();
+    h.drain();
+    h.c.set_busy(false);
+    assert_eq!(invoked(&h.invoke(5, "c3", "w", None)), vec!["c3"], "被拒绝的 callId 未记入去重表");
+}
+
+/// 策略为排队：写调用等到用户操作结束后按到达顺序开始，只读调用不被其阻塞；改回拒绝时排队中的写调用随即被拒绝。
+#[test]
+fn busy_queue_policy_defers_write_calls() {
+    let mut cfg = config();
+    cfg.busy_policy = BusyPolicy::Queue;
+    cfg.max_concurrent_calls = 4;
+    let mut h = Harness::with(cfg);
+    h.c.register_tool(write_tool("w")).unwrap();
+    h.c.register_tool(tool("r")).unwrap();
+    h.connect();
+    h.c.set_busy(true);
+    assert!(sends(&h.invoke(1, "c1", "w", None)).is_empty(), "排队，不回复");
+    assert!(invoked(&h.invoke(2, "c2", "w", None)).is_empty());
+    assert_eq!(invoked(&h.invoke(3, "c3", "r", None)), vec!["c3"], "只读调用不被排队的写调用阻塞");
+    h.c.set_busy(false);
+    assert_eq!(invoked(&h.drain()), vec!["c1", "c2"]);
+
+    h.c.set_busy(true);
+    assert!(invoked(&h.invoke(4, "c4", "w", None)).is_empty());
+    h.c.set_busy_policy(BusyPolicy::Reject);
+    let msgs = sends(&h.drain());
+    assert_eq!((msgs.len(), msgs[0]["id"].as_i64(), error_kind(&msgs[0])), (1, Some(4), "RATE_LIMITED"));
+}

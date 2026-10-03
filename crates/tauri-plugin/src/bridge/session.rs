@@ -206,6 +206,13 @@ impl Session {
                     _ => Ok(None),
                 }
             }
+            PageOp::BusySet { busy } => {
+                self.live()?.busy = busy;
+                if let Some(owner) = self.owner.upgrade() {
+                    owner.sync_busy();
+                }
+                Ok(None)
+            }
             PageOp::Wake => Ok(Some(Value::Bool(client.wake()))),
             PageOp::Sleep => Ok(Some(Value::Bool(client.sleep()))),
             PageOp::ConnectNow => Ok(Some(Value::Bool(client.connect_now()))),
@@ -313,6 +320,12 @@ impl Session {
     }
 
     /// 注销本页面的全部登记：进行中的调用 / 读取以 `APP_DISCONNECTED` 失败，释放 hold，销毁 scope。
+    /// 本页声明用户正在操作且尚未注销。
+    pub(super) fn busy(&self) -> bool {
+        let st = lock(&self.state);
+        !st.disposed && st.busy
+    }
+
     pub(super) fn dispose(&self) {
         let st = {
             let mut st = lock(&self.state);

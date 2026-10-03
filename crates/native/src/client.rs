@@ -83,6 +83,25 @@ impl NativeClient {
         self.owner.shared.lock().client.set_navigate_in_background(enabled);
     }
 
+    /// 声明用户正在 / 不再在 App 内操作（第 16 项 N6，spec/protocol.md 5.3）：期间写调用按 [`NativeConfig::busy_policy`]
+    /// 拒绝（`RATE_LIMITED`，`scope: "busy"`）或排队；只读调用与已开始的调用不受影响。何时算"正在操作"由 App 决定。随时生效。
+    pub fn set_busy(&self, busy: bool) {
+        let shared = &self.owner.shared;
+        shared.lock().client.set_busy(busy);
+        shared.wake();
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.owner.shared.lock().client.is_busy()
+    }
+
+    /// 修改用户正在操作期间写调用的处理方式（[`NativeConfig::busy_policy`]），随即对排队中的调用生效。
+    pub fn set_busy_policy(&self, policy: BusyPolicy) {
+        let shared = &self.owner.shared;
+        shared.lock().client.set_busy_policy(policy);
+        shared.wake();
+    }
+
     pub fn instance_id(&self) -> String {
         self.owner.shared.instance_id.clone()
     }

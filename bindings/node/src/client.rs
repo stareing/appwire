@@ -8,7 +8,7 @@ use napi_derive::napi;
 use super::WeakTsfn;
 use super::callbacks::{JsClientListener, JsNavigationHandler, JsResourceReader, JsToolHandler};
 use super::convert::{
-    parse_client_kind, parse_heartbeat, parse_sleep_reason, parse_visibility, parse_wake_reason, to_js_error,
+    parse_busy_policy, parse_client_kind, parse_heartbeat, parse_sleep_reason, parse_visibility, parse_wake_reason, to_js_error,
 };
 use super::handles::{Call, Hold, Navigate, Read, Resource, Scope, Tool};
 use super::objects::{ClientConfig, ClientEvent, JsStateInfo, ResourceSpecInit, ToolSpecInit};
@@ -45,6 +45,9 @@ impl JsNativeClient {
         }
         if let Some(n) = config.max_queued_calls {
             cfg.max_queued_calls = n;
+        }
+        if let Some(p) = config.busy_policy.as_deref() {
+            cfg.busy_policy = parse_busy_policy(p)?;
         }
         cfg.overview = config.overview.map(Into::into);
         if let Some(lifecycle) = config.lifecycle {
@@ -107,6 +110,25 @@ impl JsNativeClient {
     #[napi]
     pub fn set_navigate_in_background(&self, enabled: bool) {
         self.inner.set_navigate_in_background(enabled);
+    }
+
+    /// 声明用户正在 / 不再在 App 内操作（spec/protocol.md 5.3）：期间写调用按 `busyPolicy` 拒绝或排队，只读调用与已开始的调用
+    /// 不受影响。随时生效。
+    #[napi]
+    pub fn set_busy(&self, busy: bool) {
+        self.inner.set_busy(busy);
+    }
+
+    #[napi]
+    pub fn is_busy(&self) -> bool {
+        self.inner.is_busy()
+    }
+
+    /// 修改用户正在操作期间写调用的处理方式（`'reject'` | `'queue'`），随即对排队中的调用生效。
+    #[napi]
+    pub fn set_busy_policy(&self, policy: String) -> Result<(), String> {
+        self.inner.set_busy_policy(parse_busy_policy(&policy)?);
+        Ok(())
     }
 
     /// 停止：取消所有调用、断开连接、不再重连，并释放监听器的 ThreadsafeFunction。

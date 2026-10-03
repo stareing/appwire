@@ -8,7 +8,7 @@ use app_mcp_protocol as proto;
 use proto::{
     ErrorKind, HelloParams, HelloResult, Message, NavigateParams, NavigateResult, Notification, PairingResultParams,
     PairingStatus, Request, RequestId, ResourceSubscribeParams, ResourceUpdatedParams, ResourcesReadParams, Response,
-    RpcError, ToolError, ToolsCancelParams, ToolsInvokeParams, ToolsProgressParams, VisibilityParams,
+    RpcError, ToolAnnotations, ToolError, ToolsCancelParams, ToolsInvokeParams, ToolsProgressParams, VisibilityParams,
     method,
 };
 use serde::Serialize;
@@ -18,8 +18,8 @@ use serde_json::{Value, json};
 use crate::calls::Call;
 use crate::dedup::Outcome;
 use crate::{
-    CallOutput, CancelReason, Client, ConnectionErrorCode, ConnectionIssue, ConnectionState, Event, LifecycleMode,
-    Millis, NavigateId, ReadId, ResourceId, SleepReason, Visibility,
+    BusyPolicy, CallOutput, CancelReason, Client, ConnectionErrorCode, ConnectionIssue, ConnectionState, Event, LifecycleMode,
+    Millis, NavigateId, ReadId, ResourceId, SleepReason, ToolDef, Visibility,
 };
 
 /// Client 发出、等待响应的请求。
