@@ -12,6 +12,24 @@ pub enum Risk {
     OsSensitive,
 }
 
+/// 调用优先级（第 16 项 P6，spec/hub-api.md 3.15）：交互（用户在等结果）> 普通 > 后台。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum CallPriority {
+    Interactive,
+    Normal,
+    Background,
+}
+
+impl From<CallPriority> for hub::CallPriority {
+    fn from(v: CallPriority) -> Self {
+        match v {
+            CallPriority::Interactive => hub::CallPriority::Interactive,
+            CallPriority::Normal => hub::CallPriority::Normal,
+            CallPriority::Background => hub::CallPriority::Background,
+        }
+    }
+}
+
 /// 工具暴露方式（spec/hub-api.md 3.7）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
 pub enum ToolExposure {

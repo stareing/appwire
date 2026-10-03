@@ -566,6 +566,13 @@ fn surface_page_idempotency_key_and_builtins() {
     call(hub, json!({"name":"shop.order.submit","idempotencyKey":""}), &tx);
     let o = recv(&rx);
     assert_eq!(o["result"]["error"]["kind"], "INVALID_INPUT", "{o}");
+    // v21：priority 可选字段被接受；不认识的取值 → 请求 JSON 不合法
+    call(hub, json!({"name":"shop.order.submit","priority":"interactive"}), &tx);
+    assert!(recv(&rx)["result"]["ok"].is_object());
+    let req = c(&json!({"name":"shop.order.submit","priority":"urgent"}).to_string());
+    // SAFETY: 有效参数。
+    let st = unsafe { am_hub_call(hub, req.as_ptr(), Some(on_result), ud(&tx), ptr::null_mut()) };
+    assert_ne!(st, AmHubStatus::Ok);
 
     client.stop();
     // SAFETY: 有效句柄。

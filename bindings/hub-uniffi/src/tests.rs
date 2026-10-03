@@ -137,6 +137,7 @@ fn req(name: &str, args: Value) -> CallRequest {
         call_id: None,
         session: None,
         idempotency_key: None,
+        priority: None,
     }
 }
 

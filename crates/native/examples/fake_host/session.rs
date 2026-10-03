@@ -127,8 +127,13 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                         arguments: args,
                         timeout_ms: Some(opts.timeout_ms.unwrap_or(5000)),
                         idempotency_key: opts.idempotency_key,
+                        priority: Default::default(),
                     };
-                    let msg = Message::request(id.clone(), method::TOOLS_INVOKE, to_value(&params));
+                    let mut params = to_value(&params);
+                    if let Some(p) = opts.priority {
+                        params["priority"] = Value::String(p);
+                    }
+                    let msg = Message::request(id.clone(), method::TOOLS_INVOKE, params);
                     send(&mut ws, &msg).await?;
                     if opts.no_wait {
                         detached.push((id, name));

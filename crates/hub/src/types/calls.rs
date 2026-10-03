@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use app_mcp_protocol::{ContentAnnotations, ErrorKind, ResultStatus, ToolError};
+use app_mcp_protocol::{CallPriority, ContentAnnotations, ErrorKind, ResultStatus, ToolError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -28,6 +28,9 @@ pub struct CallRequest {
     /// Agent 的幂等键：原样转交 App（`ToolsInvokeParams.idempotencyKey`，spec/protocol.md 3.3），1..=256 个字符；
     /// MCP 出口取自请求 `_meta` 的 `dev.appwire/idempotencyKey`（spec/hub-api.md 3.15）。
     pub idempotency_key: Option<String>,
+    /// 调用优先级（第 16 项 P6）：原样转交 App（`ToolsInvokeParams.priority`），App SDK 的调用队列先按它、再按到达顺序调度；
+    /// MCP 出口取自请求 `_meta` 的 `dev.appwire/priority`（spec/hub-api.md 3.15）。默认 normal。
+    pub priority: CallPriority,
 }
 
 impl CallRequest {

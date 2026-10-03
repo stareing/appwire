@@ -71,18 +71,27 @@ impl Client {
         self.pump_calls();
     }
 
-    /// 刚到达的调用 `call_id` 仍在排队且队列超过 `maxQueuedCalls` → 移出并以 `RATE_LIMITED` 拒绝（未开始，不进去重表）。
+    /// 刚到达的调用 `call_id` 仍在排队且队列超过 `maxQueuedCalls` → 以 `RATE_LIMITED` 拒绝一个排队中的调用（未开始，不进去重表）：
+    /// 有优先级低于新调用的，拒绝其中最后到达的一个（低优先级让路，第 16 项 P6）；否则拒绝新调用。
     fn reject_overflow(&mut self, call_id: &str) {
         let max = self.config.max_queued_calls;
         if max == 0 || self.calls.queued_len() <= max {
             return;
         }
-        let Some(call) = self.calls.take_queued(call_id) else { return };
+        let Some(priority) = self.calls.queued_priority(call_id) else { return };
+        let victim = self.calls.lowest_below(priority).map_or_else(|| call_id.to_owned(), |c| c.call_id.clone());
+        let preempted = victim != call_id;
+        let Some(call) = self.calls.take_queued(&victim) else { return };
+        let why = if preempted { "为更高优先级的调用让路，" } else { "" };
+        let mut details = serde_json::json!({ "scope": "queue", "limit": max });
+        if preempted {
+            details["preempted"] = Value::Bool(true);
+        }
         let err = ToolError::new(
             ErrorKind::RateLimited,
-            format!("App 正忙：排队中的调用已达上限（{max} 个），工具 {} 未执行。请稍后重试。", call.name),
+            format!("App 正忙：排队中的调用已达上限（{max} 个），工具 {} {why}未执行。请稍后重试。", call.name),
         )
-        .with_details(serde_json::json!({ "scope": "queue", "limit": max }))
+        .with_details(details)
         .into();
         self.respond_call(call, Err(err), false);
     }
@@ -155,6 +164,7 @@ impl Client {
             deadline: p.timeout_ms.map(|t| now.saturating_add(t)),
             waiters: Vec::new(),
             exclusive: None,
+            priority: p.priority,
         });
         self.settle_busy();
         self.reject_overflow(&call_id);

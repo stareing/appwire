@@ -177,6 +177,7 @@ impl HubShared {
             arguments,
             timeout_ms: Some(sdk_timeout.as_millis() as u64),
             idempotency_key: ctx.idempotency_key.clone(),
+            priority: ctx.priority,
         };
         let params = match serde_json::to_value(params) {
             Ok(p) => p,

@@ -322,3 +322,25 @@ fn hello_wake_descriptor() {
     assert_eq!(serde_json::from_value::<HelloParams>(v).unwrap(), p);
     assert!(serde_json::to_value(HelloParams::default()).unwrap().get("wake").is_none());
 }
+
+#[test]
+fn invoke_priority_is_lenient_and_omitted_when_normal() {
+    let parse = |v: Value| serde_json::from_value::<ToolsInvokeParams>(json!({"callId": "c", "name": "t", "priority": v})).unwrap().priority;
+    assert_eq!(parse(json!("interactive")), CallPriority::Interactive);
+    assert_eq!(parse(json!("background")), CallPriority::Background);
+    assert_eq!(parse(json!("urgent")), CallPriority::Normal, "不认识的取值按 normal");
+    assert_eq!(parse(json!(3)), CallPriority::Normal);
+    let p = ToolsInvokeParams {
+        call_id: "c".into(),
+        name: "t".into(),
+        arguments: Value::Null,
+        timeout_ms: None,
+        idempotency_key: None,
+        priority: CallPriority::Normal,
+    };
+    assert!(serde_json::to_value(&p).unwrap().get("priority").is_none(), "normal 不写出");
+    let p = ToolsInvokeParams { priority: CallPriority::Background, ..p };
+    assert_eq!(serde_json::to_value(&p).unwrap()["priority"], json!("background"));
+    assert!(CallPriority::Interactive > CallPriority::Normal && CallPriority::Normal > CallPriority::Background);
+    assert_eq!(CallPriority::parse("urgent"), None);
+}

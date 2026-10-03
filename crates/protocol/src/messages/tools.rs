@@ -174,6 +174,42 @@ pub struct ToolsInvokeParams {
     /// （工具名, 幂等键）匹配，并在 handler 上下文中提供。省略 = 没有。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
+    /// Agent 给出的调用优先级（第 16 项 P6，spec/protocol.md 5.3）：SDK 的调用队列先按优先级、再按到达顺序调度。省略 = `normal`。
+    /// @compat 接收方把不认识的取值当作 `normal`（新 Host 加级别时旧 SDK 不拒绝调用）。
+    #[serde(default, skip_serializing_if = "CallPriority::is_normal", deserialize_with = "CallPriority::lenient")]
+    pub priority: CallPriority,
+}
+
+/// 调用优先级（[`ToolsInvokeParams::priority`]）：交互（用户在等结果）> 普通 > 后台。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CallPriority {
+    Background,
+    #[default]
+    Normal,
+    Interactive,
+}
+
+impl CallPriority {
+    pub fn is_normal(&self) -> bool {
+        *self == Self::Normal
+    }
+
+    /// 宽松解析：不认识的取值与非字符串都当作 [`CallPriority::Normal`]（见 [`ToolsInvokeParams::priority`] 的 @compat）。
+    fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = Value::deserialize(d)?;
+        Ok(serde_json::from_value(v).unwrap_or_default())
+    }
+
+    /// 严格解析（信任边界上校验 Agent 的取值）：`interactive` / `normal` / `background`，其他为 `None`。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "interactive" => Some(Self::Interactive),
+            "normal" => Some(Self::Normal),
+            "background" => Some(Self::Background),
+            _ => None,
+        }
+    }
 }
 
 /// [`ToolsInvokeParams::idempotency_key`] 的长度上限（字符数）：Host 拒绝更长的键（spec/protocol.md 3.3）。

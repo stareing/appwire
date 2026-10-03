@@ -10,7 +10,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use app_mcp_protocol::{ErrorKind, ToolError, ToolsInvokeResult};
+use app_mcp_protocol::{CallPriority, ErrorKind, ToolError, ToolsInvokeResult};
 use rmcp::model::{CallToolResult, ContentBlock, MetaObject, ResultType};
 use rmcp::ErrorData as McpError;
 use serde_json::{Value, json};
@@ -85,6 +85,8 @@ pub(crate) struct CallCtx {
     pub client_name: Option<String>,
     /// MCP 请求 `_meta` 出示的任务句柄（`dev.appwire/taskId`）；调用开始时与参数 `taskId` 一并解析为调用方（[`crate::task_handle`]）。
     pub task_id: Option<String>,
+    /// Agent 给出的调用优先级（[`CallRequest::priority`] / MCP 请求 `_meta`），原样转交 App。
+    pub priority: CallPriority,
 }
 
 /// 合并后的进度出口（[`CallCtx::progress`]）。
@@ -111,6 +113,7 @@ impl CallCtx {
             principal: None,
             client_name: None,
             task_id: None,
+            priority: req.priority,
         }
     }
 }

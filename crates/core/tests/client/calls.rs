@@ -440,3 +440,51 @@ fn busy_queue_policy_defers_write_calls() {
     let msgs = sends(&h.drain());
     assert_eq!((msgs.len(), msgs[0]["id"].as_i64(), error_kind(&msgs[0])), (1, Some(4), "RATE_LIMITED"));
 }
+
+fn invoke_with_priority(h: &mut Harness, id: i64, call_id: &str, name: &str, priority: Value) -> Vec<Event> {
+    let params = json!({"callId": call_id, "name": name, "arguments": {}, "priority": priority});
+    h.request(id, "tools/invoke", params)
+}
+
+/// `priority`（第 16 项 P6）：排队中的调用先按优先级（interactive > normal > background）、再按到达顺序开始；
+/// 不认识的取值按 normal（向后兼容）。
+#[test]
+fn queued_calls_start_by_priority() {
+    let mut h = Harness::new();
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    assert_eq!(invoked(&h.invoke(1, "c0", "a", None)), vec!["c0"]);
+    invoke_with_priority(&mut h, 2, "bg", "a", json!("background"));
+    invoke_with_priority(&mut h, 3, "n1", "a", json!("normal"));
+    invoke_with_priority(&mut h, 4, "future", "a", json!("urgent"));
+    invoke_with_priority(&mut h, 5, "i1", "a", json!("interactive"));
+    h.invoke(6, "n2", "a", None);
+    let mut order = Vec::new();
+    for id in ["c0", "i1", "n1", "future", "n2", "bg"] {
+        h.c.complete_call(id, Ok(CallOutput::default()), h.now).unwrap();
+        order.extend(invoked(&h.drain()));
+    }
+    assert_eq!(order, ["i1", "n1", "future", "n2", "bg"]);
+}
+
+/// 队列已满时更高优先级的新调用不被拒绝，改为拒绝最后到达的更低优先级调用（`details.preempted = true`）；
+/// 没有更低优先级的调用时照旧拒绝新调用。
+#[test]
+fn full_queue_preempts_lower_priority() {
+    let mut cfg = config();
+    cfg.max_queued_calls = 2;
+    let mut h = Harness::with(cfg);
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    h.invoke(1, "c0", "a", None);
+    invoke_with_priority(&mut h, 2, "b1", "a", json!("background"));
+    invoke_with_priority(&mut h, 3, "b2", "a", json!("background"));
+    let msgs = sends(&invoke_with_priority(&mut h, 4, "i1", "a", json!("interactive")));
+    assert_eq!((msgs.len(), msgs[0]["id"].as_i64(), error_kind(&msgs[0])), (1, Some(3), "RATE_LIMITED"), "最后到达的后台调用让路");
+    assert_eq!(msgs[0]["error"]["data"]["preempted"], json!(true), "{}", msgs[0]);
+    let msgs = sends(&invoke_with_priority(&mut h, 5, "b3", "a", json!("background")));
+    assert_eq!((msgs[0]["id"].as_i64(), error_kind(&msgs[0])), (Some(5), "RATE_LIMITED"), "同级不让路：拒绝新调用");
+    assert!(msgs[0]["error"]["data"].get("preempted").is_none());
+    h.c.complete_call("c0", Ok(CallOutput::default()), h.now).unwrap();
+    assert_eq!(invoked(&h.drain()), vec!["i1"]);
+}

@@ -106,6 +106,9 @@
  *   · JSON 中新增：HubStatus.locks（未到期的对象锁）。
  *   · 错误类别新增 "LOCKED"（details：appId、key?、holder、retryAfterMs）：App 正被其他调用方锁定时的写调用，
  *     或要加的锁已被他人持有。
+ * - v21（调用优先级，第 16 项 P6，spec/hub-api.md 3.15）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · CallRequest 新增可选字段 priority（"interactive" / "normal" / "background"，缺省 normal）：原样转交 App，
+ *     App SDK 的调用队列先按它、再按到达顺序调度；取值不合法时请求 JSON 解析失败。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -353,7 +356,8 @@ AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
  * ------------------------------------------------------------------------- */
 
 /* 异步调用工具。request_json 为 CallRequest：{name, arguments, instanceId, timeout(ms), callId, session,
- * idempotencyKey（v13：Agent 幂等键，1..=256 个字符，原样转交 App；不合法 → INVALID_INPUT）}。
+ * idempotencyKey（v13：Agent 幂等键，1..=256 个字符，原样转交 App；不合法 → INVALID_INPUT），
+ * priority（v21："interactive" / "normal" / "background"，缺省 normal，原样转交 App）}。
  * out_call_id 可为 NULL；否则写入本次 callId（请求未给出时自动生成，需 am_hub_string_free），供 am_hub_cancel_call。
  * cb 收到 CallOutcome JSON：
  *   {"callId":…, "result": {"ok": <data>} | {"error": {"kind","message","details"?}},

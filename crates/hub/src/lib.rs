@@ -56,7 +56,7 @@ pub mod upstream;
 pub mod wake;
 
 pub use app_mcp_protocol::{
-    Activation, Audience, ContentAnnotations, ErrorKind, LifecycleMode, ResultStatus, Risk, ToolAnnotations, ToolError,
+    Activation, Audience, CallPriority, ContentAnnotations, ErrorKind, LifecycleMode, ResultStatus, Risk, ToolAnnotations, ToolError,
     ToolSurface, Visibility,
 };
 pub use dormant_store::{DormantStoreStatus, StoreFileInfo, StoreIssue};

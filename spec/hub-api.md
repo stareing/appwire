@@ -1094,6 +1094,7 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `dev.appwire/woke` | 结果 `_meta`（只在 App 工具结果中） | 本次调用是否经历了唤醒：调用时目标未连接（休眠实例、按清单冷启动、页面工具所在 App 未运行），唤醒回连后才送达；并发调用合并到同一次唤醒时各自为 `true`；Hub API 为 `CallOutcome.woke`（内置 / 上游工具恒为 `false`，`apps.activate` / `apps.navigate` 的结果自带 `woke`） |
 | `dev.appwire/timeoutMs` | 请求 `_meta`（`tools/call`） | Agent 的截止时间（下文） |
 | `dev.appwire/idempotencyKey` | 请求 `_meta`（`tools/call`） | Agent 的幂等键（下文） |
+| `dev.appwire/priority` | 请求 `_meta`（`tools/call`） | Agent 给出的调用优先级（下文）；无旧前缀键 |
 | `dev.appwire/taskId` | 请求 `_meta`（`tools/call`，可选） | 任务句柄，与参数 `taskId` 等价、对任何工具调用生效（3.6「任务句柄」）；无旧前缀键 |
 
 **调用元信息**（第 19 项 R4）：`callId`、`durationMs` 在每个工具调用结果（含错误结果、内置与上游工具）的 `_meta` 中；`instanceId`、
@@ -1134,14 +1135,20 @@ Hub 以 min(该值, `response_timeout`) 作为本次调用等待 App 结果的�
 原样进入 `ToolsInvokeParams.idempotencyKey`（App 侧语义与 SDK 去重见 spec/protocol.md 3.3）。改调后台替代（3.14）时随调用转交。
 不转发给上游 MCP 服务器。
 
-**不合法的值**（`timeoutMs` 不是正整数；幂等键不是字符串、为空或超过 256 个字符）：调用不执行，以工具错误 `INVALID_INPUT` 结束
+**调用优先级 `dev.appwire/priority`**（第 16 项 P6；MCP `tools/call` 请求 `_meta`；Hub API `CallRequest.priority`）：`"interactive"`
+（用户在场等结果）/ `"normal"`（缺省）/ `"background"`（定时、批量等后台作业），原样进入 `ToolsInvokeParams.priority`，App SDK 的
+调用队列据此先交互、后后台，队列满时低优先级让路（spec/protocol.md 5.3）。Hub 不按优先级排队或改变限流 / 唤醒行为（Hub 不排队，
+资源保护对所有优先级相同）；优先级是 Agent 的判断，Hub 只校验与转交。改调后台替代（3.14）时随调用转交；不转发给上游 MCP 服务器。
+
+**不合法的值**（`timeoutMs` 不是正整数；幂等键不是字符串、为空或超过 256 个字符；`priority` 不是上述三个字符串之一）：调用不执行，以工具错误 `INVALID_INPUT` 结束
 （MCP 结果 `isError: true`），不静默忽略。没有这两个键时行为与之前完全相同。
 `Hub::dispatch`（第 5 节，含 `Mcp` 格式的完整 JSON-RPC 请求）不读这两个键：厂商自有循环用 `CallRequest.timeout` /
 `CallRequest.idempotency_key`。
 
 **绑定**：内置工具对所有入口一致，无需新增接口。`CallRequest.idempotency_key`：hub-c / hub-node / `@app-mcp/hub` 请求 JSON
 `idempotencyKey`，hub-uniffi `CallRequest.idempotency_key`，C# `CallRequest.IdempotencyKey`，Kotlin / Swift / Python 的调用方法可选参数（`idempotencyKey` /
-`idempotency_key`）。`HubConfig.navigate_timeout`：hub-c / hub-node JSON `navigateTimeoutMs`、`@app-mcp/hub` `navigateTimeoutMs`、
+`idempotency_key`）。`CallRequest.priority`：hub-c（v21）/ hub-node / `@app-mcp/hub` 请求 JSON `priority`，hub-uniffi
+`CallRequest.priority`（`CallPriority`），C# `CallRequest.Priority`，Kotlin / Swift / Python 的调用方法可选参数（`priority`）。`HubConfig.navigate_timeout`：hub-c / hub-node JSON `navigateTimeoutMs`、`@app-mcp/hub` `navigateTimeoutMs`、
 hub-uniffi `HubConfig.navigate_timeout_ms`、C# `HubOptions.NavigateTimeout`。
 
 ### 3.16 按名寻址：名字服务连接器（第 4d 项，spec/naming.md）

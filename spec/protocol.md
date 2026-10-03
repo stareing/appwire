@@ -326,7 +326,8 @@ interface ToolsSyncParams { tools: ToolInfo[] }
 interface ToolsChangedParams { upserted: ToolInfo[]; removed: string[] }
 
 interface ToolsInvokeParams { callId: string; name: string; arguments: object; timeoutMs?: number;
-  idempotencyKey?: string }   // Agent 的幂等键，1..=256 个字符，原样（3.3）
+  idempotencyKey?: string     // Agent 的幂等键，1..=256 个字符，原样（3.3）
+  priority?: "interactive" | "normal" | "background" }  // Agent 给出的调用优先级（5.3），省略 = normal
 interface ToolsInvokeResult {
   data: unknown            // 无返回值时为 null
   stateHints?: string[]
@@ -584,6 +585,12 @@ docs/plans/12-mcp-2026-07-28.md m10），本协议不使用；此后新增的类
   - 新到的调用需要排队而排队中的调用数已达 `maxQueuedCalls`（默认 64，0 = 不限）→ `RATE_LIMITED`，`data` 带
     `{"scope": "queue", "limit": N}`（不带 `retryAfterMs`：何时空出取决于正在执行的调用）。被拒绝的调用未开始，不记入去重表，
     同一 `callId` 稍后可重发。
+  - **优先级**（第 16 项 P6）：调用队列先按 `priority`（`interactive` > `normal` > `background`）、再按到达顺序排列，上面的调度规则
+    在此顺序上进行（交互调用排到已排队的普通 / 后台调用之前，同级不插队）；已开始的调用不被打断。新到的调用需要排队而队列已满时，
+    若队列中有优先级更低的调用，改为拒绝其中**最后到达**的一个（`RATE_LIMITED`，`data` 另带 `"preempted": true`），新调用入队；
+    否则照常拒绝新调用。接收方把不认识的 `priority` 取值当作 `normal`（向后兼容；Host 侧对 Agent 的取值另做严格校验，
+    spec/hub-api.md 3.15）。优先级由 Agent 判断（如用户在对话中等结果时用 `interactive`、定时 / 批量任务用 `background`），
+    本库不推断。
   - **用户正在操作**（第 16 项 N6）：App 用 `setBusy(true / false)` 声明用户此刻正在 App 内操作（何时算由 App 决定，如编辑框
     获得焦点、拖拽中；本库不推断）。期间**写调用**（生效注解不是 `readOnlyHint: true` 的工具，按 `risk` 推导规则）按客户端配置
     `busyPolicy` 处理：`reject`（默认）→ `RATE_LIMITED`，`data` 带 `{"scope": "busy"}`（不带 `retryAfterMs`），未开始、不记入

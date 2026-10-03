@@ -127,7 +127,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 
 | 操作 | 含义 |
 |---|---|
-| `{invoke, args?, callId?, timeoutMs?, cancelAfterMs?, idempotencyKey?, noWait?}` | 发 `tools/invoke`（`idempotencyKey` 给出时带上该字段），等结果（`cancelAfterMs` 到期仍未完成则发 `tools/cancel`）；`noWait: true` 时不等结果、立即执行下一步（结果到达时照常打印，全部操作完成后等齐再结束） |
+| `{invoke, args?, callId?, timeoutMs?, cancelAfterMs?, idempotencyKey?, priority?, noWait?}` | 发 `tools/invoke`（`idempotencyKey` / `priority` 给出时原样带上该字段），等结果（`cancelAfterMs` 到期仍未完成则发 `tools/cancel`）；`noWait: true` 时不等结果、立即执行下一步（结果到达时照常打印，全部操作完成后等齐再结束） |
 | `{read}` | 发 `resources/read` |
 | `{navigate, params?}` | 发 `app/navigate {page, params?}`，等回复 |
 | `{catalog: settleMs}` | 继续处理消息 settleMs 后打印 Host 当前目录与按 8.4 计算的 `toolsHash` |

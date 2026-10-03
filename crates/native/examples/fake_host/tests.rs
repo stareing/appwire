@@ -78,6 +78,7 @@ fn parses_conformance_ops() {
                     timeout_ms: Some(100),
                     cancel_after_ms: Some(50),
                     idempotency_key: None,
+                    priority: None,
                     no_wait: true,
                 },
             },

@@ -103,6 +103,8 @@ struct InvokeOpts {
     timeout_ms: Option<u64>,
     cancel_after_ms: Option<u64>,
     idempotency_key: Option<String>,
+    /// `--priority`：原样写入 `tools/invoke` 参数 `priority`（可发不认识的取值，检验 SDK 的宽松解析）。
+    priority: Option<String>,
     /// `--no-wait`：发出后不等结果就执行下一步（结果到达时照常打印；全部操作完成后等齐再关闭连接）。
     no_wait: bool,
 }

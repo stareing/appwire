@@ -301,6 +301,7 @@ impl ServerHandler for McpSession {
             principal: Some(caller.principal.label()),
             client_name: context.client_info().map(|i| i.name),
             task_id: agent.task_id,
+            priority: agent.priority,
         };
         let ct = context.ct.clone();
         let inv = self

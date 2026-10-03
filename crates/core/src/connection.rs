@@ -198,8 +198,10 @@ fn take_invoke_params(params: &mut Value) -> Option<ToolsInvokeParams> {
         Some(v) => Some(v.as_str()?.to_owned()),
         None => None,
     };
+    // 宽松：不认识的优先级当作 normal（[`ToolsInvokeParams::priority`] 的 @compat）。
+    let priority = obj.get("priority").and_then(Value::as_str).and_then(proto::CallPriority::parse).unwrap_or_default();
     let arguments = obj.remove("arguments").unwrap_or(Value::Null);
-    Some(ToolsInvokeParams { call_id, name, arguments, timeout_ms, idempotency_key })
+    Some(ToolsInvokeParams { call_id, name, arguments, timeout_ms, idempotency_key, priority })
 }
 
 fn tool_error(kind: ErrorKind, message: impl Into<String>) -> RpcError {

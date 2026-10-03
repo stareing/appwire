@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use app_mcp_protocol::RequestId;
+use app_mcp_protocol::{CallPriority, RequestId};
 use serde_json::Value;
 
 use crate::{Millis, ToolId};
@@ -23,6 +23,8 @@ pub(crate) struct Call {
     pub deadline: Option<Millis>,
     /// 执行期间到达的同一 `callId` 的重复请求（spec/protocol.md 3.3），完成时一并回复。
     pub waiters: Vec<RequestId>,
+    /// Agent 给出的优先级（`ToolsInvokeParams.priority`）：队列先按它、再按到达顺序排列。
+    pub priority: CallPriority,
     /// 开始执行时工具声明的互斥组（[`crate::ToolDef::exclusive`]）；排队中为 `None`。
     pub exclusive: Option<String>,
 }
@@ -80,8 +82,19 @@ impl Calls {
         self.queued.len()
     }
 
+    /// 按优先级插入：排在同级及更高优先级的调用之后、更低优先级的调用之前（同级按到达顺序）。
     pub fn enqueue(&mut self, call: Call) {
-        self.queued.push_back(call);
+        let at = self.queued.iter().position(|c| c.priority < call.priority).unwrap_or(self.queued.len());
+        self.queued.insert(at, call);
+    }
+
+    /// 排队中优先级低于 `than` 的调用里最后到达的一个（队列超限时为更高优先级的调用让路）。
+    pub fn lowest_below(&self, than: CallPriority) -> Option<&Call> {
+        self.queued.iter().rev().find(|c| c.priority < than)
+    }
+
+    pub fn queued_priority(&self, call_id: &str) -> Option<CallPriority> {
+        self.queued.iter().find(|c| c.call_id == call_id).map(|c| c.priority)
     }
 
     /// 排队中第 `index` 个调用（按到达顺序）。
@@ -153,6 +166,7 @@ mod tests {
             deadline,
             waiters: Vec::new(),
             exclusive: None,
+            priority: CallPriority::Normal,
         }
     }
 
@@ -199,5 +213,20 @@ mod tests {
         assert!(!c.can_start(ToolId(2), 0, Some("doc")), "同组互斥");
         assert!(c.can_start(ToolId(2), 0, Some("sheet")));
         assert!(c.can_start(ToolId(2), 1, None));
+    }
+
+    #[test]
+    fn enqueue_orders_by_priority_then_arrival() {
+        let mut c = Calls::default();
+        let with = |id: &str, p: CallPriority| Call { priority: p, ..call(id, None) };
+        c.enqueue(with("n1", CallPriority::Normal));
+        c.enqueue(with("b1", CallPriority::Background));
+        c.enqueue(with("i1", CallPriority::Interactive));
+        c.enqueue(with("n2", CallPriority::Normal));
+        c.enqueue(with("i2", CallPriority::Interactive));
+        let order: Vec<String> = (0..c.queued_len()).filter_map(|i| c.queued_at(i)).map(|x| x.call_id.clone()).collect();
+        assert_eq!(order, ["i1", "i2", "n1", "n2", "b1"]);
+        assert_eq!(c.lowest_below(CallPriority::Interactive).map(|x| x.call_id.as_str()), Some("b1"));
+        assert_eq!(c.lowest_below(CallPriority::Background).map(|x| x.call_id.as_str()), None);
     }
 }

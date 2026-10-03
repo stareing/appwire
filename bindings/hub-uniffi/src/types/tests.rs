@@ -130,9 +130,13 @@ fn call_request_arguments() {
         call_id: None,
         session: Some("s".into()),
         idempotency_key: Some("order-7".into()),
+        priority: None,
     };
     let h = r.clone().into_hub().unwrap();
     assert_eq!(h.arguments, json!({}));
+    assert_eq!(h.priority, hub::CallPriority::Normal);
+    let p = CallRequest { priority: Some(CallPriority::Background), ..r.clone() }.into_hub().unwrap();
+    assert_eq!(p.priority, hub::CallPriority::Background);
     assert_eq!(h.idempotency_key.as_deref(), Some("order-7"));
     assert_eq!(h.timeout, Some(Duration::from_millis(10)));
     let h = CallRequest {

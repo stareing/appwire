@@ -1,0 +1,29 @@
+{
+  "id": "call-priority",
+  "title": "排队中的调用先按 priority（interactive > normal > background）、再按到达顺序开始；不认识的取值按 normal",
+  "spec": ["protocol.md 5.3"],
+  "app": {
+    "config": { "maxConcurrentCalls": 1 },
+    "tools": [
+      { "name": "p.slow", "description": "占住执行槽", "handler": { "delayMs": 300, "return": { "ok": "slow" } } },
+      { "name": "p.bg", "description": "后台", "handler": { "return": { "ok": "bg" } } },
+      { "name": "p.unknown", "description": "未知优先级", "handler": { "return": { "ok": "unknown" } } },
+      { "name": "p.normal", "description": "普通", "handler": { "return": { "ok": "normal" } } },
+      { "name": "p.int", "description": "交互", "handler": { "return": { "ok": "int" } } }
+    ]
+  },
+  "host": { "timeoutMs": 15000, "ops": [
+    { "invoke": "p.slow", "noWait": true },
+    { "invoke": "p.bg", "priority": "background", "noWait": true },
+    { "invoke": "p.unknown", "priority": "urgent", "noWait": true },
+    { "invoke": "p.normal", "noWait": true },
+    { "invoke": "p.int", "priority": "interactive", "noWait": true }
+  ] },
+  "expect": [
+    { "type": "invoke", "name": "p.slow", "result": { "data": { "ok": "slow" } } },
+    { "type": "invoke", "name": "p.int", "result": { "data": { "ok": "int" } } },
+    { "type": "invoke", "name": "p.unknown", "result": { "data": { "ok": "unknown" } } },
+    { "type": "invoke", "name": "p.normal", "result": { "data": { "ok": "normal" } } },
+    { "type": "invoke", "name": "p.bg", "result": { "data": { "ok": "bg" } } }
+  ]
+}

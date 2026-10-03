@@ -5,7 +5,7 @@ use std::time::Duration;
 use app_mcp_hub as hub;
 use serde_json::Value;
 
-use super::{AppOverviewInfo, ContentAnnotations, HubError, ResultStatus, parse_json};
+use super::{AppOverviewInfo, CallPriority, ContentAnnotations, HubError, ResultStatus, parse_json};
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct CallRequest {
@@ -29,6 +29,9 @@ pub struct CallRequest {
     /// Agent 的幂等键（1..=256 个字符），原样转交 App（spec/hub-api.md 3.15）；不合法时调用以 `INVALID_INPUT` 结束。
     #[uniffi(default = None)]
     pub idempotency_key: Option<String>,
+    /// 调用优先级（第 16 项 P6）：原样转交 App，App 的调用队列先按它、再按到达顺序调度；为空 = `Normal`。
+    #[uniffi(default = None)]
+    pub priority: Option<CallPriority>,
 }
 
 impl CallRequest {
@@ -45,6 +48,7 @@ impl CallRequest {
             call_id: self.call_id,
             session: self.session,
             idempotency_key: self.idempotency_key,
+            priority: self.priority.map(Into::into).unwrap_or_default(),
         })
     }
 }

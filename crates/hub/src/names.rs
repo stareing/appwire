@@ -73,6 +73,8 @@ pub const META_WOKE: &str = "dev.appwire/woke";
 pub const META_TIMEOUT_MS: &str = "dev.appwire/timeoutMs";
 /// Agent 的幂等键：原样进入 `ToolsInvokeParams.idempotencyKey`（spec/protocol.md 3.3）。
 pub const META_IDEMPOTENCY_KEY: &str = "dev.appwire/idempotencyKey";
+/// Agent 给出的调用优先级（第 16 项 P6）：`interactive` / `normal` / `background`，进入 `ToolsInvokeParams.priority`。
+pub const META_PRIORITY: &str = "dev.appwire/priority";
 
 /// 可选的任务句柄通道：与工具参数 [`ARG_TASK_ID`] 等价，且对任何工具调用（含 App 工具）生效
 /// （供自己实现客户端的 Agent 宿主；模型写不进 `_meta`，见 spec/hub-api.md 3.6「任务句柄」）。

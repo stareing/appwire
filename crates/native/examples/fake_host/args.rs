@@ -51,7 +51,7 @@ pub(super) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Optio
                     _ => return Err("--args 必须紧跟在 --invoke <tool> 之后".to_owned()),
                 }
             }
-            "--call-id" | "--invoke-timeout-ms" | "--cancel-after-ms" | "--idempotency-key" => {
+            "--call-id" | "--invoke-timeout-ms" | "--cancel-after-ms" | "--idempotency-key" | "--priority" => {
                 let text = value(&flag)?;
                 let Some(Op::Invoke { opts: inv, .. }) = opts.ops.last_mut() else {
                     return Err(format!("{flag} 必须跟在 --invoke <tool> 之后"));
@@ -59,6 +59,7 @@ pub(super) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Optio
                 match flag.as_str() {
                     "--call-id" => inv.call_id = Some(text),
                     "--idempotency-key" => inv.idempotency_key = Some(text),
+                    "--priority" => inv.priority = Some(text),
                     "--invoke-timeout-ms" => inv.timeout_ms = Some(parse_u64(&flag, &text)?),
                     _ => inv.cancel_after_ms = Some(parse_u64(&flag, &text)?),
                 }

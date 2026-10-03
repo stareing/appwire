@@ -363,6 +363,7 @@ impl Hub {
             principal: None,
             client_name: None,
             task_id: None,
+            priority: Default::default(),
         };
         let inv = self.shared.call(ctx, std::future::pending()).await;
         let r = match inv.to_mcp() {

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use app_mcp_hub::{
-    CallRequest, ErrorKind, Hub, HubConfig, HubError, PolicyConfig, ToolError, ToolFilter, ToolSurface, WakeRequest, Waker,
+    CallPriority, CallRequest, ErrorKind, Hub, HubConfig, HubError, PolicyConfig, ToolError, ToolFilter, ToolSurface, WakeRequest, Waker,
     async_trait,
 };
 use app_mcp_native::{
@@ -62,12 +62,18 @@ async fn eventually(what: &str, mut f: impl FnMut() -> bool) {
     }
 }
 
+/// 参数带 `tag` 的调用按开始执行的顺序记录（调用优先级测试）。
+static STARTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// 返回工具名与 handler 上下文中的幂等键；参数带 `delayMs` 时先等待。
 struct Echo;
 impl ToolHandler for Echo {
     fn invoke(&self, call: CallHandle) {
         std::thread::spawn(move || {
             let args: Value = serde_json::from_str(&call.arguments_json()).unwrap_or(Value::Null);
+            if let Some(tag) = args["tag"].as_str() {
+                STARTED.lock().unwrap().push(tag.to_owned());
+            }
             if let Some(ms) = args["delayMs"].as_u64() {
                 std::thread::sleep(Duration::from_millis(ms));
             }
@@ -324,7 +330,7 @@ async fn activate_respects_wake_policy_and_unsupported_navigation() {
 #[cfg(feature = "mcp-server")]
 mod mcp {
     use super::*;
-    use app_mcp_hub::names::{LEGACY_META_IDEMPOTENCY_KEY, META_IDEMPOTENCY_KEY, META_TIMEOUT_MS};
+    use app_mcp_hub::names::{LEGACY_META_IDEMPOTENCY_KEY, META_IDEMPOTENCY_KEY, META_PRIORITY, META_TIMEOUT_MS};
     use rmcp::ServiceExt;
     use rmcp::model::{CallToolRequestParams, CallToolResult, RequestMetaObject};
 
@@ -379,12 +385,51 @@ mod mcp {
         assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
 
         // 不合法的 _meta：不执行，INVALID_INPUT
-        for bad in [json!({ META_TIMEOUT_MS: 0 }), json!({ META_TIMEOUT_MS: "5" }), json!({ META_IDEMPOTENCY_KEY: 7 })] {
+        for bad in [
+            json!({ META_TIMEOUT_MS: 0 }),
+            json!({ META_TIMEOUT_MS: "5" }),
+            json!({ META_IDEMPOTENCY_KEY: 7 }),
+            json!({ META_PRIORITY: "urgent" }),
+        ] {
             let r = mcp_call(&hub, "shop.cart.add", json!({}), bad).await;
             assert_eq!(r.is_error, Some(true));
             assert!(text(&r).contains("INVALID_INPUT"), "{}", text(&r));
         }
         client.stop();
+        hub.shutdown().await;
+    }
+}
+
+/// 调用优先级（第 16 项 P6）：Hub API 的 `priority` 经 `tools/invoke` 到达 App，App 的调用队列先执行交互调用、后执行后台调用。
+#[tokio::test(flavor = "multi_thread")]
+async fn priority_reaches_app_queue() {
+    let hub = Arc::new(Hub::start(config()).await.unwrap());
+    let (client, _nav) = app(&hub, false, LifecycleMode::Persistent);
+    client.start();
+    connected(&hub).await;
+
+    // 预热：首次调用的总览附带等不计入排队顺序
+    call(&hub, "shop.cart.add", json!({})).await.unwrap();
+    let spawn = |tag: &'static str, priority: CallPriority, delay_ms: u64| {
+        let hub = hub.clone();
+        tokio::spawn(async move {
+            let mut req = CallRequest::new("shop.cart.add", json!({"tag": tag, "delayMs": delay_ms}));
+            req.priority = priority;
+            let out = tokio::time::timeout(T, hub.call_tool(req)).await.expect("调用超时").unwrap();
+            assert!(out.result.is_ok(), "{tag}: {:?}", out.result);
+        })
+    };
+    let slow = spawn("slow", CallPriority::Normal, 600);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let bg = spawn("background", CallPriority::Background, 0);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let int = spawn("interactive", CallPriority::Interactive, 0);
+    for h in [slow, bg, int] {
+        h.await.unwrap();
+    }
+    assert_eq!(*STARTED.lock().unwrap(), ["slow", "interactive", "background"], "按开始执行的顺序");
+    client.stop();
+    if let Ok(hub) = Arc::try_unwrap(hub) {
         hub.shutdown().await;
     }
 }
