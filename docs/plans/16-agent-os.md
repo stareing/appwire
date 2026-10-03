@@ -276,6 +276,27 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
 ### 第四部分：场景扩展
 
 - **N3 事件与触发器**：App 在清单声明可发出的事件；用户 / Agent 注册"事件 → 提示"规则，Hub 在事件到达时回调 Agent 宿主（Hub SDK 回调；Host 侧经 MCP 通知）；本库只投递事件，不代 Agent 发起调用（调用及其授权由 Agent 负责）。
+  - **设计（2026-10-03，含 P4；机主已确认：拉取为主 + 通知提醒、休眠时丢弃并告知 App、一期 Rust + 二期各语言）**
+    - 声明：清单 `events: [{name, description, payloadSchema?}]`（同工具名规则）；运行时声明经 `tools/sync` 同一时机的新通知
+      `events/sync {events}`（无清单的网页 / 原生 App 也能声明）。未声明的事件 Hub 丢弃并记诊断。
+    - 发出：SDK `emitEvent(name, payload?)` → 通知 `events/emit {name, payload?, eventId}`（`eventId` SDK 生成，Hub 去重）。
+      只在已连接时发；休眠 / 未连接时 SDK **不缓存、不为发事件回连**（原则 4：事件不让 App 多一个连接或定时器），丢弃并返回
+      `false` 让 App 知道。载荷受 `max_event_bytes`（默认 8 KiB）约束，超限 Hub 丢弃。
+    - 订阅（"规则"）：Agent 用内置工具 `apps.events.subscribe {appId, event?, filter?}` / `apps.events.unsubscribe`，
+      订阅归属**主体**（已登记 Agent 名；匿名调用方归调用方键，随 P1 任务回收）。厂商 / 机主：Hub API `subscribe_events`
+      与回调 `set_event_handler`（同 `set_approval_handler` 形态）；Host 侧规则也可写在 `<home>/events.json`（同 policy.json 读写）。
+      不支持"事件 → 自动调用"（微内核：触发器只投递事件）。
+    - 投递 = 信箱（P4 合并）：每个订阅主体一个信箱，事件到达即入箱；Agent 以内置工具 `apps.events {ack?}`（取件，**任何 MCP
+      客户端都能用**）或资源 `app-mcp://events/self`（订阅后收 `resources/updated` 作提醒）取件。不依赖 Claude Code 是否
+      处理自定义通知（U10 的保守解：拉取为主、通知只作提醒）。`apps/self` 带未读数，Agent 每次接触都能看到。
+    - 上限（B-07）：信箱条数 `max_inbox_events`（默认 100，满则丢最旧并计数）、TTL `inbox_ttl`（默认 24 小时，**读取时惰性清理**，
+      不加定时器）、每订阅频率上限（默认 60 条 / 分钟，超出丢弃并计数，经第 14 项限流同一实现）；主体订阅数上限 32。
+    - 持久化（P4）：已登记 Agent 的信箱与订阅写 `<state_dir>/inbox/<agent>.json`（照 `dormant_store.rs`：原子写、0600、版本号、
+      上限、过期丢弃、损坏跳过；`state_dir` 为 None 时只在内存）。匿名调用方不持久化。
+    - 可观测：`HubStatus.events`（各订阅的投递 / 丢弃计数）、doctor、`HubEvent::AppEvent`。
+    - 分期：一期 = 协议 + 核心 + native + Hub + Host + 一致性用例；二期 = 各语言 App SDK `emitEvent` 与 Hub 封装。
+    - 未知：Claude Code 是否展示 `resources/updated`（不影响正确性，拉取可用）；事件 `filter` 先只支持载荷顶层字段相等匹配。
+    - 风险：事件风暴（频率上限 + 条数上限 + 丢弃计数，测试覆盖）；持久化写放大（每次变更同步写整个信箱文件，≤100 条、小文件；事件风暴已被频率上限截住）。
 - **N4 标准意图**：定义通用动词 schema（先试点 `message.send`、`calendar.create`、`media.play`、`file.share`、`navigation.open`），App 声明实现；
   Hub 按用户默认 App 路由；codegen 输出到系统意图框架。
 - **O1 工具检索**：`apps.search(query)`，按关键词、最近使用、成功率、当前可见界面（4c）排序；可选本地向量索引（U5）。
