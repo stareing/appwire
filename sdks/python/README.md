@@ -239,7 +239,10 @@ an invalid key ends the call with `INVALID_INPUT`. `priority=CallPriority.INTERA
 `"normal"` / `"background"`; `None` = normal) is passed to the app unchanged, whose call queue runs interactive calls
 before background ones. When the Hub routes a view tool to its declared background tool,
 `CallResult.routed_to` names the tool actually called. Built-in tools `apps.activate` / `apps.release` are always
-listed, plus `apps.page` / `apps.navigate` when a page catalog exists.
+listed, plus `apps.page` / `apps.navigate` when a page catalog exists. `apps.calls` lists the session's in-flight calls and
+`apps.cancel {callId}` cancels one of them (the caller gets `CANCELLED`); `hub.status().calls` lists every in-flight
+call as `CallStatus` (`call_id`, `name`, `caller`, `subject`, `state: CallState`, `elapsed_ms`, `instance_id`,
+`progress` / `progress_total` / `progress_message`, `platform_state`).
 
 Policy hook points (`spec/hub-api.md` §3.13): `Hub(policy={"rules": [{"id": "no-pay", "action": "deny", "app": "shop",
 "tool": "pay*"}]})` or `hub.set_policy(...)` at runtime. `hide` removes an app / tool from every list (calls get

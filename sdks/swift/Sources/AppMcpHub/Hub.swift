@@ -75,6 +75,11 @@ public typealias TaskSelectionStatus = AppMcpHubBindings.TaskSelectionStatus
 public typealias TaskLeaseStatus = AppMcpHubBindings.TaskLeaseStatus
 /// 未到期的对象锁（`HubStatus.locks`，spec/hub-api.md 3.6「对象锁」）。
 public typealias LockStatus = AppMcpHubBindings.LockStatus
+/// 进行中的调用（`HubStatus.calls`，spec/hub-api.md 3.6「调用对象」）：进度展开为 `progress` / `progressTotal` / `progressMessage`，
+/// `caller` 只在 `status()` 中给出，`platformState` 为执行实例最近上报的可见性。
+public typealias CallStatus = AppMcpHubBindings.CallStatus
+/// 调用阶段：`created` → `approving` → `activating` → `running`（只前进，不需要的阶段跳过）。
+public typealias CallState = AppMcpHubBindings.CallState
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。
 public typealias LimitsConfig = AppMcpHubBindings.LimitsConfig

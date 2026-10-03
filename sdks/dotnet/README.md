@@ -178,6 +178,10 @@ var outcome = await hub.CallAsync("notes.add", new { text = "买牛奶" });  // 
 - `new CallRequest(...) { Priority = CallPriority.Interactive }`：调用优先级（`Interactive` / `Normal` / `Background`，null = Normal）
   原样转交 App，App 的调用队列先交互、后后台（第 16 项 P6）。
 - 内置工具 `apps.activate` / `apps.release` 总是列出，有页面目录时另有 `apps.page` / `apps.navigate`（经 `CallAsync` / `DispatchAsync` 调用）。
+- 调用对象（第 16 项 P5，spec/hub-api.md 3.6「调用对象」）：内置工具 `apps.calls`（列出本会话进行中的调用）/ `apps.cancel`（`{callId}`，
+  取消本会话的调用，发起方得到 `CANCELLED`）总是列出；`Status().Calls` 为全部进行中的调用（`CallStatusInfo`：`CallId`、`Name`、
+  `Caller`、`Subject`、`State`（`CallState.Created` / `Approving` / `Activating` / `Running`）、`ElapsedMs`、`InstanceId`、`Progress`、
+  `PlatformState`）。嵌入方取消用 `CancelCall(callId)`（不检查归属）。
 - 调用元信息：`CallOutcome.DurationMs`（Hub 收到调用到得出结果的毫秒数，含审批、唤醒与等待 App）、`CallOutcome.Woke`
   （本次 App 工具调用是否经历了唤醒 / 按名激活；内置与上游工具恒为 false）。旧 Hub 未给出时为 0 / false。
 

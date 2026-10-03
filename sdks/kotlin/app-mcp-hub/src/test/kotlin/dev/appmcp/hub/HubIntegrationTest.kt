@@ -266,7 +266,8 @@ class HubIntegrationTest {
         assertEquals(null, hub.listenAddr)
         assertEquals(null, hub.ipcEndpoint)
         assertEquals(
-            setOf("apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.lock", "apps.unlock"),
+            setOf("apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.lock", "apps.unlock",
+                "apps.calls", "apps.cancel"),
             hub.tools().map { it.name }.toSet(),
         )
         val st = hub.status()
@@ -310,7 +311,7 @@ class HubIntegrationTest {
         assertEquals(
             listOf(
                 "apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release",
-                "apps.lock", "apps.unlock",
+                "apps.lock", "apps.unlock", "apps.calls", "apps.cancel",
             ),
             hub.tools(ToolFilter(session = "c1")).map { it.name },
         )

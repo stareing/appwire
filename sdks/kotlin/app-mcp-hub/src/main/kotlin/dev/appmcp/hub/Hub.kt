@@ -68,6 +68,13 @@ typealias TaskSelectionStatus = dev.appmcp.hub.ffi.TaskSelectionStatus
 typealias TaskLeaseStatus = dev.appmcp.hub.ffi.TaskLeaseStatus
 /** 未到期的对象锁（`HubStatus.locks`，spec/hub-api.md 3.6「对象锁」）。 */
 typealias LockStatus = dev.appmcp.hub.ffi.LockStatus
+/**
+ * 进行中的调用（`HubStatus.calls`，spec/hub-api.md 3.6「调用对象」）：进度展开为 `progress` / `progressTotal` / `progressMessage`，
+ * `caller` 只在 `status()` 中给出，`platformState` 为执行实例最近上报的可见性。
+ */
+typealias CallStatus = dev.appmcp.hub.ffi.CallStatus
+/** 调用阶段：`CREATED` → `APPROVING` → `ACTIVATING` → `RUNNING`（只前进，不需要的阶段跳过）。 */
+typealias CallState = dev.appmcp.hub.ffi.CallState
 
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /** 限流与大小上限（[HubConfig.limits]；[HubStatus.limits] 为全部字段给出的生效值）。为空的字段取默认值。 */

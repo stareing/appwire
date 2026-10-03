@@ -53,7 +53,41 @@ public sealed record HubStatusInfo(
     public IReadOnlyList<UsageStatusInfo>? Usage { get; init; }
     /// <summary>未到期的对象锁（第 16 项 N6，spec/hub-api.md 3.6「对象锁」），按 AppId、Key 排序；旧 Hub 为 null。</summary>
     public IReadOnlyList<LockStatusInfo>? Locks { get; init; }
+    /// <summary>进行中的调用（第 16 项 P5，spec/hub-api.md 3.6「调用对象」），按开始时刻排序；旧 Hub 为 null。</summary>
+    public IReadOnlyList<CallStatusInfo>? Calls { get; init; }
 }
+
+/// <summary>调用阶段（只前进，不需要的阶段跳过）。</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<CallState>))]
+public enum CallState
+{
+    /// <summary>已受理：名称解析、路由、策略与限流。</summary>
+    Created,
+    /// <summary>等待审批（ApprovalHandler 询问用户中）。</summary>
+    Approving,
+    /// <summary>唤醒 App 或导航到工具所在页面中。</summary>
+    Activating,
+    /// <summary>已交给 App 实例 / 上游 / 内置工具，等待结果。</summary>
+    Running,
+}
+
+/// <summary>
+/// 一个进行中的调用（第 16 项 P5）。Name：工具全名；Caller：调用方键（只在 Status() 中给出，内置工具 apps.calls 不含）；
+/// Subject：记账主体 agent:&lt;名&gt; / local / api；ElapsedMs：从 Hub 受理起算。
+/// </summary>
+public sealed record CallStatusInfo(string CallId, string Name, string Subject, CallState State, ulong ElapsedMs)
+{
+    public string? Caller { get; init; }
+    /// <summary>执行的 App 实例（Running 且在 App 上执行时）。</summary>
+    public string? InstanceId { get; init; }
+    /// <summary>App 最近报告的进度。</summary>
+    public CallStatusProgress? Progress { get; init; }
+    /// <summary>执行实例最近上报的可见性 visible / hidden / frozen（诊断用，不是阶段）。</summary>
+    public string? PlatformState { get; init; }
+}
+
+/// <summary>调用最近报告的进度（Message 截到 200 字符）。</summary>
+public sealed record CallStatusProgress(double Progress, double? Total, string? Message);
 
 /// <summary>
 /// 一把未到期的对象锁（第 16 项 N6）。Key：命名锁的名字（App 锁为 null）；Caller：持有者的调用方键；

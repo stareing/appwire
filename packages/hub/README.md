@@ -206,12 +206,16 @@ hub.setWaker(null)                                                 // 恢复配�
 - `callTool({ name, arguments, priority: 'interactive' })`：调用优先级（`'interactive'` / `'normal'` / `'background'`，缺省 normal）
   原样转交 App，App 的调用队列先交互、后后台（第 16 项 P6）。
 - 内置工具 `apps.activate`（只唤醒不调用）/ `apps.release`（收回本会话租约）总是列出；有页面目录时另有 `apps.page` / `apps.navigate`。
+- 调用对象（spec/hub-api.md 3.6「调用对象」）：内置工具 `apps.calls`（列出本会话进行中的调用）/ `apps.cancel({ callId })`（取消本会话
+  的调用，发起方得到 `CANCELLED`；不是自己的 → `TOOL_NOT_FOUND`）总是列出；`hub.status().calls` 列出全部进行中的调用
+  （`CallStatus`：`callId`、`name`、`caller`、`subject`、`state`（`created` / `approving` / `activating` / `running`）、`elapsedMs`、
+  `instanceId?`、`progress?`、`platformState?`）。嵌入方取消用 `hub.cancelCall(callId)`（不检查归属）。
 
 ## 渐进暴露（工具很多时）
 
 `toolExposure: 'auto'`（默认）下，App 与上游工具总数超过 `toolExposureThreshold`（默认 40）时，`tools()` / `exportTools()`
 只返回内置工具（`apps.list` / `apps.select` / `apps.overview` / `apps.tools` / `apps.activate` / `apps.release`，`maxLocks > 0` 时另有
-`apps.lock` / `apps.unlock`，有页面目录时另有 `apps.page` / `apps.navigate`），以及该会话展开过、调用过或选定了实例的 App 的工具。
+`apps.lock` / `apps.unlock`，其后 `apps.calls` / `apps.cancel`，有页面目录时另有 `apps.page` / `apps.navigate`），以及该会话展开过、调用过或选定了实例的 App 的工具。
 模型调用 `apps.tools({ appId })` 得到该 App 的工具（含 schema），之后这些工具出现在同一会话的导出里；未列出的工具按全名 / 导出名
 仍可直接调用。会话由 `ToolFilter.session` 与 `dispatch(format, call, session)` 的会话对应：
 

@@ -134,6 +134,21 @@
 - **P5 调用对象与后台作业控制**：每次调用是一个可查询的对象，状态为 `pending / running / completed / failed / cancelled / timeout`（2026-10-02 由 4f b 并入）；调用可转为脱离请求的作业，支持列出 / 取消 / 等待 / 重新挂接；与 O2 共用取消路径，载体对齐 MCP tasks 扩展（第 12 项 M6）；第 19 项 R1 的 `pending` 结果可引用调用对象。
   - **调用状态机**（4f i）：`CREATED → ACTIVATING → RUNNING → 结果`，写入 `spec/protocol.md`；平台相关状态（前台 / 后台 / 挂起）只作诊断字段 `platform_state`（`status` / `doctor`），不进核心状态。
   - **作业状态归属**（4f h）：脱离请求的作业状态由 App 持久化，Hub 只转发作业 ID 与状态查询、不在内存保存作业状态（App 进程被系统回收后状态不丢）；进行中调用的状态（状态机）由 Hub 持有，调用结束即释放。
+  - **实施（2026-10-03，第一阶段：调用对象）**：契约见 spec/hub-api.md 3.6「调用对象」；`crates/hub/src/call_objects.rs`。
+    - 事实：`HubShared.calls`（原 callId → 取消信号）扩为调用对象 `CallEntry`（调用方键、工具全名、阶段、开始时刻、实例、连接、最近进度），
+      登记与释放仍在 `dispatch.rs call()`（序号防覆盖）。阶段：`created` → `approving`（`approve` 真正询问用户时）→ `activating`
+      （唤醒 / 导航前）→ `running`（发 `tools/invoke` 前、调上游前、执行内置工具前）。进度：`route_progress` 先记到调用对象（只认执行
+      连接，不论调用方是否请求进度通知）。诊断 `platformState` = 执行实例最近上报的可见性（4f i：不进阶段）。内置工具 `apps.calls`
+      （只读）/ `apps.cancel`（按调用方键 + 任务句柄判定归属，他人的与不存在的回复相同）总是列出，属任务级工具（可带 `taskId`）。
+      `HubStatus.calls`（含调用方键）、`apps/self` `calls`、Host 摘要与 doctor（最多 5 个）。
+    - 测试：`tests/call_objects.rs`（运行中带实例、进度与 platformState；apps.calls 只见自己且不含本次查询与调用方键；取消他人 / 不存在
+      → TOOL_NOT_FOUND；取消自己 → 发起方 CANCELLED、对象释放；审批中为 approving）；Host `callers_text_lists_calls`；hub-uniffi 转换。
+      变异：去掉归属检查、不置 running、不记进度分别被检出。
+    - 未知 / 未做（第二阶段，需机主决定）：**脱离请求与重新挂接**（Agent 不等结果、稍后 `wait` 取结果）要求 Hub 在调用结束后保留结果，
+      与"调用结束即释放"冲突——可选：(a) 不做，长作业一律走 App 的 `pending` + `stateResource`（现状，作业状态在 App、进程回收不丢）；
+      (b) Hub 有界保留已结束的脱离调用结果（TTL、条数与字节上限、只给发起方）；(c) 对齐 MCP tasks 扩展（第 12 项 M6，规范仍是实验性）。
+      另：调用对象不持久化（Hub 重启即无，进行中的调用本也随之失败）；`apps.calls` 不列出其他 Agent 的调用（机主看 `/status`）。
+    - 风险：内置工具多两个（列表变长约 2 项描述）；每次 `/status` 为每个调用查一次注册表（只在读状态时）。
 - **P6 交互优先 QoS**：调用可带优先级与截止时间；截止时间由 Agent 在 MCP 请求 `_meta` 中以相对毫秒 `dev.appwire/timeoutMs` 给出，Hub 取其与 `response_timeout` 的较小者、只限制等待 App 结果（4f c，已实施 7f587d8；键名随第 19 项 R4）；用户在场的交互调用优先于后台作业，冲突时后台排队或让路。
   - **实施（2026-10-03，调用优先级）**：契约见 spec/protocol.md 5.3「优先级」、spec/hub-api.md 3.15「调用优先级」。
     - 事实：Agent 在 `tools/call` 请求 `_meta` 给 `dev.appwire/priority`（`interactive` / `normal` / `background`，Hub 严格校验，

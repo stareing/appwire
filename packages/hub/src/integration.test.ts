@@ -136,6 +136,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     const log = await startShop(hub)
     const builtins = [
       'apps.list', 'apps.select', 'apps.overview', 'apps.tools', 'apps.activate', 'apps.release', 'apps.lock', 'apps.unlock',
+      'apps.calls', 'apps.cancel',
     ]
     expect(hub.tools().map((t) => t.name)).toEqual(builtins)
     expect(toAnthropicTools(hub, { session: 'c1' }).map((t) => t.name)).toHaveLength(builtins.length)
@@ -738,6 +739,46 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
 
     // 不合法的取值：请求 JSON 无法解析，抛 HubError
     await expect(hub.callTool({ name: 'jobs.job.run', priority: 'urgent' as CallPriority })).rejects.toBeInstanceOf(HubError)
+  })
+
+  it('调用对象：进行中的调用出现在 status().calls 与 apps.calls；apps.cancel 后发起方得到 CANCELLED（第 16 项 P5）', async () => {
+    const { hub } = await startHub()
+    const app = createAppMcp({ appId: 'jobs', appName: '作业', hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false })
+    apps.push(app)
+    app.tool('job.run', {
+      description: '慢作业',
+      handler: (_: unknown, { signal }) =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(() => resolve({ ok: true }), 5000)
+          signal.addEventListener('abort', () => {
+            clearTimeout(timer)
+            reject(new Error('aborted'))
+          })
+        }),
+    })
+    app.start()
+    await until(() => hub.tools({ apps: ['jobs'], onlyAvailable: true, includeBuiltin: false }).length === 1, 'jobs 工具登记')
+
+    const slow = hub.callTool({ name: 'jobs.job.run', callId: 'slow-1', session: 's1' })
+    const status = await until(() => hub.status().calls?.find((c) => c.callId === 'slow-1' && c.state === 'running'), 'slow-1 running')
+    expect(status).toMatchObject({ name: 'jobs.job.run', caller: 'api:s1', subject: 'api', state: 'running' })
+    expect(status.instanceId).toBeTruthy()
+    expect(status.elapsedMs).toBeGreaterThanOrEqual(0)
+
+    // 只见自己的调用，且不含 caller
+    const listed = await hub.callTool({ name: 'apps.calls', session: 's1' })
+    const own = (listed.result.ok as { calls: Array<Record<string, unknown>> }).calls
+    expect(own.map((c) => c.callId)).toEqual(['slow-1'])
+    expect(own[0]).not.toHaveProperty('caller')
+    const other = await hub.callTool({ name: 'apps.calls', session: 's2' })
+    expect((other.result.ok as { calls: unknown[] }).calls).toEqual([])
+    const foreign = await hub.callTool({ name: 'apps.cancel', arguments: { callId: 'slow-1' }, session: 's2' })
+    expect(foreign.result.error?.kind).toBe('TOOL_NOT_FOUND')
+
+    const cancelled = await hub.callTool({ name: 'apps.cancel', arguments: { callId: 'slow-1' }, session: 's1' })
+    expect(cancelled.result.ok).toMatchObject({ callId: 'slow-1', cancelled: true })
+    expect((await slow).result.error?.kind).toBe('CANCELLED')
+    await until(() => !hub.status().calls?.some((c) => c.callId === 'slow-1'), 'slow-1 释放')
   })
 
   it('navigateTimeoutMs 必须是非负整数', async () => {

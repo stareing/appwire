@@ -130,6 +130,11 @@ TaskSelectionStatus = ffi.TaskSelectionStatus
 TaskLeaseStatus = ffi.TaskLeaseStatus
 #: 未到期的对象锁（``HubStatus.locks``，spec/hub-api.md 3.6「对象锁」）。
 LockStatus = ffi.LockStatus
+#: 进行中的调用（``HubStatus.calls``，spec/hub-api.md 3.6「调用对象」）：进度展开为 ``progress`` / ``progress_total`` /
+#: ``progress_message``，``caller`` 只在 ``status()`` 中给出，``platform_state`` 为执行实例最近上报的可见性。
+CallStatus = ffi.CallStatus
+#: 调用阶段：``CallState.CREATED`` → ``APPROVING`` → ``ACTIVATING`` → ``RUNNING``（只前进，不需要的阶段跳过）。
+CallState = ffi.CallState
 # 资源保护与工具声明（spec/hub-api.md 3.11）。
 #: 限流与大小上限（``HubConfig.limits``；``HubStatus.limits`` 为全部字段给出的生效值）。为空的字段取默认值。
 LimitsConfig = ffi.LimitsConfig
@@ -202,6 +207,8 @@ __all__ = [
     "LastError",
     "LimitsConfig",
     "LockStatus",
+    "CallState",
+    "CallStatus",
     "McpProtocolMode",
     "OutputValidation",
     "PairingRequest",

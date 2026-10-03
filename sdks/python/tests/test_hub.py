@@ -196,6 +196,7 @@ def test_formats_and_shutdown() -> None:
     assert hub.ipc_endpoint is None
     assert {t.name for t in hub.tools()} == {
         "apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.lock", "apps.unlock",
+        "apps.calls", "apps.cancel",
     }
     gemini = hub.export_tools("gemini")
     assert "functionDeclarations" in gemini
@@ -260,7 +261,7 @@ def test_progressive_exposure() -> None:
             wait_tools(hub, 2)
             builtins = [
                 "apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release",
-                "apps.lock", "apps.unlock",
+                "apps.lock", "apps.unlock", "apps.calls", "apps.cancel",
             ]
             assert [t.name for t in hub.tools(session="c1")] == builtins
             r = hub.call_tool_sync("apps.tools", {"appId": "notes"}, session="c1")
@@ -549,6 +550,59 @@ def test_call_priority_reaches_app_queue() -> None:
             assert started == ["slow", "interactive", "background"]
             with pytest.raises(ValueError):
                 hub.call_tool_sync("jobs.job.run", priority="urgent")
+        finally:
+            app.stop()
+
+
+def test_call_objects() -> None:
+    """第 16 项 P5（spec/hub-api.md 3.6「调用对象」）：进行中的调用出现在 status().calls 与 apps.calls；apps.cancel → CANCELLED。"""
+    from app_mcp.hub import CallState, CallStatus
+
+    with Hub(listen="127.0.0.1:0", enable_ipc=False) as hub:
+        app = AppMcp("jobs", "作业", host_url=f"ws://{hub.listen_addr}/app")
+
+        @app.tool("job.run", description="慢作业")
+        def run(ctx: ToolContext) -> dict:
+            ctx.progress(1, 4, "第一步")
+            ctx.wait_cancelled(10)
+            return {"ok": True}
+
+        app.start()
+        try:
+            deadline = time.monotonic() + 10
+            while len(hub.tools(apps=["jobs"], include_builtin=False)) != 1:
+                assert time.monotonic() < deadline, "等待工具注册超时"
+                time.sleep(0.02)
+
+            async def main() -> None:
+                slow = asyncio.ensure_future(hub.call_tool("jobs.job.run", call_id="slow-1", session="s1"))
+                deadline = time.monotonic() + 10
+                while True:
+                    found = [c for c in hub.status().calls or [] if c.call_id == "slow-1"]
+                    if found and found[0].state == CallState.RUNNING and found[0].progress is not None:
+                        break
+                    assert time.monotonic() < deadline, "等待调用进入 running 超时"
+                    await asyncio.sleep(0.02)
+                call = found[0]
+                assert isinstance(call, CallStatus)
+                assert (call.name, call.caller, call.subject) == ("jobs.job.run", "api:s1", "api")
+                assert call.instance_id
+                assert (call.progress, call.progress_total, call.progress_message) == (1, 4, "第一步")
+
+                own = await hub.call_tool("apps.calls", session="s1")
+                assert [c["callId"] for c in own.data["calls"]] == ["slow-1"]
+                assert "caller" not in own.data["calls"][0]
+                assert (await hub.call_tool("apps.calls", session="s2")).data["calls"] == []
+                foreign = await hub.call_tool("apps.cancel", {"callId": "slow-1"}, session="s2")
+                assert foreign.error is not None and foreign.error.kind == "TOOL_NOT_FOUND"
+
+                cancelled = await hub.call_tool("apps.cancel", {"callId": "slow-1"}, session="s1")
+                assert cancelled.error is None and cancelled.data["cancelled"] is True
+                out = await asyncio.wait_for(slow, 10)
+                assert out.error is not None and out.error.kind == "CANCELLED"
+
+            asyncio.run(main())
+            assert not [c for c in hub.status().calls or [] if c.call_id == "slow-1"]
         finally:
             app.stop()
 

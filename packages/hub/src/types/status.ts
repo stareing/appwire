@@ -1,6 +1,6 @@
 /** @app-mcp/hub 的公开类型：运行状态（spec/hub-api.md 3.9；与 `GET /status` 相同）。 */
 
-import type { LimitsConfig, OutputValidation, PolicyStatus, Risk, ToolAnnotations } from '../types.js'
+import type { LimitsConfig, OutputValidation, PolicyStatus, Risk, ToolAnnotations, Visibility } from '../types.js'
 import type { InstanceInfo } from './apps.js'
 
 /** 主 HTTP 服务的令牌策略。 */
@@ -142,6 +142,41 @@ export interface HubStatus {
   usage?: UsageStatus[]
   /** 未到期的对象锁（第 16 项 N6），按 appId、key 排序；旧 Hub 不报告。 */
   locks?: LockStatus[]
+  /** 进行中的调用（第 16 项 P5），按开始时刻排序；旧 Hub 不报告。 */
+  calls?: CallStatus[]
+}
+
+/**
+ * 调用阶段（spec/hub-api.md 3.6「调用对象」），只前进、不需要的阶段跳过：
+ * `created` 已受理 → `approving` 等待审批 → `activating` 唤醒 / 导航 → `running` 已交给执行方。
+ */
+export type CallState = 'created' | 'approving' | 'activating' | 'running'
+
+/** App 最近报告的进度（{@link CallStatus.progress}）。 */
+export interface CallProgress {
+  progress: number
+  total?: number
+  /** 截到 200 字符。 */
+  message?: string
+}
+
+/** 一个进行中的调用（{@link HubStatus.calls}；内置工具 `apps.calls` 返回同形态但不含 `caller`）。 */
+export interface CallStatus {
+  callId: string
+  /** 工具全名。 */
+  name: string
+  /** 调用方键；只在 `status()` 中给出。 */
+  caller?: string
+  /** 记账主体：`agent:<名>` / `local` / `api`。 */
+  subject: string
+  state: CallState
+  /** 从 Hub 受理起算的毫秒数。 */
+  elapsedMs: number
+  /** 执行的 App 实例（`running` 且在 App 上执行时）。 */
+  instanceId?: string
+  progress?: CallProgress
+  /** 执行实例最近上报的可见性（诊断用，不是阶段）。 */
+  platformState?: Visibility
 }
 
 /** 一把未到期的对象锁（{@link HubStatus.locks}，spec/hub-api.md 3.6「对象锁」）。 */
