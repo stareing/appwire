@@ -106,7 +106,7 @@ AppWire 定位为 Agent 的系统调用层（模型 = 用户态程序，App 工�
 | `spec/protocol.md`、`crates/protocol/` | SDK ↔ Host 消息格式与行为 |
 | `spec/manifest.md` | 清单格式 |
 | `spec/hub-api.md` | Hub SDK（Agent 端）API 与各语言绑定 |
-| `crates/core/src/lib.rs` 中的公开 API | 核心与各语言绑定之间的接口 |
+| `crates/core/src/lib.rs`（含其重导出的 `config.rs`、`handles.rs`、`state.rs`）中的公开 API | 核心与各语言绑定之间的接口 |
 | `packages/web/src/types.ts` | @app-mcp/web 与上层包之间的接口 |
 | `crates/native/src/lib.rs` 中的公开 API | 原生运行时与各原生绑定之间的接口 |
 | `bindings/c/include/app_mcp.h` | C ABI，C / C++ / C# / Dart 共用 |
