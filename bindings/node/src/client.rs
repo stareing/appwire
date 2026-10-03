@@ -43,6 +43,9 @@ impl JsNativeClient {
         if let Some(n) = config.max_concurrent_calls {
             cfg.max_concurrent_calls = n;
         }
+        if let Some(n) = config.max_queued_calls {
+            cfg.max_queued_calls = n;
+        }
         cfg.overview = config.overview.map(Into::into);
         if let Some(lifecycle) = config.lifecycle {
             cfg.lifecycle = lifecycle.into_policy()?;

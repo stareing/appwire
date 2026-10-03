@@ -100,6 +100,9 @@ fn op_args(op: &Value) -> Result<Vec<String>, String> {
         if let Some(n) = num("cancelAfterMs")? {
             a.extend(["--cancel-after-ms".to_owned(), n]);
         }
+        if obj.get("noWait").and_then(Value::as_bool) == Some(true) {
+            a.push("--no-wait".to_owned());
+        }
         return Ok(a);
     }
     if let Some(page) = obj.get("navigate") {
@@ -330,7 +333,7 @@ mod tests {
             id: "x".into(),
             root: PathBuf::from("."),
             doc: json!({"host": {"toolInfo": true, "leaseMs": 5, "ops": [
-                {"invoke": "t", "args": {"a": 1}, "callId": "c", "timeoutMs": 9, "cancelAfterMs": 3, "idempotencyKey": "k"},
+                {"invoke": "t", "args": {"a": 1}, "callId": "c", "timeoutMs": 9, "cancelAfterMs": 3, "idempotencyKey": "k", "noWait": true},
                 {"read": "r"}, {"catalog": 100}, {"delay": 7}, {"awaitSleep": true}, {"wake": true}
             ]}}),
         };
@@ -338,7 +341,7 @@ mod tests {
         assert_eq!(
             args.join(" "),
             "--tool-info --trace --lease-ms 5 --invoke t --args {\"a\":1} --call-id c --idempotency-key k --invoke-timeout-ms 9 \
-             --cancel-after-ms 3 --read r --catalog 100 --delay 7 --await-sleep --wake"
+             --cancel-after-ms 3 --no-wait --read r --catalog 100 --delay 7 --await-sleep --wake"
         );
         assert!(op_args(&json!({"bogus": 1})).is_err());
     }

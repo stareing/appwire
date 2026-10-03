@@ -81,7 +81,12 @@
  *   旧调用方不受影响）：App 在系统名字服务登记名字，Hub 按名拨号时接受通道（握手方向不变：SDK 先发 app/hello，
  *   wakeReason 为 "os-activation"）；通道关闭后 on-demand / idle 回到 DORMANT、不重连。由 D-Bus 激活启动的进程
  *   （命令行带 --app-mcp-activation）按"由唤醒冷启动"处理（AM_RESIDENCY_EXIT_WHEN_IDLE 生效）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v17 仍为 3。）
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v18 仍为 3。）
+ * - v18（第 4f 项 k / 第 16 项 N6，spec/protocol.md 5.3）：只在结构体末尾追加字段（按 struct_size 读取，旧调用方不受影响）。
+ *   · AmToolOptions 末尾追加 concurrency（本工具同时执行的调用上限，0 = 不单独限制）与 exclusive（互斥组名，同组工具
+ *     同一时刻至多一个在执行；NULL = 不互斥）。只在 SDK 内调度，不同步给 Host。
+ *   · AmClientOptions 末尾追加 max_queued_calls（排队中的调用上限；0 = 默认 64，负数 = 不限）。排队已满时新到的调用以
+ *     RATE_LIMITED（details {"scope":"queue","limit":N}）拒绝。
  * - 第 16 项 N6（spec/hub-api.md 3.6「对象锁」）：am_call_fail 认可的错误类别新增 "LOCKED"（-31003，由 Host 的对象锁产生，
  *   App 一般不用）；函数与结构体不变。
  *
@@ -334,6 +339,8 @@ typedef struct AmClientOptions {
     const char *name_instance;       /* 可为 NULL：登记实例名（[a-z][a-z0-9-]{0,31}，不能是 "default"），另登记
                                         dev.appmcp.App.<appId>.<instance>（Windows 管道 …-<appId>.<instance>）；不合法时
                                         am_client_new_ex 返回 AM_ERR_INVALID_CONFIG */
+    /* v18（spec/protocol.md 5.3）：旧调用方的 struct_size 不含以下字段时取默认值。 */
+    int32_t max_queued_calls;        /* 排队中的调用上限；0 = 默认 64，负数 = 不限。超出时新调用以 RATE_LIMITED 拒绝 */
 } AmClientOptions;
 
 typedef struct AmToolSpec {
@@ -363,6 +370,11 @@ typedef struct AmToolOptions {
     /* v15：可为 NULL：未声明。只对 AM_SURFACE_VIEW 工具有意义：App 在后台、本工具不可调用时 Hub 改调的同 App
      * app 工具的本地名（命名规则同工具名）。旧调用方的 struct_size 不含此字段时按 NULL 处理；更新时 NULL 表示清除。 */
     const char *background_tool;
+    /* v18（spec/protocol.md 5.3）：本工具同时执行的调用上限；0 = 不单独限制（只受 max_concurrent_calls 约束）。
+     * 旧调用方的 struct_size 不含此字段时为 0。 */
+    uint32_t concurrency;
+    /* v18：可为 NULL：不互斥。互斥组名（命名规则同工具名）：同组的工具同一时刻至多一个在执行。 */
+    const char *exclusive;
 } AmToolOptions;
 
 typedef struct AmResourceSpec {

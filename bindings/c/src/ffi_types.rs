@@ -76,6 +76,8 @@ pub struct AmClientOptions {
     pub register_name: bool,
     /// v17：登记实例名（`[a-z][a-z0-9-]{0,31}`，不能是 `default`）；NULL = 只登记默认名字。
     pub name_instance: *const c_char,
+    /// v18（spec/protocol.md 5.3）：排队中的调用上限；0 = 默认（64），负数 = 不限。
+    pub max_queued_calls: i32,
 }
 
 /// v8：`am_resource_register_ex` 的资源选项（带 `struct_size`，按调用方给出的大小读取）。
@@ -113,6 +115,10 @@ pub struct AmToolOptions {
     pub surface: c_int,
     /// v15：App 在后台时代替本工具（view 工具）调用的同 App app 工具本地名；NULL = 未声明。
     pub background_tool: *const c_char,
+    /// v18（spec/protocol.md 5.3）：本工具同时执行的调用上限；0 = 不单独限制。
+    pub concurrency: u32,
+    /// v18：互斥组（`[a-zA-Z0-9_.-]{1,64}`）；NULL = 不互斥。
+    pub exclusive: *const c_char,
 }
 
 /// v9：`am_call_complete_ex` 的调用结果（带 `struct_size`，按调用方给出的大小读取；`status` 用 c_int 接收）。

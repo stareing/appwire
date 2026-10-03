@@ -22,6 +22,10 @@ pub struct JsToolDef {
     pub page: Option<String>,
     /// 后台替代：同一 App 中一个 `app` 工具的局部名（spec/protocol.md 3.4）。
     pub background_tool: Option<String>,
+    /// 本工具的并发上限（spec/protocol.md 5.3）：缺省 / 0 = 不单独限制。
+    pub concurrency: Option<u32>,
+    /// 互斥组（spec/protocol.md 5.3）。
+    pub exclusive: Option<String>,
     /// 缺省 true。
     pub enabled: Option<bool>,
     pub scope: Option<f64>,
@@ -48,6 +52,8 @@ impl FromJson for JsToolDef {
             surface: f.protocol("surface"),
             page: f.string("page"),
             background_tool: f.string("backgroundTool"),
+            concurrency: f.u32("concurrency"),
+            exclusive: f.string("exclusive"),
             enabled: f.bool("enabled"),
             scope: f.f64("scope"),
         };
@@ -71,6 +77,8 @@ impl JsToolDef {
             surface: self.surface.unwrap_or_default(),
             page: self.page,
             background_tool: self.background_tool,
+            concurrency: self.concurrency.unwrap_or(0),
+            exclusive: self.exclusive,
         })
     }
 }
@@ -146,6 +154,9 @@ pub struct JsToolUpdate {
     pub page: Option<Option<String>>,
     /// `null` 清除声明的后台替代。
     pub background_tool: Option<Option<String>>,
+    pub concurrency: Option<u32>,
+    /// `null` 清除互斥组。
+    pub exclusive: Option<Option<String>>,
 }
 
 impl FromJson for JsToolUpdate {
@@ -170,7 +181,10 @@ impl FromJson for JsToolUpdate {
         };
         let page = f.nullable_string("page");
         let background_tool = f.nullable_string("backgroundTool");
+        let exclusive = f.nullable_string("exclusive");
         let u = JsToolUpdate {
+            concurrency: f.u32("concurrency"),
+            exclusive,
             surface: f.protocol("surface"),
             page,
             background_tool,
@@ -201,6 +215,8 @@ impl JsToolUpdate {
             surface: self.surface,
             page: self.page,
             background_tool: self.background_tool,
+            concurrency: self.concurrency,
+            exclusive: self.exclusive,
         }
     }
 }

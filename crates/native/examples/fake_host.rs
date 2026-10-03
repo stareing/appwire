@@ -33,7 +33,8 @@
 //!
 //! - `--invoke` 之后的修饰：`--call-id <id>`（指定 `callId`，缺省 `c<序号>`）、`--invoke-timeout-ms <ms>`（缺省 5000）、
 //!   `--cancel-after-ms <ms>`（发出调用后该时间仍未收到结果则发送 `tools/cancel`）、`--idempotency-key <key>`
-//!   （`ToolsInvokeParams.idempotencyKey`，spec/protocol.md 3.3）。
+//!   （`ToolsInvokeParams.idempotencyKey`，spec/protocol.md 3.3）、`--no-wait`（发出后立即执行下一步，不等结果；结果到达时
+//!   照常打印，全部操作完成后等齐未回复的调用再关闭连接；用于核对 SDK 的调用调度，spec/protocol.md 5.3）。
 //! - `--catalog <settleMs>`：继续处理消息 settleMs 后打印
 //!   `{"type":"catalog","tools":{<名称>:ToolInfo},"resources":{<名称>:ResourceInfo},"toolsHash"}`（`toolsHash` 由 Host 按 8.4 计算）。
 //! - `--delay <ms>`：继续处理消息 ms 后再执行下一步。
@@ -102,6 +103,8 @@ struct InvokeOpts {
     timeout_ms: Option<u64>,
     cancel_after_ms: Option<u64>,
     idempotency_key: Option<String>,
+    /// `--no-wait`：发出后不等结果就执行下一步（结果到达时照常打印；全部操作完成后等齐再关闭连接）。
+    no_wait: bool,
 }
 
 #[derive(Debug)]

@@ -144,7 +144,7 @@ impl Registry {
 
     pub fn register_tool(&mut self, def: ToolDef) -> Result<ToolId, CoreError> {
         validate_name(&def.name)?;
-        for name in def.page.iter().chain(&def.background_tool) {
+        for name in def.page.iter().chain(&def.background_tool).chain(&def.exclusive) {
             validate_name(name)?;
         }
         validate_schema(&def.input_schema)?;
@@ -163,12 +163,43 @@ impl Registry {
         if let Some(schema) = &update.input_schema {
             validate_schema(schema)?;
         }
-        for name in [&update.page, &update.background_tool].into_iter().flatten().flatten() {
+        for name in [&update.page, &update.background_tool, &update.exclusive].into_iter().flatten().flatten() {
             validate_name(name)?;
         }
         let def = self.tools.get_mut(&tool).ok_or(CoreError::UnknownTool(tool))?;
-        let ToolUpdate { description, input_schema, risk, activation, title, enabled, annotations, output_schema, surface, page, background_tool } =
-            update;
+        let ToolUpdate {
+            description,
+            input_schema,
+            risk,
+            activation,
+            title,
+            enabled,
+            annotations,
+            output_schema,
+            surface,
+            page,
+            background_tool,
+            concurrency,
+            exclusive,
+        } = update;
+        // 只改 SDK 内的调度声明时 Host 看到的定义不变，不发 `tools/changed`。
+        let synced = description.is_some()
+            || input_schema.is_some()
+            || risk.is_some()
+            || activation.is_some()
+            || title.is_some()
+            || enabled.is_some()
+            || annotations.is_some()
+            || output_schema.is_some()
+            || surface.is_some()
+            || page.is_some()
+            || background_tool.is_some();
+        if let Some(v) = concurrency {
+            def.concurrency = v;
+        }
+        if let Some(v) = exclusive {
+            def.exclusive = v;
+        }
         if let Some(v) = description {
             def.description = v;
         }
@@ -202,8 +233,10 @@ impl Registry {
         if let Some(v) = background_tool {
             def.background_tool = v;
         }
-        let name = def.name.clone();
-        self.mark_tool(&name);
+        if synced {
+            let name = def.name.clone();
+            self.mark_tool(&name);
+        }
         Ok(())
     }
 
@@ -395,6 +428,8 @@ mod tests {
             surface: crate::ToolSurface::App,
             page: None,
             background_tool: None,
+            concurrency: 0,
+            exclusive: None,
         }
     }
 

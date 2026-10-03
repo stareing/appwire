@@ -13,7 +13,7 @@ use app_mcp_native::{
 use super::*;
 use crate::callbacks::UserData;
 use crate::convert::{
-    activation_from, call_dedup_from, client_kind_from, convert_config, convert_lifecycle, error_kind_from,
+    activation_from, call_dedup_from, max_queued_from, client_kind_from, convert_config, convert_lifecycle, error_kind_from,
     heartbeat_mode_from, lifecycle_mode_from, read_call_result, read_hints, read_options, read_resource_options,
     read_tool_options, residency_from, result_status_from, risk_from, sleep_reason_from, visibility_from,
     wake_kind_from, wake_reason_from,

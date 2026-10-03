@@ -6,7 +6,7 @@ use serde_json::json;
 fn config_defaults_and_overrides() {
     let c: JsConfig = JsConfig::from_json(json!({
         "appId": "shop", "appName": "商城", "instanceId": "i1",
-        "sdkVersion": "9.9.9", "token": "t", "maxConcurrentCalls": 0,
+        "sdkVersion": "9.9.9", "token": "t", "maxConcurrentCalls": 0, "maxQueuedCalls": 5,
         "heartbeat": { "timeoutMs": 5 }
     }))
     .unwrap();
@@ -15,6 +15,7 @@ fn config_defaults_and_overrides() {
     assert_eq!(c.sdk_version, "9.9.9");
     assert_eq!(c.token.as_deref(), Some("t"));
     assert_eq!(c.max_concurrent_calls, 1);
+    assert_eq!(c.max_queued_calls, 5);
     assert_eq!(c.heartbeat.timeout_ms, 5);
     assert_eq!(c.heartbeat.interval_ms, HeartbeatPolicy::default().interval_ms);
     assert_eq!(c.reconnect, ReconnectPolicy::default());
@@ -119,6 +120,24 @@ fn tool_background_tool() {
     assert_eq!(u.background_tool, Some(Some("x.bg".into())));
     assert_eq!(JsToolUpdate::from_json(json!({})).unwrap().into_core().background_tool, None);
     assert!(JsToolUpdate::from_json(json!({ "backgroundTool": 1 })).is_err());
+}
+
+#[test]
+fn tool_concurrency_declarations() {
+    let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "concurrency": 2, "exclusive": "doc" }))
+        .unwrap()
+        .into_core()
+        .unwrap();
+    assert_eq!((d.concurrency, d.exclusive.as_deref()), (2, Some("doc")));
+    let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {} })).unwrap().into_core().unwrap();
+    assert_eq!((d.concurrency, d.exclusive), (0, None));
+    assert!(JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "concurrency": -1 })).is_err());
+    assert!(JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "concurrency": 4_294_967_296u64 })).is_err());
+    assert!(JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "exclusive": 1 })).is_err());
+    let u = JsToolUpdate::from_json(json!({ "concurrency": 3, "exclusive": null })).unwrap().into_core();
+    assert_eq!((u.concurrency, u.exclusive), (Some(3), Some(None)));
+    let u = JsToolUpdate::from_json(json!({})).unwrap().into_core();
+    assert_eq!((u.concurrency, u.exclusive), (None, None));
 }
 
 #[test]

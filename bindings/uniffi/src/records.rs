@@ -38,6 +38,12 @@ pub struct ToolSpec {
     /// Hub 改调该工具（spec/protocol.md 3.4「后台与前台」）。为空 = 未声明。
     #[uniffi(default = None)]
     pub background_tool: Option<String>,
+    /// 本工具同时执行的调用上限（spec/protocol.md 5.3）：0 = 不单独限制（只受 `max_concurrent_calls` 约束）。只在 SDK 内生效。
+    #[uniffi(default = 0)]
+    pub concurrency: u32,
+    /// 互斥组（spec/protocol.md 5.3，`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行。为空 = 不互斥。
+    #[uniffi(default = None)]
+    pub exclusive: Option<String>,
 }
 
 /// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。均可选，为空 = 未声明。
@@ -89,6 +95,8 @@ impl From<ToolSpec> for (native::ToolSpec, native::ToolOptions) {
             surface: s.surface.map(Into::into).unwrap_or_default(),
             page: s.page,
             background_tool: s.background_tool,
+            concurrency: s.concurrency,
+            exclusive: s.exclusive,
         };
         (n, options)
     }

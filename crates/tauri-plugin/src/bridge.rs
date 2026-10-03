@@ -87,6 +87,12 @@ struct ToolSpecMessage {
     /// 后台替代：同一 App 中一个 `app` 工具的局部名（spec/protocol.md 3.4）；`tool.update` 时缺省表示清除。
     #[serde(default, rename = "backgroundTool")]
     background_tool: Option<String>,
+    /// 本工具同时执行的调用上限（spec/protocol.md 5.3）；缺省 0 = 不单独限制。
+    #[serde(default)]
+    concurrency: u32,
+    /// 互斥组（spec/protocol.md 5.3）；`tool.update` 时缺省表示清除。
+    #[serde(default)]
+    exclusive: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

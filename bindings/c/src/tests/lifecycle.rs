@@ -69,9 +69,14 @@ fn options_are_read_up_to_struct_size() {
         call_dedup_max_entries: -1,
         register_name: true,
         name_instance: c"w2".as_ptr(),
+        max_queued_calls: 7,
     };
     let v = unsafe { read_options(&o) }.ok();
-    assert!(v.as_ref().is_some_and(|v| v.register_name && !v.name_instance.is_null()));
+    assert!(v.as_ref().is_some_and(|v| v.register_name && !v.name_instance.is_null() && v.max_queued_calls == 7));
+    // v17 调用方（到 name_instance 为止）：v18 排队上限取默认值。
+    o.struct_size = std::mem::offset_of!(AmClientOptions, max_queued_calls) as u32;
+    let v = unsafe { read_options(&o) }.ok();
+    assert!(v.as_ref().is_some_and(|v| v.register_name && v.max_queued_calls == 0));
     // v13–v16 调用方（到 call_dedup_max_entries 为止）：v17 名字服务字段取默认值。
     o.struct_size = std::mem::offset_of!(AmClientOptions, register_name) as u32;
     let v = unsafe { read_options(&o) }.ok();
@@ -123,6 +128,13 @@ fn call_dedup_values() {
     assert!(!call_dedup_from(d, -1, 0).enabled(), "负数关闭");
     assert!(!call_dedup_from(d, 0, -1).enabled());
     assert_eq!(call_dedup_from(d, 0, 5), CallDedupPolicy { ttl_ms: d.ttl_ms, max_entries: 5 });
+}
+
+#[test]
+fn max_queued_values() {
+    assert_eq!(max_queued_from(64, 0), 64, "0 保留默认值");
+    assert_eq!(max_queued_from(64, -1), 0, "负数 = 不限");
+    assert_eq!(max_queued_from(64, 3), 3);
 }
 
 #[test]
@@ -211,6 +223,7 @@ fn lifecycle_through_c_abi() {
         call_dedup_max_entries: 0,
         register_name: false,
         name_instance: ptr::null(),
+        max_queued_calls: 0,
     };
     let mut client: *mut AmClient = ptr::null_mut();
     assert_eq!(
@@ -392,6 +405,7 @@ fn tool_options_are_read_up_to_struct_size() {
     let schema = CString::new(r#"{"type":"object"}"#).unwrap_or_default();
     let page = CString::new("cart").unwrap_or_default();
     let background = CString::new("cart.summary").unwrap_or_default();
+    let group = CString::new("doc").unwrap_or_default();
     let full = AmToolOptions {
         struct_size: std::mem::size_of::<AmToolOptions>() as u32,
         annotations_json: ann.as_ptr(),
@@ -399,6 +413,8 @@ fn tool_options_are_read_up_to_struct_size() {
         page: page.as_ptr(),
         surface: 1,
         background_tool: background.as_ptr(),
+        concurrency: 2,
+        exclusive: group.as_ptr(),
     };
     let options = unsafe { read_tool_options(&full) }.ok();
     assert_eq!(
@@ -413,8 +429,14 @@ fn tool_options_are_read_up_to_struct_size() {
             surface: app_mcp_native::ToolSurface::View,
             page: Some("cart".into()),
             background_tool: Some("cart.summary".into()),
+            concurrency: 2,
+            exclusive: Some("doc".into()),
         })
     );
+    // v17 调用方（不含 concurrency / exclusive）：不单独限制、不互斥
+    let v17 = AmToolOptions { struct_size: std::mem::offset_of!(AmToolOptions, concurrency) as u32, ..full };
+    let options = unsafe { read_tool_options(&v17) }.ok();
+    assert!(options.as_ref().is_some_and(|o| o.concurrency == 0 && o.exclusive.is_none() && o.background_tool.is_some()));
     // v14 调用方（不含 background_tool）：按未声明处理
     let v14 = AmToolOptions { struct_size: std::mem::offset_of!(AmToolOptions, background_tool) as u32, ..full };
     let options = unsafe { read_tool_options(&v14) }.ok();
@@ -658,6 +680,8 @@ fn tool_options_and_call_result_reach_host() {
         page: ptr::null(),
         surface: 0,
         background_tool: ptr::null(),
+        concurrency: 0,
+        exclusive: ptr::null(),
     };
     let mut tool: *mut AmTool = ptr::null_mut();
     assert_eq!(

@@ -28,6 +28,9 @@ pub struct ClientConfig {
     pub heartbeat: HeartbeatPolicy,
     /// 同时执行的调用上限；超出的调用按到达顺序排队。默认 1（串行）。
     pub max_concurrent_calls: usize,
+    /// 排队中的调用上限（B-07）：新到的调用需要排队且队列已满时以 `RATE_LIMITED`（`details.scope = "queue"`）拒绝。
+    /// 默认 [`DEFAULT_MAX_QUEUED_CALLS`]；0 表示不限。
+    pub max_queued_calls: usize,
     /// 同一资源两次 `resources/updated` 通知之间的最小间隔。默认 100ms。
     pub resource_update_throttle_ms: Millis,
     /// 发送 `app/hello` 后等待结果的最长时间，超时断开并重连。默认 10s；0 表示不限。
@@ -59,6 +62,11 @@ pub struct ClientConfig {
     pub launched_by_activation: bool,
 }
 
+/// [`ClientConfig::max_queued_calls`] 的默认值。
+///
+/// @why 64：串行（默认并发 1）时足以容纳一个 Agent 的突发批量调用；再多通常意味着 App 卡住或调用方失控，尽早拒绝比排到超时更好。
+pub const DEFAULT_MAX_QUEUED_CALLS: usize = 64;
+
 impl ClientConfig {
     /// 其余字段取默认值。
     pub fn new(
@@ -83,6 +91,7 @@ impl ClientConfig {
             reconnect: ReconnectPolicy::default(),
             heartbeat: HeartbeatPolicy::default(),
             max_concurrent_calls: 1,
+            max_queued_calls: DEFAULT_MAX_QUEUED_CALLS,
             resource_update_throttle_ms: 100,
             handshake_timeout_ms: 10_000,
             lifecycle: LifecyclePolicy::default(),

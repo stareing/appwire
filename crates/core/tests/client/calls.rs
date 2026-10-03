@@ -305,3 +305,84 @@ fn duplicate_call_id_attaches_or_is_rejected_when_dedup_off() {
     h.drain();
     assert_eq!(invoked(&h.invoke(3, "c1", "a", None)), vec!["c1".to_owned()], "关闭时完成后再次执行");
 }
+
+/// spec/protocol.md 5.3：工具的 `concurrency` 限制本工具同时执行的调用数；忙的工具不阻塞队列中其后的其他工具。
+#[test]
+fn per_tool_concurrency_does_not_block_other_tools() {
+    let mut cfg = config();
+    cfg.max_concurrent_calls = 3;
+    let mut h = Harness::with(cfg);
+    h.c.register_tool(ToolDef { concurrency: 1, ..tool("slow") }).unwrap();
+    h.c.register_tool(tool("fast")).unwrap();
+    h.connect();
+    assert_eq!(invoked(&h.invoke(1, "c1", "slow", None)), vec!["c1"]);
+    assert!(invoked(&h.invoke(2, "c2", "slow", None)).is_empty(), "slow 已有一个在执行");
+    assert_eq!(invoked(&h.invoke(3, "c3", "fast", None)), vec!["c3"], "其后的其他工具照常开始");
+    assert_eq!((h.c.running_call_count(), h.c.queued_call_count()), (2, 1));
+    h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
+    assert_eq!(invoked(&h.drain()), vec!["c2"]);
+}
+
+/// 同一互斥组的工具同一时刻至多一个在执行，不同组 / 不互斥的工具不受影响；组内按到达顺序。
+#[test]
+fn exclusive_group_serializes_across_tools() {
+    let mut cfg = config();
+    cfg.max_concurrent_calls = 4;
+    let mut h = Harness::with(cfg);
+    let group = |name: &str, g: &str| ToolDef { exclusive: Some(g.into()), ..tool(name) };
+    h.c.register_tool(group("doc.edit", "doc")).unwrap();
+    h.c.register_tool(group("doc.rename", "doc")).unwrap();
+    h.c.register_tool(group("sheet.edit", "sheet")).unwrap();
+    h.c.register_tool(tool("other")).unwrap();
+    h.connect();
+    assert_eq!(invoked(&h.invoke(1, "c1", "doc.edit", None)), vec!["c1"]);
+    assert!(invoked(&h.invoke(2, "c2", "doc.rename", None)).is_empty(), "同组互斥");
+    assert!(invoked(&h.invoke(3, "c3", "doc.edit", None)).is_empty());
+    assert_eq!(invoked(&h.invoke(4, "c4", "sheet.edit", None)), vec!["c4"]);
+    assert_eq!(invoked(&h.invoke(5, "c5", "other", None)), vec!["c5"]);
+    h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
+    assert_eq!(invoked(&h.drain()), vec!["c2"], "组内按到达顺序，一次只放一个");
+    h.c.complete_call("c2", Ok(CallOutput::default()), h.now).unwrap();
+    assert_eq!(invoked(&h.drain()), vec!["c3"]);
+}
+
+/// 新到的调用需要排队而队列已满 → `RATE_LIMITED`（`details.scope = "queue"`），不进去重表（同一 callId 稍后可重试）。
+#[test]
+fn queue_overflow_is_rate_limited() {
+    let mut cfg = config();
+    cfg.max_queued_calls = 1;
+    let mut h = Harness::with(cfg);
+    h.c.register_tool(tool("a")).unwrap();
+    h.connect();
+    assert_eq!(invoked(&h.invoke(1, "c1", "a", None)), vec!["c1"]);
+    assert!(sends(&h.invoke(2, "c2", "a", None)).is_empty(), "排进队列");
+    let msgs = sends(&h.invoke(3, "c3", "a", None));
+    assert_eq!((msgs.len(), msgs[0]["id"].as_i64(), error_kind(&msgs[0])), (1, Some(3), "RATE_LIMITED"));
+    let details = &msgs[0]["error"]["data"];
+    assert_eq!((details["scope"].as_str(), details["limit"].as_u64()), (Some("queue"), Some(1)), "{}", msgs[0]);
+    assert_eq!(h.c.queued_call_count(), 1);
+    h.c.complete_call("c1", Ok(CallOutput::default()), h.now).unwrap();
+    assert_eq!(invoked(&h.drain()), vec!["c2"]);
+    assert_eq!(invoked(&h.invoke(4, "c3", "a", None)), Vec::<String>::new(), "被拒绝的 callId 未记入去重表：重试时照常排队");
+    assert_eq!(h.c.queued_call_count(), 1);
+}
+
+/// `max_queued_calls = 0` 不限；放宽工具的并发声明（`update_tool`）后排队中的调用随即开始，且不发 `tools/changed`。
+#[test]
+fn unlimited_queue_and_relaxing_declaration_starts_queued_calls() {
+    let mut cfg = config();
+    cfg.max_concurrent_calls = 2;
+    cfg.max_queued_calls = 0;
+    let mut h = Harness::with(cfg);
+    let id = h.c.register_tool(ToolDef { concurrency: 1, ..tool("a") }).unwrap();
+    h.connect();
+    h.invoke(1, "c1", "a", None);
+    for i in 2..=100 {
+        let msgs = sends(&h.invoke(i, &format!("c{i}"), "a", None));
+        assert!(msgs.is_empty(), "不限时不拒绝：{msgs:?}");
+    }
+    h.c.update_tool(id, ToolUpdate { concurrency: Some(2), ..Default::default() }).unwrap();
+    let ev = h.drain();
+    assert_eq!(invoked(&ev), vec!["c2"]);
+    assert!(!methods(&sends(&ev)).contains(&"tools/changed"), "调度声明只在 SDK 内");
+}

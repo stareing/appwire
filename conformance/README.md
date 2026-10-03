@@ -42,6 +42,7 @@ runner（各语言）                         fake_host --case <用例> --sdk <�
       "lifecycle": { "mode": "idle", "idleTimeoutMs": 300, "graceMs": …, "mergeWindowMs": … },
       "callDedup": { "ttlMs": …, "maxEntries": … },
       "maxConcurrentCalls": 1,
+      "maxQueuedCalls": 64,             // 需能力 callScheduling
       "navigateInBackground": false    // 给出时调用 SDK 的对应设置（spec/protocol.md 3.4）；缺省用 SDK 的平台缺省
     },
     "visibility": "hidden",             // 可选：启动前把实例可见性设为该值（visible / hidden / frozen）
@@ -66,7 +67,8 @@ App 固定为 `appId: "conf"`、`appName: "Conformance"`；runner 连接 fake_ho
 ### 2.1 工具声明
 
 `name`、`description`（必填）；`inputSchema`、`risk`、`activation`、`title`、`annotations`、`outputSchema`、`surface`、`page`、
-`backgroundTool`、`enabled`（缺省 true）按协议同名字段原样传给 SDK 的注册 API。未给出的字段不传（SDK 用自己的缺省值）。`handler` 描述 handler 的行为：
+`backgroundTool`、`enabled`（缺省 true）按协议同名字段原样传给 SDK 的注册 API；`concurrency`、`exclusive`（SDK 内的调用调度，
+spec/protocol.md 5.3，需能力 `callScheduling`）同样传给注册 API。未给出的字段不传（SDK 用自己的缺省值）。`handler` 描述 handler 的行为：
 
 | 键 | 含义 |
 |---|---|
@@ -122,7 +124,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 
 | 操作 | 含义 |
 |---|---|
-| `{invoke, args?, callId?, timeoutMs?, cancelAfterMs?, idempotencyKey?}` | 发 `tools/invoke`（`idempotencyKey` 给出时带上该字段），等结果（`cancelAfterMs` 到期仍未完成则发 `tools/cancel`） |
+| `{invoke, args?, callId?, timeoutMs?, cancelAfterMs?, idempotencyKey?, noWait?}` | 发 `tools/invoke`（`idempotencyKey` 给出时带上该字段），等结果（`cancelAfterMs` 到期仍未完成则发 `tools/cancel`）；`noWait: true` 时不等结果、立即执行下一步（结果到达时照常打印，全部操作完成后等齐再结束） |
 | `{read}` | 发 `resources/read` |
 | `{navigate, params?}` | 发 `app/navigate {page, params?}`，等回复 |
 | `{catalog: settleMs}` | 继续处理消息 settleMs 后打印 Host 当前目录与按 8.4 计算的 `toolsHash` |
@@ -170,6 +172,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `backgroundTool` | 工具 `backgroundTool` |
 | `backgroundNavigation` | `app.visibility`、`app.config.navigateInBackground`、导航行为 `userAction` |
 | `idempotencyKey` | handler 上下文中的幂等键（handler 结果 `returnIdempotencyKey`） |
+| `callScheduling` | 工具 `concurrency` / `exclusive`、`app.config.maxQueuedCalls`，且 handler 能并发执行（`delayMs` 不独占分发线程） |
 
 ## 5. 各 SDK 的 runner
 

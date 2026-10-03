@@ -58,6 +58,9 @@ pub struct ClientConfig {
     /// （Windows 管道 `…-<appId>.<instance>`），供 `appmcp://<appId>/<instance>` 寻址。不合法时构造客户端返回配置错误。
     #[uniffi(default = None)]
     pub name_instance: Option<String>,
+    /// 排队中的调用上限（spec/protocol.md 5.3）。为空时为 64；0 表示不限。超出时新调用以 `RATE_LIMITED` 拒绝。
+    #[uniffi(default = None)]
+    pub max_queued_calls: Option<u32>,
 }
 
 /// 调用去重策略（spec/protocol.md 3.3）：已开始执行的 `callId` 的首次结果在有效期内重放。任一字段为 0 关闭去重。
@@ -198,6 +201,9 @@ impl From<ClientConfig> for native::NativeConfig {
         n.token = c.token;
         n.launch_token = c.launch_token;
         n.max_concurrent_calls = c.max_concurrent_calls;
+        if let Some(q) = c.max_queued_calls {
+            n.max_queued_calls = q;
+        }
         n.overview = c.overview.map(Into::into);
         if let Some(lifecycle) = c.lifecycle {
             n.lifecycle = lifecycle.into();

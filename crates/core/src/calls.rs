@@ -23,6 +23,8 @@ pub(crate) struct Call {
     pub deadline: Option<Millis>,
     /// 执行期间到达的同一 `callId` 的重复请求（spec/protocol.md 3.3），完成时一并回复。
     pub waiters: Vec<RequestId>,
+    /// 开始执行时工具声明的互斥组（[`crate::ToolDef::exclusive`]）；排队中为 `None`。
+    pub exclusive: Option<String>,
 }
 
 impl Call {
@@ -82,8 +84,22 @@ impl Calls {
         self.queued.push_back(call);
     }
 
-    pub fn pop_queued(&mut self) -> Option<Call> {
-        self.queued.pop_front()
+    /// 排队中第 `index` 个调用（按到达顺序）。
+    pub fn queued_at(&self, index: usize) -> Option<&Call> {
+        self.queued.get(index)
+    }
+
+    pub fn remove_queued(&mut self, index: usize) -> Option<Call> {
+        self.queued.remove(index)
+    }
+
+    /// 按工具声明，`tool` 的一个调用此刻能否开始：本工具执行中的调用数小于 `concurrency`（0 = 不限），
+    /// 且互斥组 `exclusive` 中没有执行中的调用。全局并发上限由调用方检查。
+    pub fn can_start(&self, tool: ToolId, concurrency: u32, exclusive: Option<&str>) -> bool {
+        let same_tool = self.running.iter().filter(|c| c.tool == tool).count();
+        let tool_free = concurrency == 0 || same_tool < concurrency as usize;
+        let group_free = exclusive.is_none_or(|g| !self.running.iter().any(|c| c.exclusive.as_deref() == Some(g)));
+        tool_free && group_free
     }
 
     pub fn start(&mut self, call: Call) {
@@ -136,6 +152,7 @@ mod tests {
             timeout_ms: None,
             deadline,
             waiters: Vec::new(),
+            exclusive: None,
         }
     }
 
@@ -149,7 +166,7 @@ mod tests {
         let (r, q) = c.take_expired(5);
         assert!(r.is_empty());
         assert_eq!(q.len(), 1);
-        assert_eq!(c.pop_queued().map(|x| x.call_id), Some("c".into()));
+        assert_eq!(c.remove_queued(0).map(|x| x.call_id), Some("c".into()));
         let (r, _) = c.take_expired(10);
         assert_eq!(r.len(), 1);
         assert_eq!(c.running_len(), 0);
@@ -167,5 +184,20 @@ mod tests {
         assert!(!c.attach("x", RequestId::from("x2")));
         assert_eq!(c.take_running("a").map(|x| x.waiters), Some(vec![RequestId::from("a2")]));
         assert_eq!(c.take_queued("b").map(|x| x.waiters), Some(vec![RequestId::from("b2")]));
+    }
+
+    #[test]
+    fn per_tool_concurrency_and_exclusive_groups() {
+        let mut c = Calls::default();
+        assert!(c.can_start(ToolId(1), 1, Some("doc")));
+        let mut a = call("a", None);
+        a.exclusive = Some("doc".into());
+        c.start(a);
+        assert!(!c.can_start(ToolId(1), 1, None), "同一工具达到上限");
+        assert!(c.can_start(ToolId(1), 2, None));
+        assert!(c.can_start(ToolId(1), 0, None), "0 = 不单独限制");
+        assert!(!c.can_start(ToolId(2), 0, Some("doc")), "同组互斥");
+        assert!(c.can_start(ToolId(2), 0, Some("sheet")));
+        assert!(c.can_start(ToolId(2), 1, None));
     }
 }

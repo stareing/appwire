@@ -119,6 +119,8 @@ impl Shared {
                 surface: options.surface,
                 page: options.page,
                 background_tool: options.background_tool,
+                concurrency: options.concurrency,
+                exclusive: options.exclusive,
             })
             .map_err(core_error)?;
         st.tools.insert(id, ToolEntry { handler, scope });

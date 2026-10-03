@@ -5,28 +5,23 @@ use super::*;
 impl Client {
     // ---- 调用 -----------------------------------------------------------
 
-    /// 在并发上限内依次启动排队中的调用。
+    /// 在并发上限内按到达顺序启动排队中的调用（spec/protocol.md 5.3）：因本工具的 `concurrency` 或互斥组正忙而不能开始的调用
+    /// 留在原位，后面能开始的先开始（不被队头阻塞）；它们在占用者结束后的下一轮按原顺序优先。
     pub(crate) fn pump_calls(&mut self) {
         let max = self.config.max_concurrent_calls.max(1);
+        let mut index = 0;
         while self.calls.running_len() < max {
-            let Some(call) = self.calls.pop_queued() else { break };
-            match self.registry.tool(call.tool) {
-                None => {
-                    let err = tool_error(
-                        ErrorKind::ToolNotFound,
-                        format!("工具 {} 在排队期间已被注销。请重新获取工具列表。", call.name),
-                    );
-                    self.respond_call(call, Err(err), false);
-                }
-                Some(def) if !def.enabled => {
-                    let err = tool_error(
-                        ErrorKind::ToolDisabled,
-                        format!("工具 {} 在排队期间已被禁用，当前不可用。", call.name),
-                    );
-                    self.respond_call(call, Err(err), false);
-                }
-                Some(_) => {
-                    let mut call = call;
+            let Some(tool) = self.calls.queued_at(index).map(|c| c.tool) else { break };
+            let verdict = match self.registry.tool(tool) {
+                None => Err((ErrorKind::ToolNotFound, "在排队期间已被注销。请重新获取工具列表。")),
+                Some(def) if !def.enabled => Err((ErrorKind::ToolDisabled, "在排队期间已被禁用，当前不可用。")),
+                Some(def) => Ok(self.calls.can_start(tool, def.concurrency, def.exclusive.as_deref()).then(|| def.exclusive.clone())),
+            };
+            match verdict {
+                Ok(None) => index += 1,
+                Ok(Some(exclusive)) => {
+                    let Some(mut call) = self.calls.remove_queued(index) else { break };
+                    call.exclusive = exclusive;
                     // @why 参数移交给 handler 而不深拷贝：开始执行后核心不再读取参数（1 MiB 对象数组省约 3 ms / 13 万次分配）。
                     let arguments = std::mem::take(&mut call.arguments);
                     self.events.push_back(Event::InvokeTool {
@@ -38,8 +33,29 @@ impl Client {
                     });
                     self.calls.start(call);
                 }
+                Err((kind, why)) => {
+                    let Some(call) = self.calls.remove_queued(index) else { break };
+                    let err = tool_error(kind, format!("工具 {} {why}", call.name));
+                    self.respond_call(call, Err(err), false);
+                }
             }
         }
+    }
+
+    /// 刚到达的调用 `call_id` 仍在排队且队列超过 `maxQueuedCalls` → 移出并以 `RATE_LIMITED` 拒绝（未开始，不进去重表）。
+    fn reject_overflow(&mut self, call_id: &str) {
+        let max = self.config.max_queued_calls;
+        if max == 0 || self.calls.queued_len() <= max {
+            return;
+        }
+        let Some(call) = self.calls.take_queued(call_id) else { return };
+        let err = ToolError::new(
+            ErrorKind::RateLimited,
+            format!("App 正忙：排队中的调用已达上限（{max} 个），工具 {} 未执行。请稍后重试。", call.name),
+        )
+        .with_details(serde_json::json!({ "scope": "queue", "limit": max }))
+        .into();
+        self.respond_call(call, Err(err), false);
     }
 
     pub(crate) fn finish_call(&mut self, call: Call, outcome: Result<CallOutput, ToolError>) {
@@ -98,6 +114,7 @@ impl Client {
                 return;
             }
         };
+        let call_id = p.call_id.clone();
         self.calls.enqueue(Call {
             call_id: p.call_id,
             request_id: id,
@@ -108,8 +125,10 @@ impl Client {
             timeout_ms: p.timeout_ms,
             deadline: p.timeout_ms.map(|t| now.saturating_add(t)),
             waiters: Vec::new(),
+            exclusive: None,
         });
         self.pump_calls();
+        self.reject_overflow(&call_id);
     }
 
     pub(super) fn on_cancel(&mut self, p: ToolsCancelParams) {

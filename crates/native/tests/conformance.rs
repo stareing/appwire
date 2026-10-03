@@ -26,7 +26,7 @@ const SDK: &str = "rust";
 /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md。
 const FEATURES: &[&str] = &[
     "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
-    "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
+    "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey", "callScheduling",
 ];
 
 fn repo_root() -> PathBuf {
@@ -56,6 +56,8 @@ fn tool_spec(decl: &Value) -> (ToolSpec, ToolOptions) {
         surface: parse(&decl["surface"]).unwrap_or_default(),
         page: text(&decl["page"]),
         background_tool: text(&decl["backgroundTool"]),
+        concurrency: decl["concurrency"].as_u64().map_or(0, |n| n as u32),
+        exclusive: text(&decl["exclusive"]),
     };
     (spec, options)
 }
@@ -277,6 +279,9 @@ fn config(addr: &str, case: &Value) -> NativeConfig {
     }
     if let Some(n) = c["maxConcurrentCalls"].as_u64() {
         cfg.max_concurrent_calls = n as u32;
+    }
+    if let Some(n) = c["maxQueuedCalls"].as_u64() {
+        cfg.max_queued_calls = n as u32;
     }
     cfg
 }

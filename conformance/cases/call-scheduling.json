@@ -1,0 +1,32 @@
+{
+  "id": "call-scheduling",
+  "title": "工具的 exclusive 互斥组与 concurrency：同组 / 同工具排队、按到达顺序，其他工具不被阻塞",
+  "spec": ["protocol.md 5.3"],
+  "requires": ["callScheduling"],
+  "app": {
+    "config": { "maxConcurrentCalls": 4 },
+    "tools": [
+      { "name": "doc.edit", "description": "改文档（慢）", "exclusive": "doc", "handler": { "delayMs": 400, "return": { "step": "edit" } } },
+      { "name": "doc.rename", "description": "重命名文档（快）", "exclusive": "doc", "handler": { "return": { "step": "rename" } } },
+      { "name": "job.run", "description": "限一个并发（慢）", "concurrency": 1, "handler": { "delayMs": 400, "counter": true } },
+      { "name": "other", "description": "不受限", "handler": { "return": { "step": "other" } } }
+    ]
+  },
+  "host": { "timeoutMs": 15000, "ops": [
+    { "invoke": "doc.edit", "noWait": true },
+    { "invoke": "job.run", "noWait": true },
+    { "delay": 100 },
+    { "invoke": "doc.rename", "noWait": true },
+    { "invoke": "job.run", "noWait": true },
+    { "invoke": "other", "noWait": true }
+  ] },
+  "expect": [
+    { "type": "invoke", "name": "other", "result": { "data": { "step": "other" } } },
+    { "type": "invoke", "name": "doc.edit", "result": { "data": { "step": "edit" } } },
+    { "type": "invoke", "name": "doc.rename", "result": { "data": { "step": "rename" } } }
+  ],
+  "contains": [
+    { "type": "invoke", "name": "job.run", "result": { "data": { "count": 1 } } },
+    { "type": "invoke", "name": "job.run", "result": { "data": { "count": 2 } } }
+  ]
+}

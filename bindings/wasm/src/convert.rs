@@ -155,6 +155,10 @@ impl Fields {
         self.expect(key, "非负整数", |v| v.as_u64())
     }
 
+    fn u32(&mut self, key: &str) -> Option<u32> {
+        self.expect(key, "非负整数（至多 4294967295）", |v| v.as_u64().and_then(|n| u32::try_from(n).ok()))
+    }
+
     fn f64(&mut self, key: &str) -> Option<f64> {
         self.expect(key, "数字", |v| v.as_f64())
     }

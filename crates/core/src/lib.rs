@@ -206,8 +206,11 @@ impl Client {
         Ok(id)
     }
 
+    /// 更新工具。放宽了并发声明（`concurrency` / `exclusive`）时排队中的调用随即可能开始。
     pub fn update_tool(&mut self, tool: ToolId, update: ToolUpdate) -> Result<(), CoreError> {
-        self.registry.update_tool(tool, update)
+        self.registry.update_tool(tool, update)?;
+        self.pump_calls();
+        Ok(())
     }
 
     /// 注销工具。该工具进行中的调用不受影响，照常完成。

@@ -62,7 +62,7 @@ fn parses_lifecycle_ops() {
 fn parses_conformance_ops() {
     let o = parse_args(args(&[
         "--trace", "--invoke", "a", "--call-id", "x", "--invoke-timeout-ms", "100", "--cancel-after-ms", "50",
-        "--catalog", "200", "--delay", "10", "--sdk", "rust", "--report-dir", "out",
+        "--no-wait", "--catalog", "200", "--delay", "10", "--sdk", "rust", "--report-dir", "out",
     ]))
     .unwrap();
     assert!(o.trace);
@@ -73,7 +73,13 @@ fn parses_conformance_ops() {
             Op::Invoke {
                 name: "a".into(),
                 args: json!({}),
-                opts: InvokeOpts { call_id: Some("x".into()), timeout_ms: Some(100), cancel_after_ms: Some(50), idempotency_key: None },
+                opts: InvokeOpts {
+                    call_id: Some("x".into()),
+                    timeout_ms: Some(100),
+                    cancel_after_ms: Some(50),
+                    idempotency_key: None,
+                    no_wait: true,
+                },
             },
             Op::Catalog { settle_ms: 200 },
             Op::Delay { ms: 10 },
@@ -90,6 +96,7 @@ fn parses_conformance_ops() {
     );
     assert!(parse_args(args(&["--nav-params", "{}"])).is_err());
     assert!(parse_args(args(&["--read", "r", "--cancel-after-ms", "5"])).is_err());
+    assert!(parse_args(args(&["--read", "r", "--no-wait"])).is_err());
 }
 
 #[test]

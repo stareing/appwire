@@ -1,0 +1,23 @@
+{
+  "id": "call-queue-limit",
+  "title": "排队中的调用达到 maxQueuedCalls 后，新到的调用以 RATE_LIMITED（details.scope = queue）拒绝；已排队的照常执行",
+  "spec": ["protocol.md 5.3"],
+  "requires": ["callScheduling"],
+  "app": {
+    "config": { "maxConcurrentCalls": 1, "maxQueuedCalls": 1 },
+    "tools": [
+      { "name": "q.slow", "description": "慢调用", "handler": { "delayMs": 300, "counter": true } }
+    ]
+  },
+  "host": { "timeoutMs": 15000, "ops": [
+    { "invoke": "q.slow", "noWait": true },
+    { "invoke": "q.slow", "noWait": true },
+    { "invoke": "q.slow", "noWait": true }
+  ] },
+  "expect": [
+    { "type": "invoke", "name": "q.slow", "error": { "code": -32016, "data": { "kind": "RATE_LIMITED", "scope": "queue", "limit": 1 } } },
+    { "type": "invoke", "name": "q.slow", "result": { "data": { "count": 1 } } },
+    { "type": "invoke", "name": "q.slow", "result": { "data": { "count": 2 } } }
+  ],
+  "absent": [{ "type": "invoke", "result": { "data": { "count": 3 } } }]
+}

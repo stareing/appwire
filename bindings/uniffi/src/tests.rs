@@ -50,6 +50,7 @@ fn config_defaults_follow_native() {
         call_dedup: None,
         register_name: false,
         name_instance: None,
+        max_queued_calls: None,
     };
     let n: native::NativeConfig = cfg.clone().into();
     assert_eq!(n, native::NativeConfig::new("shop", "Shop"));
@@ -101,6 +102,7 @@ fn register_name_passes_through_and_instance_is_validated() {
         call_dedup: None,
         register_name: true,
         name_instance: Some("w2".into()),
+        max_queued_calls: None,
     };
     let n: native::NativeConfig = cfg.clone().into();
     assert!(n.register_name);
@@ -130,6 +132,8 @@ fn tool_spec_conversion() {
         surface: None,
         page: None,
         background_tool: None,
+        concurrency: 0,
+        exclusive: None,
     };
     let (n, options): (native::ToolSpec, native::ToolOptions) = spec.clone().into();
     assert_eq!(n.risk, native::Risk::Write);
@@ -308,6 +312,7 @@ fn client_lifecycle_api() {
         call_dedup: Some(CallDedupPolicy { ttl_ms: 1_000, max_entries: 4 }),
         register_name: false,
         name_instance: None,
+        max_queued_calls: None,
     };
     let client = AppMcpClient::new(cfg, None).expect("client");
     assert!(!client.handle_wake("not-a-wake".into()));
@@ -376,6 +381,8 @@ fn read_and_call_failures_reach_host() {
             surface: None,
             page: None,
             background_tool: None,
+            concurrency: 0,
+            exclusive: None,
         };
         keep.push(client.register_tool(spec, Arc::new(UserActionTool)).expect("tool"));
     }
@@ -442,6 +449,8 @@ fn idempotency_key_reaches_handler() {
         surface: None,
         page: None,
         background_tool: None,
+        concurrency: 0,
+        exclusive: None,
     };
     let _tool = client.register_tool(spec, Arc::new(KeyTool)).expect("tool");
     client.start();
@@ -474,6 +483,7 @@ fn fake_host_config(app_id: &str, addr: &str) -> ClientConfig {
         call_dedup: None,
         register_name: false,
         name_instance: None,
+        max_queued_calls: None,
     }
 }
 

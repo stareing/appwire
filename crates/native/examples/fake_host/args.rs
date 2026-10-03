@@ -63,6 +63,10 @@ pub(super) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Optio
                     _ => inv.cancel_after_ms = Some(parse_u64(&flag, &text)?),
                 }
             }
+            "--no-wait" => match opts.ops.last_mut() {
+                Some(Op::Invoke { opts: inv, .. }) => inv.no_wait = true,
+                _ => return Err("--no-wait 必须跟在 --invoke <tool> 之后".to_owned()),
+            },
             "--catalog" => opts.ops.push(Op::Catalog {
                 settle_ms: parse_u64("--catalog", &value("--catalog")?)?,
             }),

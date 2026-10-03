@@ -180,6 +180,7 @@ pub(crate) struct OptionsView {
     pub(crate) call_dedup_max_entries: i32,
     pub(crate) register_name: bool,
     pub(crate) name_instance: *const c_char,
+    pub(crate) max_queued_calls: i32,
 }
 
 impl Default for OptionsView {
@@ -197,6 +198,7 @@ impl Default for OptionsView {
             call_dedup_max_entries: 0,
             register_name: false,
             name_instance: std::ptr::null(),
+            max_queued_calls: 0,
         }
     }
 }
@@ -261,7 +263,19 @@ pub(crate) unsafe fn read_options(p: *const AmClientOptions) -> FfiResult<Option
     if has(offset_of!(AmClientOptions, name_instance), size_of::<*const c_char>()) {
         view.name_instance = unsafe { std::ptr::addr_of!((*p).name_instance).read() };
     }
+    if has(offset_of!(AmClientOptions, max_queued_calls), size_of::<i32>()) {
+        view.max_queued_calls = unsafe { std::ptr::addr_of!((*p).max_queued_calls).read() };
+    }
     Ok(view)
+}
+
+/// v18 排队上限：0 = 保留默认值，负数 = 不限（0），正数按字面使用。
+pub(crate) fn max_queued_from(base: u32, value: i32) -> u32 {
+    match value {
+        0 => base,
+        n if n < 0 => 0,
+        n => n.unsigned_abs(),
+    }
 }
 
 /// v13 调用去重：0 = 保留默认值，负数 = 关闭（对应字段取 0），正数按字面使用。
@@ -362,6 +376,13 @@ pub(crate) unsafe fn read_tool_options(p: *const AmToolOptions) -> FfiResult<Too
     if has(offset_of!(AmToolOptions, background_tool)) {
         let text = unsafe { std::ptr::addr_of!((*p).background_tool).read() };
         options.background_tool = unsafe { opt_str(text, "options->background_tool") }?.map(str::to_owned);
+    }
+    if size >= offset_of!(AmToolOptions, concurrency) + size_of::<u32>() {
+        options.concurrency = unsafe { std::ptr::addr_of!((*p).concurrency).read() };
+    }
+    if has(offset_of!(AmToolOptions, exclusive)) {
+        let text = unsafe { std::ptr::addr_of!((*p).exclusive).read() };
+        options.exclusive = unsafe { opt_str(text, "options->exclusive") }?.map(str::to_owned);
     }
     Ok(options)
 }

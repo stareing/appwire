@@ -294,6 +294,8 @@ fn tools_hash_fixed_vector() {
         surface: ToolSurface::App,
         page: None,
         background_tool: None,
+        concurrency: 0,
+        exclusive: None,
     })
     .unwrap();
     let checkout = h
@@ -312,6 +314,8 @@ fn tools_hash_fixed_vector() {
             surface: ToolSurface::App,
             page: None,
             background_tool: None,
+            concurrency: 0,
+            exclusive: None,
         })
         .unwrap();
     h.c.register_resource(ResourceDef {

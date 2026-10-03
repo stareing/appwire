@@ -11,6 +11,8 @@ impl ToolSpecMessage {
             surface: self.surface,
             page: self.page.take(),
             background_tool: self.background_tool.take(),
+            concurrency: self.concurrency,
+            exclusive: self.exclusive.take(),
         };
         (self.into_spec(name), options)
     }

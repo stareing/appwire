@@ -7,7 +7,7 @@ use app_mcp_native::{ClientListener, NativeClient};
 
 use crate::callbacks::{AmFreeFn, AmNavigateFn, AmStateStatus, CClientListener, CNavigationHandler, UserData};
 use crate::convert::{
-    call_dedup_from, convert_config, convert_lifecycle, heartbeat_mode_from, prepare_out, read_options,
+    call_dedup_from, convert_config, max_queued_from, convert_lifecycle, heartbeat_mode_from, prepare_out, read_options,
     sleep_reason_from, visibility_from, wake_reason_from,
 };
 use crate::ffi_types::{AmClientCallbacks, AmClientConfig, AmClientOptions, AmLifecycle};
@@ -84,6 +84,7 @@ pub unsafe extern "C" fn am_client_new_ex(
         cfg.lifecycle.sleep_on_background = opts.sleep_on_background;
         cfg.call_dedup = call_dedup_from(cfg.call_dedup, opts.call_dedup_ttl_ms, opts.call_dedup_max_entries);
         cfg.register_name = opts.register_name;
+        cfg.max_queued_calls = max_queued_from(cfg.max_queued_calls, opts.max_queued_calls);
         // SAFETY: name_instance 为 NULL 或指向以 NUL 结尾的字符串。
         cfg.name_instance = unsafe { opt_str(opts.name_instance, "options->name_instance") }?.map(str::to_owned);
         let listener: Option<Arc<dyn ClientListener>> = match listener {

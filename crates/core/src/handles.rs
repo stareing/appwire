@@ -51,6 +51,11 @@ pub struct ToolDef {
     /// 后台替代（spec/protocol.md 3.4）：同一 App 中一个 `app` 工具的局部名；本工具因 App 在后台不可调用时 Hub 改调它。
     /// 只对 `View` 工具有意义。`None` = 未声明。
     pub background_tool: Option<String>,
+    /// 本工具同时执行的调用上限（spec/protocol.md 5.3）：0 = 不单独限制（只受 `maxConcurrentCalls` 约束）。只在 SDK 内生效，不同步给 Host。
+    pub concurrency: u32,
+    /// 互斥组（spec/protocol.md 5.3，`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行（如操作同一份文档的写工具）。
+    /// `None` = 不互斥。只在 SDK 内生效，不同步给 Host。
+    pub exclusive: Option<String>,
     /// 为 false 时不同步给 Host（等同于从 Host 的角度看不存在）。
     pub enabled: bool,
     /// 所属 scope；scope 被销毁时工具自动注销。
@@ -75,6 +80,10 @@ pub struct ToolUpdate {
     pub page: Option<Option<String>>,
     /// `Some(None)` 清除声明的后台替代。
     pub background_tool: Option<Option<String>>,
+    /// 本工具的并发上限（0 = 不单独限制）。只在 SDK 内生效：只改它不发 `tools/changed`。
+    pub concurrency: Option<u32>,
+    /// `Some(None)` 清除互斥组。只在 SDK 内生效：只改它不发 `tools/changed`。
+    pub exclusive: Option<Option<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -209,6 +209,8 @@ fn tool_def(i: usize) -> ToolDef {
         surface: ToolSurface::App,
         page: None,
         background_tool: None,
+        concurrency: 0,
+        exclusive: None,
     }
 }
 

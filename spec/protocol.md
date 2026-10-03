@@ -575,8 +575,15 @@ docs/plans/12-mcp-2026-07-28.md m10），本协议不使用；此后新增的类
 - 收到 `tools/invoke`：
   - `callId`（或同一工具的同一 `idempotencyKey`）已执行过（有效期内）→ 回复首次结果，不执行；正在执行或排队 → 挂到同一次执行上（3.3）。
   - 名称不存在 → `TOOL_NOT_FOUND`；存在但禁用 → `TOOL_DISABLED`。
-  - 否则进入调用队列。正在执行的调用数小于 `maxConcurrentCalls`（默认 1）时立即执行，
-    否则排队，按到达顺序执行。
+  - 否则进入调用队列，按到达顺序调度：一个排队的调用在以下条件都满足时开始执行——正在执行的调用数小于 `maxConcurrentCalls`
+    （默认 1）；该工具正在执行的调用数小于其 `concurrency`（工具声明，0 / 缺省 = 不单独限制）；该工具声明了互斥组 `exclusive`
+    （命名规则同工具名）时，同组没有正在执行的调用。因本工具或其互斥组正忙而不能开始的调用留在原位，其后能开始的调用先开始
+    （不被队头阻塞）；占用者结束后按原顺序优先。`concurrency` / `exclusive` 只在 SDK 内生效，不随 `tools/sync` 发给 Host，
+    也不计入 `toolsHash`；放宽声明后排队中的调用随即可能开始。用途：App 声明哪些工具不能并发（如操作同一份文档的写工具），
+    调用方（Agent）不必知道（第 16 项 N6；Agent 之间的协调用 Hub 的对象锁，spec/hub-api.md 3.6）。
+  - 新到的调用需要排队而排队中的调用数已达 `maxQueuedCalls`（默认 64，0 = 不限）→ `RATE_LIMITED`，`data` 带
+    `{"scope": "queue", "limit": N}`（不带 `retryAfterMs`：何时空出取决于正在执行的调用）。被拒绝的调用未开始，不记入去重表，
+    同一 `callId` 稍后可重发。
 - `timeoutMs` 从收到请求时开始计时（包含排队时间）。超时后取消 handler，返回 `TIMEOUT`。
 - 收到 `tools/cancel`：取消对应调用（排队中的直接移出），返回 `CANCELLED`。
 - handler 完成后返回 `ToolsInvokeResult`；handler 出错返回其错误（缺省类别 `HANDLER_ERROR`）。

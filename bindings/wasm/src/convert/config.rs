@@ -212,6 +212,8 @@ pub struct JsConfig {
     pub reconnect: Option<JsReconnect>,
     pub heartbeat: Option<JsHeartbeat>,
     pub max_concurrent_calls: Option<usize>,
+    /// 排队中的调用上限（spec/protocol.md 5.3），缺省 64；0 表示不限。
+    pub max_queued_calls: Option<u64>,
     pub resource_update_throttle_ms: Option<u64>,
     /// App 总览，随 `app/hello` 发送（spec/protocol.md 第 7 节）。
     pub overview: Option<AppOverview>,
@@ -250,6 +252,7 @@ impl FromJson for JsConfig {
             reconnect: f.object("reconnect"),
             heartbeat: f.object("heartbeat"),
             max_concurrent_calls,
+            max_queued_calls: f.u64("maxQueuedCalls"),
             resource_update_throttle_ms: f.u64("resourceUpdateThrottleMs"),
             overview: f.protocol("overview"),
             handshake_timeout_ms: f.u64("handshakeTimeoutMs"),
@@ -297,6 +300,9 @@ impl JsConfig {
         }
         if let Some(n) = self.max_concurrent_calls {
             c.max_concurrent_calls = n.max(1);
+        }
+        if let Some(n) = self.max_queued_calls {
+            c.max_queued_calls = usize::try_from(n).unwrap_or(usize::MAX);
         }
         if let Some(ms) = self.resource_update_throttle_ms {
             c.resource_update_throttle_ms = ms;

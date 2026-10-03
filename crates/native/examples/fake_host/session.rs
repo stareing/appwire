@@ -94,21 +94,24 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
     let mut slept = false;
     // 当前等待响应的请求：(请求 ID, 类型, 名称)。
     let mut pending: Option<(RequestId, &'static str, String)> = None;
+    // `--no-wait` 发出、尚未回复的调用：(请求 ID, 工具名)。
+    let mut detached: Vec<(RequestId, String)> = Vec::new();
+    let mut ops_done = false;
     let mut timer: Option<(tokio::time::Instant, Timer)> = None;
 
     loop {
         // 需要发送下一个操作。
-        if started && pending.is_none() && timer.is_none() && !awaiting_sleep && !slept {
+        if ops_done && detached.is_empty() {
+            close(&mut ws).await;
+            return Ok(ConnEnd::Done);
+        }
+        if started && !ops_done && pending.is_none() && timer.is_none() && !awaiting_sleep && !slept {
             match host.ops.next() {
-                None => {
-                    let _ = ws.close(None).await;
-                    // 尽量等对端确认关闭，避免对端看到异常断开。
-                    let _ = tokio::time::timeout(Duration::from_millis(500), async {
-                        while let Some(Ok(_)) = ws.next().await {}
-                    })
-                    .await;
+                None if detached.is_empty() => {
+                    close(&mut ws).await;
                     return Ok(ConnEnd::Done);
                 }
+                None => ops_done = true,
                 Some(Op::AwaitSleep) => awaiting_sleep = true,
                 Some(Op::Wake) => return Err("--wake 必须在 --await-sleep 之后".to_owned()),
                 Some(Op::Invoke { name, args, opts }) => {
@@ -127,7 +130,13 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                     };
                     let msg = Message::request(id.clone(), method::TOOLS_INVOKE, to_value(&params));
                     send(&mut ws, &msg).await?;
-                    pending = Some((id, "invoke", name));
+                    if opts.no_wait {
+                        detached.push((id, name));
+                        // 不等结果：立即执行下一步（否则要等到下一帧到达才会发）。
+                        continue;
+                    } else {
+                        pending = Some((id, "invoke", name));
+                    }
                 }
                 Some(Op::Catalog { settle_ms }) => timer = Some((after(settle_ms), Timer::Catalog)),
                 Some(Op::Delay { ms }) => timer = Some((after(ms), Timer::Delay)),
@@ -276,6 +285,11 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                 }
             }
             Message::Response(resp) => {
+                if let Some(i) = detached.iter().position(|(id, _)| *id == resp.id) {
+                    let (_, name) = detached.remove(i);
+                    emit_response("invoke", &name, resp.outcome);
+                    continue;
+                }
                 let Some((id, kind, name)) = pending.take() else {
                     eprintln!("fake_host: 忽略未知响应 {}", resp.id);
                     continue;
@@ -288,18 +302,32 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                 if matches!(timer, Some((_, Timer::Cancel(_)))) {
                     timer = None;
                 }
-                let mut line = BTreeMap::new();
-                line.insert("type", json!(kind));
-                line.insert("name", json!(name));
-                match resp.outcome {
-                    Ok(result) => line.insert("result", result),
-                    Err(err) => line.insert("error", to_value(&err)),
-                };
-                emit(&to_value(&line).to_string());
+                emit_response(kind, &name, resp.outcome);
                 send_lease(&mut ws, host.lease_ms).await?;
             }
         }
     }
+}
+
+/// 打印一个请求的结果行（`{"type", "name", "result" | "error"}`）。
+fn emit_response(kind: &str, name: &str, outcome: Result<Value, proto::RpcError>) {
+    let mut line = BTreeMap::new();
+    line.insert("type", json!(kind));
+    line.insert("name", json!(name));
+    match outcome {
+        Ok(result) => line.insert("result", result),
+        Err(err) => line.insert("error", to_value(&err)),
+    };
+    emit(&to_value(&line).to_string());
+}
+
+/// 全部操作完成：关闭连接，尽量等对端确认关闭（避免对端看到异常断开）。
+async fn close(ws: &mut WebSocketStream<Box<dyn Io>>) {
+    let _ = ws.close(None).await;
+    let _ = tokio::time::timeout(Duration::from_millis(500), async {
+        while let Some(Ok(_)) = ws.next().await {}
+    })
+    .await;
 }
 
 /// 处理 hello，返回 `toolsCurrent`。非首个连接打印一行 hello 信息。

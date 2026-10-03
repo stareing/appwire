@@ -62,6 +62,8 @@ pub struct NativeConfig {
     pub launch_token: Option<String>,
     /// 同时执行的调用上限，默认 1。
     pub max_concurrent_calls: u32,
+    /// 排队中的调用上限（spec/protocol.md 5.3），默认 64；0 表示不限。超出时新调用以 `RATE_LIMITED` 拒绝。
+    pub max_queued_calls: u32,
     /// App 总览：握手时发给 Host，模型在会话中首次接触本 App 时由 Host 附带（spec/protocol.md 第 7 节）。
     pub overview: Option<AppOverview>,
     /// 生命周期策略（spec/lifecycle.md）。默认 `persistent`（不休眠）。
@@ -104,6 +106,7 @@ impl NativeConfig {
             token: None,
             launch_token: None,
             max_concurrent_calls: 1,
+            max_queued_calls: app_mcp_core::DEFAULT_MAX_QUEUED_CALLS as u32,
             overview: None,
             lifecycle: LifecyclePolicy::default(),
             connect_timeout_ms: 5_000,
@@ -171,6 +174,10 @@ pub struct ToolOptions {
     /// 后台替代（spec/protocol.md 3.4）：同一 App 中一个 `App` 工具的名称；本 `View` 工具因 App 在后台不可调用时
     /// Hub 改调它。`None` = 未声明。
     pub background_tool: Option<String>,
+    /// 本工具同时执行的调用上限（spec/protocol.md 5.3）：0（缺省）= 不单独限制，只受 `max_concurrent_calls` 约束。只在 SDK 内生效。
+    pub concurrency: u32,
+    /// 互斥组（spec/protocol.md 5.3，`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行。`None` = 不互斥。只在 SDK 内生效。
+    pub exclusive: Option<String>,
 }
 
 /// 调用成功的完整结果（[`CallHandle::complete_with`]，spec/protocol.md 3.2）。`Default` = 无返回值、`done`。

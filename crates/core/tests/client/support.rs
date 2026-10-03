@@ -32,6 +32,8 @@ pub(crate) fn tool(name: &str) -> ToolDef {
         surface: ToolSurface::App,
         page: None,
         background_tool: None,
+        concurrency: 0,
+        exclusive: None,
     }
 }
 

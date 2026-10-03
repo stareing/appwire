@@ -26,6 +26,8 @@ pub struct ClientConfig {
     pub token: Option<String>,
     pub launch_token: Option<String>,
     pub max_concurrent_calls: Option<u32>,
+    /// 排队中的调用上限（spec/protocol.md 5.3），缺省 64；0 表示不限。
+    pub max_queued_calls: Option<u32>,
     /// App 总览（spec/protocol.md 第 7 节）。
     pub overview: Option<OverviewInit>,
     /// 生命周期策略（spec/lifecycle.md 第 3 节）。缺省 `persistent`。
@@ -205,6 +207,10 @@ pub struct ToolSpecInit {
     pub page: Option<String>,
     /// 后台替代（spec/protocol.md 3.4）：同一 App 中一个 `app` 工具的局部名；本工具因 App 在后台不可调用时 Hub 改调它。
     pub background_tool: Option<String>,
+    /// 本工具同时执行的调用上限（spec/protocol.md 5.3）；缺省 / 0 = 不单独限制。
+    pub concurrency: Option<u32>,
+    /// 互斥组（spec/protocol.md 5.3）：同组的工具同一时刻至多一个在执行。
+    pub exclusive: Option<String>,
 }
 
 /// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。
@@ -287,6 +293,8 @@ impl ToolSpecInit {
             surface: self.surface.take().as_deref().map(parse_surface).transpose()?.unwrap_or_default(),
             page: self.page.take(),
             background_tool: self.background_tool.take(),
+            concurrency: self.concurrency.take().unwrap_or(0),
+            exclusive: self.exclusive.take(),
         };
         Ok((self.into_spec()?, options))
     }
