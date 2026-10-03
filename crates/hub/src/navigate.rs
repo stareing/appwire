@@ -222,7 +222,9 @@ impl HubShared {
             ));
         };
         let work = conn.begin_work();
-        let params = serde_json::to_value(NavigateParams { page: page.to_owned(), params: t.params.clone() })
+        let timeout_ms = u64::try_from(deadline.saturating_duration_since(Instant::now()).as_millis()).unwrap_or(u64::MAX);
+        let params = NavigateParams { page: page.to_owned(), params: t.params.clone(), timeout_ms: Some(timeout_ms) };
+        let params = serde_json::to_value(params)
             .map_err(|e| ToolError::new(ErrorKind::HandlerError, e.to_string()))?;
         tracing::info!(app_id, instance_id = %instance_id, page, tool = t.tool, with_params = t.params.is_some(), "导航到页面");
         let (req_id, rx) =
@@ -262,7 +264,7 @@ impl HubShared {
     }
 
     /// App 对 `app/navigate` 的错误回复：结果大小上限同工具结果；`-32601`（旧 SDK）按不支持；
-    /// `NAVIGATION_*`、`USER_ACTION_REQUIRED`（如 App 在后台、需用户切到前台）原样；其他类别归为 `NAVIGATION_FAILED`（`error`）。
+    /// `NAVIGATION_*`、`USER_ACTION_REQUIRED`（如 App 在后台、需用户切到前台）、`RATE_LIMITED`（用户正在操作，`scope: "busy"`）原样；其他类别归为 `NAVIGATION_FAILED`（`error`）。
     fn navigation_error(&self, app_id: &str, page: &str, rpc: &RpcError) -> ToolError {
         if rpc.code == RpcError::METHOD_NOT_FOUND {
             return ToolError::navigation_failed(
@@ -275,6 +277,7 @@ impl HubShared {
             ErrorKind::NavigationFailed
             | ErrorKind::NavigationDenied
             | ErrorKind::UserActionRequired
+            | ErrorKind::RateLimited
             | ErrorKind::PayloadTooLarge => e,
             _ => ToolError::navigation_failed(e.message, navigation_reason::ERROR),
         }

@@ -83,7 +83,7 @@ impl Client {
             }
             method::NAVIGATE => {
                 if let Some(p) = self.parse_params(&id, &m, params) {
-                    self.on_navigate(id, p);
+                    self.on_navigate(id, p, now);
                 }
             }
             _ => {

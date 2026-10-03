@@ -157,3 +157,75 @@ fn navigate_refused_fast_when_hidden() {
     let ev = h.request(8, "app/navigate", json!({"page": "cart"}));
     assert!(matches!(ev.as_slice(), [Event::Navigate { .. }]), "{ev:?}");
 }
+
+fn navigable() -> Harness {
+    let mut cfg = config();
+    cfg.navigation = true;
+    let mut h = Harness::with(cfg);
+    h.connect();
+    h
+}
+
+fn navigated(events: &[Event]) -> Vec<String> {
+    events.iter().filter_map(|e| if let Event::Navigate { page, .. } = e { Some(page.clone()) } else { None }).collect()
+}
+
+fn busy_rejected(msg: &Value) -> bool {
+    error_kind(msg) == "RATE_LIMITED" && msg["error"]["data"]["scope"] == "busy"
+}
+
+/// 用户正在操作（第 16 项 N6）且策略为拒绝（默认）：导航以 `RATE_LIMITED`（`scope = "busy"`）拒绝，不交给导航回调。
+#[test]
+fn busy_rejects_navigate_by_default() {
+    let mut h = navigable();
+    h.c.set_busy(true);
+    let ev = h.request(4, "app/navigate", json!({"page": "cart", "timeoutMs": 5000}));
+    assert!(navigated(&ev).is_empty());
+    assert!(busy_rejected(&sends(&ev)[0]), "{}", sends(&ev)[0]);
+    h.c.set_busy(false);
+    assert_eq!(navigated(&h.request(5, "app/navigate", json!({"page": "cart"}))), ["cart"]);
+}
+
+/// 排队策略：带 `timeoutMs` 的导航推迟到用户结束操作再按序执行；没带（旧 Host）的照样拒绝；改为拒绝策略时推迟的随即被拒绝。
+#[test]
+fn busy_queue_defers_navigate_until_idle() {
+    let mut h = navigable();
+    h.c.set_busy_policy(BusyPolicy::Queue);
+    h.c.set_busy(true);
+    assert!(h.request(4, "app/navigate", json!({"page": "a", "timeoutMs": 5000})).is_empty());
+    assert!(h.request(5, "app/navigate", json!({"page": "b", "timeoutMs": 5000})).is_empty());
+    assert!(busy_rejected(&sends(&h.request(6, "app/navigate", json!({"page": "c"})))[0]), "旧 Host 不推迟");
+    h.c.set_busy(false);
+    let ev = h.drain();
+    assert_eq!(navigated(&ev), ["a", "b"]);
+    let Event::Navigate { navigate, .. } = ev[0].clone() else { panic!("{ev:?}") };
+    h.c.complete_navigate(navigate, Ok(())).unwrap();
+    assert_eq!(sends(&h.drain())[0], json!({"jsonrpc": "2.0", "id": 4, "result": {"ok": true}}));
+
+    h.c.set_busy(true);
+    assert!(h.request(7, "app/navigate", json!({"page": "d", "timeoutMs": 5000})).is_empty());
+    h.c.set_busy_policy(BusyPolicy::Reject);
+    let msgs = sends(&h.drain());
+    assert_eq!(msgs[0]["id"], 7);
+    assert!(busy_rejected(&msgs[0]), "{}", msgs[0]);
+    h.c.set_busy(false);
+    assert!(navigated(&h.drain()).is_empty(), "已拒绝的不再执行");
+}
+
+/// 推迟到 Host 不再等待（`timeoutMs`）仍在操作：回复 `NAVIGATION_FAILED`（`reason = "timeout"`），之后结束操作也不再导航。
+#[test]
+fn deferred_navigate_expires() {
+    let mut h = navigable();
+    h.c.set_busy_policy(BusyPolicy::Queue);
+    h.c.set_busy(true);
+    assert!(h.request(4, "app/navigate", json!({"page": "a", "timeoutMs": 200})).is_empty());
+    assert!(h.c.poll_timeout().is_some_and(|t| t <= h.now + 200), "推迟的导航有定时器");
+    // @why 不用 advance：到期不处理时定时器不清，advance 会一直循环。
+    h.now += 200;
+    h.c.handle_timeout(h.now);
+    let msgs = sends(&h.drain());
+    let reply = msgs.iter().find(|m| m["id"] == 4).expect("到期回复");
+    assert_eq!((error_kind(reply), reply["error"]["data"]["reason"].as_str()), ("NAVIGATION_FAILED", Some("timeout")));
+    h.c.set_busy(false);
+    assert!(navigated(&h.drain()).is_empty());
+}

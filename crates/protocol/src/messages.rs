@@ -339,6 +339,10 @@ pub struct NavigateParams {
     /// 页面参数（清单 `pages[].params` 描述的对象）；省略 = 无参数。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
+    /// Host 等待本次导航的剩余毫秒数（第 16 项 N6）：用户正在操作且 `busyPolicy` 为排队时，SDK 最多推迟到此时；省略
+    /// （旧 Host）时 SDK 不推迟、直接拒绝。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 /// `app/navigate` 结果。失败（不支持、出错、拒绝）用 JSON-RPC 错误返回（`NAVIGATION_FAILED` / `NAVIGATION_DENIED`）；

@@ -293,7 +293,7 @@ fn navigation_messages() {
 
     let p: NavigateParams = serde_json::from_value(json!({"page": "orders.detail", "params": {"id": "o1"}})).unwrap();
     assert_eq!(p.params, Some(json!({"id": "o1"})));
-    assert_eq!(serde_json::to_value(NavigateParams { page: "cart".into(), params: None }).unwrap(), json!({"page": "cart"}));
+    assert_eq!(serde_json::to_value(NavigateParams { page: "cart".into(), params: None, timeout_ms: None }).unwrap(), json!({"page": "cart"}));
     assert_eq!(serde_json::to_value(NavigateResult { ok: true }).unwrap(), json!({"ok": true}));
 }
 

@@ -28,7 +28,8 @@ impl Client {
                 let ping_deadline = hb.outstanding.map(|(_, sent)| sent.saturating_add(self.heartbeat_timeout_ms()));
                 let throttle = self.session.subscriptions.values().filter_map(|s| self.throttle_due(s)).min();
                 let recheck = self.life.idle_recheck.then_some(self.life.last_now);
-                [hb.next_ping_at, ping_deadline, self.calls.next_deadline(), throttle, self.sleep_deadline(), recheck]
+                let navigation = self.session.deferred_navigations.iter().map(|d| d.deadline).min();
+                [hb.next_ping_at, ping_deadline, self.calls.next_deadline(), throttle, self.sleep_deadline(), recheck, navigation]
                     .into_iter()
                     .flatten()
                     .min()
@@ -86,6 +87,7 @@ impl Client {
             self.respond_timeout(call, false);
         }
         self.pump_calls();
+        self.expire_navigations(now);
 
         // 资源节流
         let throttle = self.config.resource_update_throttle_ms;

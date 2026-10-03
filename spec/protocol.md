@@ -368,7 +368,7 @@ interface SleepResult { accepted: boolean; resumeToken?: string; retryAfterMs?: 
 interface LeaseParams { ttlMs: number }   // 0 表示取消租约
 
 // 导航（3.4）
-interface NavigateParams { page: string; params?: object }
+interface NavigateParams { page: string; params?: object; timeoutMs?: number }   // timeoutMs：Host 还会等待的毫秒数（5.3「用户正在操作」）
 interface NavigateResult { ok: boolean }   // 成功为 { ok: true }；失败用 JSON-RPC 错误（NAVIGATION_FAILED / NAVIGATION_DENIED / USER_ACTION_REQUIRED）
 ```
 
@@ -456,6 +456,7 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
 - **`app/navigate`（Host → SDK，请求）**：`{page, params?}` → `{ok: true}`。SDK 行为（`app-mcp-core` 实现，所有语言一致）：
   - 未完成握手 → `UNAUTHORIZED`（同 5.1 第 5 步）；参数无法解析或 `page` 不合法 → `-32602`。
   - 没有导航回调（`capabilities.navigate` 为 false）→ `NAVIGATION_FAILED`，`data.reason = "unsupported"`。
+  - 用户正在操作（`setBusy`）→ 按 `busyPolicy` 拒绝或推迟，见 5.3「用户正在操作」。
   - 实例不可见（可见性 `hidden` / `frozen`）且 `navigateInBackground` 为 false → **立即**回复 `USER_ACTION_REQUIRED`
     （`data.reason = "foreground"`，无 `uri`），不调用导航回调（见下文「后台与前台」）。
   - 否则交给导航回调（核心事件 `Navigate`），回调切换界面后完成：成功回复 `{ok: true}`；页面不存在 / 参数不合法等以
@@ -597,7 +598,12 @@ docs/plans/12-mcp-2026-07-28.md m10），本协议不使用；此后新增的类
     去重表，同一 `callId` 稍后可重发；`queue` → 留在调用队列中（不被其阻塞的调用照常先开始；仍受 `maxQueuedCalls` 与 `timeoutMs`
     约束），`setBusy(false)` 后按到达顺序开始。只读调用与已开始的调用不受影响；`setBusy(true)` 时策略为 `reject` 则排队中的写调用
     随即被拒绝。`busyPolicy` 可在运行时修改（`setBusyPolicy`，如由用户在 App 设置中选择），随即对排队中的调用生效。busy 状态只在
-    SDK 内，不发给 Host；`app/navigate`、资源读取不受影响。
+    SDK 内，不发给 Host；资源读取不受影响。
+    `app/navigate` 会切走用户正在看的界面，同样按 `busyPolicy` 处理（在「没有导航回调」与页面名检查之后、「实例不可见」检查之前）：
+    `reject` → 同上 `RATE_LIMITED`（`scope: "busy"`），不调用导航回调；`queue` 且请求带 `timeoutMs` → 推迟，`setBusy(false)` 后按到达
+    顺序再按 3.4 处理（含可见性检查），改为 `reject` 时随即拒绝，到 `timeoutMs` 仍在操作则回复 `NAVIGATION_FAILED`
+    （`reason: "timeout"`）、不再导航；`queue` 但没带 `timeoutMs`（旧 Host）→ 按 `reject` 处理（不在 Host 已放弃之后切换界面）。
+    Host 发 `app/navigate` 时总带 `timeoutMs`（其导航等待的剩余时间），并把 `RATE_LIMITED` 原样交给 Agent。
 - `timeoutMs` 从收到请求时开始计时（包含排队时间）。超时后取消 handler，返回 `TIMEOUT`。
 - 收到 `tools/cancel`：取消对应调用（排队中的直接移出），返回 `CANCELLED`。
 - handler 完成后返回 `ToolsInvokeResult`；handler 出错返回其错误（缺省类别 `HANDLER_ERROR`）。

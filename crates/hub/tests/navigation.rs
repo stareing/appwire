@@ -283,3 +283,32 @@ async fn dormant_app_is_woken_then_navigated() {
     client.stop();
     hub.shutdown().await;
 }
+
+/// 第 16 项 N6：App 声明用户正在操作时，跨页调用的导航按 busyPolicy 处理——拒绝策略把 `RATE_LIMITED`（`scope: "busy"`）原样
+/// 交给 Agent、不切换页面；排队策略下 Hub 带上 `timeoutMs`，App 在用户结束操作后再导航，调用随即完成。
+#[tokio::test(flavor = "multi_thread")]
+async fn busy_app_defers_or_rejects_navigation() {
+    let hub = Arc::new(Hub::start(config(PolicyConfig::default())).await.unwrap());
+    let (client, nav) = app(&hub, "shop-1", true, LifecycleMode::Persistent);
+    client.start();
+    connected(&hub).await;
+
+    client.set_busy(true);
+    let e = call(&hub, "shop.cart.checkout", json!({})).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::RateLimited, "{e:?}");
+    assert_eq!(e.details.as_ref().and_then(|d| d.get("scope")), Some(&json!("busy")));
+    assert!(nav.pages.lock().unwrap().is_empty(), "不切换页面");
+
+    client.set_busy_policy(app_mcp_native::BusyPolicy::Queue);
+    let pending = {
+        let hub = hub.clone();
+        tokio::spawn(async move { call(&hub, "shop.cart.checkout", json!({})).await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(nav.pages.lock().unwrap().is_empty(), "用户操作期间不导航");
+    client.set_busy(false);
+    let out = pending.await.unwrap().unwrap();
+    assert_eq!(out["tool"], "cart.checkout");
+    assert_eq!(nav.pages.lock().unwrap().clone(), ["cart"]);
+    client.stop();
+}

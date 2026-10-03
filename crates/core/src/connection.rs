@@ -54,6 +54,15 @@ pub(crate) struct Subscription {
     pub pending: bool,
 }
 
+/// 推迟到用户结束操作再执行的 `app/navigate`（第 16 项 N6）。
+#[derive(Debug)]
+pub(crate) struct DeferredNavigate {
+    pub request_id: RequestId,
+    pub params: NavigateParams,
+    /// Host 不再等待的时刻（`timeoutMs`），到期回复 `NAVIGATION_FAILED`（`reason: "timeout"`）。
+    pub deadline: Millis,
+}
+
 /// 连接相关的内部状态，断线时整体重置。
 #[derive(Debug, Default)]
 pub(crate) struct Session {
@@ -62,6 +71,8 @@ pub(crate) struct Session {
     pub reads: VecMap<ReadId, PendingRead>,
     /// 进行中的导航（[`Event::Navigate`]）→ Host 的请求 ID。
     pub navigations: VecMap<NavigateId, RequestId>,
+    /// 用户正在操作、按排队策略推迟的导航（按到达顺序）。
+    pub deferred_navigations: Vec<DeferredNavigate>,
     pub subscriptions: VecMap<String, Subscription>,
     /// 握手超时时刻（`Handshaking` 期间）。
     pub handshake_deadline: Option<Millis>,

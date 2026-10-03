@@ -147,7 +147,7 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                 Some(Op::Delay { ms }) => timer = Some((after(ms), Timer::Delay)),
                 Some(Op::Navigate { page, params }) => {
                     let id = next_id(host);
-                    let params = proto::NavigateParams { page: page.clone(), params };
+                    let params = proto::NavigateParams { page: page.clone(), params, timeout_ms: None };
                     let msg = Message::request(id.clone(), method::NAVIGATE, to_value(&params));
                     send(&mut ws, &msg).await?;
                     pending = Some((id, "navigate", page));

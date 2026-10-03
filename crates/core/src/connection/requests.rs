@@ -59,16 +59,40 @@ impl Client {
                     continue;
                 }
                 let Some(call) = self.calls.remove_queued(index) else { break };
-                let err = ToolError::new(
-                    ErrorKind::RateLimited,
-                    format!("用户正在操作 App，写操作暂不执行：工具 {} 未执行。请稍后重试，或先告知用户。", call.name),
-                )
-                .with_details(serde_json::json!({ "scope": "busy" }))
-                .into();
+                let err = busy_error(&format!("工具 {} 未执行", call.name)).into();
                 self.respond_call(call, Err(err), false);
             }
         }
+        self.settle_navigations();
         self.pump_calls();
+    }
+
+    /// 推迟的导航：用户结束操作后按到达顺序执行；改为拒绝策略时随即拒绝。
+    fn settle_navigations(&mut self) {
+        if self.busy && self.config.busy_policy == BusyPolicy::Queue {
+            return;
+        }
+        for d in std::mem::take(&mut self.session.deferred_navigations) {
+            if self.busy {
+                self.respond(d.request_id, Err(busy_error(&format!("未切换到页面「{}」", d.params.page)).into()));
+            } else {
+                self.start_navigate(d.request_id, d.params);
+            }
+        }
+    }
+
+    /// 推迟期间 Host 已不再等待的导航：回复 `NAVIGATION_FAILED`（`reason: "timeout"`），不再执行。
+    pub(super) fn expire_navigations(&mut self, now: Millis) {
+        let (expired, kept) =
+            std::mem::take(&mut self.session.deferred_navigations).into_iter().partition(|d| d.deadline <= now);
+        self.session.deferred_navigations = kept;
+        for d in expired {
+            let err = ToolError::navigation_failed(
+                format!("用户一直在操作 App，未切换到页面「{}」。请稍后重试，或先告知用户。", d.params.page),
+                proto::navigation_reason::TIMEOUT,
+            );
+            self.respond(d.request_id, Err(err.into()));
+        }
     }
 
     /// 刚到达的调用 `call_id` 仍在排队且队列超过 `maxQueuedCalls` → 以 `RATE_LIMITED` 拒绝一个排队中的调用（未开始，不进去重表）：
@@ -215,7 +239,7 @@ impl Client {
 
     // ---- 导航（spec/protocol.md 3.4）------------------------------------
 
-    pub(super) fn on_navigate(&mut self, id: RequestId, p: NavigateParams) {
+    pub(super) fn on_navigate(&mut self, id: RequestId, p: NavigateParams, now: Millis) {
         if !self.config.navigation {
             let err = ToolError::navigation_failed(
                 format!("App 不支持由 Agent 导航（页面「{}」），请让用户自行打开该页面。", p.page),
@@ -228,6 +252,22 @@ impl Client {
             self.respond(id, Err(RpcError::invalid_params(format!("app/navigate 的页面名不合法：{:?}", p.page))));
             return;
         }
+        // 用户正在操作：导航会切走用户正在看的界面，与写调用同样按 busyPolicy 处理；Host 没给等待时限（旧 Host）时不推迟。
+        if self.busy {
+            match p.timeout_ms {
+                Some(t) if self.config.busy_policy == BusyPolicy::Queue => {
+                    let deadline = now.saturating_add(t);
+                    self.session.deferred_navigations.push(DeferredNavigate { request_id: id, params: p, deadline });
+                }
+                _ => self.respond(id, Err(busy_error(&format!("未切换到页面「{}」", p.page)).into())),
+            }
+            return;
+        }
+        self.start_navigate(id, p);
+    }
+
+    /// 交给导航回调（实例不可见且不能后台导航时回复 `USER_ACTION_REQUIRED`）。
+    fn start_navigate(&mut self, id: RequestId, p: NavigateParams) {
         if self.visibility != Visibility::Visible && !self.config.navigate_in_background {
             self.respond(id, Err(foreground_required(&p.page).into()));
             return;
@@ -285,6 +325,12 @@ impl Client {
             _ => self.send_resource_updated(name, now),
         }
     }
+}
+
+/// 用户正在操作（[`Client::set_busy`]）时拒绝写调用 / 导航：`RATE_LIMITED`（`details.scope = "busy"`），`what` 说明未做的事。
+fn busy_error(what: &str) -> ToolError {
+    ToolError::new(ErrorKind::RateLimited, format!("用户正在操作 App，写操作暂不执行：{what}。请稍后重试，或先告知用户。"))
+        .with_details(serde_json::json!({ "scope": "busy" }))
 }
 
 /// 实例不可见、且不能自行回到前台时对 `app/navigate` 的回复（spec/protocol.md 3.4）：`USER_ACTION_REQUIRED`（`reason: "foreground"`）。

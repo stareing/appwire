@@ -144,7 +144,9 @@
     - 测试：`tests/call_objects.rs`（运行中带实例、进度与 platformState；apps.calls 只见自己且不含本次查询与调用方键；取消他人 / 不存在
       → TOOL_NOT_FOUND；取消自己 → 发起方 CANCELLED、对象释放；审批中为 approving）；Host `callers_text_lists_calls`；hub-uniffi 转换。
       变异：去掉归属检查、不置 running、不记进度分别被检出。
-    - 未知 / 未做（第二阶段，需机主决定）：**脱离请求与重新挂接**（Agent 不等结果、稍后 `wait` 取结果）要求 Hub 在调用结束后保留结果，
+    - **第二阶段决定（2026-10-03，机主选 a）**：Hub 不做脱离请求 / 重新挂接，长作业一律由 App 以 `pending` + `stateResource` 持久化；
+      Hub 的调用对象只管进行中的调用。下面的选项保留作决策记录。
+    - 未知 / 未做（原第二阶段选项）：**脱离请求与重新挂接**（Agent 不等结果、稍后 `wait` 取结果）要求 Hub 在调用结束后保留结果，
       与"调用结束即释放"冲突——可选：(a) 不做，长作业一律走 App 的 `pending` + `stateResource`（现状，作业状态在 App、进程回收不丢）；
       (b) Hub 有界保留已结束的脱离调用结果（TTL、条数与字节上限、只给发起方）；(c) 对齐 MCP tasks 扩展（第 12 项 M6，规范仍是实验性）。
       另：调用对象不持久化（Hub 重启即无，进行中的调用本也随之失败）；`apps.calls` 不列出其他 Agent 的调用（机主看 `/status`）。
@@ -260,7 +262,14 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
       只在汇总值变化时设置客户端，不覆盖 Rust 侧直接设置）。一致性用例 `call-busy-reject` / `call-busy-queue`（能力 `busy`）。
     - 测试：核心 `busy_rejects_write_calls_by_default`、`busy_queue_policy_defers_write_calls`；C ABI 往返与非法策略；wasm 配置解析；
       Tauri 按页汇总。变异：去掉写调用判断、去掉拒绝分支分别被检出。
-    - 未知 / 未做：busy 期间的 `app/navigate`（会切走用户正在看的页面）不受影响——是否拦截待定；Hub 不知道 App 的 busy 状态
+    - busy 期间的 `app/navigate`（2026-10-03 实施）：导航会切走用户正在看的界面，同样按 `busyPolicy`——拒绝 → `RATE_LIMITED`
+      `scope: "busy"`；排队 → 推迟到 `setBusy(false)`，到 Host 给的 `timeoutMs`（`NavigateParams` 新增可选字段，Hub 填导航等待剩余时间）
+      仍在操作则回复 `NAVIGATION_FAILED`（`timeout`）、不再导航；没带 `timeoutMs`（旧 Host）按拒绝处理，避免 Host 放弃后才切换界面。
+      Hub 把 App 回复的 `RATE_LIMITED` 原样交给 Agent（原先归为 `NAVIGATION_FAILED`）。测试：核心 `busy_rejects_navigate_by_default`、
+      `busy_queue_defers_navigate_until_idle`、`deferred_navigate_expires`；Hub `navigation.rs busy_app_defers_or_rejects_navigation`。
+      变异：去掉 busy 判断、去掉到期处理、去掉改策略时的拒绝、Hub 不透传 `RATE_LIMITED`、不带 `timeoutMs` 分别被检出。
+      风险：Agent 取消调用后 Hub 不通知 App，推迟的导航仍可能在 `timeoutMs` 内执行（协议没有导航取消消息）。
+    - 未知 / 未做：Hub 不知道 App 的 busy 状态
       （Agent 只在被拒绝时得知）；排队策略下用户操作很久时调用以 `TIMEOUT` 结束。
     - 风险：App 忘记撤销 busy 导致写调用一直被拒——错误消息与 `data.scope` 指明原因；Tauri / Electron 页面卸载自动撤销。
 

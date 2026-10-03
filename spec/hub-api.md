@@ -1062,10 +1062,10 @@ App 决定（拒绝即 `NAVIGATION_DENIED`），Hub 不经 `ApprovalHandler` 另
    与资源读取触发的唤醒相同）。唤醒后实例已注册该工具则直接派发。
 4. 选导航目标：已就绪、声明了 `capabilities.navigate`、未冻结的实例，按路由优先级（调用方指定的 `instanceId` 严格、唤醒的实例、
    会话选定的实例优先）。没有 → `NAVIGATION_FAILED`（`unsupported`）。
-5. 发 `app/navigate {page}`（自动导航不带 `params`；需要页面参数时由 Agent 用 `apps.navigate`，3.15），等待回复；回复后等待该实例注册目标工具（`tools/sync` / `tools/changed`）。
+5. 发 `app/navigate {page, timeoutMs}`（`timeoutMs` 为剩余等待时间，App 用户正在操作且排队时据此推迟，spec/protocol.md 5.3；自动导航不带 `params`；需要页面参数时由 Agent 用 `apps.navigate`，3.15），等待回复；回复后等待该实例注册目标工具（`tools/sync` / `tools/changed`）。
    回复与等待合计受 `HubConfig::navigate_timeout`（默认 5 秒，独立于 `wake_timeout`）约束（超时分别为 `timeout` / `tool-not-registered`），调用取消（3.12）随时结束等待；
    期间该连接记为有进行中的工作（`app/sleep` 被拒绝）。旧 SDK 回 `-32601` 按 `unsupported`；App 回 `NAVIGATION_*` 与
-   `USER_ACTION_REQUIRED`（实例在后台、不能自行回到前台，spec/protocol.md 3.4）原样；其他错误归为 `NAVIGATION_FAILED`（`error`）。
+   `USER_ACTION_REQUIRED`（实例在后台、不能自行回到前台，spec/protocol.md 3.4）、`RATE_LIMITED`（用户正在操作，`scope: "busy"`）原样；其他错误归为 `NAVIGATION_FAILED`（`error`）。
    错误另带 `appId`、`page`。
 6. 路由到该实例并派发（不再审批）。
 
