@@ -38,6 +38,7 @@ internal static unsafe partial class HubNativeMethods
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_select_instance(HubSafeHandle hub, byte* appId, byte* instanceId);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_reset_session(HubSafeHandle hub, byte* session);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_set_policy(HubSafeHandle hub, byte* policyJson);
+    [LibraryImport(Lib)] internal static partial HubStatus am_hub_set_agents(HubSafeHandle hub, byte* agentsJson);
 
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_export_tools(HubSafeHandle hub, int format, byte* filterJson, out nint json);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_dispatch(HubSafeHandle hub, int format, byte* toolCallJson, byte* session, nint cb, nint userData);

@@ -321,9 +321,23 @@ export interface HubConfig {
    * 0 不提供任务句柄（`apps.task.*` 不列出，`taskId` 一律无效）。
    */
   maxTaskHandles?: number
+  // ---- Agent 身份（spec/hub-api.md 3.6）----
+  /** 按 Agent 发的访问令牌；缺省不登记（所有请求为本机主体）。不合法时 `Hub.start` 失败。运行中用 `Hub.setAgents` 替换。 */
+  agents?: AgentCredential[]
   /** 上游 MCP 服务器：名称（appId 规则）→ 启动方式。 */
   upstreams?: Record<string, UpstreamConfig>
   approval?: ApprovalPolicy
+}
+
+/**
+ * 一个 Agent 的访问令牌（spec/hub-api.md 3.6「Agent 身份」）：经 MCP HTTP 出口出示此令牌的请求，主体为 `agent:<name>`
+ * （只用于区分与归属，不做授权）。
+ */
+export interface AgentCredential {
+  /** 1–64 个 ASCII 字母、数字、`-`、`_`、`.`，以字母或数字开头。 */
+  name: string
+  /** 32–512 个可见 ASCII 字符、不含空白（`Authorization: Bearer <token>`）。 */
+  token: string
 }
 
 // 其余各类型按职责分在 types/ 下；对外仍从本文件导出（index.ts 的 `export type * from './types.js'`）。

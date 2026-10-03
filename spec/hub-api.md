@@ -386,7 +386,14 @@ pub struct Health {                          // serde camelCase
   - **Host**：`<home>/agents.json`（0600，格式即 `AgentsConfig`），启动时加载（不合法拒绝启动）；`app-mcp-host agent add <名> [--rotate]`
     生成 64 位十六进制令牌并打印到 stdout、`remove`、`token <名>`、`list [--json]`（只列名字）、`reload`（手工编辑后），运行中的 Host 经
     `POST /agents` 随即生效。doctor「Agent 登记」列出各 Agent 的任务数，文件不合法为错误，其他用户可读（Unix）或与运行中不一致为注意。
-  - **绑定**：hub-c / hub-node / hub-uniffi / C# 暂未暴露（嵌入式 Hub 的调用方识别随第 4g e 项）。
+  - **绑定**（嵌入式 Hub 开启 `mcpHttp` 时生效；配置不合法时启动失败，替换不合法时之前的登记继续生效，错误信息不含令牌）：
+    hub-c 配置 `agents: [{"name","token"}]` 与 `am_hub_set_agents(hub, agents_json)`（头文件 v19；JSON 不合法 → `INVALID_JSON`，
+    登记不合法 → `INVALID_CONFIG`）；`@app-mcp/hub` `HubStartOptions.agents?: AgentCredential[]` 与 `Hub.setAgents(agents)`
+    （不合法 → `INVALID_INPUT`）；uniffi `AgentCredential {name, token}`（`Debug` 不输出令牌）、`HubConfig.agents: [AgentCredential]?`
+    （最后一个字段，缺省空；不合法 → `InvalidConfig`）与 `AppMcpHub::set_agents`（不合法 → `Tool`，`kind = "INVALID_INPUT"`），
+    Kotlin `Hub.setAgents`、Swift `Hub.setAgents(_:)`、Python `Hub(agents=[{"name","token"}])` / `Hub.set_agents`（字典有未知键 →
+    `ValueError`）；C# `HubOptions.Agents`（`HubAgentCredential`，`ToString` 不输出令牌）与 `AppMcpHub.SetAgents`（不合法 →
+    `HubException`，`InvalidConfig`）。uniffi 生成的 Kotlin / Swift / Python 记录类型的字符串形式含全部字段，不要记录 `AgentCredential`。
 - **任务句柄**（第 12 项 S8、第 16 项 P1；`crates/hub/src/task_handle.rs`；名称见 3.15 名称表）：同一无会话主体经句柄同时运行多个互相隔离的
   任务（各自的 `apps.select` 选择与租约）。只提供机制：开几个、何时结束由 Agent 决定。
   - **签发** `apps.task.begin {}` → `{taskId, idleTtlMs, message}`：为请求主体创建一个新任务，`taskId` 即其任务 ID（≥128 位随机，

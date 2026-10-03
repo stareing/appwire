@@ -103,6 +103,8 @@ public typealias AnnotationMatch = AppMcpHubBindings.AnnotationMatch
 public typealias PolicyStatus = AppMcpHubBindings.PolicyStatus
 public typealias PolicyRuleStatus = AppMcpHubBindings.PolicyRuleStatus
 public typealias PolicyLoadError = AppMcpHubBindings.PolicyLoadError
+/// Agent 访问令牌（`HubConfig.agents`、`Hub.setAgents`，spec/hub-api.md 3.6「Agent 身份」）。
+public typealias AgentCredential = AppMcpHubBindings.AgentCredential
 
 /// 工具调用以错误结束（`CallResult.decode` / `CallResult.get()`）。`kind` 为协议错误类别，如 `USER_REJECTED`。
 public struct ToolError: Error, Sendable, Equatable, CustomStringConvertible {
@@ -333,6 +335,10 @@ public final class Hub: @unchecked Sendable {
     /// 替换策略规则集（命中计数清零）；传 `PolicyConfig(rules: [])` 清空。
     /// 规则不合法时抛 `HubError.Tool`（`kind == "INVALID_INPUT"`），之前的规则继续生效，原因记入 `policy().lastError`。
     public func setPolicy(_ policy: PolicyConfig) throws { try inner.setPolicy(policy: policy) }
+
+    /// 替换 Agent 登记（空数组清空），只影响之后到达的 MCP 请求。
+    /// 不合法时抛 `HubError.Tool`（`kind == "INVALID_INPUT"`），之前的登记继续生效。
+    public func setAgents(_ agents: [AgentCredential]) throws { try inner.setAgents(agents: agents) }
 
     /// 设置全局默认实例（`nil` 恢复按规则路由）。
     public func selectInstance(appId: String, instanceId: String?) {

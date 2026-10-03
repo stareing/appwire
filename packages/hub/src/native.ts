@@ -21,6 +21,7 @@ export interface NativeHub {
   status(): string
   policy(): string
   setPolicy(policyJson: string): void
+  setAgents(agentsJson: string): void
   tools(filterJson?: string | null): string
   resources(): string
   overview(appId: string): string | null

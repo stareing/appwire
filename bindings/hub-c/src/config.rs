@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use hub::{
-    ApprovalPolicy, HubConfig, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PolicyConfig, ToolExposure,
+    AgentCredential, AgentsConfig, ApprovalPolicy, HubConfig, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PolicyConfig, ToolExposure,
     UpstreamConfig, WakerConfig, load_manifests,
 };
 use serde::Deserialize;
@@ -86,6 +86,8 @@ pub(crate) struct ConfigJson {
     pub max_listen_resources: Option<usize>,
     /// v17：每个主体同时存在的任务句柄数上限（spec/hub-api.md 3.6「任务句柄」），缺省 32；0 不提供任务句柄。
     pub max_task_handles: Option<usize>,
+    /// v19：Agent 登记（spec/hub-api.md 3.6「Agent 身份」）：`[{"name","token"}]`，缺省空（所有请求为本机主体）。
+    pub agents: Option<Vec<AgentCredential>>,
     pub upstreams: BTreeMap<String, UpstreamConfig>,
     pub approval: ApprovalPolicy,
     pub worker_threads: Option<usize>,
@@ -135,6 +137,7 @@ impl Default for ConfigJson {
             max_listen_streams: None,
             max_listen_resources: None,
             max_task_handles: None,
+            agents: None,
             upstreams: BTreeMap::new(),
             approval: ApprovalPolicy::default(),
             worker_threads: None,
@@ -154,6 +157,17 @@ where
 pub(crate) struct ParsedConfig {
     pub hub: HubConfig,
     pub worker_threads: usize,
+}
+
+/// 校验 Agent 登记（`am_hub_start` 的 `agents` 与 `am_hub_set_agents` 共用）。
+///
+/// @error 不合法 → `InvalidConfig`（信息不含令牌）。
+pub(crate) fn parse_agents(agents: Vec<AgentCredential>) -> FfiResult<AgentsConfig> {
+    let config = AgentsConfig { agents };
+    config
+        .validate()
+        .map_err(|e| FfiError::new(AmHubStatus::InvalidConfig, format!("agents 无效：{e}")))?;
+    Ok(config)
 }
 
 fn set_ms(target: &mut Duration, v: Option<u64>) {
@@ -260,6 +274,9 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     }
     if let Some(v) = c.max_task_handles {
         hub.max_task_handles = v;
+    }
+    if let Some(agents) = c.agents {
+        hub.agents = parse_agents(agents)?;
     }
 
     // 目录与文件：失败的清单由 Hub 记录日志后跳过（与 app-mcp-host 一致）。
@@ -460,6 +477,22 @@ mod tests {
         assert!(e.message.contains("policy"), "{}", e.message);
         let e = parse(Some(r#"{"policy": {"rules": [], "bogus": 1}}"#)).err().map(|e| e.status);
         assert_eq!(e, Some(AmHubStatus::InvalidJson), "policy 内未知字段报错");
+    }
+
+    #[test]
+    fn agents_field() {
+        const T: &str = "0123456789abcdef0123456789abcdef";
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert!(p.hub.agents.agents.is_empty());
+        let p = parse(Some(&format!(r#"{{"agents": [{{"name": "claude", "token": "{T}"}}]}}"#)))
+            .map_err(|e| e.message)
+            .expect("解析");
+        assert_eq!(p.hub.agents.agents[0].name, "claude");
+        let e = parse(Some(r#"{"agents": [{"name": "claude", "token": "short"}]}"#)).err().expect("令牌过短");
+        assert_eq!(e.status, AmHubStatus::InvalidConfig);
+        assert!(e.message.contains("agents") && !e.message.contains("short"), "{}", e.message);
+        let e = parse(Some(r#"{"agents": {"agents": []}}"#)).err().map(|e| e.status);
+        assert_eq!(e, Some(AmHubStatus::InvalidJson), "agents 是数组");
     }
 
     #[test]

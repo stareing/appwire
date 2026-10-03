@@ -732,7 +732,7 @@ fn header_matches_implementation() {
         "am_hub_unsubscribe", "am_hub_select_instance", "am_hub_reset_session",
         "am_hub_export_tools", "am_hub_dispatch", "am_hub_set_event_cb", "am_hub_set_approval_cb",
         "am_hub_approval_complete", "am_hub_set_pairing_cb", "am_hub_pairing_complete",
-        "am_hub_set_waker_cb", "am_hub_waker_complete", "am_hub_set_policy", "am_hub_call_with_progress",
+        "am_hub_set_waker_cb", "am_hub_waker_complete", "am_hub_set_policy", "am_hub_set_agents", "am_hub_call_with_progress",
     ] {
         assert!(h.contains(&format!("{f}(")), "{f}");
     }
@@ -746,7 +746,7 @@ fn header_matches_implementation() {
     .iter()
     .map(|src| src.matches("#[unsafe(no_mangle)]").count())
     .sum();
-    assert_eq!(exported, 32, "导出函数数量与头文件清单一致");
+    assert_eq!(exported, 33, "导出函数数量与头文件清单一致");
 }
 
 #[test]
@@ -764,4 +764,5 @@ fn serve_http_on_loopback() {
     }
 }
 
+mod agents;
 mod lifecycle;

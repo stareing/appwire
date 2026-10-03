@@ -17,11 +17,13 @@ PolicyRule = ffi.PolicyRule
 PolicyAction = ffi.PolicyAction
 PolicyHook = ffi.PolicyHook
 AnnotationMatch = ffi.AnnotationMatch
+AgentCredential = ffi.AgentCredential
 
 RiskLike = Union[Risk, str]
 LimitsLike = Union[LimitsConfig, dict[str, int]]
 OutputValidationLike = Union[OutputValidation, str]
 PolicyLike = Union[PolicyConfig, dict[str, Any]]
+AgentsLike = list[Union[AgentCredential, dict[str, str]]]
 
 # LimitsConfig 字段 ← JSON 配置键（与 app-mcp-host 配置文件 ``limits`` 相同；也接受 snake_case）。
 _LIMIT_KEYS = {
@@ -115,3 +117,11 @@ def _policy(value: PolicyLike) -> PolicyConfig:
         return value
     kw = _fields(value, {"rules": "rules"}, "policy")
     return PolicyConfig(rules=[_policy_rule(r) for r in kw.get("rules", [])])
+
+
+def _agents(value: AgentsLike) -> list[AgentCredential]:
+    """``AgentCredential`` 或字典 ``{"name", "token"}`` 的列表；未知键抛 ``ValueError``（名字与令牌的校验由 Hub 完成）。"""
+    return [
+        a if isinstance(a, AgentCredential) else AgentCredential(**_fields(a, {"name": "name", "token": "token"}, "agent"))
+        for a in value
+    ]

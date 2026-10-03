@@ -100,6 +100,12 @@ public sealed class HubOptions
     /// 运行中用 <see cref="AppMcpHub.SetPolicy"/> 替换。</summary>
     public HubPolicy? Policy { get; set; }
 
+    // ---- Agent 身份（spec/hub-api.md 3.6）----
+
+    /// <summary>按 Agent 发的访问令牌；null = 不登记（所有请求为本机主体）。不合法时启动失败（InvalidConfig）。
+    /// 运行中用 <see cref="AppMcpHub.SetAgents"/> 替换。</summary>
+    public IList<HubAgentCredential>? Agents { get; set; }
+
     // ---- 渐进暴露（spec/hub-api.md 3.7）----
 
     /// <summary>工具暴露方式（默认 <see cref="AppMcp.Hub.ToolExposure.Auto"/>）。</summary>
@@ -202,6 +208,7 @@ public sealed class HubOptions
         if (Limits is { } limits) o["limits"] = limits.ToJson();
         if (OutputValidation is { } ov) o["outputValidation"] = ov.ToString().ToLowerInvariant();
         if (Policy is { } policy) o["policy"] = policy.ToJson();
+        if (Agents is { } agents) o["agents"] = HubAgentCredential.ToJson(agents);
         if (ToolExposure is { } te) o["toolExposure"] = te.ToString().ToLowerInvariant();
         if (ToolExposureThreshold is { } tt)
         {

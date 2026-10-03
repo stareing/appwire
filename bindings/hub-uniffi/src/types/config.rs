@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use app_mcp_hub as hub;
 
-use super::{HubError, McpProtocolMode, OutputValidation, PolicyConfig, Risk, ToolExposure, WakerConfig};
+use super::{AgentCredential, HubError, McpProtocolMode, OutputValidation, PolicyConfig, Risk, ToolExposure, WakerConfig};
 
 /// 上游 MCP 服务器（Hub 以子进程启动，stdio 传输）。
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -174,6 +174,11 @@ pub struct HubConfig {
     /// 每个主体同时存在的任务句柄数上限（默认 32，超出时 `apps.task.begin` 报 `RATE_LIMITED`）；`0` 不提供任务句柄。
     #[uniffi(default = None)]
     pub max_task_handles: Option<u32>,
+    // ---- Agent 身份（spec/hub-api.md 3.6「Agent 身份」）----
+    /// 按 Agent 发的访问令牌（默认不登记：所有请求为本机主体）。不合法时 `start` 返回 `InvalidConfig`（信息不含令牌）。
+    /// 运行中用 `AppMcpHub::set_agents` 替换。
+    #[uniffi(default = None)]
+    pub agents: Option<Vec<AgentCredential>>,
 }
 
 impl Default for HubConfig {
@@ -225,6 +230,7 @@ impl Default for HubConfig {
             max_listen_streams: None,
             max_listen_resources: None,
             max_task_handles: None,
+            agents: None,
         }
     }
 }
@@ -452,6 +458,11 @@ impl HubConfig {
         }
         if let Some(v) = self.max_task_handles {
             c.max_task_handles = v as usize;
+        }
+        if let Some(agents) = self.agents {
+            let agents = super::agents_config(agents);
+            agents.validate().map_err(|detail| HubError::InvalidConfig { detail: format!("agents：{detail}") })?;
+            c.agents = agents;
         }
         Ok(c)
     }

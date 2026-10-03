@@ -25,6 +25,7 @@ import type {
   PairingHandler,
   PairingRequest,
   PolicyConfig,
+  AgentCredential,
   PolicyStatus,
   ResourceContent,
   ToolCallInput,
@@ -175,6 +176,14 @@ export class Hub {
    */
   setPolicy(policy: PolicyConfig): void {
     wrapSync(() => this.#native.setPolicy(JSON.stringify(policy)))
+  }
+
+  /**
+   * 替换 Agent 登记（spec/hub-api.md 3.6「Agent 身份」），只影响之后到达的 MCP 请求；传 `[]` 清空。
+   * 登记不合法时抛 {@link HubError}（`kind = 'INVALID_INPUT'`），之前的登记继续生效。
+   */
+  setAgents(agents: AgentCredential[]): void {
+    wrapSync(() => this.#native.setAgents(JSON.stringify(agents)))
   }
 
   tools(filter?: ToolFilter): HubTool[] {

@@ -297,6 +297,13 @@ impl AppMcpHub {
         hub.set_policy(policy.into()).map_err(Into::into)
     }
 
+    /// 替换 Agent 登记（spec/hub-api.md 3.6「Agent 身份」），只影响之后到达的 MCP 请求；空列表清空。
+    /// 登记不合法时返回 `HubError::Tool`（`kind = "INVALID_INPUT"`，信息不含令牌），之前的登记继续生效。
+    pub fn set_agents(&self, agents: Vec<AgentCredential>) -> Result<(), HubError> {
+        let hub = self.hub()?;
+        hub.set_agents(types::agents_config(agents)).map_err(Into::into)
+    }
+
     // ---- 操作 ----
 
     /// 调用工具。工具层面的失败（参数不合法、用户拒绝、超时、App 报错…）放在 `CallOutcome.error`；

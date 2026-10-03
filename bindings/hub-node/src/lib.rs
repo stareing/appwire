@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use app_mcp_hub::{
+    AgentCredential, AgentsConfig,
     ApprovalHandler, ApprovalPolicy, ApprovalRequest, CallRequest, ErrorKind, Hub, HubConfig,
     HubError, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PairingHandler, PairingRequest,
     PolicyConfig, ToolExposure, ToolFilter, ToolFormat, UpstreamConfig, WakeRequest, Waker, WakerConfig,
@@ -190,6 +191,8 @@ struct ConfigJson {
     max_listen_resources: Option<usize>,
     /// 每个主体同时存在的任务句柄数上限（spec/hub-api.md 3.6「任务句柄」），缺省 32；0 不提供任务句柄。
     max_task_handles: Option<usize>,
+    /// Agent 登记（spec/hub-api.md 3.6「Agent 身份」）：`[{"name","token"}]`；不合法时 `Hub.start` 失败。
+    agents: Option<Vec<AgentCredential>>,
     upstreams: BTreeMap<String, UpstreamConfig>,
     approval: ApprovalPolicy,
 }
@@ -317,6 +320,9 @@ impl ConfigJson {
         }
         if let Some(v) = self.max_task_handles {
             c.max_task_handles = v;
+        }
+        if let Some(agents) = self.agents {
+            c.agents = AgentsConfig { agents };
         }
         c.upstreams = self.upstreams;
         c.approval = self.approval;
@@ -514,6 +520,15 @@ impl JsHub {
         let policy: PolicyConfig = serde_json::from_str(&policy_json)
             .map_err(|e| invalid_arg(format!("policy 不是合法的 JSON：{e}")))?;
         self.hub()?.set_policy(policy).map_err(hub_error)
+    }
+
+    /// 替换 Agent 登记（`[{"name","token"}]` 的 JSON，`[]` 清空），只影响之后到达的 MCP 请求。JSON 不合法 → `INVALID_ARG`；
+    /// 登记不合法 → `INVALID_INPUT`（之前的登记继续生效；信息不含令牌）。
+    #[napi]
+    pub fn set_agents(&self, agents_json: String) -> Result<()> {
+        let agents: Vec<AgentCredential> = serde_json::from_str(&agents_json)
+            .map_err(|e| invalid_arg(format!("agents 不是合法的 JSON：{e}")))?;
+        self.hub()?.set_agents(AgentsConfig { agents }).map_err(hub_error)
     }
 
     /// `HubTool[]` 的 JSON。`filterJson` 为 `ToolFilter`（可省略）。

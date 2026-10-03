@@ -13,6 +13,7 @@ function fakeBinding() {
     waker: undefined as ((json: string) => Promise<string | null>) | null | undefined,
     shutdown: false,
     policy: undefined as unknown,
+    agents: undefined as unknown,
   }
   const native: NativeHub = {
     get listenAddr() {
@@ -45,6 +46,9 @@ function fakeBinding() {
       const p = JSON.parse(json) as { rules?: { id: string }[] }
       if (p.rules?.some((r) => r.id === 'bad id')) throw new Error('[INVALID_INPUT] 规则 id 不合法')
       state.policy = p
+    },
+    setAgents: (json) => {
+      state.agents = JSON.parse(json)
     },
     tools: (f) => JSON.stringify([{ name: 'a.b', filter: f ? JSON.parse(f) : null }]),
     resources: () => '[]',
@@ -140,6 +144,14 @@ describe('Hub 封装', () => {
     })()
     expect(e).toBeInstanceOf(HubError)
     expect(e).toMatchObject({ kind: 'INVALID_INPUT' })
+  })
+
+  it('Agent 登记：配置透传、setAgents 序列化为数组', async () => {
+    const { binding, state } = fakeBinding()
+    const agents = [{ name: 'claude', token: 'claude-0123456789abcdef0123456789abcdef' }]
+    await Hub.start({ binding, keepAlive: false, agents }).then((hub) => hub.setAgents([]))
+    expect(state.config).toEqual({ agents })
+    expect(state.agents).toEqual([])
   })
 
   it('callTool 的 onProgress 收到进度；回调抛错交给 onListenerError；不传时走普通调用', async () => {

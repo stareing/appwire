@@ -98,6 +98,8 @@
  *   · limits 新增可选字段 agentRatePerMinute / agentRateBurst（每个已登记 Agent 一级限流，缺省不限）；
  *     policy 规则新增可选字段 agent（只用于 deny）。
  *   · JSON 中新增：HubStatus.agents（已登记的 Agent 名）、HubStatus.usage（按调用方记账）、tasks[].agent。
+ * - v19（嵌入式 Hub 的 Agent 登记，spec/hub-api.md 3.6「Agent 身份」）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 agents（[{"name","token"}]）；函数 am_hub_set_agents（运行中替换登记）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -270,6 +272,9 @@ void am_hub_string_free(char *s);
  *   —— v17 任务句柄（spec/hub-api.md 3.6「任务句柄」）——
  *   maxTaskHandles       每个主体同时存在的任务句柄数上限，默认 32（超出时 apps.task.begin 报 RATE_LIMITED）；
  *                        0 不提供任务句柄（apps.task.* 不列出，taskId 一律无效）
+ *   —— v19 Agent 身份（spec/hub-api.md 3.6「Agent 身份」）——
+ *   agents               [{"name","token"}]：按 Agent 发的访问令牌，/mcp 出示时请求主体为 agent:<name>（只区分与归属，
+ *                        不做授权）；名字 1–64 个字母、数字、-、_、.，令牌 32–512 个可见 ASCII 字符；缺省空
  *   workerThreads        tokio 工作线程数（默认 2）
  * 未知字段报 AM_HUB_ERR_INVALID_JSON。清单无效报 AM_HUB_ERR_INVALID_CONFIG；地址无法绑定报 AM_HUB_ERR_IO。 */
 AmHubStatus am_hub_start(const char *config_json, AmHub **out_hub);
@@ -375,6 +380,9 @@ AmHubStatus am_hub_reset_session(AmHub *hub, const char *session);
  * 不是合法 JSON 或有未知字段 → AM_HUB_ERR_INVALID_JSON；规则不合法 → AM_HUB_ERR_INVALID_CONFIG（之前的规则继续生效，
  * 原因记入 am_hub_status_json 的 policy.lastError）。 */
 AmHubStatus am_hub_set_policy(AmHub *hub, const char *policy_json);
+/* v19：替换 Agent 登记（JSON 形式同配置 agents；"[]" 清空），只影响之后到达的 MCP 请求。
+ * 不是合法 JSON 或结构不符 → AM_HUB_ERR_INVALID_JSON；登记不合法 → AM_HUB_ERR_INVALID_CONFIG（之前的登记继续生效）。 */
+AmHubStatus am_hub_set_agents(AmHub *hub, const char *agents_json);
 
 /* ---------------------------------------------------------------------------
  * 工具格式导出与分派（spec/hub-api.md 第 5 节）

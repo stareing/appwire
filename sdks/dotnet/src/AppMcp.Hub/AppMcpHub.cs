@@ -294,6 +294,15 @@ public sealed class AppMcpHub : IDisposable, IAsyncDisposable
         HubNativeMethods.Check(HubNativeMethods.am_hub_set_policy(_handle, s.Add(policy.ToJsonString())));
     }
 
+    /// <summary>替换 Agent 登记（spec/hub-api.md 3.6「Agent 身份」），只影响之后到达的 MCP 请求；传空集合清空。</summary>
+    /// <exception cref="HubException">登记不合法（<see cref="HubStatus.InvalidConfig"/>）：之前的登记继续生效。</exception>
+    public unsafe void SetAgents(IEnumerable<HubAgentCredential> agents)
+    {
+        ArgumentNullException.ThrowIfNull(agents);
+        using var s = new Utf8Strings();
+        HubNativeMethods.Check(HubNativeMethods.am_hub_set_agents(_handle, s.Add(HubAgentCredential.ToJson(agents).ToJsonString())));
+    }
+
     // -----------------------------------------------------------------------
     // 工具格式导出与分派
     // -----------------------------------------------------------------------

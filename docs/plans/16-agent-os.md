@@ -164,10 +164,15 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
       Agent 令牌不能读 `/status`、启动校验；把主体恒置为本机时其中 3 个失败）；`agents.rs` / `task.rs` / `http_server.rs` 单元；Host
       `serve.rs agent_registry_cli_and_tokens`、`agents.rs` 与 doctor 单元。
     - 未知 / 未做：stdio 与 `serve_mcp_stream`（含移动端 Binder 上的 MCP）没有 HTTP 头，恒为本机主体，嵌入式 Hub 的调用方识别随第 4g e 项；
-      `setup` 写入 Agent 配置时尚不为每个 Agent 自动登记令牌；hub-c / hub-node / hub-uniffi / C# 尚未暴露 `agents`；IPC 上出示 Agent 令牌
+      `setup` 写入 Agent 配置时尚不为每个 Agent 自动登记令牌；IPC 上出示 Agent 令牌
       只是身份声明（同一用户本来能读 `agents.json`），不构成隔离。
     - 风险：令牌泄露即可冒用该 Agent 的身份——只影响区分与归属，不扩大权限（Agent 令牌不能访问 `/status`、`/policy`、`/agents`）；
       文件以 0600 写入，doctor 检出权限过宽。
+    - 绑定（2026-10-03）：嵌入式 Hub 各语言绑定可登记 Agent（spec/hub-api.md 3.6「Agent 身份」的「绑定」）——hub-c 配置 `agents` +
+      `am_hub_set_agents`（头文件 v19）、`@app-mcp/hub` `agents` / `setAgents`、uniffi `HubConfig.agents` / `set_agents`（Kotlin / Swift
+      `setAgents`、Python `agents=` / `set_agents`）、C# `HubOptions.Agents` / `SetAgents`。各绑定一个端到端测试：经 `/mcp` 出示令牌的
+      `apps.task.begin` 任务带对应 Agent、替换不合法时保留之前的登记、启动时不合法报配置错误且信息不含令牌。uniffi 生成的 Kotlin / Swift /
+      Python 记录类型的字符串形式含令牌（生成代码不可定制），文档提示不要记录 `AgentCredential`；Swift 未编译验证（无 macOS）。
 - **N6 并发仲裁**：SDK 提供 `busy()` / 对象锁；Hub 对写调用排队或返回明确错误；多会话对同一 App 公平排队。
   工具可声明 `concurrency: N` / `exclusive`（同一资源互斥），SDK 按声明排队，队列上限可配置，满时返回明确错误（4f k，由 4f 实施）。
 

@@ -250,6 +250,25 @@ pub unsafe extern "C" fn am_hub_set_policy(hub: *mut AmHub, policy_json: *const 
     })
 }
 
+/// 替换 Agent 登记（v19，spec/hub-api.md 3.6「Agent 身份」）：`[{"name","token"}]`，`[]` 清空。只影响之后到达的 MCP 请求。
+///
+/// @error 不是合法 JSON 或结构不符 → `InvalidJson`；登记不合法 → `InvalidConfig`（之前的登记继续生效；信息不含令牌）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn am_hub_set_agents(hub: *mut AmHub, agents_json: *const c_char) -> AmHubStatus {
+    guard(|| {
+        // SAFETY: 由调用方保证。
+        let h = unsafe { hub_ref(hub) }?;
+        // SAFETY: 同上。
+        let text = unsafe { req_str(agents_json, "agents_json") }?;
+        let agents: Vec<hub::AgentCredential> =
+            serde_json::from_str(text).map_err(|e| FfiError::json("agents_json", e))?;
+        let config = crate::config::parse_agents(agents)?;
+        h.hub()?
+            .set_agents(config)
+            .map_err(|e| FfiError::new(AmHubStatus::InvalidConfig, e.0.message))
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn am_hub_dispatch(
     hub: *mut AmHub,

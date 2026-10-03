@@ -94,6 +94,8 @@ typealias AnnotationMatch = dev.appmcp.hub.ffi.AnnotationMatch
 typealias PolicyStatus = dev.appmcp.hub.ffi.PolicyStatus
 typealias PolicyRuleStatus = dev.appmcp.hub.ffi.PolicyRuleStatus
 typealias PolicyLoadError = dev.appmcp.hub.ffi.PolicyLoadError
+/** Agent 访问令牌（[HubConfig.agents]、[Hub.setAgents]，spec/hub-api.md 3.6「Agent 身份」）。 */
+typealias AgentCredential = dev.appmcp.hub.ffi.AgentCredential
 
 /** 工具暴露方式（`AUTO` / `PROGRESSIVE` / `ALL`，spec/hub-api.md 3.7）。 */
 typealias ToolExposure = dev.appmcp.hub.ffi.ToolExposure
@@ -301,6 +303,12 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
      * （`kind = "INVALID_INPUT"`），之前的规则继续生效，原因记入 [policy] 的 `lastError`。
      */
     fun setPolicy(policy: PolicyConfig) = inner.setPolicy(policy)
+
+    /**
+     * 替换 Agent 登记（空列表清空），只影响之后到达的 MCP 请求。不合法时抛出 `HubException.Tool`
+     * （`kind = "INVALID_INPUT"`），之前的登记继续生效。
+     */
+    fun setAgents(agents: List<AgentCredential>) = inner.setAgents(agents)
 
     /** 设置全局默认实例（`null` 恢复按规则路由）。 */
     fun selectInstance(appId: String, instanceId: String?) = inner.selectInstance(appId, instanceId)
