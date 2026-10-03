@@ -21,6 +21,8 @@
 //!     然后接受下一个连接，打印 `{"type":"hello","launchToken","resumeToken","wakeReason","toolsCurrent"}`，
 //!     恢复令牌与 `toolsHash` 都与休眠时一致时返回 `toolsCurrent: true`（沿用工具快照）。
 //!     该连接的 `app/ready` 之后照常打印工具列表，并附带 `"synced"`（本连接是否收到了 `tools/sync`）。
+//! - 收到 `events/sync` 时打印 `{"type":"events","events":[…]}`，收到 `events/emit` 时打印
+//!   `{"type":"event","name","eventId","payload"?}`（第 16 项 N3，spec/protocol.md 3.5；不需要 `--trace`）。
 //! - 收到 `tools/progress` 时打印 `{"type":"progress","callId","progress","total"?,"message"?}`（在对应调用结果之前）。
 //! - `--tool-info`：工具列表行另带 `"toolInfo": { <名称>: { risk, annotations?, outputSchema? } }`（核对工具声明）。
 //! - `--lease-ms <ms>`：`app/ready` 之后与每个操作完成后发送 `app/lease { ttlMs }`。

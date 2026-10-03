@@ -9,7 +9,10 @@ use serde_json::Value;
 
 use crate::types::HubEvent;
 
-use super::{HubShared, lock, parse_resource_uri, request_error, resource_uri};
+use crate::names::RESOURCE_APPS_EVENTS_URI;
+use crate::task::CallerKey;
+
+use super::{API_SUBSCRIBER, HubShared, lock, parse_resource_uri, request_error, resource_uri};
 
 impl HubShared {
     // ------------------------------------------------------------------
@@ -56,8 +59,14 @@ impl HubShared {
         Ok((target.resource, result))
     }
 
-    /// 订阅资源（`session` 为订阅方 ID——legacy MCP 会话或 listen 流——或 [`API_SUBSCRIBER`]）。
-    pub(crate) fn subscribe(self: &Arc<Self>, session: u64, uri: &str) -> Result<(), ToolError> {
+    /// 订阅资源（`session` 为订阅方 ID——legacy MCP 会话或 listen 流——或 [`API_SUBSCRIBER`]；`caller` 为其调用方，
+    /// 订阅 `app-mcp://apps/events` 时决定提醒哪个信箱的变化）。
+    pub(crate) fn subscribe(self: &Arc<Self>, session: u64, uri: &str, caller: &CallerKey) -> Result<(), ToolError> {
+        if uri == RESOURCE_APPS_EVENTS_URI {
+            self.watch_events_self(session, caller);
+            lock(&self.resource_subs).entry(uri.to_owned()).or_default().insert(session);
+            return Ok(());
+        }
         let Some((app_id, _)) = parse_resource_uri(uri) else {
             return Err(ToolError::new(
                 ErrorKind::ResourceNotFound,
@@ -80,6 +89,9 @@ impl HubShared {
 
     /// 取消订阅；没有订阅方时转发 `resources/unsubscribe`。
     pub(crate) fn unsubscribe(self: &Arc<Self>, session: u64, uri: &str) {
+        if uri == RESOURCE_APPS_EVENTS_URI {
+            self.unwatch_events_self(session);
+        }
         let now_empty = {
             let mut subs = lock(&self.resource_subs);
             match subs.get_mut(uri) {
@@ -97,7 +109,7 @@ impl HubShared {
         let Some((app_id, name)) = parse_resource_uri(uri) else {
             return;
         };
-        if !now_empty {
+        if !now_empty || uri == RESOURCE_APPS_EVENTS_URI {
             return;
         }
         let conns: Vec<_> = {
@@ -188,16 +200,33 @@ impl HubShared {
             .get(&uri)
             .map(|s| s.iter().copied().collect())
             .unwrap_or_default();
-        let subscribers = lock(&self.subscribers).pick(&ids);
+        self.notify_resource_subscribers(&ids, &uri);
+    }
+
+    /// 向订阅方 `ids`（legacy 会话 / listen 流）发 `resources/updated`；已关闭的移除。不在 tokio 运行时内时不发送。
+    fn notify_resource_subscribers(self: &Arc<Self>, ids: &[u64], uri: &str) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let subscribers = lock(&self.subscribers).pick(ids);
         for (id, subscriber) in subscribers {
-            let uri = uri.clone();
+            let uri = uri.to_owned();
             let shared = self.clone();
-            tokio::spawn(async move {
+            rt.spawn(async move {
                 if !subscriber.notify_resource_updated(uri).await {
                     shared.remove_subscriber(id);
                 }
             });
         }
+    }
+
+    /// 只提醒指定的订阅方（`app-mcp://apps/events` 按订阅方过滤，[`crate::events`]）：含 [`API_SUBSCRIBER`] 时发
+    /// [`HubEvent::ResourceUpdated`]。
+    pub(crate) fn send_resource_updated(self: &Arc<Self>, ids: &[u64], uri: &str) {
+        if ids.contains(&API_SUBSCRIBER) {
+            self.emit(HubEvent::ResourceUpdated { uri: uri.to_owned() });
+        }
+        self.notify_resource_subscribers(ids, uri);
     }
 
 }

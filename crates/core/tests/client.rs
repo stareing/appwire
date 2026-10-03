@@ -8,6 +8,8 @@ mod calls;
 mod dedup;
 #[path = "client/diagnostics.rs"]
 mod diagnostics;
+#[path = "client/events.rs"]
+mod events;
 #[path = "client/handshake.rs"]
 mod handshake;
 #[path = "client/heartbeat.rs"]

@@ -175,6 +175,61 @@ impl NativeClient {
         self.owner.shared.create_scope(None, name)
     }
 
+    // ---- 事件（第 16 项 N3，spec/protocol.md 3.5）--------------------------
+
+    /// 声明本实例可发出的事件（同名替换）。已连接时随即同步给 Host，否则在下次握手成功后同步；不触发连接。
+    ///
+    /// @error 名称不合法 → [`NativeError::InvalidName`]；已停止 → [`NativeError::Stopped`]。
+    pub fn declare_event(&self, info: EventInfo) -> Result<(), NativeError> {
+        let shared = &self.owner.shared;
+        let mut st = shared.lock();
+        if st.stopped {
+            return Err(NativeError::Stopped);
+        }
+        st.client.declare_event(info).map_err(core_error)?;
+        drop(st);
+        shared.wake();
+        Ok(())
+    }
+
+    /// 撤销事件声明；未声明过（或已停止）返回 `false`。
+    pub fn remove_event(&self, name: &str) -> bool {
+        let shared = &self.owner.shared;
+        let removed = shared.lock().client.remove_event(name);
+        if removed {
+            shared.wake();
+        }
+        removed
+    }
+
+    /// 发出已声明的事件。`payload_json` 为 JSON 对象文本（`None` = 无载荷）。
+    ///
+    /// 已连接时发送并返回 `true`；未连接（休眠、断线、重连中、握手中）丢弃并返回 `false`：不缓存、不为此连接或唤醒 Host，
+    /// 也不推迟空闲休眠。需要可靠送达的状态变化请改用资源。
+    ///
+    /// @error 名称不合法、未声明 → [`NativeError::InvalidName`]；`payload_json` 不是合法 JSON、不是对象或序列化后超过
+    /// [`MAX_EVENT_PAYLOAD_BYTES`] → [`NativeError::InvalidJson`]；已停止 → [`NativeError::Stopped`]。
+    pub fn emit_event(&self, name: &str, payload_json: Option<&str>) -> Result<bool, NativeError> {
+        let payload = payload_json
+            .map(|text| {
+                serde_json::from_str::<Value>(text)
+                    .map_err(|e| NativeError::InvalidJson(format!("事件载荷不是合法 JSON：{e}")))
+            })
+            .transpose()?;
+        let shared = &self.owner.shared;
+        let mut st = shared.lock();
+        if st.stopped {
+            return Err(NativeError::Stopped);
+        }
+        let sent = st.client.emit_event(name, payload).map_err(core_error)?;
+        drop(st);
+        // @why 只在真正排队了消息时唤醒运行时；休眠中不碰条件变量，避免无谓地重建运行时。
+        if sent {
+            shared.wake();
+        }
+        Ok(sent)
+    }
+
     // ---- 生命周期 -------------------------------------------------------
 
     /// 处理操作系统激活参数 / URL（命令行、`onOpenURL`、D-Bus action 参数等），识别

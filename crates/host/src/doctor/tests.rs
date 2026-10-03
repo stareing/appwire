@@ -121,6 +121,22 @@ fn callers_text_lists_calls() {
 }
 
 #[test]
+fn callers_text_lists_event_subscriptions() {
+    let mut st = status_with_tools(0);
+    st.events = Some(serde_json::from_value(json!({"subscriptions": [], "droppedInvalid": 0})).unwrap());
+    assert_eq!(callers_text(&st), "MCP 会话 0 个", "没有订阅时不提");
+    st.events = Some(
+        serde_json::from_value(json!({"droppedInvalid": 1, "subscriptions": [
+            {"subscriptionId": "sub-1", "subscriber": "agent:claude", "appId": "shop", "delivered": 5, "dropped": 2, "pending": 3},
+            {"subscriptionId": "sub-2", "subscriber": "agent:claude", "appId": "mail", "event": "mail.new", "delivered": 1, "dropped": 0, "pending": 3},
+            {"subscriptionId": "sub-3", "subscriber": "local", "appId": "shop", "delivered": 0, "dropped": 0, "pending": 0}
+        ]}))
+        .unwrap(),
+    );
+    assert_eq!(callers_text(&st), "MCP 会话 0 个、事件订阅 3 个（信箱积压 3 条，丢弃 3 条）", "同一信箱只计一次");
+}
+
+#[test]
 fn tools_check_lists_declarations() {
     let st = status_with_tools(0);
     let c = tools_check(Some(&Ok(st)));

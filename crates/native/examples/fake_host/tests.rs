@@ -169,3 +169,13 @@ async fn serves_over_ipc() {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+#[test]
+fn event_lines() {
+    let line = session::event_line(method::EVENTS_EMIT, json!({"name": "a", "eventId": "e1"}));
+    assert_eq!(line, json!({"type": "event", "name": "a", "eventId": "e1"}));
+    let line = session::event_line(method::EVENTS_SYNC, json!({"events": []}));
+    assert_eq!(line, json!({"type": "events", "events": []}));
+    let line = session::event_line(method::EVENTS_EMIT, json!(1));
+    assert_eq!(line, json!({"type": "event", "params": 1}), "非对象参数不 panic");
+}

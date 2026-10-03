@@ -651,3 +651,53 @@ fn load_file_and_dir() {
     assert!(load_dir(dir.join("nope")).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn with_events(events: Value) -> Manifest {
+    let mut base = example();
+    base["events"] = events;
+    serde_json::from_value(base).expect("parses")
+}
+
+#[test]
+fn events_parse_and_roundtrip() {
+    let m = with_events(json!([
+        { "name": "order.shipped", "description": "订单已发货", "payloadSchema": { "type": "object" } },
+        { "name": "download.done", "description": "下载完成" }
+    ]));
+    assert!(m.validate().is_ok());
+    assert_eq!(m.events.len(), 2);
+    assert_eq!(m.events[0].payload_schema, Some(json!({ "type": "object" })));
+    let back: Manifest = serde_json::from_value(serde_json::to_value(&m).unwrap()).unwrap();
+    assert_eq!(back, m);
+    // 无事件时不序列化。
+    let plain: Manifest = serde_json::from_value(example()).unwrap();
+    assert!(plain.events.is_empty());
+    assert!(serde_json::to_value(&plain).unwrap().get("events").is_none());
+}
+
+#[test]
+fn event_rules() {
+    let v = with_events(json!([{ "name": "bad name", "description": "d" }])).validate();
+    assert_eq!(error_paths(&v), ["events[0].name"]);
+    let v = with_events(json!([
+        { "name": "a", "description": "d" },
+        { "name": "a", "description": "d" }
+    ]))
+    .validate();
+    assert_eq!(error_paths(&v), ["events[1].name"]);
+    assert!(v.errors[0].message.contains("重复"));
+    let v = with_events(json!([{ "name": "a", "description": " " }])).validate();
+    assert_eq!(error_paths(&v), ["events[0].description"]);
+    let v = with_events(json!([{ "name": "a", "description": "d", "payloadSchema": "x" }])).validate();
+    assert_eq!(error_paths(&v), ["events[0].payloadSchema"]);
+    // 事件与工具分属不同命名空间：与工具同名不算重复。
+    let v = with_events(json!([{ "name": "orders.search", "description": "d" }])).validate();
+    assert!(v.is_ok(), "{v:?}");
+}
+
+#[test]
+fn event_name_with_app_id_prefix_warns() {
+    let v = with_events(json!([{ "name": "shop.order.shipped", "description": "d" }])).validate();
+    assert!(v.is_ok());
+    assert!(v.warnings.iter().any(|w| w.path == "events[0].name"), "{v:?}");
+}

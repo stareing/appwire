@@ -238,3 +238,50 @@ async fn legacy_only_switch_restores_legacy_negotiation() {
     shop.stop();
     hub.shutdown().await;
 }
+
+/// 第 16 项 N3：listen 流订阅 `app-mcp://apps/events` 后，只在**自己的**信箱（本机主体 `principal:local`）有新事件时收到
+/// `resources/updated`；其他订阅方（legacy 会话）的新事件不提醒。
+#[tokio::test(flavor = "multi_thread")]
+async fn listen_events_self_reminds_only_own_inbox() {
+    use rmcp::model::SubscribeRequestParams;
+    const EVENTS_SELF: &str = crate::names::RESOURCE_APPS_EVENTS_URI;
+    let (hub, shop) = start(config(Duration::ZERO, Duration::ZERO)).await;
+    for name in ["order.shipped", "cart.changed"] {
+        shop.declare_event(app_mcp_protocol::EventInfo { name: name.into(), description: "d".into(), payload_schema: None })
+            .expect("declare");
+    }
+    eventually("事件声明", || hub.shared().declared_events("shop").len() == 2).await;
+    let legacy = connect(&hub, false).await;
+    call(&legacy, "apps.events.subscribe", json!({ "appId": "shop", "event": "cart.changed" })).await;
+    #[allow(deprecated)] // @why legacy 会话仍以 resources/subscribe 订阅（listen 只给无会话请求）
+    legacy.peer().subscribe(SubscribeRequestParams::new(EVENTS_SELF)).await.expect("legacy 订阅 events/self");
+    let modern = connect_2026(&hub).await;
+    call(&modern, "apps.events.subscribe", json!({ "appId": "shop", "event": "order.shipped" })).await;
+    let filter = SubscriptionFilter::builder().resource_subscriptions([EVENTS_SELF]).build();
+    let mut sub = modern.peer().listen(filter).await.expect("listen");
+    assert_eq!(sub.acknowledged().resource_subscriptions, Some(vec![EVENTS_SELF.to_owned()]));
+    eventually("listen 流登记", || listen_streams(&hub) == Some(1)).await;
+
+    let delivered = |legacy: bool| -> u64 {
+        let subs = hub.status().events.unwrap().subscriptions;
+        subs.iter().filter(|s| s.subscriber.starts_with("mcp:") == legacy).map(|s| s.delivered).sum()
+    };
+    assert!(shop.emit_event("cart.changed", None).expect("emit"));
+    eventually("legacy 会话的信箱收到事件", || delivered(true) == 1).await;
+    assert_eq!(delivered(false), 0);
+    let quiet = tokio::time::timeout(Duration::from_millis(300), sub.next()).await;
+    assert!(quiet.is_err(), "他人信箱的新事件不应提醒本流：{quiet:?}");
+    assert!(shop.emit_event("order.shipped", Some(r#"{"id":1}"#)).expect("emit"));
+    let updated = wait_notification(&mut sub, "notifications/resources/updated").await;
+    assert_eq!(updated["params"]["uri"], json!(EVENTS_SELF));
+    let r = tokio::time::timeout(T, modern.peer().read_resource(ReadResourceRequestParams::new(EVENTS_SELF))).await.unwrap().unwrap();
+    let text = match &r.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("{other:?}"),
+    };
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!((v["pending"].clone(), v["events"][0]["payload"]["id"].clone()), (json!(1), json!(1)));
+    sub.cancel().await.expect("cancel");
+    shop.stop();
+    hub.shutdown().await;
+}

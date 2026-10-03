@@ -91,7 +91,7 @@ pub struct HubConfig {
     pub dormant_replaced_by_new_instance: bool,
     /// 持久状态目录（spec/hub-api.md 3.5「持久化」）：休眠记录写到 `<state_dir>/dormant/<appId>.json`（原子写、仅当前用户可读），
     /// [`Hub::start`](crate::Hub::start) 时读回，重启前休眠的 App 仍可列出、可唤醒。默认 `None`：Hub 不读写任何文件（嵌入式厂商按需开启）；
-    /// `app-mcp-host` 为 `<配置目录>/state`。
+    /// `app-mcp-host` 为 `<配置目录>/state`。已登记 Agent 的事件订阅与信箱写到 `<state_dir>/inbox/`（spec/hub-api.md 3.17）。
     pub state_dir: Option<PathBuf>,
     /// App 未运行、清单没有显式声明 `wake` 时，是否由清单 `launch` 推导唤醒方式并冷启动
     /// （`launch.web` 的地址会被打开）。默认 `false`：只返回 `APP_DISCONNECTED` 与启动提示。
@@ -157,6 +157,8 @@ pub struct HubConfig {
     /// `agent:<名>`，任务、任务句柄、`apps.select`、租约与 listen 流上限按 Agent 分开。默认无登记（所有请求为本机主体）。
     /// 运行中可用 [`Hub::set_agents`](crate::Hub::set_agents) 替换。
     pub agents: crate::agents::AgentsConfig,
+    /// 事件订阅与信箱的上限（第 16 项 N3 + P4，spec/hub-api.md 3.17）。默认见 [`crate::events::EventLimits`]。
+    pub event_limits: crate::events::EventLimits,
 }
 
 /// [`HubConfig::max_task_handles`] 的默认值。
@@ -271,6 +273,7 @@ impl Default for HubConfig {
             max_task_handles: DEFAULT_MAX_TASK_HANDLES,
             max_locks: DEFAULT_MAX_LOCKS,
             agents: crate::agents::AgentsConfig::default(),
+            event_limits: crate::events::EventLimits::default(),
         }
     }
 }

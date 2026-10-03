@@ -11,8 +11,10 @@ use crate::types::{Availability, HubTool};
 use crate::names::{
     BUILTIN_APP_ID, TOOL_APPS_ACTIVATE, TOOL_APPS_LIST, TOOL_APPS_LOCK, TOOL_APPS_NAVIGATE, TOOL_APPS_OVERVIEW,
     TOOL_APPS_PAGE, TOOL_APPS_RELEASE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN, TOOL_APPS_TASK_END, TOOL_APPS_TOOLS,
-    TOOL_APPS_UNLOCK, TOOL_APPS_CALLS, TOOL_APPS_CANCEL,
+    TOOL_APPS_UNLOCK, TOOL_APPS_CALLS, TOOL_APPS_CANCEL, TOOL_APPS_EVENTS, TOOL_APPS_EVENTS_SUBSCRIBE,
+    TOOL_APPS_EVENTS_UNSUBSCRIBE,
 };
+use crate::events::{MAX_EVENTS_PER_FETCH};
 use crate::object_lock::{MAX_LOCK_KEY_LEN, MAX_LOCK_TTL_MS, MIN_LOCK_TTL_MS};
 use crate::names::{ARG_TASK_ID, TASK_SCOPED_TOOLS};
 
@@ -286,6 +288,61 @@ fn base_builtin_tools() -> Vec<Tool> {
         )
         .with_annotations(
             ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
+        ),
+        Tool::new(
+            TOOL_APPS_EVENTS_SUBSCRIBE,
+            "订阅某个 App 的事件（如订单已发货、下载完成）。事件到达后放进你的信箱，用 apps.events 取出；Hub 只投递事件，\
+             不会替你调用工具。事件目录见 apps.tools 的 events。event 省略 = 该 App 的全部事件；filter 为对象时只收载荷顶层字段与之\
+             逐一相等的事件。相同的订阅重复调用返回已有订阅。",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "appId": { "type": "string", "description": "App 标识" },
+                    "event": { "type": "string", "description": "事件名（见 apps.tools 的 events）；省略 = 全部事件" },
+                    "filter": { "type": "object", "description": "载荷顶层字段 → 期望值（只做相等匹配）" }
+                },
+                "required": ["appId"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
+        ),
+        Tool::new(
+            TOOL_APPS_EVENTS_UNSUBSCRIBE,
+            "退订你自己的一个事件订阅（subscriptionId 见 apps.events.subscribe 或 apps.events 的 subscriptions）。信箱中已有的事件\
+             仍可取出。",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "subscriptionId": { "type": "string", "minLength": 1, "description": "要退订的订阅" }
+                },
+                "required": ["subscriptionId"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
+        ),
+        Tool::new(
+            TOOL_APPS_EVENTS,
+            "从你的信箱按到达顺序取出事件（取出即移出），并列出你的订阅。dropped 为上次取件以来因信箱已满或超出频率上限而丢弃的\
+             事件数。只读不移出可读取资源 app-mcp://apps/events。",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "max": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_EVENTS_PER_FETCH,
+                        "description": "最多取出的条数，默认 100"
+                    }
+                },
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(false).open_world(false),
         ),
     ]
 }

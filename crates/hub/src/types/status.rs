@@ -62,6 +62,9 @@ pub struct HubStatus {
     /// 进行中的调用对象（第 16 项 P5，spec/hub-api.md 3.6「调用对象」），按开始时刻排序。旧 Host 没有时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calls: Option<Vec<crate::call_objects::CallStatus>>,
+    /// 事件订阅（各订阅的投递 / 丢弃数与订阅方积压）与丢弃的不合法事件数（第 16 项 N3，spec/hub-api.md 3.17）。旧 Host 没有时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events: Option<crate::events::EventsStatus>,
 }
 
 /// 一个 Agent 任务（[`HubStatus::tasks`]）。

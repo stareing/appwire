@@ -206,6 +206,7 @@ impl StaticManifest {
             tools,
             resources,
             pages,
+            events,
         } = manifest;
         let page_meta = |p: &Page| Page {
             name: p.name.clone(),
@@ -230,6 +231,7 @@ impl StaticManifest {
                 tools: Vec::new(),
                 resources: resources.clone(),
                 pages: pages.iter().map(page_meta).collect(),
+                events: events.clone(),
             },
             tools: tools.iter().map(|t| Arc::new(ToolDef::copy_of(t, None))).collect(),
             page_tools: pages

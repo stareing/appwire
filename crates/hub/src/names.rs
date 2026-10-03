@@ -32,6 +32,16 @@ pub const TOOL_APPS_UNLOCK: &str = "apps.unlock";
 pub const TOOL_APPS_CALLS: &str = "apps.calls";
 /// 取消自己的进行中调用（spec/hub-api.md 3.6「调用对象」）。
 pub const TOOL_APPS_CANCEL: &str = "apps.cancel";
+/// 订阅某个 App 的事件（spec/hub-api.md 3.17，第 16 项 N3）。
+pub const TOOL_APPS_EVENTS_SUBSCRIBE: &str = "apps.events.subscribe";
+/// 退订自己的事件订阅（spec/hub-api.md 3.17）。
+pub const TOOL_APPS_EVENTS_UNSUBSCRIBE: &str = "apps.events.unsubscribe";
+/// 从自己的信箱取出事件（spec/hub-api.md 3.17，第 16 项 P4）。
+pub const TOOL_APPS_EVENTS: &str = "apps.events";
+
+/// 读取方事件信箱的资源 URI（spec/hub-api.md 3.17「提醒」）：读取不移出；订阅后自己的信箱有新事件时收到
+/// `resources/updated`。
+pub const RESOURCE_APPS_EVENTS_URI: &str = "app-mcp://apps/events";
 
 /// Hub 自身状态的只读资源名（第 16 项 P7；URI `app-mcp://apps/<名>`，spec/hub-api.md 3.6「Hub 状态资源」）：
 /// App 概况与对象锁。
@@ -41,8 +51,8 @@ pub const RESOURCE_SELF: &str = "self";
 
 /// 任务句柄的工具参数名（与 [`META_TASK_ID`] 等价）。
 pub const ARG_TASK_ID: &str = "taskId";
-/// 接受 [`ARG_TASK_ID`] 参数的内置工具（持有按任务区分的状态：选择、租约、锁、进行中的调用；[`TOOL_APPS_TASK_END`] 中为必填）。
-pub const TASK_SCOPED_TOOLS: [&str; 10] = [
+/// 接受 [`ARG_TASK_ID`] 参数的内置工具（持有按任务区分的状态：选择、租约、锁、进行中的调用、事件订阅；[`TOOL_APPS_TASK_END`] 中为必填）。
+pub const TASK_SCOPED_TOOLS: [&str; 13] = [
     TOOL_APPS_LIST,
     TOOL_APPS_SELECT,
     TOOL_APPS_NAVIGATE,
@@ -53,6 +63,9 @@ pub const TASK_SCOPED_TOOLS: [&str; 10] = [
     TOOL_APPS_UNLOCK,
     TOOL_APPS_CALLS,
     TOOL_APPS_CANCEL,
+    TOOL_APPS_EVENTS_SUBSCRIBE,
+    TOOL_APPS_EVENTS_UNSUBSCRIBE,
+    TOOL_APPS_EVENTS,
 ];
 
 // ---- MCP 结果 `_meta`（Hub → Agent）----

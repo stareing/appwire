@@ -10,7 +10,8 @@ use crate::hub::HubShared;
 use crate::schema::{self, SchemaCheck};
 use crate::names::{
     TOOL_APPS_LIST, TOOL_APPS_LOCK, TOOL_APPS_OVERVIEW, TOOL_APPS_PAGE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN,
-    TOOL_APPS_TASK_END, TOOL_APPS_TOOLS, TOOL_APPS_UNLOCK, TOOL_APPS_CALLS, TOOL_APPS_CANCEL,
+    TOOL_APPS_TASK_END, TOOL_APPS_TOOLS, TOOL_APPS_UNLOCK, TOOL_APPS_CALLS, TOOL_APPS_CANCEL, TOOL_APPS_EVENTS,
+    TOOL_APPS_EVENTS_SUBSCRIBE, TOOL_APPS_EVENTS_UNSUBSCRIBE,
 };
 
 use super::{CallCtx, unknown_app};
@@ -137,6 +138,11 @@ impl HubShared {
                     "pages": pages,
                     "message": message,
                 });
+                // 事件目录（spec/hub-api.md 3.17）：无声明时省略。
+                let events = self.declared_events(&app_id);
+                if !events.is_empty() {
+                    body["events"] = json!(events);
+                }
                 // 无会话调用方没有"首次附带"，总览随 apps.tools 应请求附带（docs/plans/12-mcp-stateless.md 3.2 H7）。
                 let overview = key.is_stateless().then(|| self.overview(&app_id)).flatten();
                 if let Some(ov) = &overview {
@@ -174,6 +180,9 @@ impl HubShared {
             TOOL_APPS_UNLOCK => self.builtin_unlock(ctx, args),
             TOOL_APPS_CALLS => self.builtin_calls(key, ctx.call_id.as_deref()),
             TOOL_APPS_CANCEL => self.builtin_cancel(key, args),
+            TOOL_APPS_EVENTS_SUBSCRIBE => self.builtin_events_subscribe(key, args),
+            TOOL_APPS_EVENTS_UNSUBSCRIBE => self.builtin_events_unsubscribe(key, args),
+            TOOL_APPS_EVENTS => self.builtin_events_fetch(key, args),
             _ => return None,
         })
     }

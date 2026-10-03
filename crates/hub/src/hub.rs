@@ -59,7 +59,7 @@ pub const RESOURCE_URI_SCHEME: &str = "app-mcp://";
 pub(crate) const DEFAULT_MIME: &str = "application/json";
 
 /// Hub API 自身（[`Hub::subscribe`]）使用的订阅会话 ID；MCP 会话 ID 从 1 开始。
-const API_SUBSCRIBER: u64 = 0;
+pub(crate) const API_SUBSCRIBER: u64 = 0;
 
 /// 事件通道容量；接收方落后超过此数时会收到 `Lagged`。
 const EVENT_CAPACITY: usize = 256;
@@ -150,6 +150,8 @@ pub struct HubShared {
     pub(crate) tools_rev: tokio::sync::watch::Sender<u64>,
     /// 接受闸门与连接计数（按需启动的空闲退出，[`crate::activity`]）。
     pub(crate) activity: crate::activity::Activity,
+    /// App 事件：目录、订阅与信箱、厂商回调（第 16 项 N3 + P4，[`crate::events`]）。
+    pub(crate) app_events: crate::events::AppEvents,
 }
 
 /// 一次调用的进度路由（[`HubShared::progress_routes`]）。
@@ -199,7 +201,9 @@ impl HubShared {
         let policy = PolicyState::new(config.policy.clone(), unix_millis());
         let agents = crate::agents::AgentRegistry::new(&config.agents);
         let persist = config.state_dir.as_deref().map(crate::lifecycle::Persist::new);
+        let app_events = crate::events::AppEvents::new(config.state_dir.as_deref());
         Self {
+            app_events,
             identity: HostIdentity::current(env!("CARGO_PKG_VERSION")),
             run_tag: format!("{:06x}", rand::random::<u32>() & 0x00ff_ffff),
             endpoints: OnceLock::new(),
@@ -238,6 +242,18 @@ impl HubShared {
             tools_rev: tokio::sync::watch::Sender::new(0),
             activity: crate::activity::Activity::default(),
         }
+    }
+
+    /// 测试用：不启动监听与后台任务的共享状态。
+    #[cfg(test)]
+    pub(crate) fn new_for_test(config: HubConfig) -> Arc<Self> {
+        Arc::new(Self::new(config, None))
+    }
+
+    /// 测试用：订阅 [`HubEvent`] 广播。
+    #[cfg(test)]
+    pub(crate) fn hub_events_for_test(&self) -> broadcast::Receiver<HubEvent> {
+        self.events.subscribe()
     }
 
     pub(crate) fn registry(&self) -> MutexGuard<'_, Registry> {

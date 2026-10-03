@@ -14,10 +14,12 @@ impl HubShared {
     // Agent 任务（调用方的跨请求状态，crate::task）
     // ------------------------------------------------------------------
 
-    /// 结束调用方的任务：收回其全部租约、删除其租约统计与状态（MCP 会话结束、`Hub::reset_session`、空闲回收）。
+    /// 结束调用方的任务：收回其全部租约、删除其租约统计与状态、按调用方键归属的事件订阅与信箱（MCP 会话结束、
+    /// `Hub::reset_session`、空闲回收、`apps.task.end`）。
     pub(crate) fn end_task(&self, key: &CallerKey) {
         self.release_leases(key);
         lock(&self.agent_tasks).remove(key);
+        self.events_end_owner(key);
     }
 
     pub(crate) fn agent_tasks(&self) -> MutexGuard<'_, TaskTable> {

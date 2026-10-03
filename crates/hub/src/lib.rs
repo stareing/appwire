@@ -19,6 +19,7 @@ pub mod call_objects;
 pub mod connection;
 pub mod connector;
 pub mod dormant_store;
+pub mod events;
 pub mod features;
 pub mod format;
 mod heap;
@@ -61,6 +62,7 @@ pub use app_mcp_protocol::{
     ToolSurface, Visibility,
 };
 pub use dormant_store::{DormantStoreStatus, StoreFileInfo, StoreIssue};
+pub use events::{AppEvent, EventHandler, EventLimits, EventSubscriptionStatus, EventsStatus, EventsSummary};
 pub use format::ToolFormat;
 pub use lease::{LeaseOverrides, LeasePairStatus, LeasePolicy, LeaseStatus};
 pub use limits::{LimitOverrides, LimitPolicy, OutputValidation, RateLimit};

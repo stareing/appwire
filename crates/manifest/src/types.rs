@@ -28,6 +28,9 @@ pub struct Manifest {
     /// 页面目录（第 4c 项，spec/manifest.md 2.3）：各页面的说明与页面内工具；Hub 渐进披露并在调用时先导航再派发。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<Page>,
+    /// 可发出的事件（第 16 项 N3，spec/manifest.md 2.4）；Agent 据此订阅。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<EventInfo>,
 }
 
 /// 页面条目（spec/manifest.md 2.3）。页面内工具不作为静态工具列出，只进入页面目录。

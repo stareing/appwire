@@ -100,6 +100,7 @@ impl Hub {
         let shared = Arc::new(HubShared::new(config, waker));
         // 先于任何监听读回休眠记录：App 回连时能按实例 ID 认领快照。
         shared.load_persisted();
+        shared.load_inboxes();
         let ipc_endpoint = ipc.as_ref().map(|(e, _)| e.clone());
         let mut hub = Hub {
             shared: shared.clone(),

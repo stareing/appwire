@@ -34,7 +34,22 @@ pub(crate) fn callers_text(st: &HubStatus) -> String {
             format!("、进行中调用 {} 个：{}{more}", c.len(), shown.join("、"))
         }
     };
-    format!("MCP 会话 {} 个{listen}{tasks}{locks}{calls}", st.mcp_sessions)
+    format!("MCP 会话 {} 个{listen}{tasks}{locks}{calls}{}", st.mcp_sessions, events_text(st))
+}
+
+/// 事件订阅（第 16 项 N3）：订阅数、各信箱积压合计、丢弃合计；没有订阅且没有丢弃时不提。
+fn events_text(st: &HubStatus) -> String {
+    let Some(ev) = st.events.as_ref() else { return String::new() };
+    let mut inboxes: Vec<(&str, usize)> = ev.subscriptions.iter().map(|s| (s.subscriber.as_str(), s.pending)).collect();
+    inboxes.sort_unstable();
+    inboxes.dedup();
+    let pending: usize = inboxes.iter().map(|(_, n)| n).sum();
+    let dropped = ev.dropped_invalid + ev.subscriptions.iter().map(|s| s.dropped).sum::<u64>();
+    if ev.subscriptions.is_empty() && dropped == 0 {
+        return String::new();
+    }
+    let dropped = if dropped > 0 { format!("，丢弃 {dropped} 条") } else { String::new() };
+    format!("、事件订阅 {} 个（信箱积压 {pending} 条{dropped}）", ev.subscriptions.len())
 }
 
 fn call_state_text(s: CallState) -> &'static str {

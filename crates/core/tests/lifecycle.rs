@@ -4,6 +4,8 @@
 mod support;
 #[path = "lifecycle/background.rs"]
 mod background;
+#[path = "lifecycle/events.rs"]
+mod events;
 #[path = "lifecycle/idle.rs"]
 mod idle;
 #[path = "lifecycle/modes.rs"]

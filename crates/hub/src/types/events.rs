@@ -50,4 +50,6 @@ pub enum HubEvent {
         message: String,
         count: u32,
     },
+    /// App 发出的事件（`events/emit`，已去重与校验；spec/hub-api.md 3.17），不论有无订阅。
+    AppEvent(crate::events::AppEvent),
 }

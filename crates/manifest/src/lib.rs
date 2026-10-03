@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub use app_mcp_protocol::{Activation, AppOverview, ResourceInfo, ToolInfo};
+pub use app_mcp_protocol::{Activation, AppOverview, EventInfo, ResourceInfo, ToolInfo};
 use app_mcp_protocol::{
     OVERVIEW_BODY_MAX_CHARS, OVERVIEW_SUMMARY_MAX_CHARS, is_valid_app_id, is_valid_name,
 };

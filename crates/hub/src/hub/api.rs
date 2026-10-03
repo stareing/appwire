@@ -184,7 +184,7 @@ impl Hub {
             ));
         }
         self.shared
-            .subscribe(API_SUBSCRIBER, uri)
+            .subscribe(API_SUBSCRIBER, uri, &CallerKey::api(None))
             .map_err(HubError::from)
     }
 
@@ -217,6 +217,12 @@ impl Hub {
 
     pub fn events(&self) -> broadcast::Receiver<HubEvent> {
         self.shared.events.subscribe()
+    }
+
+    /// App 事件的厂商回调（spec/hub-api.md 3.17）：每个通过校验的事件（不论有无订阅）同步回调一次，在 Hub 的连接任务上
+    /// 执行，应很快返回。再次设置时替换。
+    pub fn set_event_handler(&self, h: Arc<dyn crate::events::EventHandler>) {
+        self.shared.set_event_handler(h);
     }
 
     // ---- 策略回调 ----

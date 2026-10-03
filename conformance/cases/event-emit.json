@@ -1,0 +1,56 @@
+{
+  "id": "event-emit",
+  "title": "事件：握手后 events/sync（全量，在 app/ready 之前）；已连接时 emit 发 events/emit（eventId 由 SDK 生成，无载荷时省略 payload）；未声明 / 载荷不是对象为本地错误、不发送；连接中声明变化重发全量",
+  "spec": ["protocol.md 3.5"],
+  "requires": ["events"],
+  "app": {
+    "events": [
+      { "name": "order.shipped", "description": "订单已发货", "payloadSchema": { "type": "object", "properties": { "orderId": { "type": "string" } } } }
+    ],
+    "tools": [
+      { "name": "e.ship", "description": "发货并发出事件", "risk": "write", "handler": { "emit": [
+        { "name": "order.shipped", "payload": { "orderId": "o1" } },
+        { "name": "order.shipped" },
+        { "name": "nope" },
+        { "name": "order.shipped", "payload": 1 },
+        { "name": "order.shipped", "payload": [1] }
+      ] } },
+      { "name": "e.declare", "description": "运行时新增事件声明后发出", "risk": "write", "handler": {
+        "mutate": [{ "op": "declareEvent", "event": { "name": "download.done", "description": "下载完成" } }],
+        "emit": [{ "name": "download.done", "payload": { "file": "a.zip" } }]
+      } },
+      { "name": "e.remove", "description": "撤销声明后再发出", "risk": "write", "handler": {
+        "mutate": [{ "op": "removeEvent", "name": "order.shipped" }],
+        "emit": [{ "name": "order.shipped" }]
+      } }
+    ]
+  },
+  "host": { "ops": [
+    { "invoke": "e.ship" },
+    { "invoke": "e.declare" },
+    { "invoke": "e.remove" }
+  ] },
+  "expect": [
+    { "type": "events", "events": [
+      { "name": "order.shipped", "description": "订单已发货", "payloadSchema": { "type": "object", "properties": { "orderId": { "type": "string" } } } }
+    ] },
+    { "type": "tools" },
+    { "type": "event", "name": "order.shipped", "eventId": { "$type": "string" }, "payload": { "orderId": "o1" } },
+    { "type": "event", "name": "order.shipped", "eventId": { "$type": "string" }, "payload": { "$absent": true } },
+    { "type": "invoke", "name": "e.ship", "result": { "data": { "emitted": [true, true, "error", "error", "error"] } } },
+    { "type": "events", "events": [
+      { "name": "order.shipped", "description": "订单已发货", "payloadSchema": { "$any": true } },
+      { "name": "download.done", "description": "下载完成", "payloadSchema": { "$absent": true } }
+    ] },
+    { "type": "event", "name": "download.done", "eventId": { "$type": "string" }, "payload": { "file": "a.zip" } },
+    { "type": "invoke", "name": "e.declare", "result": { "data": { "emitted": [true] } } },
+    { "type": "events", "events": [{ "name": "download.done", "description": "下载完成" }] },
+    { "type": "invoke", "name": "e.remove", "result": { "data": { "emitted": ["error"] } } }
+  ],
+  "absent": [
+    { "type": "event", "name": "nope" },
+    { "type": "event", "payload": 1 },
+    { "type": "event", "payload": [1] },
+    { "type": "recv", "method": "events/emit", "params": { "name": "nope" } }
+  ]
+}

@@ -139,6 +139,12 @@ pub enum CoreError {
     UnknownRead(ReadId),
     #[error("unknown or finished navigation {0:?}")]
     UnknownNavigate(NavigateId),
+    /// 发出未声明的事件（[`Client::emit_event`]）。
+    #[error("unknown event {0:?}: declare it before emitting")]
+    UnknownEvent(String),
+    /// 事件载荷不是 JSON 对象或超过 [`MAX_EVENT_PAYLOAD_BYTES`]。
+    #[error("invalid event payload: {0}")]
+    InvalidEventPayload(String),
 }
 
 impl ConnectionState {

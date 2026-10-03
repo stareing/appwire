@@ -173,6 +173,7 @@ impl HubShared {
             usage: Some(lock(&self.usage).status()),
             locks: Some(self.lock_status()),
             calls: Some(self.call_statuses()),
+            events: Some(self.events_status()),
         }
     }
 

@@ -287,7 +287,7 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
       与回调 `set_event_handler`（同 `set_approval_handler` 形态）；Host 侧规则也可写在 `<home>/events.json`（同 policy.json 读写）。
       不支持"事件 → 自动调用"（微内核：触发器只投递事件）。
     - 投递 = 信箱（P4 合并）：每个订阅主体一个信箱，事件到达即入箱；Agent 以内置工具 `apps.events {ack?}`（取件，**任何 MCP
-      客户端都能用**）或资源 `app-mcp://events/self`（订阅后收 `resources/updated` 作提醒）取件。不依赖 Claude Code 是否
+      客户端都能用**）或资源 `app-mcp://apps/events`（订阅后收 `resources/updated` 作提醒）取件。不依赖 Claude Code 是否
       处理自定义通知（U10 的保守解：拉取为主、通知只作提醒）。`apps/self` 带未读数，Agent 每次接触都能看到。
     - 上限（B-07）：信箱条数 `max_inbox_events`（默认 100，满则丢最旧并计数）、TTL `inbox_ttl`（默认 24 小时，**读取时惰性清理**，
       不加定时器）、每订阅频率上限（默认 60 条 / 分钟，超出丢弃并计数，经第 14 项限流同一实现）；主体订阅数上限 32。
@@ -297,6 +297,20 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
     - 分期：一期 = 协议 + 核心 + native + Hub + Host + 一致性用例；二期 = 各语言 App SDK `emitEvent` 与 Hub 封装。
     - 未知：Claude Code 是否展示 `resources/updated`（不影响正确性，拉取可用）；事件 `filter` 先只支持载荷顶层字段相等匹配。
     - 风险：事件风暴（频率上限 + 条数上限 + 丢弃计数，测试覆盖）；持久化写放大（每次变更同步写整个信箱文件，≤100 条、小文件；事件风暴已被频率上限截住）。
+  - **实施（2026-10-03，一期 Rust）**：契约 spec/protocol.md 3.5、spec/manifest.md 2.4、spec/hub-api.md 3.17。
+    - 事实：协议 `crates/protocol/src/messages/events.rs`（`EventInfo` / `EventsSyncParams` / `EventEmitParams`，8 KiB 上限）；核心
+      `crates/core/src/events.rs`（`declare_event` / `remove_event` / `emit_event`，握手顺序 tools → resources → events/sync → visibility
+      → ready，恢复握手照发；未连接 `Ok(false)` 无副作用、不推迟空闲休眠；`eventId` = `e<n>` 进程内单调）；原生 `NativeClient` 同名三方法；
+      清单 `Manifest.events` 与校验；Hub `crates/hub/src/events/`（catalog / inbox / store / delivery / builtin），去重键（连接, eventId）
+      （固定 instanceId 的 App 重启后计数重来，按实例去重会误丢）；资源定为 `app-mcp://apps/events`（在保留的 `apps` 下，避免与 appId
+      `events` 冲突）；Host 摘要 / doctor「事件订阅 N 个（信箱积压 / 丢弃）」。
+    - 测试：核心 14、原生 3、一致性用例 `event-emit`（Rust runner pass，其他 runner 按能力跳过）；Hub 单元 31 + `tests/events.rs`
+      （真实 native App、按订阅方提醒、已登记 Agent 任务回收与 Hub 重启后仍可取件、厂商回调）；Host `callers_text_lists_event_subscriptions`。
+      变异：App 侧 13 个、Hub 侧 19 个 + 清单 1 个全部检出。
+    - 未知 / 未做（二期）：各语言 App SDK `emitEvent` 与 Hub 封装（`HubStatus.events`、`set_event_handler`）、其他 runner 的 `events` 能力；
+      `CoreError` 新变体映射到 `NativeError::InvalidName` / `InvalidJson`（加 `NativeError` 变体需各绑定同步）；Host `<home>/events.json`
+      机主规则未做（厂商用 Hub API）；频率窗口不持久化；任务句柄的信箱与主体分开（取件需同一 `taskId`）；Claude Code 是否展示
+      `resources/updated` 未验证（不影响拉取）。
 - **N4 标准意图**：定义通用动词 schema（先试点 `message.send`、`calendar.create`、`media.play`、`file.share`、`navigation.open`），App 声明实现；
   Hub 按用户默认 App 路由；codegen 输出到系统意图框架。
 - **O1 工具检索**：`apps.search(query)`，按关键词、最近使用、成功率、当前可见界面（4c）排序；可选本地向量索引（U5）。

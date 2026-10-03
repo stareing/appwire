@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use app_mcp_native::{
-    BusyPolicy, CallDedupPolicy, CallHandle, CallResult, ErrorKind, NativeClient, NativeConfig, NavigateHandle, NavigationHandler,
+    BusyPolicy, CallDedupPolicy, CallHandle, CallResult, ErrorKind, EventInfo, NativeClient, NativeConfig, NavigateHandle, NavigationHandler,
     ReadHandle, ResourceOptions, ResourceReader, ResourceSpec, ToolHandle, ToolHandler, ToolOptions, ToolSpec,
     Visibility,
 };
@@ -27,7 +27,7 @@ const SDK: &str = "rust";
 const FEATURES: &[&str] = &[
     "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
     "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey", "callScheduling",
-    "busy",
+    "busy", "events",
 ];
 
 fn repo_root() -> PathBuf {
@@ -89,6 +89,24 @@ impl App {
         self.client.register_resource_with(spec, options, reader).expect("注册资源");
     }
 
+    /// 事件声明（conformance/README.md 2.2）。
+    fn declare_event(&self, decl: &Value) {
+        let info: EventInfo = serde_json::from_value(decl.clone()).expect("事件声明");
+        self.client.declare_event(info).expect("声明事件");
+    }
+
+    /// handler 的 `emit`：每项的结果为 `true` / `false`（已发送 / 未连接丢弃），本地错误为 `"error"`。
+    fn emit_events(&self, list: &[Value]) -> Value {
+        let outcomes = list.iter().map(|e| {
+            let payload = e.get("payload").map(Value::to_string);
+            match self.client.emit_event(e["name"].as_str().unwrap_or_default(), payload.as_deref()) {
+                Ok(sent) => json!(sent),
+                Err(_) => json!("error"),
+            }
+        });
+        Value::Array(outcomes.collect())
+    }
+
     /// handler 的 `mutate` 操作（conformance/README.md）。
     fn mutate(self: &Arc<Self>, op: &Value) {
         let name = op["name"].as_str().unwrap_or_default();
@@ -113,6 +131,10 @@ impl App {
                 }
             }
             "busy" => self.client.set_busy(op["value"].as_bool().expect("busy 的 value 应为布尔")),
+            "declareEvent" => self.declare_event(&op["event"]),
+            "removeEvent" => {
+                self.client.remove_event(name);
+            }
             op_name @ ("enable" | "disable") => {
                 let tools = self.tools.lock().unwrap();
                 tools[name].0.set_enabled(op_name == "enable").expect("启用 / 禁用");
@@ -176,7 +198,7 @@ impl ToolHandler for CaseTool {
     }
 }
 
-/// 按 handler 描述执行（顺序：progress → delayMs → mutate → 结果，见 conformance/README.md）。
+/// 按 handler 描述执行（顺序：progress → delayMs → mutate → emit → 结果，见 conformance/README.md）。
 fn run_handler(spec: &Value, count: u64, app: Weak<App>, call: CallHandle) {
     for p in spec["progress"].as_array().into_iter().flatten() {
         let _ = call.report_progress(p["progress"].as_f64().unwrap_or(0.0), p["total"].as_f64(), p["message"].as_str());
@@ -192,11 +214,15 @@ fn run_handler(spec: &Value, count: u64, app: Weak<App>, call: CallHandle) {
             app.mutate(op);
         }
     }
+    let emitted = match (spec["emit"].as_array(), app.upgrade()) {
+        (Some(list), Some(app)) => Some(app.emit_events(list)),
+        _ => None,
+    };
     // 调用已被取消 / 超时：完成会返回 AlreadyCompleted，忽略。
-    let _ = complete(spec, count, &call);
+    let _ = complete(spec, count, emitted, &call);
 }
 
-fn complete(spec: &Value, count: u64, call: &CallHandle) -> Result<(), app_mcp_native::NativeError> {
+fn complete(spec: &Value, count: u64, emitted: Option<Value>, call: &CallHandle) -> Result<(), app_mcp_native::NativeError> {
     if let Some(msg) = spec["throw"].as_str() {
         return call.fail(ErrorKind::HandlerError, msg);
     }
@@ -226,6 +252,9 @@ fn complete(spec: &Value, count: u64, call: &CallHandle) -> Result<(), app_mcp_n
     }
     if spec["counter"].as_bool() == Some(true) {
         return call.complete(Some(&json!({ "count": count }).to_string()), vec![]);
+    }
+    if let Some(emitted) = emitted {
+        return call.complete(Some(&json!({ "emitted": emitted }).to_string()), vec![]);
     }
     // returnNothing（以及未声明结果）：Rust 的"无返回值"即 data_json = None。
     call.complete(None, vec![])
@@ -323,6 +352,9 @@ fn run_case(bin: &Path, path: &Path, report_dir: &Path) -> Value {
             }
             for r in case["app"]["resources"].as_array().into_iter().flatten() {
                 a.register_resource(r);
+            }
+            for e in case["app"]["events"].as_array().into_iter().flatten() {
+                a.declare_event(e);
             }
             if case["app"]["navigation"].is_object() {
                 let nav = CaseNavigation { app: Arc::downgrade(&a), pages: case["app"]["navigation"].clone() };

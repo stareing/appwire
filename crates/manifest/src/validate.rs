@@ -142,9 +142,38 @@ impl Manifest {
             }
         }
 
+        self.validate_events(&mut v);
         self.validate_launch(&mut v);
         self.validate_wake(&mut v);
         v
+    }
+
+    /// 事件目录（spec/manifest.md 2.4）：名称合法且唯一、description 非空、payloadSchema 为对象。
+    fn validate_events(&self, v: &mut Validation) {
+        let mut seen = HashSet::new();
+        for (i, event) in self.events.iter().enumerate() {
+            let path = format!("events[{i}]");
+            if !is_valid_name(&event.name) {
+                v.errors.push(Issue::new(
+                    format!("{path}.name"),
+                    format!("事件名 \"{}\" 不合法，应满足 [a-zA-Z0-9_.-]{{1,64}}", event.name),
+                ));
+            } else if !seen.insert(event.name.as_str()) {
+                v.errors.push(Issue::new(format!("{path}.name"), format!("事件名 \"{}\" 重复", event.name)));
+            }
+            if app_mcp_protocol::has_app_id_prefix(&event.name, &self.app_id) {
+                v.warnings.push(Issue::new(
+                    format!("{path}.name"),
+                    app_mcp_protocol::app_id_prefix_warning(&event.name, &self.app_id),
+                ));
+            }
+            if event.description.trim().is_empty() {
+                v.errors.push(Issue::new(format!("{path}.description"), "description 不能为空"));
+            }
+            if event.payload_schema.as_ref().is_some_and(|s| !s.is_object()) {
+                v.errors.push(Issue::new(format!("{path}.payloadSchema"), "payloadSchema 必须是对象（JSON Schema）"));
+            }
+        }
     }
 
     /// 单个工具（顶层或页面内）的规则；`seen` 为已出现的工具名。

@@ -78,6 +78,9 @@ pub struct SelfStateView {
     /// 读取方（含其任务句柄）进行中的调用（第 16 项 P5，[`crate::call_objects`]）。
     #[serde(default)]
     pub calls: Vec<crate::call_objects::CallStatus>,
+    /// 读取方事件信箱的摘要（第 16 项 N3 + P4）：未取出的事件数与订阅数；详情读 `app-mcp://apps/events`。
+    #[serde(default)]
+    pub events: crate::events::EventsSummary,
 }
 
 /// 读取方的一个任务（不含任务 ID）。
@@ -108,7 +111,7 @@ pub struct QuotaView {
 pub(crate) fn hub_state_resources() -> Vec<rmcp::model::Resource> {
     [
         (RESOURCE_HUB, "Hub 状态：各 App 的连接状态、在线 / 休眠实例数与当前的对象锁（只读）"),
-        (RESOURCE_SELF, "本调用方的状态：自己的任务、选择、租约、持有的锁、累计用量与配额余量（只读）"),
+        (RESOURCE_SELF, "本调用方的状态：自己的任务、选择、租约、持有的锁、累计用量、配额余量与事件信箱摘要（只读）"),
     ]
     .into_iter()
     .map(|(name, desc)| {
@@ -179,6 +182,11 @@ impl HubShared {
         HubStateView { apps, locks }
     }
 
+    #[cfg(test)]
+    pub(crate) fn self_state_view_for_test(&self, caller: &CallerKey) -> SelfStateView {
+        self.self_state_view(caller)
+    }
+
     fn self_state_view(&self, caller: &CallerKey) -> SelfStateView {
         let owner = caller.as_str();
         let subject = caller.usage_subject();
@@ -200,6 +208,7 @@ impl HubShared {
             usage,
             quota,
             calls: self.own_calls(caller, None),
+            events: self.events_summary(caller),
         }
     }
 }

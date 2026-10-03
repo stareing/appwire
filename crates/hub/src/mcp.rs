@@ -178,6 +178,9 @@ fn millis(d: std::time::Duration) -> u64 {
 impl McpSession {
     /// listen 流可订阅的资源（[`ServerHandler::accepted_subscription_filter`]）：与 legacy `resources/subscribe` 的规则相同。
     fn listen_subscribable(&self, uri: &str) -> bool {
+        if uri == crate::names::RESOURCE_APPS_EVENTS_URI {
+            return true;
+        }
         !crate::hub_state::is_hub_state_uri(uri)
             && parse_resource_uri(uri).is_some_and(|(app_id, _)| !self.shared.is_upstream(app_id) && !self.shared.app_hidden(app_id))
     }
@@ -350,6 +353,7 @@ impl ServerHandler for McpSession {
             })
             .chain(self.shared.upstream_resources())
             .chain(crate::hub_state::hub_state_resources())
+            .chain(std::iter::once(crate::events::events_self_resource()))
             .collect();
         let r = ListResourcesResult::with_all_items(resources);
         Ok(match self.list_ttl_ms(&caller) {
@@ -434,7 +438,8 @@ impl ServerHandler for McpSession {
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
         // rmcp 只把 legacy 请求的 `resources/subscribe` 交到这里（无会话请求得 method not found，订阅改经 S7 的 listen）。
-        let _activity = self.shared.session_request(&self.caller(&context).key);
+        let caller = self.caller(&context);
+        let _activity = self.shared.session_request(&caller.key);
         if let Some((app_id, _)) = parse_resource_uri(&request.uri)
             && self.shared.is_upstream(app_id)
         {
@@ -444,7 +449,7 @@ impl ServerHandler for McpSession {
             ));
         }
         self.shared
-            .subscribe(self.id, &request.uri)
+            .subscribe(self.id, &request.uri, &caller.key)
             .map_err(|e| to_mcp_error(&e))
     }
 

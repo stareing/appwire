@@ -280,6 +280,8 @@ async fn serve(mut ws: WebSocketStream<Box<dyn Io>>, host: &mut HostState) -> Re
                     let mut line = n.params;
                     line["type"] = json!("progress");
                     emit(&line.to_string());
+                } else if n.method == method::EVENTS_SYNC || n.method == method::EVENTS_EMIT {
+                    emit(&event_line(&n.method, n.params).to_string());
                 } else {
                     if n.method == method::TOOLS_SYNC {
                         synced = true;
@@ -406,6 +408,19 @@ fn trace_recv(msg: &Message) {
         return;
     }
     emit(&json!({ "type": "recv", "method": method_name, "params": params }).to_string());
+}
+
+/// 事件（第 16 项 N3，spec/protocol.md 3.5）：`events/sync` → `{"type":"events","events"}`，`events/emit` →
+/// `{"type":"event","name","eventId","payload"?}`；参数原样合并（不是对象时放在 `params` 下）。
+pub(super) fn event_line(method_name: &str, params: Value) -> Value {
+    let kind = if method_name == method::EVENTS_SYNC { "events" } else { "event" };
+    match params {
+        Value::Object(mut map) => {
+            map.insert("type".to_owned(), json!(kind));
+            Value::Object(map)
+        }
+        other => json!({ "type": kind, "params": other }),
+    }
 }
 
 fn emit_sleep(accepted: bool, p: &SleepParams) {

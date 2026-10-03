@@ -30,6 +30,10 @@ pub mod method {
     pub const RESOURCES_UPDATED: &str = "resources/updated";
     /// 进行中调用的进度（spec/protocol.md 3.3）。参数 [`super::ToolsProgressParams`]。
     pub const TOOLS_PROGRESS: &str = "tools/progress";
+    /// 全量声明可发出的事件（第 16 项 N3，spec/protocol.md 3.5）。参数 [`super::EventsSyncParams`]。
+    pub const EVENTS_SYNC: &str = "events/sync";
+    /// 发出事件（spec/protocol.md 3.5）。参数 [`super::EventEmitParams`]。
+    pub const EVENTS_EMIT: &str = "events/emit";
 
     // ---- SDK → Host：请求（生命周期，spec/lifecycle.md）----
     /// 请求休眠。参数 [`super::SleepParams`]，结果 [`super::SleepResult`]。
@@ -467,9 +471,11 @@ pub struct LeaseParams {
     pub adaptive: bool,
 }
 
+mod events;
 mod resources;
 mod tools;
 
+pub use events::*;
 pub use resources::*;
 pub use tools::*;
 

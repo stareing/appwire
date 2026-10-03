@@ -1,4 +1,4 @@
-//! 握手后的消息处理：SDK 发来的请求（`ping`、`app/sleep` 等）与通知（工具 / 资源同步与变化、可见性、诊断、进度）。
+//! 握手后的消息处理：SDK 发来的请求（`ping`、`app/sleep` 等）与通知（工具 / 资源同步与变化、可见性、诊断、进度、事件）。
 
 use std::sync::Arc;
 
@@ -158,6 +158,14 @@ pub(super) fn handle_notification(
         method::TOOLS_PROGRESS => {
             let p = params!(app_mcp_protocol::ToolsProgressParams);
             shared.route_progress(conn.id, p);
+        }
+        method::EVENTS_SYNC => {
+            let p = params!(app_mcp_protocol::EventsSyncParams);
+            shared.events_sync(app_id, conn.id, &conn.cid, p.events);
+        }
+        method::EVENTS_EMIT => {
+            let p = params!(app_mcp_protocol::EventEmitParams);
+            shared.event_emit(app_id, &reg.instance_id, conn.id, &conn.cid, p);
         }
         method::RESOURCES_UPDATED => {
             let p = params!(ResourceUpdatedParams);

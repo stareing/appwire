@@ -286,10 +286,22 @@ fn resource_text_conversion() {
 fn builtins_and_upstream_risk() {
     let b = builtin_hub_tools(BuiltinSet::default());
     let names: Vec<&str> = b.iter().map(|t| t.name.as_str()).collect();
-    assert_eq!(names, ["apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.calls", "apps.cancel"]);
+    assert_eq!(
+        names,
+        [
+            "apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.calls", "apps.cancel",
+            "apps.events.subscribe", "apps.events.unsubscribe", "apps.events"
+        ]
+    );
     // 调用对象（P5）：apps.calls 只读，apps.cancel 非只读、幂等
     assert_eq!((b[5].risk, b[5].annotations.read_only_hint), (Risk::Read, Some(true)));
     assert_eq!((b[6].risk, b[6].annotations.read_only_hint, b[6].annotations.idempotent_hint), (Risk::Write, Some(false), Some(true)));
+    // 事件（N3 + P4）：订阅 / 退订非只读、幂等；取件会移出事件，非只读、非幂等；均为任务级（可带 taskId）
+    let ann = |t: &crate::types::HubTool| (t.annotations.read_only_hint, t.annotations.idempotent_hint);
+    assert_eq!((ann(&b[7]), ann(&b[8]), ann(&b[9])), ((Some(false), Some(true)), (Some(false), Some(true)), (Some(false), Some(false))));
+    for name in ["apps.events.subscribe", "apps.events.unsubscribe", "apps.events"] {
+        assert!(builtin_schema(name).unwrap()["properties"].get("taskId").is_some(), "{name} 带 taskId");
+    }
     // 启用对象锁时另有 apps.lock / apps.unlock（非只读、幂等，风险 write）；Hub API 形式不带 taskId
     let locks = builtin_hub_tools(BuiltinSet { locks: true, ..BuiltinSet::default() });
     let lock = locks.iter().find(|t| t.name == "apps.lock").expect("apps.lock");
@@ -302,7 +314,7 @@ fn builtins_and_upstream_risk() {
     assert_eq!((b[3].risk, b[3].annotations.read_only_hint, b[3].annotations.idempotent_hint), (Risk::Write, Some(false), Some(true)));
     assert!(b.iter().all(|t| t.surface.is_none() && t.page.is_none()));
     let b = builtin_hub_tools(BuiltinSet { apps_tools: true, ..BuiltinSet::default() });
-    assert_eq!(b.len(), 8);
+    assert_eq!(b.len(), 11);
     assert_eq!(b[3].name, "apps.tools");
     // 有页面目录时另有 apps.page 与 apps.navigate
     let names: Vec<String> = builtin_hub_tools(BuiltinSet { apps_page: true, ..BuiltinSet::default() }).into_iter().map(|t| t.name).collect();

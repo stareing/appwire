@@ -196,7 +196,7 @@ def test_formats_and_shutdown() -> None:
     assert hub.ipc_endpoint is None
     assert {t.name for t in hub.tools()} == {
         "apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.lock", "apps.unlock",
-        "apps.calls", "apps.cancel",
+        "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events",
     }
     gemini = hub.export_tools("gemini")
     assert "functionDeclarations" in gemini
@@ -261,7 +261,7 @@ def test_progressive_exposure() -> None:
             wait_tools(hub, 2)
             builtins = [
                 "apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release",
-                "apps.lock", "apps.unlock", "apps.calls", "apps.cancel",
+                "apps.lock", "apps.unlock", "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events",
             ]
             assert [t.name for t in hub.tools(session="c1")] == builtins
             r = hub.call_tool_sync("apps.tools", {"appId": "notes"}, session="c1")

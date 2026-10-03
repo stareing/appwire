@@ -84,6 +84,7 @@
 | `wake` | object | 否 | 各平台唤醒描述（spec/lifecycle.md 第 5 节），键为 `web` / `windows` / `macos` / `linux` / `android` / `ios`，值为按顺序尝试的 WakeDescriptor 数组；规则见 2.2 节 |
 | `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo`：含可选 `annotations`（标准 MCP 工具注解）与 `outputSchema`（结果的 JSON Schema），语义见 spec/protocol.md 3.2；`risk` 为旧写法（与 `annotations` 同时出现时声明的注解字段优先）；可选 `surface`（`app` / `view`）与 `page`（所在页面名），语义见 spec/protocol.md 3.4 |
 | `pages` | array | 否 | 页面目录（第 4c 项）：App 内各页面的说明、导航参数与页面内工具，结构见 2.3 节 |
+| `events` | array | 否 | App 可发出的事件（第 16 项 N3），结构见 2.4 节；Agent 据此订阅，语义见 spec/protocol.md 3.5 |
 | `resources` | array | 否 | 静态资源，结构同协议中的 `ResourceInfo`（含可选 `realtime`：需实时推送，被订阅时 App 保持连接，spec/lifecycle.md 第 13 节 B3；可选 `annotations`：标准 MCP 内容注解，spec/protocol.md 3.2） |
 
 ### 2.1 `launch` 条目
@@ -140,6 +141,16 @@
 | `navigable` | boolean | 否 | 能否由 Agent 导航到该页面，缺省 `true`；`false` 时 Hub 不导航（只能由用户自己打开） |
 | `activation` | string | 否 | 导航到该页面需要的激活方式（`headless` / `background` / `foreground`），同 `ToolInfo.activation` |
 
+### 2.4 `events` 条目
+
+结构同协议中的 `EventInfo`（spec/protocol.md 3.5）。
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `name` | string | 是 | 事件名 `[a-zA-Z0-9_.-]{1,64}`，清单内唯一（与工具名、资源名分属不同命名空间） |
+| `description` | string | 是 | 面向模型：事件何时发生、载荷含义；不能为空字符串 |
+| `payloadSchema` | object | 否 | 载荷的 JSON Schema（描述用，Hub 不校验） |
+
 ## 3. 校验规则
 
 - `manifestVersion` 必须为 `1`。
@@ -148,6 +159,8 @@
   （工具名在 App 内唯一）。页面内工具与顶层工具适用相同的工具规则（名称、`inputSchema`、`outputSchema`、`description`、appId 前缀警告）。
 - `pages`：页面名满足 `[a-zA-Z0-9_.-]{1,64}` 且唯一；`description` 若给出不能为空字符串；`params` 若给出必须是 `type` 为 `"object"`
   的对象；页面内工具的 `page` 若给出必须等于所在页面名（以上违反为错误）。顶层工具的 `page` 指向未声明的页面给出警告。
+- `events`：名称满足 `[a-zA-Z0-9_.-]{1,64}` 且唯一，`description` 非空，`payloadSchema` 若给出必须是对象（以上违反为错误）；
+  名称以 `<appId>.` 开头给出与工具相同的前缀警告。
 - 工具 `inputSchema` 必须是对象且 `type` 为 `"object"`；`outputSchema` 若给出必须是对象（根类型不限）。
 - 工具 `backgroundTool`（顶层与页面内工具相同）：名称不合法、指向自身、指向清单中 `surface` 不是 `app` 的工具为错误；指向清单中
   未声明的工具（只在运行时注册）、或声明在 `surface` 为 `app` 的工具上（无意义，Hub 忽略）给出警告。

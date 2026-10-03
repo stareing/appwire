@@ -27,6 +27,7 @@ mod calls;
 mod config;
 mod connection;
 mod dedup;
+mod events;
 mod handles;
 mod lifecycle;
 mod registry;
@@ -40,7 +41,7 @@ use serde_json::Value;
 
 pub use proto::{
     Activation, AppOverview, Audience, ClientKind, ConnectionErrorCode, ConnectionIssue, ContentAnnotations,
-    DiagnosticParams, LifecycleMode, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolError, ToolSurface, TransportKind,
+    DiagnosticParams, EventInfo, LifecycleMode, MAX_EVENT_PAYLOAD_BYTES, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolError, ToolSurface, TransportKind,
     Visibility, WakeDescriptor, WakeKind, WakeReason, navigation_reason,
 };
 pub use config::*;
@@ -83,6 +84,8 @@ pub struct Client {
     life: lifecycle::Life,
     /// 待上报的连接问题（[`Client::report_issue`]），下次握手成功后以 `app/diagnostic` 发出。
     diagnostics: Vec<DiagnosticParams>,
+    /// 运行时声明的事件与 `eventId` 计数（第 16 项 N3）。
+    declared_events: events::Events,
 }
 
 impl Client {
@@ -110,6 +113,7 @@ impl Client {
             next_navigate_id: 0,
             retry_count: 0,
             diagnostics: Vec::new(),
+            declared_events: events::Events::default(),
         }
     }
 
@@ -265,6 +269,30 @@ impl Client {
     /// 调试用：Host 当前是否订阅了该资源。
     pub fn is_subscribed(&self, resource: ResourceId) -> bool {
         self.registry.resource(resource).is_some_and(|d| self.session.subscriptions.contains_key(&d.name))
+    }
+
+    // ---- 事件（第 16 项 N3，spec/protocol.md 3.5）--------------------------
+
+    /// 声明本实例可发出的事件；同名替换。已连接且声明有变化时随即重发全量 `events/sync`，否则在下次握手成功后发送。
+    /// 名称规则同工具名，不合法返回 [`CoreError::InvalidName`]。
+    pub fn declare_event(&mut self, info: EventInfo) -> Result<(), CoreError> {
+        self.on_declare_event(info)
+    }
+
+    /// 撤销事件声明；未声明过返回 `false`。已连接时随即重发全量 `events/sync`。
+    pub fn remove_event(&mut self, name: &str) -> bool {
+        self.on_remove_event(name)
+    }
+
+    /// 发出已声明的事件（`events/emit`），`eventId` 由核心生成、实例内单调唯一。
+    ///
+    /// 已连接时发送并返回 `true`；未连接（休眠、断线、重连中、握手中）丢弃并返回 `false`——不缓存、不触发连接，
+    /// 也不算调用活动（不推迟空闲休眠）。
+    ///
+    /// @error 名称不合法 → [`CoreError::InvalidName`]；未声明 → [`CoreError::UnknownEvent`]；`payload` 不是对象
+    /// 或序列化后超过 [`MAX_EVENT_PAYLOAD_BYTES`] → [`CoreError::InvalidEventPayload`]。出错时不发送。
+    pub fn emit_event(&mut self, name: &str, payload: Option<Value>) -> Result<bool, CoreError> {
+        self.on_emit_event(name, payload)
     }
 
     // ---- 可见性 ---------------------------------------------------------

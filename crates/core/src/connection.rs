@@ -456,6 +456,8 @@ impl Client {
             self.notify(method::TOOLS_SYNC, &tools);
             self.notify(method::RESOURCES_SYNC, &resources);
         }
+        // @why 事件声明不进休眠快照（spec/protocol.md 3.5），恢复握手也要重发。
+        self.send_event_declarations();
         let vis = VisibilityParams { visibility: self.visibility, focused: self.focused };
         self.notify(method::VISIBILITY, &vis);
         self.notify(method::READY, &proto::ReadyParams {});

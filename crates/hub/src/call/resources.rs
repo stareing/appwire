@@ -29,6 +29,9 @@ pub(crate) async fn read_resource(
         ));
     };
     let _activity = shared.session_request(caller);
+    if uri == crate::names::RESOURCE_APPS_EVENTS_URI {
+        return shared.read_events_self(uri, caller);
+    }
     if app_id == BUILTIN_APP_ID {
         return crate::hub_state::read_hub_state(shared, name, uri, caller);
     }

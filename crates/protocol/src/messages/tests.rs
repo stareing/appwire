@@ -344,3 +344,14 @@ fn invoke_priority_is_lenient_and_omitted_when_normal() {
     assert!(CallPriority::Interactive > CallPriority::Normal && CallPriority::Normal > CallPriority::Background);
     assert_eq!(CallPriority::parse("urgent"), None);
 }
+
+#[test]
+fn event_messages_roundtrip() {
+    let info = EventInfo { name: "order.shipped".into(), description: "订单已发货".into(), payload_schema: None };
+    assert_eq!(serde_json::to_value(&info).unwrap(), json!({"name": "order.shipped", "description": "订单已发货"}));
+    let emit: EventEmitParams =
+        serde_json::from_value(json!({"name": "order.shipped", "eventId": "e1", "payload": {"orderId": "o1"}})).unwrap();
+    assert_eq!((emit.event_id.as_str(), emit.payload), ("e1", Some(json!({"orderId": "o1"}))));
+    let sync: EventsSyncParams = serde_json::from_value(json!({"events": [{"name": "a", "description": "b"}]})).unwrap();
+    assert_eq!(sync.events[0].name, "a");
+}

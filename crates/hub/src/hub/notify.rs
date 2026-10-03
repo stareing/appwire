@@ -92,6 +92,7 @@ impl HubShared {
     ) -> Result<ListenRegistration, ToolError> {
         let id = self.next_id();
         let uris = sink.accepted().resource_subscriptions.clone().unwrap_or_default();
+        let caller = crate::task::CallerKey::principal(&principal);
         lock(&self.subscribers)
             .try_insert_listen(id, sink, principal, self.config.max_listen_streams)
             .map_err(|e| {
@@ -103,7 +104,7 @@ impl HubShared {
         let registration = ListenRegistration { shared: self.clone(), id };
         for uri in uris {
             // 接受过滤器时已按同样的规则筛过（McpSession::accepted_subscription_filter）；这里失败只可能是其间策略变化。
-            if let Err(e) = self.subscribe(id, &uri) {
+            if let Err(e) = self.subscribe(id, &uri, &caller) {
                 tracing::debug!(%uri, error = %e.message, "listen 流的资源订阅未建立");
             }
         }

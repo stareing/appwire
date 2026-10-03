@@ -32,7 +32,7 @@ impl HubShared {
         lock(&self.policy).config.clone()
     }
 
-    fn policy_hit(&self, config: &Arc<PolicyConfig>, index: usize) {
+    pub(crate) fn policy_hit(&self, config: &Arc<PolicyConfig>, index: usize) {
         lock(&self.policy).hit(config, index);
     }
 

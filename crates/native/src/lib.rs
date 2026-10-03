@@ -28,9 +28,9 @@
 use std::sync::Arc;
 
 pub use app_mcp_core::{
-    Activation, AppOverview, Audience, BusyPolicy, CallDedupPolicy, ClientKind, ContentAnnotations, HeartbeatMode, LifecycleMode, LifecyclePolicy,
+    Activation, AppOverview, Audience, BusyPolicy, CallDedupPolicy, ClientKind, ContentAnnotations, EventInfo, HeartbeatMode, LifecycleMode, LifecyclePolicy,
     Residency, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolSurface, TransportKind, Visibility, WakeDescriptor,
-    WakeKind, WakeReason, parse_wake_token,
+    WakeKind, WakeReason, MAX_EVENT_PAYLOAD_BYTES, parse_wake_token,
 };
 pub use app_mcp_protocol::{ConnectionErrorCode, ErrorKind, navigation_reason, user_action_reason};
 

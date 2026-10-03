@@ -217,6 +217,8 @@ Host 自身也可以"召之即来，挥之即去"：服务管理器代为持有 
 | SDK → Host | `app/sleep` | 请求 | `SleepParams` → `SleepResult`（第 8 节） |
 | SDK → Host | `app/diagnostic` | 通知 | `DiagnosticParams`（第 10 节） |
 | SDK → Host | `tools/progress` | 通知 | `ToolsProgressParams`（3.3） |
+| SDK → Host | `events/sync` | 通知 | `EventsSyncParams`（3.5） |
+| SDK → Host | `events/emit` | 通知 | `EventEmitParams`（3.5） |
 | Host → SDK | `tools/invoke` | 请求 | `ToolsInvokeParams` → `ToolsInvokeResult` |
 | Host → SDK | `tools/cancel` | 通知 | `ToolsCancelParams` |
 | Host → SDK | `resources/read` | 请求 | `ResourcesReadParams` → `ResourcesReadResult` |
@@ -508,6 +510,29 @@ docs/plans/14-safety.md 第 1 节）。以下字段均为可选新增，缺省�
     界面层内的工具不继承层外 scope 的 `page`（层只在打开时存在，不作为导航目标）。
   - 导航：回调完成后等界面稳定（两帧，上限可配，默认 500 ms）并重新评估门控再回复；有打开的界面层时缺省以
     `NAVIGATION_DENIED`（`app`）拒绝、不调用回调（`whileLayerOpen: 'allow'` 关闭）。
+
+### 3.5 事件（第 16 项 N3）
+
+App 告诉 Agent "发生了什么"（订单已发货、下载完成、收到新消息）的通道。本库只**投递**事件：Hub 把事件放进订阅方的信箱，
+不代 Agent 发起调用（调用及其授权由 Agent 负责）；订阅、信箱与取件见 spec/hub-api.md 3.17。
+
+```ts
+interface EventInfo { name: string; description: string; payloadSchema?: object }   // name 规则同工具名（3.1 局部名）
+interface EventsSyncParams { events: EventInfo[] }
+interface EventEmitParams { name: string; eventId: string; payload?: object }
+```
+
+- **声明**：静态事件写在清单 `events`（spec/manifest.md 2.4）；运行时声明经 `events/sync`（全量）：握手成功后、`tools/sync` 之后
+  （有声明时才发），以及已连接时声明变化时再发一次全量。`events/sync` 不进 `toolsHash`，也不影响休眠快照。
+- **发出**：`events/emit {name, eventId, payload?}`。SDK 行为（`app-mcp-core` 实现，所有语言一致）：
+  - 名称不合法、未声明（运行时声明里没有；SDK 不读清单，静态事件也需运行时声明）→ 本地错误，不发送。
+  - `payload` 不是 JSON 对象，或序列化后超过 8 KiB（`MAX_EVENT_PAYLOAD_BYTES`）→ 本地错误，不发送。
+  - 未连接（休眠、断线、重连中、握手中）→ **丢弃并返回 `false`**：不缓存、不为发事件而连接或唤醒 Host（原则 4：事件不让 App 多一个
+    连接、定时器或常驻内存）。需要可靠送达的状态变化应改用资源（`resources/updated`）或由 Agent 在下次调用时查询。
+  - 已连接 → 发送并返回 `true`。`eventId` 由 SDK 生成，进程内单调唯一（`e<n>`）。发事件不算调用活动，不推迟空闲休眠。
+- **Host 行为**：按 `(连接, eventId)` 去重（SDK 不重发事件，`eventId` 只在进程内唯一，不跨连接去重）；名称不在该实例的运行时声明与清单 `events` 中、载荷超限或不是对象 → 丢弃，记一条 Hub
+  日志并计入 `HubStatus.events` 的丢弃数，不回复（通知）。
+- 旧 Host 不认识 `events/*` 时按未知通知忽略（只记日志），SDK 无从得知；需要确认送达时 App 不应依赖事件。
 
 ## 4. 错误
 

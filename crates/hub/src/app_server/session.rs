@@ -139,6 +139,7 @@ where
         shared.emit(HubEvent::AppDormant { app_id: reg.app_id.clone(), instance_id: reg.instance_id.clone() });
     }
     if let Some(reg) = registered {
+        shared.events_disconnected(&reg.app_id, conn.id);
         let removed = shared.registry().remove_instance(&reg.app_id, conn.id);
         if let Some(inst) = &removed {
             if inst.wake.is_some() {

@@ -50,6 +50,7 @@ runner（各语言）                         fake_host --case <用例> --sdk <�
     "busy": true,                       // 可选（需能力 busy）：启动前调用 setBusy(true)
     "tools": [ <工具声明> ],
     "resources": [ <资源声明> ],
+    "events": [ <事件声明> ],           // 可选（需能力 events）：启动前声明的事件（2.2）
     "navigation": { "<页面>": <导航行为> }   // 可选：给出时设置导航回调（2.4），缺省不设置
   },
   "host": {
@@ -86,15 +87,19 @@ spec/protocol.md 5.3，需能力 `callScheduling`）同样传给注册 API。未
 | `echo: true` | 返回调用参数 |
 | `returnIdempotencyKey: true` | 返回 `{"idempotencyKey": <handler 上下文中的幂等键，没有时为 null>}`（spec/protocol.md 3.3） |
 | `counter: true`（无其他结果时） | 返回 `{"count": <执行次数>}` |
+| `emit: [{name, payload?}]`（无其他结果时） | 返回 `{"emitted": [...]}`：每项为 SDK 发事件 API 的结果 `true` / `false`，本地错误（未声明、名称不合法、载荷不是对象或超限）为 `"error"`（需能力 `events`） |
 | 都没有 / `returnNothing: true` | **该语言的"无返回值"**：`void` / `None` / `undefined` / `Unit` / `complete(null)` |
 
-执行顺序：`progress` → `delayMs` → `mutate` → `counter` 计数 → 结果。
+执行顺序：`progress` → `delayMs` → `mutate` → `emit`（依次发出事件，载荷原样以 JSON 交给 SDK）→ `counter` 计数 → 结果。
 
 ### 2.2 资源声明
 
 `name`、`description`、`mimeType?`、`annotations?`、`realtime?`；`read` 描述读取：`{return: <JSON>}`、
 `{fail: {message, kind?, details?}}`（带结构化详情失败，`kind` 缺省 `HANDLER_ERROR`；`details` 为对象时合并进错误 `data`）、
 `{userAction: {message, reason?, uri?}}`、`{throw: "消息"}`。
+
+事件声明（`app.events`、变更 `declareEvent`）：`name`、`description`、`payloadSchema?`，原样传给 SDK 的声明事件 API
+（spec/protocol.md 3.5）。
 
 ### 2.3 注册表变更（handler 的 `mutate`）
 
@@ -105,6 +110,7 @@ spec/protocol.md 5.3，需能力 `callScheduling`）同样传给注册 API。未
 | `{op: "remove", name}` | 注销 |
 | `{op: "disable" / "enable", name}` | 禁用 / 启用 |
 | `{op: "busy", value: bool}` | 调用 SDK 的 `setBusy(value)`（需能力 `busy`） |
+| `{op: "declareEvent", event: <事件声明>}` / `{op: "removeEvent", name}` | 声明（同名替换）/ 撤销事件（需能力 `events`） |
 
 runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整体更新；补丁型 API 直接传 `null`）。
 
@@ -137,7 +143,8 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 
 ### 2.6 fake_host 打印的行（模式匹配的对象）
 
-`{"type":"tools",…}`（每次 `app/ready`）、`invoke` / `read` / `navigate`（`name`，`result` 或 `error`）、`progress`、`sleep`、`wake`、`hello`
+`{"type":"tools",…}`（每次 `app/ready`）、`{"type":"events","events"}`（`events/sync`）、`{"type":"event","name","eventId","payload"?}`
+（`events/emit`）、`invoke` / `read` / `navigate`（`name`，`result` 或 `error`）、`progress`、`sleep`、`wake`、`hello`
 （回连）、`catalog`、`cancel`、`recv`（`--trace`：`{"type":"recv","method","params"}`，不含 `ping`）。
 
 ### 2.7 模式
@@ -177,6 +184,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `idempotencyKey` | handler 上下文中的幂等键（handler 结果 `returnIdempotencyKey`） |
 | `callScheduling` | 工具 `concurrency` / `exclusive`、`app.config.maxQueuedCalls`，且 handler 能并发执行（`delayMs` 不独占分发线程） |
 | `busy` | `app.busy`、`app.config.busyPolicy`、变更 `{op: "busy"}`（spec/protocol.md 5.3「用户正在操作」） |
+| `events` | `app.events`、handler `emit`、变更 `declareEvent` / `removeEvent`（spec/protocol.md 3.5 事件；一期只有 Rust runner 支持，其他 runner 跳过） |
 
 ## 5. 各 SDK 的 runner
 

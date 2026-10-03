@@ -1289,6 +1289,50 @@ pub struct ConnectorError { pub code: &'static str, pub message: String }   // c
 [--manifest app-mcp.json] [--name …]` 写 D-Bus 激活文件与 App 登记文件（spec/naming.md 4.1、5.3，`source: "manual"`）并调用
 `ReloadConfig`，清单复制到 `<home>/manifests/<appId>.json`（Host 启动时加载）；`app uninstall --app-id <id>` 删除这些文件。
 
+### 3.17 事件、订阅与信箱（第 16 项 N3 + P4）
+
+App 发出的事件（spec/protocol.md 3.5）经 Hub 投递到订阅方的**信箱**；Agent 以内置工具**拉取**（任何 MCP 客户端都能用），
+资源更新通知只作提醒（2026-10-03 机主决定）。Hub 不代 Agent 发起调用，也不为投递事件唤醒 App 或 Agent。
+
+- **事件对象** `AppEvent {id, appId, instanceId, name, payload?, at}`：`id` 为 Hub 分配的 `ev-<n>`；`at` 为 Hub 收到时的 Unix 毫秒。
+- **事件目录**：App 的事件声明 = 清单 `events` ∪ 各实例最近一次 `events/sync`（实例断开后保留最近一次，Hub 重启丢失）。
+  `apps.tools {appId}` 的结果增加 `events: [EventInfo]`（无声明时省略）。
+- **订阅**（内置工具，Agent 用）：
+  - `apps.events.subscribe {appId, event?, filter?}` → `{subscriptionId, ...}`：`event` 省略 = 该 App 的全部事件；`filter` 为对象，
+    事件 `payload` 顶层字段与之逐一相等才投递（只支持相等，值为任意 JSON）。`appId` 未知（无清单、无快照、无实例）或被策略
+    隐藏（3.13 `hide`）→ `TOOL_NOT_FOUND`；`event` 名不合法 → `INVALID_INPUT`；该 App 有事件声明而 `event` 不在其中 →
+    `INVALID_INPUT`（消息列出已声明的事件）；无任何声明时接受（App 可能稍后声明）。同一订阅方重复订阅相同 `(appId, event, filter)`
+    返回已有订阅。每个订阅方最多 `EventLimits.max_subscriptions`（默认 32）个，超出 → `RATE_LIMITED`（`scope: "events"`）。
+  - `apps.events.unsubscribe {subscriptionId}` → 只能退订自己的；他人的与不存在的相同 → `TOOL_NOT_FOUND`。
+  - `apps.events {max?}` → `{events: [AppEvent], pending, subscriptions: [...], dropped, message}`（`pending` 为取件后信箱剩余条数）：按到达顺序取出并**移出**信箱最多
+    `max`（默认与上限 100）条；`dropped` 为上次取件以来因信箱满 / 频率上限丢弃的条数（取件后清零）。注解 `readOnlyHint:
+    false`（会移出事件）、`idempotentHint: false`。
+  - 三者均为任务级工具（可带 `taskId`，与 `apps.calls` 相同的归属），属内置工具表，总是列出。
+- **订阅方与归属**：已登记 Agent（3.6 Agent 身份）按**主体** `agent:<名>` 归属——同名 Agent 的所有会话 / 任务共享订阅与信箱，
+  会话结束后保留（P4：下次接触时取件）；其余调用方（`local`、无令牌、Hub API 会话）按调用方键归属，随会话 / 任务回收一并删除。
+  带 `taskId` 的订阅归该任务句柄（`<键>/<任务 ID>`），信箱独立：取件时用同一 `taskId`。
+- **投递**：事件到达 → 去重、校验（spec/protocol.md 3.5「Host 行为」）→ 交给厂商回调与事件流（见下）→ 对每个匹配的订阅：
+  该 App 被 `hide`、或事件对订阅方被策略 `deny`（事件名按工具名匹配 `call` 挂点规则，按订阅方主体匹配，3.13；计入命中数）时跳过；订阅的频率上限（`EventLimits.per_subscription_per_minute`，
+  默认 60，滑动 1 分钟窗口）超出 → 丢弃计数；否则入信箱。信箱满（`EventLimits.max_inbox_events`，默认 100）丢最旧并计数。
+  信箱中超过 `EventLimits.inbox_ttl`（默认 24 小时）的事件在下次读写该信箱时惰性清理（不加定时器）。同一事件匹配同一订阅方的多个
+  订阅时只入箱一次。
+- **提醒**：资源 `app-mcp://apps/events`（`resources/list` 列出，`mimeType` JSON）：读取返回读取方信箱的
+  `{pending, subscriptions, events}`（**不移出**）；订阅了该 URI 的会话 / listen 流在**自己的**信箱有新事件时收到
+  `notifications/resources/updated`（按订阅方过滤，不通知他人）。`app-mcp://apps/self` 增加 `events: {pending, subscriptions}`（`subscriptions` 为订阅数）。资源放在保留的 `apps` 下，
+  不会与 App 资源冲突。
+- **持久化**（P4）：`HubConfig.state_dir` 设置时，`agent:<名>` 订阅方的订阅与信箱写入 `<state_dir>/inbox/<名的安全文件名>.json`
+  （原子写、0600、带版本号，同休眠快照存储；订阅与信箱每次变更同步写，因频率上限丢弃只更新计数、随下次变更写入，避免事件风暴放大写盘；读回时丢弃过期事件，损坏文件跳过并记日志）；Hub 启动时加载。
+  按调用方键归属的不持久化。`state_dir` 为 `None` 时只在内存。
+- **厂商 / 机主**（Rust API）：
+  - `Hub::set_event_handler(Arc<dyn EventHandler>)`，`EventHandler::on_event(&self, event: &AppEvent)`：每个通过校验的事件
+    （不论有无订阅）同步回调一次，回调应很快返回（在 Hub 的连接任务上执行）。
+  - `HubEvent::AppEvent(AppEvent)` 进入 `Hub::events()` 广播。
+  - `HubStatus.events: Option<EventsStatus {subscriptions: [EventSubscriptionStatus], dropped_invalid}>`；
+    `EventSubscriptionStatus {subscriptionId, subscriber, appId, event?, delivered, dropped, pending}`（`pending` 为订阅方信箱
+    当前条数）。Host `status` 摘要与 doctor 显示订阅数与积压。
+  - `HubConfig.event_limits: EventLimits {max_subscriptions, max_inbox_events, inbox_ttl, per_subscription_per_minute}`。
+- 实现：`crates/hub/src/events/`（目录、订阅与信箱、持久化、内置工具）。
+
 ## 4. 进程内 App（可选，M2）
 
 `Hub::attach_local(hello) -> LocalAppChannel`：厂商自带的系统 App 与 Hub 同进程时，
