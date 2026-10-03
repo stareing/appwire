@@ -59,6 +59,9 @@ pub struct HubStatus {
     /// 未到期的对象锁（第 16 项 N6，spec/hub-api.md 3.6「对象锁」），按 appId、key 排序。旧 Host 没有时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locks: Option<Vec<crate::object_lock::LockStatus>>,
+    /// 进行中的调用对象（第 16 项 P5，spec/hub-api.md 3.6「调用对象」），按开始时刻排序。旧 Host 没有时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls: Option<Vec<crate::call_objects::CallStatus>>,
 }
 
 /// 一个 Agent 任务（[`HubStatus::tasks`]）。

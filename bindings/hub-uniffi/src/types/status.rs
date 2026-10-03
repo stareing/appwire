@@ -337,6 +337,9 @@ pub struct HubStatus {
     /// 未到期的对象锁（第 16 项 N6），按 appId、key 排序；旧 Host 为空。
     #[uniffi(default = None)]
     pub locks: Option<Vec<super::LockStatus>>,
+    /// 进行中的调用对象（第 16 项 P5），按开始时刻排序；旧 Host 为空。
+    #[uniffi(default = None)]
+    pub calls: Option<Vec<super::CallStatus>>,
 }
 
 /// 调用方的种类（spec/hub-api.md 3.6）。
@@ -543,6 +546,7 @@ impl From<hub::HubStatus> for HubStatus {
             agents: s.agents,
             usage: s.usage.map(|u| u.into_iter().map(Into::into).collect()),
             locks: s.locks.map(|l| l.into_iter().map(Into::into).collect()),
+            calls: s.calls.map(|c| c.into_iter().map(Into::into).collect()),
         }
     }
 }

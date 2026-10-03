@@ -160,8 +160,8 @@ impl Hub {
 
     /// 取消进行中的调用（含等待审批中的）；未知 callId 忽略。
     pub fn cancel_call(&self, call_id: &str) {
-        if let Some((_, tx)) = lock(&self.shared.calls).remove(call_id) {
-            let _ = tx.send(());
+        if let Some(e) = lock(&self.shared.calls).remove(call_id) {
+            let _ = e.cancel.send(());
         }
     }
 

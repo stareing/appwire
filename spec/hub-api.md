@@ -457,12 +457,36 @@ pub struct Health {                          // serde camelCase
   - **绑定中的状态与错误**：hub-c / hub-node JSON 原样（`locks`、错误类别 `"LOCKED"`）；`@app-mcp/hub` `HubStatus.locks?: LockStatus[]`、
     `ErrorKind` 含 `'LOCKED'`；hub-uniffi `HubStatus.locks: [LockStatus]?`（Kotlin / Swift typealias、Python `app_mcp.hub.LockStatus`）；
     C# `HubStatusInfo.Locks`（`LockStatusInfo`）、`HubError.Locked`。
+- **调用对象**（第 16 项 P5、第 4f 项 b / i；`crates/hub/src/call_objects.rs`；名称见 3.15 名称表）：每个进行中的调用（MCP `tools/call`、
+  Hub API `call_tool`、格式分发）在 Hub 中有一个对象，Agent 可查询、可取消自己的调用。调用结束（任何结果）即释放，**不保留结果**
+  （结果只交给发起方；需要脱离请求、跨进程回收的长作业由 App 返回 `status: "pending"` + `stateResource`，作业状态由 App 持久化，
+  spec/protocol.md 3.2）。
+  - **阶段** `state`：`created`（已受理：名称解析、路由、策略与限流）→ `approving`（`ApprovalHandler` 询问用户中，只在需要审批时出现）
+    → `activating`（唤醒 App、或导航到工具所在页面）→ `running`（已交给 App 实例 / 上游 MCP 服务器 / 内置工具，等待结果）。
+    阶段只前进；不需要的阶段跳过。平台相关状态（实例前台 / 后台 / 冻结）不进阶段，只作诊断字段 `platformState`（执行实例最近上报的
+    可见性，`app/visibility`，spec/protocol.md 第 2 节）。
+  - **对象** `CallStatus {callId, name, caller?, subject, state, elapsedMs, instanceId?, progress?, platformState?}`：`name` 为工具全名；
+    `elapsedMs` 从 Hub 受理起算；`instanceId` 为执行的 App 实例（`running` 且在 App 上执行时）；`progress {progress, total?, message?}`
+    为 App 最近报告的进度（不论调用方是否请求了进度通知，只认执行该调用的连接，`message` 截到 200 字符）；`caller`（调用方键）只在
+    `/status` 中给出。
+  - **列出** `apps.calls {taskId?}` → `{calls: [CallStatus（不含 caller）], message}`：调用方自己（调用方键本身及其任务句柄
+    `<键>/<任务 ID>`，与 `app-mcp://apps/self` 相同）的进行中调用，不含本次查询，按开始时刻排序。只读。
+  - **取消** `apps.cancel {callId, taskId?}` → `{callId, cancelled: true, message}`：取消调用方自己的进行中调用，路径同 3.12 的取消
+    （等待审批 / 唤醒中直接结束；已转发给 App 时发 `tools/cancel`），发起方得到 `CANCELLED`。不是自己的或不存在 / 已结束 →
+    `TOOL_NOT_FOUND`（两者回复相同，不泄露他人的 callId）。`readOnlyHint: false, idempotentHint: true, destructiveHint: false`。
+    App 内已开始的操作是否回滚由 App 决定。
+  - **列表**：`apps.calls` / `apps.cancel` 总是列出（legacy 会话、无会话请求、`Hub::tools` / `export_tools`）；`taskId` 参数同其他任务级
+    内置工具只在无会话列表中。
+  - **`/status`**：`calls: [CallStatus]`（全部进行中的调用，含 `caller`，按开始时刻排序）；`app-mcp://apps/self` 增加 `calls`（同 `apps.calls`）。
+    Host `status` 一行摘要与 doctor 列出进行中的调用（最多 5 个：工具、阶段、主体、耗时）。嵌入方取消用 `Hub::cancel_call`（不检查归属）。
+  - **绑定**：hub-c / hub-node / `@app-mcp/hub` 的状态 JSON 原样（`calls`）；hub-uniffi `HubStatus.calls: [CallStatus]?`
+    （`CallState` 枚举，进度展开为 `progress` / `progress_total` / `progress_message`，`platform_state: Visibility?`）。
 - **Hub 状态资源**（第 16 项 P7；`crates/hub/src/hub_state.rs`；资源名见 3.15 名称表）：Hub 自身状态以只读 MCP 资源暴露，Agent 用
   `resources/read` 自查（`/status` 只对本机令牌开放，Agent 读不到）。读取时现算，内容为 JSON（`application/json`），不缓存。
   - `app-mcp://apps/hub` → `HubStateView {apps: [{appId, name, kind, state, connected, dormant}], locks: [LockView]}`：各 App（含上游，
     按 appId 排序）的状态与已连接 / 休眠（含正在唤醒的）实例数；未到期的对象锁 `LockView {appId, key?, holder, expiresInMs}`
     （`holder` 只给记账主体，同 `LOCKED`）。被 `hide` 整体隐藏的 App 及其上的锁不出现。
-  - `app-mcp://apps/self` → `SelfStateView {subject, agent?, tasks, locks, usage, quota}`：只含**读取方自己的**状态——
+  - `app-mcp://apps/self` → `SelfStateView {subject, agent?, tasks, locks, usage, quota, calls}`：只含**读取方自己的**状态——
     `tasks`：读取方的任务及其名下的任务句柄（`[{handle, selections, leases, inflight, idleMs?}]`，自身任务在前），**不含任务 ID**
     （句柄是凭据）与调用方键；`locks`：这些任务持有的锁；`usage`：读取方记账主体的累计用量（3.11 `UsageStatus`，同一 Agent 的所有
     会话 / 句柄合计；无记录为 `null`）；`quota`：读取方为已登记 Agent 且 `limits.agent_rate` 限流时为 `{perMinute, burst, available}`
@@ -1084,8 +1108,9 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `apps.release` | 内置工具 | 收回本会话在该 App 上的租约（下文） |
 | `apps.task.begin` / `apps.task.end` | 内置工具（只对无会话请求列出） | 签发 / 结束任务句柄（3.6「任务句柄」） |
 | `apps.lock` / `apps.unlock` | 内置工具（`max_locks > 0` 时列出） | 加锁 / 解锁（3.6「对象锁」） |
+| `apps.calls` / `apps.cancel` | 内置工具 | 列出 / 取消自己的进行中调用（3.6「调用对象」） |
 | `app-mcp://apps/hub` / `app-mcp://apps/self` | 只读资源（MCP `resources/list`） | Hub 状态 / 读取方自己的状态（3.6「Hub 状态资源」） |
-| `taskId` | 内置工具参数（`apps.list` / `select` / `navigate` / `activate` / `release` / `lock` / `unlock` 可选，`apps.task.end` 必填） | 任务句柄（3.6「任务句柄」） |
+| `taskId` | 内置工具参数（`apps.list` / `select` / `navigate` / `activate` / `release` / `lock` / `unlock` / `calls` / `cancel` 可选，`apps.task.end` 必填） | 任务句柄（3.6「任务句柄」） |
 | `dev.appwire/status`、`dev.appwire/stateResource` | 结果 `_meta` | 结果状态（spec/protocol.md 3.2，3.2） |
 | `dev.appwire/routedTo` | 结果 `_meta` | 改调后台替代时实际调用的工具全名（3.14） |
 | `dev.appwire/callId` | 结果 `_meta`（每个工具调用结果） | 本次调用的 callId：即转交 App 的 `tools/invoke` 参数 `callId`（App handler 所见，如原生 `CallHandle::call_id()`）与 Hub 日志「转发工具调用」记录的 `call_id` 字段（同一记录带该 App 连接的 `cid`，spec/protocol.md 10.3）；Hub API 为 `CallOutcome.call_id` |

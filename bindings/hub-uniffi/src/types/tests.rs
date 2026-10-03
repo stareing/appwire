@@ -623,3 +623,17 @@ fn status_locks() {
         ]
     );
 }
+
+#[test]
+fn call_status_conversion() {
+    let c: hub::call_objects::CallStatus = serde_json::from_value(json!({
+        "callId": "c1", "name": "shop.job.run", "caller": "api", "subject": "api", "state": "approving",
+        "elapsedMs": 12, "instanceId": "i1", "progress": {"progress": 2.0, "total": 4.0, "message": "半"},
+        "platformState": "hidden"
+    }))
+    .unwrap();
+    let u = CallStatus::from(c);
+    assert_eq!((u.state, u.elapsed_ms, u.instance_id.as_deref()), (CallState::Approving, 12, Some("i1")));
+    assert_eq!((u.progress, u.progress_total, u.progress_message.as_deref()), (Some(2.0), Some(4.0), Some("半")));
+    assert_eq!(u.platform_state, Some(Visibility::Hidden));
+}

@@ -12,7 +12,7 @@ use app_mcp_protocol::identity::HostIdentity;
 use app_mcp_protocol::registry::EndpointRegistry;
 use app_mcp_protocol::{ErrorKind, ToolError};
 use serde_json::json;
-use tokio::sync::{Notify, broadcast, oneshot};
+use tokio::sync::{Notify, broadcast};
 
 use crate::connection::RequestError;
 use crate::instance::Instance;
@@ -114,8 +114,8 @@ pub struct HubShared {
     agent_tasks: Mutex<TaskTable>,
     /// [`Hub::select_instance`] 的选择（所有调用方共用，调用方自己的 `apps.select` 优先）。
     global_selected: Mutex<HashMap<String, String>>,
-    /// 进行中的调用：callId → (登记序号, 取消信号)。
-    pub(crate) calls: Mutex<HashMap<String, (u64, oneshot::Sender<()>)>>,
+    /// 进行中的调用对象：callId → 登记（[`crate::call_objects`]）。
+    pub(crate) calls: Mutex<HashMap<String, crate::call_objects::CallEntry>>,
     /// 等待进度的调用：callId → 进度路由（只接受被路由到的那条 App 连接发来的 `tools/progress`）。
     pub(crate) progress_routes: Mutex<HashMap<String, ProgressRoute>>,
     approval_handler: Mutex<Option<Arc<dyn ApprovalHandler>>>,

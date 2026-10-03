@@ -5,6 +5,7 @@ use std::sync::Arc;
 use app_mcp_protocol::{ErrorKind, ToolError, ToolsCancelParams, ToolsInvokeParams, ToolsInvokeResult, method};
 use serde_json::{Value, json};
 
+use crate::call_objects::CallState;
 use crate::hub::HubShared;
 use crate::mcp_convert::OutputShape;
 use crate::registry::WakeTargetPresence;
@@ -96,6 +97,7 @@ impl HubShared {
                 self.registry().wake_target_presence(app_id, plan.instance_id.as_deref()),
                 WakeTargetPresence::Absent
             );
+            self.set_call_state(call_id, CallState::Activating);
             match self.wake_and_wait(&plan, cancel.as_mut()).await {
                 Ok(id) => {
                     *woke = absent;
@@ -106,6 +108,7 @@ impl HubShared {
         }
         // 页面目录（spec/hub-api.md 3.14）：没有实例注册该工具、而目录中有 →（休眠则先唤醒）→ 导航 → 等待注册。
         if let Some(target) = self.page_of_tool(app_id, tool_name) {
+            self.set_call_state(call_id, CallState::Activating);
             match self
                 .reach_page_tool(call_id, app_id, &target, &arguments, ctx, selected.as_deref(), woken.clone(), approved, cancel.as_mut())
                 .await
@@ -184,6 +187,7 @@ impl HubShared {
             Err(e) => return (Err(ToolError::new(ErrorKind::HandlerError, e.to_string())), instance),
         };
         let conn = target.conn.clone();
+        self.set_call_running(call_id, &target.instance_id, conn.id);
         let disconnected = || {
             ToolError::new(
                 ErrorKind::AppDisconnected,

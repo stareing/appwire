@@ -73,9 +73,10 @@ impl HubShared {
         }
     }
 
-    /// App 连接发来的 `tools/progress`（spec/protocol.md 3.3）：交给等待该调用进度的一方；
+    /// App 连接发来的 `tools/progress`（spec/protocol.md 3.3）：记到调用对象上（[`crate::call_objects`]），并交给等待该调用进度的一方；
     /// 调用未登记进度（调用方没要进度、已结束）或来自其他连接时丢弃。
     pub(crate) fn route_progress(&self, conn_id: u64, p: ToolsProgressParams) {
+        self.record_call_progress(conn_id, &p);
         let routes = lock(&self.progress_routes);
         match routes.get(&p.call_id) {
             Some(r) if r.conn_id == conn_id => {

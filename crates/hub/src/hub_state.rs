@@ -2,7 +2,7 @@
 //! 不必由机主转述 `status`。
 //!
 //! - `app-mcp://apps/hub`（[`HubStateView`]）：App 概况与未到期的对象锁。
-//! - `app-mcp://apps/self`（[`SelfStateView`]）：读取方自己的任务（含其任务句柄）、所持的锁、记账用量与 Agent 配额余量。
+//! - `app-mcp://apps/self`（[`SelfStateView`]）：读取方自己的任务（含其任务句柄）、所持的锁、进行中的调用、记账用量与 Agent 配额余量。
 //!
 //! 读取时现算；不可订阅（状态随每次调用变化，变化通知会给 Hub 增加推送流量，Agent 需要时再读）。
 //!
@@ -59,7 +59,7 @@ pub struct LockView {
 }
 
 /// `app-mcp://apps/self` 的内容。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelfStateView {
     /// 读取方的记账主体。
@@ -75,6 +75,9 @@ pub struct SelfStateView {
     pub usage: Option<UsageStatus>,
     /// 每 Agent 配额（`limits.agent_rate`）；读取方不是已登记 Agent 或该级不限时为 `None`。
     pub quota: Option<QuotaView>,
+    /// 读取方（含其任务句柄）进行中的调用（第 16 项 P5，[`crate::call_objects`]）。
+    #[serde(default)]
+    pub calls: Vec<crate::call_objects::CallStatus>,
 }
 
 /// 读取方的一个任务（不含任务 ID）。
@@ -139,7 +142,7 @@ fn lock_view(l: LockStatus) -> LockView {
 }
 
 /// `task_caller` 是否为 `owner` 本身或其名下的任务句柄（调用方键 `<owner>/<任务 ID>`，见 [`CallerKey::task_handle`]）。
-fn owned_by(task_caller: &str, owner: &str) -> bool {
+pub(crate) fn owned_by(task_caller: &str, owner: &str) -> bool {
     task_caller.strip_prefix(owner).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
@@ -196,6 +199,7 @@ impl HubShared {
             locks,
             usage,
             quota,
+            calls: self.own_calls(caller, None),
         }
     }
 }

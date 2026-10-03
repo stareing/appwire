@@ -172,6 +172,7 @@ impl HubShared {
             agents: Some(lock(&self.agents).names()),
             usage: Some(lock(&self.usage).status()),
             locks: Some(self.lock_status()),
+            calls: Some(self.call_statuses()),
         }
     }
 

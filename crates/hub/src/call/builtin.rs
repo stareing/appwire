@@ -10,7 +10,7 @@ use crate::hub::HubShared;
 use crate::schema::{self, SchemaCheck};
 use crate::names::{
     TOOL_APPS_LIST, TOOL_APPS_LOCK, TOOL_APPS_OVERVIEW, TOOL_APPS_PAGE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN,
-    TOOL_APPS_TASK_END, TOOL_APPS_TOOLS, TOOL_APPS_UNLOCK,
+    TOOL_APPS_TASK_END, TOOL_APPS_TOOLS, TOOL_APPS_UNLOCK, TOOL_APPS_CALLS, TOOL_APPS_CANCEL,
 };
 
 use super::{CallCtx, unknown_app};
@@ -172,6 +172,8 @@ impl HubShared {
             )),
             TOOL_APPS_LOCK => self.builtin_lock(ctx, args),
             TOOL_APPS_UNLOCK => self.builtin_unlock(ctx, args),
+            TOOL_APPS_CALLS => self.builtin_calls(key, ctx.call_id.as_deref()),
+            TOOL_APPS_CANCEL => self.builtin_cancel(key, args),
             _ => return None,
         })
     }

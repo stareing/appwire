@@ -90,6 +90,7 @@ impl HubShared {
         };
         let timeout = policy.timeout.unwrap_or(self.config.response_timeout);
         let label = format!("{}.{}", req.app_id, req.tool);
+        self.set_call_state(&req.call_id, crate::call_objects::CallState::Approving);
         tokio::select! {
             r = tokio::time::timeout(timeout, handler.approve(req)) => match r {
                 Ok(true) => Ok(()),

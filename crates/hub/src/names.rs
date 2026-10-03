@@ -28,6 +28,10 @@ pub const TOOL_APPS_TASK_END: &str = "apps.task.end";
 pub const TOOL_APPS_LOCK: &str = "apps.lock";
 /// 解锁（spec/hub-api.md 3.6「对象锁」）。
 pub const TOOL_APPS_UNLOCK: &str = "apps.unlock";
+/// 列出自己的进行中调用（spec/hub-api.md 3.6「调用对象」，第 16 项 P5）。
+pub const TOOL_APPS_CALLS: &str = "apps.calls";
+/// 取消自己的进行中调用（spec/hub-api.md 3.6「调用对象」）。
+pub const TOOL_APPS_CANCEL: &str = "apps.cancel";
 
 /// Hub 自身状态的只读资源名（第 16 项 P7；URI `app-mcp://apps/<名>`，spec/hub-api.md 3.6「Hub 状态资源」）：
 /// App 概况与对象锁。
@@ -37,8 +41,8 @@ pub const RESOURCE_SELF: &str = "self";
 
 /// 任务句柄的工具参数名（与 [`META_TASK_ID`] 等价）。
 pub const ARG_TASK_ID: &str = "taskId";
-/// 接受 [`ARG_TASK_ID`] 参数的内置工具（持有按任务区分的状态：选择、租约、锁；[`TOOL_APPS_TASK_END`] 中为必填）。
-pub const TASK_SCOPED_TOOLS: [&str; 8] = [
+/// 接受 [`ARG_TASK_ID`] 参数的内置工具（持有按任务区分的状态：选择、租约、锁、进行中的调用；[`TOOL_APPS_TASK_END`] 中为必填）。
+pub const TASK_SCOPED_TOOLS: [&str; 10] = [
     TOOL_APPS_LIST,
     TOOL_APPS_SELECT,
     TOOL_APPS_NAVIGATE,
@@ -47,6 +51,8 @@ pub const TASK_SCOPED_TOOLS: [&str; 8] = [
     TOOL_APPS_TASK_END,
     TOOL_APPS_LOCK,
     TOOL_APPS_UNLOCK,
+    TOOL_APPS_CALLS,
+    TOOL_APPS_CANCEL,
 ];
 
 // ---- MCP 结果 `_meta`（Hub → Agent）----

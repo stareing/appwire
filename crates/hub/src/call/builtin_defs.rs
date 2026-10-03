@@ -11,7 +11,7 @@ use crate::types::{Availability, HubTool};
 use crate::names::{
     BUILTIN_APP_ID, TOOL_APPS_ACTIVATE, TOOL_APPS_LIST, TOOL_APPS_LOCK, TOOL_APPS_NAVIGATE, TOOL_APPS_OVERVIEW,
     TOOL_APPS_PAGE, TOOL_APPS_RELEASE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN, TOOL_APPS_TASK_END, TOOL_APPS_TOOLS,
-    TOOL_APPS_UNLOCK,
+    TOOL_APPS_UNLOCK, TOOL_APPS_CALLS, TOOL_APPS_CANCEL,
 };
 use crate::object_lock::{MAX_LOCK_KEY_LEN, MAX_LOCK_TTL_MS, MIN_LOCK_TTL_MS};
 use crate::names::{ARG_TASK_ID, TASK_SCOPED_TOOLS};
@@ -256,6 +256,31 @@ fn base_builtin_tools() -> Vec<Tool> {
                     "key": { "type": "string", "description": "加锁时的 key（锁整个 App 时省略）" }
                 },
                 "required": ["appId"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
+        ),
+        Tool::new(
+            TOOL_APPS_CALLS,
+            "列出你自己（含你的任务句柄）进行中的调用：callId、工具、阶段（created 已受理 / approving 等待用户确认 / activating \
+             唤醒或打开页面中 / running 执行中）、已耗时与最近进度。调用结束即不再列出（结果只交给发起方）。",
+            obj(json!({ "type": "object", "properties": {}, "additionalProperties": false })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(false),
+        ),
+        Tool::new(
+            TOOL_APPS_CANCEL,
+            "取消你自己（含你的任务句柄）的一个进行中调用（callId 见 apps.calls）；发起方会收到 CANCELLED。已在 App 内开始的操作\
+             是否回滚由 App 决定。",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "callId": { "type": "string", "minLength": 1, "description": "要取消的调用（apps.calls 列出的 callId）" }
+                },
+                "required": ["callId"],
                 "additionalProperties": false
             })),
         )

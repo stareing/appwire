@@ -15,6 +15,7 @@ pub mod agents;
 mod agent_control;
 pub mod app_server;
 pub mod call;
+pub mod call_objects;
 pub mod connection;
 pub mod connector;
 pub mod dormant_store;

@@ -2,14 +2,15 @@
 
 use std::path::Path;
 
+use app_mcp_hub::call_objects::CallState;
 use app_mcp_hub::{AppState, AwakeReason, HubStatus, InstancePower, LeaseStatus, ToolAnnotations};
 use app_mcp_protocol::{ConnectionErrorCode, ErrorKind};
 use serde_json::{Value, json};
 
 use super::{Check, Level};
 
-/// 调用方计数（`status` 一行摘要与 doctor 共用）：MCP 会话数，以及 `subscriptions/listen` 流数、Agent 任务数与持有中的对象锁
-/// （spec/hub-api.md 3.6；旧 Host 不报告时省略，没有锁时不提）。
+/// 调用方计数（`status` 一行摘要与 doctor 共用）：MCP 会话数，以及 `subscriptions/listen` 流数、Agent 任务数、持有中的对象锁
+/// 与进行中的调用（spec/hub-api.md 3.6；旧 Host 不报告时省略，没有时不提；调用最多列 5 个）。
 pub(crate) fn callers_text(st: &HubStatus) -> String {
     let listen = st.mcp_listen_streams.map(|n| format!("、listen 流 {n} 个")).unwrap_or_default();
     let tasks = st.tasks.as_ref().map(|t| format!("、Agent 任务 {} 个", t.len())).unwrap_or_default();
@@ -21,7 +22,28 @@ pub(crate) fn callers_text(st: &HubStatus) -> String {
             format!("、对象锁 {} 把：{}", l.len(), held.join("、"))
         }
     };
-    format!("MCP 会话 {} 个{listen}{tasks}{locks}", st.mcp_sessions)
+    let calls = match st.calls.as_deref() {
+        Some([]) | None => String::new(),
+        Some(c) => {
+            let shown: Vec<String> = c
+                .iter()
+                .take(5)
+                .map(|k| format!("{}（{}，{}，{:.1} s）", k.name, call_state_text(k.state), k.subject, k.elapsed_ms as f64 / 1000.0))
+                .collect();
+            let more = if c.len() > shown.len() { "等".to_owned() } else { String::new() };
+            format!("、进行中调用 {} 个：{}{more}", c.len(), shown.join("、"))
+        }
+    };
+    format!("MCP 会话 {} 个{listen}{tasks}{locks}{calls}", st.mcp_sessions)
+}
+
+fn call_state_text(s: CallState) -> &'static str {
+    match s {
+        CallState::Created => "已受理",
+        CallState::Approving => "等待确认",
+        CallState::Activating => "唤醒中",
+        CallState::Running => "执行中",
+    }
 }
 
 pub(super) fn apps_check(status: Option<&Result<HubStatus, String>>) -> Check {

@@ -103,6 +103,24 @@ fn callers_text_lists_locks() {
 }
 
 #[test]
+fn callers_text_lists_calls() {
+    let mut st = status_with_tools(0);
+    st.calls = Some(Vec::new());
+    assert_eq!(callers_text(&st), "MCP 会话 0 个", "没有调用时不提");
+    st.calls = Some(
+        serde_json::from_value(json!([
+            {"callId": "c1", "name": "shop.job.run", "subject": "agent:claude", "state": "running", "elapsedMs": 1500},
+            {"callId": "c2", "name": "docs.edit", "subject": "local", "state": "approving", "elapsedMs": 200}
+        ]))
+        .unwrap(),
+    );
+    assert_eq!(
+        callers_text(&st),
+        "MCP 会话 0 个、进行中调用 2 个：shop.job.run（执行中，agent:claude，1.5 s）、docs.edit（等待确认，local，0.2 s）"
+    );
+}
+
+#[test]
 fn tools_check_lists_declarations() {
     let st = status_with_tools(0);
     let c = tools_check(Some(&Ok(st)));

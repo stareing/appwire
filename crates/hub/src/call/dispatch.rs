@@ -9,6 +9,7 @@ use rmcp::{ErrorData as McpError, Peer, RoleClient, ServiceError};
 use serde_json::{Map, Value, json};
 use tokio::sync::oneshot;
 
+use crate::call_objects::{CallEntry, CallState};
 use crate::hub::{HubShared, lock};
 use crate::limits::Payload;
 use crate::mcp_convert::OutputShape;
@@ -45,7 +46,22 @@ impl HubShared {
         };
         let (tx, rx) = oneshot::channel::<()>();
         let token = self.next_id();
-        lock(&self.calls).insert(call_id.clone(), (token, tx));
+        lock(&self.calls).insert(
+            call_id.clone(),
+            CallEntry {
+                token,
+                cancel: tx,
+                caller: ctx.caller.clone(),
+                name: ctx.name.clone(),
+                state: CallState::Created,
+                started,
+                instance_id: None,
+                conn_id: None,
+                progress: None,
+            },
+        );
+        let mut ctx = ctx;
+        ctx.call_id = Some(call_id.clone());
         let combined = async move {
             tokio::select! {
                 _ = cancel => {}
@@ -61,7 +77,7 @@ impl HubShared {
         let mut inv = self.call_inner(&call_id, ctx, combined.as_mut()).await;
         inv.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut calls = lock(&self.calls);
-        if calls.get(&call_id).is_some_and(|(t, _)| *t == token) {
+        if calls.get(&call_id).is_some_and(|e| e.token == token) {
             calls.remove(&call_id);
         }
         inv
@@ -114,6 +130,7 @@ impl HubShared {
                     match approval {
                         Err(e) => Ok(error_result(&e)),
                         Ok(()) => {
+                            self.set_call_state(call_id, CallState::Running);
                             self.call_upstream(app_id, tool, map, peer, &ctx, cancel.as_mut())
                                 .await
                         }
@@ -133,6 +150,9 @@ impl HubShared {
         }
 
         // 内置工具
+        if builtin_schema(&name).is_some() {
+            self.set_call_state(call_id, CallState::Running);
+        }
         if let Some(r) = self.call_builtin(&ctx, &name, &args) {
             return inv(None, Body::Builtin(r));
         }
