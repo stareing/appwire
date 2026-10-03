@@ -40,10 +40,46 @@ kein Screen Scraping, kein Computer Use, keine Browser-Automatisierung.
 
 ## Inhalt
 
-[Schnellstart](#schnellstart) · [Kurzer Überblick](#ein-kurzer-überblick) · [Installation](#installation) · [Ausprobieren](#ausprobieren) ·
+[Wofür](#wofür-appwire-da-ist) · [Schnellstart](#schnellstart) · [Kurzer Überblick](#ein-kurzer-überblick) · [Installation](#installation) · [Ausprobieren](#ausprobieren) ·
 [Plattformen](#plattformen-und-pakete) · [So funktioniert es](#so-funktioniert-es) · [Zuständigkeit](#zuständigkeit) ·
 [Vergleich](#appwire-im-vergleich) · [Philosophie](#philosophie) · [FAQ](#faq) ·
 [Dokumentation](#dokumentation)
+
+## Wofür AppWire da ist
+
+Mit AppWire bedient ein KI-Assistent die Apps auf einem Gerät so, wie die Apps es selbst tun – über ihre
+eigenen Aktionen, mit typisierten Eingaben, der bestehenden Anmeldung des Nutzers und den Prüfungen der
+App –, statt auf den Bildschirm zu schauen und zu raten, wohin er tippen soll. Eine App erklärt einmal in
+ihrem eigenen Code, was sie kann. Jeder Agent auf dem Gerät – ein Desktop-Assistent, der eingebaute
+Assistent des Smartphones, der Sprachassistent im Auto oder Ihre eigene LLM-Schleife – kann diese
+Aktionen dann finden, aufrufen, die Ergebnisse lesen und die App wecken, wenn sie nicht läuft. Dieselbe
+Deklaration dient Sprache, Chat und Automatisierung: Eine Integration deckt jede Art ab, wie Menschen mit
+ihren Geräten sprechen.
+
+| Gerät | Was ein Agent dort tun kann (Beispiele) | Wie Apps eingebunden werden | Stand |
+|---|---|---|---|
+| **Computer** – Windows, macOS, Linux | „Exportiere diesen Bericht als PDF und hänge ihn an eine neue E-Mail“; Desktop- und Web-Apps nebeneinander aus Claude Code, Cursor oder Claude Desktop steuern | Electron, Tauri, C# (WPF, WinUI), Python (Qt, Tk), C/C++, Rust; Webseiten über den Browser | unter Linux und Windows getestet; Apple-Plattformen nur unter Linux verifiziert |
+| **Smartphone** – Android, iOS, HarmonyOS NEXT | „Bestell die Einkäufe von letzter Woche noch einmal“; „verschieb mein Meeting um 15 Uhr und benachrichtige die Teilnehmer“ – der Assistent auf dem Gerät ruft App-Aktionen auf und weckt Apps im Hintergrund | Kotlin, Swift, Dart/Flutter, ArkTS; der Assistent bettet den Hub ein | Android auf einem Gerät getestet; iOS und HarmonyOS gebaut und unit-getestet, noch nicht auf einem Gerät |
+| **Tablet** – iPadOS, Android, Windows | auf das reagieren, was jede Hälfte im Split-Screen zeigt; ein Formular in einer App aus Notizen einer anderen ausfüllen | dieselben SDKs wie bei Smartphone und Computer; Tools folgen dem sichtbaren Bildschirm | wie bei Smartphone und Computer |
+| **Smartes Fahrzeug-Cockpit** – Android Automotive OS, HarmonyOS-Cockpits, Linux/Qt-Headunits | „Navigiere zur nächsten freien Ladesäule und spiel meine Fahrt-Playlist“ – der Sprachassistent ruft Navigations-, Lade- und Medien-Apps direkt auf, ohne Berührung des Bildschirms während der Fahrt | Kotlin (Android Automotive), ArkTS (HarmonyOS), C/C++ oder Python (Qt); der Cockpit-Assistent bettet den Hub ein (Rust, C, Kotlin) | dieselben SDKs wie bei Smartphone und Linux; auf Fahrzeugsystemen noch nicht verifiziert |
+| **Hersteller von Assistenten und Geräten** | Ihrem Assistenten mit einer Integration jede kompatible App auf dem Gerät geben, als OpenAI-, Anthropic-, Gemini- oder MCP-Tools | den Hub einbetten: Rust, Node, C/C#, Kotlin, Swift, Python | siehe [Status](#status) |
+
+Die Beispiele zeigen, was Apps bereitstellen können; es sind keine eingebauten Funktionen. Was die
+Interaktion tief statt geskriptet macht:
+
+- **Präzise statt visuell:** Der Agent ruft die echte Aktion der App mit typisiertem Schema auf – ohne
+  Screenshots, Koordinaten oder OCR –, daher funktioniert es mit verborgenem Fenster, ausgeschaltetem
+  Bildschirm oder dem Blick des Fahrers auf der Straße.
+- **Immer aufrufbar, nicht immer laufend:** Tools werden aus dem Manifest der App gelistet, und die App
+  wird erst beim Aufruf über die plattformeigene Aktivierung geweckt; untätige Apps geben ihre
+  Ressourcen zurück.
+- **Kennt den aktuellen Kontext:** Tools erscheinen und verschwinden mit Bildschirm und App-Zustand, der
+  Assistent sieht also nur, was gerade möglich ist.
+- **App-übergreifend:** Eine Anfrage kann Tools mehrerer Apps kombinieren; jedes Ergebnis sagt, ob die
+  Aktion erledigt ist oder in der App noch aussteht (etwa bis der Nutzer eine Zahlung bestätigt).
+- **Der Nutzer behält die Kontrolle:** Der Agent entscheidet, ob er vorher fragt, die App bestätigt
+  riskante Schritte in ihrer eigenen Oberfläche, und Nutzer können jede App oder jedes Tool ausblenden
+  oder sperren (`app-mcp-host policy`).
 
 ## Schnellstart
 

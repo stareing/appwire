@@ -40,10 +40,47 @@ d'écran, pas de computer use, pas d'automatisation de navigateur.
 
 ## Sommaire
 
-[Démarrage rapide](#démarrage-rapide) · [Aperçu rapide](#aperçu-rapide) · [Installation](#installation) · [Essayer](#essayer) ·
+[À quoi il sert](#à-quoi-sert-appwire) · [Démarrage rapide](#démarrage-rapide) · [Aperçu rapide](#aperçu-rapide) · [Installation](#installation) · [Essayer](#essayer) ·
 [Plateformes](#plateformes-et-paquets) · [Fonctionnement](#fonctionnement) · [Périmètre](#périmètre) ·
 [Comparaison](#appwire-face-aux-autres-approches) · [Philosophie](#philosophie) · [FAQ](#faq) ·
 [Documentation](#documentation)
+
+## À quoi sert AppWire
+
+AppWire permet à un assistant d'IA de piloter les applications d'un appareil comme elles le font
+elles-mêmes — par leurs propres actions, avec des entrées typées, la session déjà ouverte de
+l'utilisateur et les contrôles de l'application — au lieu de regarder l'écran et de deviner où appuyer.
+Une application déclare une seule fois, dans son propre code, ce qu'elle sait faire. N'importe quel agent
+de l'appareil — un assistant de bureau, l'assistant intégré du téléphone, l'assistant vocal de la
+voiture ou votre propre boucle LLM — peut alors trouver ces actions, les appeler, lire les résultats et
+réveiller l'application si elle ne tourne pas. La même déclaration sert à la voix, au chat et à
+l'automatisation : une seule intégration couvre toutes les façons dont on parle à ses appareils.
+
+| Appareil | Ce qu'un agent peut y faire (exemples) | Comment les applications s'intègrent | État |
+|---|---|---|---|
+| **Ordinateur** — Windows, macOS, Linux | « Exporte ce rapport en PDF et joins-le à un nouvel e-mail » ; piloter côte à côte applications de bureau et web depuis Claude Code, Cursor ou Claude Desktop | Electron, Tauri, C# (WPF, WinUI), Python (Qt, Tk), C/C++, Rust ; pages web via le navigateur | testé sous Linux et Windows ; plateformes Apple vérifiées sous Linux uniquement |
+| **Téléphone** — Android, iOS, HarmonyOS NEXT | « Recommande les courses de la semaine dernière » ; « décale ma réunion de 15 h et préviens les participants » — l'assistant de l'appareil appelle les actions des applications et les réveille en arrière-plan | Kotlin, Swift, Dart/Flutter, ArkTS ; l'assistant embarque le Hub | Android testé sur un appareil ; iOS et HarmonyOS compilés et testés unitairement, pas encore sur appareil |
+| **Tablette** — iPadOS, Android, Windows | agir sur ce qu'affiche chaque volet en écran partagé ; remplir un formulaire d'une application à partir des notes d'une autre | les mêmes SDK que pour le téléphone et l'ordinateur ; les outils suivent l'écran visible | comme pour le téléphone et l'ordinateur |
+| **Cockpit intelligent de voiture** — Android Automotive OS, cockpits HarmonyOS, unités Linux/Qt | « Emmène-moi à la borne libre la plus proche et lance ma playlist de route » — l'assistant vocal appelle directement les applications de navigation, de recharge et de médias, sans toucher l'écran en conduisant | Kotlin (Android Automotive), ArkTS (HarmonyOS), C/C++ ou Python (Qt) ; l'assistant du cockpit embarque le Hub (Rust, C, Kotlin) | mêmes SDK que pour le téléphone et Linux ; pas encore vérifié sur des systèmes embarqués de véhicule |
+| **Fabricants d'assistants et d'appareils** | donner à votre assistant toutes les applications compatibles de l'appareil en une seule intégration, sous forme d'outils OpenAI, Anthropic, Gemini ou MCP | embarquer le Hub : Rust, Node, C/C#, Kotlin, Swift, Python | voir [État du projet](#état-du-projet) |
+
+Les exemples montrent ce que les applications peuvent exposer ; ce ne sont pas des fonctions intégrées.
+Ce qui rend l'interaction profonde plutôt que scriptée :
+
+- **Précis, pas visuel :** l'agent appelle la vraie action de l'application avec un schéma typé — sans
+  capture d'écran, coordonnées ni OCR —, donc cela fonctionne fenêtre masquée, écran éteint ou les yeux
+  du conducteur sur la route.
+- **Toujours appelable, pas toujours lancé :** les outils sont listés depuis le manifeste de
+  l'application, qui n'est réveillée par l'activation native de la plateforme que lorsqu'on l'appelle ;
+  les applications inactives rendent leurs ressources.
+- **Attentif au contexte :** les outils apparaissent et disparaissent avec l'écran et l'état de
+  l'application ; l'assistant ne voit que ce qui est faisable maintenant.
+- **D'une application à l'autre :** une demande peut combiner les outils de plusieurs applications ;
+  chaque résultat indique si l'action est terminée ou encore en attente dans l'application (par
+  exemple, en attente de la confirmation d'un paiement par l'utilisateur).
+- **L'utilisateur garde la main :** l'agent décide s'il demande d'abord, l'application confirme les
+  étapes à risque dans sa propre interface, et l'utilisateur peut masquer ou bloquer n'importe quelle
+  application ou outil (`app-mcp-host policy`).
 
 ## Démarrage rapide
 

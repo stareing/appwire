@@ -38,10 +38,44 @@ and any MCP client can call it. No screen scraping, no computer use, no browser 
 
 ## Contents
 
-[Quick start](#quick-start) · [Quick look](#a-quick-look) · [Install](#install) · [Try it](#try-it) ·
+[What it is for](#what-appwire-is-for) · [Quick start](#quick-start) · [Quick look](#a-quick-look) · [Install](#install) · [Try it](#try-it) ·
 [Platforms](#platforms-and-packages) · [How it works](#how-it-works) · [Scope](#scope) ·
 [Comparison](#how-appwire-compares) · [Philosophy](#philosophy) · [FAQ](#faq) ·
 [Docs](#documentation)
+
+## What AppWire is for
+
+AppWire lets an AI assistant operate the apps on a device the way the apps themselves do it —
+through their own actions, with typed inputs, the user's existing login and the app's own checks —
+instead of looking at the screen and guessing where to tap. An app declares what it can do once, in
+its own code. Any agent on the device — a desktop assistant, a phone's built-in assistant, a car's
+voice assistant or your own LLM loop — can then find those actions, call them, read the results and
+wake the app when it is not running. The same declaration serves voice, chat and automation, so one
+integration covers every way people talk to their devices.
+
+| Device | What an agent can do there (examples) | How apps join | Status |
+|---|---|---|---|
+| **Computer** — Windows, macOS, Linux | "Export this report as a PDF and attach it to a new email"; drive desktop and web apps side by side from Claude Code, Cursor or Claude Desktop | Electron, Tauri, C# (WPF, WinUI), Python (Qt, Tk), C/C++, Rust; web pages via the browser | tested on Linux and Windows; Apple platforms verified on Linux only |
+| **Phone** — Android, iOS, HarmonyOS NEXT | "Reorder last week's groceries"; "move my 3 pm meeting and message the attendees" — the on-device assistant calls app actions and wakes apps in the background | Kotlin, Swift, Dart/Flutter, ArkTS; the assistant embeds the Hub | Android tested on a device; iOS and HarmonyOS built and unit-tested, not yet on a device |
+| **Tablet** — iPadOS, Android, Windows | act on what is shown in each split-screen pane; fill a form in one app from notes in another | the phone and computer SDKs; tools follow the visible screen | as for phone and computer |
+| **Car smart cockpit** — Android Automotive OS, HarmonyOS cockpits, Linux/Qt head units | "Navigate to the nearest free charger and play my driving playlist" — the voice assistant calls navigation, charging and media apps directly, with no taps on the screen while driving | Kotlin (Android Automotive), ArkTS (HarmonyOS), C/C++ or Python (Qt); the cockpit assistant embeds the Hub (Rust, C, Kotlin) | same SDKs as phone and Linux; not yet verified on in-vehicle systems |
+| **Assistant and device makers** | give your assistant every compatible app on the device through one integration, as OpenAI, Anthropic, Gemini or MCP tools | embed the Hub: Rust, Node, C/C#, Kotlin, Swift, Python | see [Status](#status) |
+
+The examples show what apps can expose; they are not built-in features. What makes the interaction
+deep rather than scripted:
+
+- **Precise, not visual:** the agent calls the app's real action with a typed schema — no
+  screenshots, coordinates or OCR — so it works with the window hidden, the screen off, or the
+  driver's eyes on the road.
+- **Always callable, not always running:** tools are listed from the app's manifest, and the app is
+  woken through the platform's own activation only when called; idle apps give their resources back.
+- **Aware of the current context:** tools appear and disappear with the screen and the app's state,
+  so the assistant only sees what can be done now.
+- **Across apps:** one request can combine tools from several apps; each result says whether the
+  action is done or still pending in the app (for example, waiting for the user to confirm a
+  payment).
+- **The user stays in control:** the agent decides whether to ask first, the app confirms high-risk
+  steps in its own UI, and users can hide or block any app or tool (`app-mcp-host policy`).
 
 ## Quick start
 

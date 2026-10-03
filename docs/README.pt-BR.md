@@ -40,10 +40,46 @@ cada app. Nada de screen scraping, computer use ou automação de navegador.
 
 ## Sumário
 
-[Início rápido](#início-rápido) · [Exemplos rápidos](#exemplos-rápidos) · [Instalação](#instalação) · [Experimente](#experimente) ·
+[Para que serve](#para-que-serve) · [Início rápido](#início-rápido) · [Exemplos rápidos](#exemplos-rápidos) · [Instalação](#instalação) · [Experimente](#experimente) ·
 [Plataformas](#plataformas-e-pacotes) · [Como funciona](#como-funciona) · [Escopo](#escopo) ·
 [Comparação](#comparação-com-outras-abordagens) · [Filosofia](#filosofia) · [FAQ](#perguntas-frequentes) ·
 [Documentação](#documentação)
+
+## Para que serve
+
+O AppWire permite que um assistente de IA opere os apps de um dispositivo do jeito que os próprios apps
+fazem — pelas ações deles, com entradas tipadas, o login que o usuário já tem e as verificações do
+próprio app — em vez de olhar a tela e adivinhar onde tocar. O app declara uma única vez, no próprio
+código, o que sabe fazer. Qualquer agente no dispositivo — um assistente de desktop, o assistente
+embutido do celular, o assistente de voz do carro ou o seu próprio loop de LLM — pode então encontrar
+essas ações, chamá-las, ler os resultados e acordar o app quando ele não está rodando. A mesma
+declaração serve para voz, chat e automação, então uma única integração cobre todas as formas de as
+pessoas falarem com seus dispositivos.
+
+| Dispositivo | O que um agente pode fazer (exemplos) | Como os apps entram | Situação |
+|---|---|---|---|
+| **Computador** — Windows, macOS, Linux | "Exporte este relatório em PDF e anexe a um novo e-mail"; operar apps de desktop e web lado a lado pelo Claude Code, Cursor ou Claude Desktop | Electron, Tauri, C# (WPF, WinUI), Python (Qt, Tk), C/C++, Rust; páginas web pelo navegador | testado em Linux e Windows; plataformas Apple verificadas só no Linux |
+| **Celular** — Android, iOS, HarmonyOS NEXT | "Peça de novo as compras da semana passada"; "mude minha reunião das 15h e avise os participantes" — o assistente do aparelho chama ações dos apps e os acorda em segundo plano | Kotlin, Swift, Dart/Flutter, ArkTS; o assistente embute o Hub | Android testado em aparelho; iOS e HarmonyOS compilados e com testes unitários, ainda não em aparelho |
+| **Tablet** — iPadOS, Android, Windows | agir sobre o que aparece em cada painel da tela dividida; preencher um formulário de um app com notas de outro | os mesmos SDKs do celular e do computador; as ferramentas acompanham a tela visível | igual a celular e computador |
+| **Cockpit inteligente do carro** — Android Automotive OS, cockpits HarmonyOS, centrais Linux/Qt | "Me leve ao carregador livre mais próximo e toque minha playlist de estrada" — o assistente de voz chama direto os apps de navegação, recarga e mídia, sem tocar na tela ao dirigir | Kotlin (Android Automotive), ArkTS (HarmonyOS), C/C++ ou Python (Qt); o assistente do cockpit embute o Hub (Rust, C, Kotlin) | os mesmos SDKs do celular e do Linux; ainda não verificado em sistemas veiculares |
+| **Fabricantes de assistentes e dispositivos** | dar ao seu assistente todos os apps compatíveis do dispositivo com uma única integração, como ferramentas OpenAI, Anthropic, Gemini ou MCP | embutir o Hub: Rust, Node, C/C#, Kotlin, Swift, Python | veja [Status](#status) |
+
+Os exemplos mostram o que os apps podem expor; não são recursos embutidos. O que torna a interação
+profunda, e não roteirizada:
+
+- **Preciso, não visual:** o agente chama a ação real do app com um schema tipado — sem capturas de
+  tela, coordenadas ou OCR —, então funciona com a janela oculta, a tela apagada ou o motorista olhando
+  para a estrada.
+- **Sempre disponível, nem sempre rodando:** as ferramentas são listadas a partir do manifesto do app,
+  e o app só é acordado pela ativação nativa da plataforma quando chamado; apps ociosos devolvem seus
+  recursos.
+- **Atento ao contexto atual:** as ferramentas aparecem e somem conforme a tela e o estado do app, então
+  o assistente só vê o que dá para fazer agora.
+- **Entre apps:** um pedido pode combinar ferramentas de vários apps; cada resultado diz se a ação foi
+  concluída ou ainda está pendente no app (por exemplo, aguardando o usuário confirmar um pagamento).
+- **O usuário no controle:** o agente decide se pergunta antes, o app confirma etapas de alto risco na
+  própria interface e o usuário pode ocultar ou bloquear qualquer app ou ferramenta
+  (`app-mcp-host policy`).
 
 ## Início rápido
 
