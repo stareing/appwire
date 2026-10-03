@@ -88,6 +88,7 @@ export type MutationOp =
   | { op: 'register'; tool: ToolDecl }
   | { op: 'update'; name: string; set: { [key: string]: Json } }
   | { op: 'remove' | 'enable' | 'disable'; name: string }
+  | { op: 'busy'; value: boolean }
 
 export interface ConformanceCase {
   id: string
@@ -100,8 +101,11 @@ export interface ConformanceCase {
       maxConcurrentCalls?: number
       maxQueuedCalls?: number
       navigateInBackground?: boolean
+      busyPolicy?: 'reject' | 'queue'
     }
     visibility?: 'visible' | 'hidden' | 'frozen'
+    /** 能力 busy：启动前 `setBusy(true)`。 */
+    busy?: boolean
     tools?: ToolDecl[]
     resources?: ResourceDecl[]
     navigation?: { [page: string]: NavigationSpec }
@@ -151,6 +155,8 @@ export interface RegistryOps<H> {
   update(handle: H, next: ToolDecl, set: { [key: string]: Json }): void
   remove(handle: H): void
   setEnabled(handle: H, enabled: boolean): void
+  /** 变更 `{op: "busy", value}`（能力 busy）；未提供时该变更抛错。 */
+  setBusy?(busy: boolean): void
 }
 
 export interface Registry {
@@ -189,7 +195,10 @@ export declare function appConfig(testCase: ConformanceCase): {
   maxConcurrentCalls?: number
   maxQueuedCalls?: number
   navigateInBackground?: boolean
+  busyPolicy?: 'reject' | 'queue'
 }
+/** 用例 `app.busy`（能力 busy）：为 true 时 runner 在启动前调用 `setBusy(true)`。 */
+export declare function appBusy(testCase: ConformanceCase): boolean
 /** 用例 `app.visibility`；未给出时为 undefined。 */
 export declare function appVisibility(testCase: ConformanceCase): 'visible' | 'hidden' | 'frozen' | undefined
 export declare function defined<T extends object>(obj: T): Partial<T>
@@ -198,6 +207,8 @@ export declare function defined<T extends object>(obj: T): Partial<T>
 export interface JsRegistrar {
   tool(name: string, definition: any): { update(changes: any): void; dispose(): void }
   resource(name: string, definition: any): unknown
+  /** 用户正在操作（能力 busy）。 */
+  setBusy(busy: boolean): void
 }
 
 /** `ToolCallError`（两包各自导出，结构相同）。 */

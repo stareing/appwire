@@ -921,3 +921,64 @@ describe('surface / page 与导航（spec/protocol.md 3.4）', () => {
     expect(handler).not.toHaveBeenCalled()
   })
 })
+
+describe('用户正在操作（spec/protocol.md 5.3）', () => {
+  it('busyPolicy 选项传给原生配置；缺省不带', () => {
+    expect(setup().native.config).not.toHaveProperty('busyPolicy')
+    expect(setup({ busyPolicy: 'queue' }).native.config).toMatchObject({ busyPolicy: 'queue' })
+  })
+
+  it('setBusy / isBusy / setBusyPolicy 转给原生；非法 busyPolicy 抛错且不转发', () => {
+    const { app, native } = setup()
+    expect(app.isBusy()).toBe(false)
+    app.setBusy(true)
+    expect(native.busy).toBe(true)
+    expect(app.isBusy()).toBe(true)
+    app.setBusy(false)
+    expect(app.isBusy()).toBe(false)
+    app.setBusyPolicy('queue')
+    expect(native.busyPolicy).toBe('queue')
+    expect(() => app.setBusyPolicy('drop' as 'queue')).toThrow(/busyPolicy/)
+    expect(native.busyPolicy).toBe('queue')
+  })
+
+  it('作用域 beginBusy 可嵌套、按引用计数；与显式开关互不清除；只在有效值变化时调用原生', () => {
+    const { app, native } = setup()
+    const outer = app.beginBusy()
+    const inner = app.beginBusy()
+    outer.release()
+    outer.release()
+    expect(app.isBusy()).toBe(true)
+    app.setBusy(true)
+    inner.release()
+    expect(app.isBusy()).toBe(true)
+    const scope = app.beginBusy()
+    app.setBusy(false)
+    expect(app.isBusy()).toBe(true)
+    scope.release()
+    expect(app.isBusy()).toBe(false)
+    expect(native.busyCalls).toEqual([true, false])
+  })
+
+  it('旧版原生模块缺少 setBusyPolicy 时非法值仍抛错', () => {
+    const { app, native } = setup()
+    ;(native as { setBusyPolicy?: unknown }).setBusyPolicy = undefined
+    expect(() => app.setBusyPolicy('drop' as 'queue')).toThrow(/busyPolicy/)
+  })
+
+  it('dispose 后为空操作；旧版原生模块缺少方法时警告、isBusy 为 false', () => {
+    const { app, native, logger } = setup()
+    ;(native as { setBusy?: unknown }).setBusy = undefined
+    ;(native as { isBusy?: unknown }).isBusy = undefined
+    app.setBusy(true)
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('setBusy'))
+    expect(app.isBusy()).toBe(false)
+    const other = setup()
+    const scope = other.app.beginBusy()
+    other.app.dispose()
+    other.app.setBusy(true)
+    other.app.beginBusy()
+    scope.release()
+    expect(other.native.busyCalls).toEqual([true])
+  })
+})

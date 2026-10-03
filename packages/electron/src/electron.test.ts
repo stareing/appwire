@@ -773,3 +773,84 @@ function getBridge(ipcMain: FakeIpcMain, wc: FakeWebContents) {
   exposeAppMcpBridge(null, fakeIpcRenderer(ipcMain, wc), { target, resetOnPageHide: false })
   return target.appMcpBridge as AppMcpBridge
 }
+
+describe('用户正在操作（busy.set，spec/protocol.md 5.3）', () => {
+  it('各页声明之或：任一页面 busy 即 busy，只在汇总值变化时改变客户端', async () => {
+    const { ipcMain, native } = setupMain()
+    const a = setupPage(ipcMain, new FakeWebContents(1)).page
+    const b = setupPage(ipcMain, new FakeWebContents(2)).page
+    a.setBusy(true)
+    await flush()
+    expect(native.busy).toBe(true)
+    b.beginBusy()
+    a.setBusy(false)
+    await flush()
+    expect(native.busy).toBe(true)
+    b.dispose()
+    await flush()
+    expect(native.busy).toBe(false)
+    expect(native.busyCalls).toEqual([true, false])
+  })
+
+  it('页面刷新（新的 hello）、卸载（reset）或 webContents 销毁后该页声明失效', async () => {
+    const { ipcMain, native } = setupMain()
+    const wc = new FakeWebContents(1)
+    setupPage(ipcMain, wc).page.setBusy(true)
+    await flush()
+    expect(native.busy).toBe(true)
+    // 刷新：同一 webContents 上的新页面
+    const reloaded = setupPage(ipcMain, wc).page
+    await flush()
+    expect(native.busy).toBe(false)
+    reloaded.setBusy(true)
+    await flush()
+    expect(native.busy).toBe(true)
+    reloaded.dispose()
+    await flush()
+    expect(native.busy).toBe(false)
+    const other = new FakeWebContents(2)
+    setupPage(ipcMain, other).page.setBusy(true)
+    await flush()
+    expect(native.busy).toBe(true)
+    other.destroy()
+    expect(native.busy).toBe(false)
+  })
+
+  it('页面声明与主进程的显式 setBusy 互不清除；接入 dispose 时撤销页面的声明', async () => {
+    const { ipcMain, appMcp, native, attachment } = setupMain()
+    appMcp.setBusy(true)
+    const wc = new FakeWebContents(1)
+    setupPage(ipcMain, wc).page.setBusy(true)
+    await flush()
+    wc.destroy()
+    expect(native.busy).toBe(true)
+    appMcp.setBusy(false)
+    expect(native.busy).toBe(false)
+    setupPage(ipcMain, new FakeWebContents(2)).page.setBusy(true)
+    await flush()
+    appMcp.setBusy(true)
+    appMcp.setBusy(false)
+    expect(native.busy).toBe(true)
+    attachment.dispose()
+    expect(native.busy).toBe(false)
+  })
+
+  it('appMcp 不支持 beginBusy：op 回复错误，页面记警告', async () => {
+    const ipcMain = new FakeIpcMain()
+    const appMcp = createAppMcp({ appId: 'shop', appName: 'Shop', clientKind: 'hybrid', binding: fakeBinding, keepAlive: false })
+    // 只有必需部分（旧版 @app-mcp/node 没有 beginBusy）
+    const attachment = attachAppMcp({
+      appMcp: { scope: (name) => appMcp.scope(name), instanceId: '', state: appMcp.state, onStateChange: () => () => {} },
+      ipcMain,
+      logger: { warn: vi.fn(), error: vi.fn() },
+    })
+    cleanups.push(() => {
+      attachment.dispose()
+      appMcp.dispose()
+    })
+    const { page, logger } = setupPage(ipcMain, new FakeWebContents(1))
+    page.setBusy(true)
+    await flush()
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('beginBusy'))
+  })
+})

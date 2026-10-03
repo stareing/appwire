@@ -22,6 +22,12 @@ void main() {
       expect(clientKindToNative(ClientKind.hybrid), 1);
     });
 
+    test('BusyPolicy（v19）与 app_mcp.h 的 AmBusyPolicy 一致', () {
+      expect(BusyPolicy.values.map(busyPolicyToNative), [AmBusyPolicy.reject, AmBusyPolicy.queue]);
+      expect(AmBusyPolicy.reject, 0);
+      expect(AmBusyPolicy.queue, 1);
+    });
+
     test('状态码与状态', () {
       expect(statusFromNative(AmStateStatus.pendingPairing), ConnectionStatus.pendingPairing);
       expect(statusFromNative(AmStateStatus.dormant), ConnectionStatus.dormant);

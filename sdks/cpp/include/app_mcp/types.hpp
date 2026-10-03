@@ -26,6 +26,8 @@ using WakeReason = AmWakeReason;
 using SleepReason = AmSleepReason;
 /// 调用结果的业务状态（AM_RESULT_DONE / PENDING / PARTIAL / NOOP）。
 using ResultStatus = AmResultStatus;
+/// 用户正在操作（Client::set_busy）期间写调用的处理方式（AM_BUSY_REJECT / AM_BUSY_QUEUE；spec/protocol.md 5.3）。
+using BusyPolicy = AmBusyPolicy;
 
 /// 工具对界面的依赖（spec/protocol.md 3.4）。
 enum class Surface {
@@ -175,6 +177,10 @@ struct ClientConfig {
     /// 排队中（等并发名额 / 互斥组）的调用上限；超出时新调用以 RATE_LIMITED（details scope "queue"）拒绝。
     /// 0 = 不限（spec/protocol.md 5.3，app_mcp.h v18）。
     uint32_t max_queued_calls = 64;
+    /// 用户正在操作（Client::set_busy(true)）期间写调用的处理方式：AM_BUSY_REJECT（缺省）以 RATE_LIMITED
+    /// （details scope "busy"）拒绝；AM_BUSY_QUEUE 排队到 set_busy(false) 后按序执行（app_mcp.h v19）。
+    /// 运行时可用 Client::set_busy_policy 修改。
+    BusyPolicy busy_policy = AM_BUSY_REJECT;
     std::optional<AppOverview> overview;
     Lifecycle lifecycle;
     /// 建立连接的超时；0 表示默认 5000ms。

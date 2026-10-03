@@ -250,6 +250,12 @@ var client = AppMcpClient.Create(new AppMcpClientOptions
 只受 `MaxConcurrentCalls` 约束）与 `ToolOptions.Exclusive`（互斥组名，同组工具同一时刻至多一个在执行）。暂不能执行的调用按到达顺序排队，
 `AppMcpClientOptions.MaxQueuedCalls`（默认 64，0 = 不限）为排队上限，超出时新调用以 `RATE_LIMITED`（details `{"scope": "queue", "limit": N}`）拒绝。
 
+用户正在操作（spec/protocol.md 5.3「用户正在操作」）：`client.SetBusy(true)` / `SetBusy(false)` 声明用户正在 App 内操作，期间写调用
+（生效注解不是 `ReadOnlyHint = true` 的工具）按 `AppMcpClientOptions.BusyPolicy` 处理——`BusyPolicy.Reject`（默认）以 `RATE_LIMITED`
+（details `{"scope": "busy"}`）拒绝，`BusyPolicy.Queue` 排队到 `SetBusy(false)` 后按序执行；只读调用不受影响。`client.SetBusyPolicy(...)` 运行中修改策略。
+`using (client.Busy()) { ... }` 在作用域内声明：引用计数、可嵌套、可跨线程 Dispose。有效 busy = `SetBusy` 显式开关 ∨ 未结束作用域数 > 0，
+二者互不清除（`SetBusy(false)` 不结束进行中的作用域，作用域结束也不清开关）；`client.IsBusy` 返回该有效值。
+
 幂等键（spec/protocol.md 3.3「idempotencyKey」）：`ToolContext.IdempotencyKey`（`string?`）是 Agent 给出的幂等键，原样提供，没有时为 null；
 同一工具同一键的重复调用已按首次结果重放（同上，去重关闭时只透传），App 可另作业务去重键或传给后端。
 

@@ -319,6 +319,47 @@ void main() {
       client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path, maxQueuedCalls: 3);
       expect(fake.maxQueuedCalls(), 3);
     });
+
+    test('用户正在操作（v19）：busyPolicy 创建后传入，setBusy / isBusy / setBusyPolicy', () {
+      // 默认 reject；创建时的策略随即设置。
+      expect(fake.busyPolicy(), AmBusyPolicy.reject);
+      client.dispose();
+      client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path, busyPolicy: BusyPolicy.queue);
+      expect(fake.busyPolicy(), AmBusyPolicy.queue);
+      expect(client.isBusy, isFalse);
+      client.setBusy(true);
+      expect(client.isBusy, isTrue);
+      client.setBusy(false);
+      expect(client.isBusy, isFalse);
+      client.setBusyPolicy(BusyPolicy.reject);
+      expect(fake.busyPolicy(), AmBusyPolicy.reject);
+
+      // 作用域：引用计数；嵌套时先结束一个仍为 busy，重复 release 不多减。
+      final outer = client.beginBusy();
+      final inner = client.beginBusy();
+      expect((client.isBusy, fake.busy()), (true, 1));
+      inner.release();
+      inner.release();
+      expect((client.isBusy, fake.busy(), inner.isReleased), (true, 1, true));
+      outer.release();
+      expect((client.isBusy, fake.busy()), (false, 0));
+
+      // 开关与作用域互不清除。
+      final held = client.beginBusy();
+      client.setBusy(false);
+      expect((client.isBusy, fake.busy()), (true, 1));
+      client.setBusy(true);
+      held.release();
+      expect((client.isBusy, fake.busy()), (true, 1));
+      client.setBusy(false);
+      expect((client.isBusy, fake.busy()), (false, 0));
+
+      final lingering = client.beginBusy();
+      client.dispose();
+      lingering.release(); // 客户端已释放：不抛出
+      expect(() => client.setBusy(true), throwsA(isA<AppMcpException>()));
+      expect(() => client.isBusy, throwsA(isA<AppMcpException>()));
+    });
   });
 
   group('生命周期（v3）', () {

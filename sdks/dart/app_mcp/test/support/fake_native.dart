@@ -143,6 +143,12 @@ final class FakeNative {
 
   /// v18：最近一次 am_client_new_ex 的 max_queued_calls（原样）。
   late final maxQueuedCalls = lib.lookupFunction<Int32 Function(), int Function()>('fake_max_queued_calls');
+
+  /// v19：最近创建的客户端当前的 busy 策略（AmBusyPolicy）；没有客户端时 -1。
+  late final busyPolicy = lib.lookupFunction<Int32 Function(), int Function()>('fake_busy_policy');
+
+  /// v19：最近创建的客户端经 am_client_set_busy 下发的值（1 / 0）；没有客户端时 -1。
+  late final busy = lib.lookupFunction<Int32 Function(), int Function()>('fake_busy');
   late final _toolEnabled = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>(
       'fake_tool_enabled');
   late final _toolDescription = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),

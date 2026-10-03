@@ -211,6 +211,72 @@ public class ClientTests
         Assert.Equal((ClientStatus.Backoff, TimeSpan.FromSeconds(1), "r"), (status, retryIn, reason));
     }
 
+    /// <summary>用户正在操作（spec/protocol.md 5.3，app_mcp.h v19）：状态读写、作用域与策略（非法值由原生库拒绝）。</summary>
+    [Fact]
+    public void BusyStateScopeAndPolicy()
+    {
+        Assert.Equal(BusyPolicy.Reject, Options().BusyPolicy);
+        var bad = Assert.Throws<AppMcpException>(() => AppMcpClient.Create(new AppMcpClientOptions
+        {
+            AppId = "dotnet-test",
+            AppName = ".NET Test",
+            HostUrl = "ws://127.0.0.1:1",
+            BusyPolicy = (BusyPolicy)9,
+        }));
+        Assert.Equal(AppMcpStatus.InvalidArgument, bad.Status);
+
+        using var client = AppMcpClient.Create(new AppMcpClientOptions
+        {
+            AppId = "dotnet-test",
+            AppName = ".NET Test",
+            HostUrl = "ws://127.0.0.1:1",
+            BusyPolicy = BusyPolicy.Queue,
+        });
+        Assert.False(client.IsBusy);
+        client.SetBusy(true);
+        Assert.True(client.IsBusy);
+        client.SetBusy(false);
+        Assert.False(client.IsBusy);
+        client.SetBusyPolicy(BusyPolicy.Reject);
+        Assert.Equal(AppMcpStatus.InvalidArgument, Assert.Throws<AppMcpException>(() => client.SetBusyPolicy((BusyPolicy)9)).Status);
+
+        // 作用域：引用计数；有效 busy = 显式开关 ∨ 作用域数 > 0。
+        var scope = client.Busy();
+        Assert.True(client.IsBusy);
+        scope.Dispose();
+        Assert.False(client.IsBusy);
+
+        // 嵌套：先结束一个仍为 busy；重复 Dispose 不多减。
+        var outer = client.Busy();
+        var inner = client.Busy();
+        inner.Dispose();
+        inner.Dispose();
+        Assert.True(client.IsBusy);
+        outer.Dispose();
+        Assert.False(client.IsBusy);
+
+        // 开关与作用域互不清除。
+        var held = client.Busy();
+        client.SetBusy(false);
+        Assert.True(client.IsBusy); // SetBusy(false) 不结束作用域
+        client.SetBusy(true);
+        held.Dispose();
+        Assert.True(client.IsBusy); // 作用域结束不清开关
+        client.SetBusy(false);
+        Assert.False(client.IsBusy);
+
+        // 跨线程结束作用域。
+        var threaded = client.Busy();
+        var thread = new Thread(threaded.Dispose);
+        thread.Start();
+        thread.Join();
+        Assert.False(client.IsBusy);
+
+        var late = client.Busy();
+        client.Dispose();
+        late.Dispose(); // 客户端已释放：不抛出
+    }
+
     [Fact]
     public void QueriesThrowAfterDispose()
     {

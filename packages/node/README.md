@@ -115,6 +115,14 @@ the process itself).
   / 0 = only `maxConcurrentCalls` applies) and `exclusive` (a group name; tools in the same group run one at a time, e.g.
   write tools on the same document) add per-tool rules; `update({ concurrency: undefined, exclusive: undefined })`
   clears them.
+- User is busy (spec/protocol.md 5.3, local to the SDK): `setBusy(true / false)` declares that the user is working in the
+  app right now (the app decides when, e.g. an editor has focus or a drag is in progress); `isBusy()` reads it. While
+  busy, write calls (tools whose effective annotations are not `readOnlyHint: true`) follow `busyPolicy`: `'reject'`
+  (default) fails them with `RATE_LIMITED` (`data: { scope: 'busy' }`; not executed, the same `callId` can be retried),
+  `'queue'` holds them and runs them in arrival order after `setBusy(false)`. Read-only calls and calls already running
+  are unaffected. `setBusyPolicy(policy)` changes the policy at runtime (an invalid value throws). `beginBusy()` opens a
+  nestable, reference-counted busy scope (`release()` ends it); the effective state is the explicit switch OR any open
+  scope, and neither clears the other.
 - Handler context: `callId`, `signal`, `hold()`, `progress()`, and `idempotencyKey` (the agent's idempotency key, passed
   through verbatim and stable across retries; absent when the agent gave none - see spec/protocol.md 3.3). Use it as a
   business-level dedup key or forward it to your backend.

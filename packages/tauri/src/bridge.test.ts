@@ -165,6 +165,22 @@ describe('createTauriAppMcp', () => {
     expect(states).toEqual(['connected', 'dormant', 'stopped'])
   })
 
+  it('用户正在操作：setBusy 经注入脚本发送 busy.set（本页声明变化时）；不提供 setBusyPolicy（Rust 侧配置）', async () => {
+    const fake = createFakeTauri()
+    const appMcp = createTauriAppMcp({ appId: 'shop', appName: '示例商城', bridge: bridgeOf(fake.window), logger: quiet })
+    appMcp.setBusy(true)
+    appMcp.setBusy(true)
+    expect(appMcp.isBusy()).toBe(true)
+    appMcp.setBusy(false)
+    await fake.waitFor((op) => op.op === 'busy.set' && !op.busy)
+    expect(JSON.parse(JSON.stringify(fake.ops.filter((op) => op.op === 'busy.set')))).toEqual([
+      { op: 'busy.set', busy: true },
+      { op: 'busy.set', busy: false },
+    ])
+    expect(appMcp.setBusyPolicy).toBeUndefined()
+    appMcp.dispose()
+  })
+
   it('USER_ACTION_REQUIRED 的类别与 reason / uri 经注入脚本送到 Rust 侧；缺省字段省略', async () => {
     const fake = createFakeTauri()
     const appMcp = createTauriAppMcp({ appId: 'shop', appName: '示例商城', bridge: bridgeOf(fake.window), logger: quiet })

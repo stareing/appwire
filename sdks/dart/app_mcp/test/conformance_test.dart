@@ -20,7 +20,7 @@ const _sdk = 'dart';
 const _features = {
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', //
   'readFailure', 'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey',
-  'callScheduling',
+  'callScheduling', 'busy',
 };
 
 final String _repoRoot = Directory('${Directory.current.path}/../../..').absolute.path;
@@ -230,6 +230,8 @@ final class _CaseApp {
         _tools.remove(name)?.dispose();
       case 'enable' || 'disable':
         _tools[name]!.setEnabled(op['op'] == 'enable');
+      case 'busy':
+        client.setBusy(op['value'] as bool);
       default:
         throw StateError('未知的 mutate 操作 ${op['op']}');
     }
@@ -249,6 +251,7 @@ AppMcp _client(String addr, Map<String, Object?> c) {
     libraryPath: _nativePath,
     maxConcurrentCalls: (c['maxConcurrentCalls'] as num?)?.toInt() ?? 1,
     maxQueuedCalls: (c['maxQueuedCalls'] as num?)?.toInt() ?? 64,
+    busyPolicy: c['busyPolicy'] == null ? BusyPolicy.reject : BusyPolicy.values.byName(c['busyPolicy'] as String),
     lifecycle: LifecyclePolicy(
       mode: _mode(l['mode']),
       idleTimeout: _ms(l['idleTimeoutMs']) ?? defaults.idleTimeout,
@@ -288,6 +291,7 @@ Future<Map<String, Object?>> _runCase(File path, String reportDir) async {
         }
         if (_map(app['navigation']) case final pages?) a.setNavigation(pages);
         if (app['visibility'] case final String v) a.client.setVisibility(AppVisibility.values.byName(v), focused: false);
+        if (app['busy'] case final bool b) a.client.setBusy(b);
         a.client.start();
         continue;
       }

@@ -78,6 +78,12 @@ Identity and connection are owned by the Rust side: `appId`, `appName` and `host
 - Call scheduling (spec/protocol.md 5.3): page tool options `concurrency` / `exclusive` are forwarded to the plugin and
   scheduled by the native runtime (the limits `max_concurrent_calls` / `max_queued_calls` are set in the plugin's
   `NativeConfig` on the Rust side).
+- User is busy (spec/protocol.md 5.3): `appMcp.setBusy(true / false)` declares that the user is working in this page
+  (e.g. an editor has focus); `beginBusy()` opens a nestable, reference-counted scope (`release()` ends it, `useBusy`
+  in `@app-mcp/react` uses it); `isBusy()` returns this page's effective state (the switch OR any open scope). The plugin records it per page, sets the
+  client's busy state to the OR of all pages, and drops a page's declaration when it reloads or closes. While busy,
+  write calls are rejected (`RATE_LIMITED`, `data: { scope: 'busy' }`) or queued according to `busy_policy` in the
+  plugin's `NativeConfig` on the Rust side (the page has no `setBusyPolicy`); read-only calls are unaffected.
 - `TAURI_OP_COMMAND` (`'plugin:app-mcp|op'`), `TAURI_DISPATCH_FN`, `BRIDGE_VERSION` - protocol constants.
 - Types: `TauriAppMcpOptions`, `AppMcpBridge`, `HelloReply`, `MainEvent`, `OpReply`, `RendererOp`, `NavigationOp`, `NavigateEvent`.
 

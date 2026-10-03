@@ -18,10 +18,12 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
 {
     private readonly ClientSafeHandle _handle;
     private readonly ToolScope _root;
+    private readonly BusyState _busy;
 
     private AppMcpClient(ClientSafeHandle handle, SynchronizationContext? dispatcher, JsonSerializerOptions json)
     {
         _handle = handle;
+        _busy = new BusyState(busy => NativeMethods.Check(NativeMethods.am_client_set_busy(_handle, busy)));
         Dispatcher = dispatcher;
         SerializerOptions = json;
         NativeMethods.Check(NativeMethods.am_client_root_scope(_handle, out var root));
@@ -96,6 +98,8 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
             var client = new AppMcpClient(handle, dispatcher, json);
             sink.Attach(client);
             if (options.NavigateInBackground is { } navigateInBackground) client.SetNavigateInBackground(navigateInBackground);
+            // @why AmClientOptions 不含 busy 策略（app_mcp.h v19 结构体不变），创建后立即设置；非法值由原生库拒绝。
+            client.SetBusyPolicy(options.BusyPolicy);
             return client;
         }
         catch
@@ -198,6 +202,43 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
     /// <summary>App 在后台时是否仍把导航交给导航回调（见 <see cref="AppMcpClientOptions.NavigateInBackground"/>）；对之后到达的请求生效。</summary>
     public void SetNavigateInBackground(bool enabled) =>
         NativeMethods.Check(NativeMethods.am_client_set_navigate_in_background(_handle, enabled));
+
+    // ---- 用户正在操作（spec/protocol.md 5.3） ------------------------------
+
+    /// <summary>
+    /// 显式开关：声明用户正在 / 不再在 App 内操作。期间写调用（生效注解不是 <c>readOnlyHint: true</c> 的工具）按
+    /// <see cref="AppMcpClientOptions.BusyPolicy"/> 拒绝或排队；只读调用与已开始的调用不受影响。何时算"正在操作"由 App 决定，随时生效。
+    /// </summary>
+    /// <remarks>有效 busy = 本开关 ∨ 未结束的 <see cref="Busy"/> 作用域数 &gt; 0：<c>SetBusy(false)</c> 不结束进行中的作用域。</remarks>
+    public void SetBusy(bool busy)
+    {
+        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
+        _busy.Set(busy);
+    }
+
+    /// <summary>有效 busy（显式开关 ∨ 未结束的作用域数 &gt; 0）。</summary>
+    public bool IsBusy
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
+            return _busy.Effective;
+        }
+    }
+
+    /// <summary>修改用户正在操作期间写调用的处理方式；随即对排队中的调用生效（改为 Reject 时排队的写调用被拒绝）。</summary>
+    /// <exception cref="AppMcpException">非法值（<see cref="AppMcpStatus.InvalidArgument"/>）。</exception>
+    public void SetBusyPolicy(BusyPolicy policy) =>
+        NativeMethods.Check(NativeMethods.am_client_set_busy_policy(_handle, (int)policy));
+
+    /// <summary>开始一个用户正在操作的作用域：引用计数 +1，返回的对象 Dispose 时 -1（重复 Dispose 无效果）。可嵌套、可跨线程 Dispose。</summary>
+    /// <remarks>作用域结束不清 <see cref="SetBusy"/> 的显式开关；全部作用域结束且开关为 false 时才解除。</remarks>
+    public IDisposable Busy()
+    {
+        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
+        _busy.Enter();
+        return new BusyRelease(_busy);
+    }
 
     public void SetVisibility(AppVisibility visibility, bool focused) =>
         NativeMethods.Check(NativeMethods.am_client_set_visibility(_handle, (int)visibility, focused));

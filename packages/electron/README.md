@@ -80,7 +80,11 @@ descriptor, as in the `attachLifecycle` example in `main.ts`.
     `attachBridgeNavigation`; without `navigation: true`, the main process may call
     `appMcp.setNavigationHandler` itself, e.g. to switch windows). Renderer tool `surface` / `page` / `backgroundTool`
     and the call-scheduling options `concurrency` / `exclusive` (spec/protocol.md 5.3) are forwarded, and a page handler throwing `ToolCallError.userActionRequired(message, { reason?, uri? })` replies
-    `USER_ACTION_REQUIRED`. In the background: with `navigation: true` the attachment sets `navigateInBackground` to
+    `USER_ACTION_REQUIRED`. The renderer's busy state (`setBusy` / `beginBusy`, spec/protocol.md 5.3) is recorded per
+    webContents; while any page is busy the attachment holds an `appMcp.beginBusy()` scope, so it never clears an
+    explicit `appMcp.setBusy(true)` in the main process. A page's declaration is dropped when it reloads, unloads or its
+    webContents is destroyed. `busyPolicy` is configured on the main `appMcp`.
+    In the background: with `navigation: true` the attachment sets `navigateInBackground` to
     whether `raiseWindow` is given. Pass
     `raiseWindow: (wc) => { const w = BrowserWindow.fromWebContents(wc); if (w?.isMinimized()) w.restore(); w?.show(); w?.focus() }`
     so a navigation brings the window to the front before the page switches routes; without it, navigations while the

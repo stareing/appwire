@@ -25,6 +25,17 @@ export type ToolSurface = 'app' | 'view'
  */
 export type ViewVisibility = 'auto' | 'always'
 
+/**
+ * 用户正在操作（{@link AppMcp.setBusy}）期间写调用的处理方式（spec/protocol.md 5.3）：`reject` 以 `RATE_LIMITED`
+ * （`data` 为 `{ scope: 'busy' }`）拒绝、未执行；`queue` 排队，`setBusy(false)` 后按到达顺序执行。
+ */
+export type BusyPolicy = 'reject' | 'queue'
+
+/** {@link AppMcp.beginBusy} 返回的作用域句柄：`release` 结束作用域（幂等）。 */
+export interface BusyHandle {
+  release(): void
+}
+
 /** 协议错误类别，见 spec/protocol.md 第 4 节。 */
 export type ErrorKind =
   | 'TOOL_NOT_FOUND'
@@ -276,6 +287,12 @@ export interface AppMcpOptions {
    * 之后可用 {@link AppMcp.setNavigateInBackground} 修改。桥接实现（Electron / Tauri 页面侧）忽略：由主进程 / Rust 侧决定。
    */
   navigateInBackground?: boolean
+  /**
+   * 用户正在操作（{@link AppMcp.setBusy}）期间写调用（生效注解不是 `readOnlyHint: true` 的工具）的处理方式
+   * （spec/protocol.md 5.3），默认 `'reject'`。之后可用 {@link AppMcp.setBusyPolicy} 修改。
+   * 桥接实现（Electron / Tauri 页面侧）忽略：由主进程 / Rust 侧配置。
+   */
+  busyPolicy?: BusyPolicy
 }
 
 export interface AppOverview {
@@ -625,6 +642,29 @@ export interface AppMcp extends Registrar {
    * （由主进程 / Rust 侧决定）。
    */
   setNavigateInBackground?(enabled: boolean): void
+
+  // ---- 用户正在操作（spec/protocol.md 5.3）----------------------------------
+
+  /**
+   * 显式声明用户正在 / 不再在 App 内操作（何时算由 App 决定，如编辑框获得焦点、拖拽中）。期间写调用按
+   * {@link AppMcpOptions.busyPolicy} 拒绝或排队；只读调用与已开始的调用不受影响。只在 SDK 内生效，不发给 Host。
+   *
+   * 有效值 = 本开关 OR 未结束的 {@link AppMcp.beginBusy} 作用域数 > 0；`setBusy(false)` 不结束进行中的作用域。
+   * 桥接实现（Electron / Tauri 页面侧）把本页的有效值转给主进程 / Rust 侧：客户端的 busy 为各页面之或，页面刷新 / 关闭后失效。
+   */
+  setBusy(busy: boolean): void
+  /**
+   * 开始一个"用户正在操作"作用域（可嵌套，按引用计数），句柄 `release` 时结束；结束作用域不清除 {@link AppMcp.setBusy}
+   * 的显式开关。适合与组件 / 交互同生命周期的声明（React 的 `useBusy` 基于它）。
+   */
+  beginBusy(): BusyHandle
+  /** 当前有效值：显式开关 OR 有未结束的作用域（桥接实现为本页面的值）。 */
+  isBusy(): boolean
+  /**
+   * 修改 {@link AppMcpOptions.busyPolicy}，随即对排队中的调用生效；非法值抛错。桥接实现（Electron / Tauri 页面侧）
+   * 不提供（由主进程 / Rust 侧配置）。
+   */
+  setBusyPolicy?(policy: BusyPolicy): void
 }
 
 /** 导航请求（`app/navigate` 的参数）。 */

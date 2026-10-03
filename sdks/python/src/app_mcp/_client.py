@@ -22,9 +22,11 @@ import json
 import threading
 from collections.abc import Callable
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from typing import Any, Literal
 
 from . import app_mcp_uniffi as ffi
+from ._busy import BusyPolicyLike, _BusyState, _busy_policy
 from ._lifecycle import LifecyclePolicy
 from ._schema import ArgumentBinder
 # @compat 以下名称已拆分到子模块，经本模块再导出以保持原导入路径
@@ -266,6 +268,9 @@ class AppMcp(_Registrar):
     （:meth:`set_navigate_in_background`），``None`` 取平台默认（桌面为 ``True``）。
     ``max_queued_calls``：排队中的调用上限，满后新到的调用以 ``RATE_LIMITED``（``scope = "queue"``）拒绝；
     ``None`` 取核心缺省 64，``0`` 不限（spec/protocol.md 5.3）。
+    ``busy_policy``：用户正在操作（:meth:`set_busy`）期间写调用的处理方式，``"reject"``（``None`` 时的缺省，以
+    ``RATE_LIMITED``、``data.scope == "busy"`` 拒绝）或 ``"queue"``（排队，停手后按序执行）；运行时可用
+    :meth:`set_busy_policy` 修改（spec/protocol.md 5.3「用户正在操作」）。
 
     ``register_name``：按名寻址（spec/naming.md）——``start()`` 后在系统名字服务登记，Hub 按名拨入、进程未运行时由系统
     激活（Linux：D-Bus 会话总线名 ``dev.appmcp.App.<app_id>``；Windows：命名管道；都需先 ``app-mcp-host app install``
@@ -287,6 +292,7 @@ class AppMcp(_Registrar):
         launch_token: str | None = None,
         max_concurrent_calls: int = 1,
         max_queued_calls: int | None = None,
+        busy_policy: BusyPolicyLike | None = None,
         overview: ffi.AppOverview | str | None = None,
         dispatcher: Dispatcher | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
@@ -341,6 +347,7 @@ class AppMcp(_Registrar):
             launch_token=launch_token,
             max_concurrent_calls=max_concurrent_calls,
             max_queued_calls=max_queued_calls,
+            busy_policy=None if busy_policy is None else _busy_policy(busy_policy),
             overview=ffi.AppOverview(summary=overview) if isinstance(overview, str) else overview,
             lifecycle=None if lifecycle is None else _lifecycle_to_ffi(lifecycle),
             connect_timeout_ms=None if connect_timeout is None else max(1, _ms(connect_timeout)),
@@ -350,6 +357,7 @@ class AppMcp(_Registrar):
             name_instance=name_instance,
         )
         self._inner = ffi.AppMcpClient(config, _ClientListener(self))
+        self._busy = _BusyState(self._inner.set_busy)
         if navigate_in_background is not None:
             self._inner.set_navigate_in_background(navigate_in_background)
         self._state: ffi.StateInfo = self._inner.state()
@@ -488,6 +496,32 @@ class AppMcp(_Registrar):
         App 不可见（``hidden`` / ``frozen``）收到的导航立即以 ``USER_ACTION_REQUIRED``（reason ``foreground``）回复，
         不调用回调。缺省取平台默认（桌面为 ``True``）。"""
         self._inner.set_navigate_in_background(enabled)
+
+    # -- 用户正在操作（spec/protocol.md 5.3） ---------------------------------
+
+    def set_busy(self, busy: bool) -> None:
+        """声明用户正在 / 不再在 App 内操作（何时算由 App 决定，如编辑框获得焦点、拖拽中）。期间写调用（生效注解不是
+        ``readOnlyHint: true`` 的工具）按 ``busy_policy`` 拒绝或排队；只读调用不受影响。状态只在 SDK 内，不发给 Host。
+
+        与 :meth:`busy` 作用域合并：生效值为「本开关 ∨ 仍有作用域未退出」，``set_busy(False)`` 不结束进行中的作用域。
+        """
+        self._busy.set(busy)
+
+    def busy(self) -> AbstractContextManager[None]:
+        """作用域写法：``with client.busy(): ...`` 期间为忙碌。可嵌套、可跨线程同时持有（引用计数），
+        最后一个作用域退出（含异常退出）且 :meth:`set_busy` 开关为关时恢复空闲。"""
+        return self._busy.scope()
+
+    def is_busy(self) -> bool:
+        """核心当前是否处于忙碌状态。"""
+        return self._inner.is_busy()
+
+    def set_busy_policy(self, policy: BusyPolicyLike) -> None:
+        """修改忙碌期间写调用的处理方式（``"reject"`` / ``"queue"``），随即对排队中的调用生效。
+
+        @error 未知策略抛 ``ValueError``。
+        """
+        self._inner.set_busy_policy(_busy_policy(policy))
 
     def set_visibility(self, visibility: str | ffi.Visibility, focused: bool = True) -> None:
         if isinstance(visibility, str):

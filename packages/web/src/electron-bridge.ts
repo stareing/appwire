@@ -17,11 +17,13 @@
  */
 
 import { attachBridgeNavigation, type BridgeNavigation } from './bridge-navigation'
+import { BusyState } from './busy'
 import { noopHold } from './noop'
 import { checkPageName } from './view'
 import type {
   AppMcp,
   AppMcpOptions,
+  BusyHandle,
   ConnectionState,
   HoldHandle,
   LazyToolDefinition,
@@ -139,6 +141,8 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
   private readonly listeners = new Set<(state: ConnectionState) => void>()
   private readonly unsubscribe: () => void
   private disposed = false
+  /** 本页"用户正在操作"的有效值；变化时经桥接发送 `busy.set`。 */
+  private readonly busyState = new BusyState((busy) => this.sendBusy(busy))
 
   constructor(options: AppMcpOptions, bridge: AppMcpBridge | null) {
     super(new Client(bridge, options.logger ?? defaultLogger))
@@ -201,6 +205,30 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
       if (this.navigation === navigation) {
         this.client.logger.warn(`[app-mcp] 主进程未接受本页处理导航：${error instanceof Error ? error.message : String(error)}`)
       }
+    })
+  }
+
+  /**
+   * 用户正在操作（spec/protocol.md 5.3）：经桥接声明本页的状态（`busy.set`），对方按页面汇总（各页之或）后设置客户端；
+   * 页面刷新 / 关闭时随登记一起失效。写调用的处理方式（`busyPolicy`）由主进程 / Rust 侧配置。
+   */
+  setBusy(busy: boolean): void {
+    if (this.disposed) return
+    this.busyState.set(busy)
+  }
+
+  beginBusy(): BusyHandle {
+    return this.disposed ? noopHold() : this.busyState.begin()
+  }
+
+  isBusy(): boolean {
+    return this.busyState.busy
+  }
+
+  private sendBusy(busy: boolean): void {
+    if (this.disposed || !this.client.bridge) return
+    void this.client.enqueue(() => ({ op: 'busy.set', busy })).then((reply) => {
+      if (reply && !reply.ok) this.client.logger.warn(`[app-mcp] 主进程未接受用户正在操作的声明：${reply.message}`)
     })
   }
 

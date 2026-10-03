@@ -16,6 +16,8 @@ import {
 } from './native.js'
 import type {
   AppMcp,
+  BusyHandle,
+  BusyPolicy,
   ConnectionState,
   HoldHandle,
   LazyToolDefinition,
@@ -38,6 +40,7 @@ import {
   submitNavigationFailure,
   wrapHold,
 } from './client/shared.js'
+import { BusyState } from './client/busy.js'
 import { ResourceEntry, ToolEntry } from './client/entries.js'
 
 // ---------------------------------------------------------------------------
@@ -79,6 +82,9 @@ abstract class RegistrarBase implements Owner {
     this.children.clear()
   }
 }
+
+/** {@link BusyPolicy} 的合法值（运行时校验 `setBusyPolicy` 的参数）。 */
+const BUSY_POLICIES: readonly BusyPolicy[] = ['reject', 'queue']
 
 class ScopeEntry extends RegistrarBase implements Scope, Child {
   private disposed = false
@@ -122,6 +128,8 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
   private readonly idleExitListeners = new Set<() => void>()
   private keepAliveTimer: ReturnType<typeof setInterval> | undefined
   private disposed = false
+  /** 用户正在操作的有效值（显式开关 OR 作用域）；变化时转给原生客户端。 */
+  private readonly busyState = new BusyState((busy) => this.lifecycleClient()?.setBusy?.(busy))
 
   constructor(options: NodeAppMcpOptions) {
     super(options.logger ?? defaultLogger)
@@ -144,6 +152,7 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
       ...(options.launchToken !== undefined && { launchToken: options.launchToken }),
       ...(options.maxConcurrentCalls !== undefined && { maxConcurrentCalls: options.maxConcurrentCalls }),
       ...(options.maxQueuedCalls !== undefined && { maxQueuedCalls: options.maxQueuedCalls }),
+      ...(options.busyPolicy !== undefined && { busyPolicy: options.busyPolicy }),
       ...(options.overview !== undefined && { overview: options.overview }),
       ...(options.lifecycle !== undefined && { lifecycle: { ...options.lifecycle } }),
       ...(options.connectTimeoutMs !== undefined && { connectTimeoutMs: options.connectTimeoutMs }),
@@ -209,6 +218,34 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
       return
     }
     client.setNavigateInBackground(enabled)
+  }
+
+  setBusy(busy: boolean): void {
+    if (this.busyClient()) this.busyState.set(busy)
+  }
+
+  beginBusy(): BusyHandle {
+    return this.busyClient() ? this.busyState.begin() : NOOP_HOLD
+  }
+
+  isBusy(): boolean {
+    return this.client?.setBusy !== undefined && this.busyState.busy
+  }
+
+  setBusyPolicy(policy: BusyPolicy): void {
+    if (!BUSY_POLICIES.includes(policy)) throw new Error(`无效的 busyPolicy：${JSON.stringify(policy)}`)
+    this.busyClient()?.setBusyPolicy(policy)
+  }
+
+  /** 支持用户正在操作的原生客户端；已停止时为 null，旧版原生模块记一条警告后为 null。 */
+  private busyClient(): Required<Pick<NativeClient, 'setBusy' | 'setBusyPolicy'>> | null {
+    const client = this.lifecycleClient()
+    if (!client) return null
+    if (!client.setBusy || !client.setBusyPolicy) {
+      this.logger.warn('[app-mcp] 原生模块版本过旧，不支持 setBusy / busyPolicy（spec/protocol.md 5.3）')
+      return null
+    }
+    return client as Required<Pick<NativeClient, 'setBusy' | 'setBusyPolicy'>>
   }
 
   /**

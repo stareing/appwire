@@ -645,3 +645,73 @@ def test_max_queued_calls_option():
         c = AppMcp(app_id="unit-queue", app_name="Unit", host_url="ws://127.0.0.1:9", max_queued_calls=queued)
         c.close()
     assert ffi.ClientConfig(app_id="a", app_name="A").max_queued_calls is None, "绑定默认交给核心（64）"
+
+
+def test_busy_switch_and_policy(client):
+    # 用户正在操作（spec/protocol.md 5.3）：开关直达核心；策略接受字符串 / 枚举，非法值抛 ValueError
+    assert client.is_busy() is False
+    client.set_busy(True)
+    assert client.is_busy() is True
+    client.set_busy(False)
+    assert client.is_busy() is False
+    for policy in ("queue", "REJECT", app_mcp.BusyPolicy.QUEUE):
+        client.set_busy_policy(policy)
+    for bad in ("later", 1, None):
+        with pytest.raises(ValueError):
+            client.set_busy_policy(bad)
+    assert ffi.ClientConfig(app_id="a", app_name="A").busy_policy is None, "绑定默认交给核心（reject）"
+
+
+def test_busy_policy_option():
+    for policy in (None, "reject", "queue", app_mcp.BusyPolicy.QUEUE):
+        AppMcp(app_id="unit-busy", app_name="Unit", host_url="ws://127.0.0.1:9", busy_policy=policy).close()
+    with pytest.raises(ValueError):
+        AppMcp(app_id="unit-busy", app_name="Unit", host_url="ws://127.0.0.1:9", busy_policy="drop")
+
+
+def test_busy_scope_is_reference_counted(client):
+    # 嵌套作用域：最外层退出才恢复空闲；异常退出同样计数归还
+    with client.busy():
+        assert client.is_busy()
+        with client.busy():
+            assert client.is_busy()
+        assert client.is_busy(), "内层退出不得提前结束外层"
+    assert not client.is_busy()
+    with pytest.raises(RuntimeError):
+        with client.busy():
+            raise RuntimeError("用户操作中出错")
+    assert not client.is_busy(), "异常退出也要归还计数"
+
+
+def test_busy_scope_combines_with_switch(client):
+    # 生效值 = set_busy 开关 ∨ 仍有作用域：两者互不覆盖
+    with client.busy():
+        client.set_busy(False)
+        assert client.is_busy(), "set_busy(False) 不结束进行中的作用域"
+    assert not client.is_busy()
+    client.set_busy(True)
+    with client.busy():
+        pass
+    assert client.is_busy(), "作用域退出不清除显式开关"
+    client.set_busy(False)
+    assert not client.is_busy()
+
+
+def test_busy_scope_across_threads(client):
+    entered = threading.Barrier(3)
+    release = threading.Event()
+
+    def hold() -> None:
+        with client.busy():
+            entered.wait(timeout=5)
+            release.wait(timeout=5)
+
+    threads = [threading.Thread(target=hold) for _ in range(2)]
+    for t in threads:
+        t.start()
+    entered.wait(timeout=5)
+    assert client.is_busy()
+    release.set()
+    for t in threads:
+        t.join(timeout=5)
+    assert not client.is_busy()

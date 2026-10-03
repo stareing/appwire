@@ -13,6 +13,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 
 #include "app_mcp.hpp"
 
@@ -503,6 +504,79 @@ void test_name_options() {
     EXPECT(status_of([&] { app_mcp::Client c(config); }) == AM_OK);
 }
 
+void test_busy() {
+    // 用户正在操作（app_mcp.h v19，spec/protocol.md 5.3）：默认拒绝；策略在创建时传给原生库（非法值构造失败）。
+    app_mcp::ClientConfig config;
+    config.app_id = "cpp-busy";
+    config.app_name = "C++ Busy";
+    config.host_url = "ws://127.0.0.1:1";
+    EXPECT(config.busy_policy == AM_BUSY_REJECT);
+    {
+        app_mcp::ClientConfig bad = config;
+        bad.busy_policy = static_cast<AmBusyPolicy>(9);
+        EXPECT(status_of([&] { app_mcp::Client c(bad); }) == AM_ERR_INVALID_ARGUMENT);
+    }
+    config.busy_policy = AM_BUSY_QUEUE;
+    app_mcp::Client client(config);
+    EXPECT(!client.is_busy());
+    client.set_busy(true);
+    EXPECT(client.is_busy());
+    client.set_busy(false);
+    EXPECT(!client.is_busy());
+    EXPECT(status_of([&] { client.set_busy_policy(AM_BUSY_REJECT); }) == AM_OK);
+    EXPECT(status_of([&] { client.set_busy_policy(static_cast<AmBusyPolicy>(9)); }) == AM_ERR_INVALID_ARGUMENT);
+
+    // BusyScope：引用计数；有效 busy = 显式开关 ∨ 作用域数 > 0（app_mcp.h v19）。
+    {
+        auto scope = client.busy();
+        EXPECT(scope.active() && client.is_busy());
+        app_mcp::BusyScope moved = std::move(scope);
+        EXPECT(!scope.active() && moved.active() && client.is_busy());
+    }
+    EXPECT(!client.is_busy());
+    // 嵌套：先结束一个仍为 busy，全部结束才解除；end() 幂等。
+    {
+        auto outer = client.busy();
+        auto inner = client.busy();
+        inner.end();
+        EXPECT(!inner.active() && client.is_busy());
+        inner.end();
+        EXPECT(client.is_busy());
+        outer.end();
+        EXPECT(!client.is_busy());
+    }
+    // 开关与作用域互不清除。
+    {
+        auto scope = client.busy();
+        client.set_busy(false);
+        EXPECT(client.is_busy());  // set_busy(false) 不结束作用域
+        client.set_busy(true);
+        scope.end();
+        EXPECT(client.is_busy());  // 作用域结束不清开关
+        client.set_busy(false);
+        EXPECT(!client.is_busy());
+    }
+    // 跨线程结束作用域。
+    {
+        auto scope = client.busy();
+        std::thread([s = std::move(scope)]() mutable { s.end(); }).join();
+        EXPECT(!client.is_busy());
+    }
+    // 移动 Client 后作用域仍对新对象生效；Client 释放后作用域结束不访问已释放句柄。
+    {
+        auto scope = client.busy();
+        app_mcp::Client moved = std::move(client);
+        EXPECT(moved.is_busy());
+        scope.end();
+        EXPECT(!moved.is_busy());
+        auto late = moved.busy();
+        moved.stop();
+        { app_mcp::Client gone = std::move(moved); }
+        late.end();
+    }
+}
+
+
 }  // namespace
 
 int main() {
@@ -512,6 +586,7 @@ int main() {
         test_lifecycle();
         test_power_options();
         test_name_options();
+        test_busy();
         test_diagnostics();
         test_annotations();
         test_navigation();

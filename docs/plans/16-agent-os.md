@@ -216,9 +216,24 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
       页面消息。一致性：fake_host 新增 `--no-wait`（用例 `noWait`），用例 `call-scheduling` / `call-queue-limit`（能力 `callScheduling`）。
     - 测试：核心单元（`can_start`）与 `tests/client/calls.rs` 4 个（按工具上限不阻塞其他工具、互斥组跨工具串行且按序、队列超限、
       不限与放宽后开始）；wasm / C 转换单元；Rust runner 两个用例通过。变异：去掉互斥判断、去掉并发判断、去掉超限拒绝分别被检出。
-    - 未知 / 未做：`busy()`（App 声明"用户正在操作"，人与 Agent 的仲裁）——语义未定（拒绝还是排队、只读工具是否受影响），
-      待定是 App 策略还是 SDK 机制；Hub 不知道 App 的调度声明（Agent 只在被拒绝时得知）。
+    - 未知 / 未做：`busy()` 已于同日实施（见下条）；Hub 不知道 App 的调度声明（Agent 只在被拒绝时得知）。
     - 风险：扫描队列为 O(排队数 × 执行中数)，排队上限默认 64，开销可忽略。
+  - 已实施（2026-10-03，用户正在操作 `setBusy`，由机主决定"排队和拒绝可用户配置"）：App 声明用户正在操作期间，写调用按客户端配置
+    `busyPolicy` 拒绝（默认，`RATE_LIMITED` `data {scope: "busy"}`）或排队；只读调用、已开始的调用、导航与资源读取不受影响；
+    策略可在运行时修改（`setBusyPolicy`，如 App 设置页让用户选择）。契约见 spec/protocol.md 5.3「用户正在操作」。
+    - 事实：机制在 sans-IO 核心（`crates/core/src/connection/requests.rs` `busy_blocks` / `settle_busy`）：拒绝策略下新到与排队中的写调用
+      随即被拒绝（未开始、不进去重表）；排队策略下写调用留在队列（`pump_calls` 跳过、不阻塞其后的调用），`set_busy(false)` 后按序开始。
+      "写"按生效注解（`ToolAnnotations::effective`，与 Hub 对象锁相同口径）。busy 只在 SDK 内，不发给 Host。复用 `RATE_LIMITED`，
+      未新增错误类别。何时算"正在操作"由 App 决定（P-08：不自动推断 UI 焦点 / 编辑状态，U7）。
+    - 接入：native `set_busy` / `is_busy` / `set_busy_policy`、`NativeConfig.busy_policy`；C ABI v19（`am_client_set_busy` /
+      `am_client_is_busy` / `am_client_set_busy_policy`、`AmBusyPolicy`；结构体不变）；uniffi `BusyPolicy` 与 `ClientConfig.busy_policy`
+      末字段；napi / WASM `busyPolicy: 'reject' | 'queue'`；Tauri 插件页面 op `busy.set`（按页记录、取或，页面刷新 / 关闭即失效，
+      只在汇总值变化时设置客户端，不覆盖 Rust 侧直接设置）。一致性用例 `call-busy-reject` / `call-busy-queue`（能力 `busy`）。
+    - 测试：核心 `busy_rejects_write_calls_by_default`、`busy_queue_policy_defers_write_calls`；C ABI 往返与非法策略；wasm 配置解析；
+      Tauri 按页汇总。变异：去掉写调用判断、去掉拒绝分支分别被检出。
+    - 未知 / 未做：busy 期间的 `app/navigate`（会切走用户正在看的页面）不受影响——是否拦截待定；Hub 不知道 App 的 busy 状态
+      （Agent 只在被拒绝时得知）；排队策略下用户操作很久时调用以 `TIMEOUT` 结束。
+    - 风险：App 忘记撤销 busy 导致写调用一直被拒——错误消息与 `data.scope` 指明原因；Tauri / Electron 页面卸载自动撤销。
 
 ### 第四部分：场景扩展
 

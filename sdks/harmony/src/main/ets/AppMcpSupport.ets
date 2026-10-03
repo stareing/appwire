@@ -8,7 +8,7 @@ import type {
 } from 'libapp_mcp_harmony.so';
 import { Failure, ToolCallError, toFailure } from './Errors';
 import {
-  CancelReason, ContentAnnotations, HoldHandle, LifecycleOptions, Logger, ToolAnnotations, ToolContext, ToolResult,
+  BusyHandle, CancelReason, ContentAnnotations, HoldHandle, LifecycleOptions, Logger, ToolAnnotations, ToolContext, ToolResult,
 } from './Types';
 
 /** 原生注册入口（客户端或 scope）。 */
@@ -258,4 +258,69 @@ export function patchField<T>(change: T | null | undefined, current: T | undefin
     return current;
   }
   return change === null ? undefined : change;
+}
+
+/**
+ * 用户正在操作（spec/protocol.md 5.3）的有效值：显式开关（`setBusy`）OR 未结束的作用域（`beginBusy`）数 > 0。
+ * 只在有效值变化时调用 `onChange`（转给原生客户端）。与 @app-mcp/node / @app-mcp/web 同义。
+ */
+export class BusyState {
+  private explicit: boolean = false;
+  private scopes: number = 0;
+  private readonly onChange: (busy: boolean) => void;
+
+  constructor(onChange: (busy: boolean) => void) {
+    this.onChange = onChange;
+  }
+
+  get busy(): boolean {
+    return this.explicit || this.scopes > 0;
+  }
+
+  /** 显式开关；不结束进行中的作用域。 */
+  setExplicit(busy: boolean): void {
+    const before = this.busy;
+    this.explicit = busy;
+    this.notify(before);
+  }
+
+  /** 开始一个作用域（可嵌套，引用计数）；结束作用域不清除显式开关。 */
+  begin(): BusyHandle {
+    const before = this.busy;
+    this.scopes++;
+    this.notify(before);
+    return new BusyScope(this);
+  }
+
+  /** 由 {@link BusyScope.release} 调用（每个作用域至多一次）。 */
+  end(): void {
+    const before = this.busy;
+    this.scopes--;
+    this.notify(before);
+  }
+
+  private notify(before: boolean): void {
+    const after = this.busy;
+    if (after !== before) {
+      this.onChange(after);
+    }
+  }
+}
+
+/** `BusyState.begin` 的句柄：`release` 幂等。 */
+class BusyScope implements BusyHandle {
+  private readonly state: BusyState;
+  private released: boolean = false;
+
+  constructor(state: BusyState) {
+    this.state = state;
+  }
+
+  release(): void {
+    if (this.released) {
+      return;
+    }
+    this.released = true;
+    this.state.end();
+  }
 }

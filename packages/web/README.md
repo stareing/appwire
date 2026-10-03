@@ -65,6 +65,15 @@ appMcp.tool('order.cancel', {
   `{ scope: 'queue', limit }`）。工具可声明 `concurrency`（本工具同时执行的上限，缺省 / 0 = 不单独限制）与 `exclusive`
   （互斥组名，同组工具同一时刻至多一个在执行，如操作同一份文档的写工具）；不继承 scope，`update` 中给出 `undefined` 即清除。
   Electron / Tauri 页面经桥接同样声明（Electron 由主进程转给 `@app-mcp/node`）。
+- **用户正在操作**（spec/protocol.md 5.3，只在 SDK 内生效、不发给 Host）：`appMcp.setBusy(true / false)` 声明用户此刻正在 App 内
+  操作（何时算由 App 决定，如编辑框获得焦点、拖拽中），`isBusy()` 读取。期间写调用（生效注解不是 `readOnlyHint: true` 的工具）按
+  `createAppMcp({ busyPolicy })` 处理：`'reject'`（缺省）以 `RATE_LIMITED` 拒绝（`data` 为 `{ scope: 'busy' }`，未执行，同一 `callId`
+  稍后可重发）；`'queue'` 排队，`setBusy(false)` 后按到达顺序执行。只读调用与已开始的调用不受影响；`setBusyPolicy(policy)` 运行时修改
+  （如由用户在设置中选择）。`beginBusy()` 开始一个作用域（可嵌套、按引用计数，句柄 `release()` 结束）：有效值 = 显式开关 OR 有未结束的
+  作用域，`setBusy(false)` 不结束作用域、作用域结束也不清除显式开关，`isBusy()` 返回有效值。React 中用 `useBusy(active)`
+  （`@app-mcp/react`，基于作用域）。Electron / Tauri 页面的有效值经桥接转给主进程 /
+  Rust 侧：客户端的 busy 为各页面声明之或，页面刷新 / 关闭后失效；`busyPolicy` 在主进程（`@app-mcp/node`）/ Rust 侧
+  （`NativeConfig::busy_policy`）配置，页面没有 `setBusyPolicy`。
 - Host 还会对调用限流、限制参数 / 结果 / 资源大小，超出时 Agent 收到 `RATE_LIMITED` / `PAYLOAD_TOO_LARGE`
   （参数超限与被限流的调用不会转发到页面；结果超限时 handler 已执行，结果不返回）。上限见 crates/host/README.md。
 - **需要用户操作**（登录过期、系统权限未授予、需切到前台、需在 App 内确认）时抛出

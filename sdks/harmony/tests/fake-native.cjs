@@ -209,6 +209,19 @@ class FakeNativeClient extends FakeRegistrar {
     this.calls.push(['setNavigateInBackground', enabled]);
     this.navigateInBackground = enabled;
   }
+  /** 用户正在操作：只记录，不模拟调度。 */
+  setBusy(busy) {
+    this.calls.push(['setBusy', busy]);
+    this.busy = busy;
+  }
+  isBusy() {
+    return this.busy === true;
+  }
+  /** 同原生：非法值抛错。 */
+  setBusyPolicy(policy) {
+    if (policy !== 'reject' && policy !== 'queue') throw new Error(`INVALID_ARGUMENT: 未知的 busyPolicy：${policy}`);
+    this.calls.push(['setBusyPolicy', policy]);
+  }
   /** 测试用：模拟 Host 的 `app/navigate`；没有回调时同真实原生层以 unsupported 失败。返回 Promise<{ok} | {ok:false, kind, message}>。 */
   navigate(page, params) {
     return new Promise((resolve) => {

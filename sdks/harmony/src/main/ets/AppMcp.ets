@@ -13,10 +13,10 @@ import type {
 } from 'libapp_mcp_harmony.so';
 import { nativeErrorCode } from './Errors';
 import {
-  AppMcpOptions, ConnectionState, ConnectionStatus, HoldHandle, NavigationHandler, NavigationRequest, Visibility, WakeReason,
+  AppMcpOptions, BusyHandle, BusyPolicy, ConnectionState, ConnectionStatus, HoldHandle, NavigationHandler, NavigationRequest, Visibility, WakeReason,
 } from './Types';
 import {
-  ConsoleLogger, NativeRegistrar, NoopHold, OnceHold, errorText, lifecycleInit, submitNavigationFailure,
+  BusyState, ConsoleLogger, NativeRegistrar, NoopHold, OnceHold, errorText, lifecycleInit, submitNavigationFailure,
 } from './AppMcpSupport';
 import { RegistrarBase } from './AppMcpEntries';
 
@@ -61,6 +61,8 @@ export class AppMcp extends RegistrarBase {
   private readonly stateListeners: Set<(state: ConnectionState) => void> = new Set<(state: ConnectionState) => void>();
   private readonly idleExitListeners: Set<() => void> = new Set<() => void>();
   private disposed: boolean = false;
+  /** 用户正在操作的有效值（显式开关 OR 作用域）；变化时转给原生客户端。 */
+  private readonly busyState: BusyState = new BusyState((busy: boolean): void => this.applyBusy(busy));
 
   /**
    * @param factory 原生客户端工厂；`options.enabled === false` 时不调用。
@@ -88,6 +90,7 @@ export class AppMcp extends RegistrarBase {
     config.launchToken = options.launchToken;
     config.maxConcurrentCalls = options.maxConcurrentCalls;
     config.maxQueuedCalls = options.maxQueuedCalls;
+    config.busyPolicy = options.busyPolicy;
     config.connectTimeoutMs = options.connectTimeoutMs;
     config.heartbeat = options.heartbeat;
     if (options.callDedup !== undefined) {
@@ -177,6 +180,42 @@ export class AppMcp extends RegistrarBase {
     const client = this.live();
     if (client !== null) {
       client.setNavigateInBackground(enabled);
+    }
+  }
+
+  /**
+   * 显式声明用户正在 / 不再在 App 内操作（spec/protocol.md 5.3；何时算由 App 决定，如输入框获得焦点、拖拽中）。期间写调用按
+   * `AppMcpOptions.busyPolicy` 拒绝或排队；只读调用与已开始的调用不受影响。只在 SDK 内生效，不发给 Host。
+   * 有效值 = 本开关 OR 未结束的 `beginBusy` 作用域数 > 0；`setBusy(false)` 不结束进行中的作用域。
+   */
+  setBusy(busy: boolean): void {
+    if (this.live() !== null) {
+      this.busyState.setExplicit(busy);
+    }
+  }
+
+  /** 开始一个"用户正在操作"作用域（可嵌套，按引用计数），句柄 `release` 时结束；结束作用域不清除 `setBusy` 的显式开关。 */
+  beginBusy(): BusyHandle {
+    return this.live() !== null ? this.busyState.begin() : new NoopHold();
+  }
+
+  /** 当前有效值：显式开关 OR 有未结束的作用域（未启用 / 已释放时为 false）。 */
+  isBusy(): boolean {
+    return this.live() !== null && this.busyState.busy;
+  }
+
+  private applyBusy(busy: boolean): void {
+    const client = this.live();
+    if (client !== null) {
+      client.setBusy(busy);
+    }
+  }
+
+  /** 修改 `AppMcpOptions.busyPolicy`，随即对排队中的调用生效；非法值时原生层抛错。 */
+  setBusyPolicy(policy: BusyPolicy): void {
+    const client = this.live();
+    if (client !== null) {
+      client.setBusyPolicy(policy);
     }
   }
 

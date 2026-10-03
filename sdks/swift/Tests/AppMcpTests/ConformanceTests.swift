@@ -13,7 +13,7 @@ final class ConformanceTests: XCTestCase {
     private static let features: Set<String> = [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
         "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-        "callScheduling",
+        "callScheduling", "busy",
     ]
     private static let verdictOK: Set<String> = ["pass", "xfail", "xpass", "skip"]
 
@@ -139,6 +139,7 @@ private final class CaseApp {
         if let v = c["app"]?["visibility"]?.stringValue {
             app.client.setVisibility(v == "frozen" ? .frozen : v == "hidden" ? .hidden : .visible, focused: false)
         }
+        if c["app"]?["busy"]?.boolValue == true { app.client.setBusy(true) }
         app.client.start()
         return app
     }
@@ -166,7 +167,8 @@ private final class CaseApp {
             maxConcurrentCalls: Int(c?["maxConcurrentCalls"]?.doubleValue ?? 1),
             lifecycle: lifecycle ?? .persistent, callDedup: dedup,
             navigateInBackground: c?["navigateInBackground"]?.boolValue,
-            maxQueuedCalls: c?["maxQueuedCalls"]?.doubleValue.map { Int($0) }
+            maxQueuedCalls: c?["maxQueuedCalls"]?.doubleValue.map { Int($0) },
+            busyPolicy: c?["busyPolicy"]?.stringValue.map { $0 == "queue" ? BusyPolicy.queue : .reject }
         )
     }
 
@@ -232,6 +234,7 @@ private final class CaseApp {
         let name = op["name"]?.stringValue ?? ""
         switch op["op"]?.stringValue {
         case "register": try register(op["tool"] ?? .null)
+        case "busy": client.setBusy(op["value"]?.boolValue ?? false)
         case "update":
             guard case let .object(set)? = op["set"] else { return }
             try tools[name]?.update { d in

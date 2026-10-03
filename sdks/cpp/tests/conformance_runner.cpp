@@ -48,7 +48,7 @@ namespace fs = std::filesystem;
 const std::vector<std::string> kFeatures = {"toolOptions", "mutate",      "lifecycle",       "wake",       "richResult",
                                             "userAction",  "progress",    "resourceOptions", "readFailure",
                                             "surface",     "navigation",  "backgroundTool",  "backgroundNavigation",
-                                            "idempotencyKey", "callScheduling"};
+                                            "idempotencyKey", "callScheduling", "busy"};
 
 // ---------------------------------------------------------------------------
 // 用例字段 → SDK 枚举（协议同名字符串，spec/protocol.md 第 3 节）
@@ -95,6 +95,15 @@ std::optional<AmVisibility> parse_visibility(const Json& v) {
     auto it = table.find(v.str_or(""));
     if (it == table.end()) return std::nullopt;
     return it->second;
+}
+
+/// 用例 app.config.busyPolicy（reject / queue）；未给出时 nullopt，其他值视为用例错误。
+std::optional<AmBusyPolicy> parse_busy_policy(const Json& v) {
+    auto s = v.str();
+    if (!s) return std::nullopt;
+    if (*s == "reject") return AM_BUSY_REJECT;
+    if (*s == "queue") return AM_BUSY_QUEUE;
+    throw std::runtime_error("未知的 busyPolicy " + *s);
 }
 
 std::optional<std::string> json_text(const Json& v) {
@@ -148,6 +157,8 @@ public:
     /// 后台导航（conformance/README.md 2 / 4 的 backgroundNavigation）：启动前调用。
     virtual void set_navigate_in_background(bool enabled) = 0;
     virtual void set_visibility(AmVisibility visibility) = 0;
+    /// 用户正在操作（conformance/README.md app.busy 与变更 {op: "busy"}）。
+    virtual void set_busy(bool busy) = 0;
     /// 停止客户端并等待 handler 线程结束。
     virtual void stop() = 0;
 
@@ -171,6 +182,10 @@ public:
             remove_tool(name);
         } else if (kind == "enable" || kind == "disable") {
             set_enabled(name, kind == "enable");
+        } else if (kind == "busy") {
+            auto value = op["value"].boolean();
+            if (!value) throw std::runtime_error("busy 的 value 应为布尔");
+            set_busy(*value);
         } else {
             throw std::runtime_error("未知的 mutate 操作 " + kind);
         }
@@ -427,6 +442,7 @@ public:
     }
     void set_navigate_in_background(bool enabled) override { client_.set_navigate_in_background(enabled); }
     void set_visibility(AmVisibility visibility) override { client_.set_visibility(visibility, false); }
+    void set_busy(bool busy) override { client_.set_busy(busy); }
     void stop() override {
         try {
             client_.stop();
@@ -477,6 +493,7 @@ app_mcp::ClientConfig cpp_config(const std::string& url, const Json& c) {
     cfg.call_dedup.max_entries = static_cast<uint32_t>(to_u64(d["maxEntries"], cfg.call_dedup.max_entries));
     cfg.max_concurrent_calls = static_cast<uint32_t>(to_u64(c["maxConcurrentCalls"], cfg.max_concurrent_calls));
     cfg.max_queued_calls = static_cast<uint32_t>(to_u64(c["maxQueuedCalls"], cfg.max_queued_calls));
+    if (auto p = parse_busy_policy(c["busyPolicy"])) cfg.busy_policy = *p;
     return cfg;
 }
 
@@ -633,6 +650,9 @@ public:
         if (auto n = c["maxQueuedCalls"].number()) options.max_queued_calls = *n == 0 ? -1 : static_cast<int32_t>(*n);
         check_c(am_client_new_ex(&config, nullptr, &options, &client_), "am_client_new_ex");
         check_c(am_client_root_scope(client_, &root_), "am_client_root_scope");
+        if (auto p = parse_busy_policy(c["busyPolicy"])) {
+            check_c(am_client_set_busy_policy(client_, *p), "am_client_set_busy_policy");
+        }
     }
     ~CApp() override {
         for (auto& [name, tool] : tools_) am_tool_free(tool);
@@ -687,6 +707,7 @@ public:
     void set_visibility(AmVisibility visibility) override {
         check_c(am_client_set_visibility(client_, visibility, false), "am_client_set_visibility");
     }
+    void set_busy(bool busy) override { check_c(am_client_set_busy(client_, busy), "am_client_set_busy"); }
     void handle_wake(const std::string& arg) override { am_client_handle_wake(client_, arg.c_str()); }
     void stop() override {
         am_client_stop(client_);
@@ -864,6 +885,7 @@ Outcome run_case(const std::string& sdk, const std::string& fake_host, const fs:
                 if (kase["app"]["navigation"].is_object()) app->set_navigation(kase["app"]["navigation"]);
                 if (auto b = kase["app"]["config"]["navigateInBackground"].boolean()) app->set_navigate_in_background(*b);
                 if (auto v = parse_visibility(kase["app"]["visibility"])) app->set_visibility(*v);
+                if (auto b = kase["app"]["busy"].boolean()) app->set_busy(*b);
                 app->start();
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "[%s] 创建 / 注册失败：%s\n", sdk.c_str(), e.what());

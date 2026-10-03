@@ -371,6 +371,29 @@ export class FakeNativeClient extends FakeRegistrarBase implements NativeClient 
     this.navigateInBackground = enabled
   }
 
+  /** 用户正在操作（`setBusy`）；只记录，不模拟调度。 */
+  busy = false
+  /** 运行时修改的 busyPolicy（`setBusyPolicy`）；undefined = 未修改。 */
+  busyPolicy: string | undefined
+
+  /** `setBusy` 的调用序列。 */
+  readonly busyCalls: boolean[] = []
+
+  setBusy(busy: boolean): void {
+    this.busyCalls.push(busy)
+    this.busy = busy
+  }
+
+  isBusy(): boolean {
+    return this.busy
+  }
+
+  /** 同原生：非法值抛错。 */
+  setBusyPolicy(policy: string): void {
+    if (policy !== 'reject' && policy !== 'queue') throw new NativeErrorWithCode('INVALID_ARGUMENT', `未知的 busyPolicy：${policy}`)
+    this.busyPolicy = policy
+  }
+
   /**
    * 模拟 Host 的 `app/navigate`：没有回调时同真实原生层以 `unsupported` 失败；不可见（`hidden` / `frozen`）且
    * `navigateInBackground` 为 false 时同核心立即以 `userAction`（`reason: "foreground"`）回复、不调用回调。

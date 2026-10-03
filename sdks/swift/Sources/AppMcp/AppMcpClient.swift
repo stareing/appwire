@@ -554,6 +554,7 @@ final class ListenerBridge: ClientListener, @unchecked Sendable {
 /// 生命周期：handler 闭包由原生层强引用，闭包中引用视图模型等对象时用 `[weak self]` 避免循环引用。
 public final class AppMcpClient: ToolRegistrar, @unchecked Sendable {
     let inner: AppMcpBindings.AppMcpClient
+    let busyState: BusyState
     /// 生效的生命周期策略（配置为空时为 `LifecyclePolicy.platformDefault`）。
     public let lifecycle: LifecyclePolicy
 
@@ -563,6 +564,8 @@ public final class AppMcpClient: ToolRegistrar, @unchecked Sendable {
         if let navigateInBackground = config.navigateInBackground {
             inner.setNavigateInBackground(enabled: navigateInBackground)
         }
+        let raw = inner
+        busyState = BusyState { raw.setBusy(busy: $0) }
         self.lifecycle = lifecycle
         super.init(dispatchTimeout: config.dispatchTimeout)
     }

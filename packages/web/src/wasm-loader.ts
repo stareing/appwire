@@ -24,7 +24,7 @@ import type {
   SleepReason,
   WakeReason,
 } from './core'
-import type { Visibility } from './types'
+import type { BusyPolicy, Visibility } from './types'
 
 /**
  * WASM 导出的 `WasmClient`（bindings/wasm）。
@@ -57,6 +57,9 @@ export interface RawWasmClient {
   completeNavigate(navigate: number, outcomeJson: string): void
   setNavigation(enabled: boolean): void
   setNavigateInBackground(enabled: boolean): void
+  setBusy(busy: boolean): void
+  isBusy(): boolean
+  setBusyPolicy(policy: string): void
   pollEvent(): string | undefined
   pollTimeout(): number | undefined
   handleWake(args: string, now: number): boolean
@@ -158,6 +161,15 @@ class WasmCore implements CoreClient {
   }
   setNavigateInBackground(enabled: boolean): void {
     this.raw.setNavigateInBackground(enabled)
+  }
+  setBusy(busy: boolean): void {
+    this.raw.setBusy(busy)
+  }
+  isBusy(): boolean {
+    return this.raw.isBusy()
+  }
+  setBusyPolicy(policy: BusyPolicy): void {
+    this.raw.setBusyPolicy(policy)
   }
   pollEvent(): CoreEvent | undefined {
     const json = this.raw.pollEvent()

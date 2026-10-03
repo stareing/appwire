@@ -22,6 +22,17 @@ export type Visibility = 'visible' | 'hidden' | 'frozen'
  */
 export type ToolSurface = 'app' | 'view'
 
+/**
+ * 用户正在操作（{@link AppMcp.setBusy}）期间写调用的处理方式（spec/protocol.md 5.3）：`reject` 以 `RATE_LIMITED`
+ * （`data` 为 `{ scope: 'busy' }`）拒绝、未执行；`queue` 排队，`setBusy(false)` 后按到达顺序执行。
+ */
+export type BusyPolicy = 'reject' | 'queue'
+
+/** {@link AppMcp.beginBusy} 返回的作用域句柄：`release` 结束作用域（幂等）。 */
+export interface BusyHandle {
+  release(): void
+}
+
 /** 导航请求（`app/navigate` 的参数，与 @app-mcp/web 同形）。 */
 export interface NavigationRequest {
   /** 页面名（清单 `pages[].name` 或工具的 `page`）。 */
@@ -363,6 +374,11 @@ export interface NodeAppMcpOptions {
    * `USER_ACTION_REQUIRED`（`reason: "foreground"`）回复、不调用回调。之后可用 {@link AppMcp.setNavigateInBackground} 修改。
    */
   navigateInBackground?: boolean
+  /**
+   * 用户正在操作（{@link AppMcp.setBusy}）期间写调用（生效注解不是 `readOnlyHint: true` 的工具）的处理方式
+   * （spec/protocol.md 5.3），默认 `'reject'`。之后可用 {@link AppMcp.setBusyPolicy} 修改。旧版原生模块忽略。
+   */
+  busyPolicy?: BusyPolicy
   /** 高级：注入原生模块（测试或自定义加载路径）。缺省按平台加载包内的 `.node` 文件。 */
   binding?: NativeBinding
 }
@@ -576,6 +592,22 @@ export interface AppMcp extends Registrar {
   setNavigationHandler(handler: NavigationHandler | null): void
   /** 修改 {@link NodeAppMcpOptions.navigateInBackground}；只影响之后到达的导航请求。旧版原生模块不支持时记一条警告、无效果。 */
   setNavigateInBackground(enabled: boolean): void
+  /**
+   * 显式声明用户正在 / 不再在 App 内操作（spec/protocol.md 5.3；何时算由 App 决定，如编辑框获得焦点、拖拽中）。期间写调用按
+   * {@link NodeAppMcpOptions.busyPolicy} 拒绝或排队；只读调用与已开始的调用不受影响。只在 SDK 内生效，不发给 Host。
+   * 有效值 = 本开关 OR 未结束的 {@link AppMcp.beginBusy} 作用域数 > 0；`setBusy(false)` 不结束进行中的作用域。
+   * 旧版原生模块不支持时记一条警告、无效果。
+   */
+  setBusy(busy: boolean): void
+  /**
+   * 开始一个"用户正在操作"作用域（可嵌套，按引用计数），句柄 `release` 时结束；结束作用域不清除 {@link AppMcp.setBusy}
+   * 的显式开关（Electron 接入用它汇总各页面的声明）。
+   */
+  beginBusy(): BusyHandle
+  /** 当前有效值：显式开关 OR 有未结束的作用域（旧版原生模块恒为 false）。 */
+  isBusy(): boolean
+  /** 修改 {@link NodeAppMcpOptions.busyPolicy}，随即对排队中的调用生效；非法值抛错。旧版原生模块不支持时记一条警告、无效果。 */
+  setBusyPolicy(policy: BusyPolicy): void
 
   // ---- 生命周期（spec/lifecycle.md 第 8 节）-------------------------------
 

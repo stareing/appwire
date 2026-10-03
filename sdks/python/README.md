@@ -102,6 +102,20 @@ def submit() -> ToolResult:
 - `AppMcp(..., max_queued_calls=N)` bounds the wait queue (default 64, `0` = unlimited); a call arriving at a full
   queue fails with `RATE_LIMITED` (`data.scope == "queue"`).
 
+### User is busy (optional, `spec/protocol.md` §5.3)
+
+While the user is actively working in the app (a text field has focus, a drag is in progress — your call), declare it so
+agent writes do not collide with their edits:
+
+- `client.set_busy(True)` / `client.set_busy(False)`; `client.is_busy()` reads the current state.
+- `with client.busy(): ...` marks a busy scope. Scopes nest and may be held from several threads (reference counted);
+  the app is busy while the `set_busy` switch is on **or** any scope is open, so `set_busy(False)` does not end an open scope.
+- While busy, write calls (tools whose effective annotations are not `readOnlyHint: true`) follow `busy_policy`:
+  `AppMcp(..., busy_policy="reject")` (default) fails them with `RATE_LIMITED` (`data.scope == "busy"`, the same
+  `callId` may be retried later); `"queue"` holds them and runs them in arrival order once the user is done.
+  Read-only calls are never affected. `client.set_busy_policy("queue")` changes the policy at runtime (e.g. from a
+  user setting). The busy state stays inside the SDK and is not sent to the Host.
+
 ### Control fallback for Qt Widgets (optional, `spec/ui-fallback.md`)
 
 For screens without declared tools, an opt-in fallback registers `ui.outline` / `ui.click` / `ui.fill` /

@@ -96,6 +96,11 @@ mcp.tool<OrderParams, Object | null>('order.submit', {
   `maxQueuedCalls`（排队中的调用数，缺省 64，0 = 不限；队列满时新调用以 `RATE_LIMITED` 拒绝，`data` 为 `{ scope: 'queue', limit }`）；
   工具可声明 `concurrency`（本工具同时执行的上限，缺省 / 0 = 不单独限制）与 `exclusive`（互斥组名，同组工具同一时刻至多一个在执行，
   如操作同一份文档的写工具），`update` 中给出 `null` 清除。
+- 用户正在操作（spec/protocol.md 5.3，只在 SDK 内生效、不发给 Host）：`mcp.setBusy(true / false)` 声明用户此刻正在 App 内操作
+  （何时算由 App 决定，如输入框获得焦点、拖拽中），`isBusy()` 读取。期间写调用（生效注解不是 `readOnlyHint: true` 的工具）按
+  `AppMcpOptions.busyPolicy` 处理：`'reject'`（缺省）以 `RATE_LIMITED` 拒绝（`data` 为 `{ scope: 'busy' }`，未执行）；`'queue'` 排队，
+  `setBusy(false)` 后按到达顺序执行。只读调用与已开始的调用不受影响；`setBusyPolicy(policy)` 运行时修改。`beginBusy()` 开始一个作用域
+  （可嵌套、按引用计数，`release()` 结束）：有效值 = 显式开关 OR 有未结束的作用域，两者互不清除，`isBusy()` 返回有效值。
 - 返回普通数据即 `done` 结果；需要业务状态、摘要或内容标注（`ContentAnnotations`：`audience` / `priority` / `lastModified`）时返回
   `new ToolResult(data, stateHints, options)`（`ToolResultOptions`）。无返回值（`data` 为 `null` / `undefined` 且无 `summary`、
   状态 `done`）时 Hub 对模型输出固定文本"已完成"。

@@ -206,6 +206,11 @@ data class AppMcpConfig(
      * 为空时 64，`0` = 不限。
      */
     val maxQueuedCalls: Int? = null,
+    /**
+     * 用户正在操作（[AppMcp.setBusy]）期间写调用的处理方式（spec/protocol.md 5.3「用户正在操作」）：为空时 `REJECT`
+     * （以 `RATE_LIMITED`、`scope = "busy"` 拒绝），`QUEUE` 排队、停手后按序执行。之后可用 [AppMcp.setBusyPolicy] 修改。
+     */
+    val busyPolicy: BusyPolicy? = null,
 ) {
     internal fun toFfi() = dev.appmcp.ffi.ClientConfig(
         appId = appId,
@@ -225,5 +230,6 @@ data class AppMcpConfig(
         registerName = registerName,
         nameInstance = nameInstance,
         maxQueuedCalls = maxQueuedCalls?.coerceAtLeast(0)?.toUInt(),
+        busyPolicy = busyPolicy,
     )
 }

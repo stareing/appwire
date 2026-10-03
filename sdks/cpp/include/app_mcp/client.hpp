@@ -226,19 +226,29 @@ public:
         // 失败时库已调用 free_user_data 释放 holder，不能再访问。
         detail::check(am_client_new_ex(&c, &cb, &opts, &h_));
         holder->client.store(h_);
+        // @why AmClientOptions 不含 busy 策略（app_mcp.h v19 结构体不变），创建后立即设置。
+        if (AmStatus s = am_client_set_busy_policy(h_, config.busy_policy); s != AM_OK) {
+            const char* msg = am_last_error_message();
+            std::string message = msg ? msg : "";
+            am_client_free(std::exchange(h_, nullptr));
+            throw Error(s, message);
+        }
+        busy_->client = h_;
     }
-    Client(Client&& o) noexcept : h_(std::exchange(o.h_, nullptr)) {}
+    // @invariant busy_ 随句柄一起移动：未结束的 BusyScope 引用同一份状态。
+    Client(Client&& o) noexcept : h_(std::exchange(o.h_, nullptr)), busy_(std::exchange(o.busy_, nullptr)) {}
     Client& operator=(Client&& o) noexcept {
         if (this != &o) {
-            am_client_free(h_);
+            release();
             h_ = std::exchange(o.h_, nullptr);
+            busy_ = std::exchange(o.busy_, nullptr);
         }
         return *this;
     }
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
     /// 停止并释放客户端（阻塞到后台线程结束）。不要在回调线程上析构。
-    ~Client() { am_client_free(h_); }
+    ~Client() { release(); }
 
     AmClient* get() const noexcept { return h_; }
 
@@ -250,6 +260,36 @@ public:
     /// App 在后台（Hidden / Frozen）时是否仍把导航交给导航回调（app_mcp.h v15）；false 时直接以
     /// USER_ACTION_REQUIRED（reason "foreground"）回复。默认随平台：桌面 true，Android / iOS / 鸿蒙 false。
     void set_navigate_in_background(bool enabled) { detail::check(am_client_set_navigate_in_background(h_, enabled)); }
+
+    // ---- 用户正在操作（spec/protocol.md 5.3，app_mcp.h v19） ----
+
+    /// 显式开关：声明用户正在 / 不再在 App 内操作。期间写调用（生效注解不是 readOnlyHint: true 的工具）按 busy_policy
+    /// 拒绝或排队；只读调用与已开始的调用不受影响。何时算"正在操作"由 App 决定，随时生效。
+    /// 有效 busy = 本开关 ∨ 未结束的 busy() 作用域数 > 0：set_busy(false) 不结束进行中的作用域。
+    void set_busy(bool busy) {
+        if (!h_) throw Error(AM_ERR_INVALID_ARGUMENT, "客户端已移走");
+        std::lock_guard<std::mutex> lock(busy_->mu);
+        busy_->manual = busy;
+        detail::check(busy_->push());
+    }
+    /// 有效 busy（显式开关 ∨ 作用域数 > 0）。
+    bool is_busy() const {
+        if (!h_) throw Error(AM_ERR_INVALID_ARGUMENT, "客户端已移走");
+        return busy_->effective();
+    }
+    /// 修改用户正在操作期间写调用的处理方式；随即对排队中的调用生效（改为 AM_BUSY_REJECT 时排队的写调用被拒绝）。
+    void set_busy_policy(BusyPolicy policy) { detail::check(am_client_set_busy_policy(h_, policy)); }
+    /// 开始一个用户正在操作的作用域（引用计数 +1，从 0 变 1 且开关为 false 时下发 busy）；作用域结束时 -1。
+    [[nodiscard]] BusyScope busy() {
+        if (!h_) throw Error(AM_ERR_INVALID_ARGUMENT, "客户端已移走");
+        std::lock_guard<std::mutex> lock(busy_->mu);
+        ++busy_->scopes;
+        if (AmStatus s = busy_->push(); s != AM_OK) {
+            --busy_->scopes;
+            detail::check(s);
+        }
+        return BusyScope(busy_);
+    }
 
     /// 设置导航回调（spec/protocol.md 3.4）；传空的 std::function 清除（之后的导航请求以 NAVIGATION_FAILED 回复）。
     /// 能力在握手时声明：建议在 start() 之前设置，连接后才设置的在下次连接时生效。handler 在分发线程上调用。
@@ -357,7 +397,17 @@ public:
     }
 
 private:
+    /// 释放句柄；先断开 busy 状态，之后结束的 BusyScope 不再访问已释放的句柄。
+    void release() noexcept {
+        if (busy_) {
+            std::lock_guard<std::mutex> lock(busy_->mu);
+            busy_->client = nullptr;
+        }
+        am_client_free(std::exchange(h_, nullptr));
+    }
+
     AmClient* h_ = nullptr;
+    std::shared_ptr<detail::BusyState> busy_ = std::make_shared<detail::BusyState>();
 };
 
 inline std::string version() { return am_version(); }

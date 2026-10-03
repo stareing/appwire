@@ -53,6 +53,7 @@ FEATURES = frozenset(
         "backgroundNavigation",
         "idempotencyKey",
         "callScheduling",
+        "busy",
     }
 )
 ROOT = Path(__file__).resolve().parents[3]
@@ -151,6 +152,9 @@ class CaseApp:
         kind, name = op["op"], op.get("name")
         if kind == "register":
             self.register_tool(op["tool"])
+            return
+        if kind == "busy":
+            self.client.set_busy(op["value"])
             return
         with self._lock:
             handle = self.tools[name]
@@ -266,6 +270,8 @@ def _config_kwargs(case: dict[str, Any]) -> dict[str, Any]:
         kwargs["max_queued_calls"] = c["maxQueuedCalls"]
     if "navigateInBackground" in c:
         kwargs["navigate_in_background"] = c["navigateInBackground"]
+    if "busyPolicy" in c:
+        kwargs["busy_policy"] = c["busyPolicy"]
     return kwargs
 
 
@@ -296,6 +302,8 @@ def run_case(fake_host: Path, path: Path) -> dict[str, Any]:
                 visibility = case["app"].get("visibility")
                 if visibility is not None:
                     app.client.set_visibility(visibility, focused=False)
+                if case["app"].get("busy") is True:
+                    app.client.set_busy(True)
                 app.client.start()
                 continue
             try:

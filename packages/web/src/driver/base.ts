@@ -3,6 +3,7 @@
  * 传输 / 生命周期见 transport.ts，调用与注册见 registry.ts，对外 API 见 ../driver.ts。
  */
 
+import { BusyState } from '../busy'
 import type { CoreClient, CoreConfig, CoreEvent, CoreState } from '../core'
 import { hostTransport } from '../host-transport'
 import { InstanceGuard } from '../instance-guard'
@@ -11,7 +12,7 @@ import { type ConnectionBlock, NetworkGuard, type PermissionState, type Permissi
 import { loadInstanceId, loadToken, saveToken } from '../storage'
 import { attachToolHub, type ToolHub, type ToolHubEvent, type ToolView } from '../tool-hub'
 import { ToolCallError } from '../types'
-import type { AppMcpOptions, ConnectionState, Logger, NavigationHandler, NavigationOptions } from '../types'
+import type { AppMcpOptions, BusyPolicy, ConnectionState, Logger, NavigationHandler, NavigationOptions } from '../types'
 import { type VisibilitySnapshot, type VisibilityWatcher, watchVisibility } from '../visibility'
 import { WakeHandoff } from '../wake-handoff'
 import {
@@ -72,6 +73,10 @@ export abstract class DriverBase {
   protected navigateInBackground: boolean
   /** 最近一次握手时是否声明了导航能力。 */
   protected navDeclared = false
+  /** 用户正在操作（{@link AppMcp.setBusy} / `beginBusy`）的有效值；变化时转给核心，核心加载时同步（核心缺省 false）。 */
+  protected readonly busyState: BusyState
+  /** 当前的 busyPolicy（{@link AppMcpOptions.busyPolicy}，`setBusyPolicy` 修改）；undefined = 核心缺省。 */
+  protected busyPolicy: BusyPolicy | undefined
 
   protected readonly toolNames = new Map<string, ToolRec>()
   protected readonly resourceNames = new Map<string, ResourceRec>()
@@ -120,6 +125,9 @@ export abstract class DriverBase {
     this.deps = deps
     this.log = options.logger ?? defaultLogger
     this.navigateInBackground = options.navigateInBackground ?? false
+    this.busyPolicy = options.busyPolicy
+    // input 之后 pump：取消 busy 时开始的排队调用、设置 busy 时被拒绝的排队调用随即发出
+    this.busyState = new BusyState((busy) => this.input((c) => c.setBusy(busy)))
     this.hostUrls = options.hostUrl !== undefined ? [options.hostUrl] : DEFAULT_HOST_URLS
     this.now = deps.now ?? (() => (typeof performance !== 'undefined' ? performance.now() : Date.now()))
     this.wallNow = deps.wallNow ?? (() => Date.now())
@@ -227,6 +235,7 @@ export abstract class DriverBase {
         ...pageInfo(),
         ...(this.options.maxConcurrentCalls !== undefined && { maxConcurrentCalls: this.options.maxConcurrentCalls }),
         ...(this.options.maxQueuedCalls !== undefined && { maxQueuedCalls: this.options.maxQueuedCalls }),
+        ...(this.busyPolicy !== undefined && { busyPolicy: this.busyPolicy }),
         ...(this.options.callDedup !== undefined && { callDedup: this.options.callDedup }),
         ...(this.options.overview !== undefined && { overview: this.options.overview }),
         ...tokenField(loadToken(this.options.appId)),
@@ -247,6 +256,8 @@ export abstract class DriverBase {
     } catch (e) {
       this.log.error(`${this.tag} 设置导航能力失败`, e)
     }
+    // 核心加载前已声明用户正在操作：在首个调用到达之前同步
+    if (this.busyState.busy) core.setBusy(true)
     const vis = this.visibility.current()
     try {
       core.setVisibility(vis.visibility, vis.focused, this.now())

@@ -76,7 +76,9 @@ target_link_libraries(named_cpp PRIVATE app_mcp_cpp)
 target_compile_options(named_cpp PRIVATE ${_warn})
 
 add_executable(test_app_mcp tests/test_app_mcp.cpp)
-target_link_libraries(test_app_mcp PRIVATE app_mcp_cpp)
+# 单元测试含跨线程结束 BusyScope 的用例。
+find_package(Threads REQUIRED)
+target_link_libraries(test_app_mcp PRIVATE app_mcp_cpp Threads::Threads)
 target_compile_options(test_app_mcp PRIVATE ${_warn})
 
 enable_testing()

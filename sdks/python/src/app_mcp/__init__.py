@@ -42,6 +42,7 @@ if TYPE_CHECKING:  # pragma: no cover
     ContentAnnotations = ffi.ContentAnnotations
     ResultStatus = ffi.ResultStatus
     Audience = ffi.Audience
+    BusyPolicy = ffi.BusyPolicy
     Activation = ffi.Activation
     Visibility = ffi.Visibility
     StateInfo = ffi.StateInfo
@@ -81,6 +82,7 @@ _LAZY: dict[str, tuple[str, str]] = {
             "ContentAnnotations",
             "ResultStatus",
             "Audience",
+            "BusyPolicy",
             "Activation",
             "Visibility",
             "StateInfo",
@@ -116,6 +118,7 @@ __all__ = [
     "AppMcpError",
     "AppOverview",
     "Audience",
+    "BusyPolicy",
     "CallDedup",
     "CancelReason",
     "ContentAnnotations",

@@ -25,6 +25,7 @@ final class AppMcp {
   /// [heartbeat] 为心跳策略（spec/lifecycle.md 第 11 节 A3）。
   /// [callDedup] 为调用去重策略（spec/protocol.md 3.3，默认保留 5 分钟、最多 64 条；[CallDedupPolicy.off] 关闭）。
   /// [navigateInBackground] 见 [setNavigateInBackground]；缺省用平台默认（桌面 true，Android / iOS false）。
+  /// [busyPolicy] 为用户正在操作（[setBusy]）期间写调用的处理方式，见 [setBusyPolicy]。
   ///
   /// [registerName] 为 true 时按名寻址（spec/naming.md）：[start] 后在系统名字服务登记，由 Hub 按名拨入
   /// （Linux：D-Bus `dev.appmcp.App.<appId>`；Windows：命名管道 `\\.\pipe\appmcp-<用户 SID>-<appId>`），需先用
@@ -47,6 +48,7 @@ final class AppMcp {
     ClientKind clientKind = ClientKind.native,
     int maxConcurrentCalls = 1,
     int maxQueuedCalls = 64,
+    BusyPolicy busyPolicy = BusyPolicy.reject,
     AppOverview? overview,
     LifecyclePolicy? lifecycle,
     Duration? connectTimeout,
@@ -120,7 +122,9 @@ final class AppMcp {
         rt.check(b.am_client_new_ex(config, callbacks, options, out));
         client._ptr = out.value;
         final scopeOut = arena<Pointer<AmScope>>();
-        final status = b.am_client_root_scope(client._ptr, scopeOut);
+        // @why AmClientOptions 不含 busy 策略（app_mcp.h v19 结构体不变），创建后立即设置。
+        var status = b.am_client_set_busy_policy(client._ptr, busyPolicyToNative(busyPolicy));
+        if (status == AmStatus.ok) status = b.am_client_root_scope(client._ptr, scopeOut);
         if (status != AmStatus.ok) {
           final e = rt.error(status);
           b.am_client_free(client._ptr);
@@ -156,6 +160,10 @@ final class AppMcp {
   late final McpScope _root;
   late final int _userDataId;
   bool _disposed = false;
+  // 用户正在操作：显式开关、未结束作用域数、已下发给原生库的值（见 [_pushBusy]）。
+  bool _busyManual = false;
+  int _busyScopes = 0;
+  bool _busyApplied = false;
 
   final StreamController<McpConnectionState> _states = StreamController<McpConnectionState>.broadcast();
   final StreamController<String> _paired = StreamController<String>.broadcast();
@@ -269,6 +277,54 @@ final class AppMcp {
   void setNavigateInBackground(bool enabled) {
     _ensureAlive();
     _rt.check(_b.am_client_set_navigate_in_background(_ptr, enabled));
+  }
+
+  // ---- 用户正在操作（spec/protocol.md 5.3） ----
+
+  /// 显式开关：声明用户正在 / 不再在 App 内操作。期间写调用（生效注解不是 `readOnlyHint: true` 的工具）按 [BusyPolicy]
+  /// 拒绝或排队；只读调用与已开始的调用不受影响。何时算"正在操作"由 App 决定，随时生效。
+  /// 有效 busy = 本开关 ∨ 未结束的 [beginBusy] 作用域数 > 0：`setBusy(false)` 不结束进行中的作用域。
+  /// Flutter 可用 `app_mcp_flutter` 的 `McpBusy` 随 widget 声明。
+  void setBusy(bool busy) {
+    _ensureAlive();
+    _busyManual = busy;
+    _pushBusy();
+  }
+
+  /// 有效 busy（显式开关 ∨ 未结束的作用域数 > 0）。
+  bool get isBusy {
+    _ensureAlive();
+    return _busyEffective;
+  }
+
+  /// 开始一个用户正在操作的作用域：引用计数 +1，[McpBusyHold.release] 时 -1（重复调用无效果）；可嵌套。
+  /// 作用域结束不清 [setBusy] 的显式开关；全部作用域结束且开关为 false 时才解除。
+  McpBusyHold beginBusy() {
+    _ensureAlive();
+    _busyScopes++;
+    try {
+      _pushBusy();
+    } catch (_) {
+      _busyScopes--;
+      rethrow;
+    }
+    return McpBusyHold._(this);
+  }
+
+  bool get _busyEffective => _busyManual || _busyScopes > 0;
+
+  /// @invariant 只在有效值变化时调用 am_client_set_busy；失败时已下发值不变（下次变化重试）。
+  void _pushBusy() {
+    final effective = _busyEffective;
+    if (effective == _busyApplied || _disposed) return;
+    _rt.check(_b.am_client_set_busy(_ptr, effective));
+    _busyApplied = effective;
+  }
+
+  /// 修改用户正在操作期间写调用的处理方式；随即对排队中的调用生效（改为 [BusyPolicy.reject] 时排队的写调用被拒绝）。
+  void setBusyPolicy(BusyPolicy policy) {
+    _ensureAlive();
+    _rt.check(_b.am_client_set_busy_policy(_ptr, busyPolicyToNative(policy)));
   }
 
   void setVisibility(AppVisibility visibility, {bool focused = true}) {

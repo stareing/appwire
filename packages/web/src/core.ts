@@ -9,6 +9,7 @@ import type { NormalizedResult } from './result'
 import type {
   Activation,
   AppOverview,
+  BusyPolicy,
   CallDedupOptions,
   ContentAnnotations,
   ErrorKind,
@@ -37,6 +38,8 @@ export interface CoreConfig {
   maxConcurrentCalls?: number
   /** 排队中的调用上限（spec/protocol.md 5.3），缺省 64，0 = 不限。 */
   maxQueuedCalls?: number
+  /** 用户正在操作（`setBusy`）期间写调用的处理方式（spec/protocol.md 5.3），缺省 `reject`。 */
+  busyPolicy?: BusyPolicy
   resourceUpdateThrottleMs?: number
   /** App 总览，随 `app/hello` 发送。 */
   overview?: AppOverview
@@ -203,6 +206,14 @@ export interface CoreClient {
    * `USER_ACTION_REQUIRED`（`reason: "foreground"`）回复。随时生效，只影响之后到达的请求。
    */
   setNavigateInBackground(enabled: boolean): void
+  /**
+   * 声明用户正在 / 不再操作（spec/protocol.md 5.3）：期间写调用按 `busyPolicy` 拒绝或排队。随时生效；
+   * 产生的回复 / 开始的调用经 `pollEvent` 取出（驱动层随后 pump）。
+   */
+  setBusy(busy: boolean): void
+  isBusy(): boolean
+  /** 修改 `busyPolicy`，随即对排队中的调用生效；非法值抛错。 */
+  setBusyPolicy(policy: BusyPolicy): void
   pollEvent(): CoreEvent | undefined
   pollTimeout(): number | undefined
   // ---- 生命周期（spec/lifecycle.md）----

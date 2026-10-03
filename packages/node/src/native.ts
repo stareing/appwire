@@ -70,6 +70,8 @@ export interface NativeClientConfig {
   maxConcurrentCalls?: number
   /** 排队中的调用上限（spec/protocol.md 5.3），缺省 64，0 = 不限（旧版原生模块忽略）。 */
   maxQueuedCalls?: number
+  /** 用户正在操作期间写调用的处理方式：`'reject'`（缺省）| `'queue'`（spec/protocol.md 5.3；旧版原生模块忽略）。 */
+  busyPolicy?: string
   overview?: { summary: string; body?: string; locale?: string }
   lifecycle?: NativeLifecycleConfig
   connectTimeoutMs?: number
@@ -223,6 +225,11 @@ export interface NativeClient extends NativeRegistrar {
   setNavigationHandler?(handler: ((navigate: NativeNavigate) => void) | null): void
   /** 不可见时导航请求是否仍交给导航回调（缺省按平台：桌面 true，移动端 false）。旧版原生模块没有此方法。 */
   setNavigateInBackground?(enabled: boolean): void
+  /** 用户正在操作（spec/protocol.md 5.3）。旧版原生模块没有这些方法。 */
+  setBusy?(busy: boolean): void
+  isBusy?(): boolean
+  /** 非法值抛错。 */
+  setBusyPolicy?(policy: string): void
   // ---- 生命周期（旧版原生模块没有这些方法）----
   handleWake?(args: string): boolean
   wake?(reason?: string | null): boolean

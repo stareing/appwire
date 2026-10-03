@@ -58,6 +58,7 @@ test('显式生命周期整体生效，不与平台默认合并；新字段与 h
     callDedup: { ttlMs: 5, maxEntries: 2 },
     maxConcurrentCalls: 3,
     maxQueuedCalls: 7,
+    busyPolicy: 'queue',
     lifecycle: { mode: 'idle', hostAbsentRetries: 0, legacyTimers: true, mergeWindowMs: 500, sleepOnBackground: false },
   });
   const l = client.config.lifecycle;
@@ -73,6 +74,7 @@ test('显式生命周期整体生效，不与平台默认合并；新字段与 h
   assert.deepEqual(client.config.callDedup, { ttlMs: 5, maxEntries: 2 });
   assert.equal(client.config.maxConcurrentCalls, 3);
   assert.equal(client.config.maxQueuedCalls, 7);
+  assert.equal(client.config.busyPolicy, 'queue');
   mcp.dispose();
 });
 

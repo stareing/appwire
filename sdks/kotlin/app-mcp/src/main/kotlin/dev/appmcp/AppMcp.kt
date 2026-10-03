@@ -358,6 +358,7 @@ class AppMcp private constructor(
     internal val awaitSleepChecks = java.util.concurrent.atomic.AtomicLong(0)
 
     private val inner: AppMcpClient
+    private val busyState: BusyState
 
     init {
         val listener = object : ClientListener {
@@ -383,6 +384,7 @@ class AppMcp private constructor(
         }
         inner = AppMcpClient(config.toFfi(), listener)
         config.navigateInBackground?.let { inner.setNavigateInBackground(it) }
+        busyState = BusyState { busy -> if (!closed.get()) inner.setBusy(busy) }
         _state.value = inner.state()
     }
 
@@ -430,6 +432,36 @@ class AppMcp private constructor(
      * `USER_ACTION_REQUIRED`（reason `foreground`）回复，不调用回调。
      */
     fun setNavigateInBackground(enabled: Boolean) = inner.setNavigateInBackground(enabled)
+
+    // -- 用户正在操作（spec/protocol.md 5.3） ------------------------------------------
+
+    /**
+     * 声明用户正在 / 不再在 App 内操作（何时算由 App 决定，如编辑框获得焦点、拖拽中）。期间写调用（生效注解不是
+     * `readOnlyHint = true` 的工具）按 [AppMcpConfig.busyPolicy] 拒绝或排队；只读调用不受影响。状态只在 SDK 内，不发给 Host。
+     * 与 [beginBusy] / [busy] 作用域合并：生效值为「本开关 ∨ 仍有作用域未结束」，`setBusy(false)` 不结束进行中的作用域。
+     * 已关闭时只记录、不再交给原生层（作用域可在 [close] 之后结束）。
+     */
+    fun setBusy(busy: Boolean) = busyState.set(busy)
+
+    /** 核心当前是否处于忙碌状态；已关闭时为 false。 */
+    val isBusy: Boolean get() = !closed.get() && inner.isBusy()
+
+    /** 修改忙碌期间写调用的处理方式，随即对排队中的调用生效（如由用户在 App 设置中选择）。已关闭时无效果。 */
+    fun setBusyPolicy(policy: BusyPolicy) {
+        if (!closed.get()) inner.setBusyPolicy(policy)
+    }
+
+    /**
+     * 开始一段忙碌作用域，直到返回值 [BusyHold.close]。可嵌套、可跨线程同时持有（引用计数）：最后一个作用域结束且
+     * [setBusy] 开关为关时恢复空闲。Compose 见 `dev.appmcp.compose.BusyEffect`。
+     */
+    fun beginBusy(): BusyHold {
+        busyState.enter()
+        return BusyHold(busyState)
+    }
+
+    /** 作用域写法：[block] 执行期间为忙碌（含异常 / 取消退出时归还），语义同 [beginBusy]。 */
+    inline fun <T> busy(block: () -> T): T = beginBusy().use { block() }
 
     /**
      * 设置导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）；null 清除（之后的导航请求以 `NAVIGATION_FAILED`

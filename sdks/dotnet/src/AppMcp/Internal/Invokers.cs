@@ -316,3 +316,25 @@ internal sealed class HoldRelease(HoldSafeHandle handle) : IDisposable
 {
     public void Dispose() => handle.Dispose();
 }
+
+/// <summary><see cref="AppMcpClient.Busy"/> 的作用域：首次 Dispose 时归还一次计数，之后无效果。</summary>
+internal sealed class BusyRelease(BusyState state) : IDisposable
+{
+    private int _released;
+
+    /// <remarks>@error 客户端已释放 / 停止时忽略：Dispose 不应抛出，且停止后的客户端不再执行调用。</remarks>
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _released, 1) != 0) return;
+        try
+        {
+            state.Exit();
+        }
+        catch (AppMcpException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+}

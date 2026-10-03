@@ -19,6 +19,8 @@ import { ToolCallError } from './types'
 import type {
   AppMcp,
   AppMcpOptions,
+  BusyHandle,
+  BusyPolicy,
   ConnectionState,
   HoldHandle,
   LazyToolDefinition,
@@ -32,6 +34,7 @@ import type {
   ToolHandle,
 } from './types'
 import { DriverRegistry } from './driver/registry'
+import { noopHold } from './noop'
 import { type AnyDef, type DriverDeps } from './driver/shared'
 
 export {
@@ -44,6 +47,9 @@ export {
   type WebSocketFactory,
   type WebSocketLike,
 } from './driver/shared'
+
+/** {@link BusyPolicy} 的合法值（运行时校验 `setBusyPolicy` 的参数）。 */
+const BUSY_POLICIES: readonly BusyPolicy[] = ['reject', 'queue']
 
 // ---------------------------------------------------------------------------
 // 驱动
@@ -90,6 +96,26 @@ export class AppMcpDriver extends DriverRegistry implements AppMcp {
     if (this.disposed) return
     this.navigateInBackground = enabled
     if (this.core) this.input((c) => c.setNavigateInBackground(enabled))
+  }
+
+  setBusy(busy: boolean): void {
+    if (this.disposed) return
+    this.busyState.set(busy)
+  }
+
+  beginBusy(): BusyHandle {
+    return this.disposed ? noopHold() : this.busyState.begin()
+  }
+
+  isBusy(): boolean {
+    return this.busyState.busy
+  }
+
+  setBusyPolicy(policy: BusyPolicy): void {
+    if (!BUSY_POLICIES.includes(policy)) throw new Error(`无效的 busyPolicy：${JSON.stringify(policy)}`)
+    if (this.disposed) return
+    this.busyPolicy = policy
+    if (this.core) this.input((c) => c.setBusyPolicy(policy))
   }
 
   wake(): void {

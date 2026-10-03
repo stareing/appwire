@@ -572,3 +572,46 @@ test('未设置导航回调时不声明', () => {
   const { client } = create();
   assert.equal(client.navigationHandler, undefined);
 });
+
+test('用户正在操作：busyPolicy 配置透传（缺省不传）；setBusy / isBusy / setBusyPolicy 转给原生，非法值抛错', () => {
+  assert.equal(create().client.config.busyPolicy, undefined);
+  const { mcp, client } = create({ busyPolicy: 'queue' });
+  assert.equal(client.config.busyPolicy, 'queue');
+  assert.equal(mcp.isBusy(), false);
+  mcp.setBusy(true);
+  assert.equal(mcp.isBusy(), true);
+  mcp.setBusy(false);
+  mcp.setBusyPolicy('reject');
+  assert.throws(() => mcp.setBusyPolicy('drop'), /busyPolicy/);
+  assert.deepEqual(
+    client.calls.filter((c) => c[0] === 'setBusy' || c[0] === 'setBusyPolicy'),
+    [['setBusy', true], ['setBusy', false], ['setBusyPolicy', 'reject']],
+  );
+  mcp.dispose();
+  mcp.setBusy(true);
+  assert.equal(mcp.isBusy(), false);
+  assert.equal(client.calls.filter((c) => c[0] === 'setBusy').length, 2);
+});
+
+test('用户正在操作：beginBusy 作用域可嵌套、按引用计数；与显式开关互不清除；只在有效值变化时调用原生', () => {
+  const { mcp, client } = create();
+  const outer = mcp.beginBusy();
+  const inner = mcp.beginBusy();
+  outer.release();
+  outer.release();
+  assert.equal(mcp.isBusy(), true);
+  mcp.setBusy(true);
+  inner.release();
+  assert.equal(mcp.isBusy(), true);
+  const scope = mcp.beginBusy();
+  mcp.setBusy(false);
+  assert.equal(mcp.isBusy(), true);
+  scope.release();
+  assert.equal(mcp.isBusy(), false);
+  assert.deepEqual(client.calls.filter((c) => c[0] === 'setBusy'), [['setBusy', true], ['setBusy', false]]);
+  const late = mcp.beginBusy();
+  mcp.dispose();
+  late.release();
+  mcp.beginBusy();
+  assert.equal(client.calls.filter((c) => c[0] === 'setBusy').length, 3);
+});

@@ -35,7 +35,7 @@ class ConformanceTest {
         val FEATURES = setOf(
             "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
             "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-            "callScheduling",
+            "callScheduling", "busy",
         )
         val VERDICT_OK = setOf("pass", "xfail", "xpass", "skip")
         val repoRoot: File = FakeHostSupport.repoRoot.canonicalFile
@@ -100,6 +100,7 @@ class ConformanceTest {
         app?.get("resources")?.jsonArray.orEmpty().forEach { registerResource(client, it.jsonObject) }
         app?.obj("navigation")?.let { pages -> client.setNavigationHandler { page, params -> navigate(client, tools, pages, page, params) } }
         app?.str("visibility")?.let { client.setVisibility(Visibility.valueOf(enumName(it)), focused = false) }
+        if (app?.bool("busy") == true) client.setBusy(true)
         return client.start()
     }
 
@@ -127,6 +128,7 @@ class ConformanceTest {
         val name = op.str("name").orEmpty()
         when (op.str("op")) {
             "register" -> registerTool(client, tools, op.obj("tool")!!)
+            "busy" -> client.setBusy(op.bool("value")!!)
             "update" -> tools.getValue(name).update {
                 op.obj("set").orEmpty().forEach { (key, v) -> setField(this, key, v) }
             }
@@ -183,6 +185,7 @@ class ConformanceTest {
             maxConcurrentCalls = c?.long("maxConcurrentCalls")?.toInt() ?: 1,
             navigateInBackground = c?.bool("navigateInBackground"),
             maxQueuedCalls = c?.long("maxQueuedCalls")?.toInt(),
+            busyPolicy = c?.str("busyPolicy")?.let { BusyPolicy.valueOf(enumName(it)) },
         )
     }
 

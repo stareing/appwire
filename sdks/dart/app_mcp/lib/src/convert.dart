@@ -27,6 +27,11 @@ int visibilityToNative(AppVisibility visibility) => switch (visibility) {
       AppVisibility.frozen => AmVisibility.frozen,
     };
 
+int busyPolicyToNative(BusyPolicy policy) => switch (policy) {
+      BusyPolicy.reject => AmBusyPolicy.reject,
+      BusyPolicy.queue => AmBusyPolicy.queue,
+    };
+
 int clientKindToNative(ClientKind kind) => switch (kind) {
       ClientKind.native => AmClientKind.native,
       ClientKind.hybrid => AmClientKind.hybrid,

@@ -19,7 +19,7 @@ const SDK = 'harmony';
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
-  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey', 'callScheduling',
+  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey', 'callScheduling', 'busy',
 ];
 
 const build = process.env.APP_MCP_HARMONY_BUILD;
@@ -134,6 +134,7 @@ function startApp(support, native, testCase, url) {
     },
     remove: (handle) => handle.dispose(),
     setEnabled: (handle, enabled) => handle.update({ enabled }),
+    setBusy: (busy) => app.setBusy(busy),
   });
   for (const t of testCase.app.tools ?? []) registry.register(t);
   for (const r of testCase.app.resources ?? []) {
@@ -158,6 +159,7 @@ function startApp(support, native, testCase, url) {
   }
   const visibility = support.appVisibility(testCase);
   if (visibility) app.setVisibility(visibility, false);
+  if (support.appBusy(testCase)) app.setBusy(true);
   app.start();
   return { handleWake: (arg) => void app.handleWake(arg), stop: () => app.dispose() };
 }

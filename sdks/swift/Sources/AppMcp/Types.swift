@@ -345,6 +345,10 @@ public struct AppMcpConfig {
     /// 排队中的调用上限（spec/protocol.md 5.3）：满后新到的调用以 `RATE_LIMITED`（`scope = "queue"`）拒绝。
     /// 为 `nil` 时 64，`0` = 不限。
     public var maxQueuedCalls: Int?
+    /// 用户正在操作（`AppMcpClient.setBusy(_:)`）期间写调用的处理方式（spec/protocol.md 5.3「用户正在操作」）：为 `nil` 时
+    /// `.reject`（以 `RATE_LIMITED`、`scope = "busy"` 拒绝），`.queue` 排队、停手后按序执行。之后可用
+    /// `AppMcpClient.setBusyPolicy(_:)` 修改。
+    public var busyPolicy: BusyPolicy?
 
     public init(
         appId: String,
@@ -369,7 +373,8 @@ public struct AppMcpConfig {
         navigateInBackground: Bool? = nil,
         registerName: Bool = false,
         nameInstance: String? = nil,
-        maxQueuedCalls: Int? = nil
+        maxQueuedCalls: Int? = nil,
+        busyPolicy: BusyPolicy? = nil
     ) {
         self.appId = appId
         self.appName = appName
@@ -394,6 +399,7 @@ public struct AppMcpConfig {
         self.registerName = registerName
         self.nameInstance = nameInstance
         self.maxQueuedCalls = maxQueuedCalls
+        self.busyPolicy = busyPolicy
     }
 }
 
@@ -418,7 +424,8 @@ extension AppMcpConfig {
             callDedup: callDedup,
             registerName: registerName,
             nameInstance: nameInstance,
-            maxQueuedCalls: maxQueuedCalls.map { UInt32(clamping: max(0, $0)) }
+            maxQueuedCalls: maxQueuedCalls.map { UInt32(clamping: max(0, $0)) },
+            busyPolicy: busyPolicy
         )
     }
 }

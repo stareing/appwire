@@ -133,6 +133,12 @@ abstract final class AmSleepReason {
   static const int app = 3;
 }
 
+/// v19：用户正在操作（`am_client_set_busy`）期间写调用的处理方式。
+abstract final class AmBusyPolicy {
+  static const int reject = 0;
+  static const int queue = 1;
+}
+
 /// v9：调用结果的业务状态（`AmCallResult.status`）。
 abstract final class AmResultStatus {
   static const int done = 0;
@@ -633,6 +639,11 @@ final class AppMcpBindings {
   late final am_client_set_navigate_in_background = library.lookupFunction<
       Int32 Function(Pointer<AmClient>, Bool),
       int Function(Pointer<AmClient>, bool)>('am_client_set_navigate_in_background');
+  // v19：用户正在操作（spec/protocol.md 5.3）
+  late final am_client_set_busy = library.lookupFunction<Int32 Function(Pointer<AmClient>, Bool),
+      int Function(Pointer<AmClient>, bool)>('am_client_set_busy');
+  late final am_client_set_busy_policy = library.lookupFunction<Int32 Function(Pointer<AmClient>, Int32),
+      int Function(Pointer<AmClient>, int)>('am_client_set_busy_policy');
 }
 
 /// 原生库默认文件名。

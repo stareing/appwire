@@ -6,6 +6,7 @@
  * - `useResource(name, { description, read, deps })`：把界面状态暴露为资源。
  * - `<ToolScope name>`：生命周期边界，卸载时注销其下全部工具与资源。
  * - `useHold(active?)`：组件挂载期间阻止自动休眠（`lifecycle.mode` 为 idle / on-demand 时）。
+ * - `useBusy(active)`：声明用户正在操作（spec/protocol.md 5.3），期间写调用按 `busyPolicy` 拒绝或排队（基于 `beginBusy` 作用域，多个组件按引用计数）。
  * - `<ToolScope anchor page surface>`：其下 `view` 工具按锚点可见性启用（spec/protocol.md 3.4）。
  * - `<ToolLayer name>`：对话框 / 抽屉等界面层，打开期间下层 `view` 工具暂停。
  * - `useRouterNavigation({ navigate, pages })`：React Router（或任何路由）的导航适配；`useNavigationHandler` 为通用形式。
@@ -18,9 +19,12 @@ export { useTool } from './use-tool'
 export { useResource, type UseResourceOptions } from './use-resource'
 export { useConnectionState } from './use-connection-state'
 export { useHold } from './use-hold'
+export { useBusy } from './use-busy'
 
 export type {
   AppMcp,
+  BusyHandle,
+  BusyPolicy,
   ConnectionState,
   ConnectionBlockCause,
   ConnectionBlockCode,

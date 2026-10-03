@@ -6,6 +6,23 @@ part of 'client.dart';
 // 句柄
 // ---------------------------------------------------------------------------
 
+/// [AppMcp.beginBusy] 返回的用户正在操作作用域：[release] 归还一次计数（重复调用无效果）。
+final class McpBusyHold {
+  McpBusyHold._(this._client);
+  final AppMcp _client;
+  bool _released = false;
+
+  bool get isReleased => _released;
+
+  /// 结束作用域。客户端已释放时只记账、不调用原生库。
+  void release() {
+    if (_released) return;
+    _released = true;
+    _client._busyScopes--;
+    _client._pushBusy();
+  }
+}
+
 /// [ToolHandle.update] 的缺省标记类型（区分“未提供”与 null）。
 final class _KeepField {
   const _KeepField();

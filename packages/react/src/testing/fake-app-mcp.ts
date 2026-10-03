@@ -5,6 +5,7 @@
 import type {
   AppMcp,
   AppMcpOptions,
+  BusyHandle,
   ConnectionState,
   HoldHandle,
   ResourceDefinition,
@@ -118,6 +119,34 @@ export class FakeAppMcp implements AppMcp {
         this.activeHolds--
       },
     }
+  }
+
+  /** 显式开关（`setBusy`）。 */
+  explicitBusy = false
+  /** 当前未结束的 `beginBusy` 作用域数。 */
+  activeBusyScopes = 0
+  /** `beginBusy` 的调用次数。 */
+  busyScopesBegun = 0
+
+  setBusy(busy: boolean): void {
+    this.explicitBusy = busy
+  }
+
+  beginBusy(): BusyHandle {
+    this.activeBusyScopes++
+    this.busyScopesBegun++
+    let released = false
+    return {
+      release: () => {
+        if (released) return
+        released = true
+        this.activeBusyScopes--
+      },
+    }
+  }
+
+  isBusy(): boolean {
+    return this.explicitBusy || this.activeBusyScopes > 0
   }
 
   get state(): ConnectionState {

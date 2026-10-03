@@ -30,6 +30,15 @@ public enum ToolActivation { Headless = 0, Background = 1, Foreground = 2 }
 
 public enum AppVisibility { Visible = 0, Hidden = 1, Frozen = 2 }
 
+/// <summary>用户正在操作（<see cref="AppMcpClient.SetBusy"/>）期间写调用的处理方式（spec/protocol.md 5.3）。</summary>
+public enum BusyPolicy
+{
+    /// <summary>以 RATE_LIMITED（details <c>{"scope":"busy"}</c>）拒绝（默认）。</summary>
+    Reject = 0,
+    /// <summary>排队，用户操作结束后按到达顺序执行（仍受 <see cref="AppMcpClientOptions.MaxQueuedCalls"/> 与调用超时约束）。</summary>
+    Queue = 1,
+}
+
 public enum CancelReason { Requested = 0, Timeout = 1, Disconnected = 2, Stopped = 3 }
 
 public enum ClientStatus
@@ -249,6 +258,9 @@ public sealed class AppMcpClientOptions
     /// <summary>排队中（等并发名额 / 互斥组）的调用上限；超出时新调用以 RATE_LIMITED（details scope "queue"）拒绝。
     /// 0 = 不限；不能为负数（spec/protocol.md 5.3）。</summary>
     public int MaxQueuedCalls { get; init; } = 64;
+    /// <summary>用户正在操作（<see cref="AppMcpClient.SetBusy"/>）期间写调用的处理方式；默认 <see cref="AppMcp.BusyPolicy.Reject"/>。
+    /// 运行中可用 <see cref="AppMcpClient.SetBusyPolicy"/> 修改（spec/protocol.md 5.3）。</summary>
+    public BusyPolicy BusyPolicy { get; init; } = BusyPolicy.Reject;
     public AppOverview? Overview { get; init; }
 
     /// <summary>生命周期策略（spec/lifecycle.md）。为 null 时 persistent（不休眠）。</summary>

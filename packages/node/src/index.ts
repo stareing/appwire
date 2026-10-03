@@ -26,6 +26,8 @@ export type {
   AppMcp,
   AppOverview,
   Audience,
+  BusyHandle,
+  BusyPolicy,
   CallDedupOptions,
   ConnectionState,
   ContentAnnotations,

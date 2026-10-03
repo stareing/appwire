@@ -39,6 +39,18 @@ enum AppVisibility {
   final String wireName;
 }
 
+/// 用户正在操作（[AppMcp.setBusy]）期间写调用的处理方式（spec/protocol.md 5.3「用户正在操作」）。
+enum BusyPolicy {
+  /// 以 `RATE_LIMITED`（data `{"scope": "busy"}`）拒绝（默认）。
+  reject('reject'),
+
+  /// 排队，用户操作结束后按到达顺序执行（仍受 `maxQueuedCalls` 与调用超时约束）。
+  queue('queue');
+
+  const BusyPolicy(this.wireName);
+  final String wireName;
+}
+
 /// 客户端连接宿主的方式。
 enum ClientKind { native, hybrid }
 

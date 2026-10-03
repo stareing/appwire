@@ -225,6 +225,10 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)] internal static partial AmStatus am_navigate_fail_user_action(nint navigate, byte* message, byte* reason, byte* uri);
     [LibraryImport(Lib)] internal static partial AmStatus am_client_set_navigate_in_background(ClientSafeHandle client, [MarshalAs(UnmanagedType.U1)] bool enabled);
 
+    // v19：用户正在操作（spec/protocol.md 5.3）；policy 为 AmBusyPolicy（0 = REJECT，1 = QUEUE）
+    [LibraryImport(Lib)] internal static partial AmStatus am_client_set_busy(ClientSafeHandle client, [MarshalAs(UnmanagedType.U1)] bool busy);
+    [LibraryImport(Lib)] internal static partial AmStatus am_client_set_busy_policy(ClientSafeHandle client, int policy);
+
     [LibraryImport(Lib)] internal static partial nint am_read_resource_name(nint read);
     [LibraryImport(Lib)] internal static partial AmStatus am_read_complete(nint read, byte* contentsJson);
     [LibraryImport(Lib)] internal static partial AmStatus am_read_fail(nint read, byte* kind, byte* message);

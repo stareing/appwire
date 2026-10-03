@@ -40,5 +40,9 @@ export function createDisabledAppMcp(options: AppMcpOptions): AppMcp {
     hold: noopHold,
     setNavigationHandler: noop,
     setNavigateInBackground: noop,
+    setBusy: noop,
+    beginBusy: noopHold,
+    isBusy: () => false,
+    setBusyPolicy: noop,
   }
 }

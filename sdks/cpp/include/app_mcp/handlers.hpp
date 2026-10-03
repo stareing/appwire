@@ -38,6 +38,77 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// BusyScope
+// ---------------------------------------------------------------------------
+
+namespace detail {
+
+/// 合并 Client::set_busy 显式开关与 Client::busy() 作用域计数（spec/protocol.md 5.3「用户正在操作」）。
+/// @invariant 交给原生库的值 = 开关 ∨ 作用域数 > 0；开关与作用域互不清除；只在有效值变化时调用 am_client_set_busy。
+/// @invariant client 由 Client 拥有：Client 释放 / 移走句柄时置空，之后的变化只记账不下发。
+struct BusyState {
+    std::mutex mu;
+    AmClient* client = nullptr;
+    bool manual = false;
+    uint64_t scopes = 0;
+    bool applied = false;
+
+    /// 在锁内调用；有效值变化时下发。@error 下发失败时返回状态码，applied 不变（下次变化重试）。
+    AmStatus push() {
+        bool effective = manual || scopes > 0;
+        if (effective == applied || !client) return AM_OK;
+        AmStatus s = am_client_set_busy(client, effective);
+        if (s == AM_OK) applied = effective;
+        return s;
+    }
+    bool effective() {
+        std::lock_guard<std::mutex> lock(mu);
+        return manual || scopes > 0;
+    }
+};
+
+}  // namespace detail
+
+/// 用户正在操作的作用域（Client::busy()）：构造时计数 +1，析构或 end() 时 -1。只能移动；可嵌套、可跨线程结束。
+/// 有效 busy = Client::set_busy 显式开关 ∨ 未结束作用域数 > 0：set_busy(false) 不结束进行中的作用域，作用域结束也不清显式开关。
+class BusyScope {
+public:
+    BusyScope() = default;
+    explicit BusyScope(std::shared_ptr<detail::BusyState> state) : state_(std::move(state)) {}
+    BusyScope(BusyScope&& o) noexcept : state_(std::move(o.state_)) {}
+    BusyScope& operator=(BusyScope&& o) noexcept {
+        if (this != &o) {
+            end();
+            state_ = std::move(o.state_);
+        }
+        return *this;
+    }
+    BusyScope(const BusyScope&) = delete;
+    BusyScope& operator=(const BusyScope&) = delete;
+    ~BusyScope() { end(); }
+
+    /// 是否仍在作用域内（尚未结束）。
+    bool active() const noexcept { return state_ != nullptr; }
+    explicit operator bool() const noexcept { return active(); }
+    /// 提前结束（计数 -1）。幂等。
+    /// @error 下发失败（如客户端已停止）被忽略：析构路径不能抛出，且停止后的客户端不再执行调用。
+    void end() noexcept {
+        auto state = std::move(state_);
+        state_ = nullptr;
+        if (!state) return;
+        try {
+            std::lock_guard<std::mutex> lock(state->mu);
+            --state->scopes;
+            (void)state->push();
+        } catch (...) {
+        }
+    }
+
+private:
+    std::shared_ptr<detail::BusyState> state_;
+};
+
+// ---------------------------------------------------------------------------
 // Call / Read
 // ---------------------------------------------------------------------------
 

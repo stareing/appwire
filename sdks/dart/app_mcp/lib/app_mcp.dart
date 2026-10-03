@@ -5,5 +5,5 @@
 library;
 
 export 'src/bindings.dart' show AppMcpBindings, openNativeLibrary, defaultNativeLibraryName;
-export 'src/client.dart' show AppMcp, McpScope, ToolHandle, ResourceHandle;
+export 'src/client.dart' show AppMcp, McpBusyHold, McpScope, ToolHandle, ResourceHandle;
 export 'src/types.dart';

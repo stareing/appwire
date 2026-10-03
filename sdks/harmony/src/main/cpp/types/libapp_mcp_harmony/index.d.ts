@@ -52,6 +52,8 @@ export interface ClientConfig {
   maxConcurrentCalls?: number;
   /** 排队中的调用上限（spec/protocol.md 5.3）；缺省 64，0 = 不限。 */
   maxQueuedCalls?: number;
+  /** 用户正在操作（`setBusy`）期间写调用的处理方式（spec/protocol.md 5.3）：'reject'（默认）| 'queue'。 */
+  busyPolicy?: string;
   overview?: OverviewInit;
   lifecycle?: LifecycleInit;
   connectTimeoutMs?: number;
@@ -233,6 +235,14 @@ export class NativeClient {
    * （`foreground`）回复）。随时生效，只影响之后到达的请求。
    */
   setNavigateInBackground(enabled: boolean): void;
+  /**
+   * 声明用户正在 / 不再操作（spec/protocol.md 5.3）：期间写调用按 `busyPolicy` 拒绝或排队，只读调用与已开始的调用不受影响。
+   * 随时生效。
+   */
+  setBusy(busy: boolean): void;
+  isBusy(): boolean;
+  /** 修改 `busyPolicy`（'reject' | 'queue'），随即对排队中的调用生效；非法值抛错。 */
+  setBusyPolicy(policy: string): void;
   registerTool(spec: ToolSpecInit, handler: (call: Call) => void): Tool;
   registerResource(spec: ResourceSpecInit, reader: (read: Read) => void): Resource;
   createScope(name: string): Scope;

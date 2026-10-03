@@ -25,7 +25,7 @@ import type {
 // `ToolSpecMessage.annotations` / `outputSchema` / `surface` / `page` / `backgroundTool` / `concurrency` / `exclusive`、导航消息（`navigation.set`、`navigate`、
 // `navigate.result`，见 {@link NavigationOp}；旧主进程对未知 op 回复错误，页面据此得知不支持；`navigate.result` 的
 // `USER_ACTION_REQUIRED` 与 `details`：旧主进程 / Rust 侧按失败处理）、成功 `Outcome` 的 `status` / `stateResource` / `summary` / `annotations`、
-// 失败 `Outcome` 的 `details`。
+// 失败 `Outcome` 的 `details`、用户正在操作 `busy.set`（旧主进程对未知 op 回复错误，页面记警告）。
 
 /** preload 默认把桥接对象暴露为 `window.appMcpBridge`。 */
 export const DEFAULT_BRIDGE_KEY = 'appMcpBridge'
@@ -100,6 +100,11 @@ export type RendererOp =
   /** 持有（阻止自动休眠），`holdId` 由页面分配；页面刷新、卸载或 webContents 销毁时主进程释放该页全部持有。 */
   | { op: 'lifecycle.hold'; holdId: number }
   | { op: 'lifecycle.release'; holdId: number }
+  /**
+   * 本页声明用户正在 / 不再操作（spec/protocol.md 5.3）：对方按页面记录，客户端的 busy 为各页之或（只在汇总值变化时设置）；
+   * 页面刷新、卸载或 webContents 销毁时该页的声明失效。
+   */
+  | { op: 'busy.set'; busy: boolean }
   | NavigationOp
 
 /**

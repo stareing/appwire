@@ -20,7 +20,7 @@ public class ConformanceTests(ITestOutputHelper output)
     [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure",
         "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-        "callScheduling",
+        "callScheduling", "busy",
     ];
 
     private static readonly IReadOnlyDictionary<string, ToolRisk> Risks = new Dictionary<string, ToolRisk>
@@ -122,6 +122,7 @@ public class ConformanceTests(ITestOutputHelper output)
                     foreach (var r in Items(Get(Get(kase, "app"), "resources"))) app.RegisterResource(r);
                     if (Get(Get(kase, "app"), "navigation").ValueKind == JsonValueKind.Object) app.SetNavigation(Get(Get(kase, "app"), "navigation"));
                     if (Text(Get(Get(kase, "app"), "visibility")) is { } visibility) app.Client.SetVisibility(Visibilities[visibility], false);
+                    if (Get(Get(kase, "app"), "busy").ValueKind is JsonValueKind.True or JsonValueKind.False) app.Client.SetBusy(Get(Get(kase, "app"), "busy").GetBoolean());
                     app.Client.Start();
                     continue;
                 }
@@ -172,6 +173,12 @@ public class ConformanceTests(ITestOutputHelper output)
             CallDedup = dedup,
             MaxConcurrentCalls = Get(c, "maxConcurrentCalls").ValueKind == JsonValueKind.Number ? Get(c, "maxConcurrentCalls").GetInt32() : 1,
             MaxQueuedCalls = Get(c, "maxQueuedCalls").ValueKind == JsonValueKind.Number ? Get(c, "maxQueuedCalls").GetInt32() : 64,
+            BusyPolicy = Text(Get(c, "busyPolicy")) switch
+            {
+                null or "reject" => BusyPolicy.Reject,
+                "queue" => BusyPolicy.Queue,
+                var other => throw new InvalidOperationException("未知的 busyPolicy " + other),
+            },
             NavigateInBackground = Get(c, "navigateInBackground").ValueKind switch
             {
                 JsonValueKind.True => true,
@@ -389,6 +396,14 @@ public class ConformanceTests(ITestOutputHelper output)
                 case "enable":
                 case "disable":
                     lock (_gate) _tools[name].Tool.SetEnabled(Text(Get(op, "op")) == "enable");
+                    break;
+                case "busy":
+                    Client.SetBusy(Get(op, "value").ValueKind switch
+                    {
+                        JsonValueKind.True => true,
+                        JsonValueKind.False => false,
+                        _ => throw new InvalidOperationException("busy 的 value 应为布尔"),
+                    });
                     break;
                 default:
                     throw new InvalidOperationException("未知的 mutate 操作 " + Text(Get(op, "op")));

@@ -162,7 +162,8 @@ export function execNavigation(pages, page, params, env) {
 
 /**
  * 注册表（handler 的 `mutate`，conformance/README.md 2.3）：记录每个工具的句柄与当前声明。
- * @input ops.register(decl) → 句柄；ops.update(handle, nextDecl, set)；ops.remove(handle)；ops.setEnabled(handle, on)。
+ * @input ops.register(decl) → 句柄；ops.update(handle, nextDecl, set)；ops.remove(handle)；ops.setEnabled(handle, on)；
+ *   ops.setBusy(busy)（可选，能力 busy：变更 `{op: "busy", value}`）。
  */
 export function createRegistry(ops) {
   const tools = new Map();
@@ -194,6 +195,9 @@ export function createRegistry(ops) {
       case 'disable':
         if (!entry) throw new Error(`${op.op} 未知工具 ${op.name}`);
         return ops.setEnabled(entry.handle, op.op === 'enable');
+      case 'busy':
+        if (typeof ops.setBusy !== 'function') throw new Error('runner 未提供 setBusy（能力 busy）');
+        return ops.setBusy(op.value === true);
       default:
         throw new Error(`未知的 mutate 操作 ${op.op}`);
     }
@@ -210,7 +214,13 @@ export function appConfig(testCase) {
   if (typeof c.maxConcurrentCalls === 'number') out.maxConcurrentCalls = c.maxConcurrentCalls;
   if (typeof c.maxQueuedCalls === 'number') out.maxQueuedCalls = c.maxQueuedCalls;
   if (typeof c.navigateInBackground === 'boolean') out.navigateInBackground = c.navigateInBackground;
+  if (c.busyPolicy === 'reject' || c.busyPolicy === 'queue') out.busyPolicy = c.busyPolicy;
   return out;
+}
+
+/** 用例 `app.busy`（能力 busy）：为 true 时 runner 在启动前调用 SDK 的 `setBusy(true)`。 */
+export function appBusy(testCase) {
+  return testCase.app?.busy === true;
 }
 
 /** 用例 `app.visibility`（启动前设置的实例可见性）；未给出或取值不认识时为 undefined。 */
@@ -272,7 +282,8 @@ async function jsRead(spec, ToolCallError) {
 }
 
 /**
- * 按用例 `app` 部分在 JS SDK 实例上注册工具与资源（conformance/README.md 2.1–2.3）。
+ * 按用例 `app` 部分在 JS SDK 实例上注册工具与资源（conformance/README.md 2.1–2.3）；`app.busy` 时随后调用 `setBusy(true)`
+ * （runner 在本函数之后启动 SDK）。
  * @input app `@app-mcp/node` / `@app-mcp/web` 的实例；ToolCallError 该包导出的错误类。
  * @why update 为补丁型 API：`set` 中为 null 的字段以显式 undefined 清除（两包的 `ToolHandle.update` 约定）。
  * @output `{ navigate }`：用例有 `app.navigation` 时为 JS 写法的导航回调 `(page, params) => Promise<void>`
@@ -309,6 +320,7 @@ export function registerJsApp(app, testCase, ToolCallError) {
     },
     remove: (handle) => handle.dispose(),
     setEnabled: (handle, enabled) => handle.update({ enabled }),
+    setBusy: (busy) => app.setBusy(busy),
   });
   for (const t of testCase.app.tools ?? []) registry.register(t);
   for (const r of testCase.app.resources ?? []) {
@@ -317,6 +329,7 @@ export function registerJsApp(app, testCase, ToolCallError) {
       read: () => jsRead(r.read, ToolCallError),
     });
   }
+  if (appBusy(testCase)) app.setBusy(true);
   const pages = testCase.app.navigation;
   if (typeof pages !== 'object' || pages === null) return { navigate: undefined };
   const navigate = async (page, params) => {

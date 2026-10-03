@@ -7,6 +7,7 @@ import {
   AppMcpProvider,
   ToolScope,
   useAppMcp,
+  useBusy,
   useConnectionState,
   useHold,
   useResource,
@@ -483,6 +484,53 @@ describe('useHold', () => {
     expect(app.activeHolds).toBe(1)
     rerender(<div />)
     expect(app.activeHolds).toBe(0)
+  })
+})
+
+describe('useBusy', () => {
+  function Editor({ active }: { active: boolean }) {
+    useBusy(active)
+    return null
+  }
+
+  it('active 期间持有一个作用域，变 false / 卸载时结束', () => {
+    const { app, rerender } = setup(<Editor active={false} />)
+    expect(app.busyScopesBegun).toBe(0)
+    rerender(<Editor active />)
+    expect(app.activeBusyScopes).toBe(1)
+    expect(app.isBusy()).toBe(true)
+    rerender(<Editor active />)
+    expect(app.busyScopesBegun).toBe(1)
+    rerender(<Editor active={false} />)
+    expect(app.isBusy()).toBe(false)
+    rerender(<Editor active />)
+    rerender(<div />)
+    expect(app.activeBusyScopes).toBe(0)
+    expect(app.busyScopesBegun).toBe(2)
+  })
+
+  it('多个组件各持一个作用域：任一为 true 即 busy；不清除显式 setBusy', () => {
+    const Pair = ({ a, b }: { a: boolean; b: boolean }) => (
+      <>
+        <Editor active={a} />
+        <Editor active={b} />
+      </>
+    )
+    const { app, rerender } = setup(<Pair a b />)
+    expect(app.activeBusyScopes).toBe(2)
+    rerender(<Pair a={false} b />)
+    expect(app.isBusy()).toBe(true)
+    app.setBusy(true)
+    rerender(<Pair a={false} b={false} />)
+    expect(app.activeBusyScopes).toBe(0)
+    expect(app.isBusy()).toBe(true)
+  })
+
+  it('StrictMode 下不泄漏作用域', () => {
+    const { app, rerender } = setup(<Editor active />, { strict: true })
+    expect(app.activeBusyScopes).toBe(1)
+    rerender(<div />)
+    expect(app.activeBusyScopes).toBe(0)
   })
 })
 

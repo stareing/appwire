@@ -39,6 +39,10 @@
 //   （reason "foreground"）返回；后台也要能用的能力做成 app 工具，或给 view 工具声明 ToolOptions::background_tool。
 //   Client::set_navigate_in_background(true)（桌面默认）时后台导航仍交给 handler：可自行把窗口提到前台，或
 //   Navigate::fail_user_action / 抛出 UserActionRequired 回复 USER_ACTION_REQUIRED。
+//
+// 用户正在操作（spec/protocol.md 5.3，app_mcp.h v19）：Client::set_busy(true / false) 显式开关，或 RAII 的 Client::busy()
+// （BusyScope，引用计数、可嵌套、可跨线程结束）。有效 busy = 开关 ∨ 未结束作用域数 > 0，二者互不清除。
+// 期间写调用按 ClientConfig::busy_policy（运行中 Client::set_busy_policy）拒绝（RATE_LIMITED，scope "busy"）或排队；只读调用不受影响。
 #ifndef APP_MCP_HPP
 #define APP_MCP_HPP
 

@@ -20,7 +20,7 @@
  */
 
 import { ToolCallError, type AppMcp, type Logger, type Registrar, type Scope, type ToolHandle, type ResourceHandle } from '@app-mcp/node'
-import type { ConnectionState, ErrorKind, HoldHandle, ToolContext, ToolResultEnvelope } from '@app-mcp/node'
+import type { ConnectionState, ErrorKind, BusyHandle, HoldHandle, ToolContext, ToolResultEnvelope } from '@app-mcp/node'
 import {
   CHANNEL_EVENT,
   CHANNEL_OP,
@@ -64,7 +64,10 @@ export interface IpcMainLike {
  */
 export type MainAppMcp = Pick<AppMcp, 'scope' | 'instanceId' | 'state' | 'onStateChange'> &
   Partial<
-    Pick<AppMcp, 'wake' | 'sleep' | 'hold' | 'connectNow' | 'connectionId' | 'setNavigationHandler' | 'setNavigateInBackground'>
+    Pick<
+      AppMcp,
+      'wake' | 'sleep' | 'hold' | 'connectNow' | 'connectionId' | 'setNavigationHandler' | 'setNavigateInBackground' | 'beginBusy'
+    >
   >
 
 export interface AttachOptions {
@@ -117,6 +120,8 @@ class RendererSession {
   private nextReadId = 1
   private nextNavId = 1
   private disposed = false
+  /** 本页声明用户正在操作（`busy.set`）。 */
+  private busy = false
   private readonly onGone = () => {
     this.owner.clearNavigationTarget(this.sender)
     this.owner.endSession(this)
@@ -148,8 +153,20 @@ class RendererSession {
     return scope
   }
 
+  /** 本页声明用户正在操作且会话未结束。 */
+  get isBusy(): boolean {
+    return !this.disposed && this.busy
+  }
+
   handle(op: RendererOp): unknown {
     switch (op.op) {
+      case 'busy.set':
+        if (!this.appMcp.beginBusy) {
+          throw Object.assign(new Error('appMcp 不支持 beginBusy（@app-mcp/node 版本过旧）'), { code: 'UNSUPPORTED' })
+        }
+        this.busy = op.busy === true
+        this.owner.syncBusy()
+        return undefined
       case 'navigation.set':
         this.owner.setNavigationTarget(this, op.enabled === true)
         return undefined
@@ -399,6 +416,11 @@ class Attachment implements AppMcpAttachment {
    *   页面卸载（`reset`）、webContents 销毁 / 崩溃或页面关闭导航时清除。
    */
   private navigationTarget: WebContentsLike | undefined
+  /**
+   * 有页面正在被用户操作时持有的 `appMcp.beginBusy()` 作用域（{@link Attachment.syncBusy}）。
+   * @why 用作用域而不是 `setBusy`：主进程代码对 `appMcp.setBusy` 的显式开关与页面的声明互不清除（有效值为两者之或）。
+   */
+  private pagesBusy: BusyHandle | undefined
   readonly logger: Pick<Logger, 'warn' | 'error'>
 
   constructor(private readonly options: AttachOptions) {
@@ -478,6 +500,19 @@ class Attachment implements AppMcpAttachment {
   endSession(session: RendererSession): void {
     if (this.sessions.get(session.sender.id) === session) this.sessions.delete(session.sender.id)
     session.dispose()
+    this.syncBusy()
+  }
+
+  /** 把各页 `busy.set` 之或同步给 `appMcp`（汇总值变化时开始 / 结束作用域）；页面刷新 / 卸载 / 销毁后其声明随之失效。 */
+  syncBusy(): void {
+    const busy = [...this.sessions.values()].some((s) => s.isBusy)
+    if (busy === (this.pagesBusy !== undefined)) return
+    if (busy) {
+      this.pagesBusy = this.options.appMcp.beginBusy?.()
+    } else {
+      this.pagesBusy?.release()
+      this.pagesBusy = undefined
+    }
   }
 
   private onOp(sender: WebContentsLike, raw: unknown): OpReply {

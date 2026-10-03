@@ -19,6 +19,17 @@ export type Visibility = 'visible' | 'hidden' | 'frozen';
  */
 export type ToolSurface = 'app' | 'view';
 
+/**
+ * 用户正在操作（`AppMcp.setBusy`）期间写调用的处理方式（spec/protocol.md 5.3）：`reject` 以 `RATE_LIMITED`
+ * （`data` 为 `{ scope: 'busy' }`）拒绝、未执行；`queue` 排队，`setBusy(false)` 后按到达顺序执行。
+ */
+export type BusyPolicy = 'reject' | 'queue';
+
+/** `AppMcp.beginBusy` 返回的作用域句柄：`release` 结束作用域（幂等）。 */
+export interface BusyHandle {
+  release(): void;
+}
+
 /** 协议错误类别，见 spec/protocol.md 第 4 节。 */
 export type ErrorKind =
   'TOOL_NOT_FOUND' | 'TOOL_DISABLED' | 'INVALID_INPUT' | 'USER_REJECTED' | 'TIMEOUT' | 'HANDLER_ERROR' |
@@ -378,4 +389,9 @@ export interface AppMcpOptions {
    * `USER_ACTION_REQUIRED`（`reason: "foreground"`）回复、不调用回调；为 true 时由回调决定（如发通知请用户点开）。
    */
   navigateInBackground?: boolean;
+  /**
+   * 用户正在操作（`AppMcp.setBusy`）期间写调用（生效注解不是 `readOnlyHint: true` 的工具）的处理方式
+   * （spec/protocol.md 5.3），默认 `'reject'`。之后可用 `AppMcp.setBusyPolicy` 修改。
+   */
+  busyPolicy?: BusyPolicy;
 }

@@ -173,6 +173,54 @@ void main() {
     expect(wake.handleLink(null), isFalse);
   }, skip: path == null);
 
+  testWidgets('McpBusy：busy 为 true 时持有作用域、变为 false 或卸载时归还（引用计数），换客户端时迁移', (tester) async {
+    final a = AppMcp(appId: 'shop', appName: '商店', libraryPath: path);
+    addTearDown(a.dispose);
+    final b = AppMcp(appId: 'shop', appName: '商店', libraryPath: path);
+    addTearDown(b.dispose);
+
+    Widget app(AppMcp client, {bool busy = true, bool show = true}) => AppMcpScope(
+          client: client,
+          trackLifecycle: false,
+          child: show ? McpBusy(busy: busy, child: const SizedBox()) : const SizedBox(),
+        );
+
+    await tester.pumpWidget(app(a));
+    expect(a.isBusy, isTrue);
+    await tester.pumpWidget(app(a, busy: false));
+    expect(a.isBusy, isFalse);
+    await tester.pumpWidget(app(a));
+    expect(a.isBusy, isTrue);
+    await tester.pumpWidget(app(b));
+    expect((a.isBusy, b.isBusy), (false, true));
+    await tester.pumpWidget(app(b, show: false));
+    expect(b.isBusy, isFalse);
+
+    // 引用计数：两个 McpBusy 并存，先卸载一个仍为 busy；与显式开关互不清除。
+    Widget two(AppMcp client, {bool second = true}) => AppMcpScope(
+          client: client,
+          trackLifecycle: false,
+          child: Column(children: [
+            const McpBusy(child: SizedBox()),
+            if (second) const McpBusy(child: SizedBox()),
+          ]),
+        );
+    await tester.pumpWidget(two(b));
+    expect(b.isBusy, isTrue);
+    await tester.pumpWidget(two(b, second: false));
+    expect(b.isBusy, isTrue);
+    b.setBusy(false);
+    expect(b.isBusy, isTrue);
+    await tester.pumpWidget(app(b, show: false));
+    expect(b.isBusy, isFalse);
+
+    // 卸载前客户端已释放：不抛出。
+    await tester.pumpWidget(app(a));
+    a.dispose();
+    await tester.pumpWidget(const SizedBox());
+    expect(tester.takeException(), isNull);
+  }, skip: path == null);
+
   testWidgets('McpTool：挂载注册、重建只更新、卸载注销', (tester) async {
     final lib = DynamicLibrary.open(path!);
     final describe = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),

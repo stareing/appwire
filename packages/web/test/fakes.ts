@@ -134,6 +134,18 @@ export class FakeCore implements CoreClient {
   setNavigateInBackground(enabled: boolean): void {
     this.rec('setNavigateInBackground', enabled)
   }
+  /** 用户正在操作（`setBusy`）；只记录，不模拟调度。 */
+  busy = false
+  setBusy(busy: boolean): void {
+    this.rec('setBusy', busy)
+    this.busy = busy
+  }
+  isBusy(): boolean {
+    return this.busy
+  }
+  setBusyPolicy(policy: string): void {
+    this.rec('setBusyPolicy', policy)
+  }
   pollEvent(): CoreEvent | undefined {
     return this.events.shift()
   }

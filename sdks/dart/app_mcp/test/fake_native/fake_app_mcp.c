@@ -116,6 +116,7 @@ struct AmClient {
     int n_res;
     int stopped;
     AmIdleExitFn on_idle_exit;
+    bool busy; int busy_policy; /* v19：am_client_set_busy / am_client_set_busy_policy 的当前值 */
 };
 struct AmScope { AmClient *client; ScopeRec *rec; };
 struct AmTool { AmClient *client; ToolRec *rec; };
@@ -520,6 +521,16 @@ char *fake_call_dedup(void) { return dup_str(g_call_dedup); }
 char *fake_name_service(void) { return dup_str(g_name_service); }
 /* v18：最近一次 am_client_new_ex 的 max_queued_calls（原样）。 */
 int32_t fake_max_queued_calls(void) { return g_max_queued; }
+/* v19：用户正在操作。只记录状态（拒绝 / 排队的行为由真实库的一致性用例覆盖）；非法策略 → AM_ERR_INVALID_ARGUMENT。 */
+AmStatus am_client_set_busy(AmClient *c, bool busy) { if (!c) return AM_ERR_INVALID_ARGUMENT; c->busy = busy; return AM_OK; }
+AmStatus am_client_is_busy(const AmClient *c, bool *out) { if (!c || !out) return AM_ERR_INVALID_ARGUMENT; *out = c->busy; return AM_OK; }
+AmStatus am_client_set_busy_policy(AmClient *c, AmBusyPolicy p) {
+    if (!c || (p != AM_BUSY_REJECT && p != AM_BUSY_QUEUE)) { set_error("非法的 busy 策略"); return AM_ERR_INVALID_ARGUMENT; }
+    c->busy_policy = (int)p;
+    return AM_OK;
+}
+int fake_busy_policy(void) { return g_client ? g_client->busy_policy : -1; }
+int fake_busy(void) { return g_client ? (int)g_client->busy : -1; }
 /* 最近一次 sleep 的原因（需 am_string_free）。 */
 char *fake_last_sleep(void) {
     lock_global();
