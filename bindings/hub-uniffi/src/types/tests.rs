@@ -31,6 +31,7 @@ fn config_defaults_follow_hub() {
         (d.mcp_protocol_mode, d.max_listen_streams, d.max_listen_resources)
     );
     assert_eq!(c.max_task_handles, d.max_task_handles);
+    assert_eq!(c.max_locks, d.max_locks);
     assert_eq!(c.approval, d.approval);
     assert!(c.manifests.is_empty() && c.upstreams.is_empty());
 }
@@ -54,6 +55,7 @@ fn config_overrides() {
         max_listen_streams: Some(0),
         max_listen_resources: Some(8),
         max_task_handles: Some(0),
+        max_locks: Some(0),
         upstreams: vec![UpstreamSpec {
             name: "fs".into(),
             command: "npx".into(),
@@ -81,6 +83,7 @@ fn config_overrides() {
     assert_eq!(c.mcp_protocol_mode, hub::McpProtocolMode::LegacyOnly);
     assert_eq!((c.max_listen_streams, c.max_listen_resources), (0, 8));
     assert_eq!(c.max_task_handles, 0);
+    assert_eq!(c.max_locks, 0);
     assert_eq!(c.upstreams["fs"].env["A"], "1");
     assert_eq!(c.manifests[0].app_id, "shop");
 
@@ -538,6 +541,7 @@ fn old_host_status_has_no_listen_streams() {
     .unwrap();
     let s = HubStatus::from(st);
     assert_eq!((s.mcp_sessions, s.mcp_listen_streams, s.tasks), (1, None, None));
+    assert_eq!((s.usage, s.locks), (None, None));
 }
 
 #[test]
@@ -587,4 +591,31 @@ fn status_agents_and_usage() {
     let counts = UsageCounts { calls: 3, wakes: 1, rate_limited: 2, arguments_bytes: 10, result_bytes: 20 };
     assert_eq!((u.subject.as_str(), u.agent.as_deref(), u.total, u.apps_truncated), ("agent:claude", Some("claude"), counts, true));
     assert_eq!(u.apps, vec![AppUsageStatus { app_id: "shop".into(), counts }]);
+}
+
+/// 第 16 项 N6：`locks` 原样转换（App 锁无 key）。
+#[test]
+fn status_locks() {
+    let st: hub::HubStatus = serde_json::from_value(serde_json::json!({
+        "service": "app-mcp", "version": "0", "pid": 1, "startedAtMs": 0, "mcpHttp": true,
+        "auth": {"tokenConfigured": false, "tokenRequiredWithoutOrigin": false}, "mcpSessions": 0,
+        "apps": [], "reports": [],
+        "locks": [{"appId": "shop", "caller": "api:s1", "holder": "api", "expiresInMs": 1500},
+                  {"appId": "shop", "key": "doc-1", "caller": "principal:agent:claude", "holder": "agent:claude", "expiresInMs": 9}]
+    }))
+    .unwrap();
+    let locks = HubStatus::from(st).locks.unwrap();
+    assert_eq!(
+        locks,
+        vec![
+            LockStatus { app_id: "shop".into(), key: None, caller: "api:s1".into(), holder: "api".into(), expires_in_ms: 1500 },
+            LockStatus {
+                app_id: "shop".into(),
+                key: Some("doc-1".into()),
+                caller: "principal:agent:claude".into(),
+                holder: "agent:claude".into(),
+                expires_in_ms: 9,
+            },
+        ]
+    );
 }

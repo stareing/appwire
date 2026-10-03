@@ -64,6 +64,8 @@ object ErrorKind {
     const val NAVIGATION_FAILED = "NAVIGATION_FAILED"
     /** 导航被拒绝（App 拒绝或页面不可由 Agent 导航）。 */
     const val NAVIGATION_DENIED = "NAVIGATION_DENIED"
+    /** 对象锁冲突（由 Host 产生，App 一般不用；spec/hub-api.md 3.6「对象锁」）。 */
+    const val LOCKED = "LOCKED"
 
     /** 原生库认可的全部类别。 */
     val all: Set<String> by lazy { dev.appmcp.ffi.errorKinds().toSet() }

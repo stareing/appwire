@@ -168,7 +168,7 @@ impl HubShared {
                 "已创建任务 {task_id}。在 {} 的参数中带 {ARG_TASK_ID}: \"{task_id}\" 即在该任务中操作：实例选择与租约只属于该任务，\
                  与其他任务及不带 {ARG_TASK_ID} 的调用互不影响；工具列表不变。任务{idle}；用完可调用 {TOOL_APPS_TASK_END}。\
                  App 工具的参数由 App 定义、不带 {ARG_TASK_ID}，按不带任务的默认规则路由。",
-                TASK_SCOPED_TOOLS[..TASK_SCOPED_TOOLS.len() - 1].join(" / "),
+                TASK_SCOPED_TOOLS.iter().filter(|n| **n != TOOL_APPS_TASK_END).copied().collect::<Vec<_>>().join(" / "),
             ),
         })))
     }

@@ -121,6 +121,9 @@ pub struct McpSection {
     /// 每个主体同时存在的任务句柄数上限（spec/hub-api.md 3.6「任务句柄」），默认 32；0 = 不提供任务句柄。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_task_handles: Option<usize>,
+    /// 每个任务同时持有的对象锁数上限（spec/hub-api.md 3.6「对象锁」），默认 16；0 = 不提供对象锁。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_locks: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

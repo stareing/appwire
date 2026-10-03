@@ -24,12 +24,24 @@ pub const TOOL_APPS_RELEASE: &str = "apps.release";
 pub const TOOL_APPS_TASK_BEGIN: &str = "apps.task.begin";
 /// 结束一个 Agent 任务句柄：收回其租约、清除其选择（spec/hub-api.md 3.6「任务句柄」）。
 pub const TOOL_APPS_TASK_END: &str = "apps.task.end";
+/// 加锁 / 续期（spec/hub-api.md 3.6「对象锁」，第 16 项 N6）。
+pub const TOOL_APPS_LOCK: &str = "apps.lock";
+/// 解锁（spec/hub-api.md 3.6「对象锁」）。
+pub const TOOL_APPS_UNLOCK: &str = "apps.unlock";
 
 /// 任务句柄的工具参数名（与 [`META_TASK_ID`] 等价）。
 pub const ARG_TASK_ID: &str = "taskId";
-/// 接受 [`ARG_TASK_ID`] 参数的内置工具（持有按任务区分的状态：选择、租约；[`TOOL_APPS_TASK_END`] 中为必填）。
-pub const TASK_SCOPED_TOOLS: [&str; 6] =
-    [TOOL_APPS_LIST, TOOL_APPS_SELECT, TOOL_APPS_NAVIGATE, TOOL_APPS_ACTIVATE, TOOL_APPS_RELEASE, TOOL_APPS_TASK_END];
+/// 接受 [`ARG_TASK_ID`] 参数的内置工具（持有按任务区分的状态：选择、租约、锁；[`TOOL_APPS_TASK_END`] 中为必填）。
+pub const TASK_SCOPED_TOOLS: [&str; 8] = [
+    TOOL_APPS_LIST,
+    TOOL_APPS_SELECT,
+    TOOL_APPS_NAVIGATE,
+    TOOL_APPS_ACTIVATE,
+    TOOL_APPS_RELEASE,
+    TOOL_APPS_TASK_END,
+    TOOL_APPS_LOCK,
+    TOOL_APPS_UNLOCK,
+];
 
 // ---- MCP 结果 `_meta`（Hub → Agent）----
 

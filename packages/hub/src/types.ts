@@ -48,6 +48,11 @@ export type ErrorKind =
   | 'NAVIGATION_FAILED'
   /** 导航被拒绝（App 拒绝或页面不可由 Agent 导航）。`details`：`reason`（`app` / `not-navigable`）、`appId`、`page`。 */
   | 'NAVIGATION_DENIED'
+  /**
+   * 对象锁冲突（spec/hub-api.md 3.6「对象锁」，只由 Hub 产生）：App 正被其他调用方以 `apps.lock` 锁定，写调用未转发、未唤醒；
+   * 或要加的锁已被他人持有。`details`：`appId`、`key?`、`holder`（`agent:<名>` / `local` / `api`）、`retryAfterMs`。
+   */
+  | 'LOCKED'
 
 /**
  * 标准 MCP 工具注解（spec/protocol.md 第 3 节）。Hub 原样传递 App 的声明，不据此做判断；
@@ -321,6 +326,11 @@ export interface HubConfig {
    * 0 不提供任务句柄（`apps.task.*` 不列出，`taskId` 一律无效）。
    */
   maxTaskHandles?: number
+  /**
+   * 每个持有者同时持有的对象锁数上限（spec/hub-api.md 3.6「对象锁」），缺省 16，超出时 `apps.lock` 报 `RATE_LIMITED`；
+   * 0 不提供对象锁（`apps.lock` / `apps.unlock` 不列出，调用为 `TOOL_NOT_FOUND`）。
+   */
+  maxLocks?: number
   // ---- Agent 身份（spec/hub-api.md 3.6）----
   /** 按 Agent 发的访问令牌；缺省不登记（所有请求为本机主体）。不合法时 `Hub.start` 失败。运行中用 `Hub.setAgents` 替换。 */
   agents?: AgentCredential[]

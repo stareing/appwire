@@ -10,17 +10,10 @@ use app_mcp_protocol::{ErrorKind, ToolError};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
-use crate::call::{CallCtx, CancelFut, TOOL_APPS_ACTIVATE, TOOL_APPS_NAVIGATE, TOOL_APPS_RELEASE, json_result};
+use crate::call::{CallCtx, CancelFut, TOOL_APPS_ACTIVATE, TOOL_APPS_NAVIGATE, TOOL_APPS_RELEASE, json_result, unknown_app};
 use crate::hub::HubShared;
 use crate::schema::{self, SchemaCheck};
 use crate::types::AppState;
-
-fn unknown_app(app_id: &str) -> ToolError {
-    ToolError::new(
-        ErrorKind::ToolNotFound,
-        format!("没有 appId 为「{app_id}」的 App。可调用 apps.list 查看可用的 App。"),
-    )
-}
 
 fn str_arg(args: &Value, key: &str) -> String {
     args.get(key).and_then(Value::as_str).unwrap_or_default().to_owned()
@@ -116,6 +109,7 @@ impl HubShared {
             }
         }
         self.check_app_call_policy(app_id, ctx.agent())?;
+        self.check_app_lock(app_id, None, &ctx.caller)?;
         self.guard_call(app_id, TOOL_APPS_NAVIGATE, args, &ctx.caller)?;
         let selected = self.selected_for(&ctx.caller, app_id);
         let woken = self.wake_app_if_disconnected(app_id, selected.as_deref(), None, &ctx.caller, cancel.as_mut()).await?;

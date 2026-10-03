@@ -191,6 +191,8 @@ struct ConfigJson {
     max_listen_resources: Option<usize>,
     /// 每个主体同时存在的任务句柄数上限（spec/hub-api.md 3.6「任务句柄」），缺省 32；0 不提供任务句柄。
     max_task_handles: Option<usize>,
+    /// 每个持有者同时持有的对象锁数上限（spec/hub-api.md 3.6「对象锁」），缺省 16；0 不提供对象锁。
+    max_locks: Option<usize>,
     /// Agent 登记（spec/hub-api.md 3.6「Agent 身份」）：`[{"name","token"}]`；不合法时 `Hub.start` 失败。
     agents: Option<Vec<AgentCredential>>,
     upstreams: BTreeMap<String, UpstreamConfig>,
@@ -320,6 +322,9 @@ impl ConfigJson {
         }
         if let Some(v) = self.max_task_handles {
             c.max_task_handles = v;
+        }
+        if let Some(v) = self.max_locks {
+            c.max_locks = v;
         }
         if let Some(agents) = self.agents {
             c.agents = AgentsConfig { agents };

@@ -121,6 +121,7 @@ const ERROR_KINDS: readonly ErrorKind[] = [
   'USER_ACTION_REQUIRED',
   'NAVIGATION_FAILED',
   'NAVIGATION_DENIED',
+  'LOCKED',
 ]
 
 export function isRisk(v: string): v is Risk {

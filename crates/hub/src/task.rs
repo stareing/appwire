@@ -28,6 +28,10 @@ use tokio::time::Instant;
 use crate::agents::AgentName;
 use crate::lifecycle::LeaseEntry;
 
+mod locks;
+
+pub(crate) use locks::{LockRefusal, LockTarget};
+
 /// 调用方主体：由**传输层凭据**决定，不取自 `clientInfo`（MCP 规范：自报信息不可信，S-F6）。
 ///
 /// 本机令牌（及允许不带令牌的回环请求）、IPC 同一用户、stdio 父进程都是"本机用户" [`Principal::Local`]；
@@ -232,6 +236,8 @@ pub(crate) struct AgentTask {
     pub leases: HashMap<u64, LeaseEntry>,
     /// 渐进暴露：本任务展开过（`apps.tools`）或调用过的 App（含上游）。
     pub exposed: HashSet<String>,
+    /// 对象锁（第 16 项 N6）：随任务移除一并释放。
+    pub locks: locks::TaskLocks,
 }
 
 impl AgentTask {
@@ -242,6 +248,7 @@ impl AgentTask {
             delivered: HashMap::new(),
             leases: HashMap::new(),
             exposed: HashSet::new(),
+            locks: locks::TaskLocks::default(),
         }
     }
 

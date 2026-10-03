@@ -95,6 +95,20 @@ fn max_task_handles_from_file_and_cli() {
 }
 
 #[test]
+fn max_locks_from_file_and_cli() {
+    let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home()).unwrap();
+    assert_eq!(s.max_locks, app_mcp_hub::HubConfig::default().max_locks, "默认值与 HubConfig 一致");
+    let file: FileConfig = serde_json::from_str(r#"{"mcp":{"maxLocks":0}}"#).unwrap();
+    assert_eq!(Settings::resolve(&file, &Overrides::default(), &home()).unwrap().max_locks, 0);
+    let o = Overrides { max_locks: Some(3), ..Default::default() };
+    assert_eq!(Settings::resolve(&file, &o, &home()).unwrap().max_locks, 3);
+    let mut f = FileConfig::default();
+    f.apply(&o).unwrap();
+    assert_eq!(serde_json::to_value(&f).unwrap()["mcp"], serde_json::json!({"maxLocks": 3}));
+    assert!(serde_json::from_str::<FileConfig>(r#"{"mcp":{"maxLocks":-1}}"#).is_err());
+}
+
+#[test]
 fn mcp_settings_from_file_and_cli() {
     let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home()).unwrap();
     let hub = app_mcp_hub::HubConfig::default();

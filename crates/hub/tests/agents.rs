@@ -384,3 +384,34 @@ async fn agent_quota_and_usage_accounting() {
     app.stop();
     hub.shutdown().await;
 }
+
+/// 第 16 项 N6：一个 Agent 经 MCP 加的 App 锁拦截其他 Agent 与本机主体的写调用（`LOCKED`，`holder` 为 `agent:<名>`、不含任务 ID），
+/// 不拦截持有者自己；其他 Agent 释放不了；持有者解锁后恢复。
+#[tokio::test(flavor = "multi_thread")]
+async fn app_lock_is_held_per_agent() {
+    let hub = start().await;
+    let addr = hub.listen_addr().unwrap();
+    let app = start_shop(&hub).await;
+
+    let r = modern_call(addr, Some(CLAUDE), "apps.lock", json!({"appId": "shop"})).await.json();
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    for token in [Some(CURSOR), Some(LOCAL)] {
+        let r = modern_call(addr, token, "shop.cart.add", json!({})).await.json();
+        let e = &r["result"]["structuredContent"]["error"];
+        assert_eq!((e["kind"].as_str(), e["details"]["holder"].as_str()), (Some("LOCKED"), Some("agent:claude")), "{r}");
+    }
+    let r = modern_call(addr, Some(CLAUDE), "shop.cart.add", json!({})).await.json();
+    assert_ne!(r["result"]["isError"], true, "持有者自己照常：{r}");
+    let r = modern_call(addr, Some(CURSOR), "apps.unlock", json!({"appId": "shop"})).await.json();
+    assert_eq!(r["result"]["structuredContent"]["released"], false, "{r}");
+    let st = hub_status(addr).await;
+    let locks = st.locks.expect("locks");
+    assert_eq!((locks.len(), locks[0].caller.as_str(), locks[0].holder.as_str()), (1, "principal:agent:claude", "agent:claude"));
+
+    let r = modern_call(addr, Some(CLAUDE), "apps.unlock", json!({"appId": "shop"})).await.json();
+    assert_eq!(r["result"]["structuredContent"]["released"], true, "{r}");
+    let r = modern_call(addr, Some(CURSOR), "shop.cart.add", json!({})).await.json();
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    app.stop();
+    hub.shutdown().await;
+}

@@ -766,3 +766,4 @@ fn serve_http_on_loopback() {
 
 mod agents;
 mod lifecycle;
+mod locks;

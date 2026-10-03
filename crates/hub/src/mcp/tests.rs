@@ -311,7 +311,8 @@ async fn stateless_tools_list_is_pure_function_of_server_state() {
 
         // legacy：渐进暴露照旧随 apps.tools 变化，结果不带缓存字段
         let l1 = tools_json(&legacy).await;
-        assert!(!l1.contains("ttlMs") && !l1.contains("cacheScope"), "{l1}");
+        let l1_json: Value = serde_json::from_str(&l1).expect("json");
+        assert!(l1_json.get("ttlMs").is_none() && l1_json.get("cacheScope").is_none(), "{l1}");
         assert!(!tool_names(&l1).contains(&"shop.cart.add".to_owned()));
         call(&legacy, "apps.tools", json!({"appId": "shop"})).await;
         assert!(tool_names(&tools_json(&legacy).await).contains(&"shop.cart.add".to_owned()));

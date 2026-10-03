@@ -8,12 +8,20 @@ use serde_json::{Value, json};
 
 use super::{Check, Level};
 
-/// 调用方计数（`status` 一行摘要与 doctor 共用）：MCP 会话数，以及 `subscriptions/listen` 流数与 Agent 任务数
-/// （spec/hub-api.md 3.6；旧 Host 不报告时省略）。
+/// 调用方计数（`status` 一行摘要与 doctor 共用）：MCP 会话数，以及 `subscriptions/listen` 流数、Agent 任务数与持有中的对象锁
+/// （spec/hub-api.md 3.6；旧 Host 不报告时省略，没有锁时不提）。
 pub(crate) fn callers_text(st: &HubStatus) -> String {
     let listen = st.mcp_listen_streams.map(|n| format!("、listen 流 {n} 个")).unwrap_or_default();
     let tasks = st.tasks.as_ref().map(|t| format!("、Agent 任务 {} 个", t.len())).unwrap_or_default();
-    format!("MCP 会话 {} 个{listen}{tasks}", st.mcp_sessions)
+    let locks = match st.locks.as_deref() {
+        Some([]) | None => String::new(),
+        Some(l) => {
+            let mut held: Vec<String> = l.iter().map(|k| format!("{}（{}）", k.app_id, k.holder)).collect();
+            held.dedup();
+            format!("、对象锁 {} 把：{}", l.len(), held.join("、"))
+        }
+    };
+    format!("MCP 会话 {} 个{listen}{tasks}{locks}", st.mcp_sessions)
 }
 
 pub(super) fn apps_check(status: Option<&Result<HubStatus, String>>) -> Check {

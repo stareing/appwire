@@ -51,6 +51,17 @@ public sealed record HubStatusInfo(
     public IReadOnlyList<string>? Agents { get; init; }
     /// <summary>按调用方记账（第 16 项 P3），按 Subject 排序；旧 Hub 为 null。</summary>
     public IReadOnlyList<UsageStatusInfo>? Usage { get; init; }
+    /// <summary>未到期的对象锁（第 16 项 N6，spec/hub-api.md 3.6「对象锁」），按 AppId、Key 排序；旧 Hub 为 null。</summary>
+    public IReadOnlyList<LockStatusInfo>? Locks { get; init; }
+}
+
+/// <summary>
+/// 一把未到期的对象锁（第 16 项 N6）。Key：命名锁的名字（App 锁为 null）；Caller：持有者的调用方键；
+/// Holder：持有者的记账主体 agent:&lt;名&gt; / local / api；ExpiresInMs：距到期的毫秒数。
+/// </summary>
+public sealed record LockStatusInfo(string AppId, string Caller, string Holder, ulong ExpiresInMs)
+{
+    public string? Key { get; init; }
 }
 
 /// <summary>

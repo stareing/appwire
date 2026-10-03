@@ -136,7 +136,7 @@ public class HubBasicTests
         {
             // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
             var names = h.ListTools(new ToolFilter { Session = "c1" }).Select(t => t.Name).ToArray();
-            Assert.Equal(["apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release"], names);
+            Assert.Equal(["apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release", "apps.lock", "apps.unlock"], names);
         }
 
         var disabled = JsonNode.Parse(new HubOptions { DisableListen = true, DisableIpc = true }.ToConfigJson())!.AsObject();

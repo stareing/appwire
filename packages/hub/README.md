@@ -127,6 +127,8 @@ MCP 出口的协议版本与通知（spec/hub-api.md 3.6）：`mcpProtocolMode`�
 `maxListenResources`（一个 listen 流接受的资源 URI 数上限，默认 256）。`hub.status().mcpListenStreams` 为当前 listen 流数。
 任务句柄（spec/hub-api.md 3.6「任务句柄」）：`maxTaskHandles`（每个主体同时存在的任务句柄数上限，默认 32，超出时 `apps.task.begin`
 报 `RATE_LIMITED`；0 不提供任务句柄，`apps.task.*` 不列出）。
+对象锁（spec/hub-api.md 3.6「对象锁」）：`maxLocks`（每个持有者同时持有的锁数上限，默认 16，超出时 `apps.lock` 报 `RATE_LIMITED`；
+0 关闭，`apps.lock` / `apps.unlock` 不列出）。他人持有时写调用与加锁以 `LOCKED` 结束；`hub.status().locks` 列出未到期的锁。
 
 ## 资源保护与结果校验（spec/hub-api.md 3.11）
 
@@ -206,8 +208,8 @@ hub.setWaker(null)                                                 // 恢复配�
 ## 渐进暴露（工具很多时）
 
 `toolExposure: 'auto'`（默认）下，App 与上游工具总数超过 `toolExposureThreshold`（默认 40）时，`tools()` / `exportTools()`
-只返回内置工具（`apps.list` / `apps.select` / `apps.overview` / `apps.tools` / `apps.activate` / `apps.release`，有页面目录时另有
-`apps.page` / `apps.navigate`），以及该会话展开过、调用过或选定了实例的 App 的工具。
+只返回内置工具（`apps.list` / `apps.select` / `apps.overview` / `apps.tools` / `apps.activate` / `apps.release`，`maxLocks > 0` 时另有
+`apps.lock` / `apps.unlock`，有页面目录时另有 `apps.page` / `apps.navigate`），以及该会话展开过、调用过或选定了实例的 App 的工具。
 模型调用 `apps.tools({ appId })` 得到该 App 的工具（含 schema），之后这些工具出现在同一会话的导出里；未列出的工具按全名 / 导出名
 仍可直接调用。会话由 `ToolFilter.session` 与 `dispatch(format, call, session)` 的会话对应：
 

@@ -47,6 +47,7 @@ pub(super) fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
         max_listen_streams: s.max_listen_streams,
         max_listen_resources: s.max_listen_resources,
         max_task_handles: s.max_task_handles,
+        max_locks: s.max_locks,
         ..defaults
     }
 }
@@ -136,5 +137,15 @@ mod tests {
         let file: FileConfig = serde_json::from_str(r#"{"mcp":{"maxTaskHandles":0}}"#).unwrap();
         let s = Settings::resolve(&file, &Overrides::default(), &home).unwrap();
         assert_eq!(hub_config(&s, &home).max_task_handles, 0);
+    }
+
+    #[test]
+    fn hub_config_carries_max_locks() {
+        let home = AppHome { dir: std::env::temp_dir().join(format!("app-mcp-hubcfg-locks-{}", std::process::id())) };
+        let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home).unwrap();
+        assert_eq!(hub_config(&s, &home).max_locks, HubConfig::default().max_locks);
+        let file: FileConfig = serde_json::from_str(r#"{"mcp":{"maxLocks":0}}"#).unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home).unwrap();
+        assert_eq!(hub_config(&s, &home).max_locks, 0);
     }
 }

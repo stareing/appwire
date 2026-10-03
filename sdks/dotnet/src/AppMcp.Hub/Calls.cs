@@ -89,6 +89,9 @@ public sealed record HubError(string Kind, string Message, JsonElement? Details)
     public const string NavigationFailed = "NAVIGATION_FAILED";
     /// <summary>导航被拒绝（App 拒绝或页面不可由 Agent 导航）。Details：reason（"app" / "not-navigable"）、appId、page。</summary>
     public const string NavigationDenied = "NAVIGATION_DENIED";
+    /// <summary>对象锁冲突（spec/hub-api.md 3.6「对象锁」，只由 Hub 产生）：App 正被其他调用方以 apps.lock 锁定，写调用未转发；
+    /// 或要加的锁已被他人持有。Details：appId、key?、holder（"agent:&lt;名&gt;" / "local" / "api"）、retryAfterMs。</summary>
+    public const string Locked = "LOCKED";
 }
 
 /// <summary>App 声明的调用结果业务状态（spec/protocol.md 3.2）。</summary>

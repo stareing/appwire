@@ -87,6 +87,22 @@ fn callers_text_counts_tasks() {
 }
 
 #[test]
+fn callers_text_lists_locks() {
+    let mut st = status_with_tools(0);
+    st.locks = Some(Vec::new());
+    assert_eq!(callers_text(&st), "MCP 会话 0 个", "没有锁时不提");
+    st.locks = Some(
+        serde_json::from_value(json!([
+            {"appId": "docs", "caller": "principal:agent:claude", "holder": "agent:claude", "expiresInMs": 5000},
+            {"appId": "docs", "key": "d1", "caller": "principal:agent:claude", "holder": "agent:claude", "expiresInMs": 5000},
+            {"appId": "shop", "caller": "api", "holder": "api", "expiresInMs": 100}
+        ]))
+        .unwrap(),
+    );
+    assert_eq!(callers_text(&st), "MCP 会话 0 个、对象锁 3 把：docs（agent:claude）、shop（api）");
+}
+
+#[test]
 fn tools_check_lists_declarations() {
     let st = status_with_tools(0);
     let c = tools_check(Some(&Ok(st)));

@@ -93,7 +93,7 @@ impl HubShared {
             && let Some(peer) = self.upstream_peer(app_id)
         {
             let guard = if args.is_object() {
-                self.check_call_policy(app_id, tool, ctx.agent()).and_then(|()| self.guard_call(app_id, tool, &args, &ctx.caller))
+                self.admit_call(app_id, tool, &args, &ctx)
             } else {
                 Ok(())
             };
@@ -153,7 +153,7 @@ impl HubShared {
         if !self.registry().has_app(app_id) {
             return inv(Some(app_id), Body::NotFound(unknown_app(app_id)));
         }
-        if let Err(e) = self.check_call_policy(app_id, tool, ctx.agent()) {
+        if let Err(e) = self.check_call_policy(app_id, tool, ctx.agent()).and_then(|()| self.check_app_lock(app_id, Some(tool), &ctx.caller)) {
             return inv(Some(app_id), Body::App(Err(e)));
         }
         // 后台替代（spec/hub-api.md 3.14）：view 工具够不着且已知 App 在后台 → 直接改调声明的 app 工具；
@@ -204,10 +204,17 @@ impl HubShared {
         cancel: CancelFut<'_>,
     ) -> ToolRun {
         tracing::info!(app_id, tool, "App 在后台，改调 view 工具声明的后台替代");
-        if let Err(e) = self.check_call_policy(app_id, tool, ctx.agent()).and_then(|()| self.guard_call(app_id, tool, &args, &ctx.caller)) {
+        if let Err(e) = self.admit_call(app_id, tool, &args, ctx) {
             return ToolRun { result: Err(e), instance_id: None, output_shape: OutputShape::Undeclared, woke: false };
         }
         self.invoke_tool(call_id, app_id, tool, args, ctx, cancel).await
+    }
+
+    /// 转发前的准入（顺序即优先级）：策略 `call` 执行点 → 对象锁 → 资源保护（大小上限、限流与记账）。
+    fn admit_call(&self, app_id: &str, tool: &str, args: &Value, ctx: &CallCtx) -> Result<(), ToolError> {
+        self.check_call_policy(app_id, tool, ctx.agent())?;
+        self.check_app_lock(app_id, Some(tool), &ctx.caller)?;
+        self.guard_call(app_id, tool, args, &ctx.caller)
     }
 
     /// 渐进暴露：把 App 加入调用方会话的工具列表；列表因此变化时通知该 MCP 会话。

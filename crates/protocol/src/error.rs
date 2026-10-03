@@ -56,11 +56,14 @@ pub enum ErrorKind {
     /// 导航被拒绝：App 拒绝本次导航（如用户正在输入、页面需要登录），或清单声明该页面不可由 Agent 导航
     /// （`navigable: false`）；`data.reason` 见 [`navigation_reason`]。重试不会改变结果，应请用户自行打开。
     NavigationDenied,
+    /// 对象锁冲突（第 16 项 N6，spec/hub-api.md 3.6「对象锁」，只由 Hub 产生）：App 正被其他 Agent 锁定，写调用未转发；
+    /// 或要加的锁已被他人持有。`data.holder` 为持有者的记账主体，`data.retryAfterMs` 为锁的剩余有效期。
+    Locked,
 }
 
 impl ErrorKind {
     /// 全部类别（唯一列表；按字符串解析时使用 [`ErrorKind::parse`]）。
-    pub const ALL: [ErrorKind; 21] = [
+    pub const ALL: [ErrorKind; 22] = [
         ErrorKind::ToolNotFound,
         ErrorKind::ToolDisabled,
         ErrorKind::InvalidInput,
@@ -82,6 +85,7 @@ impl ErrorKind {
         ErrorKind::UserActionRequired,
         ErrorKind::NavigationFailed,
         ErrorKind::NavigationDenied,
+        ErrorKind::Locked,
     ];
 
     /// 字符串形式（如 `"HANDLER_ERROR"`）→ 类别；未知值返回 `None`。
@@ -122,6 +126,7 @@ impl ErrorKind {
             ErrorKind::UserActionRequired => -32019,
             ErrorKind::NavigationFailed => -31001,
             ErrorKind::NavigationDenied => -31002,
+            ErrorKind::Locked => -31003,
         }
     }
 
@@ -148,6 +153,7 @@ impl ErrorKind {
             ErrorKind::UserActionRequired => "USER_ACTION_REQUIRED",
             ErrorKind::NavigationFailed => "NAVIGATION_FAILED",
             ErrorKind::NavigationDenied => "NAVIGATION_DENIED",
+            ErrorKind::Locked => "LOCKED",
         }
     }
 }
@@ -309,6 +315,8 @@ mod tests {
         assert_eq!(ErrorKind::UserActionRequired.as_str(), "USER_ACTION_REQUIRED");
         assert_eq!((ErrorKind::NavigationFailed.code(), ErrorKind::NavigationDenied.code()), (-31001, -31002));
         assert_eq!(serde_json::to_value(ErrorKind::NavigationDenied).unwrap(), json!("NAVIGATION_DENIED"));
+        assert_eq!((ErrorKind::Locked.code(), ErrorKind::Locked.as_str()), (-31003, "LOCKED"));
+        assert_eq!(ErrorKind::parse("LOCKED"), Some(ErrorKind::Locked));
     }
 
     #[test]

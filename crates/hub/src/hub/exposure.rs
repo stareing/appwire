@@ -123,7 +123,12 @@ impl HubShared {
         let exposed = self.exposed_apps(key);
         let listed = |app_id: &str| exposed.as_ref().is_none_or(|e| e.contains(app_id));
         let policy = self.policy();
-        let mut tools = call::builtin_tools(exposed.is_some(), self.has_pages(), self.task_handles_for(key));
+        let mut tools = call::builtin_tools(call::BuiltinSet {
+            apps_tools: exposed.is_some(),
+            apps_page: self.has_pages(),
+            tasks: self.task_handles_for(key),
+            locks: self.locks_enabled(),
+        });
         self.registry().visit_tools(listed, |app_id, t, availability| {
             if policy.tool_hidden(app_id, &t.name, Some(&t.effective_annotations())).is_none() {
                 tools.push(call::to_mcp_tool(app_id, t, availability));

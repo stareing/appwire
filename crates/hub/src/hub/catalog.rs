@@ -120,7 +120,8 @@ impl HubShared {
     /// `with_apps_tools`：内置工具是否包含 `apps.tools`（渐进暴露生效时才列出）。
     /// `app`：只取 appId（或上游名）满足条件的 App / 上游工具（先过滤再构造，构造会解析 schema）；内置工具总是包含。
     pub(crate) fn all_tools(&self, with_apps_tools: bool, with_apps_page: bool, app: impl Fn(&str) -> bool) -> Vec<(HubTool, bool)> {
-        let mut out: Vec<(HubTool, bool)> = call::builtin_hub_tools(with_apps_tools, with_apps_page, false)
+        let set = call::BuiltinSet { apps_tools: with_apps_tools, apps_page: with_apps_page, tasks: false, locks: self.locks_enabled() };
+        let mut out: Vec<(HubTool, bool)> = call::builtin_hub_tools(set)
             .into_iter()
             .map(|t| (t, true))
             .collect();
@@ -148,7 +149,8 @@ impl HubShared {
 
     /// 全部工具的全名（顺序同 [`Self::all_tools`]，只取名称，不构造定义）。
     fn all_tool_names(&self) -> Vec<String> {
-        let mut out: Vec<String> = call::builtin_hub_tools(true, true, false).into_iter().map(|t| t.name).collect();
+        let set = call::BuiltinSet { apps_tools: true, apps_page: true, tasks: false, locks: true };
+        let mut out: Vec<String> = call::builtin_hub_tools(set).into_iter().map(|t| t.name).collect();
         self.registry().visit_tools(|_| true, |app_id, t, _| out.push(format!("{app_id}.{}", t.name)));
         for (name, st) in lock(&self.upstreams).iter() {
             out.extend(st.tools.iter().map(|t| format!("{name}.{}", t.name)));

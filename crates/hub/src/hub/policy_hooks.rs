@@ -81,7 +81,7 @@ impl HubShared {
     }
 
     /// 某个 App / 上游工具当前的注解（Agent 实际看到的；按注解匹配规则时使用）。
-    fn tool_annotations(&self, app_id: &str, tool: &str) -> Option<ToolAnnotations> {
+    pub(crate) fn tool_annotations(&self, app_id: &str, tool: &str) -> Option<ToolAnnotations> {
         if let Some(st) = lock(&self.upstreams).get(app_id) {
             return st
                 .tools

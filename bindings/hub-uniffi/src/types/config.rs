@@ -179,6 +179,11 @@ pub struct HubConfig {
     /// 运行中用 `AppMcpHub::set_agents` 替换。
     #[uniffi(default = None)]
     pub agents: Option<Vec<AgentCredential>>,
+    // ---- 对象锁（spec/hub-api.md 3.6「对象锁」）----
+    /// 每个持有者同时持有的对象锁数上限（默认 16，超出时 `apps.lock` 报 `RATE_LIMITED`）；`0` 不提供对象锁
+    /// （`apps.lock` / `apps.unlock` 不列出，调用为 `TOOL_NOT_FOUND`）。
+    #[uniffi(default = None)]
+    pub max_locks: Option<u32>,
 }
 
 impl Default for HubConfig {
@@ -231,6 +236,7 @@ impl Default for HubConfig {
             max_listen_resources: None,
             max_task_handles: None,
             agents: None,
+            max_locks: None,
         }
     }
 }
@@ -458,6 +464,9 @@ impl HubConfig {
         }
         if let Some(v) = self.max_task_handles {
             c.max_task_handles = v as usize;
+        }
+        if let Some(v) = self.max_locks {
+            c.max_locks = v as usize;
         }
         if let Some(agents) = self.agents {
             let agents = super::agents_config(agents);

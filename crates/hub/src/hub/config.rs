@@ -150,6 +150,9 @@ pub struct HubConfig {
     /// 每个主体同时存在的任务句柄数上限（`apps.task.begin`，spec/hub-api.md 3.6「任务句柄」，B-07）；达到上限时签发以
     /// `RATE_LIMITED` 失败。`0` = 不提供任务句柄（`apps.task.*` 不列出，`taskId` 一律无效）。默认 [`DEFAULT_MAX_TASK_HANDLES`]。
     pub max_task_handles: usize,
+    /// 每个持有者（Agent 任务）同时持有的对象锁数上限（`apps.lock`，spec/hub-api.md 3.6「对象锁」，B-07）；达到上限时加锁以
+    /// `RATE_LIMITED` 失败。`0` = 不提供对象锁（`apps.lock` / `apps.unlock` 不列出、不可调用）。默认 [`DEFAULT_MAX_LOCKS`]。
+    pub max_locks: usize,
     /// 已登记的 Agent 及其访问令牌（第 16 项 N5，spec/hub-api.md 3.6「Agent 身份」）：出示其令牌的 `/mcp` 请求的主体为
     /// `agent:<名>`，任务、任务句柄、`apps.select`、租约与 listen 流上限按 Agent 分开。默认无登记（所有请求为本机主体）。
     /// 运行中可用 [`Hub::set_agents`](crate::Hub::set_agents) 替换。
@@ -161,6 +164,11 @@ pub struct HubConfig {
 /// @why 32：一个 Agent 通常同时只有一到几个并行任务；N5 之前本机所有无会话 Agent 共用一个主体，32 足够多个 Agent 并存，
 /// 又限制了异常 Agent 反复签发句柄占用的任务表与租约（每个句柄任务空闲 `task_idle_ttl` 后回收）。
 pub const DEFAULT_MAX_TASK_HANDLES: usize = 32;
+
+/// [`HubConfig::max_locks`] 的默认值。
+///
+/// @why 16：一个任务通常只锁正在操作的一两个 App 或对象；上限限制异常 Agent 反复加命名锁占用的任务表（锁随任务回收）。
+pub const DEFAULT_MAX_LOCKS: usize = 16;
 
 /// [`HubConfig::max_listen_streams`] 的默认值。
 ///
@@ -261,6 +269,7 @@ impl Default for HubConfig {
             max_listen_streams: DEFAULT_MAX_LISTEN_STREAMS,
             max_listen_resources: DEFAULT_MAX_LISTEN_RESOURCES,
             max_task_handles: DEFAULT_MAX_TASK_HANDLES,
+            max_locks: DEFAULT_MAX_LOCKS,
             agents: crate::agents::AgentsConfig::default(),
         }
     }

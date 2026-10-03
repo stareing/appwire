@@ -265,7 +265,7 @@ class HubIntegrationTest {
         assertEquals(null, hub.listenAddr)
         assertEquals(null, hub.ipcEndpoint)
         assertEquals(
-            setOf("apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release"),
+            setOf("apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.lock", "apps.unlock"),
             hub.tools().map { it.name }.toSet(),
         )
         val st = hub.status()
@@ -307,7 +307,10 @@ class HubIntegrationTest {
         )
         // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
         assertEquals(
-            listOf("apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release"),
+            listOf(
+                "apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release",
+                "apps.lock", "apps.unlock",
+            ),
             hub.tools(ToolFilter(session = "c1")).map { it.name },
         )
         hub.close()

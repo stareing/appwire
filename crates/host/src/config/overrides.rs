@@ -50,6 +50,7 @@ pub struct Overrides {
     pub mcp_protocol_mode: Option<McpProtocolMode>,
     pub max_listen_streams: Option<usize>,
     pub max_task_handles: Option<usize>,
+    pub max_locks: Option<usize>,
 }
 
 impl FileConfig {
@@ -91,6 +92,7 @@ impl FileConfig {
         set(&mut self.mcp.protocol_mode, &o.mcp_protocol_mode);
         set(&mut self.mcp.max_listen_streams, &o.max_listen_streams);
         set(&mut self.mcp.max_task_handles, &o.max_task_handles);
+        set(&mut self.mcp.max_locks, &o.max_locks);
         set(&mut self.tools.exposure, &o.tool_exposure);
         set(&mut self.tools.threshold, &o.tool_exposure_threshold);
         set(&mut self.tools.output_validation, &o.output_validation);

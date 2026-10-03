@@ -22,6 +22,7 @@ const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
   'USER_ACTION_REQUIRED',
   'NAVIGATION_FAILED',
   'NAVIGATION_DENIED',
+  'LOCKED',
 ])
 
 export function isErrorKind(value: unknown): value is ErrorKind {

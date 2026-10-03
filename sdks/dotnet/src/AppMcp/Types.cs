@@ -84,6 +84,8 @@ public enum ToolErrorKind
     NavigationFailed,
     /// <summary>导航被拒绝（App 拒绝或页面不可由 Agent 导航）。</summary>
     NavigationDenied,
+    /// <summary>对象锁冲突（由 Host 产生，App 一般不用；spec/hub-api.md 3.6「对象锁」）。</summary>
+    Locked,
 }
 
 public static class ToolErrorKinds
@@ -112,6 +114,7 @@ public static class ToolErrorKinds
         ToolErrorKind.UserActionRequired => "USER_ACTION_REQUIRED",
         ToolErrorKind.NavigationFailed => "NAVIGATION_FAILED",
         ToolErrorKind.NavigationDenied => "NAVIGATION_DENIED",
+        ToolErrorKind.Locked => "LOCKED",
         _ => "HANDLER_ERROR",
     };
 }

@@ -140,6 +140,12 @@ public sealed class HubOptions
     /// <summary>每个主体同时存在的任务句柄数上限（默认 32，超出时 apps.task.begin 报 RATE_LIMITED）；0 不提供任务句柄。</summary>
     public int? MaxTaskHandles { get; set; }
 
+    // ---- 对象锁（spec/hub-api.md 3.6「对象锁」）----
+
+    /// <summary>每个持有者同时持有的对象锁数上限（默认 16，超出时 apps.lock 报 RATE_LIMITED）；0 不提供对象锁
+    /// （apps.lock / apps.unlock 不列出，调用为 TOOL_NOT_FOUND）。</summary>
+    public int? MaxLocks { get; set; }
+
     /// <summary>上游 MCP 服务器（名称 → 启动方式）。</summary>
     public IDictionary<string, UpstreamOptions> Upstreams { get; } = new Dictionary<string, UpstreamOptions>();
 
@@ -231,6 +237,7 @@ public sealed class HubOptions
         AddCount(o, "maxListenStreams", MaxListenStreams, nameof(MaxListenStreams));
         AddCount(o, "maxListenResources", MaxListenResources, nameof(MaxListenResources));
         AddCount(o, "maxTaskHandles", MaxTaskHandles, nameof(MaxTaskHandles));
+        AddCount(o, "maxLocks", MaxLocks, nameof(MaxLocks));
         if (Upstreams.Count > 0)
         {
             var ups = new JsonObject();

@@ -71,6 +71,8 @@ public typealias AgentTaskStatus = AppMcpHubBindings.AgentTaskStatus
 public typealias CallerKind = AppMcpHubBindings.CallerKind
 public typealias TaskSelectionStatus = AppMcpHubBindings.TaskSelectionStatus
 public typealias TaskLeaseStatus = AppMcpHubBindings.TaskLeaseStatus
+/// 未到期的对象锁（`HubStatus.locks`，spec/hub-api.md 3.6「对象锁」）。
+public typealias LockStatus = AppMcpHubBindings.LockStatus
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。
 public typealias LimitsConfig = AppMcpHubBindings.LimitsConfig

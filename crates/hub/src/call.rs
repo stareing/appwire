@@ -43,7 +43,7 @@ mod results;
 mod tests;
 mod tool_convert;
 
-pub(crate) use builtin_defs::builtin_hub_tools;
+pub(crate) use builtin_defs::{BuiltinSet, builtin_hub_tools};
 #[cfg(feature = "mcp-server")]
 pub(crate) use builtin_defs::builtin_tools;
 pub(crate) use resources::{first_content, read_resource};
@@ -245,7 +245,8 @@ fn cancelled() -> ToolError {
 }
 
 /// appId 未知（或被 `hide` 规则整体隐藏，二者对 Agent 不可区分）。
-fn unknown_app(app_id: &str) -> ToolError {
+/// appId 未知（或被 `hide` 整体隐藏，与不存在相同）→ `TOOL_NOT_FOUND`。
+pub(crate) fn unknown_app(app_id: &str) -> ToolError {
     ToolError::new(
         ErrorKind::ToolNotFound,
         format!("没有 appId 为「{app_id}」的 App。可调用 apps.list 查看可用的 App。"),

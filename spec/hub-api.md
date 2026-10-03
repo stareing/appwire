@@ -423,6 +423,39 @@ pub struct Health {                          // serde camelCase
   - **配置入口**（`max_task_handles`，缺省取 Hub 默认值 32；`0` 关闭句柄）：`app-mcp-host` 配置文件 `mcp.maxTaskHandles`、命令行
     `--max-task-handles <N>`；hub-c（头文件 v17）/ hub-node / `@app-mcp/hub` JSON `maxTaskHandles`；hub-uniffi `HubConfig.max_task_handles: u32?`
     （Kotlin / Swift / Python 直接使用生成的 `HubConfig`）；C# `HubOptions.MaxTaskHandles`（`int?`，负数抛 `ArgumentOutOfRangeException`）。
+- **对象锁**（第 16 项 N6；`crates/hub/src/object_lock.rs`；名称见 3.15 名称表）：Agent 在一段操作期间独占某个 App 的写操作，或与其他 Agent
+  就一个命名对象协调先后。锁归调用方的 Agent 任务（legacy 会话、无会话主体、任务句柄、Hub API 会话各自一个持有者），只提供机制：
+  锁什么、锁多久、冲突时等还是放弃由 Agent 决定；Hub 不排队、不代为重试。
+  - **加锁** `apps.lock {appId, key?, ttlMs?, taskId?}` → `{appId, key?, ttlMs, renewed, message}`：
+    - 不带 `key` 为 **App 锁**（强制）：持有期间，其他调用方对该 App 的**写调用**——工具的生效注解（3.2 `HubTool.annotations`）不是
+      `readOnlyHint: true` 的 App 工具与上游工具、`apps.navigate`——在转发前返回 `LOCKED`（未转发、未唤醒、未计入限流）；只读工具、
+      `apps.list` / `overview` / `tools` / `page` / `activate` / `release` 与资源读取不受影响。持有者自己的调用照常。
+    - 带 `key`（1–128 个可见字符，App 内对象的名字，如文档 ID）为**命名锁**（建议性）：只与同一 `(appId, key)` 的 `apps.lock` 冲突，
+      不拦截任何调用（Hub 不知道哪些调用碰到该对象）。App 锁与命名锁互不冲突。
+    - `ttlMs`：1000–600000，缺省 `DEFAULT_LOCK_TTL` = 60000；到期即失效（取用时判定，不设定时器）。同一持有者再次加同一把锁 = 续期
+      （`renewed: true`，有效期从此刻重算）。
+    - 已被其他持有者持有且未到期 → `LOCKED`（`data`：`appId`、`key?`、`holder`、`retryAfterMs`）。`holder` 为持有者的记账主体
+      （`agent:<名>` / `local` / `api`，3.11「按调用方记账」），**不含**任务 ID 或会话号（任务 ID 是凭据）；`retryAfterMs` 为剩余有效期。
+    - appId 未知 / 被整体隐藏 / 为 `apps` → `TOOL_NOT_FOUND`（与 `apps.overview` 相同）。每个持有者同时持有的锁至多
+      `HubConfig.max_locks`（默认 `DEFAULT_MAX_LOCKS` = 16，B-07；续期不计新锁），超出 → `RATE_LIMITED`（`data.limit`，不带 `retryAfterMs`）。
+  - **解锁** `apps.unlock {appId, key?, taskId?}` → `{appId, key?, released, message}`：持有者释放；不存在、已到期或由他人持有时
+    `released: false`（幂等，不能释放他人的锁）。
+  - **健壮性**：持有者的任务结束即全部释放——legacy 会话关闭、`Hub::reset_session`、`apps.task.end`、按 `task_idle_ttl` 空闲回收
+    （锁随任务存放，任务移除时一并移除）。崩溃的 Agent 至多锁住 App 到 `ttlMs` 到期或其任务被回收。
+  - **同一主体**：不带句柄的无会话请求共用主体任务（`principal:<主体>`），同一主体下的多个客户端视为同一持有者；需要互相排斥时各自
+    `apps.task.begin` 取句柄后在句柄上加锁。
+  - **列表**：`max_locks > 0` 时 `apps.lock` / `apps.unlock` 在所有列表中出现（legacy 会话、无会话请求、`Hub::tools` / `export_tools`）；
+    `taskId` 参数同其他任务级内置工具只在无会话列表中。注解：`apps.lock` `readOnlyHint: false, idempotentHint: true`，`apps.unlock`
+    `readOnlyHint: false, idempotentHint: true, destructiveHint: false`。`max_locks = 0` 关闭：不列出，调用 → `TOOL_NOT_FOUND`。
+  - **`/status`**：`locks: [LockStatus {appId, key?, caller, holder, expiresInMs}]`（未到期的，按 appId、key 排序；`caller` 为持有者的调用方键，
+    `/status` 只对本机令牌开放）；旧 Hub 为 `None`。
+  - **错误类别** `LOCKED`（-31003，spec/protocol.md 第 4 节）：只由 Hub 产生；Agent 可等 `retryAfterMs` 后重试、改做只读操作，或请用户协调。
+  - **配置入口**（`max_locks`，缺省 16；`0` 关闭）：`app-mcp-host` 配置文件 `mcp.maxLocks`、命令行 `--max-locks <N>`；hub-c（头文件 v20）/
+    hub-node / `@app-mcp/hub` JSON `maxLocks`；hub-uniffi `HubConfig.max_locks: u32?`（末字段；Kotlin / Swift / Python 直接使用生成的
+    `HubConfig`）；C# `HubOptions.MaxLocks`（`int?`，负数抛 `ArgumentOutOfRangeException`）。
+  - **绑定中的状态与错误**：hub-c / hub-node JSON 原样（`locks`、错误类别 `"LOCKED"`）；`@app-mcp/hub` `HubStatus.locks?: LockStatus[]`、
+    `ErrorKind` 含 `'LOCKED'`；hub-uniffi `HubStatus.locks: [LockStatus]?`（Kotlin / Swift typealias、Python `app_mcp.hub.LockStatus`）；
+    C# `HubStatusInfo.Locks`（`LockStatusInfo`）、`HubError.Locked`。
 - 校验顺序（`/mcp`、`/healthz`）：`Origin`（与 App 连接相同的允许列表，不通过 403）→ 路径 → 令牌（仅 `/mcp`）。
   令牌规则：`Authorization: Bearer <令牌>`；带 `Origin` 的请求必须携带；不带 `Origin` 的请求在
   `require_token_without_origin` 时必须携带；携带了错误令牌一律 401（带 `WWW-Authenticate: Bearer`）；空令牌视为未携带。常量时间比较。
@@ -1036,7 +1069,8 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `apps.activate` | 内置工具 | 只唤醒不调用（下文） |
 | `apps.release` | 内置工具 | 收回本会话在该 App 上的租约（下文） |
 | `apps.task.begin` / `apps.task.end` | 内置工具（只对无会话请求列出） | 签发 / 结束任务句柄（3.6「任务句柄」） |
-| `taskId` | 内置工具参数（`apps.list` / `select` / `navigate` / `activate` / `release` 可选，`apps.task.end` 必填） | 任务句柄（3.6「任务句柄」） |
+| `apps.lock` / `apps.unlock` | 内置工具（`max_locks > 0` 时列出） | 加锁 / 解锁（3.6「对象锁」） |
+| `taskId` | 内置工具参数（`apps.list` / `select` / `navigate` / `activate` / `release` / `lock` / `unlock` 可选，`apps.task.end` 必填） | 任务句柄（3.6「任务句柄」） |
 | `dev.appwire/status`、`dev.appwire/stateResource` | 结果 `_meta` | 结果状态（spec/protocol.md 3.2，3.2） |
 | `dev.appwire/routedTo` | 结果 `_meta` | 改调后台替代时实际调用的工具全名（3.14） |
 | `dev.appwire/callId` | 结果 `_meta`（每个工具调用结果） | 本次调用的 callId：即转交 App 的 `tools/invoke` 参数 `callId`（App handler 所见，如原生 `CallHandle::call_id()`）与 Hub 日志「转发工具调用」记录的 `call_id` 字段（同一记录带该 App 连接的 `cid`，spec/protocol.md 10.3）；Hub API 为 `CallOutcome.call_id` |

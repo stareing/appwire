@@ -113,6 +113,16 @@ fn parses_max_task_handles() {
 }
 
 #[test]
+fn parses_max_locks() {
+    let cli = Cli::try_parse_from(["app-mcp-host", "serve", "--max-locks", "0"]).unwrap();
+    let Some(Command::Serve(s)) = cli.command else {
+        panic!()
+    };
+    assert_eq!(s.hub.overrides().unwrap().max_locks, Some(0));
+    assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--max-locks", "-1"]).is_err());
+}
+
+#[test]
 fn parses_limits() {
     assert_eq!(parse_output_validation("reject"), Ok(OutputValidation::Reject));
     assert!(parse_output_validation("strict").is_err());

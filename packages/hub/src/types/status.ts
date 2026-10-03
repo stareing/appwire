@@ -140,6 +140,21 @@ export interface HubStatus {
   agents?: string[]
   /** 按调用方记账（第 16 项 P3），按主体排序；旧 Hub 不报告。 */
   usage?: UsageStatus[]
+  /** 未到期的对象锁（第 16 项 N6），按 appId、key 排序；旧 Hub 不报告。 */
+  locks?: LockStatus[]
+}
+
+/** 一把未到期的对象锁（{@link HubStatus.locks}，spec/hub-api.md 3.6「对象锁」）。 */
+export interface LockStatus {
+  appId: string
+  /** 命名锁的名字；App 锁缺省。 */
+  key?: string
+  /** 持有者的调用方键（`mcp:<n>` / `principal:<主体>` / `api` / `api:<session>` 等）。 */
+  caller: string
+  /** 持有者的记账主体：`agent:<名>` / `local` / `api`。 */
+  holder: string
+  /** 距到期的毫秒数。 */
+  expiresInMs: number
 }
 
 /** 计数（主体合计与每 App 共用）。`wakes`：为该主体发起的唤醒（与进行中的唤醒合并的也计入）。 */

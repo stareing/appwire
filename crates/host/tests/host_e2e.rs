@@ -1088,7 +1088,10 @@ async fn progressive_exposure_over_mcp() {
     tokio::time::sleep(Duration::from_millis(150)).await;
     // 默认只列出 apps.*
     let names = tool_names(&client).await;
-    assert_eq!(names, ["apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release"]);
+    assert_eq!(
+        names,
+        ["apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release", "apps.lock", "apps.unlock"]
+    );
 
     // apps.tools 返回 schema，并把 shop 加入本会话的列表（通知 list_changed）
     let before = handler.tool_changes.load(Ordering::SeqCst);
@@ -1123,7 +1126,7 @@ async fn progressive_exposure_over_mcp() {
     // 另一个会话互不影响；apps.select 选定实例后该 App 直接列出
     let (client2, handler2) = mcp_client(&host).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(tool_names(&client2).await.len(), 6); // 只有 apps.*（含 apps.tools、apps.activate、apps.release）
+    assert_eq!(tool_names(&client2).await.len(), 8); // 只有 apps.*（含 apps.tools、activate、release、lock、unlock）
     let before = handler2.tool_changes.load(Ordering::SeqCst);
     let r = call(&client2, "apps.select", json!({"appId": "notes", "instanceId": "n1"})).await;
     assert_eq!(r.is_error, Some(false));

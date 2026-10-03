@@ -9,8 +9,8 @@ use serde_json::{Value, json};
 use crate::hub::HubShared;
 use crate::schema::{self, SchemaCheck};
 use crate::names::{
-    TOOL_APPS_LIST, TOOL_APPS_OVERVIEW, TOOL_APPS_PAGE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN, TOOL_APPS_TASK_END,
-    TOOL_APPS_TOOLS,
+    TOOL_APPS_LIST, TOOL_APPS_LOCK, TOOL_APPS_OVERVIEW, TOOL_APPS_PAGE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN,
+    TOOL_APPS_TASK_END, TOOL_APPS_TOOLS, TOOL_APPS_UNLOCK,
 };
 
 use super::{CallCtx, unknown_app};
@@ -166,6 +166,12 @@ impl HubShared {
             }
             TOOL_APPS_TASK_BEGIN => self.builtin_task_begin(ctx),
             TOOL_APPS_TASK_END => self.builtin_task_end(ctx),
+            TOOL_APPS_LOCK | TOOL_APPS_UNLOCK if !self.locks_enabled() => Err(ToolError::new(
+                ErrorKind::ToolNotFound,
+                format!("工具「{name}」不存在：本 Hub 未启用对象锁（max_locks = 0）。"),
+            )),
+            TOOL_APPS_LOCK => self.builtin_lock(ctx, args),
+            TOOL_APPS_UNLOCK => self.builtin_unlock(ctx, args),
             _ => return None,
         })
     }

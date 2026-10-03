@@ -64,6 +64,8 @@ typealias AgentTaskStatus = dev.appmcp.hub.ffi.AgentTaskStatus
 typealias CallerKind = dev.appmcp.hub.ffi.CallerKind
 typealias TaskSelectionStatus = dev.appmcp.hub.ffi.TaskSelectionStatus
 typealias TaskLeaseStatus = dev.appmcp.hub.ffi.TaskLeaseStatus
+/** 未到期的对象锁（`HubStatus.locks`，spec/hub-api.md 3.6「对象锁」）。 */
+typealias LockStatus = dev.appmcp.hub.ffi.LockStatus
 
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /** 限流与大小上限（[HubConfig.limits]；[HubStatus.limits] 为全部字段给出的生效值）。为空的字段取默认值。 */

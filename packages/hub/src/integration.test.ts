@@ -133,7 +133,9 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
   it('渐进暴露：apps.tools 展开后按会话导出；waker / toolExposure 配置透传', async () => {
     const { hub } = await startHub({ toolExposure: 'progressive', toolExposureThreshold: 1, waker: 'none' })
     const log = await startShop(hub)
-    const builtins = ['apps.list', 'apps.select', 'apps.overview', 'apps.tools', 'apps.activate', 'apps.release']
+    const builtins = [
+      'apps.list', 'apps.select', 'apps.overview', 'apps.tools', 'apps.activate', 'apps.release', 'apps.lock', 'apps.unlock',
+    ]
     expect(hub.tools().map((t) => t.name)).toEqual(builtins)
     expect(toAnthropicTools(hub, { session: 'c1' }).map((t) => t.name)).toHaveLength(builtins.length)
 

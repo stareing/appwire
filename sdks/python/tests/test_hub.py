@@ -194,7 +194,9 @@ def test_formats_and_shutdown() -> None:
     hub = Hub(enable_listen=False, enable_ipc=False)
     assert hub.listen_addr is None
     assert hub.ipc_endpoint is None
-    assert {t.name for t in hub.tools()} == {"apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release"}
+    assert {t.name for t in hub.tools()} == {
+        "apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.lock", "apps.unlock",
+    }
     gemini = hub.export_tools("gemini")
     assert "functionDeclarations" in gemini
     st = hub.status()
@@ -256,7 +258,10 @@ def test_progressive_exposure() -> None:
         app = start_notes_app(hub)
         try:
             wait_tools(hub, 2)
-            builtins = ["apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release"]
+            builtins = [
+                "apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release",
+                "apps.lock", "apps.unlock",
+            ]
             assert [t.name for t in hub.tools(session="c1")] == builtins
             r = hub.call_tool_sync("apps.tools", {"appId": "notes"}, session="c1")
             assert r.error is None
@@ -313,6 +318,47 @@ def test_max_task_handles_config() -> None:
         Hub(enable_listen=False, enable_ipc=False, max_task_handles=-1)
     with pytest.raises(ValueError):
         Hub(enable_listen=False, enable_ipc=False, max_task_handles=2**32)
+
+
+SHOP_MANIFEST = json.dumps({
+    "manifestVersion": 1, "appId": "shop", "name": "商城",
+    "tools": [{"name": "cart.add", "description": "加购", "inputSchema": {"type": "object"}}],
+})
+
+
+def test_object_locks() -> None:
+    """spec/hub-api.md 3.6「对象锁」：缺省列出 apps.lock / apps.unlock；他人持有 → LOCKED；status().locks 列出未到期的锁。"""
+    from app_mcp.hub import LockStatus
+
+    with Hub(enable_listen=False, enable_ipc=False, manifests_json=[SHOP_MANIFEST]) as hub:
+        names = {t.name for t in hub.tools()}
+        assert {"apps.lock", "apps.unlock"} <= names
+        ok = hub.call_tool_sync("apps.lock", {"appId": "shop", "ttlMs": 30000}, session="s1")
+        assert ok.error is None and ok.data["renewed"] is False
+        denied = hub.call_tool_sync("apps.lock", {"appId": "shop"}, session="s2")
+        assert denied.error is not None and denied.error.kind == "LOCKED"
+        assert json.loads(denied.error.details_json or "null")["holder"] == "api"
+        locks = hub.status().locks
+        assert locks is not None and len(locks) == 1
+        lock = locks[0]
+        assert isinstance(lock, LockStatus)
+        assert (lock.app_id, lock.key, lock.caller, lock.holder) == ("shop", None, "api:s1", "api")
+        assert 0 < lock.expires_in_ms <= 30000
+        released = hub.call_tool_sync("apps.unlock", {"appId": "shop"}, session="s1")
+        assert released.error is None and released.data["released"] is True
+        assert hub.status().locks == []
+
+
+def test_max_locks_config() -> None:
+    """max_locks = 0 关闭对象锁（不列出，调用为 TOOL_NOT_FOUND）；越界报错。"""
+    with Hub(enable_listen=False, enable_ipc=False, manifests_json=[SHOP_MANIFEST], max_locks=0) as hub:
+        assert not {"apps.lock", "apps.unlock"} & {t.name for t in hub.tools()}
+        r = hub.call_tool_sync("apps.lock", {"appId": "shop"}, session="s1")
+        assert r.error is not None and r.error.kind == "TOOL_NOT_FOUND"
+    with pytest.raises(ValueError):
+        Hub(enable_listen=False, enable_ipc=False, max_locks=-1)
+    with pytest.raises(ValueError):
+        Hub(enable_listen=False, enable_ipc=False, max_locks=2**32)
 
 
 def json_text(content: object) -> str:

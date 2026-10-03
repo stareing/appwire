@@ -187,6 +187,10 @@ pub struct HubArgs {
     #[arg(long, value_name = "N")]
     pub max_task_handles: Option<usize>,
 
+    /// 每个任务同时持有的对象锁数上限（spec/hub-api.md 3.6「对象锁」），默认 16；0 不提供对象锁（apps.lock / apps.unlock 不列出）。
+    #[arg(long, value_name = "N")]
+    pub max_locks: Option<usize>,
+
     /// 日志级别（trace / debug / info / warn / error），默认 info。设置 RUST_LOG 时以 RUST_LOG 为准。
     #[arg(long, value_name = "LEVEL")]
     pub log_level: Option<String>,
@@ -253,6 +257,7 @@ impl HubArgs {
             mcp_protocol_mode: self.mcp_protocol_mode,
             max_listen_streams: self.max_listen_streams,
             max_task_handles: self.max_task_handles,
+            max_locks: self.max_locks,
             ..Default::default()
         })
     }

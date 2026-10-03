@@ -73,6 +73,8 @@ export type ErrorKind =
   | 'NAVIGATION_FAILED'
   /** 导航被拒绝（App 拒绝或页面不可由 Agent 导航）。 */
   | 'NAVIGATION_DENIED'
+  /** 对象锁冲突（由 Host 产生，App 一般不用；spec/hub-api.md 3.6「对象锁」）。 */
+  | 'LOCKED'
 
 /** `USER_ACTION_REQUIRED` 的 `reason` 建议取值（spec/protocol.md 第 4 节）；也可以是其他字符串。 */
 export type UserActionReason = 'login' | 'permission' | 'foreground' | 'confirm' | (string & {})

@@ -94,7 +94,7 @@
     为主通道，`_meta` `dev.appwire/taskId` 为可选通道（任何工具调用）；各句柄的选择与租约互不影响，寿命复用 `task_idle_ttl`（U9），
     过期 / 结束后出示 → `INVALID_INPUT`（`reason: task-expired`，可恢复：重新 `apps.task.begin`）；legacy 会话与 Hub API 出示 →
     `INVALID_INPUT`（`task-handle-unsupported`）。契约见 `spec/hub-api.md` 3.6「任务句柄」，记录见第 12 项 S8 记录。
-  - 未实施（挂点已留在 `AgentTask` 上）：P2 按 Agent 匹配、P3 记账、N6 锁、第 17 项句柄与订阅归属；通用客户端（不填 `_meta`）
+  - 未实施（挂点已留在 `AgentTask` 上）：第 17 项句柄与订阅归属（P2 按 Agent 匹配、P3 记账、N6 锁已实施，见各自条目）；通用客户端（不填 `_meta`）
     的 App 工具调用仍按主体默认任务路由。N5 身份已实施（2026-10-03，见第三部分 N5 记录）。
 - **P2 策略挂点（2026-10-02 决定实施；第 18 项 L5 暴露开关由此实现）**：类比 LSM，本库只提供执行点，不内置任何判断；无规则时行为与现状完全一致。
   - **执行点**：列出（`tools/list`、`apps.*`）、调用、唤醒、句柄访问（句柄挂点只定义类型，规则用到即校验失败，待第 17 项句柄落地）。
@@ -175,6 +175,20 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
       Python 记录类型的字符串形式含令牌（生成代码不可定制），文档提示不要记录 `AgentCredential`；Swift 未编译验证（无 macOS）。
 - **N6 并发仲裁**：SDK 提供 `busy()` / 对象锁；Hub 对写调用排队或返回明确错误；多会话对同一 App 公平排队。
   工具可声明 `concurrency: N` / `exclusive`（同一资源互斥），SDK 按声明排队，队列上限可配置，满时返回明确错误（4f k，由 4f 实施）。
+  - 已实施（2026-10-03，Hub 对象锁）：`apps.lock {appId, key?, ttlMs?}` / `apps.unlock`（spec/hub-api.md 3.6「对象锁」）。锁存放在持有者的
+    Agent 任务上（`crates/hub/src/task/locks.rs`），任务结束（会话关闭、`reset_session`、`apps.task.end`、空闲回收）即释放；`ttlMs`
+    1–600 s（默认 60 s），到期在取用时判定、不设定时器。App 锁拦截其他持有者对该 App 的写调用（生效注解不是 `readOnlyHint: true` 的工具、
+    上游工具、`apps.navigate`），在策略之后、限流之前返回新错误类别 `LOCKED`（-31003，`data {appId, key?, holder, retryAfterMs}`，
+    `holder` 只给记账主体，不给任务 ID）；命名锁（`key`）只与同名加锁冲突、不拦截调用。Hub 不排队（"返回明确错误"一支）：等待与重试是
+    Agent 的策略。`HubConfig.max_locks`（每持有者，默认 16，0 关闭并不列出）；`/status` `locks`；Host `mcp.maxLocks` / `--max-locks`，
+    status 摘要与 doctor 列出持有中的锁。
+    - 事实：内置工具经 `call_builtin` 分派、参数按 inputSchema 校验；写调用的准入顺序统一为 `admit_call`（策略 → 锁 → 资源保护），
+      `apps.navigate` 单独检查；工具只读与否取 `tool_annotations`（App 声明 / 快照 / 页面目录 / 上游缓存），取不到按写处理。
+    - 未知 / 未做：工具声明 `concurrency` / `exclusive` 与 SDK 侧按声明排队（4f k）未做——SDK 已有 `maxConcurrentCalls`（默认 1，FIFO）；
+      `busy()`；人与 Agent 之间的仲裁（用户在 App 内的直接操作不经 Hub，锁拦不住，由 App 自己决定）；同一主体下不带句柄的多个客户端
+      视为同一持有者（需互斥时各自 `apps.task.begin`）；锁不持久化（Hub 重启即全部释放）。
+    - 风险：异常 Agent 反复加锁占住 App——每把锁至多 10 分钟、每持有者至多 `max_locks` 把，任务空闲回收即释放；内置工具多了两个
+      （列表变长，`max_locks = 0` 可关闭）。
 
 ### 第四部分：场景扩展
 

@@ -61,6 +61,8 @@ pub struct Settings {
     pub max_listen_resources: usize,
     /// 每个主体的任务句柄数上限；0 = 不提供任务句柄。
     pub max_task_handles: usize,
+    /// 每个任务的对象锁数上限；0 = 不提供对象锁。
+    pub max_locks: usize,
     pub log_level: String,
     pub log_file: bool,
     pub log_max_bytes: u64,
@@ -187,6 +189,7 @@ impl Settings {
             max_listen_streams: c.mcp.max_listen_streams.unwrap_or(app_mcp_hub::DEFAULT_MAX_LISTEN_STREAMS),
             max_listen_resources: c.mcp.max_listen_resources.unwrap_or(app_mcp_hub::DEFAULT_MAX_LISTEN_RESOURCES),
             max_task_handles: c.mcp.max_task_handles.unwrap_or(app_mcp_hub::DEFAULT_MAX_TASK_HANDLES),
+            max_locks: c.mcp.max_locks.unwrap_or(app_mcp_hub::DEFAULT_MAX_LOCKS),
             log_level: c.log.level.unwrap_or_else(|| "info".to_owned()),
             log_file: c.log.file.unwrap_or(true),
             log_max_bytes: c.log.max_bytes.unwrap_or(5 * 1024 * 1024),

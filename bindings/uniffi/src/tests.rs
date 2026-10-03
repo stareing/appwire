@@ -11,7 +11,8 @@ use crate::error::parse_error_kind;
 #[test]
 fn error_kinds_roundtrip() {
     let kinds = error_kinds();
-    assert_eq!(kinds.len(), 21);
+    assert_eq!(kinds.len(), 22);
+    assert!(kinds.contains(&"LOCKED".to_owned()));
     assert!(kinds.contains(&"NAVIGATION_FAILED".to_owned()) && kinds.contains(&"NAVIGATION_DENIED".to_owned()));
     assert!(kinds.contains(&"RATE_LIMITED".to_owned()));
     assert!(kinds.contains(&"PAYLOAD_TOO_LARGE".to_owned()));

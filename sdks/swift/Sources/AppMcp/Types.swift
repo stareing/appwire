@@ -60,6 +60,8 @@ public enum ErrorKind {
     public static let navigationFailed = "NAVIGATION_FAILED"
     /// 导航被拒绝（App 拒绝或页面不可由 Agent 导航）。
     public static let navigationDenied = "NAVIGATION_DENIED"
+    /// 对象锁冲突（由 Host 产生，App 一般不用；spec/hub-api.md 3.6「对象锁」）。
+    public static let locked = "LOCKED"
 
     /// 原生库认可的全部类别。
     public static var all: Set<String> { Set(AppMcpBindings.errorKinds()) }

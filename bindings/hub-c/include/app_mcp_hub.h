@@ -100,6 +100,12 @@
  *   · JSON 中新增：HubStatus.agents（已登记的 Agent 名）、HubStatus.usage（按调用方记账）、tasks[].agent。
  * - v19（嵌入式 Hub 的 Agent 登记，spec/hub-api.md 3.6「Agent 身份」）：只做新增，AM_HUB_API_VERSION 仍为 3。
  *   · am_hub_start 配置新增可选字段 agents（[{"name","token"}]）；函数 am_hub_set_agents（运行中替换登记）。
+ * - v20（对象锁，第 16 项 N6，spec/hub-api.md 3.6「对象锁」）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 maxLocks。
+ *   · 新内置工具 apps.lock、apps.unlock（maxLocks > 0 时列出，缺省开启）。
+ *   · JSON 中新增：HubStatus.locks（未到期的对象锁）。
+ *   · 错误类别新增 "LOCKED"（details：appId、key?、holder、retryAfterMs）：App 正被其他调用方锁定时的写调用，
+ *     或要加的锁已被他人持有。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -272,6 +278,9 @@ void am_hub_string_free(char *s);
  *   —— v17 任务句柄（spec/hub-api.md 3.6「任务句柄」）——
  *   maxTaskHandles       每个主体同时存在的任务句柄数上限，默认 32（超出时 apps.task.begin 报 RATE_LIMITED）；
  *                        0 不提供任务句柄（apps.task.* 不列出，taskId 一律无效）
+ *   —— v20 对象锁（spec/hub-api.md 3.6「对象锁」）——
+ *   maxLocks             每个持有者同时持有的对象锁数上限，默认 16（超出时 apps.lock 报 RATE_LIMITED）；
+ *                        0 不提供对象锁（apps.lock / apps.unlock 不列出，调用为 TOOL_NOT_FOUND）
  *   —— v19 Agent 身份（spec/hub-api.md 3.6「Agent 身份」）——
  *   agents               [{"name","token"}]：按 Agent 发的访问令牌，/mcp 出示时请求主体为 agent:<name>（只区分与归属，
  *                        不做授权）；名字 1–64 个字母、数字、-、_、.，令牌 32–512 个可见 ASCII 字符；缺省空
@@ -333,7 +342,10 @@ AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **ou
  *   caller（调用方键 "mcp:<n>" | "principal:<主体>" | "api" | "api:<session>"）, kind（"mcpSession" | "principal" | "api"）,
  *   selections: [{appId, instanceId, expiresInMs?（主体级选择距失效的毫秒数）}], leases: [{connectionId, expiresInMs}],
  *   inflight（进行中的请求数）, idleMs?（距最近一次请求活动的毫秒数）}]
- * v16 起另有 mcpListenStreams：进行中的 subscriptions/listen 流数（mcpSessions 只计 legacy 会话）。 */
+ * v16 起另有 mcpListenStreams：进行中的 subscriptions/listen 流数（mcpSessions 只计 legacy 会话）。
+ * v18 起另有 agents（已登记的 Agent 名）、usage（按调用方记账，spec/hub-api.md 3.11）、tasks[].agent。
+ * v20 起另有 locks：未到期的对象锁，按 appId、key 排序：[{appId, key?（命名锁）, caller（持有者的调用方键）,
+ *   holder（记账主体 "agent:<名>" | "local" | "api"）, expiresInMs}]。 */
 AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------

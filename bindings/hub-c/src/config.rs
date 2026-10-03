@@ -86,6 +86,8 @@ pub(crate) struct ConfigJson {
     pub max_listen_resources: Option<usize>,
     /// v17：每个主体同时存在的任务句柄数上限（spec/hub-api.md 3.6「任务句柄」），缺省 32；0 不提供任务句柄。
     pub max_task_handles: Option<usize>,
+    /// v20：每个持有者同时持有的对象锁数上限（spec/hub-api.md 3.6「对象锁」），缺省 16；0 不提供对象锁。
+    pub max_locks: Option<usize>,
     /// v19：Agent 登记（spec/hub-api.md 3.6「Agent 身份」）：`[{"name","token"}]`，缺省空（所有请求为本机主体）。
     pub agents: Option<Vec<AgentCredential>>,
     pub upstreams: BTreeMap<String, UpstreamConfig>,
@@ -137,6 +139,7 @@ impl Default for ConfigJson {
             max_listen_streams: None,
             max_listen_resources: None,
             max_task_handles: None,
+            max_locks: None,
             agents: None,
             upstreams: BTreeMap::new(),
             approval: ApprovalPolicy::default(),
@@ -274,6 +277,9 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     }
     if let Some(v) = c.max_task_handles {
         hub.max_task_handles = v;
+    }
+    if let Some(v) = c.max_locks {
+        hub.max_locks = v;
     }
     if let Some(agents) = c.agents {
         hub.agents = parse_agents(agents)?;
@@ -415,6 +421,20 @@ mod tests {
         let p = parse(Some(r#"{"maxTaskHandles": 5}"#)).map_err(|e| e.message).expect("解析");
         assert_eq!(p.hub.max_task_handles, 5);
         for bad in [r#"{"maxTaskHandles": -1}"#, r#"{"maxTaskHandles": 1.5}"#, r#"{"maxTaskHandles": "8"}"#] {
+            let e = parse(Some(bad)).err().map(|e| e.status);
+            assert_eq!(e, Some(AmHubStatus::InvalidJson), "{bad}");
+        }
+    }
+
+    #[test]
+    fn max_locks_field() {
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert_eq!(p.hub.max_locks, hub::DEFAULT_MAX_LOCKS);
+        let p = parse(Some(r#"{"maxLocks": 0}"#)).map_err(|e| e.message).expect("解析");
+        assert_eq!(p.hub.max_locks, 0);
+        let p = parse(Some(r#"{"maxLocks": 3}"#)).map_err(|e| e.message).expect("解析");
+        assert_eq!(p.hub.max_locks, 3);
+        for bad in [r#"{"maxLocks": -1}"#, r#"{"maxLocks": 1.5}"#, r#"{"maxLocks": "8"}"#] {
             let e = parse(Some(bad)).err().map(|e| e.status);
             assert_eq!(e, Some(AmHubStatus::InvalidJson), "{bad}");
         }

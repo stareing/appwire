@@ -56,6 +56,9 @@ pub struct HubStatus {
     /// 按调用方记账（第 16 项 P3）：各主体的调用 / 唤醒 / 被限流次数与字节数，按 App 细分，按主体排序。旧 Host 没有时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Vec<crate::usage::UsageStatus>>,
+    /// 未到期的对象锁（第 16 项 N6，spec/hub-api.md 3.6「对象锁」），按 appId、key 排序。旧 Host 没有时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locks: Option<Vec<crate::object_lock::LockStatus>>,
 }
 
 /// 一个 Agent 任务（[`HubStatus::tasks`]）。

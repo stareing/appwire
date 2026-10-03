@@ -9,9 +9,11 @@ use serde_json::{Map, Value, json};
 use crate::mcp_convert;
 use crate::types::{Availability, HubTool};
 use crate::names::{
-    BUILTIN_APP_ID, TOOL_APPS_ACTIVATE, TOOL_APPS_LIST, TOOL_APPS_NAVIGATE, TOOL_APPS_OVERVIEW, TOOL_APPS_PAGE,
-    TOOL_APPS_RELEASE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN, TOOL_APPS_TASK_END, TOOL_APPS_TOOLS,
+    BUILTIN_APP_ID, TOOL_APPS_ACTIVATE, TOOL_APPS_LIST, TOOL_APPS_LOCK, TOOL_APPS_NAVIGATE, TOOL_APPS_OVERVIEW,
+    TOOL_APPS_PAGE, TOOL_APPS_RELEASE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN, TOOL_APPS_TASK_END, TOOL_APPS_TOOLS,
+    TOOL_APPS_UNLOCK,
 };
+use crate::object_lock::{MAX_LOCK_KEY_LEN, MAX_LOCK_TTL_MS, MIN_LOCK_TTL_MS};
 use crate::names::{ARG_TASK_ID, TASK_SCOPED_TOOLS};
 
 use super::tool_convert::upstream_risk;
@@ -23,18 +25,33 @@ pub(super) fn obj(v: Value) -> Map<String, Value> {
     }
 }
 
-/// 内置工具（MCP 形式）。`with_apps_tools`：是否包含 `apps.tools`（只在渐进暴露生效时列出）；`with_apps_page`：是否包含
-/// `apps.page` 与 `apps.navigate`（只在有页面目录时列出）。不列出时也都可调用。`with_tasks`：是否包含 `apps.task.*` 与各工具的
-/// `taskId` 参数（只对可用任务句柄的无会话请求列出，[`HubShared::task_handles_for`]）；不列出时 legacy 会话与 Hub API 的定义与
-/// 句柄出现之前逐字节相同。
-pub(crate) fn builtin_tools(with_apps_tools: bool, with_apps_page: bool, with_tasks: bool) -> Vec<Tool> {
+/// 列出哪些可选的内置工具（不列出的除 `apps.lock` / `apps.unlock` 在 `locks` 关闭时外，也都可调用）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BuiltinSet {
+    /// `apps.tools`：只在渐进暴露生效时列出。
+    pub apps_tools: bool,
+    /// `apps.page` 与 `apps.navigate`：只在有页面目录时列出。
+    pub apps_page: bool,
+    /// `apps.task.*` 与各工具的 `taskId` 参数：只对可用任务句柄的无会话请求列出（[`HubShared::task_handles_for`]）；不列出时
+    /// legacy 会话与 Hub API 的定义与句柄出现之前逐字节相同。
+    pub tasks: bool,
+    /// `apps.lock` / `apps.unlock`：启用对象锁时列出（[`HubShared::locks_enabled`]）。
+    pub locks: bool,
+}
+
+/// 内置工具（MCP 形式），按 [`BuiltinSet`] 取舍。
+pub(crate) fn builtin_tools(set: BuiltinSet) -> Vec<Tool> {
     let mut tools = all_builtin_tools();
     let page_tool = |n: &str| n == TOOL_APPS_PAGE || n == TOOL_APPS_NAVIGATE;
     let task_tool = |n: &str| n == TOOL_APPS_TASK_BEGIN || n == TOOL_APPS_TASK_END;
+    let lock_tool = |n: &str| n == TOOL_APPS_LOCK || n == TOOL_APPS_UNLOCK;
     tools.retain(|t| {
-        (with_apps_tools || t.name != TOOL_APPS_TOOLS) && (with_apps_page || !page_tool(&t.name)) && (with_tasks || !task_tool(&t.name))
+        (set.apps_tools || t.name != TOOL_APPS_TOOLS)
+            && (set.apps_page || !page_tool(&t.name))
+            && (set.tasks || !task_tool(&t.name))
+            && (set.locks || !lock_tool(&t.name))
     });
-    if !with_tasks {
+    if !set.tasks {
         for t in &mut tools {
             let mut schema = (*t.input_schema).clone();
             if let Some(Value::Object(props)) = schema.get_mut("properties")
@@ -180,7 +197,7 @@ fn base_builtin_tools() -> Vec<Tool> {
             TOOL_APPS_TASK_BEGIN,
             "开始一个独立的任务，返回任务句柄 taskId。同时进行多件互不相关的事（如分别操作同一 App 的两个实例）时，在 apps.select / \
              apps.list / apps.activate / apps.release / apps.navigate 的参数中带各自的 taskId，实例选择与保活（租约）按任务分开、\
-             互不影响。任务空闲一段时间后自动回收，用完可调用 apps.task.end。",
+             互不影响；apps.lock 加的锁也归该任务。任务空闲一段时间后自动回收，用完可调用 apps.task.end。",
             obj(json!({ "type": "object", "properties": {}, "additionalProperties": false })),
         )
         .with_annotations(
@@ -199,6 +216,52 @@ fn base_builtin_tools() -> Vec<Tool> {
         .with_annotations(
             ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
         ),
+        Tool::new(
+            TOOL_APPS_LOCK,
+            "在一段连续操作期间锁定某个 App，避免其他 Agent 同时修改：锁定后其他 Agent 对该 App 的写操作会收到 LOCKED 错误\
+             （只读工具不受影响；用户在 App 里的直接操作不受影响）。带 key 时只锁 App 内的一个对象（如文档 ID），只与其他 Agent \
+             对同一对象加锁互斥、不拦截调用。锁在 ttlMs（默认 60000）后到期，再次调用即续期；用完请调用 apps.unlock。\
+             已被其他 Agent 锁定时返回 LOCKED（含剩余时间 retryAfterMs）。",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "appId": { "type": "string", "description": "App 标识" },
+                    "key": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_LOCK_KEY_LEN,
+                        "description": "App 内对象的名字（省略 = 锁整个 App 的写操作）"
+                    },
+                    "ttlMs": {
+                        "type": "integer",
+                        "minimum": MIN_LOCK_TTL_MS,
+                        "maximum": MAX_LOCK_TTL_MS,
+                        "description": "有效期（毫秒），默认 60000"
+                    }
+                },
+                "required": ["appId"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
+        ),
+        Tool::new(
+            TOOL_APPS_UNLOCK,
+            "释放 apps.lock 加的锁（appId 与 key 与加锁时相同）。只能释放自己的锁；没有持有时什么也不做。",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "appId": { "type": "string", "description": "App 标识" },
+                    "key": { "type": "string", "description": "加锁时的 key（锁整个 App 时省略）" }
+                },
+                "required": ["appId"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
+        ),
     ]
 }
 
@@ -209,8 +272,8 @@ pub(super) fn builtin_schema(name: &str) -> Option<Value> {
         .map(|t| Value::Object((*t.input_schema).clone()))
 }
 
-pub(crate) fn builtin_hub_tools(with_apps_tools: bool, with_apps_page: bool, with_tasks: bool) -> Vec<HubTool> {
-    builtin_tools(with_apps_tools, with_apps_page, with_tasks)
+pub(crate) fn builtin_hub_tools(set: BuiltinSet) -> Vec<HubTool> {
+    builtin_tools(set)
         .into_iter()
         .map(|t| {
             let name = t.name.to_string();
