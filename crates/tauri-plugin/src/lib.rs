@@ -50,7 +50,7 @@ use tauri::{AppHandle, Manager, RunEvent, Runtime, Webview, WindowEvent};
 
 pub use app_mcp_native::{
     Activation, AppOverview, Audience, CallHandle, CallResult, CancelListener, CancelReason,
-    ClientKind, ClientListener, ContentAnnotations, ErrorKind, HeartbeatMode, HoldHandle,
+    ClientKind, ClientListener, ContentAnnotations, ErrorKind, EventInfo, HeartbeatMode, HoldHandle,
     LifecycleMode, LifecyclePolicy, LogLevel, NativeClient, NativeConfig, NativeError, NavigateHandle, NavigationHandler,
     ReadHandle,
     Residency, ResourceHandle, ResourceOptions, ResourceReader, ResourceSpec, ResultStatus, Risk,

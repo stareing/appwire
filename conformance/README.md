@@ -184,7 +184,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `idempotencyKey` | handler 上下文中的幂等键（handler 结果 `returnIdempotencyKey`） |
 | `callScheduling` | 工具 `concurrency` / `exclusive`、`app.config.maxQueuedCalls`，且 handler 能并发执行（`delayMs` 不独占分发线程） |
 | `busy` | `app.busy`、`app.config.busyPolicy`、变更 `{op: "busy"}`（spec/protocol.md 5.3「用户正在操作」） |
-| `events` | `app.events`、handler `emit`、变更 `declareEvent` / `removeEvent`（spec/protocol.md 3.5 事件；一期只有 Rust runner 支持，其他 runner 跳过） |
+| `events` | `app.events`、handler `emit`、变更 `declareEvent` / `removeEvent`（spec/protocol.md 3.5 事件；全部 runner 支持） |
 
 ## 5. 各 SDK 的 runner
 

@@ -10,6 +10,7 @@ use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
+use crate::app_events::CAppEventHandler;
 use crate::async_bridge::CApprovalHandler;
 use crate::config;
 use crate::dispatch::{Dispatcher, Slot};
@@ -50,6 +51,9 @@ pub(crate) fn start(config_json: Option<&str>) -> FfiResult<Box<AmHub>> {
         }
     };
     let events = Arc::new(Slot::<AmHubEventFn>::new());
+    // v22：App 事件的厂商回调总是装上；未设置 C 回调时只做一次判空。
+    let app_events = Arc::new(Slot::new());
+    hub.set_event_handler(Arc::new(CAppEventHandler { slot: app_events.clone(), dispatcher: dispatcher.clone() }));
     let approval = Arc::new(Slot::<AmHubApprovalFn>::new());
     hub.set_approval_handler(Arc::new(CApprovalHandler {
         slot: approval.clone(),
@@ -90,6 +94,7 @@ pub(crate) fn start(config_json: Option<&str>) -> FfiResult<Box<AmHub>> {
         ops: Mutex::new(JoinSet::new()),
         dispatcher,
         events,
+        app_events,
         approval,
         pairing: Arc::new(Slot::new()),
         pairing_installed: AtomicBool::new(false),

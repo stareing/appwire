@@ -13,6 +13,7 @@
 mod callbacks;
 mod client;
 mod convert;
+mod events;
 mod ffi_types;
 mod handles;
 mod registration;
@@ -28,6 +29,7 @@ pub use callbacks::{
     AmStateFn, AmStateStatus, AmToolFn,
 };
 pub use client::*;
+pub use events::*;
 pub use ffi_types::{
     AmCallResult, AmClientCallbacks, AmClientConfig, AmClientOptions, AmLifecycle, AmResourceOptions, AmResourceSpec,
     AmToolOptions, AmToolSpec,

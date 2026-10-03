@@ -109,6 +109,13 @@
  * - v21（调用优先级，第 16 项 P6，spec/hub-api.md 3.15）：只做新增，AM_HUB_API_VERSION 仍为 3。
  *   · CallRequest 新增可选字段 priority（"interactive" / "normal" / "background"，缺省 normal）：原样转交 App，
  *     App SDK 的调用队列先按它、再按到达顺序调度；取值不合法时请求 JSON 解析失败。
+ * - v22（事件、订阅与信箱，第 16 项 N3 + P4，spec/hub-api.md 3.17）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · 函数 am_hub_set_app_event_cb 与回调类型 AmHubAppEventFn：App 发出、经 Hub 去重与校验的每个事件（不论有无订阅）回调一次。
+ *   · am_hub_set_event_cb 的事件新增 {"type":"appEvent", ...AppEvent}（同一事件；该流处理过慢时可能 lagged，需要不丢的用
+ *     am_hub_set_app_event_cb）。
+ *   · 新内置工具 apps.events.subscribe、apps.events.unsubscribe、apps.events（总是列出）与资源 app-mcp://apps/events。
+ *   · JSON 中新增：HubStatus.events：{subscriptions: [{subscriptionId, subscriber, appId, event?, delivered, dropped, pending}],
+ *     droppedInvalid}；apps.tools 的结果增加 events（App 的事件声明）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -195,6 +202,11 @@ typedef void (*AmHubPairingFn)(void *user_data, char *request_json, AmHubPairing
  * 然后调用 am_hub_waker_complete 恰好一次（可在任意线程、回调返回之后）：ok = true 表示已发出激活，
  * Hub 随后等待 App 回连（wakeTimeoutMs）。wake 的所有权转移给回调方。 */
 typedef void (*AmHubWakerFn)(void *user_data, char *request_json, AmHubWake *wake);
+
+/* v22：App 事件（spec/hub-api.md 3.17）。event_json 为 AppEvent：
+ *   {"id": "ev-<n>"（Hub 分配）, "appId", "instanceId", "name"（App 内的局部名，如 "order.shipped"）,
+ *    "payload"?: <JSON 对象>（App 未给出时省略）, "at": <Hub 收到时的 Unix 毫秒>} */
+typedef void (*AmHubAppEventFn)(void *user_data, char *event_json);
 
 /* ---------------------------------------------------------------------------
  * 通用
@@ -348,7 +360,9 @@ AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **ou
  * v16 起另有 mcpListenStreams：进行中的 subscriptions/listen 流数（mcpSessions 只计 legacy 会话）。
  * v18 起另有 agents（已登记的 Agent 名）、usage（按调用方记账，spec/hub-api.md 3.11）、tasks[].agent。
  * v20 起另有 locks：未到期的对象锁，按 appId、key 排序：[{appId, key?（命名锁）, caller（持有者的调用方键）,
- *   holder（记账主体 "agent:<名>" | "local" | "api"）, expiresInMs}]。 */
+ *   holder（记账主体 "agent:<名>" | "local" | "api"）, expiresInMs}]。
+ * v22 起另有 events：{subscriptions: [{subscriptionId, subscriber（"agent:<名>" 或调用方键）, appId, event?（省略 = 该 App 全部事件）,
+ *   delivered（经本订阅入箱数）, dropped（因频率上限丢弃数）, pending（订阅方信箱当前条数）}], droppedInvalid（不合法而丢弃的事件数）}。 */
 AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------
@@ -417,6 +431,11 @@ AmHubStatus am_hub_dispatch(AmHub *hub, AmHubToolFormat format, const char *tool
  * ------------------------------------------------------------------------- */
 
 AmHubStatus am_hub_set_event_cb(AmHub *hub, AmHubEventFn cb, void *user_data, AmHubFreeFn free_user_data);
+
+/* v22：App 事件的厂商 / 机主回调（Rust Hub::set_event_handler）：App 发出、经 Hub 去重与校验的每个事件（不论有无订阅）回调一次，
+ * 在分发线程上按到达顺序执行（不在 Hub 的连接任务上；与其他回调共用分发线程，必须尽快返回）。不受 am_hub_set_event_cb
+ * 事件流的 lagged 影响；Hub 释放中到达的事件丢弃。投递到 Agent 信箱与本回调无关（订阅、取件经内置工具 apps.events.*）。 */
+AmHubStatus am_hub_set_app_event_cb(AmHub *hub, AmHubAppEventFn cb, void *user_data, AmHubFreeFn free_user_data);
 
 /* 审批回调（配合 config 的 approval.requireAtOrAbove）。未设置或清除后，需要审批的调用以 USER_REJECTED 结束。 */
 AmHubStatus am_hub_set_approval_cb(AmHub *hub, AmHubApprovalFn cb, void *user_data, AmHubFreeFn free_user_data);

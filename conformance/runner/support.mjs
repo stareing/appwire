@@ -119,10 +119,11 @@ export function describeFailure(outcome) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * 按 handler 描述执行（顺序：progress → delayMs → mutate → counter 计数 → 结果，conformance/README.md 2.1）。
+ * 按 handler 描述执行（顺序：progress → delayMs → mutate → emit → counter 计数 → 结果，conformance/README.md 2.1）。
  * @input spec handler 描述；env.count 本次执行序号（counter 用，从 1 开始，由调用方按工具计数）；
  *   env.args 调用参数；env.idempotencyKey handler 上下文中的幂等键（没有时 undefined / null）；
- *   env.progress / env.isCancelled / env.mutate 由 SDK 映射。
+ *   env.progress / env.isCancelled / env.mutate 由 SDK 映射；env.emit(name, payload) 为 SDK 发事件 API（能力 events，
+ *   返回是否发送，本地错误抛出；`payload` 未给出时为 undefined）。
  * @output 与 SDK 无关的结果描述（`{kind:'throw'|'userAction'|'result'|'value'|'nothing', …}`），由 runner 映射为该语言的写法。
  */
 export async function execHandler(spec, env) {
@@ -132,6 +133,7 @@ export async function execHandler(spec, env) {
     while (Date.now() < until && !env.isCancelled()) await sleep(10);
   }
   for (const op of spec.mutate ?? []) env.mutate(op);
+  const emitted = Array.isArray(spec.emit) ? spec.emit.map((e) => emitOne(env, e)) : undefined;
   if (typeof spec.throw === 'string') return { kind: 'throw', message: spec.throw };
   if (spec.userAction) return { kind: 'userAction', ...spec.userAction };
   if (spec.result && typeof spec.result === 'object') return { kind: 'result', result: spec.result };
@@ -139,7 +141,18 @@ export async function execHandler(spec, env) {
   if (spec.echo === true) return { kind: 'value', value: env.args };
   if (spec.returnIdempotencyKey === true) return { kind: 'value', value: { idempotencyKey: env.idempotencyKey ?? null } };
   if (spec.counter === true) return { kind: 'value', value: { count: env.count } };
+  if (emitted) return { kind: 'value', value: { emitted } };
   return { kind: 'nothing' };
+}
+
+/** handler `emit` 的一项：SDK 的结果 `true` / `false`，本地错误为 `"error"`。 */
+function emitOne(env, e) {
+  if (typeof env.emit !== 'function') throw new Error('runner 未提供 emit（能力 events）');
+  try {
+    return env.emit(e.name, e.payload) === true;
+  } catch {
+    return 'error';
+  }
 }
 
 /**
@@ -163,7 +176,8 @@ export function execNavigation(pages, page, params, env) {
 /**
  * 注册表（handler 的 `mutate`，conformance/README.md 2.3）：记录每个工具的句柄与当前声明。
  * @input ops.register(decl) → 句柄；ops.update(handle, nextDecl, set)；ops.remove(handle)；ops.setEnabled(handle, on)；
- *   ops.setBusy(busy)（可选，能力 busy：变更 `{op: "busy", value}`）。
+ *   ops.setBusy(busy)（可选，能力 busy：变更 `{op: "busy", value}`）；ops.declareEvent(event) / ops.removeEvent(name)
+ *   （可选，能力 events：变更 `{op: "declareEvent", event}` / `{op: "removeEvent", name}`）。
  */
 export function createRegistry(ops) {
   const tools = new Map();
@@ -198,6 +212,13 @@ export function createRegistry(ops) {
       case 'busy':
         if (typeof ops.setBusy !== 'function') throw new Error('runner 未提供 setBusy（能力 busy）');
         return ops.setBusy(op.value === true);
+      case 'declareEvent':
+        if (typeof ops.declareEvent !== 'function') throw new Error('runner 未提供 declareEvent（能力 events）');
+        return ops.declareEvent(op.event);
+      case 'removeEvent':
+        if (typeof ops.removeEvent !== 'function') throw new Error('runner 未提供 removeEvent（能力 events）');
+        ops.removeEvent(op.name);
+        return undefined;
       default:
         throw new Error(`未知的 mutate 操作 ${op.op}`);
     }
@@ -216,6 +237,11 @@ export function appConfig(testCase) {
   if (typeof c.navigateInBackground === 'boolean') out.navigateInBackground = c.navigateInBackground;
   if (c.busyPolicy === 'reject' || c.busyPolicy === 'queue') out.busyPolicy = c.busyPolicy;
   return out;
+}
+
+/** 用例 `app.events`（能力 events）：启动前声明的事件，原样交给 SDK 的声明事件 API；未给出时为空数组。 */
+export function appEvents(testCase) {
+  return Array.isArray(testCase.app?.events) ? testCase.app.events : [];
 }
 
 /** 用例 `app.busy`（能力 busy）：为 true 时 runner 在启动前调用 SDK 的 `setBusy(true)`。 */
@@ -282,8 +308,8 @@ async function jsRead(spec, ToolCallError) {
 }
 
 /**
- * 按用例 `app` 部分在 JS SDK 实例上注册工具与资源（conformance/README.md 2.1–2.3）；`app.busy` 时随后调用 `setBusy(true)`
- * （runner 在本函数之后启动 SDK）。
+ * 按用例 `app` 部分在 JS SDK 实例上注册工具与资源、声明事件（conformance/README.md 2.1–2.3）；`app.busy` 时随后调用
+ * `setBusy(true)`（runner 在本函数之后启动 SDK）。
  * @input app `@app-mcp/node` / `@app-mcp/web` 的实例；ToolCallError 该包导出的错误类。
  * @why update 为补丁型 API：`set` 中为 null 的字段以显式 undefined 清除（两包的 `ToolHandle.update` 约定）。
  * @output `{ navigate }`：用例有 `app.navigation` 时为 JS 写法的导航回调 `(page, params) => Promise<void>`
@@ -306,6 +332,7 @@ export function registerJsApp(app, testCase, ToolCallError) {
               progress: (p, t, m) => ctx.progress?.(p, t, m),
               isCancelled: () => ctx.signal.aborted,
               mutate: (op) => registry.mutate(op),
+              emit: (name, payload) => app.emitEvent(name, payload),
             }),
             ToolCallError,
           ),
@@ -321,6 +348,8 @@ export function registerJsApp(app, testCase, ToolCallError) {
     remove: (handle) => handle.dispose(),
     setEnabled: (handle, enabled) => handle.update({ enabled }),
     setBusy: (busy) => app.setBusy(busy),
+    declareEvent: (event) => app.declareEvent(event),
+    removeEvent: (name) => app.removeEvent(name),
   });
   for (const t of testCase.app.tools ?? []) registry.register(t);
   for (const r of testCase.app.resources ?? []) {
@@ -329,6 +358,7 @@ export function registerJsApp(app, testCase, ToolCallError) {
       read: () => jsRead(r.read, ToolCallError),
     });
   }
+  for (const e of appEvents(testCase)) app.declareEvent(e);
   if (appBusy(testCase)) app.setBusy(true);
   const pages = testCase.app.navigation;
   if (typeof pages !== 'object' || pages === null) return { navigate: undefined };

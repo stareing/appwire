@@ -146,6 +146,10 @@ function Root() {
   while it is open.
 - `useRouterNavigation(options)` / `useNavigationHandler(handler, options?)` - handle the Hub's page navigation requests.
 - `useHold(active = true)` - prevents automatic sleep while mounted (`lifecycle.mode` `idle` / `on-demand`).
+- Events (spec/protocol.md 3.5): there is no dedicated hook; declare once at startup and emit from anywhere through the
+  client, e.g. `appMcp.declareEvent({ name: 'order.shipped', description: 'An order was shipped' })` next to
+  `createAppMcp`, then `useAppMcp().emitEvent('order.shipped', { orderId })` in an effect or handler (returns `false`
+  while not connected; the event is dropped).
 - `useBusy(active)` - declares that the user is working in the app while `active` is true (spec/protocol.md 5.3), e.g.
   `useBusy(focused)` in an editor; write calls are then rejected or queued according to `busyPolicy`. Each active hook
   holds an `appMcp.beginBusy()` scope (reference-counted), so the app is busy while any of them is active; it does not

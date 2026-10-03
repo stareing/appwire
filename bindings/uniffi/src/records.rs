@@ -1,8 +1,9 @@
-//! 工具 / 资源声明与调用结果等记录：[`ToolSpec`]、[`ResourceSpec`]、[`CallResult`]、[`StateInfo`] 等。
+//! 工具 / 资源 / 事件声明与调用结果等记录：[`ToolSpec`]、[`ResourceSpec`]、[`EventInfo`]、[`CallResult`]、[`StateInfo`] 等。
 
 use app_mcp_native as native;
 
 use crate::enums::{Activation, Audience, ResultStatus, Risk, StateStatus, ToolSurface};
+use crate::error::AppMcpError;
 
 /// 工具定义。
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -205,5 +206,33 @@ impl From<native::StateInfo> for StateInfo {
             reason: s.reason,
             code: s.code,
         }
+    }
+}
+
+/// 事件声明（spec/protocol.md 3.5，[`AppMcpClient::declare_event`]）。
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct EventInfo {
+    /// 事件名，规则同工具名（`[a-zA-Z0-9_.-]{1,64}`），如 `order.shipped`。
+    pub name: String,
+    /// 面向模型：事件何时发生、载荷含义。
+    pub description: String,
+    /// 载荷的 JSON Schema 文本（描述用，Hub 不校验）；为空 = 无载荷或不描述。
+    #[uniffi(default = None)]
+    pub payload_schema_json: Option<String>,
+}
+
+/// @error `payload_schema_json` 不是合法 JSON → [`AppMcpError::InvalidJson`]。
+impl TryFrom<EventInfo> for native::EventInfo {
+    type Error = AppMcpError;
+
+    fn try_from(e: EventInfo) -> Result<Self, AppMcpError> {
+        let payload_schema = e
+            .payload_schema_json
+            .map(|text| {
+                serde_json::from_str(&text)
+                    .map_err(|err| AppMcpError::InvalidJson { detail: format!("事件 payloadSchema 不是合法 JSON：{err}") })
+            })
+            .transpose()?;
+        Ok(native::EventInfo { name: e.name, description: e.description, payload_schema })
     }
 }

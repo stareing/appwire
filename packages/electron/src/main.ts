@@ -16,7 +16,7 @@
  * webContents 销毁或渲染进程崩溃时整体注销，进行中的调用以 APP_DISCONNECTED 失败。
  *
  * 页面的生命周期操作（`wake` / `sleep` / `connectNow` / `hold`）转给主进程客户端；
- * 页面的 hold 按 webContents 记录，上述注销时一并释放。
+ * 页面的 hold 按 webContents 记录，上述注销时一并释放；页面声明的事件（`event.*`）同样按 webContents 记录、上述注销时撤销。
  */
 
 import { ToolCallError, type AppMcp, type Logger, type Registrar, type Scope, type ToolHandle, type ResourceHandle } from '@app-mcp/node'
@@ -32,6 +32,7 @@ import {
   type RendererOp,
   type ToolSpecMessage,
 } from './protocol.js'
+import { PageEvents } from './page-events.js'
 
 export type { HelloReply, MainEvent, NavigateEvent, NavigationOp, OpReply, RendererOp } from './protocol.js'
 /** 主进程 handler 抛出以指定错误类别（如 `ToolCallError.userActionRequired(...)`）。 */
@@ -66,7 +67,17 @@ export type MainAppMcp = Pick<AppMcp, 'scope' | 'instanceId' | 'state' | 'onStat
   Partial<
     Pick<
       AppMcp,
-      'wake' | 'sleep' | 'hold' | 'connectNow' | 'connectionId' | 'setNavigationHandler' | 'setNavigateInBackground' | 'beginBusy'
+      | 'wake'
+      | 'sleep'
+      | 'hold'
+      | 'connectNow'
+      | 'connectionId'
+      | 'setNavigationHandler'
+      | 'setNavigateInBackground'
+      | 'beginBusy'
+      | 'declareEvent'
+      | 'removeEvent'
+      | 'emitEvent'
     >
   >
 
@@ -167,6 +178,13 @@ class RendererSession {
         this.busy = op.busy === true
         this.owner.syncBusy()
         return undefined
+      case 'event.declare':
+        this.owner.pageEvents.declare(this.sender.id, op.event)
+        return undefined
+      case 'event.remove':
+        return this.owner.pageEvents.remove(this.sender.id, op.name)
+      case 'event.emit':
+        return this.owner.pageEvents.emit(op.name, op.payload)
       case 'navigation.set':
         this.owner.setNavigationTarget(this, op.enabled === true)
         return undefined
@@ -422,9 +440,12 @@ class Attachment implements AppMcpAttachment {
    */
   private pagesBusy: BusyHandle | undefined
   readonly logger: Pick<Logger, 'warn' | 'error'>
+  /** 页面声明的事件（`event.*`），按 webContents 记录，{@link Attachment.endSession} 时撤销。 */
+  readonly pageEvents: PageEvents
 
   constructor(private readonly options: AttachOptions) {
     this.logger = options.logger ?? console
+    this.pageEvents = new PageEvents(options.appMcp)
     options.ipcMain.handle(CHANNEL_OP, (event, op: unknown) => this.onOp(event.sender, op))
     this.unsubscribe = options.appMcp.onStateChange((state) => this.broadcast(state))
     if (options.navigation) {
@@ -500,6 +521,7 @@ class Attachment implements AppMcpAttachment {
   endSession(session: RendererSession): void {
     if (this.sessions.get(session.sender.id) === session) this.sessions.delete(session.sender.id)
     session.dispose()
+    this.pageEvents.release(session.sender.id)
     this.syncBusy()
   }
 

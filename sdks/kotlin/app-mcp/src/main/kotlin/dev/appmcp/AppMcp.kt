@@ -6,6 +6,7 @@ import dev.appmcp.ffi.Call
 import dev.appmcp.ffi.CallResult
 import dev.appmcp.ffi.CancelListener
 import dev.appmcp.ffi.ClientListener
+import dev.appmcp.ffi.EventInfo
 import dev.appmcp.ffi.Navigate
 import dev.appmcp.ffi.Read
 import dev.appmcp.ffi.ResourceReader
@@ -462,6 +463,33 @@ class AppMcp private constructor(
 
     /** 作用域写法：[block] 执行期间为忙碌（含异常 / 取消退出时归还），语义同 [beginBusy]。 */
     inline fun <T> busy(block: () -> T): T = beginBusy().use { block() }
+
+    // -- 事件（spec/protocol.md 3.5） ----------------------------------------------------
+
+    /**
+     * 声明本实例可发出的事件（同名替换）；[payloadSchema] 为载荷的 JSON Schema（描述用，Hub 不校验）。
+     * 已连接时随即同步给 Host，否则在下次握手成功后同步；不触发连接。名称不合法 / 已停止时抛 [AppMcpException]。
+     */
+    fun declareEvent(name: String, description: String, payloadSchema: JsonObject? = null) =
+        inner.declareEvent(EventInfo(name, description, payloadSchema?.toString()))
+
+    /** 撤销事件声明；未声明过（或已停止）返回 false。 */
+    fun removeEvent(name: String): Boolean = inner.removeEvent(name)
+
+    /**
+     * 发出已声明的事件。[payload] 为 JSON 对象（[JsonObject] 或 `Map`，转换规则同 [anyToJson]）；null = 无载荷。
+     * 已连接时发送并返回 true；未连接（休眠、断线、重连中）丢弃并返回 false：不缓存、不为此连接或唤醒 Host，也不推迟空闲休眠。
+     * 需要可靠送达的状态变化请改用资源。未声明 / 名称不合法抛 `AppMcpException.InvalidName`；载荷无法转换、不是对象
+     * 或超过 8 KiB 抛 `AppMcpException.InvalidJson`。
+     */
+    fun emitEvent(name: String, payload: Any? = null): Boolean {
+        val json = try {
+            anyToJson(payload)
+        } catch (e: IllegalArgumentException) {
+            throw AppMcpException.InvalidJson("事件载荷无法转换为 JSON：${e.message}")
+        }
+        return inner.emitEvent(name, json.takeUnless { it is JsonNull }?.toString())
+    }
 
     /**
      * 设置导航回调（Host 的 `app/navigate`，spec/protocol.md 3.4）；null 清除（之后的导航请求以 `NAVIGATION_FAILED`

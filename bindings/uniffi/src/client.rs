@@ -9,7 +9,7 @@ use crate::config::ClientConfig;
 use crate::enums::{BusyPolicy, SleepReason, Visibility, WakeReason};
 use crate::error::AppMcpError;
 use crate::handles::{Hold, Resource, Scope, Tool};
-use crate::records::{ResourceSpec, StateInfo, ToolSpec};
+use crate::records::{EventInfo, ResourceSpec, StateInfo, ToolSpec};
 
 /// 客户端。创建时启动后台运行时（不连接），`start` 后开始连接 Host。
 /// 对象被外部语言释放（最后一个引用消失）时自动停止。
@@ -106,6 +106,27 @@ impl AppMcpClient {
         Ok(Arc::new(Scope {
             inner: self.inner.create_scope(&name)?,
         }))
+    }
+
+    // ---- 事件（spec/protocol.md 3.5） ----
+
+    /// 声明本实例可发出的事件（同名替换）。已连接时随即同步给 Host，否则在下次握手成功后同步；不触发连接。
+    ///
+    /// @error 名称不合法 → `InvalidName`；`payload_schema_json` 不是合法 JSON → `InvalidJson`；已停止 → `Stopped`。
+    pub fn declare_event(&self, info: EventInfo) -> Result<(), AppMcpError> {
+        Ok(self.inner.declare_event(info.try_into()?)?)
+    }
+    /// 撤销事件声明；未声明过（或已停止）返回 `false`。
+    pub fn remove_event(&self, name: String) -> bool {
+        self.inner.remove_event(&name)
+    }
+    /// 发出已声明的事件，`payload_json` 为 JSON 对象文本（为空 = 无载荷）。已连接时发送并返回 `true`；未连接时丢弃并返回
+    /// `false`：不缓存、不为此连接或唤醒 Host，也不推迟空闲休眠。需要可靠送达的状态变化请改用资源。
+    ///
+    /// @error 名称不合法、未声明 → `InvalidName`；载荷不是合法 JSON、不是对象或序列化后超过 8 KiB → `InvalidJson`；
+    /// 已停止 → `Stopped`。
+    pub fn emit_event(&self, name: String, payload_json: Option<String>) -> Result<bool, AppMcpError> {
+        Ok(self.inner.emit_event(&name, payload_json.as_deref())?)
     }
 
     // ---- 生命周期（spec/lifecycle.md 第 8 节） ----

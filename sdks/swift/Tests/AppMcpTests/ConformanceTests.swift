@@ -13,7 +13,7 @@ final class ConformanceTests: XCTestCase {
     private static let features: Set<String> = [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
         "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-        "callScheduling", "busy",
+        "callScheduling", "busy", "events",
     ]
     private static let verdictOK: Set<String> = ["pass", "xfail", "xpass", "skip"]
 
@@ -130,6 +130,7 @@ private final class CaseApp {
         let app = CaseApp(client: try AppMcpClient(config: config(addr: addr, c["app"]?["config"])))
         for t in c["app"]?["tools"]?.arrayValue ?? [] { try app.register(t) }
         for r in c["app"]?["resources"]?.arrayValue ?? [] { try app.registerResource(r) }
+        for e in c["app"]?["events"]?.arrayValue ?? [] { try app.declareEvent(e) }
         if let pages = c["app"]?["navigation"] {
             app.client.setNavigationHandler { [weak app] req in
                 guard let app else { return .failed("App 已释放") }
@@ -197,7 +198,7 @@ private final class CaseApp {
         }
     }
 
-    /// 顺序：progress → delayMs → mutate → 结果（conformance/README.md 2.1）。普通返回值即 `.done` 且无附加信息的结果。
+    /// 顺序：progress → delayMs → mutate → emit → 结果（conformance/README.md 2.1）。普通返回值即 `.done` 且无附加信息的结果。
     private func run(_ spec: JSONValue, count: Int, args: JSONValue, ctx: ToolContext) async throws -> ToolResult<JSONValue> {
         for p in spec["progress"]?.arrayValue ?? [] {
             ctx.progress(p["progress"]?.doubleValue ?? 0, total: p["total"]?.doubleValue, message: p["message"]?.stringValue)
@@ -206,6 +207,7 @@ private final class CaseApp {
             try await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000) // 取消 / 超时时 Task 被取消
         }
         for op in spec["mutate"]?.arrayValue ?? [] { try mutate(op) }
+        let emitted = spec["emit"]?.arrayValue.map(emitEvents)
         if let msg = spec["throw"]?.stringValue { throw CaseError(description: msg) }
         if let u = spec["userAction"], u != .null {
             throw ToolCallError.userActionRequired(message: u["message"]?.stringValue ?? "", reason: u["reason"]?.stringValue, uri: u["uri"]?.stringValue)
@@ -226,7 +228,25 @@ private final class CaseApp {
             return ToolResult(data: .object(["idempotencyKey": ctx.idempotencyKey.map(JSONValue.string) ?? .null]))
         }
         if spec["counter"]?.boolValue == true { return ToolResult(data: .object(["count": .number(Double(count))])) }
+        if let emitted { return ToolResult(data: .object(["emitted": .array(emitted)])) }
         return ToolResult(data: nil) // returnNothing：Swift 的"无返回值"
+    }
+
+    /// 事件声明（conformance/README.md 2.2）。
+    func declareEvent(_ decl: JSONValue) throws {
+        try client.declareEvent(
+            decl["name"]?.stringValue ?? "", description: decl["description"]?.stringValue ?? "",
+            payloadSchema: try decl["payloadSchema"].map(text)
+        )
+    }
+
+    /// handler 的 `emit`：每项为 `true` / `false`（已发送 / 未连接丢弃），本地错误为 `"error"`。
+    private func emitEvents(_ items: [JSONValue]) -> [JSONValue] {
+        items.map { e in
+            let name = e["name"]?.stringValue ?? ""
+            let sent = try? (e["payload"].map { try client.emitEvent(name, payload: $0) } ?? client.emitEvent(name))
+            return sent.map(JSONValue.bool) ?? .string("error")
+        }
     }
 
     /// handler 的 `mutate`（conformance/README.md 2.3）：update 用补丁 API，`nil` 清除。
@@ -235,6 +255,8 @@ private final class CaseApp {
         switch op["op"]?.stringValue {
         case "register": try register(op["tool"] ?? .null)
         case "busy": client.setBusy(op["value"]?.boolValue ?? false)
+        case "declareEvent": try declareEvent(op["event"] ?? .null)
+        case "removeEvent": client.removeEvent(name)
         case "update":
             guard case let .object(set)? = op["set"] else { return }
             try tools[name]?.update { d in

@@ -181,6 +181,24 @@ describe('createTauriAppMcp', () => {
     appMcp.dispose()
   })
 
+  it('事件：declareEvent / removeEvent / emitEvent 经注入脚本发送 event.* op；连接前发出丢弃，未声明抛 INVALID_NAME', async () => {
+    const fake = createFakeTauri()
+    const appMcp = createTauriAppMcp({ appId: 'shop', appName: '示例商城', bridge: bridgeOf(fake.window), logger: quiet })
+    appMcp.declareEvent({ name: 'order.shipped', description: '订单已发货', payloadSchema: { type: 'object' } })
+    expect(appMcp.emitEvent('order.shipped')).toBe(false)
+    await vi.waitFor(() => expect(appMcp.state.status).toBe('connected'))
+    expect(appMcp.emitEvent('order.shipped', { orderId: 'o1' })).toBe(true)
+    expect(() => appMcp.emitEvent('nope')).toThrow(expect.objectContaining({ code: 'INVALID_NAME' }))
+    expect(appMcp.removeEvent('order.shipped')).toBe(true)
+    await fake.waitFor((op) => op.op === 'event.remove')
+    expect(JSON.parse(JSON.stringify(fake.ops.filter((op) => op.op.startsWith('event.'))))).toEqual([
+      { op: 'event.declare', event: { name: 'order.shipped', description: '订单已发货', payloadSchema: { type: 'object' } } },
+      { op: 'event.emit', name: 'order.shipped', payload: { orderId: 'o1' } },
+      { op: 'event.remove', name: 'order.shipped' },
+    ])
+    appMcp.dispose()
+  })
+
   it('USER_ACTION_REQUIRED 的类别与 reason / uri 经注入脚本送到 Rust 侧；缺省字段省略', async () => {
     const fake = createFakeTauri()
     const appMcp = createTauriAppMcp({ appId: 'shop', appName: '示例商城', bridge: bridgeOf(fake.window), logger: quiet })

@@ -58,6 +58,22 @@ client.RegisterTool("order.submit", "提交订单",
 - `ToolRegistration.Update(description, options)` 整体替换：`options` 中为 `null` 的 `Annotations` / `OutputSchemaJson` 表示清除该声明。
 - `ToolErrorKind.RateLimited` / `PayloadTooLarge` 由 Hub 产生（限流 / 超过大小上限），handler 不会收到，也不必抛出。
 
+## 事件（spec/protocol.md 3.5）
+
+App 告诉 Agent "发生了什么"（订单已发货、下载完成）：先声明，再在发生时发出。
+
+```csharp
+client.DeclareEvent("order.shipped", "订单已发货", """{"type":"object","properties":{"orderId":{"type":"string"}}}""");
+bool sent = client.EmitEvent("order.shipped", new { orderId = "o1" });   // 载荷按 SerializerOptions 序列化，须为 JSON 对象
+client.RemoveEvent("order.shipped");
+```
+
+- 已连接时发送并返回 `true`；未连接（休眠、断线、重连中、握手中）时丢弃并返回 `false`——不缓存、不为发事件连接或唤醒 Host，
+  也不推迟空闲休眠。需要可靠送达的状态变化请改用资源（`ResourceRegistration.NotifyChanged`）。
+- SDK 不读清单：要发出的事件都需运行时 `DeclareEvent`（同名替换，连接后自动同步）。未声明、名称不合法抛 `AppMcpException`
+  （`InvalidName`），载荷不是对象或超过 8 KiB 为 `InvalidJson`；`EmitEventJson(name, json)` 直接传 JSON 文本。
+- Agent 经 Hub 内置工具 `apps.events.subscribe` / `apps.events` 订阅与取件（spec/hub-api.md 3.17）。
+
 ## 界面级暴露与导航（spec/protocol.md 3.4）
 
 ```csharp
@@ -184,6 +200,16 @@ var outcome = await hub.CallAsync("notes.add", new { text = "买牛奶" });  // 
   `PlatformState`）。嵌入方取消用 `CancelCall(callId)`（不检查归属）。
 - 调用元信息：`CallOutcome.DurationMs`（Hub 收到调用到得出结果的毫秒数，含审批、唤醒与等待 App）、`CallOutcome.Woke`
   （本次 App 工具调用是否经历了唤醒 / 按名激活；内置与上游工具恒为 false）。旧 Hub 未给出时为 0 / false。
+
+### 事件、订阅与信箱（spec/hub-api.md 3.17）
+
+- Agent 用内置工具 `apps.events.subscribe {appId, event?, filter?}` / `apps.events.unsubscribe {subscriptionId}` / `apps.events {max?}`
+  订阅与取件（总是列出；按会话 / 已登记 Agent 归属，经 `CallAsync` / `DispatchAsync` 调用）；资源 `app-mcp://apps/events` 为信箱只读视图。
+- 厂商 / 机主回调：`hub.SetEventHandler(ev => ...)`（`HubAppEvent`：`Id`、`AppId`、`InstanceId`、`Name`、`Payload`、`At`），每个通过校验的
+  事件（不论有无订阅）调用一次，在 `Dispatcher` 上执行（null 时在分发线程上，须尽快返回）；传 `null` 清除。`Event` 也收到同一事件
+  （`HubEventTypes.AppEvent`），但处理过慢时可能 `lagged`。
+- `Status().Events`（`EventsStatusInfo`）：`Subscriptions`（`EventSubscriptionStatusInfo`：`SubscriptionId`、`Subscriber`、`AppId`、
+  `Event`、`Delivered`、`Dropped`、`Pending`）与 `DroppedInvalid`（未声明 / 载荷不合法而丢弃的事件数）。
 
 ### 休眠与唤醒（spec/hub-api.md 3.5）
 

@@ -277,6 +277,7 @@ await hub.shutdown()
 | `selectInstance(appId, instanceId?)` / `resetSession(session?)` | 路由与会话 |
 | `exportTools(format, filter?)` / `dispatch(format, call, session?)` | 格式导出与分派 |
 | `onEvent(cb)` → 取消函数；`waitForEvent(pred, ms?)` | 事件 |
+| `setEventHandler(fn \| null)` | App 事件回调（spec/hub-api.md 3.17）：每个通过校验的 `AppEvent {id, appId, instanceId, name, payload?, at}` 调用一次（不论有无订阅），同一事件也以 `{type: 'appEvent', ...}` 进入 `onEvent`；订阅与积压见 `status().events`（`subscriptions[]` 的 `delivered` / `dropped` / `pending`、`droppedInvalid`）。Agent 用内置工具 `apps.events.subscribe` / `apps.events` / `apps.events.unsubscribe` 订阅与取件 |
 | `setApprovalHandler(fn)` / `setPairingHandler(fn)` | 审批 / 配对回调（可 async） |
 | `setWaker(fn \| null)` | 自定义唤醒（休眠实例 / 冷启动）；`null` 恢复默认 |
 | `serveHttp(addr, allowRemote?)` | MCP Streamable HTTP 出口 |

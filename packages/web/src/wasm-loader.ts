@@ -24,6 +24,7 @@ import type {
   SleepReason,
   WakeReason,
 } from './core'
+import type { EventInfo } from './events'
 import type { BusyPolicy, Visibility } from './types'
 
 /**
@@ -60,6 +61,9 @@ export interface RawWasmClient {
   setBusy(busy: boolean): void
   isBusy(): boolean
   setBusyPolicy(policy: string): void
+  declareEvent(eventJson: string): void
+  removeEvent(name: string): boolean
+  emitEvent(name: string, payloadJson?: string | null): boolean
   pollEvent(): string | undefined
   pollTimeout(): number | undefined
   handleWake(args: string, now: number): boolean
@@ -170,6 +174,15 @@ class WasmCore implements CoreClient {
   }
   setBusyPolicy(policy: BusyPolicy): void {
     this.raw.setBusyPolicy(policy)
+  }
+  declareEvent(event: EventInfo): void {
+    this.raw.declareEvent(JSON.stringify(event))
+  }
+  removeEvent(name: string): boolean {
+    return this.raw.removeEvent(name)
+  }
+  emitEvent(name: string, payloadJson: string | undefined): boolean {
+    return this.raw.emitEvent(name, payloadJson)
   }
   pollEvent(): CoreEvent | undefined {
     const json = this.raw.pollEvent()

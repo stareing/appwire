@@ -13,6 +13,7 @@
 //!   全部回调在调用结果返回之前完成。
 //! - 事件：外部实现 [`HubEventListener`]，在专用分发线程上**同步**回调（须尽快返回）；
 //!   接收方落后时回调 `on_lagged(skipped)`。
+//! - App 事件回调：外部实现 [`AppEventHandler`]，在 Hub 的 App 连接任务上**同步**回调（须很快返回）。
 //! - 审批 / 配对 / 唤醒：外部实现**同步**回调接口 [`ApprovalHandler`] / [`PairingHandler`] /
 //!   [`HubWaker`]，回调收到一个完成句柄（[`ApprovalResponder`] / [`PairingResponder`] /
 //!   [`WakeResponder`]），在任意线程、任意时刻给出结果。回调本身在 Hub 的阻塞线程上调用、应尽快返回；
@@ -37,14 +38,14 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 
 pub use callbacks::{
-    ApprovalHandler, ApprovalResponder, HubEventListener, HubWaker, PairingHandler, PairingResponder, ProgressListener,
+    AppEventHandler, ApprovalHandler, ApprovalResponder, HubEventListener, HubWaker, PairingHandler, PairingResponder, ProgressListener,
     WakeResponder,
 };
 pub use free_functions::{HubFeatures, hub_features, init_logging, parse_tool_format};
 pub use naming::{DialOutcome, HubNameService, NamedApp};
 pub use types::*;
 
-use callbacks::{ApprovalAdapter, PairingAdapter, WakerAdapter, guarded};
+use callbacks::{AppEventAdapter, ApprovalAdapter, PairingAdapter, WakerAdapter, guarded};
 
 uniffi::setup_scaffolding!();
 
@@ -443,6 +444,14 @@ impl AppMcpHub {
                 }
             }
         }));
+    }
+
+    /// 设置 App 事件回调（spec/hub-api.md 3.17，替换之前的；为空时清除）：每个通过校验的事件（不论有无订阅）同步回调一次，
+    /// 在 Hub 的 App 连接任务上执行，必须很快返回。同一事件也以 [`HubEvent::AppEvent`] 进入事件监听。
+    pub fn set_event_handler(&self, handler: Option<Arc<dyn AppEventHandler>>) {
+        if let Ok(hub) = self.hub() {
+            hub.set_event_handler(Arc::new(AppEventAdapter(handler)));
+        }
     }
 
     /// 设置审批处理器（替换之前的）。审批阈值由 `HubConfig.approval_min_risk` 决定；

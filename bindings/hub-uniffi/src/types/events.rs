@@ -3,7 +3,7 @@
 use app_mcp_hub as hub;
 use serde_json::Value;
 
-use super::{Risk, ToolAnnotations, Visibility, WakeKind};
+use super::{AppEvent, Risk, ToolAnnotations, Visibility, WakeKind};
 
 #[derive(Clone, Debug, PartialEq, uniffi::Enum)]
 pub enum HubEvent {
@@ -49,6 +49,10 @@ pub enum HubEvent {
         code: String,
         message: String,
         count: u32,
+    },
+    /// App 发出的事件（`events/emit`，已去重与校验；spec/hub-api.md 3.17），不论有无订阅。
+    AppEvent {
+        event: AppEvent,
     },
     /// 本绑定尚未单独映射的 Hub 事件（兜底，兼容未来新增）。`kind` 为事件类型名，
     /// `json` 为事件的完整 JSON 文本。
@@ -123,6 +127,9 @@ impl From<hub::HubEvent> for HubEvent {
                 code,
                 message,
                 count,
+            },
+            H::AppEvent(event) => HubEvent::AppEvent {
+                event: event.into(),
             },
             #[allow(unreachable_patterns)]
             other => other_event(&other),

@@ -43,6 +43,10 @@
 // 用户正在操作（spec/protocol.md 5.3，app_mcp.h v19）：Client::set_busy(true / false) 显式开关，或 RAII 的 Client::busy()
 // （BusyScope，引用计数、可嵌套、可跨线程结束）。有效 busy = 开关 ∨ 未结束作用域数 > 0，二者互不清除。
 // 期间写调用按 ClientConfig::busy_policy（运行中 Client::set_busy_policy）拒绝（RATE_LIMITED，scope "busy"）或排队；只读调用不受影响。
+//
+// 事件（spec/protocol.md 3.5，app_mcp.h v20）：Client::declare_event(name, description, payload_schema_json?) 声明，
+// Client::emit_event(name, payload_json?) 发出——已连接时发送并返回 true，未连接时丢弃并返回 false（不缓存、不唤醒 Host）；
+// 未声明 / 载荷不是 JSON 对象时抛 Error。Client::remove_event 撤销声明。Agent 经 Hub 的 apps.events.* 订阅与取件。
 #ifndef APP_MCP_HPP
 #define APP_MCP_HPP
 

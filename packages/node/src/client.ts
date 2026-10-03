@@ -19,6 +19,8 @@ import type {
   BusyHandle,
   BusyPolicy,
   ConnectionState,
+  EventDefinition,
+  EventPayload,
   HoldHandle,
   LazyToolDefinition,
   Logger,
@@ -41,6 +43,7 @@ import {
   wrapHold,
 } from './client/shared.js'
 import { BusyState } from './client/busy.js'
+import { encodePayload, toNativeEventSpec } from './client/events.js'
 import { ResourceEntry, ToolEntry } from './client/entries.js'
 
 // ---------------------------------------------------------------------------
@@ -246,6 +249,31 @@ class NodeAppMcp extends RegistrarBase implements AppMcp {
       return null
     }
     return client as Required<Pick<NativeClient, 'setBusy' | 'setBusyPolicy'>>
+  }
+
+  declareEvent(event: EventDefinition): void {
+    const spec = toNativeEventSpec(event)
+    this.eventClient()?.declareEvent(spec)
+  }
+
+  removeEvent(name: string): boolean {
+    return this.eventClient()?.removeEvent(name) ?? false
+  }
+
+  emitEvent(name: string, payload?: EventPayload): boolean {
+    const payloadJson = encodePayload(name, payload)
+    return this.eventClient()?.emitEvent(name, payloadJson) ?? false
+  }
+
+  /** 支持事件的原生客户端；已停止时为 null，旧版原生模块记一条警告后为 null。 */
+  private eventClient(): Required<Pick<NativeClient, 'declareEvent' | 'removeEvent' | 'emitEvent'>> | null {
+    const client = this.lifecycleClient()
+    if (!client) return null
+    if (!client.declareEvent || !client.removeEvent || !client.emitEvent) {
+      this.logger.warn('[app-mcp] 原生模块版本过旧，不支持事件（spec/protocol.md 3.5）')
+      return null
+    }
+    return client as Required<Pick<NativeClient, 'declareEvent' | 'removeEvent' | 'emitEvent'>>
   }
 
   /**

@@ -19,6 +19,7 @@ import { loadWasmCore } from './wasm-loader'
 export * from './types'
 export { DEFAULT_HOST_URL, DEFAULT_HOST_URLS, SDK_VERSION } from './driver'
 export { isToolResultEnvelope } from './result'
+export { MAX_EVENT_PAYLOAD_BYTES } from './events'
 export { attachBridgeNavigation, type BridgeNavigation } from './bridge-navigation'
 // 界面级暴露（spec/protocol.md 3.4）：层栈与 view 工具门控
 export { createViewLayer, openViewLayers, refreshViewTools } from './view'
@@ -30,6 +31,8 @@ export {
   DEFAULT_BRIDGE_KEY,
   findElectronBridge,
   type AppMcpBridge,
+  type EventMessage,
+  type EventOp,
   type HelloReply,
   type MainEvent,
   type NavigateEvent,

@@ -141,6 +141,23 @@ final class FakeNative {
   /// v17：最近一次 am_client_new_ex 的按名寻址 `registerName(0/1)|nameInstance 或 -`。
   String? nameService() => _take(_nameService());
 
+  // v20：事件（fake_events.c）
+  late final _eventsSetConnected =
+      lib.lookupFunction<Void Function(Int32), void Function(int)>('fake_events_set_connected');
+  late final _eventInfo = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
+      Pointer<Utf8> Function(Pointer<Utf8>)>('fake_event_info');
+  late final _lastEmit = lib.lookupFunction<Pointer<Utf8> Function(), Pointer<Utf8> Function()>('fake_last_emit');
+  late final eventsReset = lib.lookupFunction<Void Function(), void Function()>('fake_events_reset');
+
+  /// emit 时是否视为已连接（已连接时写入 sent = true 并记录）。
+  void eventsConnected(bool connected) => _eventsSetConnected(connected ? 1 : 0);
+
+  /// 已声明事件的 `描述|schema 或 -`；未声明时 null。
+  String? eventInfo(String name) => _take(using((a) => _eventInfo(name.toNativeUtf8(allocator: a))));
+
+  /// 最近一次已发送的 `名称|载荷或 -`；没有时 null。
+  String? lastEmit() => _take(_lastEmit());
+
   /// v18：最近一次 am_client_new_ex 的 max_queued_calls（原样）。
   late final maxQueuedCalls = lib.lookupFunction<Int32 Function(), int Function()>('fake_max_queued_calls');
 

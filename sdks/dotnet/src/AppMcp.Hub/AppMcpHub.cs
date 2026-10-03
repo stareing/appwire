@@ -412,6 +412,16 @@ public sealed class AppMcpHub : IDisposable, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// App 事件的厂商 / 机主回调（spec/hub-api.md 3.17）：App 发出、经 Hub 去重与校验的每个事件（不论有无 Agent 订阅）调用一次。
+    /// 在 <see cref="Dispatcher"/> 上执行（null 时直接在 Hub 的分发线程上，按到达顺序，必须尽快返回）；handler 的异常被忽略。
+    /// 与 <see cref="Event"/> 的 <c>appEvent</c> 是同一事件，但不受该事件流处理过慢（lagged）影响。传 null 清除。
+    /// 投递到 Agent 信箱与本回调无关（Agent 经内置工具 <c>apps.events.subscribe</c> / <c>apps.events</c> 订阅与取件）。
+    /// </summary>
+    public void SetEventHandler(Action<HubAppEvent>? handler) =>
+        SetSlot(HubNativeMethods.am_hub_set_app_event_cb, HubCallbacks.AppEventPtr,
+            handler is null ? null : new AppEventSink(handler, Dispatcher));
+
     /// <summary>设置 / 清除常驻回调。user_data 交给库之后（无论成败）由库负责释放；
     /// 句柄已释放导致未进入原生调用时在此释放。</summary>
     private void SetSlot(Func<HubSafeHandle, nint, nint, nint, HubStatus> set, nint cb, object? target)

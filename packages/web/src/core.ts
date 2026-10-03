@@ -5,6 +5,7 @@
  * 方法与 `app_mcp_core::Client` 一一对应，时间参数为 `performance.now()` 毫秒，句柄为数字。
  */
 
+import type { EventInfo } from './events'
 import type { NormalizedResult } from './result'
 import type {
   Activation,
@@ -214,6 +215,13 @@ export interface CoreClient {
   isBusy(): boolean
   /** 修改 `busyPolicy`，随即对排队中的调用生效；非法值抛错。 */
   setBusyPolicy(policy: BusyPolicy): void
+  // ---- 事件（spec/protocol.md 3.5）----
+  /** 声明事件（同名替换）；已连接时排队 `events/sync`（经 `pollEvent` 取出）。名称不合法时抛错。 */
+  declareEvent(event: EventInfo): void
+  /** 撤销声明；未声明过返回 false。 */
+  removeEvent(name: string): boolean
+  /** 发出已声明的事件（`payloadJson` 为 JSON 对象文本）；已连接时排队并返回 true，未连接返回 false。不合法时抛错、不发送。 */
+  emitEvent(name: string, payloadJson: string | undefined): boolean
   pollEvent(): CoreEvent | undefined
   pollTimeout(): number | undefined
   // ---- 生命周期（spec/lifecycle.md）----

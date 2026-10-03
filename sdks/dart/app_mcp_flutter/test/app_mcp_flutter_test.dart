@@ -221,6 +221,64 @@ void main() {
     expect(tester.takeException(), isNull);
   }, skip: path == null);
 
+  testWidgets('McpEvent：挂载声明、变化时重新声明、换名 / 卸载撤销；emitEvent 经 AppMcpScope 可用', (tester) async {
+    final lib = DynamicLibrary.open(path!);
+    final info = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>), Pointer<Utf8> Function(Pointer<Utf8>)>(
+        'fake_event_info');
+    final reset = lib.lookupFunction<Void Function(), void Function()>('fake_events_reset');
+    final setConnected = lib.lookupFunction<Void Function(Int32), void Function(int)>('fake_events_set_connected');
+    String? describe(String name) {
+      final p = name.toNativeUtf8();
+      try {
+        final r = info(p);
+        if (r == nullptr) return null;
+        final s = r.toDartString();
+        malloc.free(r);
+        return s;
+      } finally {
+        malloc.free(p);
+      }
+    }
+
+    reset();
+    final client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path);
+    addTearDown(client.dispose);
+    late BuildContext inner;
+    Widget app({String name = 'message.received', String description = '收到新消息', bool show = true}) => AppMcpScope(
+          client: client,
+          trackLifecycle: false,
+          child: show
+              ? McpEvent(
+                  name: name,
+                  description: description,
+                  payloadSchema: const {'type': 'object'},
+                  child: Builder(builder: (c) {
+                    inner = c;
+                    return const SizedBox();
+                  }))
+              : const SizedBox(),
+        );
+
+    await tester.pumpWidget(app());
+    expect(describe('message.received'), '收到新消息|{"type":"object"}');
+    expect(AppMcpScope.of(inner).emitEvent('message.received', {'from': 'a'}), isFalse); // 未连接：丢弃
+    setConnected(1);
+    expect(AppMcpScope.of(inner).emitEvent('message.received', {'from': 'a'}), isTrue);
+    await tester.pumpWidget(app(description: '新消息'));
+    expect(describe('message.received'), '新消息|{"type":"object"}');
+    await tester.pumpWidget(app(name: 'message.read', description: '新消息'));
+    expect((describe('message.received'), describe('message.read')), (null, '新消息|{"type":"object"}'));
+    await tester.pumpWidget(app(show: false));
+    expect(describe('message.read'), isNull);
+
+    // 卸载前客户端已释放：不抛出。
+    await tester.pumpWidget(app());
+    client.dispose();
+    await tester.pumpWidget(const SizedBox());
+    expect(tester.takeException(), isNull);
+    reset();
+  }, skip: path == null);
+
   testWidgets('McpTool：挂载注册、重建只更新、卸载注销', (tester) async {
     final lib = DynamicLibrary.open(path!);
     final describe = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),

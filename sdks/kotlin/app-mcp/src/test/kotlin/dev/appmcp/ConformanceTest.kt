@@ -35,7 +35,7 @@ class ConformanceTest {
         val FEATURES = setOf(
             "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
             "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-            "callScheduling", "busy",
+            "callScheduling", "busy", "events",
         )
         val VERDICT_OK = setOf("pass", "xfail", "xpass", "skip")
         val repoRoot: File = FakeHostSupport.repoRoot.canonicalFile
@@ -98,6 +98,7 @@ class ConformanceTest {
         val tools = ConcurrentHashMap<String, ToolHandle>()
         app?.get("tools")?.jsonArray.orEmpty().forEach { registerTool(client, tools, it.jsonObject) }
         app?.get("resources")?.jsonArray.orEmpty().forEach { registerResource(client, it.jsonObject) }
+        app?.get("events")?.jsonArray.orEmpty().forEach { declareEvent(client, it.jsonObject) }
         app?.obj("navigation")?.let { pages -> client.setNavigationHandler { page, params -> navigate(client, tools, pages, page, params) } }
         app?.str("visibility")?.let { client.setVisibility(Visibility.valueOf(enumName(it)), focused = false) }
         if (app?.bool("busy") == true) client.setBusy(true)
@@ -129,6 +130,8 @@ class ConformanceTest {
         when (op.str("op")) {
             "register" -> registerTool(client, tools, op.obj("tool")!!)
             "busy" -> client.setBusy(op.bool("value")!!)
+            "declareEvent" -> declareEvent(client, op.obj("event")!!)
+            "removeEvent" -> client.removeEvent(name)
             "update" -> tools.getValue(name).update {
                 op.obj("set").orEmpty().forEach { (key, v) -> setField(this, key, v) }
             }
@@ -136,6 +139,19 @@ class ConformanceTest {
             "enable" -> tools.getValue(name).setEnabled(true)
             "disable" -> tools.getValue(name).setEnabled(false)
             else -> error("未知的 mutate 操作 ${op.str("op")}")
+        }
+    }
+
+    /** 事件声明（conformance/README.md 2.2）。 */
+    private fun declareEvent(client: AppMcp, decl: JsonObject) =
+        client.declareEvent(decl.str("name")!!, decl.str("description")!!, decl.obj("payloadSchema"))
+
+    /** handler 的 `emit`：每项为 true / false（已发送 / 未连接丢弃），本地错误为 `"error"`。 */
+    private fun emitEvents(client: AppMcp, items: List<JsonObject>): List<Any> = items.map {
+        try {
+            client.emitEvent(it.str("name")!!, it["payload"])
+        } catch (_: dev.appmcp.ffi.AppMcpException) {
+            "error"
         }
     }
 
@@ -210,7 +226,7 @@ class ConformanceTest {
         ) { args, ctx -> runHandler(client, tools, handler, runs.incrementAndGet(), args, ctx) }
     }
 
-    /** 顺序：progress → delayMs → mutate → 结果（conformance/README.md 2.1）。 */
+    /** 顺序：progress → delayMs → mutate → emit → 结果（conformance/README.md 2.1）。 */
     private suspend fun runHandler(
         client: AppMcp,
         tools: MutableMap<String, ToolHandle>,
@@ -224,6 +240,7 @@ class ConformanceTest {
         }
         spec.long("delayMs")?.let { delay(it) } // 取消 / 超时时协程被取消
         spec["mutate"]?.jsonArray.orEmpty().forEach { mutate(client, tools, it.jsonObject) }
+        val emitted = spec["emit"]?.jsonArray?.let { list -> emitEvents(client, list.map { it.jsonObject }) }
         spec.str("throw")?.let { error(it) }
         spec.obj("userAction")?.let { throw ToolCallException.userActionRequired(it.str("message")!!, it.str("reason"), it.str("uri")) }
         spec.obj("result")?.let { r ->
@@ -242,6 +259,7 @@ class ConformanceTest {
             return JsonObject(mapOf("idempotencyKey" to JsonPrimitive(ctx.idempotencyKey)))
         }
         if (spec.bool("counter") == true) return mapOf("count" to count)
+        if (emitted != null) return mapOf("emitted" to emitted)
         // returnNothing（以及未声明结果）：Kotlin 的"无返回值"即返回 Unit。
         return Unit
     }

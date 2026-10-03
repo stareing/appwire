@@ -30,6 +30,19 @@ export interface BusyHandle {
   release(): void;
 }
 
+/**
+ * 事件声明（spec/protocol.md 3.5，`AppMcp.declareEvent`）：App 告诉 Agent "发生了什么"。静态事件另写在清单 `events`
+ * （spec/manifest.md 2.4），SDK 不读清单，仍需运行时声明后才能发出。
+ */
+export interface EventDefinition {
+  /** 事件名，规则同工具名（`[a-zA-Z0-9_.-]{1,64}`，如 `order.shipped`）。 */
+  name: string;
+  /** 面向模型：事件何时发生、载荷含义。 */
+  description: string;
+  /** 载荷的 JSON Schema 文本（描述用，Hub 不校验）；缺省不描述。 */
+  payloadSchema?: string;
+}
+
 /** 协议错误类别，见 spec/protocol.md 第 4 节。 */
 export type ErrorKind =
   'TOOL_NOT_FOUND' | 'TOOL_DISABLED' | 'INVALID_INPUT' | 'USER_REJECTED' | 'TIMEOUT' | 'HANDLER_ERROR' |

@@ -33,6 +33,22 @@ export interface BusyHandle {
   release(): void
 }
 
+/**
+ * 事件声明（spec/protocol.md 3.5，{@link AppMcp.declareEvent}；与 @app-mcp/web 同形）。静态事件另写在清单 `events`
+ * （spec/manifest.md 2.4），SDK 不读清单，仍需运行时声明后才能发出。
+ */
+export interface EventDefinition {
+  /** 事件名，规则同工具名（`[a-zA-Z0-9_.-]{1,64}`，如 `order.shipped`）。 */
+  name: string
+  /** 面向模型：事件何时发生、载荷含义。 */
+  description: string
+  /** 载荷的 JSON Schema（描述用，Hub 不校验）；省略 = 无载荷或不描述。 */
+  payloadSchema?: OutputSchema
+}
+
+/** 事件载荷：JSON 对象，序列化后不超过 8 KiB。 */
+export type EventPayload = Record<string, unknown>
+
 /** 导航请求（`app/navigate` 的参数，与 @app-mcp/web 同形）。 */
 export interface NavigationRequest {
   /** 页面名（清单 `pages[].name` 或工具的 `page`）。 */
@@ -608,6 +624,23 @@ export interface AppMcp extends Registrar {
   isBusy(): boolean
   /** 修改 {@link NodeAppMcpOptions.busyPolicy}，随即对排队中的调用生效；非法值抛错。旧版原生模块不支持时记一条警告、无效果。 */
   setBusyPolicy(policy: BusyPolicy): void
+
+  // ---- 事件（spec/protocol.md 3.5）----------------------------------------
+
+  /**
+   * 声明本实例可发出的事件（同名替换）。已连接时随即同步给 Host，否则在下次握手成功后同步；不触发连接。
+   * 已注销时为空操作；旧版原生模块不支持时记一条警告、无效果。
+   * @error 名称不合法 → 原生错误（`code` 为 `INVALID_NAME`）；`payloadSchema` 无法序列化 → `INVALID_JSON`。
+   */
+  declareEvent(event: EventDefinition): void
+  /** 撤销事件声明；未声明过（或已注销）返回 false。 */
+  removeEvent(name: string): boolean
+  /**
+   * 发出已声明的事件。已连接时发送并返回 true；未连接（休眠、断线、重连中、握手中）丢弃并返回 false：不缓存、不为此连接或
+   * 唤醒 Host，也不推迟空闲休眠。需要可靠送达的状态变化请改用资源（`notifyChanged`）。已注销或旧版原生模块返回 false。
+   * @error 未声明或名称不合法 → `code` 为 `INVALID_NAME`；载荷不是 JSON 对象、无法序列化或超过 8 KiB → `INVALID_JSON`。出错时不发送。
+   */
+  emitEvent(name: string, payload?: EventPayload): boolean
 
   // ---- 生命周期（spec/lifecycle.md 第 8 节）-------------------------------
 

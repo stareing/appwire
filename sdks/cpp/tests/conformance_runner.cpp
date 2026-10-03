@@ -48,7 +48,8 @@ namespace fs = std::filesystem;
 const std::vector<std::string> kFeatures = {"toolOptions", "mutate",      "lifecycle",       "wake",       "richResult",
                                             "userAction",  "progress",    "resourceOptions", "readFailure",
                                             "surface",     "navigation",  "backgroundTool",  "backgroundNavigation",
-                                            "idempotencyKey", "callScheduling", "busy"};
+                                            "idempotencyKey", "callScheduling", "busy",
+                                            "events"};
 
 // ---------------------------------------------------------------------------
 // 用例字段 → SDK 枚举（协议同名字符串，spec/protocol.md 第 3 节）
@@ -136,11 +137,14 @@ public:
     virtual void progress(double progress, std::optional<double> total, const std::optional<std::string>& message) = 0;
     /// 按 handler 描述的结果部分完成调用（第一个出现的结果键，见 conformance/README.md 2.1）。
     virtual void finish(const Json& spec, uint64_t count) = 0;
+
+    /// handler 的 `emit` 结果（`[true, false, "error", …]` 的 JSON 文本，run_handler 写入）；没有 `emit` 时 nullopt。
+    std::optional<std::string> emitted;
 };
 
 class App;
 
-/// 按 handler 描述执行（顺序：progress → delayMs → mutate → 结果，见 conformance/README.md 2.1）。
+/// 按 handler 描述执行（顺序：progress → delayMs → mutate → emit → 结果，见 conformance/README.md 2.1）。
 void run_handler(const Json& spec, uint64_t count, App& app, CallPort& call);
 
 /// 一个用例的 App：已注册工具的声明（mutate 用）与各后端的 SDK 对象。
@@ -159,6 +163,11 @@ public:
     virtual void set_visibility(AmVisibility visibility) = 0;
     /// 用户正在操作（conformance/README.md app.busy 与变更 {op: "busy"}）。
     virtual void set_busy(bool busy) = 0;
+    /// 事件声明（conformance/README.md app.events 与变更 declareEvent）：name、description、payloadSchema?。
+    virtual void declare_event(const Json& decl) = 0;
+    virtual void remove_event(const std::string& name) = 0;
+    /// 发出一个事件：true / false（已发送 / 未连接丢弃）；本地错误抛异常。
+    virtual bool emit_event(const std::string& name, const std::optional<std::string>& payload_json) = 0;
     /// 停止客户端并等待 handler 线程结束。
     virtual void stop() = 0;
 
@@ -186,9 +195,31 @@ public:
             auto value = op["value"].boolean();
             if (!value) throw std::runtime_error("busy 的 value 应为布尔");
             set_busy(*value);
+        } else if (kind == "declareEvent") {
+            declare_event(op["event"]);
+        } else if (kind == "removeEvent") {
+            remove_event(name);
         } else {
             throw std::runtime_error("未知的 mutate 操作 " + kind);
         }
+    }
+
+    /// handler 的 `emit`：每项为 true / false，本地错误（未声明、载荷不是对象等）为 "error"；返回 JSON 数组文本。
+    std::string emit_events(const Json& list) {
+        std::string out = "[";
+        for (const auto& e : list.items()) {
+            if (out.size() > 1) out += ",";
+            const Json* payload = e.find("payload");
+            try {
+                out += emit_event(e["name"].str_or(""), payload ? std::optional<std::string>(payload->dump())
+                                                                 : std::nullopt)
+                           ? "true"
+                           : "false";
+            } catch (const std::exception&) {
+                out += "\"error\"";
+            }
+        }
+        return out + "]";
     }
 
     /// 工具 handler 入口（分发线程上调用）。有 delayMs 时转到工作线程（不能阻塞分发线程），其余就地执行。
@@ -249,10 +280,11 @@ void run_handler(const Json& spec, uint64_t count, App& app, CallPort& call) {
         }
     }
     for (const auto& op : spec["mutate"].items()) app.mutate(op);
+    if (spec["emit"].is_array()) call.emitted = app.emit_events(spec["emit"]);
     call.finish(spec, count);
 }
 
-/// 结果键 `return` / `echo` / `returnIdempotencyKey` / `counter` 对应的 data JSON；都没有时 nullopt（无返回值）。
+/// 结果键 `return` / `echo` / `returnIdempotencyKey` / `counter`（及无其他结果时的 `emit`）对应的 data JSON；都没有时 nullopt（无返回值）。
 std::optional<std::string> plain_data(const Json& spec, uint64_t count, const CallPort& port) {
     if (const Json* v = spec.find("return")) return v->dump();
     if (spec["echo"].boolean() == true) return port.arguments_json();
@@ -261,6 +293,7 @@ std::optional<std::string> plain_data(const Json& spec, uint64_t count, const Ca
         return "{\"idempotencyKey\":" + (key ? Json::quote(*key) : std::string("null")) + "}";
     }
     if (spec["counter"].boolean() == true) return "{\"count\":" + std::to_string(count) + "}";
+    if (port.emitted) return "{\"emitted\":" + *port.emitted + "}";
     return std::nullopt;
 }
 
@@ -443,6 +476,14 @@ public:
     void set_navigate_in_background(bool enabled) override { client_.set_navigate_in_background(enabled); }
     void set_visibility(AmVisibility visibility) override { client_.set_visibility(visibility, false); }
     void set_busy(bool busy) override { client_.set_busy(busy); }
+    void declare_event(const Json& decl) override {
+        auto schema = json_text(decl["payloadSchema"]);
+        client_.declare_event(decl["name"].str_or(""), decl["description"].str_or(""), schema);
+    }
+    void remove_event(const std::string& name) override { client_.remove_event(name); }
+    bool emit_event(const std::string& name, const std::optional<std::string>& payload_json) override {
+        return client_.emit_event(name, payload_json);
+    }
     void stop() override {
         try {
             client_.stop();
@@ -708,6 +749,20 @@ public:
         check_c(am_client_set_visibility(client_, visibility, false), "am_client_set_visibility");
     }
     void set_busy(bool busy) override { check_c(am_client_set_busy(client_, busy), "am_client_set_busy"); }
+    void declare_event(const Json& decl) override {
+        auto schema = json_text(decl["payloadSchema"]);
+        check_c(am_client_declare_event(client_, decl["name"].str_or("").c_str(), decl["description"].str_or("").c_str(),
+                                        c_or_null(schema)),
+                "am_client_declare_event");
+    }
+    void remove_event(const std::string& name) override {
+        check_c(am_client_remove_event(client_, name.c_str(), nullptr), "am_client_remove_event");
+    }
+    bool emit_event(const std::string& name, const std::optional<std::string>& payload_json) override {
+        bool sent = false;
+        check_c(am_client_emit_event(client_, name.c_str(), c_or_null(payload_json), &sent), "am_client_emit_event");
+        return sent;
+    }
     void handle_wake(const std::string& arg) override { am_client_handle_wake(client_, arg.c_str()); }
     void stop() override {
         am_client_stop(client_);
@@ -882,6 +937,7 @@ Outcome run_case(const std::string& sdk, const std::string& fake_host, const fs:
                 app = make_app(sdk, line.substr(10), kase["app"]["config"]);
                 for (const auto& t : kase["app"]["tools"].items()) app->register_tool(t);
                 for (const auto& r : kase["app"]["resources"].items()) app->register_resource(r);
+                for (const auto& e : kase["app"]["events"].items()) app->declare_event(e);
                 if (kase["app"]["navigation"].is_object()) app->set_navigation(kase["app"]["navigation"]);
                 if (auto b = kase["app"]["config"]["navigateInBackground"].boolean()) app->set_navigate_in_background(*b);
                 if (auto v = parse_visibility(kase["app"]["visibility"])) app->set_visibility(*v);

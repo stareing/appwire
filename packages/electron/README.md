@@ -84,6 +84,11 @@ descriptor, as in the `attachLifecycle` example in `main.ts`.
     webContents; while any page is busy the attachment holds an `appMcp.beginBusy()` scope, so it never clears an
     explicit `appMcp.setBusy(true)` in the main process. A page's declaration is dropped when it reloads, unloads or its
     webContents is destroyed. `busyPolicy` is configured on the main `appMcp`.
+    Renderer events (`declareEvent` / `emitEvent` / `removeEvent`, spec/protocol.md 3.5) go over the bridge
+    (`event.declare` / `event.emit` / `event.remove`) and are emitted by the main `appMcp`. Declarations are recorded per
+    webContents and withdrawn when the page reloads, unloads or its webContents is destroyed (kept while another page
+    still declares the same name). The page decides from its mirrored connection state: `emitEvent` returns `false`
+    while the main client is not connected; local validation errors (`INVALID_NAME` / `INVALID_JSON`) throw in the page.
     In the background: with `navigation: true` the attachment sets `navigateInBackground` to
     whether `raiseWindow` is given. Pass
     `raiseWindow: (wc) => { const w = BrowserWindow.fromWebContents(wc); if (w?.isMinimized()) w.restore(); w?.show(); w?.focus() }`

@@ -229,6 +229,11 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)] internal static partial AmStatus am_client_set_busy(ClientSafeHandle client, [MarshalAs(UnmanagedType.U1)] bool busy);
     [LibraryImport(Lib)] internal static partial AmStatus am_client_set_busy_policy(ClientSafeHandle client, int policy);
 
+    // v20：事件（spec/protocol.md 3.5）；removed / sent 为可空的 bool*
+    [LibraryImport(Lib)] internal static partial AmStatus am_client_declare_event(ClientSafeHandle client, byte* name, byte* description, byte* payloadSchemaJson);
+    [LibraryImport(Lib)] internal static partial AmStatus am_client_remove_event(ClientSafeHandle client, byte* name, byte* removed);
+    [LibraryImport(Lib)] internal static partial AmStatus am_client_emit_event(ClientSafeHandle client, byte* name, byte* payloadJson, byte* sent);
+
     [LibraryImport(Lib)] internal static partial nint am_read_resource_name(nint read);
     [LibraryImport(Lib)] internal static partial AmStatus am_read_complete(nint read, byte* contentsJson);
     [LibraryImport(Lib)] internal static partial AmStatus am_read_fail(nint read, byte* kind, byte* message);

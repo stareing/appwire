@@ -4,6 +4,7 @@
  */
 
 import { BusyState } from '../busy'
+import { EventDeclarations } from '../events'
 import type { CoreClient, CoreConfig, CoreEvent, CoreState } from '../core'
 import { hostTransport } from '../host-transport'
 import { InstanceGuard } from '../instance-guard'
@@ -77,6 +78,8 @@ export abstract class DriverBase {
   protected readonly busyState: BusyState
   /** 当前的 busyPolicy（{@link AppMcpOptions.busyPolicy}，`setBusyPolicy` 修改）；undefined = 核心缺省。 */
   protected busyPolicy: BusyPolicy | undefined
+  /** 已声明的事件（{@link AppMcp.declareEvent}）：核心加载前也可声明与校验，核心加载时同步。 */
+  protected readonly events = new EventDeclarations()
 
   protected readonly toolNames = new Map<string, ToolRec>()
   protected readonly resourceNames = new Map<string, ResourceRec>()
@@ -258,6 +261,14 @@ export abstract class DriverBase {
     }
     // 核心加载前已声明用户正在操作：在首个调用到达之前同步
     if (this.busyState.busy) core.setBusy(true)
+    // 核心加载前声明的事件：握手成功后随 `events/sync` 发出
+    for (const event of this.events.values()) {
+      try {
+        core.declareEvent(event)
+      } catch (e) {
+        this.log.error(`${this.tag} 声明事件 ${event.name} 失败`, e)
+      }
+    }
     const vis = this.visibility.current()
     try {
       core.setVisibility(vis.visibility, vis.focused, this.now())

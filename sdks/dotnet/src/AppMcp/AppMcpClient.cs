@@ -240,6 +240,56 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         return new BusyRelease(_busy);
     }
 
+    // ---- 事件（spec/protocol.md 3.5） ---------------------------------------
+
+    /// <summary>
+    /// 声明本实例可发出的事件（同名替换）。已连接时随即同步给 Host，否则在下次握手成功后同步；不触发连接。
+    /// SDK 不读清单：要发出的事件都需在运行时声明。
+    /// </summary>
+    /// <param name="name">事件名，规则同工具名，如 <c>order.shipped</c>。</param>
+    /// <param name="description">面向模型：事件何时发生、载荷含义。</param>
+    /// <param name="payloadSchemaJson">载荷的 JSON Schema（对象文本，描述用，Hub 不校验）；null = 不声明。</param>
+    /// <exception cref="AppMcpException">名称不合法（<see cref="AppMcpStatus.InvalidName"/>）、schema 不是 JSON 对象
+    /// （<see cref="AppMcpStatus.InvalidSchema"/>）、客户端已停止（<see cref="AppMcpStatus.Stopped"/>）。</exception>
+    public unsafe void DeclareEvent(string name, string description, string? payloadSchemaJson = null)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        ArgumentNullException.ThrowIfNull(description);
+        using var strings = new Utf8Strings();
+        NativeMethods.Check(NativeMethods.am_client_declare_event(
+            _handle, strings.AddPtr(name), strings.AddPtr(description), strings.AddPtr(payloadSchemaJson)));
+    }
+
+    /// <summary>撤销事件声明；返回是否撤销了已有声明（未声明过为 false）。</summary>
+    public unsafe bool RemoveEvent(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        using var strings = new Utf8Strings();
+        byte removed = 0;
+        NativeMethods.Check(NativeMethods.am_client_remove_event(_handle, strings.AddPtr(name), &removed));
+        return removed != 0;
+    }
+
+    /// <summary>
+    /// 发出已声明的事件。<paramref name="payload"/> 按 <see cref="SerializerOptions"/> 序列化，须为 JSON 对象（null = 无载荷）。
+    /// 已连接时发送并返回 true；未连接（休眠、断线、重连中、握手中）时丢弃并返回 false——不缓存、不为此连接或唤醒 Host，
+    /// 也不推迟空闲休眠。需要可靠送达的状态变化请改用资源。
+    /// </summary>
+    /// <exception cref="AppMcpException">未声明 / 名称不合法（<see cref="AppMcpStatus.InvalidName"/>）、载荷不是对象或超过 8 KiB
+    /// （<see cref="AppMcpStatus.InvalidJson"/>）、客户端已停止（<see cref="AppMcpStatus.Stopped"/>）。</exception>
+    public bool EmitEvent(string name, object? payload = null) =>
+        EmitEventJson(name, payload is null ? null : JsonSerializer.Serialize(payload, payload.GetType(), SerializerOptions));
+
+    /// <summary>同 <see cref="EmitEvent"/>，载荷为 JSON 对象文本（null = 无载荷）。</summary>
+    public unsafe bool EmitEventJson(string name, string? payloadJson)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        using var strings = new Utf8Strings();
+        byte sent = 0;
+        NativeMethods.Check(NativeMethods.am_client_emit_event(_handle, strings.AddPtr(name), strings.AddPtr(payloadJson), &sent));
+        return sent != 0;
+    }
+
     public void SetVisibility(AppVisibility visibility, bool focused) =>
         NativeMethods.Check(NativeMethods.am_client_set_visibility(_handle, (int)visibility, focused));
 

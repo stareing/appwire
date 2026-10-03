@@ -123,6 +123,15 @@ the process itself).
   are unaffected. `setBusyPolicy(policy)` changes the policy at runtime (an invalid value throws). `beginBusy()` opens a
   nestable, reference-counted busy scope (`release()` ends it); the effective state is the explicit switch OR any open
   scope, and neither clears the other.
+- Events (spec/protocol.md 3.5): `declareEvent({ name, description, payloadSchema? })` declares an event the app can emit
+  (same name replaces; synced to the Host when connected, otherwise on the next handshake - it never connects by
+  itself); `emitEvent(name, payload?)` sends it and returns `true` when connected, or drops it and returns `false`
+  while not connected (dormant, disconnected, reconnecting): no buffering, no wake-up, no idle-timer reset. Use a
+  resource (`notifyChanged`) for state that must arrive. Local errors throw and send nothing: an undeclared or invalid
+  name (`code: 'INVALID_NAME'`), a payload that is not a JSON object, cannot be serialized or exceeds 8 KiB
+  (`code: 'INVALID_JSON'`). `removeEvent(name)` withdraws a declaration. Agents subscribe with the built-in tools
+  `apps.events.subscribe` / `apps.events` (spec/hub-api.md 3.17). Static `events` in the manifest are only for listing
+  while the app is not running; the SDK still has to declare them.
 - Handler context: `callId`, `signal`, `hold()`, `progress()`, and `idempotencyKey` (the agent's idempotency key, passed
   through verbatim and stable across retries; absent when the agent gave none - see spec/protocol.md 3.3). Use it as a
   business-level dedup key or forward it to your backend.

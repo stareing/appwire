@@ -18,6 +18,7 @@
 
 import { attachBridgeNavigation, type BridgeNavigation } from './bridge-navigation'
 import { BusyState } from './busy'
+import { EventDeclarations } from './events'
 import { noopHold } from './noop'
 import { checkPageName } from './view'
 import type {
@@ -25,6 +26,8 @@ import type {
   AppMcpOptions,
   BusyHandle,
   ConnectionState,
+  EventDefinition,
+  EventPayload,
   HoldHandle,
   LazyToolDefinition,
   NavigationHandler,
@@ -36,7 +39,7 @@ import type {
   ToolDefinition,
   ToolHandle,
 } from './types'
-import type { AppMcpBridge, HelloReply, MainEvent } from './electron-bridge/protocol'
+import type { AppMcpBridge, EventOp, HelloReply, MainEvent } from './electron-bridge/protocol'
 import { type AnyDef, callError, Client, defaultLogger, type Detachable, type Owner, scopeField } from './electron-bridge/client'
 import { ResourceEntry, ToolEntry } from './electron-bridge/entries'
 
@@ -44,6 +47,8 @@ export {
   type AppMcpBridge,
   BRIDGE_VERSION,
   DEFAULT_BRIDGE_KEY,
+  type EventMessage,
+  type EventOp,
   findElectronBridge,
   type HelloReply,
   type MainEvent,
@@ -143,6 +148,8 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
   private disposed = false
   /** 本页"用户正在操作"的有效值；变化时经桥接发送 `busy.set`。 */
   private readonly busyState = new BusyState((busy) => this.sendBusy(busy))
+  /** 本页声明的事件（本地校验用；主进程 / Rust 侧按页面记录）。 */
+  private readonly events = new EventDeclarations()
 
   constructor(options: AppMcpOptions, bridge: AppMcpBridge | null) {
     super(new Client(bridge, options.logger ?? defaultLogger))
@@ -229,6 +236,41 @@ class BridgeAppMcp extends RegistrarBase implements AppMcp {
     if (this.disposed || !this.client.bridge) return
     void this.client.enqueue(() => ({ op: 'busy.set', busy })).then((reply) => {
       if (reply && !reply.ok) this.client.logger.warn(`[app-mcp] 主进程未接受用户正在操作的声明：${reply.message}`)
+    })
+  }
+
+  /** 事件（spec/protocol.md 3.5）：声明经桥接登记到本页（`event.declare`），页面刷新 / 关闭后由对方撤销。 */
+  declareEvent(event: EventDefinition): void {
+    const info = this.events.declare(event)
+    if (this.disposed) return
+    this.sendEventOp({ op: 'event.declare', event: info })
+  }
+
+  removeEvent(name: string): boolean {
+    const removed = this.events.remove(name)
+    if (removed && !this.disposed) this.sendEventOp({ op: 'event.remove', name })
+    return removed
+  }
+
+  /**
+   * 本地校验后按镜像的连接状态决定：不是 `connected` 时丢弃并返回 false；否则经桥接发出并返回 true
+   * （与对方断线竞争时事件在对方丢弃，见 {@link AppMcp.emitEvent}）。
+   */
+  emitEvent(name: string, payload?: EventPayload): boolean {
+    const payloadJson = this.events.prepareEmit(name, payload)
+    if (this.disposed || !this.client.bridge || this.currentState.status !== 'connected') return false
+    this.sendEventOp({
+      op: 'event.emit',
+      name,
+      ...(payloadJson !== undefined && { payload: JSON.parse(payloadJson) as Record<string, unknown> }),
+    })
+    return true
+  }
+
+  private sendEventOp(op: EventOp): void {
+    if (!this.client.bridge) return
+    void this.client.enqueue(() => op).then((reply) => {
+      if (reply && !reply.ok) this.client.logger.warn(`[app-mcp] 主进程未接受事件操作 ${op.op}：${reply.message}`)
     })
   }
 

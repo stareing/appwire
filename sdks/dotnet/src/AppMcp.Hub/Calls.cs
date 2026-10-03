@@ -243,6 +243,9 @@ public static class HubEventTypes
     public const string AppWaking = "appWaking";
     /// <summary>SDK 上报了此前遇到的连接问题（app/diagnostic）。含 appId、instanceId、code、message、count。</summary>
     public const string AppDiagnostic = "appDiagnostic";
+    /// <summary>App 发出的事件（已去重与校验，不论有无订阅）。字段同 <see cref="HubAppEvent"/>：id、appId、instanceId、name、payload?、at。
+    /// 处理过慢时可能 lagged；需要不丢的用 <see cref="AppMcpHub.SetEventHandler"/>。</summary>
+    public const string AppEvent = "appEvent";
     /// <summary>事件回调处理过慢导致丢失，应重新查询全量状态。</summary>
     public const string Lagged = "lagged";
 }

@@ -20,7 +20,7 @@ const _sdk = 'dart';
 const _features = {
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', //
   'readFailure', 'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey',
-  'callScheduling', 'busy',
+  'callScheduling', 'busy', 'events',
 };
 
 final String _repoRoot = Directory('${Directory.current.path}/../../..').absolute.path;
@@ -155,7 +155,24 @@ final class _CaseApp {
     });
   }
 
-  /// 按 handler 描述执行（顺序：progress → delayMs → mutate → 结果，见 conformance/README.md 2.1）。
+  /// 事件声明（conformance/README.md app.events 与变更 declareEvent）。
+  void declareEvent(Map<String, Object?> decl) => client.declareEvent(
+      decl['name'] as String, decl['description'] as String,
+      payloadSchema: decl['payloadSchema']);
+
+  /// handler 的 `emit`：每项为 [AppMcp.emitEvent] 的结果 true / false，本地错误（[AppMcpException]）为 "error"。
+  List<Object> _emitEvents(List<Object?> list) => [
+        for (final e in list.map(_map))
+          () {
+            try {
+              return client.emitEvent(e!['name'] as String, e['payload']);
+            } on AppMcpException {
+              return 'error';
+            }
+          }(),
+      ];
+
+  /// 按 handler 描述执行（顺序：progress → delayMs → mutate → emit → 结果，见 conformance/README.md 2.1）。
   Future<Object?> _runHandler(Map<String, Object?> spec, int count, Map<String, dynamic> args, ToolContext ctx) async {
     for (final p in (spec['progress'] as List?) ?? const []) {
       final m = _map(p)!;
@@ -169,11 +186,13 @@ final class _CaseApp {
     for (final op in (spec['mutate'] as List?) ?? const []) {
       _mutate(_map(op)!);
     }
-    return _complete(spec, count, args, ctx);
+    final emitted = spec['emit'] is List ? _emitEvents(spec['emit'] as List<Object?>) : null;
+    return _complete(spec, count, args, ctx, emitted);
   }
 
   /// Dart 最自然的写法：失败抛异常；无返回值即 handler 不返回（null）。
-  static Object? _complete(Map<String, Object?> spec, int count, Map<String, dynamic> args, ToolContext ctx) {
+  static Object? _complete(
+      Map<String, Object?> spec, int count, Map<String, dynamic> args, ToolContext ctx, List<Object>? emitted) {
     if (spec['throw'] case final String message) throw Exception(message);
     if (_map(spec['userAction']) case final u?) {
       throw UserActionRequiredError(u['message'] as String? ?? '', reason: u['reason'] as String?, uri: u['uri'] as String?);
@@ -190,6 +209,7 @@ final class _CaseApp {
     if (spec['echo'] == true) return args;
     if (spec['returnIdempotencyKey'] == true) return {'idempotencyKey': ctx.idempotencyKey};
     if (spec['counter'] == true) return {'count': count};
+    if (emitted != null) return {'emitted': emitted};
     // returnNothing（以及未声明结果）：Dart 的"无返回值"即 handler 不返回值（null）。
     return null;
   }
@@ -232,6 +252,10 @@ final class _CaseApp {
         _tools[name]!.setEnabled(op['op'] == 'enable');
       case 'busy':
         client.setBusy(op['value'] as bool);
+      case 'declareEvent':
+        declareEvent(_map(op['event'])!);
+      case 'removeEvent':
+        client.removeEvent(name);
       default:
         throw StateError('未知的 mutate 操作 ${op['op']}');
     }
@@ -288,6 +312,9 @@ Future<Map<String, Object?>> _runCase(File path, String reportDir) async {
         }
         for (final r in (app['resources'] as List?) ?? const []) {
           a.registerResource(_map(r)!);
+        }
+        for (final e in (app['events'] as List?) ?? const []) {
+          a.declareEvent(_map(e)!);
         }
         if (_map(app['navigation']) case final pages?) a.setNavigation(pages);
         if (app['visibility'] case final String v) a.client.setVisibility(AppVisibility.values.byName(v), focused: false);

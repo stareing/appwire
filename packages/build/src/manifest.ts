@@ -82,6 +82,16 @@ export interface ManifestResource {
   mimeType?: string
 }
 
+/** 清单 `events` 条目（spec/manifest.md 2.4，同协议 `EventInfo`）。 */
+export interface ManifestEvent {
+  /** 事件名 `[a-zA-Z0-9_.-]{1,64}`，清单内唯一（与工具名、资源名分属不同命名空间）。 */
+  name: string
+  /** 面向模型：事件何时发生、载荷含义。 */
+  description: string
+  /** 载荷的 JSON Schema（描述用，Hub 不校验）。 */
+  payloadSchema?: Record<string, unknown>
+}
+
 export interface AppMcpManifest {
   manifestVersion: 1
   appId: string
@@ -97,6 +107,8 @@ export interface AppMcpManifest {
   resources?: ManifestResource[]
   /** 页面目录（spec/manifest.md 2.3）。 */
   pages?: ManifestPage[]
+  /** App 可发出的事件（spec/manifest.md 2.4）；SDK 仍需运行时 `declareEvent` 后才能发出。 */
+  events?: ManifestEvent[]
 }
 
 /**
@@ -123,6 +135,8 @@ export interface ManifestInfo {
   /** 唤醒描述；缺省时 web 平台由 `launch.web` 推导，见 {@link WakeOption}。 */
   wake?: WakeOption
   resources?: ManifestResource[]
+  /** 静态事件声明（spec/manifest.md 2.4），原样写入清单 `events`。 */
+  events?: ManifestEvent[]
 }
 
 // ---------------------------------------------------------------------------
@@ -330,8 +344,42 @@ export function validateManifest(manifest: AppMcpManifest): ValidationResult {
       errors.push(`${label} description 不能为空`)
     }
   }
+  checkEvents(manifest.events, appId, errors, warnings)
 
   return { errors, warnings }
+}
+
+/** `events` 的规则（spec/manifest.md 2.4，与 crates/manifest 的 `validate_events` 一致）。 */
+function checkEvents(events: unknown, appId: string, errors: string[], warnings: string[]): void {
+  if (events === undefined) return
+  if (!Array.isArray(events)) {
+    errors.push('events 必须是数组')
+    return
+  }
+  const names = new Set<string>()
+  for (const [i, event] of (events as unknown[]).entries()) {
+    if (!isJsonObject(event)) {
+      errors.push(`events[${i}] 必须是对象`)
+      continue
+    }
+    const e = event as Partial<ManifestEvent>
+    const label = `events[${i}]${typeof e.name === 'string' ? `（${e.name}）` : ''}`
+    if (typeof e.name !== 'string' || !NAME_PATTERN.test(e.name)) {
+      errors.push(`${label} 名称不合法，应满足 [a-zA-Z0-9_.-]{1,64}`)
+    } else if (names.has(e.name)) {
+      errors.push(`${label} 名称重复`)
+    } else {
+      names.add(e.name)
+      const prefix = appIdPrefixMessage(e.name, appId)
+      if (prefix) warnings.push(`${label} ${prefix}`)
+    }
+    if (typeof e.description !== 'string' || e.description.trim() === '') {
+      errors.push(`${label} description 不能为空`)
+    }
+    if (e.payloadSchema !== undefined && !isJsonObject(e.payloadSchema)) {
+      errors.push(`${label} payloadSchema 必须是对象`)
+    }
+  }
 }
 
 /**
@@ -592,6 +640,9 @@ export function generateManifest(
     manifest.resources = info.resources.map((r) => ({ ...r }))
   }
   if (manifestPages.length > 0) manifest.pages = manifestPages
+  if (info.events && info.events.length > 0) {
+    manifest.events = info.events.map((e) => JSON.parse(JSON.stringify(e)) as ManifestEvent)
+  }
 
   errors.push(...validateManifest(manifest).errors)
   if (errors.length > 0) throw new ManifestError(errors)

@@ -44,5 +44,8 @@ export function createDisabledAppMcp(options: AppMcpOptions): AppMcp {
     beginBusy: noopHold,
     isBusy: () => false,
     setBusyPolicy: noop,
+    declareEvent: noop,
+    removeEvent: () => false,
+    emitEvent: () => false,
   }
 }

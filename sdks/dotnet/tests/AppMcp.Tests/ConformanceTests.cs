@@ -20,7 +20,7 @@ public class ConformanceTests(ITestOutputHelper output)
     [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure",
         "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-        "callScheduling", "busy",
+        "callScheduling", "busy", "events",
     ];
 
     private static readonly IReadOnlyDictionary<string, ToolRisk> Risks = new Dictionary<string, ToolRisk>
@@ -120,6 +120,7 @@ public class ConformanceTests(ITestOutputHelper output)
                     app = new CaseApp(Config(line["LISTENING ".Length..].Trim(), Get(Get(kase, "app"), "config")));
                     foreach (var t in Items(Get(Get(kase, "app"), "tools"))) app.RegisterTool(t);
                     foreach (var r in Items(Get(Get(kase, "app"), "resources"))) app.RegisterResource(r);
+                    foreach (var e in Items(Get(Get(kase, "app"), "events"))) app.DeclareEvent(e);
                     if (Get(Get(kase, "app"), "navigation").ValueKind == JsonValueKind.Object) app.SetNavigation(Get(Get(kase, "app"), "navigation"));
                     if (Text(Get(Get(kase, "app"), "visibility")) is { } visibility) app.Client.SetVisibility(Visibilities[visibility], false);
                     if (Get(Get(kase, "app"), "busy").ValueKind is JsonValueKind.True or JsonValueKind.False) app.Client.SetBusy(Get(Get(kase, "app"), "busy").GetBoolean());
@@ -290,7 +291,26 @@ public class ConformanceTests(ITestOutputHelper output)
             if (Get(spec, "failParams").ValueKind == JsonValueKind.True) throw new InvalidOperationException(request.ParamsJson ?? "");
         });
 
-        /// <summary>按 handler 描述执行（顺序：progress → delayMs → mutate → 结果，见 conformance/README.md 2.1）。</summary>
+        /// <summary>事件声明（conformance/README.md app.events 与变更 declareEvent）。</summary>
+        public void DeclareEvent(JsonElement decl) => Client.DeclareEvent(
+            Text(Get(decl, "name")) ?? "",
+            Text(Get(decl, "description")) ?? "",
+            Has(decl, "payloadSchema") ? Get(decl, "payloadSchema").GetRawText() : null);
+
+        /// <summary>handler 的 <c>emit</c>：每项为 EmitEvent 的结果 true / false，本地错误（AppMcpException）为 "error"。</summary>
+        private List<object> EmitEvents(JsonElement list) => Items(list).Select(e =>
+        {
+            try
+            {
+                return (object)Client.EmitEvent(Text(Get(e, "name")) ?? "", Has(e, "payload") ? Get(e, "payload") : null);
+            }
+            catch (AppMcpException)
+            {
+                return "error";
+            }
+        }).ToList();
+
+        /// <summary>按 handler 描述执行（顺序：progress → delayMs → mutate → emit → 结果，见 conformance/README.md 2.1）。</summary>
         private async Task<object?> RunHandler(JsonElement spec, int count, JsonElement args, ToolContext ctx)
         {
             foreach (var p in Items(Get(spec, "progress")))
@@ -310,11 +330,12 @@ public class ConformanceTests(ITestOutputHelper output)
                 }
             }
             foreach (var op in Items(Get(spec, "mutate"))) Mutate(op);
-            return Complete(spec, count, args, ctx);
+            var emitted = Get(spec, "emit").ValueKind == JsonValueKind.Array ? EmitEvents(Get(spec, "emit")) : null;
+            return Complete(spec, count, args, ctx, emitted);
         }
 
         /// <summary>C# 最自然的写法：失败抛异常；无返回值即 handler 返回 null。</summary>
-        private static object? Complete(JsonElement spec, int count, JsonElement args, ToolContext ctx)
+        private static object? Complete(JsonElement spec, int count, JsonElement args, ToolContext ctx, List<object>? emitted)
         {
             if (Text(Get(spec, "throw")) is { } message) throw new InvalidOperationException(message);
             if (IsSet(Get(spec, "userAction")))
@@ -339,6 +360,7 @@ public class ConformanceTests(ITestOutputHelper output)
             if (Get(spec, "returnIdempotencyKey").ValueKind == JsonValueKind.True)
                 return new Dictionary<string, string?> { ["idempotencyKey"] = ctx.IdempotencyKey };
             if (Get(spec, "counter").ValueKind == JsonValueKind.True) return new { count };
+            if (emitted is not null) return new { emitted };
             // returnNothing（以及未声明结果）：C# 的"无返回值"即 handler 返回 null。
             return null;
         }
@@ -404,6 +426,12 @@ public class ConformanceTests(ITestOutputHelper output)
                         JsonValueKind.False => false,
                         _ => throw new InvalidOperationException("busy 的 value 应为布尔"),
                     });
+                    break;
+                case "declareEvent":
+                    DeclareEvent(Get(op, "event"));
+                    break;
+                case "removeEvent":
+                    Client.RemoveEvent(name);
                     break;
                 default:
                     throw new InvalidOperationException("未知的 mutate 操作 " + Text(Get(op, "op")));

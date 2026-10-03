@@ -615,3 +615,32 @@ test('用户正在操作：beginBusy 作用域可嵌套、按引用计数；与�
   mcp.beginBusy();
   assert.equal(client.calls.filter((c) => c[0] === 'setBusy').length, 3);
 });
+
+test('事件：declareEvent 把 payloadSchema 文本交给原生；emitEvent 未连接 false、已连接 true；错误码透传；释放后空操作', () => {
+  const { mcp, client } = create();
+  mcp.declareEvent({ name: 'order.shipped', description: '订单已发货', payloadSchema: '{"type":"object"}' });
+  mcp.declareEvent({ name: 'download.done', description: '下载完成' });
+  assert.deepEqual(client.calls.filter((c) => c[0] === 'declareEvent'), [
+    ['declareEvent', { name: 'order.shipped', description: '订单已发货', payloadSchemaJson: '{"type":"object"}' }],
+    ['declareEvent', { name: 'download.done', description: '下载完成', payloadSchemaJson: undefined }],
+  ]);
+  assert.equal(mcp.emitEvent('order.shipped', { orderId: 'o0' }), false);
+  client.state = { status: 'connected' };
+  assert.equal(mcp.emitEvent('order.shipped', { orderId: 'o1' }), true);
+  assert.equal(mcp.emitEvent('download.done'), true);
+  assert.throws(() => mcp.emitEvent('nope'), (e) => e.code === 'INVALID_NAME');
+  assert.throws(() => mcp.emitEvent('order.shipped', [1]), (e) => e.code === 'INVALID_JSON');
+  assert.throws(() => mcp.emitEvent('order.shipped', 1), (e) => e.code === 'INVALID_JSON');
+  assert.deepEqual(client.calls.filter((c) => c[0] === 'emitEvent'), [
+    ['emitEvent', 'order.shipped', '{"orderId":"o0"}'],
+    ['emitEvent', 'order.shipped', '{"orderId":"o1"}'],
+    ['emitEvent', 'download.done', null],
+  ]);
+  assert.equal(mcp.removeEvent('download.done'), true);
+  assert.equal(mcp.removeEvent('download.done'), false);
+  mcp.dispose();
+  mcp.declareEvent({ name: 'late', description: 'x' });
+  assert.equal(mcp.emitEvent('order.shipped'), false);
+  assert.equal(mcp.removeEvent('order.shipped'), false);
+  assert.equal(client.calls.filter((c) => c[0] === 'declareEvent').length, 2);
+});

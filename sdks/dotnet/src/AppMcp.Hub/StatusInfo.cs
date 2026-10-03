@@ -55,6 +55,8 @@ public sealed record HubStatusInfo(
     public IReadOnlyList<LockStatusInfo>? Locks { get; init; }
     /// <summary>进行中的调用（第 16 项 P5，spec/hub-api.md 3.6「调用对象」），按开始时刻排序；旧 Hub 为 null。</summary>
     public IReadOnlyList<CallStatusInfo>? Calls { get; init; }
+    /// <summary>事件订阅（各订阅的投递 / 丢弃数与订阅方积压）与丢弃的不合法事件数（第 16 项 N3，spec/hub-api.md 3.17）；旧 Hub 为 null。</summary>
+    public EventsStatusInfo? Events { get; init; }
 }
 
 /// <summary>调用阶段（只前进，不需要的阶段跳过）。</summary>

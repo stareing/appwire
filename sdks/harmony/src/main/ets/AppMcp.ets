@@ -9,14 +9,14 @@
  */
 
 import type {
-  ClientConfig, ClientEvent, JsStateInfo, NativeClient, Navigate,
+  ClientConfig, ClientEvent, EventSpecInit, JsStateInfo, NativeClient, Navigate,
 } from 'libapp_mcp_harmony.so';
 import { nativeErrorCode } from './Errors';
 import {
-  AppMcpOptions, BusyHandle, BusyPolicy, ConnectionState, ConnectionStatus, HoldHandle, NavigationHandler, NavigationRequest, Visibility, WakeReason,
+  AppMcpOptions, BusyHandle, BusyPolicy, ConnectionState, EventDefinition, ConnectionStatus, HoldHandle, NavigationHandler, NavigationRequest, Visibility, WakeReason,
 } from './Types';
 import {
-  BusyState, ConsoleLogger, NativeRegistrar, NoopHold, OnceHold, errorText, lifecycleInit, submitNavigationFailure,
+  BusyState, ConsoleLogger, NativeRegistrar, NoopHold, OnceHold, errorText, lifecycleInit, stringifyJson, submitNavigationFailure,
 } from './AppMcpSupport';
 import { RegistrarBase } from './AppMcpEntries';
 
@@ -217,6 +217,39 @@ export class AppMcp extends RegistrarBase {
     if (client !== null) {
       client.setBusyPolicy(policy);
     }
+  }
+
+  /**
+   * 声明本实例可发出的事件（spec/protocol.md 3.5，同名替换）。已连接时随即同步给 Host，否则在下次握手成功后同步；不触发连接。
+   * 未启用 / 已释放时为空操作。名称不合法时原生层抛错（`code` 为 `INVALID_NAME`）。
+   */
+  declareEvent(event: EventDefinition): void {
+    const client = this.live();
+    if (client === null) {
+      return;
+    }
+    const spec: EventSpecInit = { name: event.name, description: event.description };
+    spec.payloadSchemaJson = event.payloadSchema;
+    client.declareEvent(spec);
+  }
+
+  /** 撤销事件声明；未声明过（或未启用 / 已释放）返回 false。 */
+  removeEvent(name: string): boolean {
+    const client = this.live();
+    return client !== null && client.removeEvent(name);
+  }
+
+  /**
+   * 发出已声明的事件。已连接时发送并返回 true；未连接（休眠、断线、重连中、握手中）丢弃并返回 false：不缓存、不为此连接或
+   * 唤醒 Host，也不推迟空闲休眠。需要可靠送达的状态变化请改用资源（`notifyChanged`）。未启用 / 已释放时返回 false。
+   * 未声明 / 名称不合法抛 `INVALID_NAME`；载荷不是 JSON 对象或序列化后超过 8 KiB 抛 `INVALID_JSON`（原生层错误，出错时不发送）。
+   */
+  emitEvent(name: string, payload?: Object): boolean {
+    const client = this.live();
+    if (client === null) {
+      return false;
+    }
+    return client.emitEvent(name, payload === undefined ? null : stringifyJson(payload));
   }
 
   /**

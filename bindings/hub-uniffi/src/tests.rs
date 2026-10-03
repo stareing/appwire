@@ -1129,5 +1129,6 @@ fn mcp_over_fd() {
 }
 
 mod agents;
+mod app_events;
 mod locks;
 mod policy;

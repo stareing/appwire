@@ -10,12 +10,14 @@ import { loadNativeBinding, type HubBinding, type NativeHub } from './native.js'
 import type {
   ErrorKind,
   AppInfo,
+  AppEvent,
   AppOverviewInfo,
   ApprovalHandler,
   ApprovalRequest,
   CallOutcome,
   CallRequest,
   CallToolOptions,
+  EventHandler,
   ExportedTools,
   HubConfig,
   HubEvent,
@@ -324,6 +326,26 @@ export class Hub {
   }
 
   // ---- 策略回调 ----
+
+  /**
+   * 设置 App 事件回调（spec/hub-api.md 3.17，替换之前的；`null` 清除）：每个通过校验的事件（不论有无订阅）调用一次，
+   * 在 Node 事件循环上执行。同样的事件也以 `appEvent` 进入 {@link Hub.onEvent}。回调抛出的异常交给 `onListenerError`（缺省写 stderr）。
+   * @error 原生模块过旧（没有事件支持）→ {@link HubError}（`kind = 'UNSUPPORTED_PROTOCOL'`）。
+   */
+  setEventHandler(handler: EventHandler | null): void {
+    const native = this.#native
+    if (!native.setEventHandler) throw new HubError('UNSUPPORTED_PROTOCOL', '原生模块版本过旧，不支持事件回调（spec/hub-api.md 3.17）')
+    const forward = handler
+      ? (json: string) => {
+          try {
+            handler(JSON.parse(json) as AppEvent)
+          } catch (e) {
+            this.#onListenerError(e)
+          }
+        }
+      : null
+    wrapSync(() => native.setEventHandler?.(forward))
+  }
 
   /**
    * 设置审批回调（配合 `approval.requireAtOrAbove`）。返回 true 同意；

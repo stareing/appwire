@@ -23,6 +23,7 @@ import {
   toAnthropicTools,
   toOpenAiTools,
   toVercelAiTools,
+  type AppEvent,
   type ApprovalRequest,
   type CallPriority,
   type HubEvent,
@@ -779,6 +780,50 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(cancelled.result.ok).toMatchObject({ callId: 'slow-1', cancelled: true })
     expect((await slow).result.error?.kind).toBe('CANCELLED')
     await until(() => !hub.status().calls?.some((c) => c.callId === 'slow-1'), 'slow-1 释放')
+  })
+
+  it('事件：App emit → 订阅方经 apps.events 取件、status().events 计数、setEventHandler 与 appEvent 事件（第 16 项 N3）', async () => {
+    const { hub, events } = await startHub()
+    const seen: AppEvent[] = []
+    hub.setEventHandler((e) => seen.push(e))
+    const app = createAppMcp({ appId: 'shop', appName: '商城', hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false })
+    apps.push(app)
+    app.declareEvent({ name: 'order.shipped', description: '订单已发货', payloadSchema: { type: 'object' } })
+    app.start()
+    await until(() => app.state.status === 'connected', 'shop 连上')
+
+    const sub = await hub.callTool({ name: 'apps.events.subscribe', arguments: { appId: 'shop', event: 'order.shipped' }, session: 's1' })
+    const subscriptionId = (sub.result.ok as { subscriptionId: string }).subscriptionId
+    expect(subscriptionId).toBeTruthy()
+    const unknown = await hub.callTool({ name: 'apps.events.subscribe', arguments: { appId: 'shop', event: 'nope' }, session: 's1' })
+    expect(unknown.result.error?.kind).toBe('INVALID_INPUT')
+
+    expect(app.emitEvent('order.shipped', { orderId: 'o1' })).toBe(true)
+    await until(() => seen.length === 1, '厂商回调收到事件')
+    expect(seen[0]).toMatchObject({ appId: 'shop', name: 'order.shipped', payload: { orderId: 'o1' } })
+    expect(seen[0]?.id).toMatch(/^ev-/)
+    await until(() => events.some((e) => e.type === 'appEvent' && e.name === 'order.shipped'), 'appEvent 进入事件流')
+
+    const subscription = await until(
+      () => hub.status().events?.subscriptions.find((s) => s.subscriptionId === subscriptionId && s.pending === 1),
+      'status().events 记一条积压',
+    )
+    expect(subscription).toMatchObject({ subscriber: 'api:s1', appId: 'shop', event: 'order.shipped', delivered: 1, dropped: 0 })
+    expect(hub.status().events?.droppedInvalid).toBe(0)
+
+    const fetched = await hub.callTool({ name: 'apps.events', session: 's1' })
+    const inbox = fetched.result.ok as { events: AppEvent[]; pending: number }
+    expect(inbox.events.map((e) => [e.name, e.payload])).toEqual([['order.shipped', { orderId: 'o1' }]])
+    expect(inbox.pending).toBe(0)
+    const otherSession = await hub.callTool({ name: 'apps.events', session: 's2' })
+    expect((otherSession.result.ok as { events: unknown[] }).events).toEqual([])
+
+    hub.setEventHandler(null)
+    expect(app.emitEvent('order.shipped')).toBe(true)
+    await until(() => hub.status().events?.subscriptions.find((s) => s.subscriptionId === subscriptionId)?.pending === 1, '第二条入箱')
+    expect(seen).toHaveLength(1)
+    const off = await hub.callTool({ name: 'apps.events.unsubscribe', arguments: { subscriptionId }, session: 's1' })
+    expect(off.result.error).toBeUndefined()
   })
 
   it('navigateTimeoutMs 必须是非负整数', async () => {

@@ -11,7 +11,7 @@ use super::convert::{
     parse_busy_policy, parse_client_kind, parse_heartbeat, parse_sleep_reason, parse_visibility, parse_wake_reason, to_js_error,
 };
 use super::handles::{Call, Hold, Navigate, Read, Resource, Scope, Tool};
-use super::objects::{ClientConfig, ClientEvent, JsStateInfo, ResourceSpecInit, ToolSpecInit};
+use super::objects::{ClientConfig, ClientEvent, EventSpecInit, JsStateInfo, ResourceSpecInit, ToolSpecInit};
 
 /// 本绑定抛出的错误：`status` 字符串成为 JS 错误的 `code`（napi-derive 按名称 `Result` 识别返回类型）。
 use napi::Result;
@@ -129,6 +129,26 @@ impl JsNativeClient {
     pub fn set_busy_policy(&self, policy: String) -> Result<(), String> {
         self.inner.set_busy_policy(parse_busy_policy(&policy)?);
         Ok(())
+    }
+
+    /// 声明可发出的事件（spec/protocol.md 3.5，同名替换）；已连接时随即同步给 Host，不触发连接。
+    #[napi]
+    pub fn declare_event(&self, spec: EventSpecInit) -> Result<(), String> {
+        self.inner.declare_event(spec.into_info()?).map_err(to_js_error)
+    }
+
+    /// 撤销事件声明；未声明过返回 `false`。
+    #[napi]
+    pub fn remove_event(&self, name: String) -> bool {
+        self.inner.remove_event(&name)
+    }
+
+    /// 发出已声明的事件，`payloadJson` 为 JSON 对象文本。已连接时发送并返回 `true`；未连接时丢弃并返回 `false`（不缓存、不连接）。
+    ///
+    /// @error 未声明 / 名称不合法 → `INVALID_NAME`；载荷不是合法 JSON、不是对象或超过 8 KiB → `INVALID_JSON`；已停止 → `STOPPED`。
+    #[napi]
+    pub fn emit_event(&self, name: String, payload_json: Option<String>) -> Result<bool, String> {
+        self.inner.emit_event(&name, payload_json.as_deref()).map_err(to_js_error)
     }
 
     /// 停止：取消所有调用、断开连接、不再重连，并释放监听器的 ThreadsafeFunction。

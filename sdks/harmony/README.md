@@ -96,6 +96,11 @@ mcp.tool<OrderParams, Object | null>('order.submit', {
   `maxQueuedCalls`（排队中的调用数，缺省 64，0 = 不限；队列满时新调用以 `RATE_LIMITED` 拒绝，`data` 为 `{ scope: 'queue', limit }`）；
   工具可声明 `concurrency`（本工具同时执行的上限，缺省 / 0 = 不单独限制）与 `exclusive`（互斥组名，同组工具同一时刻至多一个在执行，
   如操作同一份文档的写工具），`update` 中给出 `null` 清除。
+- 事件（spec/protocol.md 3.5）：`mcp.declareEvent({ name: 'order.shipped', description: '订单已发货', payloadSchema: '{"type":"object"}' })`
+  声明（`payloadSchema` 为 JSON 文本，同名替换；已连接时随即同步给 Host，否则下次握手后同步，不触发连接），
+  `mcp.emitEvent('order.shipped', { orderId: 'o1' } as Record<string, Object>)` 发出：已连接返回 `true`；未连接（休眠、断线、重连中）
+  丢弃并返回 `false`，不缓存、不唤醒、不推迟空闲休眠，需要可靠送达请改用资源。未声明 / 名称不合法抛 `code` 为 `INVALID_NAME` 的错误，
+  载荷不是对象或超过 8 KiB 抛 `INVALID_JSON`。`removeEvent(name)` 撤销。Agent 用内置工具 `apps.events.subscribe` / `apps.events` 订阅、取件。
 - 用户正在操作（spec/protocol.md 5.3，只在 SDK 内生效、不发给 Host）：`mcp.setBusy(true / false)` 声明用户此刻正在 App 内操作
   （何时算由 App 决定，如输入框获得焦点、拖拽中），`isBusy()` 读取。期间写调用（生效注解不是 `readOnlyHint: true` 的工具）按
   `AppMcpOptions.busyPolicy` 处理：`'reject'`（缺省）以 `RATE_LIMITED` 拒绝（`data` 为 `{ scope: 'busy' }`，未执行）；`'queue'` 排队，

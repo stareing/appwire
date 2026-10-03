@@ -235,6 +235,37 @@ impl WasmClient {
         Ok(())
     }
 
+    // ---- 事件（spec/protocol.md 3.5）--------------------------------------
+
+    /// 声明可发出的事件（`{"name","description","payloadSchema"?}` 的 JSON，同名替换）；已连接时随即排队 `events/sync`
+    /// （驱动层下一次取消息时发出），否则在下次握手成功后发送。
+    #[wasm_bindgen(js_name = declareEvent)]
+    pub fn declare_event(&mut self, event: &str) -> Result<(), JsError> {
+        let info: app_mcp_protocol::EventInfo =
+            serde_json::from_str(event).map_err(|e| JsError::new(&format!("事件声明 格式错误：{e}")))?;
+        self.inner.declare_event(info).map_err(core_err)
+    }
+
+    /// 撤销事件声明；未声明过返回 `false`。
+    #[wasm_bindgen(js_name = removeEvent)]
+    pub fn remove_event(&mut self, name: &str) -> bool {
+        self.inner.remove_event(name)
+    }
+
+    /// 发出已声明的事件，`payload` 为 JSON 对象文本（`undefined` = 无载荷）。已连接时排队并返回 `true`；未连接时丢弃并返回
+    /// `false`（不缓存、不触发连接）。
+    ///
+    /// @error 名称不合法、未声明、载荷不是合法 JSON / 不是对象 / 超过 8 KiB 时抛出，不发送。
+    #[wasm_bindgen(js_name = emitEvent)]
+    pub fn emit_event(&mut self, name: &str, payload: Option<String>) -> Result<bool, JsError> {
+        let payload = payload
+            .as_deref()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .transpose()
+            .map_err(|e| JsError::new(&format!("事件载荷 格式错误：{e}")))?;
+        self.inner.emit_event(name, payload).map_err(core_err)
+    }
+
     // ---- 驱动层输出 -----------------------------------------------------
 
     /// 取出下一个事件（带 `type` 字段的对象的 JSON）；没有事件时返回 `undefined`。

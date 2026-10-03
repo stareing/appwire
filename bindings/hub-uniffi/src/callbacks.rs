@@ -7,7 +7,7 @@ use app_mcp_hub as hub;
 use tokio::sync::oneshot;
 
 use crate::lock;
-use crate::types::{ApprovalRequest, HubEvent, PairingRequest, ProgressUpdate, WakeRequest, wake_error};
+use crate::types::{AppEvent, ApprovalRequest, HubEvent, PairingRequest, ProgressUpdate, WakeRequest, wake_error};
 
 /// Hub 事件监听。在专用分发线程上同步调用，必须尽快返回（需要时自行切换线程）。
 #[uniffi::export(foreign)]
@@ -15,6 +15,15 @@ pub trait HubEventListener: Send + Sync {
     fn on_event(&self, event: HubEvent);
     /// 监听方处理过慢，跳过了 `skipped` 个事件；应重新拉取 `apps()` / `tools()`。
     fn on_lagged(&self, skipped: u64);
+}
+
+/// App 事件回调（spec/hub-api.md 3.17，[`crate::AppMcpHub::set_event_handler`]）：每个通过去重与校验的事件（不论有无订阅）
+/// 同步回调一次。
+///
+/// @invariant 在 Hub 的 App 连接任务上执行，必须很快返回（耗时工作请转交其他线程），否则拖慢该 App 的消息处理。
+#[uniffi::export(foreign)]
+pub trait AppEventHandler: Send + Sync {
+    fn on_app_event(&self, event: AppEvent);
 }
 
 /// 调用进度接收方（[`AppMcpHub::call_tool_with_progress`]）。在专用阻塞线程上按顺序同步调用，必须尽快返回；
@@ -152,6 +161,19 @@ impl hub::Waker for WakerAdapter {
                 "唤醒回调没有给出结果（WakeResponder 未完成即被释放，或回调抛出异常）。",
             ))
         })
+    }
+}
+
+/// 接到 Hub 的事件回调；`None` 表示已清除（Hub 只能替换回调，不能移除）。
+pub(crate) struct AppEventAdapter(pub(crate) Option<Arc<dyn AppEventHandler>>);
+
+impl hub::EventHandler for AppEventAdapter {
+    fn on_event(&self, event: &hub::AppEvent) {
+        let Some(handler) = &self.0 else { return };
+        let event = AppEvent::from(event.clone());
+        if !guarded(|| handler.on_app_event(event)) {
+            tracing::warn!("事件回调抛出异常");
+        }
     }
 }
 

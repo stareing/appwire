@@ -35,6 +35,21 @@ export interface HandlerSpec {
   echo?: boolean
   returnIdempotencyKey?: boolean
   returnNothing?: boolean
+  /** 能力 events：依次发出事件，结果 `{emitted: [true | false | "error"]}`（无其他结果时）。 */
+  emit?: EmitSpec[]
+}
+
+/** 事件声明（能力 events；`app.events`、变更 `declareEvent`）。 */
+export interface EventDecl {
+  name: string
+  description: string
+  payloadSchema?: { [key: string]: Json }
+}
+
+/** handler `emit` 的一项；`payload` 原样交给 SDK（可能故意不是对象）。 */
+export interface EmitSpec {
+  name: string
+  payload?: Json
 }
 
 export interface ToolDecl {
@@ -89,6 +104,8 @@ export type MutationOp =
   | { op: 'update'; name: string; set: { [key: string]: Json } }
   | { op: 'remove' | 'enable' | 'disable'; name: string }
   | { op: 'busy'; value: boolean }
+  | { op: 'declareEvent'; event: EventDecl }
+  | { op: 'removeEvent'; name: string }
 
 export interface ConformanceCase {
   id: string
@@ -106,6 +123,8 @@ export interface ConformanceCase {
     visibility?: 'visible' | 'hidden' | 'frozen'
     /** 能力 busy：启动前 `setBusy(true)`。 */
     busy?: boolean
+    /** 能力 events：启动前声明的事件。 */
+    events?: EventDecl[]
     tools?: ToolDecl[]
     resources?: ResourceDecl[]
     navigation?: { [page: string]: NavigationSpec }
@@ -148,6 +167,8 @@ export interface HandlerEnv {
   progress(progress: number, total?: number, message?: string): void
   isCancelled(): boolean
   mutate(op: MutationOp): void
+  /** SDK 发事件 API（能力 events）：返回是否发送，本地错误抛出。 */
+  emit?(name: string, payload: Json | undefined): boolean
 }
 
 export interface RegistryOps<H> {
@@ -157,6 +178,9 @@ export interface RegistryOps<H> {
   setEnabled(handle: H, enabled: boolean): void
   /** 变更 `{op: "busy", value}`（能力 busy）；未提供时该变更抛错。 */
   setBusy?(busy: boolean): void
+  /** 变更 `{op: "declareEvent", event}` / `{op: "removeEvent", name}`（能力 events）；未提供时该变更抛错。 */
+  declareEvent?(event: EventDecl): void
+  removeEvent?(name: string): void
 }
 
 export interface Registry {
@@ -197,6 +221,8 @@ export declare function appConfig(testCase: ConformanceCase): {
   navigateInBackground?: boolean
   busyPolicy?: 'reject' | 'queue'
 }
+/** 用例 `app.events`（能力 events）；未给出时为空数组。 */
+export declare function appEvents(testCase: ConformanceCase): EventDecl[]
 /** 用例 `app.busy`（能力 busy）：为 true 时 runner 在启动前调用 `setBusy(true)`。 */
 export declare function appBusy(testCase: ConformanceCase): boolean
 /** 用例 `app.visibility`；未给出时为 undefined。 */
@@ -209,6 +235,10 @@ export interface JsRegistrar {
   resource(name: string, definition: any): unknown
   /** 用户正在操作（能力 busy）。 */
   setBusy(busy: boolean): void
+  /** 事件（能力 events）。 */
+  declareEvent(event: EventDecl): void
+  removeEvent(name: string): boolean
+  emitEvent(name: string, payload?: any): boolean
 }
 
 /** `ToolCallError`（两包各自导出，结构相同）。 */

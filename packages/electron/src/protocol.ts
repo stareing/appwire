@@ -27,6 +27,8 @@ export const BRIDGE_VERSION = 1
  */
 export type {
   AppMcpBridge,
+  EventMessage,
+  EventOp,
   HelloReply,
   MainEvent,
   NavigateEvent,

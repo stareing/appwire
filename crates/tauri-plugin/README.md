@@ -97,6 +97,15 @@ app_mcp.client().register_tool_with(ToolSpec::new("window.title", "设置窗口�
 let _ = call.complete_with(CallResult { status: ResultStatus::Noop, summary: Some("标题未变化".into()), ..Default::default() });
 ```
 
+### 事件（spec/protocol.md 3.5）
+
+- **页面**：`appMcp.declareEvent({ name, description, payloadSchema? })` / `emitEvent(name, payload?)` / `removeEvent(name)` 经桥接 op
+  `event.declare` / `event.emit` / `event.remove` 交给 Rust 侧客户端发出。声明按 WebView 记录，页面刷新、卸载或窗口销毁时撤销；
+  多个页面声明同名事件时，最后一个页面撤销才撤销客户端上的声明，其余页面仍声明时以其声明重新声明。`event.emit` 的回复为是否已发送
+  （未连接时 `false`，事件丢弃）；未声明 / 载荷不合法回复 `INVALID_NAME` / `INVALID_JSON`。
+- **Rust 侧**：直接用 `app_mcp.client().declare_event(EventInfo { .. })`（`EventInfo` 由本 crate 重新导出） / `emit_event(name, Some(r#"{"orderId":"o1"}"#))`。
+  与页面同名时视为同一事件：页面全部撤销时会一并撤销它。
+
 ### Builder 选项
 
 | 方法 | 默认 | 说明 |

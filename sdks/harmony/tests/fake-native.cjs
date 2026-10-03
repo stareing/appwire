@@ -222,6 +222,26 @@ class FakeNativeClient extends FakeRegistrar {
     if (policy !== 'reject' && policy !== 'queue') throw new Error(`INVALID_ARGUMENT: 未知的 busyPolicy：${policy}`);
     this.calls.push(['setBusyPolicy', policy]);
   }
+  /** 事件：同原生核心的校验（名称、是否声明、载荷是否为对象 / 8 KiB）；未连接返回 false。 */
+  declareEvent(spec) {
+    if (!/^[a-zA-Z0-9_.-]{1,64}$/.test(spec.name)) throw nativeError('INVALID_NAME', spec.name);
+    this.calls.push(['declareEvent', { ...spec }]);
+    (this.events ??= new Map()).set(spec.name, spec);
+  }
+  removeEvent(name) {
+    this.calls.push(['removeEvent', name]);
+    return this.events?.delete(name) ?? false;
+  }
+  emitEvent(name, payloadJson) {
+    if (!this.events?.has(name)) throw nativeError('INVALID_NAME', `${name}（未声明的事件）`);
+    const payload = payloadJson == null ? undefined : JSON.parse(payloadJson);
+    if (payload !== undefined && (typeof payload !== 'object' || payload === null || Array.isArray(payload))) {
+      throw nativeError('INVALID_JSON', '事件载荷无效：payload must be a json object');
+    }
+    if (payloadJson != null && Buffer.byteLength(payloadJson) > 8 * 1024) throw nativeError('INVALID_JSON', '事件载荷超过 8 KiB');
+    this.calls.push(['emitEvent', name, payloadJson ?? null]);
+    return this.state.status === 'connected';
+  }
   /** 测试用：模拟 Host 的 `app/navigate`；没有回调时同真实原生层以 unsupported 失败。返回 Promise<{ok} | {ok:false, kind, message}>。 */
   navigate(page, params) {
     return new Promise((resolve) => {

@@ -25,7 +25,8 @@ import type {
 // `ToolSpecMessage.annotations` / `outputSchema` / `surface` / `page` / `backgroundTool` / `concurrency` / `exclusive`、导航消息（`navigation.set`、`navigate`、
 // `navigate.result`，见 {@link NavigationOp}；旧主进程对未知 op 回复错误，页面据此得知不支持；`navigate.result` 的
 // `USER_ACTION_REQUIRED` 与 `details`：旧主进程 / Rust 侧按失败处理）、成功 `Outcome` 的 `status` / `stateResource` / `summary` / `annotations`、
-// 失败 `Outcome` 的 `details`、用户正在操作 `busy.set`（旧主进程对未知 op 回复错误，页面记警告）。
+// 失败 `Outcome` 的 `details`、用户正在操作 `busy.set`（旧主进程对未知 op 回复错误，页面记警告）、事件 {@link EventOp}
+// （同样按未知 op 回复错误，页面记警告）。
 
 /** preload 默认把桥接对象暴露为 `window.appMcpBridge`。 */
 export const DEFAULT_BRIDGE_KEY = 'appMcpBridge'
@@ -105,7 +106,25 @@ export type RendererOp =
    * 页面刷新、卸载或 webContents 销毁时该页的声明失效。
    */
   | { op: 'busy.set'; busy: boolean }
+  | EventOp
   | NavigationOp
+
+/**
+ * 事件（spec/protocol.md 3.5）：页面 → 主进程 / Rust 侧。声明归本页（按页面记录，页面刷新、卸载或 webContents 销毁时撤销；
+ * 其他页面也声明了同名事件时保留）。`event.emit` 的回复 `value` 为是否已发送（布尔）；未声明 / 载荷不合法时回复错误
+ * （`code` 同原生：`INVALID_NAME` / `INVALID_JSON`）。页面先在本地校验，并在镜像的状态不是 `connected` 时不发送。
+ */
+export type EventOp =
+  | { op: 'event.declare'; event: EventMessage }
+  | { op: 'event.remove'; name: string }
+  | { op: 'event.emit'; name: string; payload?: Record<string, unknown> }
+
+/** 事件声明（与协议 `EventInfo` 同形）。 */
+export interface EventMessage {
+  name: string
+  description: string
+  payloadSchema?: Record<string, unknown>
+}
 
 /**
  * 导航（spec/protocol.md 3.4）：页面 → 主进程 / Rust 侧。`navigation.set`：本页处理（`enabled: true`）/ 不再处理导航，

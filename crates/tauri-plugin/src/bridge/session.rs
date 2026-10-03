@@ -213,6 +213,20 @@ impl Session {
                 }
                 Ok(None)
             }
+            PageOp::EventDeclare { event } => {
+                self.declare_event(client, event)?;
+                Ok(None)
+            }
+            PageOp::EventRemove { name } => {
+                let removed = self.remove_event(&name);
+                if removed && let Some(owner) = self.owner.upgrade() {
+                    owner.release_events(vec![name]);
+                }
+                Ok(Some(Value::Bool(removed)))
+            }
+            PageOp::EventEmit { name, payload } => {
+                Ok(Some(Value::Bool(Self::emit_event(client, &name, payload.as_ref())?)))
+            }
             PageOp::Wake => Ok(Some(Value::Bool(client.wake()))),
             PageOp::Sleep => Ok(Some(Value::Bool(client.sleep()))),
             PageOp::ConnectNow => Ok(Some(Value::Bool(client.connect_now()))),
@@ -231,7 +245,7 @@ impl Session {
         }
     }
 
-    fn live(&self) -> Result<MutexGuard<'_, SessionState>, OpError> {
+    pub(super) fn live(&self) -> Result<MutexGuard<'_, SessionState>, OpError> {
         let st = lock(&self.state);
         if st.disposed {
             return Err(op_error("DISPOSED", "页面会话已注销"));
@@ -326,11 +340,12 @@ impl Session {
         !st.disposed && st.busy
     }
 
-    pub(super) fn dispose(&self) {
+    /// 返回本页声明过的事件名（交给 [`Sessions::release_events`]）；已注销时为空。
+    pub(super) fn dispose(&self) -> Vec<String> {
         let st = {
             let mut st = lock(&self.state);
             if st.disposed {
-                return;
+                return Vec::new();
             }
             st.disposed = true;
             std::mem::take(&mut *st)
@@ -345,5 +360,6 @@ impl Session {
             hold.release();
         }
         self.scope.dispose();
+        st.events.into_iter().map(|e| e.name).collect()
     }
 }

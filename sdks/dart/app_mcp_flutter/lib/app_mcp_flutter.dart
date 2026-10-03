@@ -10,6 +10,7 @@
 ///   所在界面可见且处于最上层时启用；没有门控时按所在路由是否为栈顶判定。
 /// - [mcpNavigatorHandler] / [mcpLocationHandler]：[AppMcp.setNavigationHandler] 的 Navigator / 位置路由适配
 ///   （go_router 见 `app_mcp_go_router` 包）。
+/// - [McpEvent]：随 widget 声明可发出的事件（挂载时 [AppMcp.declareEvent]、卸载时撤销）；发出用 [AppMcp.emitEvent]。
 /// - [McpBusy]：随 widget 持有用户正在操作的作用域（[AppMcp.beginBusy]，引用计数），期间写调用按 [BusyPolicy] 拒绝或排队。
 /// - [McpUiFallback] / [McpDeclared]：进程内控件兜底（`ui.outline` / `click` / `fill` 等，spec/ui-fallback.md），默认关闭。
 library;
@@ -17,6 +18,7 @@ library;
 export 'package:app_mcp/app_mcp.dart';
 
 export 'src/busy.dart';
+export 'src/event.dart';
 export 'src/lifecycle.dart';
 export 'src/scope.dart';
 export 'src/tool.dart';

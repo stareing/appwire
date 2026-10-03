@@ -577,6 +577,30 @@ void test_busy() {
 }
 
 
+void test_events() {
+    // 事件（app_mcp.h v20，spec/protocol.md 3.5）：未连接时 emit 返回 false；本地错误抛 Error（状态码同 C ABI）。
+    app_mcp::ClientConfig config;
+    config.app_id = "cpp-events";
+    config.app_name = "C++ Events";
+    config.host_url = "ws://127.0.0.1:1";
+    app_mcp::Client client(config);
+    EXPECT(status_of([&] { client.emit_event("order.shipped"); }) == AM_ERR_INVALID_NAME);  // 未声明
+    EXPECT(status_of([&] { client.declare_event("bad name", "非法"); }) == AM_ERR_INVALID_NAME);
+    EXPECT(status_of([&] { client.declare_event("order.shipped", "订单已发货", std::string("[1]")); }) ==
+           AM_ERR_INVALID_SCHEMA);
+    EXPECT(status_of([&] { client.declare_event("order.shipped", "订单已发货", std::string(R"({"type":"object"})")); }) ==
+           AM_OK);
+    bool sent = true;
+    EXPECT(status_of([&] { sent = client.emit_event("order.shipped", std::string(R"({"orderId":"o1"})")); }) == AM_OK);
+    EXPECT(!sent);  // 未连接：丢弃
+    EXPECT(status_of([&] { sent = client.emit_event("order.shipped"); }) == AM_OK && !sent);
+    EXPECT(status_of([&] { client.emit_event("order.shipped", std::string("[1]")); }) == AM_ERR_INVALID_JSON);
+    EXPECT(status_of([&] { client.emit_event("order.shipped", std::string("{")); }) == AM_ERR_INVALID_JSON);
+    EXPECT(client.remove_event("order.shipped"));
+    EXPECT(!client.remove_event("order.shipped"));
+    EXPECT(status_of([&] { client.emit_event("order.shipped"); }) == AM_ERR_INVALID_NAME);
+}
+
 }  // namespace
 
 int main() {
@@ -587,6 +611,7 @@ int main() {
         test_power_options();
         test_name_options();
         test_busy();
+        test_events();
         test_diagnostics();
         test_annotations();
         test_navigation();

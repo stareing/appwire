@@ -715,3 +715,28 @@ def test_busy_scope_across_threads(client):
     for t in threads:
         t.join(timeout=5)
     assert not client.is_busy()
+
+
+def test_events_offline(client):
+    # 事件（spec/protocol.md 3.5）：未连接时发出即丢弃（False）；本地错误抛 AppMcpError，不发送
+    client.declare_event("order.shipped", "订单已发货", {"type": "object"})
+    client.declare_event("download.done", "下载完成", '{"type": "object"}')
+    assert client.emit_event("order.shipped", {"orderId": "o1"}) is False
+    assert client.emit_event("order.shipped") is False
+    with pytest.raises(ffi.AppMcpError.InvalidName):
+        client.emit_event("nope")
+    for bad in (1, [1]):
+        with pytest.raises(ffi.AppMcpError.InvalidJson):
+            client.emit_event("order.shipped", bad)  # type: ignore[arg-type]
+    with pytest.raises(ffi.AppMcpError.InvalidJson):
+        client.emit_event("order.shipped", {"x": object()})
+    with pytest.raises(ffi.AppMcpError.InvalidJson):
+        client.emit_event("order.shipped", {"blob": "x" * 9000})
+    with pytest.raises(ValueError):
+        client.declare_event("bad.schema", "非法 schema", "{")
+    with pytest.raises(ffi.AppMcpError.InvalidName):
+        client.declare_event("坏 名", "名称不合法")
+    assert client.remove_event("order.shipped") is True
+    assert client.remove_event("order.shipped") is False
+    with pytest.raises(ffi.AppMcpError.InvalidName):
+        client.emit_event("order.shipped")

@@ -20,7 +20,8 @@
  * v18：am_client_new_ex 记录 max_queued_calls（fake_max_queued_calls）；工具记录 concurrency / exclusive（fake_tool_schedule）。
  * 结构体布局探针 fake_sizeof 在 fake_layout.c。
  *
- * 编译：cc -shared -fPIC -o libfake_app_mcp.so fake_app_mcp.c fake_layout.c -lpthread
+ * v20 事件函数在 fake_events.c。
+ * 编译：cc -shared -fPIC -o libfake_app_mcp.so fake_app_mcp.c fake_layout.c fake_events.c -lpthread
  * Windows（MSVC）：cl /c /utf-8 编译后按 dumpbin /symbols 中的外部函数生成 .def 再 link /DLL
  * （与 cc 默认导出全部非 static 函数一致，见 test/support/fake_native.dart）。
  */

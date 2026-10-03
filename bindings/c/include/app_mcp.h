@@ -81,7 +81,7 @@
  *   旧调用方不受影响）：App 在系统名字服务登记名字，Hub 按名拨号时接受通道（握手方向不变：SDK 先发 app/hello，
  *   wakeReason 为 "os-activation"）；通道关闭后 on-demand / idle 回到 DORMANT、不重连。由 D-Bus 激活启动的进程
  *   （命令行带 --app-mcp-activation）按"由唤醒冷启动"处理（AM_RESIDENCY_EXIT_WHEN_IDLE 生效）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v19 仍为 3。）
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v20 仍为 3。）
  * - v18（第 4f 项 k / 第 16 项 N6，spec/protocol.md 5.3）：只在结构体末尾追加字段（按 struct_size 读取，旧调用方不受影响）。
  *   · AmToolOptions 末尾追加 concurrency（本工具同时执行的调用上限，0 = 不单独限制）与 exclusive（互斥组名，同组工具
  *     同一时刻至多一个在执行；NULL = 不互斥）。只在 SDK 内调度，不同步给 Host。
@@ -89,6 +89,8 @@
  *     RATE_LIMITED（details {"scope":"queue","limit":N}）拒绝。
  * - v19（第 16 项 N6，spec/protocol.md 5.3「用户正在操作」）：新增 am_client_set_busy / am_client_is_busy /
  *   am_client_set_busy_policy 与枚举 AmBusyPolicy；结构体不变。
+ * - v20（第 16 项 N3，spec/protocol.md 3.5「事件」）：新增 am_client_declare_event / am_client_remove_event /
+ *   am_client_emit_event；结构体与枚举不变。
  * - 第 16 项 N6（spec/hub-api.md 3.6「对象锁」）：am_call_fail 认可的错误类别新增 "LOCKED"（-31003，由 Host 的对象锁产生，
  *   App 一般不用）；函数与结构体不变。
  *
@@ -454,6 +456,21 @@ AmStatus am_client_set_busy(AmClient *client, bool busy);
 AmStatus am_client_is_busy(const AmClient *client, bool *out);
 /* v19：用户正在操作期间写调用的处理方式（默认 AM_BUSY_REJECT），随即对排队中的调用生效。 */
 AmStatus am_client_set_busy_policy(AmClient *client, AmBusyPolicy policy);
+/* v20：声明本实例可发出的事件（spec/protocol.md 3.5；同名替换）。已连接时随即同步给 Host（events/sync 全量），否则在下次
+ * 握手成功后同步；不触发连接。静态事件写在清单 events 中，但 SDK 不读清单：要发出的事件都需在运行时声明。
+ * name 规则同工具名；description 面向模型（事件何时发生、载荷含义）；payload_schema_json 为载荷的 JSON Schema（JSON 对象文本，
+ * 描述用，Hub 不校验），NULL = 不声明。name 不合法 → AM_ERR_INVALID_NAME；payload_schema_json 不是合法 JSON 或不是对象 →
+ * AM_ERR_INVALID_SCHEMA；name / description 为 NULL 或非法 UTF-8 → AM_ERR_INVALID_ARGUMENT；客户端已停止 → AM_ERR_STOPPED。 */
+AmStatus am_client_declare_event(AmClient *client, const char *name, const char *description,
+                                 const char *payload_schema_json);
+/* v20：撤销事件声明（已连接时随即重发全量）。removed 可为 NULL：写入是否撤销了已有声明（未声明过为 false）。 */
+AmStatus am_client_remove_event(AmClient *client, const char *name, bool *removed);
+/* v20：发出已声明的事件。payload_json 为 JSON 对象文本，NULL = 无载荷。sent 可为 NULL：写入是否已发送——
+ * 已连接时发送（events/emit，eventId 由 SDK 生成）并写入 true；未连接（休眠、断线、重连中、握手中）时丢弃并写入 false：
+ * 不缓存、不为此连接或唤醒 Host，也不推迟空闲休眠（需要可靠送达的状态变化请改用资源）。
+ * 名称不合法或未声明 → AM_ERR_INVALID_NAME；payload_json 不是合法 JSON（含非法 UTF-8）、不是对象或序列化后超过 8 KiB →
+ * AM_ERR_INVALID_JSON；客户端已停止 → AM_ERR_STOPPED。出错时不发送，*sent 为 false。 */
+AmStatus am_client_emit_event(AmClient *client, const char *name, const char *payload_json, bool *sent);
 /* 当前状态；retry_in_ms、reason 可为 NULL。*reason 需用 am_string_free 释放（REJECTED / HOST_MISMATCH 时非 NULL；
  * v6 起 BACKOFF 有原因时也非 NULL；其他状态为 NULL）。 */
 AmStatus am_client_state(const AmClient *client, AmStateStatus *status, uint64_t *retry_in_ms, char **reason);

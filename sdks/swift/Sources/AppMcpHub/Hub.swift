@@ -49,7 +49,7 @@ public typealias HubWakeDescriptor = AppMcpHubBindings.WakeDescriptor
 public typealias HubWakeKind = AppMcpHubBindings.WakeKind
 /// Hub 事件。休眠相关：`.appDormant(appId:instanceId:)`、`.appWaking(appId:instanceId:)`（`nil` = 冷启动）；
 /// SDK 诊断上报：`.appDiagnostic(appId:instanceId:code:message:count:)`（spec/protocol.md 10.2）。
-/// 未单独映射的新事件以 `.other(kind:json:)` 送达。
+/// App 发出的事件：`.appEvent(event:)`（`AppEvent`）。未单独映射的新事件以 `.other(kind:json:)` 送达。
 public typealias HubEvent = AppMcpHubBindings.HubEvent
 /// Hub 操作错误（`.Tool`、`.InvalidJson`、`.InvalidConfig`、`.Io`、`.Shutdown`、`.Unsupported`）。
 /// `.Unsupported(detail:)`：本构建未包含所需能力（`mcpHttp`、`upstreams`、`serveHttp`），`detail` 说明缺哪个 cargo feature
@@ -80,6 +80,13 @@ public typealias LockStatus = AppMcpHubBindings.LockStatus
 public typealias CallStatus = AppMcpHubBindings.CallStatus
 /// 调用阶段：`created` → `approving` → `activating` → `running`（只前进，不需要的阶段跳过）。
 public typealias CallState = AppMcpHubBindings.CallState
+/// App 发出的事件（`HubEvent.appEvent(event:)`、`Hub.setEventHandler`，spec/hub-api.md 3.17）：`id`（`ev-<n>`）、`appId`、
+/// `instanceId`、`name`、`payloadJson`（JSON 对象文本或 `nil`）、`atMs`。
+public typealias AppEvent = AppMcpHubBindings.AppEvent
+/// 事件订阅与丢弃统计（`HubStatus.events`）：`subscriptions`、`droppedInvalid`。
+public typealias EventsStatus = AppMcpHubBindings.EventsStatus
+/// 一个订阅：`subscriptionId`、`subscriber`、`appId`、`event`、`delivered`、`dropped`、`pending`。
+public typealias EventSubscriptionStatus = AppMcpHubBindings.EventSubscriptionStatus
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。
 public typealias LimitsConfig = AppMcpHubBindings.LimitsConfig
@@ -228,6 +235,12 @@ private final class WakerBridge: HubWaker, @unchecked Sendable {
             }
         }
     }
+}
+
+private final class AppEventBridge: AppMcpHubBindings.AppEventHandler, @unchecked Sendable {
+    let body: @Sendable (AppEvent) -> Void
+    init(_ body: @escaping @Sendable (AppEvent) -> Void) { self.body = body }
+    func onAppEvent(event: AppEvent) { body(event) }
 }
 
 /// 把单一的原生监听分发给多个订阅者。
@@ -459,6 +472,13 @@ public final class Hub: @unchecked Sendable {
     /// 调用确认（风险不低于 `approvalMinRisk` 时询问）。返回 `false` 或抛出错误 → `USER_REJECTED`。
     public func setApprovalHandler(_ handler: @escaping @Sendable (ApprovalRequest) async throws -> Bool) {
         inner.setApprovalHandler(handler: ApprovalBridge(handler))
+    }
+
+    /// App 事件回调（spec/hub-api.md 3.17，替换之前的；`nil` 清除）：每个通过去重与校验的事件（不论有无订阅）回调一次。
+    /// 在 Hub 的 App 连接线程上同步执行，必须很快返回（耗时工作请转交 `Task` / 其他队列）。
+    /// 同一事件也以 `HubEvent.appEvent` 进入 `events()` / `onEvent`。
+    public func setEventHandler(_ handler: (@Sendable (AppEvent) -> Void)?) {
+        inner.setEventHandler(handler: handler.map { AppEventBridge($0) })
     }
 
     /// App 配对确认。返回 `false` 或抛出错误 → 拒绝。

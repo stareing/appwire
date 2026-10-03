@@ -600,3 +600,38 @@ fn guarded_catches_panic() {
     assert!(guarded(|| {}));
     assert!(!guarded(|| panic!("boom")));
 }
+
+/// 事件 API（spec/protocol.md 3.5）：声明的转换与校验、未连接时丢弃（`false`）、各本地错误的映射、停止后拒绝。
+#[test]
+fn event_api_offline() {
+    let info = EventInfo {
+        name: "order.shipped".into(),
+        description: "订单已发货".into(),
+        payload_schema_json: Some(r#"{"type":"object"}"#.into()),
+    };
+    let native_info: native::EventInfo = info.clone().try_into().expect("转换");
+    assert_eq!(native_info.payload_schema, Some(serde_json::json!({ "type": "object" })));
+    let bad_schema = EventInfo { payload_schema_json: Some("{".into()), ..info.clone() };
+    assert!(matches!(native::EventInfo::try_from(bad_schema.clone()), Err(AppMcpError::InvalidJson { .. })));
+
+    let client = AppMcpClient::new(fake_host_config("uniffi-events", "127.0.0.1:9"), None).expect("client");
+    assert!(matches!(client.declare_event(bad_schema), Err(AppMcpError::InvalidJson { .. })));
+    let bad_name = EventInfo { name: "坏 名".into(), ..info.clone() };
+    assert!(matches!(client.declare_event(bad_name), Err(AppMcpError::InvalidName { .. })));
+    client.declare_event(info).expect("声明");
+    assert_eq!(client.emit_event("order.shipped".into(), Some(r#"{"orderId":"o1"}"#.into())), Ok(false), "未连接时丢弃");
+    assert_eq!(client.emit_event("order.shipped".into(), None), Ok(false));
+    assert!(matches!(client.emit_event("nope".into(), None), Err(AppMcpError::InvalidName { .. })));
+    for payload in ["1", "[1]", "{"] {
+        assert!(
+            matches!(client.emit_event("order.shipped".into(), Some(payload.into())), Err(AppMcpError::InvalidJson { .. })),
+            "{payload}"
+        );
+    }
+    assert!(client.remove_event("order.shipped".into()));
+    assert!(!client.remove_event("order.shipped".into()));
+    assert!(matches!(client.emit_event("order.shipped".into(), None), Err(AppMcpError::InvalidName { .. })));
+    client.stop();
+    let after = EventInfo { name: "late".into(), description: String::new(), payload_schema_json: None };
+    assert_eq!(client.declare_event(after), Err(AppMcpError::Stopped));
+}

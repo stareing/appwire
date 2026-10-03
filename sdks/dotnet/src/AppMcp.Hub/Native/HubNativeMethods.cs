@@ -45,6 +45,8 @@ internal static unsafe partial class HubNativeMethods
 
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_set_event_cb(HubSafeHandle hub, nint cb, nint userData, nint freeUserData);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_set_approval_cb(HubSafeHandle hub, nint cb, nint userData, nint freeUserData);
+    // v22：App 事件的厂商回调（spec/hub-api.md 3.17）
+    [LibraryImport(Lib)] internal static partial HubStatus am_hub_set_app_event_cb(HubSafeHandle hub, nint cb, nint userData, nint freeUserData);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_approval_complete(nint approval, [MarshalAs(UnmanagedType.U1)] bool approved);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_set_pairing_cb(HubSafeHandle hub, nint cb, nint userData, nint freeUserData);
     [LibraryImport(Lib)] internal static partial HubStatus am_hub_pairing_complete(nint pairing, [MarshalAs(UnmanagedType.U1)] bool approved);

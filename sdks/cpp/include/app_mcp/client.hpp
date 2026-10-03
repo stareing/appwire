@@ -291,6 +291,31 @@ public:
         return BusyScope(busy_);
     }
 
+    // ---- 事件（spec/protocol.md 3.5，app_mcp.h v20） ----
+
+    /// 声明本实例可发出的事件（同名替换）。已连接时随即同步给 Host，否则在下次握手成功后同步；不触发连接。
+    /// SDK 不读清单：要发出的事件都需在运行时声明。payload_schema_json 为载荷的 JSON Schema（对象文本，描述用）。
+    /// @error 名称不合法 → AM_ERR_INVALID_NAME；schema 不是 JSON 对象 → AM_ERR_INVALID_SCHEMA；已停止 → AM_ERR_STOPPED。
+    void declare_event(const std::string& name, const std::string& description,
+                       const std::optional<std::string>& payload_schema_json = std::nullopt) {
+        detail::check(am_client_declare_event(h_, name.c_str(), description.c_str(),
+                                              payload_schema_json ? payload_schema_json->c_str() : nullptr));
+    }
+    /// 撤销事件声明；返回是否撤销了已有声明（未声明过为 false）。
+    bool remove_event(const std::string& name) {
+        bool removed = false;
+        detail::check(am_client_remove_event(h_, name.c_str(), &removed));
+        return removed;
+    }
+    /// 发出已声明的事件；payload_json 为 JSON 对象文本（nullopt = 无载荷）。已连接时发送并返回 true；未连接（休眠、断线、
+    /// 重连中、握手中）时丢弃并返回 false——不缓存、不为此连接或唤醒 Host。需要可靠送达的状态变化请改用资源。
+    /// @error 未声明 / 名称不合法 → AM_ERR_INVALID_NAME；载荷不是 JSON 对象或超过 8 KiB → AM_ERR_INVALID_JSON。
+    bool emit_event(const std::string& name, const std::optional<std::string>& payload_json = std::nullopt) {
+        bool sent = false;
+        detail::check(am_client_emit_event(h_, name.c_str(), payload_json ? payload_json->c_str() : nullptr, &sent));
+        return sent;
+    }
+
     /// 设置导航回调（spec/protocol.md 3.4）；传空的 std::function 清除（之后的导航请求以 NAVIGATION_FAILED 回复）。
     /// 能力在握手时声明：建议在 start() 之前设置，连接后才设置的在下次连接时生效。handler 在分发线程上调用。
     void set_navigation_handler(NavigationHandler handler) {

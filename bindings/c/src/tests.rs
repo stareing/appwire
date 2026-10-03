@@ -467,6 +467,10 @@ fn header_consistency() {
         "am_client_set_busy",
         "am_client_is_busy",
         "am_client_set_busy_policy",
+        // v20
+        "am_client_declare_event",
+        "am_client_remove_event",
+        "am_client_emit_event",
     ];
     // 收集头文件中形如 `am_xxx(` 的声明。
     let mut declared = Vec::new();
@@ -776,3 +780,4 @@ fn listener_strings_are_owned_by_callee() {
 }
 
 mod lifecycle;
+mod events;

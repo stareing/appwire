@@ -28,7 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use app_mcp_native::{
     Activation, CallHandle, CallResult, CancelListener, CancelReason, ContentAnnotations,
-    ErrorKind, HoldHandle, NativeClient, NativeError, NavigateHandle, NavigationHandler, ReadHandle, ResourceHandle, ResourceOptions,
+    ErrorKind, EventInfo, HoldHandle, NativeClient, NativeError, NavigateHandle, NavigationHandler, ReadHandle, ResourceHandle, ResourceOptions,
     ResourceReader, ResourceSpec, ResultStatus, Risk, ScopeHandle, StateInfo, StateStatus,
     ToolAnnotations, ToolHandle, ToolHandler, ToolOptions, ToolSpec, ToolSurface,
 };
@@ -48,6 +48,7 @@ pub(crate) trait PageSink: Send + Sync + 'static {
 
 /// 判断某个 WebView（按 label）是否允许登记。
 pub(crate) type AcceptFn = dyn Fn(&str) -> bool + Send + Sync;
+mod events;
 mod messages;
 mod session;
 mod sessions;
@@ -187,6 +188,19 @@ enum PageOp {
     /// 本页声明用户正在 / 不再操作（spec/protocol.md 5.3）；客户端的 busy 为各页之或（[`Sessions::sync_busy`]）。
     #[serde(rename = "busy.set")]
     BusySet { busy: bool },
+    /// 本页声明事件（spec/protocol.md 3.5，同名替换）；页面注销后撤销（[`Sessions::release_events`]）。
+    #[serde(rename = "event.declare")]
+    EventDeclare { event: EventInfo },
+    /// 撤销本页的事件声明；回复 `value` 为本页是否声明过。
+    #[serde(rename = "event.remove")]
+    EventRemove { name: String },
+    /// 发出事件；回复 `value` 为是否已发送（未连接时 `false`）。
+    #[serde(rename = "event.emit")]
+    EventEmit {
+        name: String,
+        #[serde(default)]
+        payload: Option<Value>,
+    },
     /// 本页开启 / 关闭导航处理（[`Bridge::enable_page_navigation`]）。
     #[serde(rename = "navigation.set")]
     NavigationSet { enabled: bool },
@@ -418,6 +432,8 @@ struct SessionState {
     next_read_id: u64,
     /// 本页声明用户正在操作（`busy.set`）。
     busy: bool,
+    /// 本页声明的事件（`event.declare`，同名替换）。
+    events: Vec<EventInfo>,
 }
 
 /// 一个 WebView 的登记。

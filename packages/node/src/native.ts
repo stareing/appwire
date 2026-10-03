@@ -208,6 +208,14 @@ export interface NativeRegistrar {
   createScope(name: string): NativeScope
 }
 
+/** 事件声明（原生 `EventSpecInit`）。 */
+export interface NativeEventSpec {
+  name: string
+  description: string
+  /** 载荷的 JSON Schema 文本。 */
+  payloadSchemaJson?: string
+}
+
 export interface NativeScope extends NativeRegistrar {
   dispose(): void
 }
@@ -230,6 +238,10 @@ export interface NativeClient extends NativeRegistrar {
   isBusy?(): boolean
   /** 非法值抛错。 */
   setBusyPolicy?(policy: string): void
+  /** 事件（spec/protocol.md 3.5）。旧版原生模块没有这些方法。未声明 / 名称不合法抛 `INVALID_NAME`，载荷不合法抛 `INVALID_JSON`。 */
+  declareEvent?(spec: NativeEventSpec): void
+  removeEvent?(name: string): boolean
+  emitEvent?(name: string, payloadJson?: string | null): boolean
   // ---- 生命周期（旧版原生模块没有这些方法）----
   handleWake?(args: string): boolean
   wake?(reason?: string | null): boolean

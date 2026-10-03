@@ -44,7 +44,7 @@ impl Sessions {
     pub(crate) fn end(&self, label: &str) {
         let removed = lock(&self.map).remove(label);
         if let Some(session) = removed {
-            session.dispose();
+            self.release_events(session.dispose());
         }
         self.sync_busy();
     }
@@ -81,9 +81,8 @@ impl Sessions {
                 .filter_map(|label| map.remove(label))
                 .collect()
         };
-        for session in removed {
-            session.dispose();
-        }
+        let events = removed.iter().flat_map(|s| s.dispose()).collect();
+        self.release_events(events);
         self.sync_busy();
         self.end_navigation(|p| p.window == window);
     }
@@ -91,9 +90,8 @@ impl Sessions {
     /// 注销全部登记。
     pub(crate) fn end_all(&self) {
         let removed: Vec<Arc<Session>> = lock(&self.map).drain().map(|(_, s)| s).collect();
-        for session in removed {
-            session.dispose();
-        }
+        let events = removed.iter().flat_map(|s| s.dispose()).collect();
+        self.release_events(events);
         self.sync_busy();
         self.end_navigation(|_| true);
     }
@@ -192,8 +190,9 @@ impl Sessions {
                 _ => None,
             }
         };
-        session.dispose();
+        let events = session.dispose();
         drop(removed);
+        self.release_events(events);
         self.sync_busy();
         self.end_navigation(|p| p.label == session.label);
     }

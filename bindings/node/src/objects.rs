@@ -336,3 +336,27 @@ impl ResourceSpecInit {
         Ok((spec, options))
     }
 }
+
+/// 事件声明（spec/protocol.md 3.5）。
+#[napi(object)]
+pub struct EventSpecInit {
+    pub name: String,
+    pub description: String,
+    /// 载荷的 JSON Schema 文本（描述用，Hub 不校验）；省略 = 不描述。
+    pub payload_schema_json: Option<String>,
+}
+
+impl EventSpecInit {
+    /// @error `payloadSchemaJson` 不是合法 JSON → `INVALID_JSON`。
+    pub(super) fn into_info(self) -> Result<native::EventInfo, String> {
+        let payload_schema = self
+            .payload_schema_json
+            .as_deref()
+            .map(|text| {
+                serde_json::from_str(text)
+                    .map_err(|e| napi::Error::new("INVALID_JSON".to_string(), format!("事件载荷 schema 不是合法 JSON：{e}")))
+            })
+            .transpose()?;
+        Ok(native::EventInfo { name: self.name, description: self.description, payload_schema })
+    }
+}

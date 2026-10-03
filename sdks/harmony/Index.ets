@@ -11,6 +11,7 @@ export {
 } from './src/main/ets/Harmony';
 export {
   Activation, AppMcpOptions, AppOverview, Audience, BusyHandle, BusyPolicy, CallDedupOptions, CancelReason, ConnectionState, ConnectionStatus, ContentAnnotations,
+  EventDefinition,
   ErrorKind, HeartbeatMode, HoldHandle, LifecycleMode, LifecycleOptions, Logger, NavigationHandler, NavigationRequest, Registrar, Residency, ResourceDefinition,
   ResourceHandle, ResultStatus, Risk, Scope, ToolAnnotations, ToolChanges, ToolContext, ToolDefinition, ToolHandle,
   ToolHandler, ToolResult, ToolResultOptions, ToolSurface, UserActionRequiredOptions, Visibility, WakeDescriptor, WakeKind,

@@ -159,6 +159,42 @@ describe('generateManifest', () => {
     expect(warnings).toEqual([expect.stringContaining('"magic" 未知')])
   })
 
+  it('events：选项原样写入清单；名称 / 重复 / description / payloadSchema 校验与 crates/manifest 一致（spec/manifest.md 2.4）', () => {
+    const events = [
+      { name: 'order.shipped', description: '订单已发货', payloadSchema: { type: 'object' } },
+      { name: 'download.done', description: '下载完成' },
+    ]
+    const manifest = generateManifest({ appId: 'shop', name: '商城', events })
+    expect(manifest.events).toEqual(events)
+    expect(manifest.events).not.toBe(events)
+    expect(generateManifest({ appId: 'shop', name: '商城', events: [] })).not.toHaveProperty('events')
+
+    const bad = {
+      manifestVersion: 1,
+      appId: 'shop',
+      name: 'x',
+      // 与工具同名不算重复（不同命名空间）
+      tools: [{ name: 'a', description: 'd', inputSchema: { type: 'object' } }],
+      events: [
+        { name: 'bad name', description: 'd' },
+        { name: 'a', description: 'd' },
+        { name: 'a', description: 'd' },
+        { name: 'b', description: ' ' },
+        { name: 'c', description: 'd', payloadSchema: 'x' },
+        { name: 'shop.order.shipped', description: 'd' },
+      ],
+    } as unknown as AppMcpManifest
+    const { errors, warnings } = validateManifest(bad)
+    expect(errors).toEqual([
+      expect.stringContaining('events[0]（bad name） 名称不合法'),
+      expect.stringContaining('events[2]（a） 名称重复'),
+      expect.stringContaining('events[3]（b） description 不能为空'),
+      expect.stringContaining('events[4]（c） payloadSchema 必须是对象'),
+    ])
+    expect(warnings).toEqual([expect.stringContaining('events[5]（shop.order.shipped）')])
+    expect(validateManifest({ ...bad, events: {} } as unknown as AppMcpManifest).errors).toEqual(['events 必须是数组'])
+  })
+
   it('工具名以 appId. 开头时警告（局部名，spec/protocol.md 3.1）', () => {
     const manifest = {
       manifestVersion: 1,

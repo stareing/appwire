@@ -116,6 +116,25 @@ agent writes do not collide with their edits:
   Read-only calls are never affected. `client.set_busy_policy("queue")` changes the policy at runtime (e.g. from a
   user setting). The busy state stays inside the SDK and is not sent to the Host.
 
+### Events (optional, `spec/protocol.md` §3.5)
+
+Tell agents that something happened (an order shipped, a download finished) instead of making them poll:
+
+```python
+client.declare_event("order.shipped", "An order was shipped", {"type": "object", "properties": {"orderId": {"type": "string"}}})
+client.emit_event("order.shipped", {"orderId": "o1"})  # True = sent, False = not connected (dropped)
+client.remove_event("order.shipped")
+```
+
+- Declarations (name rules as for tools; the schema only describes the payload) are synced to the Host after the
+  handshake and whenever they change; declaring never triggers a connection.
+- `emit_event(name, payload=None)` takes a JSON object (dict, at most 8 KiB serialized). While not connected the event
+  is **dropped** and `False` is returned: nothing is queued, the Host is not woken and the idle timer is not extended.
+  Use a resource for state that must be delivered reliably.
+- Undeclared / invalid names raise `AppMcpError.InvalidName`; a payload that is not an object, cannot be serialized or
+  is too large raises `AppMcpError.InvalidJson`. Nothing is sent in either case.
+- Agents subscribe with the built-in tools `apps.events.subscribe` / `apps.events` (inbox) on the Hub side.
+
 ### Control fallback for Qt Widgets (optional, `spec/ui-fallback.md`)
 
 For screens without declared tools, an opt-in fallback registers `ui.outline` / `ui.click` / `ui.fill` /
@@ -243,6 +262,14 @@ listed, plus `apps.page` / `apps.navigate` when a page catalog exists. `apps.cal
 `apps.cancel {callId}` cancels one of them (the caller gets `CANCELLED`); `hub.status().calls` lists every in-flight
 call as `CallStatus` (`call_id`, `name`, `caller`, `subject`, `state: CallState`, `elapsed_ms`, `instance_id`,
 `progress` / `progress_total` / `progress_message`, `platform_state`).
+
+App events (`spec/hub-api.md` §3.17): agents subscribe with `apps.events.subscribe {appId, event?, filter?}` and fetch
+their inbox with `apps.events {max?}` (`apps.events.unsubscribe {subscriptionId}` to stop). Every validated event also
+arrives as `HubEvent.APP_EVENT(event)` on `hub.on_event` / `hub.events()`, and `hub.set_event_handler(fn, dispatcher=None)`
+calls `fn(AppEvent)` once per event whether or not anyone subscribed (`AppEvent`: `id`, `app_id`, `instance_id`, `name`,
+`payload_json`, `at_ms`). Without a dispatcher `fn` runs on the Hub's app-connection thread and must return quickly;
+`None` clears it. `hub.status().events` is an `EventsStatus` (`subscriptions: [EventSubscriptionStatus]` with
+`delivered` / `dropped` / `pending`, plus `dropped_invalid`).
 
 Policy hook points (`spec/hub-api.md` §3.13): `Hub(policy={"rules": [{"id": "no-pay", "action": "deny", "app": "shop",
 "tool": "pay*"}]})` or `hub.set_policy(...)` at runtime. `hide` removes an app / tool from every list (calls get

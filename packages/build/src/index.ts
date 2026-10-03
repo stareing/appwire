@@ -49,6 +49,7 @@ export {
   type LaunchEntry,
   type ManifestInfo,
   type ManifestLaunch,
+  type ManifestEvent,
   type ManifestPage,
   type ManifestResource,
   type ManifestTool,

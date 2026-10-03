@@ -67,6 +67,8 @@ pub struct AmHub {
     pub(crate) ipc_endpoint: Option<String>,
     pub(crate) dispatcher: Dispatcher,
     pub(crate) events: Arc<Slot<AmHubEventFn>>,
+    /// v22：App 事件的厂商回调（[`crate::app_events`]）。
+    pub(crate) app_events: Arc<Slot<crate::app_events::AmHubAppEventFn>>,
     pub(crate) approval: Arc<Slot<AmHubApprovalFn>>,
     pub(crate) pairing: Arc<Slot<AmHubPairingFn>>,
     pub(crate) pairing_installed: AtomicBool,
@@ -169,6 +171,7 @@ impl AmHub {
         // 运行时关闭时被丢弃的任务已把兜底结果排进队列；等分发线程处理完再释放 user_data。
         self.dispatcher.close_and_join();
         self.events.set(None);
+        self.app_events.set(None);
         self.approval.set(None);
         self.pairing.set(None);
         self.waker.set(None);

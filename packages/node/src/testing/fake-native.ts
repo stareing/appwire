@@ -11,6 +11,7 @@ import type {
   NativeClient,
   NativeClientConfig,
   NativeClientEvent,
+  NativeEventSpec,
   NativeHold,
   NativeNavigate,
   NativeRead,
@@ -392,6 +393,39 @@ export class FakeNativeClient extends FakeRegistrarBase implements NativeClient 
   setBusyPolicy(policy: string): void {
     if (policy !== 'reject' && policy !== 'queue') throw new NativeErrorWithCode('INVALID_ARGUMENT', `未知的 busyPolicy：${policy}`)
     this.busyPolicy = policy
+  }
+
+  /** 已声明的事件（`declareEvent`，同名替换）。 */
+  readonly events = new Map<string, NativeEventSpec>()
+  /** 发出成功（已连接）的事件，按发出顺序。 */
+  readonly emittedEvents: Array<{ name: string; payload: unknown }> = []
+
+  /** 同原生：名称不合法抛 `INVALID_NAME`，schema 文本不是合法 JSON 抛 `INVALID_JSON`。 */
+  declareEvent(spec: NativeEventSpec): void {
+    this.checkUsable()
+    if (!/^[a-zA-Z0-9_.-]{1,64}$/.test(spec.name)) throw new NativeErrorWithCode('INVALID_NAME', spec.name)
+    if (spec.payloadSchemaJson != null) parseDetails(spec.payloadSchemaJson)
+    this.events.set(spec.name, spec)
+  }
+
+  removeEvent(name: string): boolean {
+    return this.events.delete(name)
+  }
+
+  /** 同原生核心的校验顺序：未声明 → `INVALID_NAME`；载荷不是对象 / 超过 8 KiB → `INVALID_JSON`；未连接返回 false。 */
+  emitEvent(name: string, payloadJson?: string | null): boolean {
+    this.checkUsable()
+    if (!this.events.has(name)) throw new NativeErrorWithCode('INVALID_NAME', `${name}（未声明的事件，请先 declare_event）`)
+    const payload = parseDetails(payloadJson)
+    if (payload !== undefined && (typeof payload !== 'object' || payload === null || Array.isArray(payload))) {
+      throw new NativeErrorWithCode('INVALID_JSON', '事件载荷无效：payload must be a json object')
+    }
+    if (payloadJson != null && Buffer.byteLength(payloadJson) > 8 * 1024) {
+      throw new NativeErrorWithCode('INVALID_JSON', '事件载荷无效：exceeds the limit of 8192 bytes')
+    }
+    if (this.state.status !== 'connected') return false
+    this.emittedEvents.push({ name, payload })
+    return true
   }
 
   /**

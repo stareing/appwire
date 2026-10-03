@@ -20,6 +20,7 @@ import pytest
 
 from app_mcp import (
     AppMcp,
+    AppMcpError,
     CallDedup,
     LifecyclePolicy,
     NavigationDenied,
@@ -54,6 +55,7 @@ FEATURES = frozenset(
         "idempotencyKey",
         "callScheduling",
         "busy",
+        "events",
     }
 )
 ROOT = Path(__file__).resolve().parents[3]
@@ -147,6 +149,20 @@ class CaseApp:
             annotations=_rename(decl.get("annotations"), _CONTENT_ANNOTATION_KEYS),
         )
 
+    def declare_event(self, decl: dict[str, Any]) -> None:
+        """事件声明（conformance/README.md 2.2）。"""
+        self.client.declare_event(decl["name"], decl["description"], decl.get("payloadSchema"))
+
+    def emit_events(self, items: list[dict[str, Any]]) -> list[Any]:
+        """handler 的 ``emit``：每项为 ``True`` / ``False``（已发送 / 未连接丢弃），本地错误为 ``"error"``。"""
+        outcomes: list[Any] = []
+        for e in items:
+            try:
+                outcomes.append(self.client.emit_event(e["name"], e.get("payload")))
+            except AppMcpError:
+                outcomes.append("error")
+        return outcomes
+
     def mutate(self, op: dict[str, Any]) -> None:
         """handler 的 ``mutate`` 操作（conformance/README.md 2.3）；Python 的 ``update`` 是补丁型，``None`` 即清除。"""
         kind, name = op["op"], op.get("name")
@@ -155,6 +171,12 @@ class CaseApp:
             return
         if kind == "busy":
             self.client.set_busy(op["value"])
+            return
+        if kind == "declareEvent":
+            self.declare_event(op["event"])
+            return
+        if kind == "removeEvent":
+            self.client.remove_event(name)
             return
         with self._lock:
             handle = self.tools[name]
@@ -206,13 +228,14 @@ class CaseApp:
             raise RuntimeError("" if params is None else json.dumps(params, ensure_ascii=False))
 
     def _run_handler(self, spec: dict[str, Any], count: int, ctx: ToolContext) -> Any:
-        """顺序：progress → delayMs → mutate → 结果（conformance/README.md 2.1）。"""
+        """顺序：progress → delayMs → mutate → emit → 结果（conformance/README.md 2.1）。"""
         for p in spec.get("progress", []):
             ctx.progress(p["progress"], p.get("total"), p.get("message"))
         if "delayMs" in spec:
             ctx.wait_cancelled(spec["delayMs"] / 1000)
         for op in spec.get("mutate", []):
             self.mutate(op)
+        emitted = self.emit_events(spec["emit"]) if "emit" in spec else None
         if "throw" in spec:
             raise RuntimeError(spec["throw"])
         if spec.get("userAction") is not None:
@@ -236,6 +259,8 @@ class CaseApp:
             return {"idempotencyKey": ctx.idempotency_key}
         if spec.get("counter") is True:
             return {"count": count}
+        if emitted is not None:
+            return {"emitted": emitted}
         # returnNothing（以及未声明结果）：Python 的"无返回值"即函数返回 None。
         return None
 
@@ -295,6 +320,8 @@ def run_case(fake_host: Path, path: Path) -> dict[str, Any]:
                     app.register_tool(t)
                 for r in case["app"].get("resources", []):
                     app.register_resource(r)
+                for e in case["app"].get("events", []):
+                    app.declare_event(e)
                 pages = case["app"].get("navigation")
                 if pages is not None:
                     nav_app = app

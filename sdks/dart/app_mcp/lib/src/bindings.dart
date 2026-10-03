@@ -644,6 +644,16 @@ final class AppMcpBindings {
       int Function(Pointer<AmClient>, bool)>('am_client_set_busy');
   late final am_client_set_busy_policy = library.lookupFunction<Int32 Function(Pointer<AmClient>, Int32),
       int Function(Pointer<AmClient>, int)>('am_client_set_busy_policy');
+  // v20：事件（spec/protocol.md 3.5）；removed / sent 可为 NULL
+  late final am_client_declare_event = library.lookupFunction<
+      Int32 Function(Pointer<AmClient>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>),
+      int Function(Pointer<AmClient>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>)>('am_client_declare_event');
+  late final am_client_remove_event = library.lookupFunction<
+      Int32 Function(Pointer<AmClient>, Pointer<Utf8>, Pointer<Bool>),
+      int Function(Pointer<AmClient>, Pointer<Utf8>, Pointer<Bool>)>('am_client_remove_event');
+  late final am_client_emit_event = library.lookupFunction<
+      Int32 Function(Pointer<AmClient>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Bool>),
+      int Function(Pointer<AmClient>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Bool>)>('am_client_emit_event');
 }
 
 /// 原生库默认文件名。

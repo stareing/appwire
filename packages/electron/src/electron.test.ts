@@ -854,3 +854,71 @@ describe('用户正在操作（busy.set，spec/protocol.md 5.3）', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('beginBusy'))
   })
 })
+
+describe('事件（event.*，spec/protocol.md 3.5）', () => {
+  const shipped = { name: 'order.shipped', description: '订单已发货', payloadSchema: { type: 'object' } }
+
+  it('页面声明转给主进程客户端；已连接时发出到达原生，未连接时页面丢弃', async () => {
+    const { ipcMain, native } = setupMain()
+    const { page } = setupPage(ipcMain, new FakeWebContents(1))
+    page.declareEvent(shipped)
+    await flush()
+    expect(native.events.get('order.shipped')).toEqual({
+      name: 'order.shipped',
+      description: '订单已发货',
+      payloadSchemaJson: '{"type":"object"}',
+    })
+    expect(page.emitEvent('order.shipped', { orderId: 'o0' })).toBe(false)
+    native.emit({ type: 'state', state: { status: 'connected' } })
+    await flush()
+    expect(page.emitEvent('order.shipped', { orderId: 'o1' })).toBe(true)
+    await flush()
+    expect(native.emittedEvents).toEqual([{ name: 'order.shipped', payload: { orderId: 'o1' } }])
+    expect(page.removeEvent('order.shipped')).toBe(true)
+    await flush()
+    expect(native.events.has('order.shipped')).toBe(false)
+  })
+
+  it('声明归页面：刷新 / 销毁后撤销；另一页仍声明同名事件时保留（以其声明为准）', async () => {
+    const { ipcMain, native } = setupMain()
+    const wc1 = new FakeWebContents(1)
+    const wc2 = new FakeWebContents(2)
+    const other = setupPage(ipcMain, wc2).page
+    other.declareEvent({ name: 'order.shipped', description: '另一页的说明' })
+    other.declareEvent({ name: 'only.two', description: 'x' })
+    await flush()
+    setupPage(ipcMain, wc1).page.declareEvent(shipped)
+    await flush()
+    expect(native.events.get('order.shipped')?.description).toBe('订单已发货')
+    setupPage(ipcMain, wc1) // 刷新
+    await flush()
+    expect(native.events.get('order.shipped')?.description).toBe('另一页的说明')
+    wc2.destroy()
+    expect(native.events.has('order.shipped')).toBe(false)
+    expect(native.events.has('only.two')).toBe(false)
+  })
+
+  it('主进程拒绝（名称不合法 / 未声明）：页面记警告；appMcp 不支持事件时回复 UNSUPPORTED', async () => {
+    const { ipcMain } = setupMain()
+    const wc = new FakeWebContents(1)
+    // 绕过页面本地校验，直接发 op：未声明的事件
+    const reply = (await ipcMain.invoke(wc, CHANNEL_OP, { op: 'event.emit', name: 'nope' })) as { ok: boolean; code?: string }
+    expect(reply).toMatchObject({ ok: false, code: 'INVALID_NAME' })
+
+    const ipcMain2 = new FakeIpcMain()
+    const appMcp = createAppMcp({ appId: 'shop', appName: 'Shop', clientKind: 'hybrid', binding: fakeBinding, keepAlive: false })
+    const attachment = attachAppMcp({
+      appMcp: { scope: (name) => appMcp.scope(name), instanceId: '', state: appMcp.state, onStateChange: () => () => {} },
+      ipcMain: ipcMain2,
+      logger: { warn: vi.fn(), error: vi.fn() },
+    })
+    cleanups.push(() => {
+      attachment.dispose()
+      appMcp.dispose()
+    })
+    const { page, logger } = setupPage(ipcMain2, new FakeWebContents(3))
+    page.declareEvent(shipped)
+    await flush()
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('event.declare'))
+  })
+})

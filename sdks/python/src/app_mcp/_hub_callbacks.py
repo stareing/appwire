@@ -174,3 +174,25 @@ class _ProgressAdapter(ffi.ProgressListener):
     def on_progress(self, update: ProgressUpdate) -> None:  # Hub 线程
         if not self._loop.is_closed():
             self._loop.call_soon_threadsafe(self._deliver, update)
+
+
+class _AppEventAdapter(ffi.AppEventHandler):
+    """App 事件回调（Hub 的 App 连接线程）→ ``fn``：缺省就地执行（须很快返回），给了 ``dispatcher`` 则交给它。
+
+    @error ``fn`` 抛出的异常只记日志，不影响投递。
+    """
+
+    def __init__(self, fn: Callable[[ffi.AppEvent], Any], dispatcher: Dispatcher | None) -> None:
+        self._fn, self._dispatcher = fn, dispatcher
+
+    def _deliver(self, event: ffi.AppEvent) -> None:
+        try:
+            self._fn(event)
+        except Exception:  # noqa: BLE001 - 事件回调异常不影响投递
+            _log.exception("事件回调抛出异常，已忽略")
+
+    def on_app_event(self, event: ffi.AppEvent) -> None:  # Hub 线程
+        if self._dispatcher is None:
+            self._deliver(event)
+        else:
+            self._dispatcher(lambda: self._deliver(event))

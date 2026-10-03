@@ -80,6 +80,30 @@ appMcp.tool('order.cancel', {
   `ToolCallError.userActionRequired('登录已过期，请重新登录后重试', { reason: 'login', uri: 'shop://login' })`：
   Agent 收到 `USER_ACTION_REQUIRED`，把说明转告用户；`reason` / `uri` 可省略。
 
+## 事件（spec/protocol.md 3.5）
+
+App 告诉 Agent "发生了什么"（订单已发货、下载完成）。先声明、再发出；Agent 用内置工具 `apps.events.subscribe` 订阅、
+`apps.events` 取件（spec/hub-api.md 3.17）：
+
+```ts
+appMcp.declareEvent({
+  name: 'order.shipped',
+  description: '订单已发货；载荷含订单号',
+  payloadSchema: { type: 'object', properties: { orderId: { type: 'string' } } },
+})
+const sent = appMcp.emitEvent('order.shipped', { orderId: 'o1' })   // 未连接时 false：丢弃，不缓存、不为此连接
+appMcp.removeEvent('order.shipped')
+```
+
+- `declareEvent` 同名替换；核心加载前也可调用（加载时同步），已连接时随即同步给 Host。清单里的静态 `events`（`@app-mcp/build` 的
+  `events` 选项）只用于 App 未运行时展示，运行时仍需声明。
+- `emitEvent` 已连接时发送并返回 `true`；未连接（休眠、断线、重连中、核心尚未加载）返回 `false`，事件丢弃，不触发连接或唤醒，
+  也不推迟空闲休眠。需要可靠送达的状态变化请用资源（`notifyChanged`）。
+- 本地错误（抛出、不发送）：未声明或名称不合法 → `code` 为 `INVALID_NAME`；载荷不是 JSON 对象或序列化后超过 8 KiB
+  （`MAX_EVENT_PAYLOAD_BYTES`）→ `INVALID_JSON`；`payloadSchema` 不是对象 → `INVALID_SCHEMA`。
+- Electron / Tauri 页面经桥接（`event.declare` / `event.remove` / `event.emit`）由主进程 / Rust 侧发出；声明归本页，页面刷新 / 关闭后
+  撤销（其他页面也声明了同名事件时保留）。页面按镜像的连接状态判断是否发送，与对方断线竞争时事件在对方丢弃。
+
 ## 生命周期（休眠与唤醒）
 
 默认 `persistent`：启动即连接、一直在线。设置 `lifecycle` 后，空闲时与 Host 完成 `app/sleep` 握手并断开

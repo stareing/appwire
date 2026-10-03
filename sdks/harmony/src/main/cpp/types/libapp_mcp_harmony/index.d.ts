@@ -85,6 +85,14 @@ export interface ClientEvent {
   message?: string;
 }
 
+/** 事件声明（spec/protocol.md 3.5）。 */
+export interface EventSpecInit {
+  name: string;
+  description: string;
+  /** 载荷的 JSON Schema 文本（描述用，Hub 不校验）。 */
+  payloadSchemaJson?: string;
+}
+
 export interface ToolSpecInit {
   name: string;
   description: string;
@@ -243,6 +251,15 @@ export class NativeClient {
   isBusy(): boolean;
   /** 修改 `busyPolicy`（'reject' | 'queue'），随即对排队中的调用生效；非法值抛错。 */
   setBusyPolicy(policy: string): void;
+  /** 声明事件（同名替换）；已连接时随即同步给 Host，不触发连接。名称不合法抛 `INVALID_NAME`。 */
+  declareEvent(spec: EventSpecInit): void;
+  /** 撤销事件声明；未声明过返回 false。 */
+  removeEvent(name: string): boolean;
+  /**
+   * 发出已声明的事件（`payloadJson` 为 JSON 对象文本，`null` = 无载荷）。已连接时发送并返回 true，未连接丢弃并返回 false。
+   * 未声明 / 名称不合法抛 `INVALID_NAME`；载荷不是对象或超过 8 KiB 抛 `INVALID_JSON`；已停止抛 `STOPPED`。
+   */
+  emitEvent(name: string, payloadJson?: string | null): boolean;
   registerTool(spec: ToolSpecInit, handler: (call: Call) => void): Tool;
   registerResource(spec: ResourceSpecInit, reader: (read: Read) => void): Resource;
   createScope(name: string): Scope;

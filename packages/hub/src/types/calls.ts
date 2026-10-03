@@ -2,6 +2,7 @@
 
 import type { ContentAnnotations, ErrorKind, ResultStatus, Visibility } from '../types.js'
 import type { AppOverviewInfo } from './apps.js'
+import type { AppEvent } from './events.js'
 
 export interface CallRequest {
   /** 全名 `<appId>.<tool>`（内置工具为 `apps.list` 等）。 */
@@ -100,3 +101,5 @@ export type HubEvent =
   | { type: 'appWaking'; appId: string; instanceId: string | null }
   /** SDK 上报了此前遇到的连接问题（`app/diagnostic`，spec/protocol.md 10.2）；`code` 可能是本 Hub 不认识的新码。 */
   | { type: 'appDiagnostic'; appId: string; instanceId: string; code: string; message: string; count: number }
+  /** App 发出的事件（已去重与校验，不论有无订阅；spec/hub-api.md 3.17）。 */
+  | ({ type: 'appEvent' } & AppEvent)

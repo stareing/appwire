@@ -22,6 +22,8 @@ import type {
   BusyHandle,
   BusyPolicy,
   ConnectionState,
+  EventDefinition,
+  EventPayload,
   HoldHandle,
   LazyToolDefinition,
   NavigationHandler,
@@ -116,6 +118,26 @@ export class AppMcpDriver extends DriverRegistry implements AppMcp {
     if (this.disposed) return
     this.busyPolicy = policy
     if (this.core) this.input((c) => c.setBusyPolicy(policy))
+  }
+
+  declareEvent(event: EventDefinition): void {
+    const info = this.events.declare(event)
+    if (this.core) this.input((c) => c.declareEvent(info))
+  }
+
+  removeEvent(name: string): boolean {
+    const removed = this.events.remove(name)
+    if (removed && this.core) this.input((c) => c.removeEvent(name))
+    return removed
+  }
+
+  emitEvent(name: string, payload?: EventPayload): boolean {
+    const payloadJson = this.events.prepareEmit(name, payload)
+    const core = this.core
+    if (!core || this.disposed) return false
+    const sent = core.emitEvent(name, payloadJson)
+    if (sent) this.pump()
+    return sent
   }
 
   wake(): void {

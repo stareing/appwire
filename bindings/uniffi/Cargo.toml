@@ -29,11 +29,12 @@ cli = ["uniffi/cli"]
 app-mcp-native.workspace = true
 uniffi = { workspace = true }
 thiserror.workspace = true
+# 事件声明的 payloadSchema 文本 → JSON 值（`EventInfo`）。
+serde_json.workspace = true
 
 [dev-dependencies]
 # 测试用 test_support::fake_host_path() 构建并定位 examples/fake_host。
 app-mcp-native = { workspace = true, features = ["test-support"] }
-serde_json.workspace = true
 
 [build-dependencies]
 uniffi = { workspace = true, features = ["build"] }

@@ -118,6 +118,23 @@ components it imports: a dialog's tools exist only while it is open and are not 
 literal; zod schemas are runtime values). Anything else is a build error with its location, asking for an explicit
 `definePage()`; explicitly declared pages are not scanned.
 
+## Events
+
+Static event declarations (spec/manifest.md 2.4) go into the manifest's `events` through the plugin option of the same
+name, so agents can see and subscribe to them while the app is not running:
+
+```ts
+appMcp({
+  appId: 'shop',
+  name: 'Shop',
+  events: [{ name: 'order.shipped', description: 'An order was shipped', payloadSchema: { type: 'object' } }],
+})
+```
+
+Names follow the tool-name rule and must be unique within `events`; `description` must not be empty and
+`payloadSchema` must be an object. The SDK does not read the manifest: the page still calls
+`appMcp.declareEvent(...)` before `emitEvent(...)`.
+
 ## API
 
 - `appMcp(options)` (also the default export) - the Vite plugin. Options: `appId`, `name`, `version`,

@@ -19,7 +19,7 @@ const SDK = 'harmony';
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
-  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey', 'callScheduling', 'busy',
+  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey', 'callScheduling', 'busy', 'events',
 ];
 
 const build = process.env.APP_MCP_HARMONY_BUILD;
@@ -38,6 +38,15 @@ const silentLogger = { debug() {}, warn() {}, error() {} };
 /** `{a: 1, b: undefined}` → `{a: 1}`。 */
 const defined = (obj) => Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
 const jsonText = (v) => (v === undefined ? undefined : JSON.stringify(v));
+
+/** 用例的事件声明 → ArkTS `EventDefinition`（payloadSchema 为 JSON 文本）。 */
+function eventDefinition(e) {
+  return defined({
+    name: e.name,
+    description: e.description,
+    payloadSchema: e.payloadSchema === undefined ? undefined : JSON.stringify(e.payloadSchema),
+  });
+}
 
 /** 用例的工具声明 → ArkTS `ToolDefinition` 的声明字段（schema 为 JSON 文本；未给出的不传）。 */
 function toolFields(decl) {
@@ -120,6 +129,7 @@ function startApp(support, native, testCase, url) {
               progress: (p, t, m) => ctx.progress(p, t, m),
               isCancelled: () => ctx.isCancelled(),
               mutate: (op) => registry.mutate(op),
+              emit: (name, payload) => app.emitEvent(name, payload),
             }),
           ),
       });
@@ -135,6 +145,8 @@ function startApp(support, native, testCase, url) {
     remove: (handle) => handle.dispose(),
     setEnabled: (handle, enabled) => handle.update({ enabled }),
     setBusy: (busy) => app.setBusy(busy),
+    declareEvent: (event) => app.declareEvent(eventDefinition(event)),
+    removeEvent: (name) => app.removeEvent(name),
   });
   for (const t of testCase.app.tools ?? []) registry.register(t);
   for (const r of testCase.app.resources ?? []) {
@@ -143,6 +155,7 @@ function startApp(support, native, testCase, url) {
       read: () => readResource(r.read),
     });
   }
+  for (const e of support.appEvents(testCase)) app.declareEvent(eventDefinition(e));
   const pages = testCase.app.navigation;
   if (pages) {
     // 导航行为表（conformance/README.md 2.4）→ ArkTS 写法：拒绝抛 navigationDenied、失败抛 NAVIGATION_FAILED、

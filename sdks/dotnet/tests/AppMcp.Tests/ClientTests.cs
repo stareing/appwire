@@ -277,6 +277,30 @@ public class ClientTests
         late.Dispose(); // 客户端已释放：不抛出
     }
 
+    /// <summary>事件（spec/protocol.md 3.5，app_mcp.h v20）：未连接时 EmitEvent 返回 false；本地错误抛 AppMcpException。</summary>
+    [Fact]
+    public void EventsDeclareEmitRemove()
+    {
+        using var client = AppMcpClient.Create(Options());
+        AppMcpStatus StatusOf(Action a) => Assert.Throws<AppMcpException>(a).Status;
+
+        Assert.Equal(AppMcpStatus.InvalidName, StatusOf(() => client.EmitEvent("order.shipped"))); // 未声明
+        Assert.Equal(AppMcpStatus.InvalidName, StatusOf(() => client.DeclareEvent("bad name", "非法")));
+        Assert.Equal(AppMcpStatus.InvalidSchema, StatusOf(() => client.DeclareEvent("order.shipped", "订单已发货", "[1]")));
+        client.DeclareEvent("order.shipped", "订单已发货", """{"type":"object"}""");
+
+        Assert.False(client.EmitEvent("order.shipped", new { orderId = "o1" })); // 未连接：丢弃
+        Assert.False(client.EmitEvent("order.shipped"));
+        Assert.False(client.EmitEventJson("order.shipped", """{"orderId":"o1"}"""));
+        Assert.Equal(AppMcpStatus.InvalidJson, StatusOf(() => client.EmitEvent("order.shipped", new[] { 1 })));
+        Assert.Equal(AppMcpStatus.InvalidJson, StatusOf(() => client.EmitEvent("order.shipped", "text")));
+        Assert.Equal(AppMcpStatus.InvalidJson, StatusOf(() => client.EmitEventJson("order.shipped", "{")));
+
+        Assert.True(client.RemoveEvent("order.shipped"));
+        Assert.False(client.RemoveEvent("order.shipped"));
+        Assert.Equal(AppMcpStatus.InvalidName, StatusOf(() => client.EmitEvent("order.shipped")));
+    }
+
     [Fact]
     public void QueriesThrowAfterDispose()
     {

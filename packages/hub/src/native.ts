@@ -37,6 +37,8 @@ export interface NativeHub {
   dispatch(format: string, toolCallJson: string, session?: string | null): Promise<string>
   serveHttp(addr: string, allowRemote?: boolean | null): Promise<string>
   onEvent(listener: ((eventJson: string) => void) | null): void
+  /** App 事件回调（spec/hub-api.md 3.17）：参数为 AppEvent JSON；null 清除。旧版原生模块没有此方法。 */
+  setEventHandler?(handler: ((eventJson: string) => void) | null): void
   /** handler 必须返回 Promise<boolean>（封装层负责规整）。 */
   setApprovalHandler(handler: (requestJson: string) => Promise<boolean>): void
   setPairingHandler(handler: (requestJson: string) => Promise<boolean>): void

@@ -37,6 +37,22 @@ export interface BusyHandle {
 }
 
 /** 协议错误类别，见 spec/protocol.md 第 4 节。 */
+/**
+ * 事件声明（spec/protocol.md 3.5，{@link AppMcp.declareEvent}）：App 告诉 Agent "发生了什么"（订单已发货、下载完成）。
+ * 静态事件另写在清单 `events`（spec/manifest.md 2.4），SDK 不读清单，仍需运行时声明后才能发出。
+ */
+export interface EventDefinition {
+  /** 事件名，规则同工具名（`[a-zA-Z0-9_.-]{1,64}`，如 `order.shipped`）。 */
+  name: string
+  /** 面向模型：事件何时发生、载荷含义。 */
+  description: string
+  /** 载荷的 JSON Schema（描述用，Hub 不校验）；省略 = 无载荷或不描述。 */
+  payloadSchema?: OutputSchema
+}
+
+/** 事件载荷：JSON 对象，序列化后不超过 8 KiB。 */
+export type EventPayload = Record<string, unknown>
+
 export type ErrorKind =
   | 'TOOL_NOT_FOUND'
   | 'TOOL_DISABLED'
@@ -665,6 +681,24 @@ export interface AppMcp extends Registrar {
    * 不提供（由主进程 / Rust 侧配置）。
    */
   setBusyPolicy?(policy: BusyPolicy): void
+
+  // ---- 事件（spec/protocol.md 3.5）----------------------------------------
+
+  /**
+   * 声明本实例可发出的事件（同名替换）。已连接时随即同步给 Host，否则在下次握手成功后同步；不触发连接。
+   * 桥接实现（Electron / Tauri 页面侧）的声明归本页：页面刷新 / 关闭后失效（其他页面也声明了同名事件时保留）。
+   * @error 名称不合法 → 抛出 `code` 为 `INVALID_NAME` 的错误。
+   */
+  declareEvent(event: EventDefinition): void
+  /** 撤销事件声明；未声明过返回 false。 */
+  removeEvent(name: string): boolean
+  /**
+   * 发出已声明的事件。已连接时发送并返回 true；未连接（休眠、断线、重连中、握手中，或核心尚未加载）丢弃并返回 false：
+   * 不缓存、不为此连接或唤醒 Host，也不推迟空闲休眠。需要可靠送达的状态变化请改用资源（`notifyChanged`）。
+   * 桥接实现按页面镜像的连接状态判断，发出与主进程 / Rust 侧之间仍可能有断线竞争（此时事件丢弃）。
+   * @error 未声明或名称不合法 → `code` 为 `INVALID_NAME`；载荷不是 JSON 对象或序列化后超过 8 KiB → `INVALID_JSON`。出错时不发送。
+   */
+  emitEvent(name: string, payload?: EventPayload): boolean
 }
 
 /** 导航请求（`app/navigate` 的参数）。 */

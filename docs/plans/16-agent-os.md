@@ -307,7 +307,15 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
     - 测试：核心 14、原生 3、一致性用例 `event-emit`（Rust runner pass，其他 runner 按能力跳过）；Hub 单元 31 + `tests/events.rs`
       （真实 native App、按订阅方提醒、已登记 Agent 任务回收与 Hub 重启后仍可取件、厂商回调）；Host `callers_text_lists_event_subscriptions`。
       变异：App 侧 13 个、Hub 侧 19 个 + 清单 1 个全部检出。
-    - 未知 / 未做（二期）：各语言 App SDK `emitEvent` 与 Hub 封装（`HubStatus.events`、`set_event_handler`）、其他 runner 的 `events` 能力；
+  - **二期（2026-10-03，各语言）**：App SDK `declareEvent` / `removeEvent` / `emitEvent`——Web（WASM 加载前也可声明）、Node、Electron
+      与 Tauri 页面（桥接 op `event.declare` / `event.remove` / `event.emit`，声明归页面、页面结束撤销、多页同名按引用重新声明）、
+      鸿蒙、Python、Kotlin、Swift、C ABI v20（`am_client_declare_event` / `remove_event` / `emit_event`）、C++、C#、Dart、Flutter（`McpEvent`）；
+      `@app-mcp/build` 选项 `events`。Hub 封装：`@app-mcp/hub` `setEventHandler` / `HubEvent appEvent` / `HubStatus.events`；hub-uniffi
+      `AppEventHandler` / `HubEvent::AppEvent`（Python / Kotlin / Swift）；hub-c v22 `am_hub_set_app_event_cb`（`am_hub_set_event_cb` 已是
+      Hub 事件流）、C# `SetEventHandler`。一致性 `event-emit` 11 个 runner 全 pass。各族新增测试均做变异验证（JS 17、uniffi 11、C ABI 10）。
+      未做：hub-c / hub-uniffi 未暴露 `HubConfig.event_limits`（用默认上限）；React 不加专用 hook（用 `useAppMcp().emitEvent`）；
+      页面与主进程 / Rust 侧同名声明是同一份，页面全部撤销时一并撤销。
+    - 未知 / 未做（一期遗留）：
       `CoreError` 新变体映射到 `NativeError::InvalidName` / `InvalidJson`（加 `NativeError` 变体需各绑定同步）；Host `<home>/events.json`
       机主规则未做（厂商用 Hub API）；频率窗口不持久化；任务句柄的信箱与主体分开（取件需同一 `taskId`）；Claude Code 是否展示
       `resources/updated` 未验证（不影响拉取）。

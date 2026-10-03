@@ -14,6 +14,7 @@ use super::*;
 
 mod bridge_sessions;
 mod bridge_tools;
+mod events;
 mod mock;
 mod navigation;
 

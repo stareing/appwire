@@ -76,6 +76,18 @@ typealias CallStatus = dev.appmcp.hub.ffi.CallStatus
 /** 调用阶段：`CREATED` → `APPROVING` → `ACTIVATING` → `RUNNING`（只前进，不需要的阶段跳过）。 */
 typealias CallState = dev.appmcp.hub.ffi.CallState
 
+/**
+ * App 发出的事件（`HubEvent.AppEvent(event)`、[Hub.setEventHandler]，spec/hub-api.md 3.17）：`id`（`ev-<n>`）、`appId`、
+ * `instanceId`、`name`、`payloadJson`（JSON 对象文本或 `null`）、`atMs`。
+ */
+typealias AppEvent = dev.appmcp.hub.ffi.AppEvent
+
+/** 事件订阅与丢弃统计（`HubStatus.events`）：`subscriptions`、`droppedInvalid`。 */
+typealias EventsStatus = dev.appmcp.hub.ffi.EventsStatus
+
+/** 一个订阅：`subscriptionId`、`subscriber`、`appId`、`event`、`delivered`、`dropped`、`pending`。 */
+typealias EventSubscriptionStatus = dev.appmcp.hub.ffi.EventSubscriptionStatus
+
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /** 限流与大小上限（[HubConfig.limits]；[HubStatus.limits] 为全部字段给出的生效值）。为空的字段取默认值。 */
 typealias LimitsConfig = dev.appmcp.hub.ffi.LimitsConfig
@@ -123,7 +135,7 @@ typealias WakeRequest = dev.appmcp.hub.ffi.WakeRequest
  * Hub 事件（sealed class）。休眠相关：`HubEvent.AppDormant(appId, instanceId)`、
  * `HubEvent.AppWaking(appId, instanceId?)`（`null` = 冷启动）；SDK 诊断上报：
  * `HubEvent.AppDiagnostic(appId, instanceId, code, message, count)`（spec/protocol.md 10.2）。
- * 未单独映射的新事件以 `HubEvent.Other(kind, json)` 送达。
+ * App 发出的事件：`HubEvent.AppEvent(event)`（[AppEvent]）。未单独映射的新事件以 `HubEvent.Other(kind, json)` 送达。
  * 子类需通过 `dev.appmcp.hub.ffi.HubEvent.AppConnected` 等访问（typealias 不能访问嵌套类）。
  */
 typealias HubEvent = dev.appmcp.hub.ffi.HubEvent
@@ -430,6 +442,21 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
                 callbackScope.launch(context) {
                     responder.complete(runCatching { handler(request) }.getOrDefault(false))
                 }.invokeOnCompletion { responder.close() }
+            }
+        })
+    }
+
+    /**
+     * App 事件回调（spec/hub-api.md 3.17，替换之前的；`null` 清除）：每个通过去重与校验的事件（不论有无订阅）回调一次。
+     * 在 Hub 的 App 连接线程上同步执行，必须很快返回（耗时工作请转交协程 / 其他线程）；抛出的异常被忽略。
+     * 同一事件也以 `HubEvent.AppEvent` 进入 [events]。
+     */
+    fun setEventHandler(handler: ((AppEvent) -> Unit)?) {
+        inner.setEventHandler(handler?.let { fn ->
+            object : dev.appmcp.hub.ffi.AppEventHandler {
+                override fun onAppEvent(event: AppEvent) {
+                    runCatching { fn(event) }
+                }
             }
         })
     }

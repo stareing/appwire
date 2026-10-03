@@ -20,6 +20,7 @@ macro_rules! enum_map {
 
 mod agents;
 mod annotations;
+mod app_events;
 mod apps;
 mod call;
 mod catalog;
@@ -36,6 +37,7 @@ mod usage;
 pub use agents::AgentCredential;
 pub(crate) use agents::agents_config;
 pub use annotations::*;
+pub use app_events::*;
 pub use apps::*;
 pub use call::*;
 pub use catalog::*;

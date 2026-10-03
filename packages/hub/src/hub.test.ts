@@ -11,6 +11,7 @@ function fakeBinding() {
     approval: undefined as ((json: string) => Promise<boolean>) | undefined,
     pairing: undefined as ((json: string) => Promise<boolean>) | undefined,
     waker: undefined as ((json: string) => Promise<string | null>) | null | undefined,
+    eventHandler: undefined as ((json: string) => void) | null | undefined,
     shutdown: false,
     policy: undefined as unknown,
     agents: undefined as unknown,
@@ -87,6 +88,9 @@ function fakeBinding() {
     },
     setWaker: (h) => {
       state.waker = h
+    },
+    setEventHandler: (h) => {
+      state.eventHandler = h
     },
   }
   const binding: HubBinding = {
@@ -213,6 +217,29 @@ describe('Hub 封装', () => {
     offA()
     offB()
     expect(state.listener).toBeNull()
+  })
+
+  it('setEventHandler：解析 AppEvent JSON 后回调；回调异常交给 onListenerError；null 清除；旧原生模块抛 UNSUPPORTED_PROTOCOL', async () => {
+    const { binding, state } = fakeBinding()
+    const onListenerError = vi.fn()
+    const hub = await Hub.start({ binding, keepAlive: false, onListenerError })
+    const seen: unknown[] = []
+    hub.setEventHandler((e) => seen.push(e))
+    const event = { id: 'ev-1', appId: 'shop', instanceId: 'i1', name: 'order.shipped', payload: { orderId: 'o1' }, at: 1 }
+    state.eventHandler?.(JSON.stringify(event))
+    expect(seen).toEqual([event])
+    hub.setEventHandler(() => {
+      throw new Error('坏回调')
+    })
+    state.eventHandler?.(JSON.stringify(event))
+    expect(onListenerError).toHaveBeenCalledTimes(1)
+    hub.setEventHandler(null)
+    expect(state.eventHandler).toBeNull()
+
+    const old = fakeBinding()
+    delete (await old.binding.Hub.start(null) as Partial<NativeHub>).setEventHandler
+    const oldHub = await Hub.start({ binding: old.binding, keepAlive: false })
+    expect(() => oldHub.setEventHandler(() => {})).toThrow(expect.objectContaining({ kind: 'UNSUPPORTED_PROTOCOL' }))
   })
 
   it('审批 / 配对回调规整为 Promise<boolean>：同步值、Promise、抛错、reject、非布尔', async () => {

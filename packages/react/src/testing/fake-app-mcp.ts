@@ -7,6 +7,8 @@ import type {
   AppMcpOptions,
   BusyHandle,
   ConnectionState,
+  EventDefinition,
+  EventPayload,
   HoldHandle,
   ResourceDefinition,
   ResourceHandle,
@@ -147,6 +149,27 @@ export class FakeAppMcp implements AppMcp {
 
   isBusy(): boolean {
     return this.explicitBusy || this.activeBusyScopes > 0
+  }
+
+  /** 已声明的事件（`declareEvent`）。 */
+  readonly declaredEvents = new Map<string, EventDefinition>()
+  /** 已发出（`connected` 时）的事件。 */
+  readonly emittedEvents: Array<{ name: string; payload: EventPayload | undefined }> = []
+
+  declareEvent(event: EventDefinition): void {
+    this.declaredEvents.set(event.name, event)
+  }
+
+  removeEvent(name: string): boolean {
+    return this.declaredEvents.delete(name)
+  }
+
+  /** 未声明时抛错；`connected` 时记录并返回 true。 */
+  emitEvent(name: string, payload?: EventPayload): boolean {
+    if (!this.declaredEvents.has(name)) throw Object.assign(new Error(`事件 ${name} 未声明`), { code: 'INVALID_NAME' })
+    if (this.currentState.status !== 'connected') return false
+    this.emittedEvents.push({ name, payload })
+    return true
   }
 
   get state(): ConnectionState {

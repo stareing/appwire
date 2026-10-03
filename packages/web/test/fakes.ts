@@ -14,6 +14,7 @@ import type {
   SleepReason,
   WakeReason,
 } from '../src/core'
+import type { EventInfo } from '../src/events'
 import { AppMcpDriver, type DriverDeps, parseWakeTokenJs, type WebSocketLike } from '../src/driver'
 import type { BroadcastChannelFactory, BroadcastChannelLike } from '../src/instance-guard'
 import type { AppMcpOptions, Logger, Visibility } from '../src/types'
@@ -145,6 +146,18 @@ export class FakeCore implements CoreClient {
   }
   setBusyPolicy(policy: string): void {
     this.rec('setBusyPolicy', policy)
+  }
+  /** 事件：只记录；`emitEvent` 在 `connected` 时返回 true（不模拟核心的校验，校验在驱动层与真实核心）。 */
+  declareEvent(event: EventInfo): void {
+    this.rec('declareEvent', event)
+  }
+  removeEvent(name: string): boolean {
+    this.rec('removeEvent', name)
+    return true
+  }
+  emitEvent(name: string, payloadJson: string | undefined): boolean {
+    this.rec('emitEvent', name, payloadJson)
+    return this.current.status === 'connected'
   }
   pollEvent(): CoreEvent | undefined {
     return this.events.shift()

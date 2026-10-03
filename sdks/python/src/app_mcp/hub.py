@@ -61,6 +61,7 @@ from ._hub_config import (  # noqa: E402  字典形式的配置 → 生成的记
 from ._hub_callbacks import (  # noqa: E402  用户回调的执行与适配器
     Dispatcher as Dispatcher,
     WakeFailed,
+    _AppEventAdapter,
     _ApprovalAdapter,
     _await,
     _PairingAdapter,
@@ -94,7 +95,8 @@ ToolErrorInfo = ffi.ToolErrorInfo
 ApprovalRequest = ffi.ApprovalRequest
 PairingRequest = ffi.PairingRequest
 #: 事件（``HubEvent.APP_CONNECTED`` 等变体；SDK 诊断上报为 ``HubEvent.APP_DIAGNOSTIC(app_id, instance_id,
-#: code, message, count)``，spec/protocol.md 10.2；未单独映射的新事件为 ``HubEvent.OTHER(kind, json)``）。
+#: code, message, count)``，spec/protocol.md 10.2；App 发出的事件为 ``HubEvent.APP_EVENT(event)``；
+#: 未单独映射的新事件为 ``HubEvent.OTHER(kind, json)``）。
 HubEvent = ffi.HubEvent
 #: Hub 操作错误（``HubError.Tool``、``InvalidJson``、``InvalidConfig``、``Io``、``Shutdown``、``Unsupported``）。
 #: ``HubError.Unsupported``：本构建未包含所需能力（``mcp_http``、``upstreams``、``serve_http``），``detail`` 说明缺哪个
@@ -135,6 +137,13 @@ LockStatus = ffi.LockStatus
 CallStatus = ffi.CallStatus
 #: 调用阶段：``CallState.CREATED`` → ``APPROVING`` → ``ACTIVATING`` → ``RUNNING``（只前进，不需要的阶段跳过）。
 CallState = ffi.CallState
+#: App 发出的事件（``HubEvent.APP_EVENT(event)``、:meth:`Hub.set_event_handler`，spec/hub-api.md 3.17）：``id``（``ev-<n>``）、
+#: ``app_id``、``instance_id``、``name``、``payload_json``（JSON 对象文本或 ``None``）、``at_ms``。
+AppEvent = ffi.AppEvent
+#: 事件订阅与丢弃统计（``HubStatus.events``）：``subscriptions``、``dropped_invalid``。
+EventsStatus = ffi.EventsStatus
+#: 一个订阅：``subscription_id``、``subscriber``、``app_id``、``event``、``delivered``、``dropped``、``pending``。
+EventSubscriptionStatus = ffi.EventSubscriptionStatus
 # 资源保护与工具声明（spec/hub-api.md 3.11）。
 #: 限流与大小上限（``HubConfig.limits``；``HubStatus.limits`` 为全部字段给出的生效值）。为空的字段取默认值。
 LimitsConfig = ffi.LimitsConfig
@@ -176,6 +185,7 @@ __all__ = [
     "AgentTaskStatus",
     "AnnotationMatch",
     "Activation",
+    "AppEvent",
     "AppInfo",
     "AppKind",
     "AppOverviewInfo",
@@ -193,6 +203,8 @@ __all__ = [
     "DiagnosticReport",
     "DormantStoreStatus",
     "EventStream",
+    "EventSubscriptionStatus",
+    "EventsStatus",
     "Hub",
     "ProgressUpdate",
     "HubConfig",
@@ -674,6 +686,16 @@ class Hub:
         self._inner.set_waker(
             None if handler is None else _WakerAdapter(handler, loop or _running_loop(), dispatcher)
         )
+
+    def set_event_handler(
+        self, handler: Callable[[AppEvent], None] | None, *, dispatcher: Dispatcher | None = None
+    ) -> None:
+        """App 事件回调（spec/hub-api.md 3.17，替换之前的；``None`` 清除）：每个通过去重与校验的事件（不论有无订阅）回调一次。
+
+        缺省在 Hub 的 App 连接线程上同步执行，须很快返回；传 ``dispatcher`` 则交给它（如 UI 线程）。回调抛出的异常只记日志。
+        同一事件也以 ``HubEvent.APP_EVENT`` 进入 :meth:`on_event` / :meth:`events`。
+        """
+        self._inner.set_event_handler(None if handler is None else _AppEventAdapter(handler, dispatcher))
 
     def on_event(
         self, callback: Callable[[HubEvent], None], *, dispatcher: Dispatcher | None = None

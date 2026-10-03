@@ -45,6 +45,25 @@ client.tool('order.submit',
   删除，`inputSchema` 变为无参数，`risk` 恢复 `Risk.write`，`enabled` 恢复 `true`；`description` 不可清除）。参数类型不符时抛
   `ArgumentError`。`ToolHandle.replace(spec)` 按 `ToolSpec` 整体替换。
 
+## 事件（spec/protocol.md 3.5）
+
+App 告诉 Agent "发生了什么"（订单已发货、下载完成）：先声明，再在发生时发出。
+
+```dart
+client.declareEvent('order.shipped', '订单已发货',
+    payloadSchema: {'type': 'object', 'properties': {'orderId': {'type': 'string'}}});
+final sent = client.emitEvent('order.shipped', {'orderId': 'o1'}); // 载荷经 jsonEncode，须为 JSON 对象（Map）
+client.removeEvent('order.shipped');
+```
+
+- 已连接时发送并返回 `true`；未连接（休眠、断线、重连中、握手中）时丢弃并返回 `false`——不缓存、不为发事件连接或唤醒 Host，
+  也不推迟空闲休眠。需要可靠送达的状态变化请改用资源（`ResourceHandle.notifyChanged`）。
+- SDK 不读清单：要发出的事件都需运行时 `declareEvent`（同名替换，连接后自动同步）。未声明、名称不合法抛 `AppMcpException`
+  （`AppMcpErrorCode.invalidName`），载荷不是对象或超过 8 KiB 为 `invalidJson`。
+- Flutter：`McpEvent(name: ..., description: ..., payloadSchema: ..., child: ...)` 随 widget 声明（挂载时声明、卸载时撤销；同一名称只由
+  一个 `McpEvent` 声明），发出用 `AppMcpScope.of(context).emitEvent(...)`。整个 App 都会发出的事件在创建客户端后直接 `declareEvent`。
+- Agent 经 Hub 内置工具 `apps.events.subscribe` / `apps.events` 订阅与取件（spec/hub-api.md 3.17）。
+
 ## 界面级暴露与导航（spec/protocol.md 3.4）
 
 ```dart

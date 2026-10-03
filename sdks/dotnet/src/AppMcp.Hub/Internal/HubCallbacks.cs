@@ -16,6 +16,7 @@ internal static unsafe class HubCallbacks
     internal static nint ResultPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnResult;
     internal static nint ProgressPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnProgress;
     internal static nint EventPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnEvent;
+    internal static nint AppEventPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnAppEvent;
     internal static nint ApprovalPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, nint, void>)&OnApproval;
     internal static nint PairingPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, nint, void>)&OnPairing;
     internal static nint WakerPtr => (nint)(delegate* unmanaged[Cdecl]<nint, nint, nint, void>)&OnWake;
@@ -74,6 +75,19 @@ internal static unsafe class HubCallbacks
         {
             var text = HubNativeMethods.TakeString(json);
             if (text is not null) Target<HubEventSink>(userData)?.OnEvent(text);
+        }
+        catch
+        {
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnAppEvent(nint userData, nint json)
+    {
+        try
+        {
+            var text = HubNativeMethods.TakeString(json);
+            if (text is not null) Target<AppEventSink>(userData)?.OnEvent(text);
         }
         catch
         {
@@ -225,6 +239,26 @@ internal sealed class HubEventSink(SynchronizationContext? dispatcher)
         dispatcher.Post(_ =>
         {
             if (_hub.TryGetTarget(out var h)) h.RaiseEvent(args);
+        }, null);
+    }
+}
+
+/// <summary>App 事件的厂商回调（<see cref="AppMcpHub.SetEventHandler"/>）：解析 AppEvent 后在调度器上调用 handler；
+/// 调度器为 null 时直接在分发线程上调用（保持到达顺序，handler 必须尽快返回）。handler 的异常被吞掉（不能跨越 FFI 边界）。</summary>
+internal sealed class AppEventSink(Action<HubAppEvent> handler, SynchronizationContext? dispatcher)
+{
+    public void OnEvent(string json)
+    {
+        var ev = JsonSerializer.Deserialize<HubAppEvent>(json, AppMcpHub.WireOptions);
+        if (ev is null) return;
+        if (dispatcher is null)
+        {
+            try { handler(ev); } catch { }
+            return;
+        }
+        dispatcher.Post(_ =>
+        {
+            try { handler(ev); } catch { }
         }, null);
     }
 }

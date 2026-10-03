@@ -13,6 +13,7 @@
 //! 各函数的安全约定（指针有效性、所有权）统一写在头文件中，这里不再逐个重复。
 #![allow(clippy::missing_safety_doc)]
 
+mod app_events;
 mod async_bridge;
 mod callbacks;
 mod calls;
@@ -27,6 +28,7 @@ mod query;
 use std::ffi::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+pub use app_events::{AmHubAppEventFn, am_hub_set_app_event_cb};
 pub use callbacks::*;
 pub use calls::*;
 pub use dispatch::{AmHubFreeFn, AmHubResultFn};

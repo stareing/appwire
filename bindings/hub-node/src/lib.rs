@@ -28,10 +28,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use app_mcp_hub::{
-    AgentCredential, AgentsConfig,
+    AgentCredential, AgentsConfig, AppEvent,
     ApprovalHandler, ApprovalPolicy, ApprovalRequest, CallRequest, ErrorKind, Hub, HubConfig,
     HubError, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PairingHandler, PairingRequest,
-    PolicyConfig, ToolExposure, ToolFilter, ToolFormat, UpstreamConfig, WakeRequest, Waker, WakerConfig,
+    EventHandler, PolicyConfig, ToolExposure, ToolFilter, ToolFormat, UpstreamConfig, WakeRequest, Waker, WakerConfig,
     async_trait, load_manifests,
 };
 use napi::bindgen_prelude::{Promise, spawn};
@@ -373,6 +373,19 @@ impl PairingHandler for JsPairing {
 
 struct JsWaker(WakerTsfn);
 
+/// App 事件的厂商回调（spec/hub-api.md 3.17）：`None` = 已清除（Hub 没有撤销接口，换成空实现）。
+struct JsEventHandler(Option<EventTsfn>);
+
+impl EventHandler for JsEventHandler {
+    /// @invariant 在 Hub 的连接任务上同步执行：只做序列化与非阻塞投递，JS 回调在 Node 事件循环上执行。
+    fn on_event(&self, event: &AppEvent) {
+        let Some(tsfn) = &self.0 else { return };
+        if let Ok(json) = serde_json::to_string(event) {
+            let _ = tsfn.call(json, ThreadsafeFunctionCallMode::NonBlocking);
+        }
+    }
+}
+
 fn launch_failed(message: impl Into<String>) -> HubError {
     HubError::new(ErrorKind::LaunchFailed, message)
 }
@@ -705,6 +718,14 @@ impl JsHub {
             }
         });
         *lock(&self.events) = Some(task);
+        Ok(())
+    }
+
+    /// 设置 App 事件回调（替换之前的）：每个通过校验的事件（不论有无订阅）`handler(appEventJson)` 一次，在 Node 事件循环上执行。
+    /// `null` 清除。
+    #[napi]
+    pub fn set_event_handler(&self, handler: Option<EventTsfn>) -> Result<()> {
+        self.hub()?.set_event_handler(Arc::new(JsEventHandler(handler)));
         Ok(())
     }
 

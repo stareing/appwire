@@ -21,6 +21,7 @@ import inspect
 import json
 import threading
 from collections.abc import Callable
+from collections.abc import Mapping
 from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from typing import Any, Literal
@@ -28,7 +29,7 @@ from typing import Any, Literal
 from . import app_mcp_uniffi as ffi
 from ._busy import BusyPolicyLike, _BusyState, _busy_policy
 from ._lifecycle import LifecyclePolicy
-from ._schema import ArgumentBinder
+from ._schema import ArgumentBinder, to_jsonable
 # @compat 以下名称已拆分到子模块，经本模块再导出以保持原导入路径
 from ._client_convert import (  # noqa: F401
     logger, Dispatcher, F, RiskLike, ActivationLike, SurfaceLike, ToolAnnotationsLike, ContentAnnotationsLike,
@@ -522,6 +523,42 @@ class AppMcp(_Registrar):
         @error 未知策略抛 ``ValueError``。
         """
         self._inner.set_busy_policy(_busy_policy(policy))
+
+    # -- 事件（spec/protocol.md 3.5） -------------------------------------------
+
+    def declare_event(
+        self, name: str, description: str, payload_schema: dict[str, Any] | str | None = None
+    ) -> None:
+        """声明本实例可发出的事件（同名替换）。已连接时随即同步给 Host，否则在下次握手成功后同步；不触发连接。
+
+        ``payload_schema`` 为载荷的 JSON Schema（字典或 JSON 文本，描述用，Hub 不校验）。
+
+        @error 名称不合法 → ``AppMcpError.InvalidName``；``payload_schema`` 不是合法 JSON → ``ValueError``；
+        已停止 → ``AppMcpError.Stopped``。
+        """
+        info = ffi.EventInfo(name=name, description=description, payload_schema_json=_schema_json(payload_schema))
+        self._inner.declare_event(info)
+
+    def remove_event(self, name: str) -> bool:
+        """撤销事件声明；未声明过（或已停止）返回 ``False``。"""
+        return self._inner.remove_event(name)
+
+    def emit_event(self, name: str, payload: Mapping[str, Any] | None = None) -> bool:
+        """发出已声明的事件，``payload`` 为 JSON 对象（字典；``None`` = 无载荷）。
+
+        已连接时发送并返回 ``True``；未连接（休眠、断线、重连中）丢弃并返回 ``False``：不缓存、不为此连接或唤醒 Host，
+        也不推迟空闲休眠。需要可靠送达的状态变化请改用资源。
+
+        @error 未声明、名称不合法 → ``AppMcpError.InvalidName``；载荷不能序列化、不是对象或序列化后超过 8 KiB →
+        ``AppMcpError.InvalidJson``；已停止 → ``AppMcpError.Stopped``。
+        """
+        text = None
+        if payload is not None:
+            try:
+                text = json.dumps(payload, default=to_jsonable, ensure_ascii=False)
+            except (TypeError, ValueError) as e:
+                raise ffi.AppMcpError.InvalidJson(f"事件载荷无法序列化为 JSON：{e}") from e
+        return self._inner.emit_event(name, text)
 
     def set_visibility(self, visibility: str | ffi.Visibility, focused: bool = True) -> None:
         if isinstance(visibility, str):

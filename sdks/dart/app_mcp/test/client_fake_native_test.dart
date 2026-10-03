@@ -362,6 +362,47 @@ void main() {
     });
   });
 
+  group('事件（v20）', () {
+    setUp(fake.eventsReset);
+
+    test('declareEvent / emitEvent / removeEvent：参数编码、未连接返回 false、错误码', () {
+      AppMcpErrorCode codeOf(void Function() f) {
+        try {
+          f();
+        } on AppMcpException catch (e) {
+          return e.code;
+        }
+        fail('应抛出 AppMcpException');
+      }
+
+      expect(codeOf(() => client.emitEvent('order.shipped')), AppMcpErrorCode.invalidName); // 未声明
+      expect(codeOf(() => client.declareEvent('bad name', '非法')), AppMcpErrorCode.invalidName);
+      expect(codeOf(() => client.declareEvent('order.shipped', '订单已发货', payloadSchema: [1])),
+          AppMcpErrorCode.invalidSchema);
+      client.declareEvent('order.shipped', '订单已发货', payloadSchema: {'type': 'object'});
+      expect(fake.eventInfo('order.shipped'), '订单已发货|{"type":"object"}');
+      client.declareEvent('download.done', '下载完成');
+      expect(fake.eventInfo('download.done'), '下载完成|-');
+
+      expect(client.emitEvent('order.shipped', {'orderId': 'o1'}), isFalse); // 未连接：丢弃
+      expect(fake.lastEmit(), isNull);
+      fake.eventsConnected(true);
+      expect(client.emitEvent('order.shipped', {'orderId': 'o1'}), isTrue);
+      expect(fake.lastEmit(), 'order.shipped|{"orderId":"o1"}');
+      expect(client.emitEvent('download.done'), isTrue);
+      expect(fake.lastEmit(), 'download.done|-');
+      expect(codeOf(() => client.emitEvent('order.shipped', 1)), AppMcpErrorCode.invalidJson);
+
+      expect(client.removeEvent('order.shipped'), isTrue);
+      expect(client.removeEvent('order.shipped'), isFalse);
+      expect(codeOf(() => client.emitEvent('order.shipped')), AppMcpErrorCode.invalidName);
+
+      client.dispose();
+      expect(() => client.emitEvent('download.done'), throwsA(isA<AppMcpException>()));
+      client = AppMcp(appId: 'shop', appName: '商店', libraryPath: path);
+    });
+  });
+
   group('生命周期（v3）', () {
     test('默认策略（桌面）与 connectTimeout 传入 am_client_new_ex', () {
       // 默认：persistent、不上报唤醒描述（-1）、connect_timeout 0（原生默认）。

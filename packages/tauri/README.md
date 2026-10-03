@@ -78,6 +78,12 @@ Identity and connection are owned by the Rust side: `appId`, `appName` and `host
 - Call scheduling (spec/protocol.md 5.3): page tool options `concurrency` / `exclusive` are forwarded to the plugin and
   scheduled by the native runtime (the limits `max_concurrent_calls` / `max_queued_calls` are set in the plugin's
   `NativeConfig` on the Rust side).
+- Events (spec/protocol.md 3.5): `appMcp.declareEvent({ name, description, payloadSchema? })`,
+  `emitEvent(name, payload?)` and `removeEvent(name)` go over the plugin bridge (`event.declare` / `event.emit` /
+  `event.remove`) and are emitted by the Rust-side client. Declarations belong to the page and are withdrawn when it
+  reloads or closes (kept while another page still declares the same name). `emitEvent` returns `false` while the
+  client is not connected (the event is dropped); an undeclared name or a payload that is not a JSON object / exceeds
+  8 KiB throws in the page (`code` `INVALID_NAME` / `INVALID_JSON`).
 - User is busy (spec/protocol.md 5.3): `appMcp.setBusy(true / false)` declares that the user is working in this page
   (e.g. an editor has focus); `beginBusy()` opens a nestable, reference-counted scope (`release()` ends it, `useBusy`
   in `@app-mcp/react` uses it); `isBusy()` returns this page's effective state (the switch OR any open scope). The plugin records it per page, sets the
