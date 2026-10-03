@@ -436,6 +436,7 @@ pub struct Health {                          // serde camelCase
       （`renewed: true`，有效期从此刻重算）。
     - 已被其他持有者持有且未到期 → `LOCKED`（`data`：`appId`、`key?`、`holder`、`retryAfterMs`）。`holder` 为持有者的记账主体
       （`agent:<名>` / `local` / `api`，3.11「按调用方记账」），**不含**任务 ID 或会话号（任务 ID 是凭据）；`retryAfterMs` 为剩余有效期。
+      持有者与被拒绝的调用方同属一个主体（如主体任务与其任务句柄）时，消息改为“同一主体的另一个任务”并提示用持有锁的句柄调用；`data` 不变。
     - appId 未知 / 被整体隐藏 / 为 `apps` → `TOOL_NOT_FOUND`（与 `apps.overview` 相同）。每个持有者同时持有的锁至多
       `HubConfig.max_locks`（默认 `DEFAULT_MAX_LOCKS` = 16，B-07；续期不计新锁），超出 → `RATE_LIMITED`（`data.limit`，不带 `retryAfterMs`）。
   - **解锁** `apps.unlock {appId, key?, taskId?}` → `{appId, key?, released, message}`：持有者释放；不存在、已到期或由他人持有时

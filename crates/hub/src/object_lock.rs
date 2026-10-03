@@ -54,17 +54,25 @@ fn describe(target: &LockTarget) -> String {
     }
 }
 
-/// `LOCKED`：`target` 由 `holder` 持有，还剩 `remaining`。
-fn locked_error(target: &LockTarget, holder: &CallerKey, remaining: Duration, what: &str) -> ToolError {
+/// `LOCKED`：`target` 由 `holder` 持有，还剩 `remaining`；`caller` 为被拒绝的调用方。
+///
+/// @why 同一主体的另一个任务（如主体任务与其任务句柄）持有时单独措辞：只写主体名，Agent 会误以为是自己锁了自己。
+fn locked_error(target: &LockTarget, holder: &CallerKey, caller: &CallerKey, remaining: Duration, what: &str) -> ToolError {
     let subject = holder.usage_subject();
     let secs = remaining.as_secs_f64().ceil();
-    ToolError::new(
-        ErrorKind::Locked,
+    let message = if subject == caller.usage_subject() {
+        format!(
+            "{} 正被同为 {subject} 的另一个任务锁定（还剩约 {secs} 秒），{what}。锁按任务持有：请用持有锁的任务句柄（taskId）调用，\
+             或在该任务中 apps.unlock 后重试。",
+            describe(target)
+        )
+    } else {
         format!(
             "{} 正被 {subject} 锁定（还剩约 {secs} 秒），{what}。可等锁到期后重试、改做只读操作，或请用户协调。",
             describe(target)
-        ),
-    )
+        )
+    };
+    ToolError::new(ErrorKind::Locked, message)
     .with_details(json!({
         "appId": target.app_id,
         "key": target.key,
@@ -126,7 +134,7 @@ impl HubShared {
         {
             return Ok(());
         }
-        Err(locked_error(&target, &holder, remaining, "写操作未执行（只读工具不受影响）"))
+        Err(locked_error(&target, &holder, caller, remaining, "写操作未执行（只读工具不受影响）"))
     }
 
     /// 锁对象的 App 必须已知、未被整体隐藏且不是内置 `apps`。
@@ -149,7 +157,7 @@ impl HubShared {
         let now = tokio::time::Instant::now();
         let acquired = self.agent_tasks().acquire_lock(&ctx.caller, target.clone(), ttl, self.config.max_locks, now);
         let renewed = acquired.map_err(|refusal| match refusal {
-            LockRefusal::Held { holder, remaining } => locked_error(&target, &holder, remaining, "加锁未成功"),
+            LockRefusal::Held { holder, remaining } => locked_error(&target, &holder, &ctx.caller, remaining, "加锁未成功"),
             LockRefusal::Limit(limit) => ToolError::new(
                 ErrorKind::RateLimited,
                 format!("同时持有的锁已达上限（{limit} 个）。请先用 {TOOL_APPS_UNLOCK} 释放不再需要的锁后重试。"),
@@ -233,10 +241,16 @@ mod tests {
         let owner = CallerKey::principal(&crate::task::Principal::Local);
         let handle = CallerKey::task_handle(&owner, "task-0123456789abcdef0123456789abcdef");
         let target = LockTarget { app_id: "shop".into(), key: Some("doc".into()) };
-        let e = locked_error(&target, &handle, Duration::from_millis(1500), "x");
+        let api = CallerKey::api(None);
+        let e = locked_error(&target, &handle, &api, Duration::from_millis(1500), "x");
         assert_eq!(e.kind, ErrorKind::Locked);
         let d = e.details.clone().unwrap_or_default();
         assert_eq!((d["holder"].as_str(), d["retryAfterMs"].as_u64(), d["key"].as_str()), (Some("local"), Some(1500), Some("doc")));
         assert!(!format!("{e:?}").contains("task-0123"), "{e:?}");
+        assert!(!e.message.contains("另一个任务"), "{}", e.message);
+        let own = locked_error(&target, &handle, &owner, Duration::from_millis(1500), "x");
+        assert!(own.message.contains("同为 local 的另一个任务") && own.message.contains("taskId"), "{}", own.message);
+        assert!(!own.message.contains("task-0123"), "{}", own.message);
+        assert_eq!(own.details, e.details, "data 不变");
     }
 }
