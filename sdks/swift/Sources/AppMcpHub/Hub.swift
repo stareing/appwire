@@ -18,6 +18,8 @@ public typealias UpstreamSpec = AppMcpHubBindings.UpstreamSpec
 public typealias ToolFilter = AppMcpHubBindings.ToolFilter
 public typealias ToolFormat = AppMcpHubBindings.ToolFormat
 public typealias Risk = AppMcpHubBindings.Risk
+/// 调用优先级（`callTool(priority:)`，第 16 项 P6，spec/hub-api.md 3.15）：`.interactive` / `.normal` / `.background`。
+public typealias CallPriority = AppMcpHubBindings.CallPriority
 public typealias Activation = AppMcpHubBindings.Activation
 public typealias Availability = AppMcpHubBindings.Availability
 public typealias Visibility = AppMcpHubBindings.Visibility
@@ -355,6 +357,7 @@ public final class Hub: @unchecked Sendable {
     /// Task 被取消时自动取消调用。
     /// `onProgress`：接收调用进度（Hub 合并后，spec/hub-api.md 3.12），在 Hub 的进度线程上按顺序同步调用、须尽快返回
     /// （需要时自行切到主 actor）；全部回调在本函数返回之前完成。
+    /// `priority`：调用优先级（`nil` = `.normal`），原样转交 App，App 的调用队列先交互、后后台（第 16 项 P6）。
     public func callTool(
         _ name: String,
         argumentsJSON: String? = nil,
@@ -363,6 +366,7 @@ public final class Hub: @unchecked Sendable {
         session: String? = nil,
         callId: String? = nil,
         idempotencyKey: String? = nil,
+        priority: CallPriority? = nil,
         onProgress: (@Sendable (ProgressUpdate) -> Void)? = nil
     ) async throws -> CallResult {
         let request = CallRequest(
@@ -372,7 +376,8 @@ public final class Hub: @unchecked Sendable {
             timeoutMs: timeout.map { UInt64(max(0, $0 * 1000)) },
             callId: callId,
             session: session,
-            idempotencyKey: idempotencyKey
+            idempotencyKey: idempotencyKey,
+            priority: priority
         )
         let out: CallOutcome
         if let onProgress {
@@ -406,12 +411,13 @@ public final class Hub: @unchecked Sendable {
         session: String? = nil,
         callId: String? = nil,
         idempotencyKey: String? = nil,
+        priority: CallPriority? = nil,
         onProgress: (@Sendable (ProgressUpdate) -> Void)? = nil
     ) async throws -> CallResult {
         let json = String(decoding: try JSONEncoder().encode(arguments), as: UTF8.self)
         return try await callTool(
             name, argumentsJSON: json, instanceId: instanceId, timeout: timeout, session: session, callId: callId,
-            idempotencyKey: idempotencyKey, onProgress: onProgress
+            idempotencyKey: idempotencyKey, priority: priority, onProgress: onProgress
         )
     }
 

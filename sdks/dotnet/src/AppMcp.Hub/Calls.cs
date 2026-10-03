@@ -55,6 +55,8 @@ public sealed class CallRequest
     public string? Session { get; init; }
     /// <summary>Agent 的幂等键（1..=256 个字符），原样转交 App（spec/hub-api.md 3.15）；不合法时结果为 INVALID_INPUT。</summary>
     public string? IdempotencyKey { get; init; }
+    /// <summary>调用优先级（第 16 项 P6，spec/hub-api.md 3.15）：原样转交 App，App 的调用队列先按它、再按到达顺序调度；null = Normal。</summary>
+    public CallPriority? Priority { get; init; }
 
     internal string ToJson(JsonSerializerOptions options)
     {
@@ -68,8 +70,31 @@ public sealed class CallRequest
         if (CallId is not null) o["callId"] = CallId;
         if (Session is not null) o["session"] = Session;
         if (IdempotencyKey is not null) o["idempotencyKey"] = IdempotencyKey;
+        if (Priority is { } p) o["priority"] = p.ToProtocolString();
         return o.ToJsonString();
     }
+}
+
+/// <summary>调用优先级（第 16 项 P6，spec/hub-api.md 3.15）：交互（用户在等结果）&gt; 普通 &gt; 后台。</summary>
+public enum CallPriority
+{
+    /// <summary>用户在场等结果。</summary>
+    Interactive,
+    /// <summary>缺省。</summary>
+    Normal,
+    /// <summary>定时、批量等后台作业。</summary>
+    Background,
+}
+
+public static class CallPriorityExtensions
+{
+    /// <summary>请求 JSON 中的取值（"interactive" / "normal" / "background"）。</summary>
+    public static string ToProtocolString(this CallPriority priority) => priority switch
+    {
+        CallPriority.Interactive => "interactive",
+        CallPriority.Background => "background",
+        _ => "normal",
+    };
 }
 
 /// <summary>调用出错信息（{kind, message, details?}）。Kind 为协议错误类别，如 TOOL_NOT_FOUND；Hub 的资源保护另有

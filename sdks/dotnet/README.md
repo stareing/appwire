@@ -175,6 +175,8 @@ var outcome = await hub.CallAsync("notes.add", new { text = "买牛奶" });  // 
 - 自动导航的等待上限 `HubOptions.NavigateTimeout`（默认 5 秒）；改调后台替代时 `CallOutcome.RoutedTo` 为实际调用的工具全名。
 - `new CallRequest("shop.order.submit", args) { IdempotencyKey = "order-7" }`：幂等键原样转交 App（`ToolContext.IdempotencyKey`），
   不合法时 `Error.Kind` 为 `INVALID_INPUT`。
+- `new CallRequest(...) { Priority = CallPriority.Interactive }`：调用优先级（`Interactive` / `Normal` / `Background`，null = Normal）
+  原样转交 App，App 的调用队列先交互、后后台（第 16 项 P6）。
 - 内置工具 `apps.activate` / `apps.release` 总是列出，有页面目录时另有 `apps.page` / `apps.navigate`（经 `CallAsync` / `DispatchAsync` 调用）。
 - 调用元信息：`CallOutcome.DurationMs`（Hub 收到调用到得出结果的毫秒数，含审批、唤醒与等待 App）、`CallOutcome.Woke`
   （本次 App 工具调用是否经历了唤醒 / 按名激活；内置与上游工具恒为 false）。旧 Hub 未给出时为 0 / false。

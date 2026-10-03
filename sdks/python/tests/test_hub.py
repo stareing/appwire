@@ -508,6 +508,51 @@ def test_surface_page_and_idempotency_key() -> None:
             app.stop()
 
 
+def test_call_priority_reaches_app_queue() -> None:
+    """第 16 项 P6（spec/hub-api.md 3.15）：call_tool(priority=) 经 tools/invoke 到达 App，调用队列先交互、后后台。"""
+    from app_mcp.hub import CallPriority
+
+    with Hub(listen="127.0.0.1:0", enable_ipc=False) as hub:
+        app = AppMcp("jobs", "作业", host_url=f"ws://{hub.listen_addr}/app", max_concurrent_calls=1)
+        started: list[str] = []
+
+        @app.tool("job.run", description="执行")
+        def run(tag: str = "", delay_ms: int = 0) -> dict:
+            if tag:
+                started.append(tag)
+            time.sleep(delay_ms / 1000)
+            return {"ok": True}
+
+        app.start()
+        try:
+            deadline = time.monotonic() + 10
+            while len(hub.tools(apps=["jobs"], include_builtin=False)) != 1:
+                assert time.monotonic() < deadline, "等待工具注册超时"
+                time.sleep(0.02)
+            # 预热：首次调用的总览附带等不计入排队顺序
+            assert hub.call_tool_sync("jobs.job.run").error is None
+
+            async def main() -> None:
+                def call(tag: str, priority: object, delay_ms: int):
+                    args = {"tag": tag, "delay_ms": delay_ms}
+                    return asyncio.ensure_future(hub.call_tool("jobs.job.run", args, priority=priority))
+
+                slow = call("slow", CallPriority.NORMAL, 600)
+                await asyncio.sleep(0.2)
+                background = call("background", "background", 0)  # 名称形式
+                await asyncio.sleep(0.05)
+                interactive = call("interactive", CallPriority.INTERACTIVE, 0)
+                for out in await asyncio.wait_for(asyncio.gather(slow, background, interactive), 10):
+                    assert out.error is None, out
+
+            asyncio.run(main())
+            assert started == ["slow", "interactive", "background"]
+            with pytest.raises(ValueError):
+                hub.call_tool_sync("jobs.job.run", priority="urgent")
+        finally:
+            app.stop()
+
+
 def test_limits_annotations_and_structured_result() -> None:
     """第 14 / 19 项：限流 / 大小上限配置与统计、工具注解 / outputSchema、结构化调用结果。"""
     from app_mcp import ToolResult

@@ -235,7 +235,9 @@ Pages, navigation and idempotency (`spec/hub-api.md` §3.14 / §3.15): `HubTool.
 and `HubTool.page` describe an app tool's UI dependency and page (`None` for built-in and upstream tools).
 `Hub(navigate_timeout_ms=5000)` bounds automatic navigation (default 5 s). `await hub.call_tool("shop.order.submit",
 {...}, idempotency_key="order-7")` passes the agent's idempotency key to the app unchanged (`ctx.idempotency_key`);
-an invalid key ends the call with `INVALID_INPUT`. When the Hub routes a view tool to its declared background tool,
+an invalid key ends the call with `INVALID_INPUT`. `priority=CallPriority.INTERACTIVE` (or `"interactive"` /
+`"normal"` / `"background"`; `None` = normal) is passed to the app unchanged, whose call queue runs interactive calls
+before background ones. When the Hub routes a view tool to its declared background tool,
 `CallResult.routed_to` names the tool actually called. Built-in tools `apps.activate` / `apps.release` are always
 listed, plus `apps.page` / `apps.navigate` when a page catalog exists.
 

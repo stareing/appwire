@@ -26,6 +26,8 @@ typealias UpstreamSpec = dev.appmcp.hub.ffi.UpstreamSpec
 typealias ToolFilter = dev.appmcp.hub.ffi.ToolFilter
 typealias ToolFormat = dev.appmcp.hub.ffi.ToolFormat
 typealias Risk = dev.appmcp.hub.ffi.Risk
+/** 调用优先级（[Hub.callTool] 的 `priority`，第 16 项 P6，spec/hub-api.md 3.15）：`INTERACTIVE` / `NORMAL` / `BACKGROUND`。 */
+typealias CallPriority = dev.appmcp.hub.ffi.CallPriority
 typealias Activation = dev.appmcp.hub.ffi.Activation
 typealias Availability = dev.appmcp.hub.ffi.Availability
 typealias Visibility = dev.appmcp.hub.ffi.Visibility
@@ -321,6 +323,7 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
      *
      * @param idempotencyKey Agent 的幂等键（1..=256 个字符），原样转交 App（spec/hub-api.md 3.15）；不合法时
      *   [CallResult.error] 为 `INVALID_INPUT`。
+     * @param priority 调用优先级（为空 = `NORMAL`），原样转交 App，App 的调用队列先交互、后后台（第 16 项 P6）。
      * @param onProgress 接收调用进度（Hub 合并后，spec/hub-api.md 3.12）：在 Hub 的进度线程上按顺序同步调用，须尽快返回
      *   （需要时自行切换线程）；全部回调都在本函数返回之前完成。回调抛出的异常被忽略。为空时不接收进度。
      */
@@ -332,6 +335,7 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
         session: String? = null,
         callId: String? = null,
         idempotencyKey: String? = null,
+        priority: CallPriority? = null,
         onProgress: ((ProgressUpdate) -> Unit)? = null,
     ): CallResult {
         val request = dev.appmcp.hub.ffi.CallRequest(
@@ -342,6 +346,7 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
             callId = callId,
             session = session,
             idempotencyKey = idempotencyKey,
+            priority = priority,
         )
         val out = if (onProgress == null) {
             inner.callTool(request)

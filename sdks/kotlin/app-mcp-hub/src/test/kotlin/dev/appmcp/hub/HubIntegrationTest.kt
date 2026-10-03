@@ -5,6 +5,7 @@ import dev.appmcp.AppMcpConfig
 import dev.appmcp.hub.ffi.HubEvent as Ev
 import dev.appmcp.hub.ffi.HubException as FfiHubException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -391,6 +392,50 @@ class HubIntegrationTest {
             assertEquals(false, out.woke, "已连接的 App 不唤醒")
             assertTrue(out.durationMs >= 0)
             assertEquals("INVALID_INPUT", hub.callTool("cafe.order.submit", idempotencyKey = "").error?.kind)
+        } finally {
+            app.close()
+            hub.close()
+        }
+    }
+
+    /** 第 16 项 P6（spec/hub-api.md 3.15）：callTool(priority) 经 tools/invoke 到达 App，调用队列先交互、后后台。 */
+    @Test
+    fun priorityReachesAppQueue() = runBlocking {
+        val hub = Hub.start(HubConfig(listen = "127.0.0.1:0", enableIpc = false))
+        val app = AppMcp.create(
+            AppMcpConfig("jobs", "作业", hostUrl = "ws://${hub.listenAddr}/app", dispatcher = Dispatchers.Default, maxConcurrentCalls = 1),
+        )
+        val started = Collections.synchronizedList(mutableListOf<String>())
+        app.tool("job.run", "执行") { args, _ ->
+            args["tag"]?.jsonPrimitive?.content?.let { started.add(it) }
+            args["delayMs"]?.jsonPrimitive?.content?.toLong()?.let { delay(it) }
+            buildJsonObject { put("ok", true) }
+        }
+        try {
+            app.start()
+            withTimeout(10.seconds) {
+                while (hub.tools(ToolFilter(apps = listOf("jobs"), includeBuiltin = false))
+                        .none { it.availability == Availability.AVAILABLE }
+                ) delay(20)
+            }
+            // 预热：首次调用的总览附带等不计入排队顺序
+            assertEquals(null, hub.callTool("jobs.job.run").error)
+            fun call(tag: String, priority: CallPriority, delayMs: Int) = async {
+                hub.callTool(
+                    "jobs.job.run",
+                    buildJsonObject { put("tag", tag); put("delayMs", delayMs) },
+                    priority = priority,
+                )
+            }
+            val slow = call("slow", CallPriority.NORMAL, 600)
+            delay(200)
+            val background = call("background", CallPriority.BACKGROUND, 0)
+            delay(50)
+            val interactive = call("interactive", CallPriority.INTERACTIVE, 0)
+            withTimeout(10.seconds) {
+                for (out in listOf(slow, background, interactive).map { it.await() }) assertEquals(null, out.error, out.toString())
+            }
+            assertEquals(listOf("slow", "interactive", "background"), started.toList())
         } finally {
             app.close()
             hub.close()

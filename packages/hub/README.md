@@ -203,6 +203,8 @@ hub.setWaker(null)                                                 // 恢复配�
   `NAVIGATION_FAILED`。改调了 view 工具声明的后台替代时，`CallOutcome.routedTo` 为实际调用的工具全名。
 - `callTool({ name, arguments, idempotencyKey: 'order-7' })`：Agent 的幂等键（1..=256 个字符）原样转交 App（handler 的
   `context.idempotencyKey`）；不合法时结果为 `INVALID_INPUT`。
+- `callTool({ name, arguments, priority: 'interactive' })`：调用优先级（`'interactive'` / `'normal'` / `'background'`，缺省 normal）
+  原样转交 App，App 的调用队列先交互、后后台（第 16 项 P6）。
 - 内置工具 `apps.activate`（只唤醒不调用）/ `apps.release`（收回本会话租约）总是列出；有页面目录时另有 `apps.page` / `apps.navigate`。
 
 ## 渐进暴露（工具很多时）

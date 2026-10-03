@@ -21,7 +21,15 @@ export interface CallRequest {
    * 不合法时调用以 `INVALID_INPUT` 结束。
    */
   idempotencyKey?: string | null
+  /**
+   * 调用优先级（第 16 项 P6，spec/hub-api.md 3.15）：原样转交 App，App 的调用队列先按它、再按到达顺序调度；缺省 `'normal'`。
+   * 不合法时 `callTool` 抛 `HubError`（请求 JSON 无法解析）。
+   */
+  priority?: CallPriority | null
 }
+
+/** 调用优先级：`interactive`（用户在场等结果）> `normal` > `background`（定时、批量等后台作业）。 */
+export type CallPriority = 'interactive' | 'normal' | 'background'
 
 /** 一条调用进度（spec/hub-api.md 3.12）：已按 `progressIntervalMs` 合并、丢弃不递增的值；`message` 最长 200 字符。 */
 export interface ProgressUpdate {

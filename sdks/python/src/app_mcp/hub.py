@@ -52,6 +52,7 @@ from ._hub_config import (  # noqa: E402  字典形式的配置 → 生成的记
     PolicyLike,
     RiskLike,
     _agents,
+    _enum,
     _limits,
     _output_validation,
     _policy,
@@ -73,6 +74,8 @@ UpstreamSpec = ffi.UpstreamSpec
 ToolFilter = ffi.ToolFilter
 ToolFormat = ffi.ToolFormat
 Risk = ffi.Risk
+#: 调用优先级（:meth:`Hub.call_tool` 的 ``priority``，第 16 项 P6，spec/hub-api.md 3.15）：``INTERACTIVE`` / ``NORMAL`` / ``BACKGROUND``。
+CallPriority = ffi.CallPriority
 Activation = ffi.Activation
 Availability = ffi.Availability
 Visibility = ffi.Visibility
@@ -160,6 +163,8 @@ PolicyLoadError = ffi.PolicyLoadError
 AgentCredential = ffi.AgentCredential
 
 FormatLike = Union[ToolFormat, str]
+#: :data:`CallPriority` 或其名称（``"interactive"`` / ``"normal"`` / ``"background"``，不区分大小写）。
+CallPriorityLike = Union[CallPriority, str]
 
 __all__ = [
     "AgentCredential",
@@ -175,6 +180,8 @@ __all__ = [
     "Audience",
     "AuthStatus",
     "Availability",
+    "CallPriority",
+    "CallPriorityLike",
     "CallResult",
     "CallerKind",
     "ContentAnnotations",
@@ -512,6 +519,7 @@ class Hub:
         session: str | None = None,
         call_id: str | None = None,
         idempotency_key: str | None = None,
+        priority: CallPriorityLike | None = None,
         on_progress: Callable[[ProgressUpdate], Any] | None = None,
     ) -> CallResult:
         """调用工具（全名 ``<appId>.<tool>``，``timeout`` 单位秒）。
@@ -522,6 +530,8 @@ class Hub:
         都在结果返回之前；回调抛出的异常记日志后忽略。
         ``idempotency_key``：Agent 的幂等键（1..=256 个字符），原样转交 App（spec/hub-api.md 3.15）；不合法时
         ``CallResult.error.kind`` 为 ``INVALID_INPUT``。
+        ``priority``：调用优先级（:data:`CallPriority` 或其名称；``None`` = normal），原样转交 App，App 的调用队列
+        先交互、后后台（第 16 项 P6）；未知名称抛 ``ValueError``。
         """
         req = ffi.CallRequest(
             name=name,
@@ -531,6 +541,7 @@ class Hub:
             call_id=call_id,
             session=session,
             idempotency_key=idempotency_key,
+            priority=None if priority is None else _enum(CallPriority, priority, "priority"),
         )
         if on_progress is None:
             out = await self._inner.call_tool(req)

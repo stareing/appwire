@@ -24,6 +24,7 @@ import {
   toOpenAiTools,
   toVercelAiTools,
   type ApprovalRequest,
+  type CallPriority,
   type HubEvent,
   type HubStartOptions,
   type McpProtocolMode,
@@ -705,6 +706,38 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(none.result.ok).toEqual({ key: null })
     const bad = await hub.callTool({ name: 'cafe.order.submit', idempotencyKey: '' })
     expect(bad.result.error?.kind).toBe('INVALID_INPUT')
+  })
+
+  it('priority 经 tools/invoke 到达 App：调用队列先执行交互调用、后执行后台调用（第 16 项 P6，spec/hub-api.md 3.15）', async () => {
+    const { hub } = await startHub()
+    const app = createAppMcp({ appId: 'jobs', appName: '作业', hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false, maxConcurrentCalls: 1 })
+    apps.push(app)
+    const started: string[] = []
+    app.tool('job.run', {
+      description: '执行',
+      handler: async (input: { tag?: string; delayMs?: number }) => {
+        if (input.tag !== undefined) started.push(input.tag)
+        if (input.delayMs) await new Promise((r) => setTimeout(r, input.delayMs))
+        return { ok: true }
+      },
+    })
+    app.start()
+    await until(() => hub.tools({ apps: ['jobs'], onlyAvailable: true, includeBuiltin: false }).length === 1, 'jobs 工具登记')
+    // 预热：首次调用的总览附带等不计入排队顺序
+    expect((await hub.callTool({ name: 'jobs.job.run' })).result.ok).toEqual({ ok: true })
+
+    const call = (tag: string, priority: CallPriority, delayMs: number) =>
+      hub.callTool({ name: 'jobs.job.run', arguments: { tag, delayMs }, priority })
+    const slow = call('slow', 'normal', 600)
+    await new Promise((r) => setTimeout(r, 200))
+    const background = call('background', 'background', 0)
+    await new Promise((r) => setTimeout(r, 50))
+    const interactive = call('interactive', 'interactive', 0)
+    for (const out of await Promise.all([slow, background, interactive])) expect(out.result.ok).toEqual({ ok: true })
+    expect(started).toEqual(['slow', 'interactive', 'background'])
+
+    // 不合法的取值：请求 JSON 无法解析，抛 HubError
+    await expect(hub.callTool({ name: 'jobs.job.run', priority: 'urgent' as CallPriority })).rejects.toBeInstanceOf(HubError)
   })
 
   it('navigateTimeoutMs 必须是非负整数', async () => {

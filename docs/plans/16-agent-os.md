@@ -135,6 +135,20 @@
   - **调用状态机**（4f i）：`CREATED → ACTIVATING → RUNNING → 结果`，写入 `spec/protocol.md`；平台相关状态（前台 / 后台 / 挂起）只作诊断字段 `platform_state`（`status` / `doctor`），不进核心状态。
   - **作业状态归属**（4f h）：脱离请求的作业状态由 App 持久化，Hub 只转发作业 ID 与状态查询、不在内存保存作业状态（App 进程被系统回收后状态不丢）；进行中调用的状态（状态机）由 Hub 持有，调用结束即释放。
 - **P6 交互优先 QoS**：调用可带优先级与截止时间；截止时间由 Agent 在 MCP 请求 `_meta` 中以相对毫秒 `dev.appwire/timeoutMs` 给出，Hub 取其与 `response_timeout` 的较小者、只限制等待 App 结果（4f c，已实施 7f587d8；键名随第 19 项 R4）；用户在场的交互调用优先于后台作业，冲突时后台排队或让路。
+  - **实施（2026-10-03，调用优先级）**：契约见 spec/protocol.md 5.3「优先级」、spec/hub-api.md 3.15「调用优先级」。
+    - 事实：Agent 在 `tools/call` 请求 `_meta` 给 `dev.appwire/priority`（`interactive` / `normal` / `background`，Hub 严格校验，
+      不合法 → `INVALID_INPUT`）；Hub API `CallRequest.priority`。Hub 只转交为 `ToolsInvokeParams.priority`（normal 不写出），不按优先级
+      排队、限流或唤醒（Hub 不排队；资源保护对所有优先级相同）。SDK 核心调用队列按（优先级, 到达顺序）插入（`calls.rs enqueue`），
+      4f k 的调度规则在此顺序上进行；队列满时若有更低优先级的排队调用，拒绝其中最后到达的一个（`RATE_LIMITED` `data.preempted`），
+      否则拒绝新调用。SDK 宽松解析（不认识的取值 = normal，新旧版本互不拒绝）。各 App SDK 无需改动（核心统一调度）。
+    - 测试：协议宽松解析与省略；核心 `enqueue` 单元、`queued_calls_start_by_priority`、`full_queue_preempts_lower_priority`；Hub
+      `request_meta` 校验、`agent_control priority_reaches_app_queue`（Hub API → 真实 native App 的开始顺序）与 MCP `_meta` 不合法值；
+      hub-c v21 JSON、hub-uniffi 转换；一致性用例 `call-priority`（含不认识的取值）11 个 runner 全 pass。变异：插入不按优先级、
+      不让路、Hub 不转交分别被检出。
+    - 未知 / 未做：已开始的后台调用不被抢占（handler 无通用的暂停语义；需要时由 Agent 取消）；handler 上下文不提供优先级（App 暂无
+      按优先级降级的需求，需要时追加）；"用户在场"由 Agent 判断，本库不推断；Hub 侧唤醒不区分优先级（后台调用也会唤醒休眠 App——
+      是否让后台调用不唤醒属于策略；P2 策略规则目前不能按优先级匹配，需要时给规则加该条件）。
+    - 风险：Agent 把所有调用都标为 interactive 时退化为原来的到达顺序（无害）；让路只发生在队列满时（默认 64）。
 - **P7 Hub 自身状态作为资源**：已连接 App、任务、句柄、配额余量以只读 MCP 资源暴露（K13），Agent 用 `read` 自查。
   - **实施（2026-10-03）**：契约见 `spec/hub-api.md` 3.6「Hub 状态资源」；`crates/hub/src/hub_state.rs`。
     - 事实：两个资源 `app-mcp://apps/hub`（App 概况 + 所有未到期锁，持有者只给记账主体）与 `app-mcp://apps/self`（读取方自己的任务
