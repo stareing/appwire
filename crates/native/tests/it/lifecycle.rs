@@ -1,8 +1,6 @@
 //! 生命周期集成测试：休眠释放运行时、唤醒快速恢复、on-demand、连接超时、handler 持有与错误详情。
 
-mod common;
-#[path = "../src/test_support.rs"]
-mod test_support;
+use crate::test_support;
 
 use std::io::{BufRead, BufReader, Lines};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -17,7 +15,7 @@ use app_mcp_native::{
     StateStatus, ToolHandler, ToolSpec, Visibility,
 };
 use app_mcp_protocol::method;
-use common::{HostEvent, MockHost, eventually};
+use crate::common::{HostEvent, MockHost, eventually};
 use serde_json::{Value, json};
 
 struct Add;

@@ -204,7 +204,7 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
       `tower.rs` 1524 / 2072）；调用方键 `principal:agent:<名>`，legacy 会话在 `initialize` 时记下身份（`CallerKey.agent`，相等与哈希只看键字符串）。
       任务、句柄（归签发 Agent）、主体级选择、租约、句柄与 listen 流上限、审批 `principal` 随之按 Agent 分开；`/status` `agents`（只列名字）
       与 `tasks[].agent`。Host `<home>/agents.json`（0600）+ `app-mcp-host agent add / remove / token / list / reload`，doctor「Agent 登记」。
-    - 测试：`crates/hub/tests/agents.rs` 5 个（两个 Agent 令牌的任务与句柄归属、句柄上限按 Agent、legacy 会话记身份、`/agents` 替换与
+    - 测试：`crates/hub/tests/it/agents.rs` 5 个（两个 Agent 令牌的任务与句柄归属、句柄上限按 Agent、legacy 会话记身份、`/agents` 替换与
       Agent 令牌不能读 `/status`、启动校验；把主体恒置为本机时其中 3 个失败）；`agents.rs` / `task.rs` / `http_server.rs` 单元；Host
       `serve.rs agent_registry_cli_and_tokens`、`agents.rs` 与 doctor 单元。
     - 未知 / 未做：stdio 与 `serve_mcp_stream`（含移动端 Binder 上的 MCP）没有 HTTP 头，恒为本机主体，嵌入式 Hub 的调用方识别随第 4g e 项；
@@ -343,7 +343,7 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
       / `Hub::set_intent_defaults` / `Hub::intents` / `HubStatus.intents`、`HubTool.implements`（apps.search 结果带上）；Host `<home>/intents.json`
       （启动不合法拒绝启动、`POST /intents` 与 `app-mcp-host intents show|validate|reload|set|unset`、doctor）。绑定：WASM / Node / uniffi 透传
       `implements`；C ABI 未加字段（二期）。
-    - 测试：协议 / 清单 / 核心 / Hub 单元，`crates/hub/tests/intents.rs`、host `serve.rs`；变异 29 个全检出（被中断的前任留下一处未恢复的变异，
+    - 测试：协议 / 清单 / 核心 / Hub 单元，`crates/hub/tests/it/intents.rs`、host `serve.rs`；变异 29 个全检出（被中断的前任留下一处未恢复的变异，
       接手时从备份恢复并核对；host `run_to_exit` 加 30 秒上限，避免"应拒绝启动却启动"时测试挂死）。
     - 未做（二期）：各语言 SDK 声明 `implements` 的封装（C ABI 字段、Web types、Kotlin / Swift / Python / C++ / C# / Dart / 鸿蒙、`@app-mcp/build`）、
       Hub 封装 `set_intent_defaults` / `intents()` / `HubStatus.intents`；codegen 输出系统 schema；规范未写的上限（动词名 64、默认表 256、

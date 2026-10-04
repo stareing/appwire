@@ -45,8 +45,7 @@ async fn small_calls_over_tcp_are_not_delayed() {
     app.stop();
 }
 
-#[path = "support/mcp_http.rs"]
-mod mcp_http;
+use crate::support::mcp_http;
 
 const BIN: &str = env!("CARGO_BIN_EXE_app-mcp-host");
 const T: Duration = Duration::from_secs(15);

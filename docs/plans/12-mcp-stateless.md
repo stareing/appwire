@@ -345,7 +345,7 @@ modern `tools/list` / `resources/list` 只是以下输入的函数：注册表�
 - resultType（S2 遗留）：modern 结果由 rmcp 构造器带 `complete`（测试断言 tools/list、tools/call、resources/read、resources/list、
   server/discover、原始 HTTP 回复）；空结果问题**不出现**——对 modern 请求 rmcp 把 `ping`、`resources/subscribe` / `unsubscribe` 直接
   返回 method not found（`handler/server.rs:110-116, 184-202`），`logging/setLevel` 本 Hub 不实现，listen 的最终结果带 `resultType`。
-- 测试（`crates/hub/src/mcp.rs` rmcp 客户端 `ClientLifecycleMode::Discover { V_2026_07_28 }`；`crates/hub/tests/mcp_ipc.rs` 经 IPC 上的
+- 测试（`crates/hub/src/mcp.rs` rmcp 客户端 `ClientLifecycleMode::Discover { V_2026_07_28 }`；`crates/hub/tests/it/mcp_ipc.rs` 经 IPC 上的
   Streamable HTTP）：`modern_2026_negotiation_results_and_error_codes`、`modern_listen_delivers_list_changes_and_resource_updates`（App
   上线 / 资源变化 / 下线依次在流上收到通知且带 `subscriptionId`、关闭流后清理、Hub 停止时 `SubscriptionEnd::Graceful`）、
   `listen_streams_are_bounded_per_principal`（含 legacy 会话 listen → method not found、`max_listen_streams = 0`）、

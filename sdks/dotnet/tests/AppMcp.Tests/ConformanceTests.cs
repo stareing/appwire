@@ -8,7 +8,7 @@ namespace AppMcp.Tests;
 /// <summary>
 /// 一致性用例 runner（.NET）：按 <c>conformance/cases/*.json</c> 的 app 部分注册工具与资源，连接 fake_host
 /// （<c>--case</c> 模式，核对在 fake_host 内完成），汇总各用例结论。格式与约定见 conformance/README.md，
-/// 结构对照 crates/native/tests/conformance.rs。
+/// 结构对照 crates/native/tests/it/conformance.rs。
 /// 只跑部分用例：<c>APP_MCP_CONFORMANCE_CASES=handshake,errors dotnet test --filter ConformanceTests</c>。
 /// </summary>
 public class ConformanceTests(ITestOutputHelper output)

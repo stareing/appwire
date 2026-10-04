@@ -23,7 +23,7 @@ import kotlin.test.assertTrue
 /**
  * 一致性用例 runner（Kotlin JVM）：按 `conformance/cases/` 下各用例 JSON 的 `app` 部分注册工具与资源，连接 fake_host
  * （`--case` 模式，核对在 fake_host 内完成）。格式与约定见 conformance/README.md；参照 Rust runner
- * crates/native/tests/conformance.rs。
+ * crates/native/tests/it/conformance.rs。
  *
  * 只跑部分用例：`APP_MCP_CONFORMANCE_CASES=handshake,errors ./gradlew :app-mcp:test --tests dev.appmcp.ConformanceTest`。
  */

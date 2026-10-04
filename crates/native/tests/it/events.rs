@@ -1,10 +1,8 @@
 //! 集成测试：事件声明与发出（第 16 项 N3，spec/protocol.md 3.5）。
 
-mod common;
-
 use app_mcp_native::{EventInfo, MAX_EVENT_PAYLOAD_BYTES, NativeClient, NativeConfig, NativeError, StateStatus};
 use app_mcp_protocol::method;
-use common::{MockHost, eventually};
+use crate::common::{MockHost, eventually};
 use serde_json::json;
 
 fn config(host: &MockHost) -> NativeConfig {

@@ -1,7 +1,7 @@
 //! 一致性用例 runner（Rust native）：按 `conformance/cases/*.json` 的 `app` 部分注册工具与资源，连接 fake_host
 //! （`--case` 模式，核对在 fake_host 内完成），汇总各用例结论。格式与约定见 conformance/README.md。
 //!
-//! 只跑部分用例：`APP_MCP_CONFORMANCE_CASES=handshake,errors cargo test -p app-mcp-native --test conformance`。
+//! 只跑部分用例：`APP_MCP_CONFORMANCE_CASES=handshake,errors cargo test -p app-mcp-native --test it -- conformance::`。
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -19,8 +19,7 @@ use app_mcp_native::{
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-#[path = "../src/test_support.rs"]
-mod test_support;
+use crate::test_support;
 
 const SDK: &str = "rust";
 /// 本 runner 支持的用例能力（`requires`），见 conformance/README.md。

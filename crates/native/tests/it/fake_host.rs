@@ -10,8 +10,7 @@ use app_mcp_native::{
 };
 use serde_json::{Value, json};
 
-#[path = "../src/test_support.rs"]
-mod test_support;
+use crate::test_support;
 
 struct Add;
 impl ToolHandler for Add {

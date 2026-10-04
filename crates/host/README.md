@@ -119,7 +119,7 @@ spec/protocol.md 1.9）。缺省仍为登录自启：`status` / `doctor` / 安�
 - 监听地址必须是 `IP:端口` 且端口不为 0；激活时只服务交来的套接字，配置中没有交来的那一个不自己绑定。
 - 空闲判定：没有已接受的连接（含 SSE 流、App WebSocket）、进行中的调用 / 唤醒、在线 App（含按名拨入的通道）与 MCP 会话。
   连接进出由事件驱动；空闲期间只有一个一次性倒计时（`crates/hub/src/activity.rs`）。退出前关闭接受闸门并复核，漏进来的连接会被完整服务。
-- 休眠 App 的记录已持久化（`<home>/state/dormant/`），空闲退出、再次启动后仍列出、可唤醒（`tests/on_demand.rs`）。
+- 休眠 App 的记录已持久化（`<home>/state/dormant/`），空闲退出、再次启动后仍列出、可唤醒（`tests/it/on_demand.rs`）。
 
 **Windows 常驻成本**（2026-10-02，release，`serve --listen 127.0.0.1:0`、无 App、无清单，Windows 11 build 26200，
 `Get-Process` 每 15 秒采样 3 分钟）：工作集 14.0 MB（峰值 14.1 MB）、私有内存 5.6 MB、线程 25–27（tokio 每核一个工作线程）、
@@ -138,7 +138,7 @@ spec/protocol.md 1.9）。缺省仍为登录自启：`status` / `doctor` / 安�
   Windows 上管道的 DACL 只允许当前用户、所有者为当前用户，拒绝远程客户端；SDK 也核对监听方是同一用户（防抢占）。
 - Hub API 的 `InstanceInfo.pid` 为 IPC 连接的对端进程号。
 - **MCP over IPC**：`serve` 在 IPC 端点上同样提供 `/mcp`（及 `/healthz`、`/status`），供支持本地套接字的 MCP 客户端 /
-  厂商 Agent 使用（请求 URL `http://localhost/mcp`；Rust 示例见 `crates/hub/tests/mcp_ipc.rs`，用 rmcp 的
+  厂商 Agent 使用（请求 URL `http://localhost/mcp`；Rust 示例见 `crates/hub/tests/it/mcp_ipc.rs`，用 rmcp 的
   `UnixSocketHttpClient`）。IPC 上**不校验令牌**：连接已确认是同一用户，而同一用户本来就能读取令牌文件；客户端应核对
   监听方是同一用户。不提供 stdio→HTTP 转发程序。
 

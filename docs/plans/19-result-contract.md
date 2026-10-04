@@ -63,7 +63,7 @@
   `woke` 判定：调用时目标未连接（`wake_target_presence` 为 Absent），经唤醒回连后送达；审批期间目标自行连上则为 false。
   Hub API `CallOutcome.duration_ms` / `woke` 只增字段（serde 缺省 0 / false），hub-c v14、hub-node / `@app-mcp/hub`（JSON 透传）、
   hub-uniffi（`CallOutcome.duration_ms` / `woke`，`routed_to` 已有）同步。测试：`crates/hub/src/call.rs` `call_meta_keys_and_result_type`、
-  `crates/hub/tests/call_meta.rs`（休眠唤醒 woke = true、热调用 false、durationMs ≥ handler 耗时、callId 等于 handler 所见；去掉实现时均失败）。
+  `crates/hub/tests/it/call_meta.rs`（休眠唤醒 woke = true、热调用 false、durationMs ≥ handler 耗时、callId 等于 handler 所见；去掉实现时均失败）。
   未做：内置工具 `apps.activate` / `apps.navigate` 的 `_meta` 不带 `woke`（其结果 `structuredContent.woke` 已给出；Hub API `woke` 为 false）。
 - **R5 可重试标注**：错误码表加"可重试"列（是 / 否 / 视 `retryAfterMs`），作为唯一定义；SDK 与 Hub 按表填 `data.retryable`。
 - **R6 结构化状态提示**：`stateHints` 在 MCP 出口改为 `resource_link` 内容块（随第 17 项 C1），保留现有文本一个版本后移除（E-06）。

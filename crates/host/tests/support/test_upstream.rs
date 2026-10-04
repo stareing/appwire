@@ -7,7 +7,7 @@
 //! - 资源 `demo://greeting`；
 //! - `instructions` 超过 100 字符，用于测试上游总览。
 //!
-//! 仅供集成测试使用（`crates/host/tests/upstream_http.rs` 通过 `CARGO_BIN_EXE_app-mcp-test-upstream` 启动）。
+//! 仅供集成测试使用（`crates/host/tests/it/upstream_http.rs` 通过 `CARGO_BIN_EXE_app-mcp-test-upstream` 启动）。
 
 use std::sync::{Arc, Mutex};
 

@@ -72,5 +72,5 @@ app-mcp-native.workspace = true
 futures.workspace = true
 tokio-tungstenite.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-io", "transport-streamable-http-client-reqwest"] }
-# tests/support/mcp_http.rs：给 rmcp 的 HTTP 传输一个不走环境代理的客户端（与 rmcp 依赖的同一版本，不新增下载）。
+# tests/it/support/mcp_http.rs：给 rmcp 的 HTTP 传输一个不走环境代理的客户端（与 rmcp 依赖的同一版本，不新增下载）。
 reqwest = { version = "0.13", default-features = false }

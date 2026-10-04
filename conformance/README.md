@@ -190,7 +190,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 
 | SDK | runner | 运行 |
 |---|---|---|
-| Rust native | `crates/native/tests/conformance.rs` | `cargo test -p app-mcp-native --test conformance` |
+| Rust native | `crates/native/tests/it/conformance.rs` | `cargo test -p app-mcp-native --test it -- conformance::` |
 | C++ / C ABI | `sdks/cpp/tests/conformance_runner.cpp`（`cpp` 走 C++ 封装；`c` 直接调 `am_*`） | `ctest -L conformance`（CTest `conformance_cpp` / `conformance_c`） |
 | C# | `sdks/dotnet/tests/AppMcp.Tests/ConformanceTests.cs` | `dotnet test tests/AppMcp.Tests --filter FullyQualifiedName~ConformanceTests` |
 | Dart | `sdks/dart/app_mcp/test/conformance_test.dart` | `dart test test/conformance_test.dart` |

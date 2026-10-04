@@ -35,7 +35,7 @@
 | U3 | npm / PyPI 分发原生二进制的方式（按平台的可选依赖包 vs 首次运行下载） | **已解决（2026-10-02）**：npm = 主包 + 6 个平台包（`optionalDependencies`，npm `os`/`cpu` 过滤，运行时不下载）；PyPI = 每平台一个 `py3-none-<平台标签>` wheel（二进制为包数据，`wheel tags` 打复合标签，不发 sdist）。实现与平台表见 `packaging/`。证据：本机以 musl 静态 `app-mcp-host` 走完 stage → `node_modules` 布局 → `appwire --version` / `status`（退出码 3 透传），wheel 经 `uvx --from <wheel> appwire-cli --version` 运行、`twine check --strict` 通过。更正第 3 节：`@app-mcp/hub` / `@app-mcp/node` 目前是单包内 `native/<名>.<platform>-<arch>.node`，并无按平台拆包，可借鉴的只有 `<platform>-<arch>` 命名 |
 | U4 | 网页 App 连接 `/app` 是否也受 `browser` 令牌策略约束、首次授权能否免令牌 | **验证**：读 `crates/hub/src/app_server.rs` 鉴权路径并补测试 |
 | U5 | macOS launchd 自启与 IPC（`getpeereid`）路径 | 无环境，**记为待验证** |
-| U6 | 写入 Agent 配置时与用户已有条目冲突（同名 `app-mcp`、不同 URL） | **已实现（2026-10-02）**：已存在且不同、又不是 `setup.json` 记录的本程序写入值 → 报冲突（退出码 1）并给手动说明，`--force` 才替换（Claude Code 非用户作用域的同名条目 `--force` 也不动）；写前备份到 `<home>/backups/`，写后用同一方式回读校验，失败回滚；配置文件不是标准 JSON 时不写。`uninstall`：文件自写入后未变化 → 逐字节恢复备份，否则只删 URL 仍为写入值的本条目。测试：`crates/host/tests/setup.rs`（假 Agent 命令 + 临时目录） |
+| U6 | 写入 Agent 配置时与用户已有条目冲突（同名 `app-mcp`、不同 URL） | **已实现（2026-10-02）**：已存在且不同、又不是 `setup.json` 记录的本程序写入值 → 报冲突（退出码 1）并给手动说明，`--force` 才替换（Claude Code 非用户作用域的同名条目 `--force` 也不动）；写前备份到 `<home>/backups/`，写后用同一方式回读校验，失败回滚；配置文件不是标准 JSON 时不写。`uninstall`：文件自写入后未变化 → 逐字节恢复备份，否则只删 URL 仍为写入值的本条目。测试：`crates/host/tests/it/setup.rs`（假 Agent 命令 + 临时目录） |
 
 ## 3. 未知的已知（已有、可直接复用）
 

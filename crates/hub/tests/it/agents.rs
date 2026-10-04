@@ -6,8 +6,7 @@
 //! - `/status` 的 `agents` 只列名字，不含令牌。
 //!
 //! 所有 TCP 监听都绑定端口 0 并从监听器取实际地址。
-
-#![cfg(feature = "mcp-server")]
+//! 需要 `mcp-server`（在 `main.rs` 按特性声明本模块）。
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -17,10 +16,7 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
-#[path = "support/mcp_http.rs"]
-mod mcp_http;
-
-use mcp_http::{Reply, http, modern_call, modern_request};
+use crate::support::mcp_http::{Reply, http, modern_call, modern_request};
 
 const T: Duration = Duration::from_secs(10);
 const LOCAL: &str = "local-0123456789abcdef0123456789abcdef";

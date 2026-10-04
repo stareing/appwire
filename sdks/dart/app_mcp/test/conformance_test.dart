@@ -1,6 +1,6 @@
 // 一致性用例 runner（Dart）：按 conformance/cases/*.json 的 app 部分注册工具与资源，连接 fake_host
 // （--case 模式，核对在 fake_host 内完成），每个用例一个 test。格式与约定见 conformance/README.md，
-// 结构对照 crates/native/tests/conformance.rs。
+// 结构对照 crates/native/tests/it/conformance.rs。
 //
 // 先构建：cargo build -p app-mcp-c；fake_host 由本测试用 cargo 构建（APP_MCP_FAKE_HOST 可跳过构建）。
 // 只跑部分用例：APP_MCP_CONFORMANCE_CASES=handshake,errors dart test test/conformance_test.dart

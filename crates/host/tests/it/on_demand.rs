@@ -26,8 +26,7 @@ use rmcp::service::RunningService;
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
 
-#[path = "support/mcp_http.rs"]
-mod mcp_http;
+use crate::support::mcp_http;
 
 const BIN: &str = env!("CARGO_BIN_EXE_app-mcp-host");
 const T: Duration = Duration::from_secs(15);

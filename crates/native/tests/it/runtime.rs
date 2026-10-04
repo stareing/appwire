@@ -1,7 +1,5 @@
 //! 集成测试：NativeClient 连接模拟 Host。
 
-mod common;
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -12,7 +10,7 @@ use app_mcp_native::{
     ReadHandle, ResourceReader, ResourceSpec, StateStatus, ToolHandler, ToolSpec, user_action_reason,
 };
 use app_mcp_protocol::method;
-use common::{MockHost, Recorder, WAIT, eventually};
+use crate::common::{MockHost, Recorder, WAIT, eventually};
 use serde_json::{Value, json};
 
 fn config(host: &MockHost) -> NativeConfig {

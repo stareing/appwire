@@ -1,5 +1,5 @@
 // conformance_runner.cpp —— 一致性用例 runner（C++ 封装与 C ABI）。用例格式与约定见 conformance/README.md，
-// 结构对照 crates/native/tests/conformance.rs：按用例 app 部分注册工具与资源，连接 fake_host（--case 模式，
+// 结构对照 crates/native/tests/it/conformance.rs：按用例 app 部分注册工具与资源，连接 fake_host（--case 模式，
 // 核对全部在 fake_host 内完成），汇总各用例结论。
 //
 // 用法：conformance_runner <cpp|c> [fake_host 可执行文件]

@@ -191,8 +191,7 @@ async fn events_self_resource_reminds_only_its_owner() {
 }
 
 #[cfg(feature = "mcp-server")]
-#[path = "support/mcp_http.rs"]
-mod mcp_http;
+use crate::support::mcp_http;
 
 #[cfg(feature = "mcp-server")]
 mod agents {

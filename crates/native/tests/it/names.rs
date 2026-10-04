@@ -2,16 +2,13 @@
 //! 在 fd 上跑 WebSocket + 核心（SDK 先发 `app/hello`），Hub 关闭通道后回到休眠、名字保留；`stop` 后名字消失。
 #![cfg(all(target_os = "linux", not(target_env = "ohos"), feature = "dbus"))]
 
-mod common;
-#[path = "../src/test_bus.rs"]
-#[allow(dead_code)]
-mod test_bus;
+use crate::test_bus;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use app_mcp_native::{CallHandle, LifecycleMode, NativeClient, NativeConfig, StateStatus, ToolHandler, ToolSpec};
-use common::{Recorder, eventually};
+use crate::common::{Recorder, eventually};
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message as WsMessage;

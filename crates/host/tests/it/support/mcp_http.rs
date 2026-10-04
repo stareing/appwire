@@ -1,4 +1,4 @@
-//! 测试用的 MCP Streamable HTTP 客户端传输（`serve.rs`、`upstream_http.rs` 经 `#[path]` 引入）。
+//! 测试用的 MCP Streamable HTTP 客户端传输（`serve.rs`、`upstream_http.rs` 经 `crate::support::mcp_http` 引入，见 `tests/it/main.rs`）。
 //!
 //! @why reqwest 缺省读取 `HTTP_PROXY` 等环境变量，且不认 `NO_PROXY=127.*` 这类通配写法，回环地址会被送进代理；
 //! 代理不可用时测试失败。测试只连本机 Hub，客户端一律不走代理（T-06：不依赖运行环境）。

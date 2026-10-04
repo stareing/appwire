@@ -1153,5 +1153,4 @@ async fn subscriptions_survive_sleep_and_are_resent_on_reconnect() {
     assert_eq!(waker.requests.lock().unwrap().len(), 1);
 }
 
-#[path = "lifecycle/persistence.rs"]
 mod persistence;

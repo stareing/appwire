@@ -1,6 +1,6 @@
 """一致性用例 runner（Python）：按 ``conformance/cases/*.json`` 的 ``app`` 部分注册工具与资源，连接 fake_host
 （``--case`` 模式，核对在 fake_host 内完成）。格式与约定见 conformance/README.md；参照 Rust runner
-crates/native/tests/conformance.rs。
+crates/native/tests/it/conformance.rs。
 
 只跑部分用例：``APP_MCP_CONFORMANCE_CASES=handshake,errors pytest tests/test_conformance.py``。
 fake_host 定位与 test_integration.py 相同（``APP_MCP_FAKE_HOST`` 或 cargo 构建）。

@@ -272,7 +272,7 @@ uniffi `LifecyclePolicy.legacyTimers`、JS `lifecycle.legacyTimers`）。
 
 ### 功耗回归测试（O2）
 
-`crates/core/tests/power.rs` 用确定性时钟模拟驱动层，断言：本地传输空闲 1 小时 0 次定时器、0 次心跳、1 次连接；远程 1 小时心跳 ≤ 240 次；
+`crates/core/tests/it/power.rs` 用确定性时钟模拟驱动层，断言：本地传输空闲 1 小时 0 次定时器、0 次心跳、1 次连接；远程 1 小时心跳 ≤ 240 次；
 Host 不在时 `idle` / `on-demand` 1 小时内连接发起 = 3 次后无定时器；前台调用后在线 60 s（期间 1 次定时器）；回退开关恢复旧数值。
 
 ## 12. Host 侧观测与唤醒速率上限

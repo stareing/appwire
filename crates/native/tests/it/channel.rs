@@ -3,8 +3,6 @@
 //! 调用可用；Hub 关闭后回到休眠并再次释放运行时；忙 / 未启动 / 非套接字被拒绝。
 #![cfg(unix)]
 
-mod common;
-
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +10,7 @@ use std::time::Duration;
 use app_mcp_native::{
     CallHandle, ChannelRefusal, LifecycleMode, NativeClient, NativeConfig, StateStatus, ToolHandler, ToolSpec,
 };
-use common::eventually;
+use crate::common::eventually;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message as WsMessage;

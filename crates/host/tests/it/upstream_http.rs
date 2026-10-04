@@ -13,8 +13,7 @@ use serde_json::{Map, Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 
-#[path = "support/mcp_http.rs"]
-mod mcp_http;
+use crate::support::mcp_http;
 
 const T: Duration = Duration::from_secs(10);
 const UPSTREAM_BIN: &str = env!("CARGO_BIN_EXE_app-mcp-test-upstream");

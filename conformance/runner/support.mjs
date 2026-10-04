@@ -1,6 +1,6 @@
 // 一致性 runner 的 JS 公共部分（Node / Web / 鸿蒙 runner 共用）：列出用例、定位 fake_host、逐个用例驱动 fake_host 进程，
 // 以及与 SDK 无关的 handler 描述解释（conformance/README.md 2.1–2.3）。各 SDK 的 runner 只负责把这些映射到自己的 API。
-// 类型见同目录 support.d.mts。参考实现：crates/native/tests/conformance.rs（Rust）。
+// 类型见同目录 support.d.mts。参考实现：crates/native/tests/it/conformance.rs（Rust）。
 //
 // @invariant 不做任何期望核对：核对只在 fake_host 内（crates/native/examples/support/conformance.rs）。
 import { spawn, spawnSync } from 'node:child_process';

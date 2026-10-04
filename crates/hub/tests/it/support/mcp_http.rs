@@ -1,5 +1,5 @@
 //! 集成测试共用：经裸 HTTP/1.1 向 Hub 的 `/mcp` 发无会话（2026-07-28）请求（可带 Agent 令牌）。
-//! 用法：`#[path = "support/mcp_http.rs"] mod mcp_http;`。
+//! 用法：`use crate::support::mcp_http;`（在 `tests/it/main.rs` 声明，需要 `mcp-server`）。
 
 #![allow(dead_code)]
 
