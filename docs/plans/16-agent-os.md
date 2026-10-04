@@ -356,6 +356,22 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
       一致性 `tool-implements`（声明原样到达、未声明省略、词表外动词照常发送、更新替换、null 清除）；变异 36 个全检出。
     - 未知：bindings/c 端到端测试未断言字段到达 Host（fake_host `--tool-info` 不含 implements），由一致性 `c` runner 与 C# Hub 集成测试覆盖。
     - 未做：codegen 系统 schema（Apple `@AppIntent(schema:)`、Android intent filter、鸿蒙标准意图）。
+  - **实施（2026-10-04，codegen 二期）**：`--standard-intents`，映射表按平台一处定义（`targets/app_intents/standard.rs`、
+    `targets/appfunctions/standard/table.rs`、`targets/harmony/standard.rs`），筛选与去重共用 `crates/codegen/src/standard_intents.rs`。
+    - 事实（证据）：Apple——developer.apple.com 文档 JSON（`appschema/messagesintent/sendmessage`、`appschema/calendarintent/createevent`、
+      `appschema/audiointent/playaudio`、`appschema/browserintent/openurlintab`、`appschema/browserentity/tab`、`appschema/mapsintent/startnavigation`、
+      `appschema/filesintent`、`appintent(schema:)`），2026-10-04 取；files 域无分享，browser 域仅快捷指令。Android——本机
+      `platforms/android-36/android.jar` `javap -constants`（Intent / CalendarContract / MediaStore / SearchManager 常量、`MailTo`）与
+      developer.android.com Common Intents、`training/sharing/receive`、`calendar-provider`；RFC 5724 / 6068。鸿蒙——OpenHarmony SDK API 20
+      `ets-loader/insight_intents/schema/{PlayVideo_1.0.2,PlayAudio_1.0.1,PlayMusicList_1.0.2,StartNavigate_1.0.1}.json`、
+      `@ohos.app.ability.InsightIntentDecorator.d.ts`、ets-loader `userIntents_parser/parseUserIntents.js`（`collectSchemaInfo`、
+      `schemaValidateSync`）；96 个标准意图中无消息 / 日程 / 链接 / 分享。
+    - 决定：lat / lng 为 WGS-84（spec 第 2 节）；鸿蒙 GCJ-02 坐标不转换、不传；Android `ACTION_SEND` 按 `EXTRA_STREAM` 区分（不看 MIME，
+      发送方常设错）；短信过滤器不加 `BROWSABLE`（避免网页直接拉起）；link.open 只登记 https。
+    - 测试：每个映射项与跳过规则（T-09）；快照 `tests/fixtures/intents.json`；关闭开关输出不变；verify.sh 用真实工具链（AGP + Robolectric、
+      swiftc + 桩、ets-loader 规则）。
+    - 未知：Apple 宏对显式 `: AppIntent` / `public` 成员 / 包内声明的接受度（需 Xcode）；鸿蒙意图框架白名单与审核（二手资料）、podcast →
+      PlayAudio 为推断；Android smsto 的 `;` 分隔、老系统自定义 Parcelable。
 - **O1 工具检索**：`apps.search(query)`，按关键词、最近使用、成功率、当前可见界面（4c）排序；可选本地向量索引（U5）。
 - **O3 只读结果缓存**：`read` 工具与资源按 App 声明的 TTL / 版本号缓存，命中时不唤醒 App。
 - **O4 schema 演进**：字段弃用标记、兼容规则与 Agent 侧缓存失效策略，写入 `spec/manifest.md`。

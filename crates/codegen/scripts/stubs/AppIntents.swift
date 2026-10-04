@@ -10,6 +10,10 @@
 //   IntentExecutionTargets / allowedExecutionTargets（iOS 27）、CancellableIntent /
 //   withIntentCancellationHandler(operation:onCancel:isolation:) / IntentCancellationReason（iOS 26.4）。
 //   Linux 上 `*` 覆盖全部版本，@available / #available 的门槛本身不被检查。
+// 系统 schema（--standard-intents，文档 JSON，2026-10-04）：AppSchemaIntent / AppSchema.BrowserIntent.openURLInTab
+//   （iOS 18 / macOS 15）、AssistantSchemaIntent（@AppIntent(schema:) 宏声明的遵循之一）、无参 @Parameter 与 .result()
+//   （assistantschemas/browserintent/openurlintab 示例）。宏本身无法在桩中展开：verify.sh 去掉宏行，另行检查 schema 表达式，
+//   并以 AssistantSchemaIntent 的默认 title 代替宏生成的成员（近似，真实成员以 Xcode 展开为准）。
 // 通过这里的检查不代表能在真实 SDK 上编译，真实验证需要 Xcode。
 
 public struct LocalizedStringResource: ExpressibleByStringInterpolation, Sendable, Hashable {
@@ -60,6 +64,10 @@ extension IntentResult {
     public static func result<V>(value: V) -> Self where Self == IntentResultContainer<V> {
         IntentResultContainer<V>()
     }
+
+    public static func result() -> Self where Self == IntentResultContainer<Void> {
+        IntentResultContainer<Void>()
+    }
 }
 
 @available(iOS 27.0, macOS 27.0, *)
@@ -99,6 +107,8 @@ extension AppIntent {
 @propertyWrapper
 public final class Parameter<Value>: @unchecked Sendable {
     private var value: Value?
+
+    public init() {}
 
     public init(title: LocalizedStringResource, description: LocalizedStringResource? = nil) {}
 
@@ -200,3 +210,35 @@ extension AppExtension {
 }
 
 public protocol AppIntentsExtension: AppExtension {}
+
+// ---- 系统 schema（@AppIntent(schema:)）
+
+public struct AppSchema {
+    public protocol Kind {}
+    @available(iOS 18.0, macOS 15.0, visionOS 2.0, *)
+    public protocol BrowserIntent: AppSchema.Kind {}
+}
+
+@available(iOS 18.0, macOS 15.0, visionOS 2.0, *)
+public protocol AppSchemaIntent: AppSchema.Kind {}
+
+/// 桩：真实 API 中 schema 是不透明类型 `some AppSchemaIntent`，这里用一个具体类型代替以支持隐式成员链 `.browser.openURLInTab`。
+@available(iOS 18.0, macOS 15.0, visionOS 2.0, *)
+public struct AppSchemaIntentStub: AppSchemaIntent {}
+
+@available(iOS 18.0, macOS 15.0, visionOS 2.0, *)
+public struct AppSchemaBrowserIntents: AppSchema.BrowserIntent {
+    public var openURLInTab: AppSchemaIntentStub { AppSchemaIntentStub() }
+}
+
+@available(iOS 18.0, macOS 15.0, visionOS 2.0, *)
+extension AppSchemaIntent where Self == AppSchemaIntentStub {
+    public static var browser: AppSchemaBrowserIntents { AppSchemaBrowserIntents() }
+}
+
+/// `@AppIntent(schema:)` 宏添加的遵循之一；桩里代替宏提供 schema 决定的 title。
+public protocol AssistantSchemaIntent: AppIntent {}
+
+extension AssistantSchemaIntent {
+    public static var title: LocalizedStringResource { "schema" }
+}

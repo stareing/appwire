@@ -438,6 +438,37 @@ EOF
   record NOTE app-intents-extension "扩展布局只做了桩类型检查；AppIntentsExtension / 包内 intent 元数据需 Xcode 实机验证"
 fi
 
+# 标准意图的系统 schema 版本（tests/fixtures/intents.json，--standard-intents）：@AppIntent(schema:) 宏无法在桩中展开，
+# 去掉宏行后对 intent 做桩类型检查，schema 表达式单独检查，App 实体用最小替身
+if want swift-app-intents-standard-intents; then
+  D="$WORK/swift-app-intents-standard-intents"
+  rm -rf "$D" && mkdir -p "$D/src" "$D/stub"
+  "$BIN" --manifest "$CRATE_DIR/tests/fixtures/intents.json" --target swift-app-intents --standard-intents --out "$D/src" \
+    2>"$WORK/logs/gen-swift-app-intents-standard-intents.log"
+  if [[ -n "$SWIFTC" ]]; then
+    run_step app-intents-std-parse "$SWIFTC" -parse "$D/src/HubStandardIntents.swift"
+    awk -v check="$D/SchemaCheck.swift" '
+      BEGIN { print "import AppIntents\n\nfunc checkSchema<T: AppSchemaIntent>(_: T) {}\n\npublic struct HubBrowserTab: Sendable {}\n" > check }
+      /^@AppIntent\(schema: / { schema = substr($0, 20, length($0) - 20); next }
+      schema != "" && /^public struct / {
+        name = $3; sub(/:$/, "", name)
+        print "@available(iOS 18.0, macOS 15.0, visionOS 2.0, *)\nextension " name ": AssistantSchemaIntent {}" >> check
+        print "@available(iOS 18.0, macOS 15.0, visionOS 2.0, *)\nfunc check" name "() { checkSchema(" schema ") }" >> check
+        schema = ""
+      }
+      { print }' "$D/src/HubStandardIntents.swift" >"$D/HubStandardIntents.stripped.swift"
+    run_step app-intents-std-stub-typecheck bash -c "
+      grep -q 'extension .*: AssistantSchemaIntent' '$D/SchemaCheck.swift' &&
+      '$SWIFTC' -swift-version 6 -parse-as-library -emit-module -emit-library -module-name AppIntents \
+        -o '$D/stub/libAppIntents.so' -emit-module-path '$D/stub/AppIntents.swiftmodule' '$STUBS/AppIntents.swift' &&
+      '$SWIFTC' -swift-version 6 -parse-as-library -typecheck -warnings-as-errors -I '$D/stub' \
+        '$D/src/HubTools.swift' '$D/src/HubAppIntents.swift' '$D/HubStandardIntents.stripped.swift' '$D/SchemaCheck.swift'"
+  else
+    record SKIP swift-app-intents-standard-intents "未找到 swiftc"
+  fi
+  record NOTE app-intents-std "系统 schema 宏与 App 实体需 Xcode 验证，本机只做了语法、schema 表达式与桩类型检查"
+fi
+
 # ---------------------------------------------------------------- Kotlin（JVM）与 AppFunctions（Android + KSP）
 GRADLE=""
 for cand in gradle "$HOME"/.local/gradle-*/bin/gradle; do
@@ -506,6 +537,60 @@ if want kotlin || want kotlin-appfunctions; then
   fi
 fi
 
+# ---------------------------------------------------------------- Android 系统意图（kotlin-appfunctions --standard-intents）
+# tests/fixtures/intents.json 的输出：intent-filter 片段的 XML 结构；把片段合并进 verify.StandardIntentActivity 后经 AGP
+# 处理 manifest 并编译；Robolectric 在真实 Intent / Uri / PackageManager 上运行 scripts/kotlin/StandardIntentsTest.kt。
+if want kotlin-appfunctions-standard-intents; then
+  D="$WORK/kotlin-standard-intents"
+  SI="$D/si/src"
+  rm -rf "$SI" && mkdir -p "$SI/main/kotlin/verify" "$SI/test/kotlin/verify" "$D/fragment"
+  "$BIN" --manifest "$CRATE_DIR/tests/fixtures/intents.json" --target kotlin-appfunctions --standard-intents \
+    --out "$SI/main/kotlin/generated" 2>"$WORK/logs/gen-kotlin-appfunctions-standard-intents.log"
+  # AppFunctions 文件已由 kotlin-appfunctions 步骤（KSP）检查，这里只编译类型文件与系统意图文件
+  rm -f "$SI/main/kotlin/generated/HubAppFunctions.kt"
+  mv "$SI/main/kotlin/generated/HubStandardIntentFilters.xml" "$D/fragment/"
+  run_step standard-intents-xml python3 - "$D/fragment/HubStandardIntentFilters.xml" "$SI/main/AndroidManifest.xml" <<'EOF'
+import sys, xml.etree.ElementTree as ET
+A = "{http://schemas.android.com/apk/res/android}"
+root = ET.parse(sys.argv[1]).getroot()
+assert root.tag == "activity", root.tag
+filters = root.findall("intent-filter")
+assert filters and all(len(f.findall("action")) == 1 for f in filters), "每个 intent-filter 恰有一个 action"
+assert all(c.get(A + "name") for f in filters for c in f if c.tag in ("action", "category")), "action / category 须有 android:name"
+ET.register_namespace("android", A[1:-1])
+manifest = ET.Element("manifest")
+app = ET.SubElement(manifest, "application")
+root.set(A + "name", "verify.StandardIntentActivity")
+app.append(root)
+ET.ElementTree(manifest).write(sys.argv[2], encoding="utf-8", xml_declaration=True)
+print(f"{len(filters)} 个 intent-filter")
+EOF
+  if [[ -n "$GRADLE" && "${VERIFY_ANDROID:-1}" != "0" && -d "$ANDROID_SDK/platforms/android-36" ]]; then
+    cp "$CRATE_DIR/scripts/kotlin/si.gradle.kts" "$D/si/build.gradle.kts"
+    cp "$CRATE_DIR/scripts/kotlin/StandardIntentActivity.kt" "$SI/main/kotlin/verify/"
+    cp "$CRATE_DIR/scripts/kotlin/StandardIntentsTest.kt" "$SI/test/kotlin/verify/"
+    {
+      echo 'pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }'
+      echo 'dependencyResolutionManagement { repositories { google(); mavenCentral() } }'
+      echo 'rootProject.name = "codegen-verify-standard-intents"'
+      echo 'include(":si")'
+    } >"$D/settings.gradle.kts"
+    {
+      echo 'plugins {'
+      echo "    kotlin(\"android\") version \"$KOTLIN_VERSION\" apply false"
+      echo "    kotlin(\"plugin.serialization\") version \"$KOTLIN_VERSION\" apply false"
+      echo "    id(\"com.android.library\") version \"$AGP_VERSION\" apply false"
+      echo '}'
+    } >"$D/build.gradle.kts"
+    printf 'org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\n' >"$D/gradle.properties"
+    echo "sdk.dir=$ANDROID_SDK" >"$D/local.properties"
+    run_step standard-intents-robolectric bash -c "cd '$D' && '$GRADLE' --console=plain :si:testDebugUnitTest"
+  else
+    record SKIP standard-intents-robolectric "需要 gradle 与 Android SDK platforms/android-36（或 VERIFY_ANDROID=0）"
+  fi
+  record NOTE kotlin-appfunctions-standard-intents "未在真机上由其他 App 发出 Intent 验证"
+fi
+
 # ---------------------------------------------------------------- Windows App Actions
 if want windows-app-actions; then
   D="$WORK/windows-app-actions"
@@ -549,6 +634,103 @@ if want harmony-insight-intents; then
     record SKIP harmony-insight-intents "未找到 node 或 OpenHarmony SDK（OHOS_SDK_ETS）"
   fi
   record NOTE harmony-insight-intents "未用 hvigor 打包、未在鸿蒙设备上执行（无 DevEco 工具链与真机）"
+fi
+
+# 鸿蒙标准意图（tests/fixtures/intents.json，--standard-intents）：同样做 ArkTS 类型检查（含 App 实现的 handler 与媒体实体解析器），
+# 再用 ets-loader 的解析器检查标准意图执行器（SDK 中有对应 schema 文件、类属性与标准意图参数一致、位置实体类）。
+if want harmony-insight-intents-standard-intents; then
+  D="$WORK/harmony-standard-intents"
+  OHOS_SDK_ETS="${OHOS_SDK_ETS:-$HOME/sdk/ohos/sdk/ets}"
+  if command -v node >/dev/null && [[ -d "$OHOS_SDK_ETS/build-tools/ets-loader" ]]; then
+    export OHOS_SDK_ETS
+    rm -rf "$D" && mkdir -p "$D/src/main"
+    "$BIN" --manifest "$CRATE_DIR/tests/fixtures/intents.json" --target harmony-insight-intents --standard-intents \
+      --out "$D/src/main" 2>"$WORK/logs/gen-harmony-standard-intents.log"
+    cat >"$D/src/main/ets/Usage.ets" <<'EOF_HARMONY_STANDARD'
+// verify.sh 的 harmony-standard-intents 步骤：实现 HubToolHandlers 与 HubMediaEntityResolver，检查标准意图生成的接口能接入。
+import { AbilityStage } from '@kit.AbilityKit';
+import { ToolCallError } from '@app-mcp/harmony';
+import {
+  HubMediaEntityResolver, HubPlayAudioRequest, HubPlayMusicListRequest, HubPlayVideoRequest, HubStandardIntents,
+} from './appmcp/HubStandardIntents';
+import { HubIntentRuntime } from './appmcp/HubInsightIntents';
+import {
+  BrowserOpenParams, CalendarAddParams, FilesShareParams, HubToolHandlers, MapNavigateParams, MessageComposeParams,
+  MessageQuickParams, PlayerPlayParams,
+} from './appmcp/HubTools';
+
+class Handlers implements HubToolHandlers {
+  messageCompose(p: MessageComposeParams): Object | null {
+    return p.to.length;
+  }
+
+  calendarAdd(p: CalendarAddParams): Object | null {
+    return p.title;
+  }
+
+  async playerPlay(p: PlayerPlayParams): Promise<Object | null> {
+    return `${p.kind ?? 'song'}:${p.query}`;
+  }
+
+  filesShare(p: FilesShareParams): Object | null {
+    return p.files;
+  }
+
+  browserOpen(p: BrowserOpenParams): Object | null {
+    return p.url;
+  }
+
+  mapNavigate(p: MapNavigateParams): Object | null {
+    return `${p.destination.name ?? ''}:${p.destination.lat ?? 0}:${p.mode ?? 'drive'}`;
+  }
+
+  messageQuick(p: MessageQuickParams): Object | null {
+    return p.text;
+  }
+
+  notesCustom(): Object | null {
+    return null;
+  }
+
+  notesPlain(): Object | null {
+    return null;
+  }
+}
+
+class Resolver implements HubMediaEntityResolver {
+  playVideo(request: HubPlayVideoRequest): PlayerPlayParams {
+    const params: PlayerPlayParams = { query: '', kind: 'video' };
+    params.query = `${request.entityId}#${request.episodeNumber ?? 1}`;
+    return params;
+  }
+
+  async playAudio(request: HubPlayAudioRequest): Promise<PlayerPlayParams> {
+    const params: PlayerPlayParams = { query: request.soundId ?? request.entityId, kind: 'podcast' };
+    return params;
+  }
+
+  playMusicList(request: HubPlayMusicListRequest): PlayerPlayParams {
+    if (request.entityId === undefined) {
+      throw new ToolCallError('RESOURCE_NOT_FOUND', '没有歌单');
+    }
+    const params: PlayerPlayParams = { query: request.entityId, kind: 'playlist' };
+    return params;
+  }
+}
+
+export default class HubStage extends AbilityStage {
+  onCreate(): void {
+    HubIntentRuntime.handlers = new Handlers();
+    HubStandardIntents.mediaResolver = new Resolver();
+  }
+}
+EOF_HARMONY_STANDARD
+    run_step harmony-standard-arkts node "$REPO_DIR/sdks/harmony/scripts/arkts-check.cjs" "$D/src/main/ets"
+    run_step harmony-standard-intents node "$CRATE_DIR/scripts/harmony-intents-check.cjs" "$D/src/main"
+  else
+    record SKIP harmony-insight-intents-standard-intents "未找到 node 或 OpenHarmony SDK（OHOS_SDK_ETS）"
+  fi
+  record NOTE harmony-insight-intents-standard-intents "未经小艺等系统入口调用（标准意图需 App 提供实体 / 平台接入，见报告）"
 fi
 
 # ---------------------------------------------------------------- 结果

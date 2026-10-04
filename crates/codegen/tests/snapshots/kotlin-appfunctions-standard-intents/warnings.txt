@@ -1,0 +1,2 @@
+工具 message.quick：`message.send@1` 已由工具 message.compose 绑定到系统意图，本工具只生成自定义意图
+工具 notes.custom：`notes.create@1` 不在标准意图词表中，不生成系统意图

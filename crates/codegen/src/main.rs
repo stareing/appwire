@@ -1,6 +1,6 @@
 //! `app-mcp-codegen --manifest app-mcp.json --target <target> --out <dir> [--package <name>] [--module <name>]
 //! [--intent-domain <垂域>] [--ability <UIAbility>]
-//! [--app-intents-extension] [--app-intents-execution-targets] [--app-intents-cancellable]`
+//! [--app-intents-extension] [--app-intents-execution-targets] [--app-intents-cancellable] [--standard-intents]`
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -44,6 +44,10 @@ struct Args {
     /// swift-app-intents：intent 遵循 CancellableIntent（iOS / macOS 26.4 起，以 #available 限定），把取消原因转给 App。
     #[arg(long)]
     app_intents_cancellable: bool,
+    /// swift-app-intents / kotlin-appfunctions / harmony-insight-intents：为声明了 implements 的工具额外输出
+    /// 系统意图版本（spec/intents.md 第 3 节）。
+    #[arg(long)]
+    standard_intents: bool,
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
@@ -57,12 +61,19 @@ fn run(args: Args) -> anyhow::Result<()> {
     if app_intents != AppIntentsOptions::default() && args.target != Target::SwiftAppIntents {
         anyhow::bail!("--app-intents-* 选项只用于 --target swift-app-intents（当前为 {}）", args.target);
     }
+    if args.standard_intents && !args.target.supports_standard_intents() {
+        anyhow::bail!(
+            "--standard-intents 只用于 swift-app-intents、kotlin-appfunctions、harmony-insight-intents（当前为 {}）",
+            args.target
+        );
+    }
     let options = Options {
         package: args.package,
         module: args.module,
         intent_domain: args.intent_domain,
         ability: args.ability,
         app_intents,
+        standard_intents: args.standard_intents,
     };
     let (output, manifest_warnings) = generate_from_str(&text, args.target, &options)
         .with_context(|| format!("清单 {} 无效", args.manifest.display()))?;

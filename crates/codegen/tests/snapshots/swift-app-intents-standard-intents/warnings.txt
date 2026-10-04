@@ -1,0 +1,7 @@
+工具 message.compose：`message.send@1` 对应的 Apple 系统 schema `.messages.sendMessage`（iOS / macOS / visionOS 27）：收件人 destination 是 App 自定义类型，且 messages 域要求同时实现 draftMessage / sendMessage / editSentMessage / unsendMessage / setMessageReadStatus；需要实体解析，未生成，只生成自定义意图
+工具 calendar.add：`calendar.create@1` 对应的 Apple 系统 schema `.calendar.createEvent`（iOS / macOS / visionOS 27）：要求 App 的日历实体 calendar、地点与参与者类型，并返回事件实体；需要实体解析，未生成，只生成自定义意图
+工具 player.play：`media.play@1` 对应的 Apple 系统 schema `.audio.playAudio`（iOS / macOS / visionOS 27）：要求 App 的音频实体 audioEntity（经 IntentValueQuery 从 MediaIntents 请求解析）；需要实体解析，未生成，只生成自定义意图
+工具 files.share：`file.share@1` 在 Apple 上没有对应的系统意图，只生成自定义意图
+工具 map.navigate：`navigation.start@1` 对应的 Apple 系统 schema `.maps.startNavigation`（iOS / macOS / visionOS 27）：要求 App 的地点类型 origin / destinations 与交通方式枚举，并返回导航会话实体；需要实体解析，未生成，只生成自定义意图
+工具 message.quick：`message.send@1` 对应的 Apple 系统 schema `.messages.sendMessage`（iOS / macOS / visionOS 27）：收件人 destination 是 App 自定义类型，且 messages 域要求同时实现 draftMessage / sendMessage / editSentMessage / unsendMessage / setMessageReadStatus；需要实体解析，未生成，只生成自定义意图
+工具 notes.custom：`notes.create@1` 不在标准意图词表中，不生成系统意图

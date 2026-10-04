@@ -5,7 +5,7 @@
 ```bash
 app-mcp-codegen --manifest app-mcp.json --target <target> --out <dir> \
   [--package <name>] [--module <name>] [--intent-domain <垂域>] [--ability <UIAbility>] \
-  [--app-intents-extension] [--app-intents-execution-targets] [--app-intents-cancellable]
+  [--app-intents-extension] [--app-intents-execution-targets] [--app-intents-cancellable] [--standard-intents]
 ```
 
 | target | 输出 |
@@ -52,10 +52,29 @@ app-mcp-codegen --manifest app-mcp.json --target <target> --out <dir> \
 **未验证**：本机没有带 iOS SDK 的 Xcode，可选输出只对照 `scripts/stubs/AppIntents.swift`（按 Apple 文档签名写的桩模块）
 做了类型检查，未在真实 AppIntents 框架上编译；首次接入请在 Xcode 中确认（spec/naming.md U-22）。
 
+## 标准意图的系统意图版本（`--standard-intents`）
+
+用于 `swift-app-intents`、`kotlin-appfunctions`、`harmony-insight-intents`，缺省关闭（关闭时输出不变）。为声明了 `implements`
+（spec/intents.md）、动词在词表中且 `inputSchema` 兼容的工具，在自定义意图之外另生成平台的系统意图版本，调用复用同一
+`<Module>ToolHandlers`。各平台能生成哪些动词见 spec/intents.md 第 3 节；不能生成的、同一动词的后续工具都以警告说明。
+
+- **Android**（`kotlin-appfunctions`）：`<Module>StandardIntents.kt`（`parse(intent)` → `Matched(call)` / `Invalid(tool, reason)` /
+  `Unrecognized`，`call.risk` 照清单）与 `<Module>StandardIntentFilters.xml`（把其中的 `<intent-filter>` 复制进 App 自己的
+  `android:exported="true"` Activity，在 `onCreate` / `onNewIntent` 调 `parse`）。`ACTION_SEND` 带 `EXTRA_STREAM` 归 `file.share`，
+  不带归 `message.send`。Intent 可能来自任意 App：有副作用的工具先按 `call.risk` 确认再调用。`calendar.create` 需要 API 26+。
+- **Apple**（`swift-app-intents`）：`<Module>StandardIntents.swift`（`@AppIntent(schema:)`）。目前只有 `link.open` →
+  `.browser.openURLInTab`（iOS 18 / macOS 15，仅快捷指令），需 App 提供 `@AppEntity(schema: .browser.tab)` 的 `<Module>BrowserTab`；
+  其余 schema（iOS 27）要求 App 实体，只给警告。与 `--app-intents-extension` 同用时文件放进共享包。**未在真实 AppIntents 框架上编译验证。**
+- **鸿蒙**（`harmony-insight-intents`）：`media.play` → `PlayVideo` / `PlayAudio` / `PlayMusicList`（按工具 `kind` 枚举选择；系统只给
+  实体 ID，App 在 AbilityStage 中设置 `<Module>StandardIntents.mediaResolver` 把实体解析为工具参数）、`navigation.start` → `StartNavigate`。
+  执行器在 `ets/insightintents/standard/`，并追加到 `insight_intent.json`；`--ability` 生效，`--intent-domain` 不生效（垂域由标准意图固定）。
+  上线还需华为意图框架的接入申请与审核；未经 hvigor 打包与小艺实际调用验证。
+
 ## 测试与验证
 
 ```bash
 cargo test -p app-mcp-codegen                      # 快照：tests/snapshots/<target>/，UPDATE_SNAPSHOTS=1 更新
 bash crates/codegen/scripts/verify.sh [target ...] # 用各语言真实编译器检查输出；缺少工具链的步骤记为 SKIP
 bash crates/codegen/scripts/verify.sh swift-app-intents swift-app-intents-extension
+bash crates/codegen/scripts/verify.sh kotlin-appfunctions-standard-intents   # Android 系统意图：manifest 合并 + Robolectric
 ```

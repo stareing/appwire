@@ -1,0 +1,135 @@
+{
+  "manifestVersion": 1,
+  "appId": "hub",
+  "name": "生活助手",
+  "description": "标准意图快照用例：六个试点动词各一个实现者，另含跳过规则",
+  "tools": [
+    {
+      "name": "message.compose",
+      "title": "发消息",
+      "description": "给联系人发送一条消息",
+      "risk": "write",
+      "implements": ["message.send@1"],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "收件人" },
+          "text": { "type": "string", "description": "正文" },
+          "subject": { "type": "string", "description": "主题" }
+        },
+        "required": ["to", "text"]
+      }
+    },
+    {
+      "name": "calendar.add",
+      "title": "新建日程",
+      "description": "在日历中新建一个日程",
+      "risk": "write",
+      "implements": ["calendar.create@1"],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "start": { "type": "string", "format": "date-time" },
+          "end": { "type": "string", "format": "date-time" },
+          "allDay": { "type": "boolean" },
+          "location": { "type": "string" }
+        },
+        "required": ["title", "start"]
+      }
+    },
+    {
+      "name": "player.play",
+      "title": "播放",
+      "description": "搜索并播放音乐",
+      "risk": "write",
+      "implements": ["media.play@1"],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "kind": { "type": "string", "enum": ["song", "album", "artist", "playlist", "podcast", "video"] }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "files.share",
+      "title": "分享文件",
+      "description": "把文件分享给联系人",
+      "risk": "write",
+      "implements": ["file.share@1"],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "files": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "mimeType": { "type": "string" },
+          "text": { "type": "string" }
+        },
+        "required": ["files"]
+      }
+    },
+    {
+      "name": "browser.open",
+      "title": "打开链接",
+      "description": "在内置浏览器中打开网址",
+      "risk": "read",
+      "implements": ["link.open@1"],
+      "inputSchema": {
+        "type": "object",
+        "properties": { "url": { "type": "string", "format": "uri" } },
+        "required": ["url"]
+      }
+    },
+    {
+      "name": "map.navigate",
+      "title": "开始导航",
+      "description": "导航到目的地",
+      "risk": "write",
+      "implements": ["navigation.start@1"],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "destination": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "address": { "type": "string" },
+              "lat": { "type": "number" },
+              "lng": { "type": "number" }
+            }
+          },
+          "mode": { "type": "string", "enum": ["drive", "walk", "transit", "bike"] }
+        },
+        "required": ["destination"]
+      }
+    },
+    {
+      "name": "message.quick",
+      "description": "快捷回复（与 message.compose 声明同一动词，系统意图只绑定第一个）",
+      "risk": "write",
+      "implements": ["message.send@1"],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": { "type": "array", "items": { "type": "string" } },
+          "text": { "type": "string" }
+        },
+        "required": ["to", "text"]
+      }
+    },
+    {
+      "name": "notes.custom",
+      "description": "词表外动词",
+      "risk": "write",
+      "implements": ["notes.create@1"],
+      "inputSchema": { "type": "object", "properties": { "body": { "type": "string" } } }
+    },
+    {
+      "name": "notes.plain",
+      "description": "未声明意图",
+      "risk": "read",
+      "inputSchema": { "type": "object", "properties": {} }
+    }
+  ]
+}

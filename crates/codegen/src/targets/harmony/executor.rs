@@ -58,12 +58,7 @@ pub(super) fn executor_file(model: &Model, tool: &ToolModel, domain: &str, abili
     }
     c.block_doc(&doc);
 
-    let first_line = tool.info.description.lines().next().unwrap_or("").trim();
-    let display_description = if first_line.is_empty() {
-        tool.display_title()
-    } else {
-        first_line
-    };
+    let display_description = display_description(tool);
     let mut keywords = vec![lit(tool.display_title())];
     if tool.info.title.is_some() {
         keywords.push(lit(&tool.info.name));
@@ -133,6 +128,16 @@ pub(super) fn executor_file(model: &Model, tool: &ToolModel, domain: &str, abili
     c.close("}");
     c.close("}");
     c.finish()
+}
+
+/// 意图的 `displayDescription`：描述的第一行，为空时用标题。
+pub(super) fn display_description(tool: &ToolModel) -> &str {
+    let first_line = tool.info.description.lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
+        tool.display_title()
+    } else {
+        first_line
+    }
 }
 
 /// 意图的 `parameters`：由类型模型重新生成的 JSON Schema。

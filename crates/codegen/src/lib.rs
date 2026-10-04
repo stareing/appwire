@@ -11,6 +11,7 @@ pub mod code;
 pub mod ident;
 pub mod ordered;
 pub mod schema;
+pub mod standard_intents;
 pub mod targets;
 
 use std::fmt;
@@ -58,6 +59,11 @@ impl Target {
             self,
             Target::SwiftAppIntents | Target::KotlinAppFunctions | Target::WindowsAppActions | Target::HarmonyInsightIntents
         )
+    }
+
+    /// 支持 `--standard-intents`（spec/intents.md 第 3 节有映射列）的 target。
+    pub fn supports_standard_intents(self) -> bool {
+        matches!(self, Target::SwiftAppIntents | Target::KotlinAppFunctions | Target::HarmonyInsightIntents)
     }
 
     pub fn name(self) -> &'static str {
@@ -109,6 +115,9 @@ pub struct Options {
     pub ability: Option<String>,
     /// `swift-app-intents` 的可选输出（App Intents 扩展布局、执行进程声明、取消处理）；缺省全部关闭。
     pub app_intents: AppIntentsOptions,
+    /// 为声明了 `implements` 的工具额外输出系统意图版本（spec/intents.md 第 3 节；只用于
+    /// [`Target::supports_standard_intents`]）；缺省关闭，关闭时输出不变。
+    pub standard_intents: bool,
 }
 
 /// 一个生成的文件。

@@ -13,7 +13,7 @@ fn model(tools: Value) -> Model {
 
 fn generate_all(m: &Model) -> (Vec<GeneratedFile>, Vec<Warning>) {
     let mut w = Vec::new();
-    (generate(m, DEFAULT_DOMAIN, DEFAULT_ABILITY, &mut w), w)
+    (generate(m, DEFAULT_DOMAIN, DEFAULT_ABILITY, false, &mut w), w)
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn custom_domain_and_ability() {
         json!([{ "name": "a", "description": "x", "inputSchema": { "type": "object" } }]),
     );
     let mut w = Vec::new();
-    let files = generate(&m, "ShoppingPlatformsDomain", "MainAbility", &mut w);
+    let files = generate(&m, "ShoppingPlatformsDomain", "MainAbility", false, &mut w);
     let exec = files
         .iter()
         .find(|f| f.path.ends_with("ShopAIntent.ets"))

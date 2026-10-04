@@ -107,7 +107,7 @@ pub const VOCABULARY: [IntentDef; 6] = [
     IntentDef {
         verb: "navigation.start",
         version: 1,
-        description: "开始导航：destination 为目的地对象（name / address / lat+lng 至少一组）；可选 mode（drive / walk / transit / bike）。",
+        description: "开始导航：destination 为目的地对象（name / address / lat+lng（WGS-84）至少一组）；可选 mode（drive / walk / transit / bike）。",
         required: &[p("destination", ParamKind::Object)],
     },
 ];

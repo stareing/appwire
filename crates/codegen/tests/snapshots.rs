@@ -11,11 +11,18 @@ fn crate_dir() -> PathBuf {
 }
 
 fn generate(target: Target, options: &Options) -> Output {
-    let text = std::fs::read_to_string(crate_dir().join("tests/fixtures/shop.json"))
+    generate_fixture("shop.json", target, options)
+}
+
+fn generate_fixture(fixture: &str, target: Target, options: &Options) -> Output {
+    let text = std::fs::read_to_string(crate_dir().join("tests/fixtures").join(fixture))
         .expect("读取示例清单");
     let (output, manifest_warnings) =
         generate_from_str(&text, target, options).expect("示例清单应当合法");
-    assert!(manifest_warnings.is_empty(), "{manifest_warnings:?}");
+    // intents.json 有意声明词表外动词（清单校验只给警告），其余示例清单不应有警告
+    let expected: &[&str] = if fixture == "intents.json" { &["tools[7].implements[0]"] } else { &[] };
+    let paths: Vec<String> = manifest_warnings.iter().map(|w| w.path.clone()).collect();
+    assert_eq!(paths, expected, "{manifest_warnings:?}");
     output
 }
 
@@ -46,7 +53,12 @@ fn check_target(target: Target) {
 
 /// 以指定选项生成，与 tests/snapshots/<snapshot>/ 比较。
 fn check_snapshot(target: Target, options: &Options, snapshot: &str) {
-    let output = generate(target, options);
+    check_fixture_snapshot("shop.json", target, options, snapshot);
+}
+
+/// 用 tests/fixtures/<fixture> 生成，与 tests/snapshots/<snapshot>/ 比较。
+fn check_fixture_snapshot(fixture: &str, target: Target, options: &Options, snapshot: &str) {
+    let output = generate_fixture(fixture, target, options);
     let dir = crate_dir().join("tests/snapshots").join(snapshot);
     let mut actual: Vec<(PathBuf, String)> = output
         .files
@@ -250,6 +262,24 @@ fn cli_rejects_app_intents_flags_for_other_targets() {
     let _ = std::fs::remove_dir_all(&out);
 }
 
+/// `--standard-intents` 只用于有系统意图映射的原生 target（windows-app-actions 与类型化接口拒绝）。
+#[test]
+fn cli_rejects_standard_intents_for_other_targets() {
+    for target in ["windows-app-actions", "typescript"] {
+        let out = std::env::temp_dir().join(format!("app-mcp-codegen-cli-si-{}-{target}", std::process::id()));
+        let bad = std::process::Command::new(env!("CARGO_BIN_EXE_app-mcp-codegen"))
+            .arg("--manifest")
+            .arg(crate_dir().join("tests/fixtures/intents.json"))
+            .args(["--target", target, "--standard-intents", "--out"])
+            .arg(&out)
+            .output()
+            .expect("运行 CLI");
+        assert!(!bad.status.success(), "{target}");
+        assert!(String::from_utf8_lossy(&bad.stderr).contains("--standard-intents"), "{target}");
+        assert!(!out.exists(), "{target} 被拒绝时不应写文件");
+    }
+}
+
 #[test]
 fn snapshot_kotlin_appfunctions() {
     check_target(Target::KotlinAppFunctions);
@@ -362,5 +392,41 @@ fn native_targets_skip_view_tools() {
             assert!(!skipped, "{target}: 类型化接口不过滤");
             assert!(all.contains("CartHighlight") || all.contains("cart_highlight"), "{target}: 类型化接口含 view 工具");
         }
+    }
+}
+
+/// `--standard-intents`（spec/intents.md 第 3 节）：tests/fixtures/intents.json 六个试点动词各一个实现者，另含重复动词、
+/// 词表外动词与未声明的工具。
+fn check_standard_intents(target: Target) {
+    let options = Options { standard_intents: true, ..Options::default() };
+    check_fixture_snapshot("intents.json", target, &options, &format!("{}-standard-intents", target.name()));
+}
+
+#[test]
+fn snapshot_swift_app_intents_standard_intents() {
+    check_standard_intents(Target::SwiftAppIntents);
+}
+
+#[test]
+fn snapshot_kotlin_appfunctions_standard_intents() {
+    check_standard_intents(Target::KotlinAppFunctions);
+}
+
+#[test]
+fn snapshot_harmony_insight_intents_standard_intents() {
+    check_standard_intents(Target::HarmonyInsightIntents);
+}
+
+/// 选项关闭时，声明了 implements 的清单不产生任何系统意图输出：与去掉 implements 的同一清单逐字相同。
+#[test]
+fn standard_intents_off_ignores_implements() {
+    let text = std::fs::read_to_string(crate_dir().join("tests/fixtures/intents.json")).expect("读取清单");
+    let with = app_mcp_manifest::load_str(&text).expect("清单").manifest;
+    let mut without = with.clone();
+    without.tools.iter_mut().for_each(|t| t.implements.clear());
+    for target in [Target::SwiftAppIntents, Target::KotlinAppFunctions, Target::HarmonyInsightIntents] {
+        let on = app_mcp_codegen::generate(&with, target, &Options::default());
+        let off = app_mcp_codegen::generate(&without, target, &Options::default());
+        assert_eq!(on.files, off.files, "{target} 关闭 --standard-intents 时输出应与未声明 implements 相同");
     }
 }

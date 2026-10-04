@@ -34,21 +34,30 @@ implements?: string[]   // 如 ["message.send@1"]；每项为 "<动词>@<主版�
 | `media.play@1` | `query: string`（要播放什么；有 `uri` 时可为空字符串） | `uri: string`、`kind: "song" \| "album" \| "artist" \| "playlist" \| "podcast" \| "video"` |
 | `file.share@1` | `files: string[]`（≥ 1，URI 或 Hub 句柄） | `mimeType: string`、`text: string`、`to: string[]` |
 | `link.open@1` | `url: string`（uri） | — |
-| `navigation.start@1` | `destination: object`（`name` / `address` / `lat`+`lng` 至少一组） | `mode: "drive" \| "walk" \| "transit" \| "bike"` |
+| `navigation.start@1` | `destination: object`（`name` / `address` / `lat`+`lng` 至少一组；`lat` / `lng` 为 WGS-84 十进制度数） | `mode: "drive" \| "walk" \| "transit" \| "bike"` |
 
 词表的机器可读形式在 `crates/protocol/src/intents.rs`（每个动词版本的必填参数与类型），本表与之一致；新增动词或版本同时改两处。
 不兼容的变更只能发新主版本（`@2`），旧版本保留。
 
-## 3. 平台映射（codegen 二期使用，本期只作记录）
+## 3. 平台映射（codegen `--standard-intents`）
 
-| 动词 | Apple App Intents | Android | 鸿蒙 |
+`app-mcp-codegen --standard-intents`（`swift-app-intents` / `kotlin-appfunctions` / `harmony-insight-intents`）为声明了 `implements`、
+动词在词表中且兼容的工具，在自定义意图之外**另生成系统意图版本**，调用复用同一 handler 接口。下表为 2026-10-04 按官方资料核实的结果
+（证据见 `docs/plans/16-agent-os.md` N4「codegen 二期」）；映射的权威形式在各 target 的映射表（`crates/codegen/src/targets/*/standard*`）。
+
+| 动词 | Apple App Schemas（`@AppIntent(schema:)`） | Android（标准 Intent） | 鸿蒙（意图框架标准意图） |
 |---|---|---|---|
-| `message.send` | `.messages.sendMessage`（iOS 27，destination 需实体解析） | `ACTION_SENDTO` / `ACTION_SEND` | 无标准意图，自定义意图 |
-| `calendar.create` | `.calendar.createEvent`（iOS 27） | `ACTION_INSERT Events.CONTENT_URI` | 无，自定义意图 |
-| `media.play` | `.audio.playAudio`（需 AudioItem 实体） | `MEDIA_PLAY_FROM_SEARCH` | `PlayMusicList` / `PlayAudio` / `PlayVideo`（需 entityId） |
-| `file.share` | 无，自定义意图 | `ACTION_SEND` / `ACTION_SEND_MULTIPLE` | `ohos.want.action.sendData`（待核实） |
-| `link.open` | `.browser.openURLInTab`（iOS 18） | `ACTION_VIEW https:` | 自定义意图 |
-| `navigation.start` | `.maps.startNavigation`（iOS 27） | `ACTION_VIEW geo:` | `StartNavigate`（GCJ02） |
+| `message.send` | `.messages.sendMessage`（iOS 27）：需 App 实体，且 messages 域须同时实现 5 个 schema → **不生成** | `SENDTO`（smsto / sms / mmsto / mms / mailto）、`SEND` `text/plain`（不带 `EXTRA_STREAM`） | 无 |
+| `calendar.create` | `.calendar.createEvent`（iOS 27）：必填 App 日历实体 → **不生成** | `INSERT` `vnd.android.cursor.dir/event` | 无 |
+| `media.play` | `.audio.playAudio`（iOS 27）：需 App 音频实体与 `IntentValueQuery` → **不生成** | `MEDIA_PLAY_FROM_SEARCH`（`kind` 只识别 song / album / artist / playlist） | `PlayVideo@1.0.2` / `PlayAudio@1.0.1` / `PlayMusicList@1.0.2`，按工具 `kind` 枚举的 video / podcast / playlist 选；系统只给实体 ID，由 App 实现 `<M>MediaEntityResolver` |
+| `file.share` | 无 | `SEND`（带 `EXTRA_STREAM`）/ `SEND_MULTIPLE` | 无 |
+| `link.open` | `.browser.openURLInTab`（iOS 18 / macOS 15 / visionOS 2，仅快捷指令）：App 提供 `@AppEntity(schema: .browser.tab)` 的 `<M>BrowserTab` | `VIEW` `https`（`BROWSABLE`） | 无 |
+| `navigation.start` | `.maps.startNavigation`（iOS 27）：需 App 地点类型 → **不生成** | `VIEW` `geo:`（`mode` 不可得） | `StartNavigate@1.0.1`：`dstLocation` 为意图实体、经纬度为字符串且缺省 GCJ-02，只在 WGS-84 时传坐标 |
+
+- 同一动词有多个工具声明时只绑定第一个能生成的；其余、以及表中"无 / 不生成"的动词照常只生成自定义意图，codegen 给出警告。
+- 系统意图可能来自任意 App（Android）或系统入口：有副作用的工具由 App 按风险确认后再调用（生成代码带出 `risk`）。
+- **未验证**：Apple 输出未在真实 AppIntents 框架上编译（只对照桩模块）；鸿蒙未经 hvigor 打包与小艺实际调用，标准意图接入另需华为意图框架的申请与审核；
+  Android 经 AGP manifest 合并与 Robolectric 解析验证，未在真机上由其他 App 发起。
 
 ## 4. Hub：`apps.intents` 与机主默认
 

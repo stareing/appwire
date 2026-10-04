@@ -7,6 +7,7 @@
 //! - `ets/insightintents/<Module><Tool>Intent.ets`：每个工具一个 `@InsightIntentEntry` 执行器
 //!   （`InsightIntentEntryExecutor<string>`，结果为 handler 返回值的 JSON 文本）；
 //! - `resources/base/profile/insight_intent.json`：`insightIntentsSrcEntry` 列出各执行器文件。
+//! - `--standard-intents` 时另有鸿蒙标准意图执行器与媒体实体解析接口（见 [`standard`]）。
 //!
 //! 映射：意图参数由系统入口按 `parameters`（JSON Schema）赋值给执行器的同名属性，因此属性名就是 JSON 属性名；
 //! 含非标识符属性名（如 `is-urgent`）或与执行器基类成员同名的工具不生成意图（给出警告），仍可作为 MCP 工具使用。
@@ -32,6 +33,7 @@ use crate::schema::{Field, Model, ObjectDecl, ToolModel, Ty, TypeDecl, Warning, 
 use crate::targets::{decl_doc, file, needs_confirmation, risk_name, tool_doc};
 
 mod executor;
+pub mod standard;
 
 pub use executor::intent_parameters;
 use executor::executor_file;
@@ -59,6 +61,7 @@ pub fn generate(
     model: &Model,
     domain: &str,
     ability: &str,
+    standard_intents: bool,
     warnings: &mut Vec<Warning>,
 ) -> Vec<GeneratedFile> {
     let m = &model.module;
@@ -93,9 +96,18 @@ pub fn generate(
             executor_file(model, tool, domain, ability),
         ));
     }
+    let mut src_entries: Vec<String> = supported
+        .iter()
+        .map(|t| format!("./ets/insightintents/{}.ets", executor_name(model, t)))
+        .collect();
+    if standard_intents {
+        let (standard_files, entries) = standard::generate(model, ability, warnings);
+        files.extend(standard_files);
+        src_entries.extend(entries);
+    }
     files.push(file(
         "resources/base/profile/insight_intent.json",
-        insight_intent_json(model, &supported),
+        insight_intent_json(&src_entries),
     ));
     files
 }
@@ -447,10 +459,11 @@ fn runtime_file(model: &Model) -> String {
 // insight_intent.json
 // ---------------------------------------------------------------------------
 
-fn insight_intent_json(model: &Model, tools: &[&ToolModel]) -> String {
-    let entries: Vec<Value> = tools
+/// @input `src_entries` 各执行器文件相对 `src/main/` 的路径（`./ets/...`）。
+fn insight_intent_json(src_entries: &[String]) -> String {
+    let entries: Vec<Value> = src_entries
         .iter()
-        .map(|t| json!({ "srcEntry": format!("./ets/insightintents/{}.ets", executor_name(model, t)) }))
+        .map(|e| json!({ "srcEntry": e }))
         .collect();
     let mut s = serde_json::to_string_pretty(&json!({ "insightIntentsSrcEntry": entries }))
         .unwrap_or_default();

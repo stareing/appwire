@@ -1,0 +1,43 @@
+{
+  "insightIntentsSrcEntry": [
+    {
+      "srcEntry": "./ets/insightintents/HubMessageComposeIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/HubCalendarAddIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/HubPlayerPlayIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/HubFilesShareIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/HubBrowserOpenIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/HubMapNavigateIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/HubMessageQuickIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/HubNotesCustomIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/HubNotesPlainIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/standard/HubPlayVideoStandardIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/standard/HubPlayAudioStandardIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/standard/HubPlayMusicListStandardIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/standard/HubStartNavigateStandardIntent.ets"
+    }
+  ]
+}

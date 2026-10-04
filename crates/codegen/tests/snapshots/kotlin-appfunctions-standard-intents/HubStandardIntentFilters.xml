@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  由 app-mcp-codegen 生成（target: kotlin-appfunctions），请勿手动修改。
+  App：生活助手（hub）
+  简介：标准意图快照用例：六个试点动词各一个实现者，另含跳过规则
+
+  Android 系统意图的 intent-filter（spec/intents.md 第 3 节，codegen 选项 standard-intents）。
+  把下面 <activity> 中的 <intent-filter> 复制到 AndroidManifest.xml 里处理这些意图的 Activity
+  （须 android:exported="true"），并在其 onCreate / onNewIntent 中调用
+  HubStandardIntents.parse(intent)（HubStandardIntents.kt）。
+-->
+<activity xmlns:android="http://schemas.android.com/apk/res/android" android:exported="true">
+    <!-- message.send@1 → 工具 message.compose -->
+    <intent-filter>
+        <action android:name="android.intent.action.SENDTO" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:scheme="smsto" />
+        <data android:scheme="sms" />
+        <data android:scheme="mmsto" />
+        <data android:scheme="mms" />
+        <data android:scheme="mailto" />
+    </intent-filter>
+    <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="text/plain" />
+    </intent-filter>
+    <!-- calendar.create@1 → 工具 calendar.add -->
+    <intent-filter>
+        <action android:name="android.intent.action.INSERT" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="vnd.android.cursor.dir/event" />
+    </intent-filter>
+    <!-- media.play@1 → 工具 player.play -->
+    <intent-filter>
+        <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+        <category android:name="android.intent.category.DEFAULT" />
+    </intent-filter>
+    <!-- file.share@1 → 工具 files.share -->
+    <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="*/*" />
+    </intent-filter>
+    <intent-filter>
+        <action android:name="android.intent.action.SEND_MULTIPLE" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="*/*" />
+    </intent-filter>
+    <!-- link.open@1 → 工具 browser.open -->
+    <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="https" />
+    </intent-filter>
+    <!-- navigation.start@1 → 工具 map.navigate -->
+    <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:scheme="geo" />
+    </intent-filter>
+</activity>

@@ -27,6 +27,8 @@
 //! `AppIntentsPackage.includedPackages`（iOS 17）、`IntentExecutionTargets`（iOS 27）、`CancellableIntent` /
 //! `IntentCancellationReason.timeout / .userCancelled`（iOS 26.4）。没有带 iOS SDK 的 Xcode，未在真实框架上编译，
 //! 只对照 `scripts/stubs/AppIntents.swift` 做桩类型检查。
+//!
+//! `--standard-intents`：另输出 `<Module>StandardIntents.swift`（系统 schema 版本，见 [`standard`]），与 `<Module>AppIntents.swift` 同处。
 
 use app_mcp_protocol::{Activation, Risk};
 
@@ -35,6 +37,8 @@ use crate::code::{Code, header_lines, string_literal};
 use crate::ident::{self, Lang, NameScope};
 use crate::schema::{Field, Model, ToolModel, Ty, TypeDecl, Warning, field_notes};
 use crate::targets::{file, swift};
+
+mod standard;
 
 /// App Shortcuts 的数量上限（系统限制每个 App 最多 10 个）。
 pub const MAX_APP_SHORTCUTS: usize = 10;
@@ -58,20 +62,25 @@ const EXECUTION_TARGETS_AVAILABILITY: &str = "iOS 27.0, macOS 27.0, *";
 pub fn generate(
     model: &Model,
     options: &AppIntentsOptions,
+    standard_intents: bool,
     warnings: &mut Vec<Warning>,
 ) -> Vec<GeneratedFile> {
     let m = &model.module;
     let tools = swift::generate(model);
     let intents = intents_file(model, options, warnings);
+    let system = standard_intents.then(|| standard::generate(model, options.extension, warnings)).flatten();
+    let system_name = format!("{m}StandardIntents.swift");
     if !options.extension {
-        return vec![tools, file(format!("{m}AppIntents.swift"), intents)];
+        let mut files = vec![tools, file(format!("{m}AppIntents.swift"), intents)];
+        files.extend(system.map(|s| file(system_name, s)));
+        return files;
     }
     if !options.execution_targets {
         warn_foreground_in_extension(model, warnings);
     }
     let package = shared_package_name(model);
     let sources = format!("{package}/Sources/{package}");
-    vec![
+    let mut files = vec![
         file(format!("{package}/Package.swift"), package_manifest(model)),
         file(
             format!("{sources}/{}", tools.path.display()),
@@ -83,7 +92,9 @@ pub fn generate(
             extension_entry(model),
         ),
         file(format!("App/{m}AppIntentsPackage.swift"), app_package(model)),
-    ]
+    ];
+    files.extend(system.map(|s| file(format!("{sources}/{system_name}"), s)));
+    files
 }
 
 /// 共享 Swift 包（及其库 / 模块）名：`<Module>Intents`。
@@ -727,13 +738,7 @@ fn emit_intent(c: &mut Code, model: &Model, options: &AppIntentsOptions, tool: &
             }
             ParamKind::JsonString => json_decode_expr(model, m, f, &v),
         };
-        // 调用处的参数标签除 inout / var / let 外不需要转义
-        let label = if matches!(prop.as_str(), "inout" | "var" | "let") {
-            format!("`{prop}`")
-        } else {
-            prop.clone()
-        };
-        args.push(format!("{label}: {expr}"));
+        args.push(format!("{}: {expr}", arg_label(prop)));
     }
     c.line(format!("let params = {}({})", params.name, args.join(", ")));
     let call = format!(
@@ -766,6 +771,11 @@ fn emit_intent(c: &mut Code, model: &Model, options: &AppIntentsOptions, tool: &
     ));
     c.close("}");
     c.close("}");
+}
+
+/// 调用处的参数标签：除 inout / var / let 外不需要转义。
+fn arg_label(prop: &str) -> String {
+    if matches!(prop, "inout" | "var" | "let") { format!("`{prop}`") } else { prop.to_string() }
 }
 
 /// `allowedExecutionTargets`：需要界面的工具只在 App 进程执行，其余 App 与扩展均可。

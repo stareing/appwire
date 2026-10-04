@@ -32,9 +32,11 @@ pub fn generate(
         Target::Kotlin => vec![kotlin::generate(model, &kotlin_package(model, options))],
         Target::Python => vec![python::generate(model)],
         Target::Dart => vec![dart::generate(model)],
-        Target::SwiftAppIntents => app_intents::generate(model, &options.app_intents, warnings),
+        Target::SwiftAppIntents => {
+            app_intents::generate(model, &options.app_intents, options.standard_intents, warnings)
+        }
         Target::KotlinAppFunctions => {
-            appfunctions::generate(model, &kotlin_package(model, options), warnings)
+            appfunctions::generate(model, &kotlin_package(model, options), options.standard_intents, warnings)
         }
         Target::WindowsAppActions => {
             windows::generate(model, &csharp_namespace(model, options), warnings)
@@ -43,6 +45,7 @@ pub fn generate(
             model,
             options.intent_domain.as_deref().unwrap_or(harmony::DEFAULT_DOMAIN),
             options.ability.as_deref().unwrap_or(harmony::DEFAULT_ABILITY),
+            options.standard_intents,
             warnings,
         ),
     }

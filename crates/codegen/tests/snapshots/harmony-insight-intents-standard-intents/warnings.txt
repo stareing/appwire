@@ -1,0 +1,6 @@
+工具 message.compose：`message.send@1` 在 HarmonyOS 上没有对应的系统意图，只生成自定义意图
+工具 calendar.add：`calendar.create@1` 在 HarmonyOS 上没有对应的系统意图，只生成自定义意图
+工具 files.share：`file.share@1` 在 HarmonyOS 上没有对应的系统意图，只生成自定义意图
+工具 browser.open：`link.open@1` 在 HarmonyOS 上没有对应的系统意图，只生成自定义意图
+工具 message.quick：`message.send@1` 在 HarmonyOS 上没有对应的系统意图，只生成自定义意图
+工具 notes.custom：`notes.create@1` 不在标准意图词表中，不生成系统意图

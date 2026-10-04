@@ -18,16 +18,29 @@ use crate::ident::{self, Lang, NameScope};
 use crate::schema::{Field, Model, ObjectDecl, ToolModel, Ty, TypeId, Warning, field_doc};
 use crate::targets::{file, kotlin, risk_name};
 
+mod standard;
+
 pub const APPFUNCTIONS_VERSION: &str = "1.0.0-alpha12";
 
-pub fn generate(model: &Model, package: &str, _warnings: &mut Vec<Warning>) -> Vec<GeneratedFile> {
-    vec![
+/// @input `standard_intents` 为真时，为声明了 `implements` 的工具追加 Android 系统意图输出（[`standard`]）；
+/// 为假时输出与未声明 `implements` 相同。
+pub fn generate(
+    model: &Model,
+    package: &str,
+    standard_intents: bool,
+    warnings: &mut Vec<Warning>,
+) -> Vec<GeneratedFile> {
+    let mut files = vec![
         kotlin::generate(model, package),
         file(
             format!("{}AppFunctions.kt", model.module),
             functions_file(model, package),
         ),
-    ]
+    ];
+    if standard_intents {
+        files.extend(standard::generate(model, package, warnings));
+    }
+    files
 }
 
 /// 嵌套对象 → `@AppFunctionSerializable` 类名。
