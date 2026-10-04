@@ -55,6 +55,15 @@ napi = { version = "3", default-features = false }
 napi-derive = "3"
 napi-build = "2"
 
+# 开发 / 测试：调试信息只保留行号（panic 回溯仍有文件与行号），依赖不带调试信息——测试程序多（hub 等几十个集成测试），
+# 全量调试信息让每次链接与写盘（仓库在 /mnt/d，WSL 小文件 IO 慢）成为主要耗时。需要调试器看变量时临时设
+# CARGO_PROFILE_DEV_DEBUG=2。
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = true
 codegen-units = 1
