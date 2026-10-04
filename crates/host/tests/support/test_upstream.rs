@@ -5,6 +5,8 @@
 //! - 工具 `typed()`：声明 `outputSchema`（`{n: number}`），但返回不符合的 `structuredContent`（Hub 不核对上游结果的 schema）；
 //! - 工具 `blob({bytes})`：返回指定字节数的文本（用于测试结果大小上限）；
 //! - 资源 `demo://greeting`；
+//! - MCP Apps：声明扩展 `io.modelcontextprotocol/ui`；客户端也声明时工具 `widget` 带 `_meta.ui.resourceUri`（及平铺键），
+//!   界面资源 `ui://widget/view.html` 不在资源列表中（规范允许），只能按 URI 读取；
 //! - `instructions` 超过 100 字符，用于测试上游总览。
 //!
 //! 仅供集成测试使用（`crates/host/tests/it/upstream_http.rs` 通过 `CARGO_BIN_EXE_app-mcp-test-upstream` 启动）。
@@ -12,8 +14,8 @@
 use std::sync::{Arc, Mutex};
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ExtensionCapabilities, ListResourcesResult,
+    ListToolsResult, MetaObject, PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams,
     ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
     ServerConfig, Tool,
 };
@@ -26,6 +28,9 @@ struct Echo {
     extra: Arc<Mutex<Vec<String>>>,
 }
 
+const UI_EXTENSION: &str = "io.modelcontextprotocol/ui";
+const WIDGET_URI: &str = "ui://widget/view.html";
+
 fn schema(v: Value) -> Map<String, Value> {
     match v {
         Value::Object(m) => m,
@@ -35,11 +40,12 @@ fn schema(v: Value) -> Map<String, Value> {
 
 impl ServerHandler for Echo {
     fn get_info(&self) -> ServerConfig {
-        let caps = ServerCapabilities::builder()
+        let mut caps = ServerCapabilities::builder()
             .enable_tools()
             .enable_tool_list_changed()
             .enable_resources()
             .build();
+        caps.extensions = Some(ExtensionCapabilities::from([(UI_EXTENSION.to_owned(), schema(json!({})))]));
         let instructions = format!("回显服务器：{}。这里是正文部分。", "用于测试".repeat(30));
         ServerConfig::new(caps)
             .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
@@ -49,8 +55,13 @@ impl ServerHandler for Echo {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        let client_ui = context
+            .peer
+            .peer_info()
+            .and_then(|i| i.capabilities.extensions.as_ref().map(|e| e.contains_key(UI_EXTENSION)))
+            .unwrap_or(false);
         let text_schema = json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]});
         let mut tools = vec![
             Tool::new("echo", "原样返回文本", schema(text_schema)),
@@ -72,6 +83,14 @@ impl ServerHandler for Echo {
                 schema(json!({"type": "object", "properties": {"bytes": {"type": "integer"}}})),
             ),
         ];
+        if client_ui {
+            let mut widget = Tool::new("widget", "带界面的工具", schema(json!({"type": "object"})));
+            widget.meta = Some(MetaObject::from(schema(json!({
+                "ui": {"resourceUri": WIDGET_URI, "visibility": ["model", "app"]},
+                "ui/resourceUri": WIDGET_URI,
+            }))));
+            tools.push(widget);
+        }
         let extra = self.extra.lock().map(|e| e.clone()).unwrap_or_default();
         for name in extra {
             tools.push(Tool::new(
@@ -138,10 +157,12 @@ impl ServerHandler for Echo {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
-        if request.uri != "demo://greeting" {
-            return Err(ErrorData::resource_not_found("no such resource", None));
-        }
-        Ok(ReadResourceResult::new(vec![ResourceContents::text("你好，上游", request.uri)]).into())
+        let contents = match request.uri.as_str() {
+            "demo://greeting" => ResourceContents::text("你好，上游", request.uri),
+            WIDGET_URI => ResourceContents::text("<p>widget</p>", request.uri).with_mime_type("text/html;profile=mcp-app"),
+            _ => return Err(ErrorData::resource_not_found("no such resource", None)),
+        };
+        Ok(ReadResourceResult::new(vec![contents]).into())
     }
 }
 

@@ -48,7 +48,7 @@
 |---|---|---|
 | U1 | 断线 / 唤醒重连后，进行中的写调用是否会被重发（决定 N7 幂等的紧迫度） | **先验证**：读 `crates/core` 调用队列与 `crates/hub` 派发重试路径，写复现测试；结论写回本文件 |
 | U2 | MCP 侧传句柄的载体（`resource_link` 内容 + Hub 自有 URI 方案）与各 Agent 的呈现 | **验证**：以 MCP 2025-11-25 规范与 Claude Code 实测为准；第 12 项无会话协议下句柄的生命周期一并设计 |
-| U3 | MCP Apps（UI 资源扩展）的规范现状与 Agent 支持面 | **验证**：查官方规范与 Claude Code 支持情况；未确认前不实施 N8 |
+| U3 | MCP Apps（UI 资源扩展）的规范现状与 Agent 支持面 | **已核实（2026-10-04）**：官方扩展 `io.modelcontextprotocol/ui`（`modelcontextprotocol/ext-apps`，规范 2026-01-26，Stable，SEP-1865）；工具 `_meta.ui.resourceUri` 指向 `ui://` 资源（mimeType `text/html;profile=mcp-app`），宿主在沙箱 iframe 中渲染，iframe 经 postMessage 走 `ui/*` 与代理 `tools/call`；扩展须双方声明（`capabilities.extensions`）。支持面：Claude 网页版 / Desktop、ChatGPT、Cursor、VS Code Copilot 等（modelcontextprotocol.io/extensions/client-matrix）；Claude 文档明确 Claude Code 只当文本工具、不渲染；claude.ai / Desktop 按 URL 添加的服务器从云端连接、连不到 localhost，Desktop 经 stdio 的本地服务器可渲染（本仓库 stdio 模式未实测）。rmcp 3.5.0 只有通用 `extensions` 字段，无 MCP Apps 专用类型。**发现现状缺陷**：Hub 聚合上游时工具 `_meta` 原样保留（`crates/hub/src/hub/exposure.rs`），但上游资源 URI 被改写为 `app-mcp://<上游>/<编码>`（`crates/hub/src/hub/upstreams.rs`），工具里的 `ui://` 在 Hub 侧读不到。**决定（2026-10-04，机主）**：先修上游透传（N8a）；App 自带界面（N8b）推迟，等 Claude Code 支持或实测 Desktop 经 stdio 可渲染后再定 |
 | U4 | 标准意图词表的来源（自定义 vs 对齐 schema.org Actions / App Intents 领域 / AppFunctions 预置 schema） | **调研**后定词表；先做 5 个高频动词试点 |
 | U5 | 本地向量检索的体积与依赖（移动端 `mobile` 精简包能否承受） | **保守**：默认关键词 + 使用统计排序；向量检索为可选特性（cargo feature），默认关闭 |
 | U6 | 信息流控制的标签传播粒度（整次结果 vs 字段级）与误伤率 | **保守**：先做结果级标签 + 只拦"私密 → 外发"一类；记录拦截次数后再细化 |
@@ -397,8 +397,10 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
 
 ### 第五部分：依赖外部规范 / 远程（最后）
 
-- **N7b 预演与跨 App 补偿**：工具可选 `preview`（返回将执行的操作，供 Agent 展示）；多步操作失败时按 `undo` 逆序补偿（依赖第 15 项 X2）。
-- **N8 App 界面嵌入 Agent**：U3 确认后再定。
+- **N7b 预演与跨 App 补偿**：工具可选 `preview`（返回将执行的操作，供 Agent 展示）；多步操作失败时按 `undo` 逆序补偿（依赖第 15 项 X2）。按第 15 项 U3 决定，Hub 只提供按 `callId` 撤销的机制（`apps.undo`），逆序补偿由 Agent 编排（Hub 不代 Agent 发起调用）。
+- **N8 App 界面嵌入 Agent**（U3 已核实）：
+  - N8a 上游 MCP Apps 透传：上游工具 `_meta.ui.resourceUri` 指向的 `ui://` 资源经 Hub 可读（URI 与资源列表一致），按需声明 `io.modelcontextprotocol/ui` 扩展能力；纯机制，先做。
+  - N8b App 自带界面资源（协议 / 清单声明 HTML 与 CSP，Hub 原样转发，iframe 发起的调用标记来源）：推迟。若做，界面资源只允许清单静态声明（休眠时可列可读，不为界面唤醒 App）。
 - **N9 跨设备接力**：依赖第 15 项 R1 远程鉴权设计。
 - **N10 本地小模型辅助**：工具排序、参数提示、敏感信息识别；可选、默认关闭。按 `CLAUDE.md`「微内核范围」属于用户态服务，实施前重新评估是否留在本库。
 

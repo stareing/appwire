@@ -8,7 +8,8 @@ use rmcp::service::NotificationContext;
 use rmcp::transport::TokioChildProcess;
 use rmcp::{ClientHandler, RoleClient, ServiceExt};
 
-use super::UpstreamConfig;
+use super::ui::{declares_mcp_apps, mcp_apps_extension};
+use super::{UpstreamConfig, UpstreamHello};
 use crate::hub::HubShared;
 
 const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
@@ -42,8 +43,9 @@ impl ClientHandler for UpstreamClient {
     }
 
     fn get_info(&self) -> ClientConfig {
+        // 声明 MCP Apps 扩展：上游据此在工具中给出界面资源，Hub 原样透传给 Agent（spec/hub-api.md 3.22）
         ClientConfig::new(
-            ClientCapabilities::default(),
+            ClientCapabilities::builder().enable_extensions_with(mcp_apps_extension()).build(),
             Implementation::new("app-mcp-host", env!("CARGO_PKG_VERSION")),
         )
     }
@@ -81,7 +83,9 @@ pub(crate) async fn run(shared: Arc<HubShared>, name: String, config: UpstreamCo
                     .and_then(|i| i.server_info.as_ref())
                     .map(|s| s.title.clone().unwrap_or_else(|| s.name.clone()));
                 tracing::info!(upstream = %name, tools = tools.len(), resources = resources.len(), "上游 MCP 服务器已连接");
-                shared.upstream_connected(&name, peer, tools, resources, instructions, server_name);
+                let mcp_apps = declares_mcp_apps(caps.extensions.as_ref());
+                let hello = UpstreamHello { tools, resources, instructions, server_name, mcp_apps };
+                shared.upstream_connected(&name, peer, hello);
                 match service.waiting().await {
                     Ok(reason) => {
                         tracing::warn!(upstream = %name, ?reason, "上游 MCP 服务器已断开")

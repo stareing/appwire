@@ -14,6 +14,7 @@ use crate::result_cache::ResourceCacheHint;
 use crate::task::CallerKey;
 use crate::types::ResourceContent;
 use crate::upstream::decode_uri_component;
+use crate::upstream::ui::{decode_upstream_ui_uri, parse_upstream_ui_uri};
 
 use super::results::to_mcp_error;
 
@@ -27,6 +28,9 @@ pub(crate) async fn read_resource(
     caller: &CallerKey,
     bypass: bool,
 ) -> Result<(ReadResourceResult, Option<ResourceCacheHint>), McpError> {
+    if let Some((upstream, encoded)) = parse_upstream_ui_uri(uri) {
+        return read_upstream_ui_resource(shared, upstream, encoded, uri, caller).await;
+    }
     let Some((app_id, name)) = parse_resource_uri(uri) else {
         return Err(McpError::resource_not_found(
             format!("无法识别的资源 URI：{uri}"),
@@ -66,6 +70,23 @@ pub(crate) async fn read_resource(
     check_resource_size(shared, app_id, uri, std::slice::from_ref(&contents))?;
     let hint = policy.map(|p| shared.store_resource_cache(caller, app_id, name, p, &contents, epoch));
     Ok((ReadResourceResult::new(vec![contents]), hint))
+}
+
+/// 上游 MCP Apps 界面资源 `ui://<上游名>/<编码>`（spec/hub-api.md 3.22）：只路由到上游，不经结果缓存；隐藏规则同其他上游资源。
+async fn read_upstream_ui_resource(
+    shared: &Arc<HubShared>,
+    upstream: &str,
+    encoded: &str,
+    uri: &str,
+    caller: &CallerKey,
+) -> Result<(ReadResourceResult, Option<ResourceCacheHint>), McpError> {
+    let not_found = || McpError::resource_not_found(format!("资源「{uri}」不存在"), Some(json!({ "kind": ErrorKind::ResourceNotFound })));
+    let _activity = shared.session_request(caller);
+    if shared.app_hidden_hit(upstream) || decode_upstream_ui_uri(encoded).is_none() {
+        return Err(not_found());
+    }
+    let peer = shared.upstream_peer(upstream).ok_or_else(not_found)?;
+    read_upstream_resource(shared, upstream, encoded, uri, peer).await.map(|r| (r, None))
 }
 
 async fn read_upstream_resource(

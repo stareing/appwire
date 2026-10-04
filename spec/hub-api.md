@@ -1428,6 +1428,28 @@ App 在工具 / 资源声明中给出 `cache: {ttlMs, scope?}`（spec/protocol.m
 - Hub API `CallOutcome` 不带弃用字段（`HubTool.deprecated` 已足够）；格式导出（第 5 节）暂不加弃用前缀。
 - 实现：判定 `crates/protocol/src/schema_compat.rs`；Hub 接入 `crates/hub/src/schema_evolution/`。
 
+### 3.22 上游资源 URI 与 MCP Apps 界面透传（第 16 项 N8a）
+
+MCP Apps（扩展 `io.modelcontextprotocol/ui`，modelcontextprotocol/ext-apps 规范 2026-01-26）：工具 `_meta.ui.resourceUri` 指向
+`ui://` 界面资源，宿主经同一服务器的 `resources/read` 读取后在沙箱 iframe 中渲染。Hub 只透传上游 MCP 服务器的界面，**自身不提供界面、
+不评估 HTML、不改变可见性**；是否渲染、是否信任由 Agent 决定（`CLAUDE.md`「微内核范围」）。App 自带界面（N8b）未定，见
+`docs/plans/16-agent-os.md` 第五部分。
+
+- **上游资源在 Hub 侧的 URI**（唯一定义 `crates/hub/src/upstream/ui.rs` `hub_upstream_uri`）：原 URI 以 `ui://` 开头 →
+  `ui://<上游名>/<编码后的原 URI>`（规范要求界面资源必须用 `ui://`）；其余 → `app-mcp://<上游名>/<编码后的原 URI>`。编码为 RFC 3986
+  unreserved 之外逐字节 `%XX`。MCP `resources/list` 与 Hub API `resources()` 列出的上游资源、读取结果中与原 URI 相同的内容 URI 都用此形式。
+- **上游工具 `_meta`**：`ui.resourceUri` 与已弃用的平铺键 `ui/resourceUri` 的值为 `ui://` 字符串时改写为上述 Hub 侧 URI（上游工具
+  列表到达时改写一次，此后 `tools/list` 等各出口一致）；其余 `_meta`（`ui.visibility`、`ui.csp` 等）原样。`ui.visibility` 不含
+  `model` 的工具照常列出：按规范由宿主从模型可见的列表中去掉。
+- **读取**：`ui://<上游名>/<编码>` 只路由到该上游（上游未在 `resources/list` 列出也可读，规范允许界面资源不列出）；上游名未知、
+  被 `hide`、编码非法或还原后不是 `ui://` 时为资源不存在（`ResourceNotFound`）；上游未连接为 `APP_DISCONNECTED`。不经只读结果缓存
+  （3.20）、不可订阅，大小上限同其他资源（3.11）。
+- **扩展能力**：Hub 作为上游的 MCP 客户端声明 `extensions["io.modelcontextprotocol/ui"] = {"mimeTypes": ["text/html;profile=mcp-app"]}`
+  （上游据此给出界面）；Hub 作为服务器在 `initialize` / `server/discover` 时，只要有已连接上游声明了该扩展，就声明同样的扩展能力。
+  Agent 未声明该扩展时界面元信息照常透传，由其忽略。
+- 未覆盖：iframe 经宿主代理发来的 `tools/call` 与模型发起的调用不可区分（规范未给来源标记）；`apps.tools` / `apps.search` 的上游工具
+  条目不按 `ui.visibility` 过滤。
+
 ## 4. 进程内 App（可选，M2）
 
 `Hub::attach_local(hello) -> LocalAppChannel`：厂商自带的系统 App 与 Hub 同进程时，

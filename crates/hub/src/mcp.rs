@@ -102,13 +102,19 @@ impl McpSession {
 
     /// 服务器信息（`initialize` 与 `server/discover` 共用），`instructions` 由调用方按两代给出。
     fn server_config(&self, instructions: String) -> ServerConfig {
-        let capabilities = ServerCapabilities::builder()
+        #[cfg_attr(not(feature = "upstream"), allow(unused_mut))]
+        let mut capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_tool_list_changed()
             .enable_resources()
             .enable_resources_list_changed()
             .enable_resources_subscribe()
             .build();
+        // MCP Apps：有已连接上游声明该扩展时才声明（Hub 只透传上游界面，自身不提供，spec/hub-api.md 3.22）
+        #[cfg(feature = "upstream")]
+        if self.shared.upstreams_declare_mcp_apps() {
+            capabilities.extensions = Some(crate::upstream::ui::mcp_apps_extension());
+        }
         ServerConfig::new(capabilities)
             .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
             .with_server_info(Implementation::new(

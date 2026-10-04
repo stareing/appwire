@@ -9,10 +9,9 @@ use crate::overview::{Overview, OverviewSource};
 use crate::types::HubEvent;
 use crate::upstream::UpstreamState;
 #[cfg(feature = "mcp-server")]
-use crate::upstream::encode_uri_component;
-
-#[cfg(feature = "mcp-server")]
-use super::resource_uri;
+use crate::upstream::ui::hub_upstream_uri;
+#[cfg(feature = "upstream")]
+use crate::upstream::{UpstreamHello, ui::rewrite_tool_ui_meta};
 use super::{HubShared, lock};
 
 impl HubShared {
@@ -47,21 +46,14 @@ impl HubShared {
     }
 
     #[cfg(feature = "upstream")]
-    pub(crate) fn upstream_connected(
-        &self,
-        name: &str,
-        peer: Peer<RoleClient>,
-        tools: Vec<Tool>,
-        resources: Vec<Resource>,
-        instructions: Option<String>,
-        server_name: Option<String>,
-    ) {
+    pub(crate) fn upstream_connected(&self, name: &str, peer: Peer<RoleClient>, hello: UpstreamHello) {
         if let Some(st) = lock(&self.upstreams).get_mut(name) {
             st.peer = Some(peer);
-            st.tools = tools;
-            st.resources = resources;
-            st.instructions = instructions;
-            st.server_name = server_name;
+            st.tools = with_hub_ui_uris(name, hello.tools);
+            st.resources = hello.resources;
+            st.instructions = hello.instructions;
+            st.server_name = hello.server_name;
+            st.mcp_apps = hello.mcp_apps;
             st.last_error = None;
         }
         self.emit(HubEvent::UpstreamState {
@@ -78,6 +70,7 @@ impl HubShared {
         if let Some(st) = lock(&self.upstreams).get_mut(name) {
             let was_connected = st.connected();
             st.peer = None;
+            st.mcp_apps = false;
             st.tools.clear();
             st.resources.clear();
             st.restarts += 1;
@@ -100,7 +93,7 @@ impl HubShared {
     #[cfg(feature = "upstream")]
     pub(crate) fn set_upstream_tools(&self, name: &str, tools: Vec<Tool>) {
         if let Some(st) = lock(&self.upstreams).get_mut(name) {
-            st.tools = tools;
+            st.tools = with_hub_ui_uris(name, tools);
         }
         self.mark_tools_changed();
     }
@@ -113,7 +106,7 @@ impl HubShared {
         self.mark_resources_changed();
     }
 
-    /// 已连接上游的资源，URI 改为 `app-mcp://<name>/<编码后的上游 URI>`。
+    /// 已连接上游的资源，URI 改为 Hub 侧 URI（[`hub_upstream_uri`]）。
     #[cfg(feature = "mcp-server")]
     pub(crate) fn upstream_resources(&self) -> Vec<Resource> {
         let policy = self.policy();
@@ -122,7 +115,7 @@ impl HubShared {
         for (name, st) in ups.iter().filter(|(name, _)| policy.app_hidden(name).is_none()) {
             for r in &st.resources {
                 let mut r = r.clone();
-                r.uri = resource_uri(name, &encode_uri_component(&r.uri));
+                r.uri = hub_upstream_uri(name, &r.uri);
                 r.name = format!("{name}.{}", r.name);
                 out.push(r);
             }
@@ -130,6 +123,20 @@ impl HubShared {
         out
     }
 
+    /// 是否有已连接的上游声明了 MCP Apps 扩展（Hub 作为服务器据此声明，spec/hub-api.md 3.22）。
+    #[cfg(all(feature = "mcp-server", feature = "upstream"))]
+    pub(crate) fn upstreams_declare_mcp_apps(&self) -> bool {
+        lock(&self.upstreams).values().any(|st| st.connected() && st.mcp_apps)
+    }
+}
+
+/// 上游工具存入状态前把 `_meta` 中的界面资源 URI 改为 Hub 侧 URI：此后各暴露路径看到的都是可经 Hub 读取的 URI。
+#[cfg(feature = "upstream")]
+fn with_hub_ui_uris(name: &str, mut tools: Vec<Tool>) -> Vec<Tool> {
+    for t in &mut tools {
+        rewrite_tool_ui_meta(name, t);
+    }
+    tools
 }
 
 /// 上游的总览：取 `instructions` 的前 100 个字符为简介，其余（≤ 2000）为正文。

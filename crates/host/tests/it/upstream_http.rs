@@ -427,3 +427,46 @@ async fn http_origin_and_bind_checks() {
     assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(host.serve_http("0.0.0.0:0", true).await.is_ok());
 }
+
+/// MCP Apps 透传（spec/hub-api.md 3.22，第 16 项 N8a）：上游工具 `_meta` 的界面资源 URI 改写为 `ui://<上游名>/<编码>`，
+/// 经 Hub 可读（上游未列出该资源也可读），内容 URI 与 mimeType 一致；Hub 作为客户端向上游声明扩展（否则上游不给出 `widget`），
+/// 有上游声明扩展时 Hub 作为服务器也声明；伪造的 `ui://` URI（未知上游、还原后不是 `ui://`）按不存在处理。
+#[tokio::test]
+async fn upstream_mcp_apps_ui_resources_pass_through() {
+    let host = Host::start(HostConfig { upstreams: upstreams(&["echo"]), ..config() }).await.unwrap();
+    let probe = duplex_client(&host).await;
+    wait_tools(&probe, |n| has(n, "echo.widget")).await;
+    probe.cancel().await.ok();
+    // 上游已连接后建立的会话：服务器能力含 MCP Apps 扩展
+    let client = duplex_client(&host).await;
+    let caps = &client.peer_info().expect("server info").capabilities;
+    assert!(caps.extensions.as_ref().is_some_and(|e| e.contains_key("io.modelcontextprotocol/ui")), "{caps:?}");
+
+    let tools = client.list_all_tools().await.unwrap();
+    let widget = tools.iter().find(|t| t.name == "echo.widget").expect("widget");
+    let meta = widget.meta.as_ref().expect("_meta");
+    let ui_uri = meta["ui"]["resourceUri"].as_str().expect("resourceUri").to_owned();
+    assert_eq!(ui_uri, "ui://echo/ui%3A%2F%2Fwidget%2Fview.html");
+    assert_eq!(meta["ui/resourceUri"], ui_uri);
+    assert_eq!(meta["ui"]["visibility"], json!(["model", "app"]));
+
+    let read = client.read_resource(ReadResourceRequestParams::new(ui_uri.clone())).await.unwrap();
+    let ResourceContents::TextResourceContents { text, uri, mime_type, .. } = &read.contents[0] else { panic!("text") };
+    assert_eq!(text, "<p>widget</p>");
+    assert_eq!(uri, &ui_uri);
+    assert_eq!(mime_type.as_deref(), Some("text/html;profile=mcp-app"));
+    // 非界面资源仍是 app-mcp:// 形式
+    let resources = client.list_all_resources().await.unwrap();
+    assert!(resources.iter().any(|r| r.uri == "app-mcp://echo/demo%3A%2F%2Fgreeting"));
+
+    for forged in [
+        "ui://nobody/ui%3A%2F%2Fwidget%2Fview.html".to_owned(),
+        format!("ui://echo/{}", "demo%3A%2F%2Fgreeting"),
+        "ui://echo/%zz".to_owned(),
+    ] {
+        let err = client.read_resource(ReadResourceRequestParams::new(forged.clone())).await.expect_err(&forged);
+        assert!(err.to_string().contains("不存在"), "{forged}: {err}");
+    }
+    client.cancel().await.ok();
+    host.shutdown().await;
+}

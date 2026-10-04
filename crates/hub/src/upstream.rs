@@ -1,5 +1,5 @@
 //! 上游 MCP 服务器：Host 以子进程启动已有的 MCP 服务器（stdio），作为 MCP 客户端连接，
-//! 把其工具以 `<name>.<tool>`、资源以 `app-mcp://<name>/<编码后的上游 URI>` 聚合进来。
+//! 把其工具以 `<name>.<tool>`、资源以 `app-mcp://<name>/<编码后的上游 URI>`（MCP Apps 界面资源为 `ui://<name>/…`，见 [`ui`]）聚合进来。
 //!
 //! 上游退出后标记为未连接，并按指数退避重启（500ms 起、×2、最大 30s；
 //! 连续运行超过 30s 后重置退避计数）。
@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 mod client;
 #[cfg(feature = "upstream")]
 pub(crate) use client::run;
+/// 上游资源的 Hub 侧 URI 与 MCP Apps 界面透传。
+pub mod ui;
 
 /// 一个上游 MCP 服务器的启动方式。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +118,16 @@ pub fn split_command_line(s: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// 上游连接成功时取得的信息（`initialize` 结果与首次列表）。
+#[cfg(feature = "upstream")]
+pub(crate) struct UpstreamHello {
+    pub tools: Vec<Tool>,
+    pub resources: Vec<Resource>,
+    pub instructions: Option<String>,
+    pub server_name: Option<String>,
+    pub mcp_apps: bool,
+}
+
 /// 上游的运行状态。
 #[derive(Debug, Default)]
 pub struct UpstreamState {
@@ -128,6 +140,8 @@ pub struct UpstreamState {
     pub instructions: Option<String>,
     /// 上游自报的名称（`serverInfo.title` 或 `serverInfo.name`）。
     pub server_name: Option<String>,
+    /// 上游在 `initialize` 结果中声明了 MCP Apps 扩展（[`ui::MCP_APPS_EXTENSION`]）。
+    pub mcp_apps: bool,
     pub restarts: u32,
     pub last_error: Option<String>,
 }

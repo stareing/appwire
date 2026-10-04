@@ -19,7 +19,7 @@ use crate::types::{
     AppInfo, AppKind, AppOverviewInfo, ApprovalHandler, CallOutcome, CallRequest, HubError, HubEvent, HubResource,
     HubStatus, HubTool, PairingHandler, ResourceContent, ToolFilter,
 };
-use crate::upstream::encode_uri_component;
+use crate::upstream::ui::hub_upstream_uri;
 use crate::wake::Waker;
 
 use super::{API_SUBSCRIBER, Hub, LocalAppChannel, lock, overview_info, parse_resource_uri, resource_uri};
@@ -85,7 +85,7 @@ impl Hub {
         for (name, st) in lock(&self.shared.upstreams).iter() {
             for r in &st.resources {
                 out.push(HubResource {
-                    uri: resource_uri(name, &encode_uri_component(&r.uri)),
+                    uri: hub_upstream_uri(name, &r.uri),
                     name: format!("{name}.{}", r.name),
                     app_id: name.clone(),
                     description: r.description.clone().unwrap_or_default(),
