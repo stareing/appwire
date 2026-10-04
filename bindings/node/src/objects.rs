@@ -213,6 +213,8 @@ pub struct ToolSpecInit {
     pub concurrency: Option<u32>,
     /// 互斥组（spec/protocol.md 5.3）：同组的工具同一时刻至多一个在执行。
     pub exclusive: Option<String>,
+    /// 实现的标准意图（spec/intents.md），如 `["message.send@1"]`。
+    pub implements: Option<Vec<String>>,
 }
 
 /// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。
@@ -297,6 +299,7 @@ impl ToolSpecInit {
             background_tool: self.background_tool.take(),
             concurrency: self.concurrency.take().unwrap_or(0),
             exclusive: self.exclusive.take(),
+            implements: self.implements.take().unwrap_or_default(),
         };
         Ok((self.into_spec()?, options))
     }

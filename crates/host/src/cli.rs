@@ -9,7 +9,9 @@ use crate::setup::agents::{AgentSelection, parse_selection};
 mod admin_commands;
 mod hub_args;
 
-pub use admin_commands::{AgentCommand, AppAction, AppInstallArgs, AppTargetArgs, AppUninstallArgs, PolicyCommand, PolicyRuleArgs};
+pub use admin_commands::{
+    AgentCommand, AppAction, AppInstallArgs, AppTargetArgs, AppUninstallArgs, IntentsCommand, PolicyCommand, PolicyRuleArgs,
+};
 pub use hub_args::{HubArgs, LegacyArgs, ServeArgs, ServiceInstallArgs, StdioArgs};
 
 /// 本地 MCP Host：聚合本机各 App 的工具并以 MCP 暴露给模型。
@@ -73,6 +75,12 @@ pub enum Command {
     Agent {
         #[command(subcommand)]
         action: AgentCommand,
+    },
+    /// 标准意图的默认 App（<home>/intents.json）：apps.intents 把默认工具排在最前并标 default（只是提示，Hub 不据此路由；
+    /// spec/intents.md 第 4 节）。
+    Intents {
+        #[command(subcommand)]
+        action: IntentsCommand,
     },
     /// 按名寻址的 App 登记（spec/naming.md 4.1、4.3、4.4、5.3）：生成 App 登记文件（Linux 另生成 D-Bus 激活文件
     /// `$XDG_DATA_HOME/dbus-1/services/dev.appmcp.App.<appId>.service`；Windows 写 `%LOCALAPPDATA%\app-mcp\apps\<appId>.json`；

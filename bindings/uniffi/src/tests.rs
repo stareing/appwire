@@ -136,6 +136,7 @@ fn tool_spec_conversion() {
         background_tool: None,
         concurrency: 0,
         exclusive: None,
+        implements: Vec::new(),
     };
     let (n, options): (native::ToolSpec, native::ToolOptions) = spec.clone().into();
     assert_eq!(n.risk, native::Risk::Write);
@@ -153,10 +154,12 @@ fn tool_spec_conversion() {
         surface: Some(ToolSurface::View),
         page: Some("cart".into()),
         background_tool: Some("cart.add_bg".into()),
+        implements: vec!["message.send@1".into()],
         ..spec
     }
     .into();
     assert_eq!(n.risk, native::Risk::OsSensitive);
+    assert_eq!(options.implements, ["message.send@1"], "implements 原样传给原生运行时");
     assert_eq!((options.surface, options.page.as_deref()), (native::ToolSurface::View, Some("cart")));
     assert_eq!(options.background_tool.as_deref(), Some("cart.add_bg"));
     let a = options.annotations.expect("annotations");
@@ -386,6 +389,7 @@ fn read_and_call_failures_reach_host() {
             background_tool: None,
             concurrency: 0,
             exclusive: None,
+            implements: Vec::new(),
         };
         keep.push(client.register_tool(spec, Arc::new(UserActionTool)).expect("tool"));
     }
@@ -454,6 +458,7 @@ fn idempotency_key_reaches_handler() {
         background_tool: None,
         concurrency: 0,
         exclusive: None,
+        implements: Vec::new(),
     };
     let _tool = client.register_tool(spec, Arc::new(KeyTool)).expect("tool");
     client.start();

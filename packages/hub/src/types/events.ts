@@ -1,5 +1,19 @@
 /** @app-mcp/hub 的公开类型：App 事件、订阅与信箱（spec/hub-api.md 3.17）。 */
 
+/**
+ * 事件信箱上限（`HubConfig.eventLimits`）。每项可选，缺省取默认值；超出时的行为见各字段。
+ */
+export interface EventLimitsConfig {
+  /** 每个订阅方最多的订阅数，缺省 32；超出时 `apps.events.subscribe` 报 `RATE_LIMITED`（`details.scope = 'events'`）。 */
+  maxSubscriptions?: number
+  /** 每个信箱最多的事件数，缺省 100（至少按 1 处理）；满时丢最旧并计入 `dropped`。 */
+  maxInboxEvents?: number
+  /** 信箱中事件的保留时长（毫秒），缺省 86400000（24 小时）；过期的在下次读写该信箱时清理。 */
+  inboxTtlMs?: number
+  /** 每个订阅每分钟（滑动窗口）最多入箱的事件数，缺省 60；0 不限。 */
+  perSubscriptionPerMinute?: number
+}
+
 /** App 发出、经 Hub 去重与校验后的一个事件（{@link HubEvent} `appEvent`、{@link EventHandler}、内置工具 `apps.events`）。 */
 export interface AppEvent {
   /** Hub 分配：`ev-<n>`。 */

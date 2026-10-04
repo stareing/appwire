@@ -88,3 +88,25 @@ fn app_event_reaches_listener_handler_and_inbox() {
     app.stop();
     hub.shutdown();
 }
+
+/// `HubConfig.event_limits` 经绑定生效：`max_subscriptions = 1` 时第二个订阅 → `RATE_LIMITED`（`scope: "events"`）。
+#[test]
+fn event_limits_max_subscriptions_applies() {
+    let shop = r#"{"manifestVersion":1,"appId":"shop","name":"商城","tools":[]}"#;
+    let hub = AppMcpHub::start(HubConfig {
+        enable_listen: false,
+        enable_ipc: false,
+        manifests_json: vec![shop.into()],
+        event_limits: Some(EventLimitOverrides { max_subscriptions: Some(1), ..Default::default() }),
+        ..Default::default()
+    })
+    .expect("启动 Hub");
+    session_call(&hub, "apps.events.subscribe", json!({"appId": "shop", "event": "a"}));
+    let req = CallRequest { session: Some("s1".into()), ..req("apps.events.subscribe", json!({"appId": "shop", "event": "b"})) };
+    let out = wait(hub.call_tool(req)).expect("调用");
+    let err = out.error.expect("超出订阅上限");
+    assert_eq!(err.kind, "RATE_LIMITED", "{err:?}");
+    let details: Value = serde_json::from_str(err.details_json.as_deref().unwrap_or("null")).unwrap_or_default();
+    assert_eq!(details["scope"], "events", "{details}");
+    hub.shutdown();
+}

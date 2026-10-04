@@ -10,7 +10,7 @@ use crate::hub::HubShared;
 use crate::types::{Availability, HubTool};
 
 /// 一个候选工具与其上下文文本（App 名称、所在页面的标题与描述）。
-pub(super) struct Candidate {
+pub(crate) struct Candidate {
     pub tool: HubTool,
     pub context: Vec<String>,
 }
@@ -20,7 +20,7 @@ type PageText = (Option<String>, Option<String>);
 
 impl HubShared {
     /// `app`：只取该 appId（或上游名）的工具；`None` = 全部。
-    pub(super) fn search_candidates(&self, app: Option<&str>) -> Vec<Candidate> {
+    pub(crate) fn search_candidates(&self, app: Option<&str>) -> Vec<Candidate> {
         let wanted = |a: &str| app.is_none_or(|x| x == a);
         let mut seen: HashSet<String> = HashSet::new();
         let mut tools: Vec<HubTool> = self

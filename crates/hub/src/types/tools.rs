@@ -44,6 +44,9 @@ pub struct HubTool {
     /// App 工具所在页面（声明的 `page`，或页面目录中的页面，spec/hub-api.md 3.14）；不属于页面时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<String>,
+    /// App 工具声明实现的标准意图（spec/intents.md，如 `message.send@1`）；未声明、内置与上游工具为空（空时不序列化）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implements: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

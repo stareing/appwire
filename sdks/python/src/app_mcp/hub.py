@@ -47,12 +47,14 @@ _log = logging.getLogger("app_mcp.hub")
 
 from ._hub_config import (  # noqa: E402  字典形式的配置 → 生成的记录类型
     AgentsLike,
+    EventLimitsLike as EventLimitsLike,
     LimitsLike as LimitsLike,
     OutputValidationLike as OutputValidationLike,
     PolicyLike,
     RiskLike,
     _agents,
     _enum,
+    _event_limits,
     _limits,
     _output_validation,
     _policy,
@@ -144,6 +146,9 @@ AppEvent = ffi.AppEvent
 EventsStatus = ffi.EventsStatus
 #: 一个订阅：``subscription_id``、``subscriber``、``app_id``、``event``、``delivered``、``dropped``、``pending``。
 EventSubscriptionStatus = ffi.EventSubscriptionStatus
+#: 事件信箱上限（``HubConfig.event_limits``）：``max_subscriptions``、``max_inbox_events``、``inbox_ttl_ms``、
+#: ``per_subscription_per_minute``；为空的字段取默认值（32 / 100 / 24 小时 / 60）。
+EventLimitOverrides = ffi.EventLimitOverrides
 # 资源保护与工具声明（spec/hub-api.md 3.11）。
 #: 限流与大小上限（``HubConfig.limits``；``HubStatus.limits`` 为全部字段给出的生效值）。为空的字段取默认值。
 LimitsConfig = ffi.LimitsConfig
@@ -202,6 +207,7 @@ __all__ = [
     "ContentAnnotations",
     "DiagnosticReport",
     "DormantStoreStatus",
+    "EventLimitOverrides",
     "EventStream",
     "EventSubscriptionStatus",
     "EventsStatus",
@@ -417,7 +423,8 @@ class Hub:
     """嵌入式 Hub。
 
     参数与 :class:`HubConfig` 字段一致（``approval_min_risk`` 可用字符串，如 ``"destructive"``；``limits`` 可用字典，
-    键同 JSON 配置，如 ``{"toolRatePerMinute": 60}``；``output_validation`` 可用 ``"off"`` / ``"log"`` / ``"reject"``；
+    键同 JSON 配置，如 ``{"toolRatePerMinute": 60}``；``event_limits`` 同样可用字典，如 ``{"maxInboxEvents": 20}``；
+    ``output_validation`` 可用 ``"off"`` / ``"log"`` / ``"reject"``；
     ``policy`` 可用 JSON 形式的字典，如 ``{"rules": [{"id": "no-pay", "action": "deny", "app": "shop", "tool": "order.*"}]}``）；
     也可直接传 ``config=HubConfig(...)``。
     """
@@ -428,6 +435,8 @@ class Hub:
                 kwargs["approval_min_risk"] = _risk(kwargs["approval_min_risk"])
             if "limits" in kwargs:
                 kwargs["limits"] = _limits(kwargs["limits"])
+            if "event_limits" in kwargs:
+                kwargs["event_limits"] = _event_limits(kwargs["event_limits"])
             if "output_validation" in kwargs:
                 kwargs["output_validation"] = _output_validation(kwargs["output_validation"])
             if kwargs.get("policy") is not None:

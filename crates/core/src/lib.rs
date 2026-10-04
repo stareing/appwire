@@ -204,18 +204,33 @@ impl Client {
     /// 工具名是 App 内的局部名，Host 对外暴露为 `<appId>.<局部名>`（spec/protocol.md 3.1）。
     /// 名称以 `<appId>.` 开头时仍按原样注册（协议语义不变），但产生 [`Event::Warning`]——
     /// 这通常是误把全名写成了局部名，对外会变成 `<appId>.<appId>.…`。
+    ///
+    /// `implements`（spec/intents.md）格式不合法返回 [`CoreError::InvalidImplements`]；动词不在词表中或不满足词表必填参数时
+    /// 照常注册，产生 [`Event::Warning`]。
     pub fn register_tool(&mut self, def: ToolDef) -> Result<ToolId, CoreError> {
         let prefixed = proto::has_app_id_prefix(&def.name, &self.config.app_id).then(|| def.name.clone());
+        let intent_warnings = registry::intent_warnings(&def);
         let id = self.registry.register_tool(def)?;
         if let Some(name) = prefixed {
             self.warn(proto::app_id_prefix_warning(&name, &self.config.app_id));
+        }
+        for w in intent_warnings {
+            self.warn(w);
         }
         Ok(id)
     }
 
     /// 更新工具。放宽了并发声明（`concurrency` / `exclusive`）时排队中的调用随即可能开始。
+    /// 改了 `implements` 或 `inputSchema` 时按 [`Client::register_tool`] 的规则重新给出标准意图的警告。
     pub fn update_tool(&mut self, tool: ToolId, update: ToolUpdate) -> Result<(), CoreError> {
+        let recheck = update.implements.is_some() || update.input_schema.is_some();
         self.registry.update_tool(tool, update)?;
+        if recheck {
+            let warnings = self.registry.tool(tool).map(registry::intent_warnings).unwrap_or_default();
+            for w in warnings {
+                self.warn(w);
+            }
+        }
         self.settle_busy();
         Ok(())
     }

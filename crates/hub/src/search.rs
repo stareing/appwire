@@ -2,7 +2,7 @@
 //!
 //! - [`score`]：分词、关键词得分、排序加成（纯函数，规则表）。
 //! - [`stats`]：按（记账主体, 工具全名）的使用统计（纯状态，只在内存）。
-//! - `candidates`：候选工具（注册表、休眠快照、清单、上游缓存、页面目录）。
+//! - `candidates`：候选工具（注册表、休眠快照、清单、上游缓存、页面目录）；`apps.intents` 复用（[`crate::intents`]）。
 //! - `builtin`：参数校验、检索与结果。
 //!
 //! @invariant 检索只读注册表与缓存：不唤醒 App、不连接上游、不新增定时器或后台任务。
@@ -10,7 +10,7 @@
 use crate::call::Body;
 
 mod builtin;
-mod candidates;
+pub(crate) mod candidates;
 pub(crate) mod score;
 pub(crate) mod stats;
 

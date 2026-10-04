@@ -176,3 +176,51 @@ fn scope_dispose_is_recursive() {
     assert!(h.c.create_scope("x", Some(page)).is_err());
     assert!(h.c.create_scope("x", Some(other)).is_ok());
 }
+
+/// 第 16 项 N4：`implements` 格式校验（注册 / 更新）、随工具同步、词表警告（spec/intents.md 第 1 节）。
+#[test]
+fn implements_validation_sync_and_warnings() {
+    let mut h = Harness::new();
+    let send_schema = json!({"type": "object", "properties": {"to": {"type": "array"}, "text": {"type": "string"}}});
+    let with = |name: &str, implements: &[&str], schema: Value| {
+        let mut t = tool(name);
+        t.implements = implements.iter().map(|s| (*s).to_owned()).collect();
+        t.input_schema = schema;
+        t
+    };
+    // 格式 / 重复 / 超过 4 项：注册失败
+    for bad in [&["message.send"][..], &["a.b@1", "a.b@1"], &["a.b@1", "a.b@2", "a.b@3", "a.b@4", "a.b@5"]] {
+        let r = h.c.register_tool(with("bad", bad, send_schema.clone()));
+        assert!(matches!(r, Err(CoreError::InvalidImplements(_))), "{bad:?}: {r:?}");
+    }
+    // 兼容：无警告；未知动词与不兼容：照常注册并警告
+    let ok = h.c.register_tool(with("ok", &["message.send@1"], send_schema.clone())).unwrap();
+    assert_eq!(warnings(&h.drain()), 0);
+    h.c.register_tool(with("custom", &["x.y@1"], json!({"type": "object"}))).unwrap();
+    h.c.register_tool(with("partial", &["message.send@1"], json!({"type": "object"}))).unwrap();
+    let ev = h.drain();
+    let texts: Vec<&String> = ev.iter().filter_map(|e| if let Event::Warning(w) = e { Some(w) } else { None }).collect();
+    assert_eq!(texts.len(), 2, "{texts:?}");
+    assert!(texts[0].contains("known: false") && texts[1].contains("缺少必填参数 to"), "{texts:?}");
+
+    // 同步：声明的才序列化
+    let ev = h.connect();
+    let sync = sends(&ev).into_iter().find(|m| m["method"] == "tools/sync").unwrap();
+    let tools = sync["params"]["tools"].as_array().unwrap();
+    let by_name = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
+    assert_eq!(by_name("ok")["implements"], json!(["message.send@1"]));
+
+    // 更新：不合法则拒绝且不变；合法则发 tools/changed；改 schema 后重新检查兼容性
+    let r = h.c.update_tool(ok, ToolUpdate { implements: Some(vec!["nope".into()]), ..Default::default() });
+    assert!(matches!(r, Err(CoreError::InvalidImplements(_))));
+    assert_eq!(h.c.tool_def(ok).unwrap().implements, ["message.send@1"]);
+    assert!(h.drain().is_empty());
+    h.c.update_tool(ok, ToolUpdate { implements: Some(vec!["link.open@1".into()]), ..Default::default() }).unwrap();
+    let ev = h.drain();
+    assert_eq!(warnings(&ev), 1, "inputSchema 没有 url：不兼容");
+    let msgs = sends(&ev);
+    assert_eq!(msgs[0]["params"]["upserted"][0]["implements"], json!(["link.open@1"]));
+    h.c.update_tool(ok, ToolUpdate { implements: Some(Vec::new()), ..Default::default() }).unwrap();
+    let msgs = sends(&h.drain());
+    assert!(msgs[0]["params"]["upserted"][0].get("implements").is_none(), "清除后不再序列化");
+}

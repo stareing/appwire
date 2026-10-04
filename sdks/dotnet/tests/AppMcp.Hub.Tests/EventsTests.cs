@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace AppMcp.Hub.Tests;
 
@@ -101,5 +102,41 @@ public class EventsTests
         Assert.True(unsub.IsSuccess, unsub.Json.GetRawText());
         Assert.Empty(hub.Status().Events!.Subscriptions);
         app.Stop();
+    }
+
+    [Fact]
+    public void EventLimitsSerialize()
+    {
+        Assert.False(JsonNode.Parse(new HubOptions().ToConfigJson())!.AsObject().ContainsKey("eventLimits"));
+        var json = new HubOptions
+        {
+            EventLimits = new HubEventLimits { MaxInboxEvents = 5, InboxTtl = TimeSpan.FromSeconds(2), PerSubscriptionPerMinute = 0 },
+        }.ToConfigJson();
+        var el = JsonNode.Parse(json)!["eventLimits"]!.AsObject();
+        Assert.Equal(5, (int?)el["maxInboxEvents"]);
+        Assert.Equal(2000UL, (ulong?)el["inboxTtlMs"]);
+        Assert.Equal(0, (int?)el["perSubscriptionPerMinute"]);
+        Assert.False(el.ContainsKey("maxSubscriptions"), "未设置的字段不写出");
+        Assert.Throws<ArgumentOutOfRangeException>(() => new HubOptions { EventLimits = new HubEventLimits { MaxSubscriptions = -1 } }.ToConfigJson());
+    }
+
+    /// <summary>EventLimits.MaxSubscriptions = 1：第二个订阅 → RATE_LIMITED（details.scope = "events"）。</summary>
+    [Fact]
+    public async Task EventLimitsMaxSubscriptionsApplies()
+    {
+        var options = new HubOptions
+        {
+            DisableIpc = true,
+            DisableListen = true,
+            Dispatcher = null,
+            EventLimits = new HubEventLimits { MaxSubscriptions = 1 },
+        };
+        options.Manifests.Add(JsonNode.Parse("""{"manifestVersion":1,"appId":"shop","name":"商城","tools":[]}""")!);
+        using var hub = AppMcpHub.Start(options);
+        var first = await hub.CallAsync(new CallRequest("apps.events.subscribe", new { appId = "shop", @event = "a" }) { Session = "s1" });
+        Assert.True(first.IsSuccess, first.Json.GetRawText());
+        var second = await hub.CallAsync(new CallRequest("apps.events.subscribe", new { appId = "shop", @event = "b" }) { Session = "s1" });
+        Assert.Equal(HubError.RateLimited, second.Error?.Kind);
+        Assert.Equal("events", second.Error!.Details!.Value.GetProperty("scope").GetString());
     }
 }

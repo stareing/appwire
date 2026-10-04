@@ -92,6 +92,20 @@ fn config_overview() {
 }
 
 #[test]
+fn tool_implements() {
+    let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "implements": ["message.send@1"] }))
+        .unwrap()
+        .into_core()
+        .unwrap();
+    assert_eq!(d.implements, ["message.send@1"]);
+    let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {} })).unwrap().into_core().unwrap();
+    assert!(d.implements.is_empty());
+    assert!(JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "implements": [1] })).is_err());
+    let u = JsToolUpdate::from_json(json!({ "implements": [] })).unwrap().into_core();
+    assert_eq!(u.implements, Some(Vec::new()));
+}
+
+#[test]
 fn tool_surface_and_page() {
     let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "surface": "view", "page": "cart" }))
         .unwrap()

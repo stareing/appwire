@@ -52,6 +52,7 @@ fn tool_info(def: &ToolDef) -> ToolInfo {
         surface: def.surface,
         page: def.page.clone(),
         background_tool: def.background_tool.clone(),
+        implements: def.implements.clone(),
     }
 }
 
@@ -70,6 +71,32 @@ fn validate_schema(schema: &Value) -> Result<(), CoreError> {
         Value::Object(obj) if obj.get("type").and_then(Value::as_str) == Some("object") => Ok(()),
         _ => Err(CoreError::InvalidSchema),
     }
+}
+
+fn validate_implements(list: &[String]) -> Result<(), CoreError> {
+    proto::intents::validate_implements(list).map_err(|e| CoreError::InvalidImplements(e.to_string()))
+}
+
+/// 声明的标准意图中不在词表里、或工具 `inputSchema` 不满足词表必填参数的项（spec/intents.md 第 1 节：SDK 给出警告）。
+pub(crate) fn intent_warnings(def: &ToolDef) -> Vec<String> {
+    use proto::intents::{Compatibility, IntentRef, compatibility};
+    def.implements
+        .iter()
+        .filter_map(|item| {
+            let intent = IntentRef::parse(item).ok()?;
+            match compatibility(intent, &def.input_schema) {
+                Compatibility::Compatible => None,
+                Compatibility::Unknown => Some(format!(
+                    "工具 \"{}\" 声明的 \"{item}\" 不在标准意图词表中（spec/intents.md）：Hub 照常列出，标注 known: false",
+                    def.name
+                )),
+                Compatibility::Incompatible(reason) => Some(format!(
+                    "工具 \"{}\" 不满足 \"{item}\" 的必填参数（{reason}）：Hub 不把它列为实现者，工具本身照常可调用",
+                    def.name
+                )),
+            }
+        })
+        .collect()
 }
 
 fn validate_name(name: &str) -> Result<(), CoreError> {
@@ -148,6 +175,7 @@ impl Registry {
             validate_name(name)?;
         }
         validate_schema(&def.input_schema)?;
+        validate_implements(&def.implements)?;
         self.check_scope(def.scope)?;
         if self.tool_names.contains_key(&def.name) {
             return Err(CoreError::DuplicateName(def.name));
@@ -166,6 +194,9 @@ impl Registry {
         for name in [&update.page, &update.background_tool, &update.exclusive].into_iter().flatten().flatten() {
             validate_name(name)?;
         }
+        if let Some(list) = &update.implements {
+            validate_implements(list)?;
+        }
         let def = self.tools.get_mut(&tool).ok_or(CoreError::UnknownTool(tool))?;
         let ToolUpdate {
             description,
@@ -179,6 +210,7 @@ impl Registry {
             surface,
             page,
             background_tool,
+            implements,
             concurrency,
             exclusive,
         } = update;
@@ -193,7 +225,8 @@ impl Registry {
             || output_schema.is_some()
             || surface.is_some()
             || page.is_some()
-            || background_tool.is_some();
+            || background_tool.is_some()
+            || implements.is_some();
         if let Some(v) = concurrency {
             def.concurrency = v;
         }
@@ -232,6 +265,9 @@ impl Registry {
         }
         if let Some(v) = background_tool {
             def.background_tool = v;
+        }
+        if let Some(v) = implements {
+            def.implements = v;
         }
         if synced {
             let name = def.name.clone();
@@ -428,6 +464,7 @@ mod tests {
             surface: crate::ToolSurface::App,
             page: None,
             background_tool: None,
+            implements: Vec::new(),
             concurrency: 0,
             exclusive: None,
         }

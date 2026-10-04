@@ -57,6 +57,7 @@ fn tool_spec(decl: &Value) -> (ToolSpec, ToolOptions) {
         surface: parse(&decl["surface"]).unwrap_or_default(),
         page: text(&decl["page"]),
         background_tool: text(&decl["backgroundTool"]),
+        implements: parse(&decl["implements"]).unwrap_or_default(),
         concurrency: decl["concurrency"].as_u64().map_or(0, |n| n as u32),
         exclusive: text(&decl["exclusive"]),
     };

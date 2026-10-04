@@ -158,6 +158,55 @@ fn background_tool_rules() {
     assert_eq!(v.warnings.iter().filter(|w| w.path == "tools[0].backgroundTool").count(), 2, "{:?}", v.warnings);
 }
 
+/// 工具 `implements`（spec/manifest.md 第 3 节）：每条规则一个用例，顶层与页面内工具相同。
+#[test]
+fn implements_rules() {
+    let send_schema = json!({ "type": "object", "properties": { "to": { "type": "array", "items": { "type": "string" } },
+        "text": { "type": "string" } } });
+    let top = |implements: Value, schema: Value| {
+        let mut m = example();
+        m["tools"][0]["implements"] = implements;
+        m["tools"][0]["inputSchema"] = schema;
+        serde_json::from_value::<Manifest>(m).expect("parses")
+    };
+    let warning_paths = |v: &Validation| v.warnings.iter().map(|w| w.path.clone()).collect::<Vec<_>>();
+    // 合法且兼容：无错误、无警告，往返不丢；未声明时不序列化
+    let m = top(json!(["message.send@1"]), send_schema.clone());
+    let v = m.validate();
+    assert!(v.is_ok() && v.warnings.is_empty(), "{:?} {:?}", v.errors, v.warnings);
+    assert_eq!(serde_json::to_value(&m).unwrap()["tools"][0]["implements"], json!(["message.send@1"]));
+    assert!(serde_json::to_value(serde_json::from_value::<Manifest>(example()).unwrap()).unwrap()["tools"][0].get("implements").is_none());
+    // 格式不合法：错误（逐项路径）
+    let v = top(json!(["message.send", "ok.verb@1", "a.b@0"]), send_schema.clone()).validate();
+    assert_eq!(error_paths(&v), vec!["tools[0].implements[0]", "tools[0].implements[2]"]);
+    // 重复：错误
+    let v = top(json!(["x.y@1", "x.y@1"]), send_schema.clone()).validate();
+    assert_eq!(error_paths(&v), vec!["tools[0].implements[1]"]);
+    // 超过 4 项：错误（整个字段）
+    let v = top(json!(["a.b@1", "a.b@2", "a.b@3", "a.b@4", "a.b@5"]), send_schema.clone()).validate();
+    assert_eq!(error_paths(&v), vec!["tools[0].implements"]);
+    // 未知动词 / 未知版本：警告
+    let v = top(json!(["x.y@1", "message.send@2"]), send_schema.clone()).validate();
+    assert!(v.is_ok());
+    assert_eq!(warning_paths(&v), vec!["tools[0].implements[0]", "tools[0].implements[1]"]);
+    assert!(v.warnings[0].message.contains("known: false"));
+    // 不兼容（缺必填参数 / 类型不一致）：警告，带原因
+    let v = top(json!(["message.send@1"]), json!({ "type": "object", "properties": { "to": { "type": "string" } } })).validate();
+    assert!(v.is_ok());
+    assert_eq!(warning_paths(&v), vec!["tools[0].implements[0]"]);
+    assert!(v.warnings[0].message.contains("缺少必填参数 text"), "{}", v.warnings[0].message);
+    assert!(v.warnings[0].message.contains("参数 to 的类型应为 array"), "{}", v.warnings[0].message);
+    // 格式错误的项不再给出词表警告
+    let v = top(json!(["bad"]), json!({ "type": "object" })).validate();
+    assert_eq!((error_paths(&v), v.warnings.len()), (vec!["tools[0].implements[0]"], 0));
+    // 页面内工具：同一规则
+    let mut t = page_tool("p");
+    t["implements"] = json!(["link.open@1", "link.open@1"]);
+    let v = with_pages(json!([{ "name": "a", "tools": [t] }])).validate();
+    assert_eq!(error_paths(&v), vec!["pages[0].tools[0].implements[1]"]);
+    assert_eq!(warning_paths(&v), vec!["pages[0].tools[0].implements[0]"], "inputSchema 没有 url：不兼容");
+}
+
 #[test]
 fn tool_names_unique_across_pages() {
     // 与顶层工具重名、与其他页面的工具重名

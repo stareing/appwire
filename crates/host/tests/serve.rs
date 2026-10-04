@@ -155,14 +155,36 @@ async fn start_serve(home: &TempHome, extra: &[&str]) -> Serve {
     Serve { child, addr, ipc: ipc_endpoint(&home.0) }
 }
 
-/// 同步运行一个 serve，等它退出，返回（退出码，stdout，stderr）。
+/// [`run_to_exit`] 等待进程退出的上限。
+const EXIT_WAIT: Duration = Duration::from_secs(30);
+
+/// 同步运行一个命令，等它退出，返回（退出码，stdout，stderr）。
+///
+/// @why 预期"拒绝启动"的 serve 若意外启动成功会一直运行：超过 [`EXIT_WAIT`] 仍未退出时结束它并 panic，测试失败而不是挂起。
 fn run_to_exit(mut cmd: Command) -> (i32, String, String) {
-    let out = cmd.output().expect("运行 serve");
-    (
-        out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("运行命令");
+    let drain = |mut pipe: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = pipe.read_to_string(&mut text);
+            text
+        })
+    };
+    let stdout = drain(Box::new(child.stdout.take().expect("stdout")));
+    let stderr = drain(Box::new(child.stderr.take().expect("stderr")));
+    let deadline = Instant::now() + EXIT_WAIT;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("等待进程") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("进程 {EXIT_WAIT:?} 内未退出（预期它很快退出）：stderr = {}", stderr.join().unwrap_or_default());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    (status.code().unwrap_or(-1), stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default())
 }
 
 /// 发一个原始 HTTP 请求，返回状态码。
@@ -638,6 +660,51 @@ async fn policy_file_reload_and_cli() {
     let (code, _, err) = run_to_exit(serve_cmd(&home.0, "127.0.0.1:0", &[]));
     assert_ne!(code, 0);
     assert!(err.contains("策略规则文件无效"), "{err}");
+}
+
+/// 运行 `app-mcp-host intents …`（同步），返回（退出码，stdout，stderr）。
+fn intents_cli(home: &Path, args: &[&str]) -> (i32, String, String) {
+    let mut c = Command::new(BIN);
+    c.arg("intents").args(args).arg("--home").arg(home).env_remove("APP_MCP_HOME");
+    run_to_exit(c)
+}
+
+/// 第 16 项 N4：`<home>/intents.json` 启动时加载；`intents set` 编辑后运行中的 Host 立即重载；不合法的文件 reload 被拒绝、
+/// 之前的默认表继续生效并记入状态；不合法的文件使 serve 拒绝启动。
+#[tokio::test(flavor = "multi_thread")]
+async fn intents_file_reload_and_cli() {
+    let home = TempHome::new("intents");
+    let file = home.0.join("intents.json");
+    std::fs::write(&file, json!({"defaults": {"message.send": "calc.math.add"}}).to_string()).unwrap();
+    let serve = start_serve(&home, &[]).await;
+    let running = || async {
+        app_mcp_host::probe::fetch_status(Some(&serve.ipc), None, None).await.expect("status").intents.expect("intents")
+    };
+    assert_eq!(running().await.defaults.get("message.send").map(String::as_str), Some("calc.math.add"));
+
+    let (code, out, err) = intents_cli(&home.0, &["set", "media.play@1", "calc.math.add"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("已重载意图默认表（2 条）"), "{out}");
+    assert_eq!(running().await.defaults.len(), 2);
+    let (code, out, err) = intents_cli(&home.0, &["set", "media", "calc.math.add"]);
+    assert_eq!(code, 1, "键不合法：{out}{err}");
+
+    // 不合法的文件：reload 失败（退出码 1），之前的默认表继续生效，错误可见
+    std::fs::write(&file, r#"{"defaults": {"message.send": "nope"}}"#).unwrap();
+    let (code, out, err) = intents_cli(&home.0, &["reload"]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(err.contains("继续使用之前的默认表") && err.contains("工具全名"), "{err}");
+    let st = running().await;
+    assert_eq!(st.defaults.len(), 2);
+    assert!(st.last_error.as_deref().is_some_and(|e| e.contains("工具全名")), "{st:?}");
+    let (code, _, err) = intents_cli(&home.0, &["validate"]);
+    assert_eq!(code, 1, "{err}");
+    drop(serve);
+
+    // 不合法的文件：serve 拒绝启动
+    let (code, _, err) = run_to_exit(serve_cmd(&home.0, "127.0.0.1:0", &[]));
+    assert_ne!(code, 0);
+    assert!(err.contains("意图默认表文件无效"), "{err}");
 }
 
 /// 运行 `app-mcp-host agent …`（同步），返回（退出码，stdout，stderr）。

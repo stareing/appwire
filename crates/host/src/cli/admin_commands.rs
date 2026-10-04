@@ -1,4 +1,4 @@
-//! `policy`、`agent`、`app` 子命令的参数定义。
+//! `policy`、`agent`、`intents`、`app` 子命令的参数定义。
 
 use std::path::PathBuf;
 
@@ -80,6 +80,43 @@ pub enum AgentCommand {
         /// 输出 JSON。
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IntentsCommand {
+    /// 显示默认表文件。
+    Show {
+        #[command(flatten)]
+        home: HomeArg,
+        /// 输出 JSON。
+        #[arg(long)]
+        json: bool,
+    },
+    /// 校验默认表文件（默认 <home>/intents.json）；不合法时退出码 1。
+    Validate {
+        #[command(flatten)]
+        home: HomeArg,
+        /// 要校验的文件。
+        #[arg(value_name = "FILE")]
+        file: Option<PathBuf>,
+    },
+    /// 让运行中的 Host 重新加载默认表；不合法时 Host 保留之前的默认表（退出码 1）。Host 未运行时退出码 3。
+    Reload(HomeArg),
+    /// 设置某个意图的默认 App 工具，如 set message.send mail.compose.send（意图可带 @主版本）。
+    Set {
+        #[command(flatten)]
+        home: HomeArg,
+        /// 意图：message.send（全部版本）或 message.send@1。
+        intent: String,
+        /// 工具全名 <appId>.<工具名>。
+        tool: String,
+    },
+    /// 删除某个意图的默认设置（键须与设置时相同）。
+    Unset {
+        #[command(flatten)]
+        home: HomeArg,
+        intent: String,
     },
 }
 

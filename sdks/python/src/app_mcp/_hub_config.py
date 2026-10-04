@@ -11,6 +11,7 @@ from app_mcp_hub import app_mcp_hub_uniffi as ffi
 
 Risk = ffi.Risk
 LimitsConfig = ffi.LimitsConfig
+EventLimitOverrides = ffi.EventLimitOverrides
 OutputValidation = ffi.OutputValidation
 PolicyConfig = ffi.PolicyConfig
 PolicyRule = ffi.PolicyRule
@@ -21,6 +22,7 @@ AgentCredential = ffi.AgentCredential
 
 RiskLike = Union[Risk, str]
 LimitsLike = Union[LimitsConfig, dict[str, int]]
+EventLimitsLike = Union[EventLimitOverrides, dict[str, int]]
 OutputValidationLike = Union[OutputValidation, str]
 PolicyLike = Union[PolicyConfig, dict[str, Any]]
 AgentsLike = list[Union[AgentCredential, dict[str, str]]]
@@ -36,6 +38,13 @@ _LIMIT_KEYS = {
     "maxArgumentsBytes": "max_arguments_bytes",
     "maxResultBytes": "max_result_bytes",
     "maxResourceBytes": "max_resource_bytes",
+}
+# EventLimitOverrides 字段 ← JSON 配置键（与 hub-c / @app-mcp/hub 的 ``eventLimits`` 相同；也接受 snake_case）。
+_EVENT_LIMIT_KEYS = {
+    "maxSubscriptions": "max_subscriptions",
+    "maxInboxEvents": "max_inbox_events",
+    "inboxTtlMs": "inbox_ttl_ms",
+    "perSubscriptionPerMinute": "per_subscription_per_minute",
 }
 # 策略规则的 JSON 键 → PolicyRule / AnnotationMatch 字段（与 app-mcp-host 的 policy.json 相同；也接受 snake_case）。
 _RULE_KEYS = {"id": "id", "action": "action", "app": "app", "tool": "tool", "annotations": "annotations", "agent": "agent", "hooks": "hooks"}
@@ -65,6 +74,13 @@ def _limits(value: LimitsLike | None) -> LimitsConfig | None:
             raise ValueError(f"未知的 limits 字段：{key!r}（可选 {sorted(_LIMIT_KEYS)}）")
         kwargs[name] = v
     return LimitsConfig(**kwargs)
+
+
+def _event_limits(value: EventLimitsLike | None) -> EventLimitOverrides | None:
+    """``EventLimitOverrides`` 或字典（JSON 配置键 ``maxInboxEvents`` 等，或 snake_case）；未知键抛 ``ValueError``。"""
+    if value is None or isinstance(value, EventLimitOverrides):
+        return value
+    return EventLimitOverrides(**_fields(value, _EVENT_LIMIT_KEYS, "event_limits"))
 
 
 def _output_validation(value: OutputValidationLike | None) -> OutputValidation | None:

@@ -477,7 +477,7 @@ final class HubIntegrationTests: XCTestCase {
         // 渐进暴露：没有展开的 App 时只有内置工具（含 apps.tools）
         XCTAssertEqual(hub.tools(ToolFilter(session: "c1")).map(\.name),
                        ["apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release",
-                        "apps.lock", "apps.unlock", "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events"])
+                        "apps.lock", "apps.unlock", "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events", "apps.search", "apps.intents"])
         hub.close()
     }
 
@@ -505,7 +505,7 @@ final class HubIntegrationTests: XCTestCase {
         XCTAssertEqual(
             Set(hub.tools().map(\.name)),
             ["apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.lock", "apps.unlock",
-             "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events"]
+             "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events", "apps.search", "apps.intents"]
         )
         let st = try hub.status()
         XCTAssertNil(st.listen)

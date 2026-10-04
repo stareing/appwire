@@ -116,6 +116,8 @@
  *   · 新内置工具 apps.events.subscribe、apps.events.unsubscribe、apps.events（总是列出）与资源 app-mcp://apps/events。
  *   · JSON 中新增：HubStatus.events：{subscriptions: [{subscriptionId, subscriber, appId, event?, delivered, dropped, pending}],
  *     droppedInvalid}；apps.tools 的结果增加 events（App 的事件声明）。
+ *   · am_hub_start 配置新增可选字段 eventLimits（{"maxSubscriptions","maxInboxEvents","inboxTtlMs","perSubscriptionPerMinute"}，
+ *     缺省字段取默认值 32 / 100 / 86400000 / 60）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -299,6 +301,11 @@ void am_hub_string_free(char *s);
  *   —— v19 Agent 身份（spec/hub-api.md 3.6「Agent 身份」）——
  *   agents               [{"name","token"}]：按 Agent 发的访问令牌，/mcp 出示时请求主体为 agent:<name>（只区分与归属，
  *                        不做授权）；名字 1–64 个字母、数字、-、_、.，令牌 32–512 个可见 ASCII 字符；缺省空
+ *   —— v22 事件信箱（spec/hub-api.md 3.17）——
+ *   eventLimits          {"maxSubscriptions": 32, "maxInboxEvents": 100, "inboxTtlMs": 86400000, "perSubscriptionPerMinute": 60}
+ *                        （缺省字段取这些默认值）：每个订阅方的订阅数上限（超出时 apps.events.subscribe 报 RATE_LIMITED，
+ *                        details.scope = "events"）、每个信箱的事件数上限（满时丢最旧，至少按 1 处理）、信箱中事件的保留时长、
+ *                        每个订阅每分钟入箱数（0 不限）；未知字段报 AM_HUB_ERR_INVALID_JSON
  *   workerThreads        tokio 工作线程数（默认 2）
  * 未知字段报 AM_HUB_ERR_INVALID_JSON。清单无效报 AM_HUB_ERR_INVALID_CONFIG；地址无法绑定报 AM_HUB_ERR_IO。 */
 AmHubStatus am_hub_start(const char *config_json, AmHub **out_hub);

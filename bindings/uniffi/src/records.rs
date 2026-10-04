@@ -45,6 +45,9 @@ pub struct ToolSpec {
     /// 互斥组（spec/protocol.md 5.3，`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行。为空 = 不互斥。
     #[uniffi(default = None)]
     pub exclusive: Option<String>,
+    /// 实现的标准意图（spec/intents.md），如 `["message.send@1"]`。
+    #[uniffi(default = [])]
+    pub implements: Vec<String>,
 }
 
 /// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。均可选，为空 = 未声明。
@@ -98,6 +101,7 @@ impl From<ToolSpec> for (native::ToolSpec, native::ToolOptions) {
             background_tool: s.background_tool,
             concurrency: s.concurrency,
             exclusive: s.exclusive,
+            implements: s.implements,
         };
         (n, options)
     }

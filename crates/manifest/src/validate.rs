@@ -213,6 +213,7 @@ impl Manifest {
         if let Some(alt) = &tool.background_tool {
             self.validate_background_tool(tool, alt, &format!("{path}.backgroundTool"), v);
         }
+        validate_implements(tool, &format!("{path}.implements"), v);
     }
 
     /// `backgroundTool`（spec/manifest.md 2.3）：同一 App 中一个 app 工具的名称。
@@ -358,6 +359,35 @@ impl Manifest {
                 format!("launch.{key}"),
                 format!("未知的平台 \"{key}\"，已忽略"),
             ));
+        }
+    }
+}
+
+/// 工具 `implements`（spec/manifest.md 第 3 节、spec/intents.md 第 1 节）：格式 / 重复 / 上限为错误；动词或版本不在词表中、
+/// 不满足词表必填参数为警告（允许 App 先于本库词表声明）。
+fn validate_implements(tool: &ToolInfo, path: &str, v: &mut Validation) {
+    use app_mcp_protocol::intents::{Compatibility, IntentRef, compatibility, implements_errors};
+    let errors = implements_errors(&tool.implements);
+    for (index, e) in &errors {
+        let at = index.map_or_else(|| path.to_owned(), |i| format!("{path}[{i}]"));
+        v.errors.push(Issue::new(at, e.to_string()));
+    }
+    for (i, item) in tool.implements.iter().enumerate() {
+        if errors.iter().any(|(index, _)| *index == Some(i)) {
+            continue;
+        }
+        let Ok(intent) = IntentRef::parse(item) else { continue };
+        let at = format!("{path}[{i}]");
+        match compatibility(intent, &tool.input_schema) {
+            Compatibility::Compatible => {}
+            Compatibility::Unknown => v.warnings.push(Issue::new(
+                at,
+                format!("\"{item}\" 不在标准意图词表中（spec/intents.md 第 2 节）：Hub 照常列出，标注 known: false"),
+            )),
+            Compatibility::Incompatible(reason) => v.warnings.push(Issue::new(
+                at,
+                format!("工具不满足 \"{item}\" 的必填参数（{reason}）：Hub 不把它列为实现者，工具本身照常可调用"),
+            )),
         }
     }
 }

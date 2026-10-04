@@ -177,6 +177,9 @@ pub struct ToolOptions {
     /// 后台替代（spec/protocol.md 3.4）：同一 App 中一个 `App` 工具的名称；本 `View` 工具因 App 在后台不可调用时
     /// Hub 改调它。`None` = 未声明。
     pub background_tool: Option<String>,
+    /// 实现的标准意图（spec/intents.md），每项 `"<动词>@<主版本>"`，最多 4 项、不重复；格式不合法时注册 / 更新返回
+    /// [`NativeError::InvalidName`]。空（缺省）= 未声明。
+    pub implements: Vec<String>,
     /// 本工具同时执行的调用上限（spec/protocol.md 5.3）：0（缺省）= 不单独限制，只受 `max_concurrent_calls` 约束。只在 SDK 内生效。
     pub concurrency: u32,
     /// 互斥组（spec/protocol.md 5.3，`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行。`None` = 不互斥。只在 SDK 内生效。

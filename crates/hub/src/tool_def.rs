@@ -25,6 +25,8 @@ pub struct ToolDef {
     pub surface: ToolSurface,
     pub page: Option<String>,
     pub background_tool: Option<String>,
+    /// 实现的标准意图（spec/intents.md）；空 = 未声明。
+    pub implements: Vec<String>,
     /// @invariant 由 `serde_json` 序列化一个 `Value` 得到，总能解析回同一个值。
     input_schema: Box<str>,
     output_schema: Option<Box<str>>,
@@ -63,6 +65,7 @@ impl ToolDef {
             surface,
             page,
             background_tool,
+            implements,
         } = info;
         Self {
             name,
@@ -74,6 +77,7 @@ impl ToolDef {
             surface,
             page,
             background_tool,
+            implements,
             input_schema: schema_text(&input_schema),
             output_schema: output_schema.as_ref().map(schema_text),
         }
@@ -93,6 +97,7 @@ impl ToolDef {
             surface,
             page: declared_page,
             background_tool,
+            implements,
         } = info;
         Self {
             name: name.clone(),
@@ -104,6 +109,7 @@ impl ToolDef {
             surface: *surface,
             page: page.map(str::to_owned).or_else(|| declared_page.clone()),
             background_tool: background_tool.clone(),
+            implements: implements.clone(),
             input_schema: schema_text(input_schema),
             output_schema: output_schema.as_ref().map(schema_text),
         }
@@ -123,6 +129,7 @@ impl ToolDef {
             surface: self.surface,
             page: self.page.clone(),
             background_tool: self.background_tool.clone(),
+            implements: self.implements.clone(),
         }
     }
 
@@ -280,6 +287,7 @@ mod tests {
             surface: ToolSurface::View,
             page: Some("orders".into()),
             background_tool: Some("orders.searchBg".into()),
+            implements: vec!["message.send@1".into()],
         }
     }
 
@@ -310,6 +318,7 @@ mod tests {
             surface: ToolSurface::App,
             page: None,
             background_tool: None,
+            implements: Vec::new(),
         };
         let def = ToolDef::from(info.clone());
         assert_eq!(def.to_info(), info);

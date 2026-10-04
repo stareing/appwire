@@ -6,7 +6,9 @@
 
 use std::time::Duration;
 
-use app_mcp_hub::http_server::{AGENTS_PATH, AgentsReply, HEALTH_PATH, POLICY_PATH, PolicyReply, STATUS_PATH};
+use app_mcp_hub::http_server::{
+    AGENTS_PATH, AgentsReply, HEALTH_PATH, INTENTS_PATH, IntentsReply, POLICY_PATH, PolicyReply, STATUS_PATH,
+};
 use app_mcp_hub::{Health, HubStatus};
 use app_mcp_protocol::Endpoint;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -254,6 +256,24 @@ pub async fn post_agents(
     let (code, body) = request_host(ipc_endpoint, listen, token, req).await?;
     if code == 404 {
         return Err("运行中的 Host 版本不支持 Agent 登记（POST /agents），请升级后重启 Host".to_owned());
+    }
+    serde_json::from_str(&body).map_err(|_| format!("HTTP {code}：{body}"))
+}
+
+/// 把意图默认表（`intents.json` 的原文）交给运行中的 Host 替换（`POST /intents`，spec/intents.md 第 4 节）。Host 校验不合法时
+/// 返回 `IntentsReply { ok: false, error }` 并保留之前的默认表。
+///
+/// @error 连接失败、旧版 Host 不支持（404）、响应无法解析。
+pub async fn post_intents(
+    ipc_endpoint: Option<&str>,
+    listen: Option<&str>,
+    token: Option<&str>,
+    intents_json: &str,
+) -> Result<IntentsReply, String> {
+    let req = HostRequest { method: "POST", path: INTENTS_PATH, body: Some(intents_json) };
+    let (code, body) = request_host(ipc_endpoint, listen, token, req).await?;
+    if code == 404 {
+        return Err("运行中的 Host 版本不支持意图默认表（POST /intents），请升级后重启 Host".to_owned());
     }
     serde_json::from_str(&body).map_err(|_| format!("HTTP {code}：{body}"))
 }

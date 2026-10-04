@@ -58,6 +58,10 @@ impl AppHome {
     pub fn agents_file(&self) -> PathBuf {
         self.dir.join("agents.json")
     }
+    /// 标准意图的机主默认表（spec/intents.md 第 4 节）。
+    pub fn intents_file(&self) -> PathBuf {
+        self.dir.join("intents.json")
+    }
     pub fn log_dir(&self) -> PathBuf {
         self.dir.join("logs")
     }

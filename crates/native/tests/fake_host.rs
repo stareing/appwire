@@ -151,6 +151,10 @@ fn tool_options_and_call_result_reach_host() {
     // 非法 outputSchema：注册失败，不影响已注册的工具
     let bad = ToolOptions { output_schema_json: Some("{".into()), ..ToolOptions::default() };
     assert!(tool.update_with(ToolSpec::new("order.submit", "下单"), bad).is_err());
+    // 非法 implements（spec/intents.md）：注册失败，归入名称错误
+    let bad = ToolOptions { implements: vec!["message.send".into()], ..ToolOptions::default() };
+    let r = client.register_tool_with(ToolSpec::new("bad.intent", "x"), bad, Arc::new(Submit));
+    assert!(matches!(r, Err(app_mcp_native::NativeError::InvalidName(ref m)) if m.contains("message.send")), "{:?}", r.err());
     client.start();
 
     let out: Vec<Value> = lines.map(|l| serde_json::from_str(&l.unwrap()).unwrap()).collect();

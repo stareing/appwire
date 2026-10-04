@@ -145,6 +145,9 @@ pub enum CoreError {
     /// 事件载荷不是 JSON 对象或超过 [`MAX_EVENT_PAYLOAD_BYTES`]。
     #[error("invalid event payload: {0}")]
     InvalidEventPayload(String),
+    /// 工具 `implements` 格式不合法、重复或超过 4 项（spec/intents.md 第 1 节）。
+    #[error("invalid implements: {0}")]
+    InvalidImplements(String),
 }
 
 impl ConnectionState {

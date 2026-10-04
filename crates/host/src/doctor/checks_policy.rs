@@ -1,4 +1,4 @@
-//! 用户 / 厂商规则文件的检查：Agent 登记（agents.json）与策略规则（policy.json）。
+//! 用户 / 厂商规则文件的检查：Agent 登记（agents.json）、策略规则（policy.json）与意图默认表（intents.json）。
 
 use app_mcp_hub::HubStatus;
 use serde_json::json;
@@ -139,4 +139,49 @@ pub(super) fn policy_check(file: (String, Result<app_mcp_hub::PolicyConfig, Stri
     }
     let level = if st.rules.is_empty() { Level::Ok } else { Level::Info };
     Check::new("policy", T, level, summary).details(details)
+}
+
+/// 意图默认表文件的校验结果（`intents_check` 的输入，便于测试）。
+pub(super) fn validate_intents_file(home: &AppHome) -> (String, Result<app_mcp_hub::IntentsConfig, String>) {
+    let path = home.intents_file();
+    (path.display().to_string(), crate::intents::validate_file(&path))
+}
+
+/// 标准意图的默认 App（spec/intents.md 第 4 节）：文件不合法、最近一次重载失败为错误；文件与生效的默认表不一致为注意。
+pub(super) fn intents_check(
+    file: (String, Result<app_mcp_hub::IntentsConfig, String>),
+    status: Option<&Result<HubStatus, String>>,
+) -> Check {
+    const T: &str = "意图默认 App";
+    let (path, file) = file;
+    let running = match status {
+        Some(Ok(st)) => st.intents.as_ref(),
+        _ => None,
+    };
+    let details = json!({ "file": path, "fileError": file.as_ref().err(), "running": running });
+    let file = match file {
+        Ok(c) => c,
+        Err(e) => {
+            let effect = if running.is_some() { "运行中的 Host 继续使用之前的默认表" } else { "Host 启动时会因此失败" };
+            return Check::new("intents", T, Level::Error, format!("默认表文件无效（{effect}）：{e}"))
+                .hint("修正或删除该文件后运行 app-mcp-host intents reload；app-mcp-host intents validate 校验")
+                .details(details);
+        }
+    };
+    let summary = crate::intents::describe(&file).replace('\n', "；");
+    let Some(st) = running else {
+        return Check::new("intents", T, Level::Skip, format!("{summary}；Host 未运行或版本不支持，无法确认生效情况")).details(details);
+    };
+    if let Some(e) = &st.last_error {
+        return Check::new("intents", T, Level::Error, format!("最近一次重载失败，之前的默认表继续生效：{e}"))
+            .hint("修正 intents.json 后运行 app-mcp-host intents reload")
+            .details(details);
+    }
+    if st.defaults != file.defaults {
+        return Check::new("intents", T, Level::Warn, format!("默认表文件与运行中的不一致（改动尚未重载）。文件：{summary}"))
+            .hint("运行 app-mcp-host intents reload 使文件中的默认表生效")
+            .details(details);
+    }
+    let level = if file.defaults.is_empty() { Level::Ok } else { Level::Info };
+    Check::new("intents", T, level, summary).details(details)
 }

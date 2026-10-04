@@ -490,6 +490,7 @@ mod tests {
             output_schema: None,
             surface: None,
             page: None,
+            implements: Vec::new(),
         }
     }
 

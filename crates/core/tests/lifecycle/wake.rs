@@ -294,6 +294,7 @@ fn tools_hash_fixed_vector() {
         surface: ToolSurface::App,
         page: None,
         background_tool: None,
+        implements: Vec::new(),
         concurrency: 0,
         exclusive: None,
     })
@@ -314,6 +315,7 @@ fn tools_hash_fixed_vector() {
             surface: ToolSurface::App,
             page: None,
             background_tool: None,
+            implements: Vec::new(),
             concurrency: 0,
             exclusive: None,
         })

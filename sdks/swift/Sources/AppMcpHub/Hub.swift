@@ -87,6 +87,9 @@ public typealias AppEvent = AppMcpHubBindings.AppEvent
 public typealias EventsStatus = AppMcpHubBindings.EventsStatus
 /// 一个订阅：`subscriptionId`、`subscriber`、`appId`、`event`、`delivered`、`dropped`、`pending`。
 public typealias EventSubscriptionStatus = AppMcpHubBindings.EventSubscriptionStatus
+/// 事件信箱上限（`HubConfig.eventLimits`）：`maxSubscriptions`、`maxInboxEvents`、`inboxTtlMs`、`perSubscriptionPerMinute`；
+/// 为空的字段取默认值（32 / 100 / 24 小时 / 60）。
+public typealias EventLimitOverrides = AppMcpHubBindings.EventLimitOverrides
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。
 public typealias LimitsConfig = AppMcpHubBindings.LimitsConfig

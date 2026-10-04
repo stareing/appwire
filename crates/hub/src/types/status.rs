@@ -65,6 +65,9 @@ pub struct HubStatus {
     /// 事件订阅（各订阅的投递 / 丢弃数与订阅方积压）与丢弃的不合法事件数（第 16 项 N3，spec/hub-api.md 3.17）。旧 Host 没有时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events: Option<crate::events::EventsStatus>,
+    /// 标准意图的机主默认表与最近的替换错误（spec/intents.md 第 4 节）；旧版 Hub 无此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intents: Option<crate::intents::IntentsStatus>,
 }
 
 /// 一个 Agent 任务（[`HubStatus::tasks`]）。

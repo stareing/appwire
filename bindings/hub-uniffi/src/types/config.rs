@@ -184,6 +184,10 @@ pub struct HubConfig {
     /// （`apps.lock` / `apps.unlock` 不列出，调用为 `TOOL_NOT_FOUND`）。
     #[uniffi(default = None)]
     pub max_locks: Option<u32>,
+    // ---- 事件信箱（spec/hub-api.md 3.17）----
+    /// 订阅数、信箱容量、保留时长与每订阅频率上限（默认见 [`EventLimitOverrides`]）。
+    #[uniffi(default = None)]
+    pub event_limits: Option<EventLimitOverrides>,
 }
 
 impl Default for HubConfig {
@@ -237,6 +241,7 @@ impl Default for HubConfig {
             max_task_handles: None,
             agents: None,
             max_locks: None,
+            event_limits: None,
         }
     }
 }
@@ -339,6 +344,40 @@ impl From<hub::LimitOverrides> for LimitsConfig {
             max_resource_bytes: c.max_resource_bytes,
             agent_rate_per_minute: c.agent_rate_per_minute,
             agent_rate_burst: c.agent_rate_burst,
+        }
+    }
+}
+
+/// 事件信箱上限（spec/hub-api.md 3.17；与 JSON 配置 `eventLimits` 同构）。为空的字段取默认值。
+#[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Record)]
+pub struct EventLimitOverrides {
+    /// 每个订阅方最多的订阅数（默认 32）；超出时 `apps.events.subscribe` 报 `RATE_LIMITED`（`scope: "events"`）。
+    #[uniffi(default = None)]
+    pub max_subscriptions: Option<u32>,
+    /// 每个信箱最多的事件数（默认 100，至少按 1 处理）；满时丢最旧并计数。
+    #[uniffi(default = None)]
+    pub max_inbox_events: Option<u32>,
+    /// 信箱中事件的保留时长（默认 24 小时）；过期的在下次读写该信箱时清理。
+    #[uniffi(default = None)]
+    pub inbox_ttl_ms: Option<u64>,
+    /// 每个订阅每分钟（滑动窗口）最多入箱的事件数（默认 60）；`0` 不限。
+    #[uniffi(default = None)]
+    pub per_subscription_per_minute: Option<u32>,
+}
+
+impl EventLimitOverrides {
+    fn apply(&self, target: &mut hub::EventLimits) {
+        if let Some(v) = self.max_subscriptions {
+            target.max_subscriptions = v as usize;
+        }
+        if let Some(v) = self.max_inbox_events {
+            target.max_inbox_events = v as usize;
+        }
+        if let Some(ms) = self.inbox_ttl_ms {
+            target.inbox_ttl = Duration::from_millis(ms);
+        }
+        if let Some(v) = self.per_subscription_per_minute {
+            target.per_subscription_per_minute = v;
         }
     }
 }
@@ -467,6 +506,9 @@ impl HubConfig {
         }
         if let Some(v) = self.max_locks {
             c.max_locks = v as usize;
+        }
+        if let Some(o) = &self.event_limits {
+            o.apply(&mut c.event_limits);
         }
         if let Some(agents) = self.agents {
             let agents = super::agents_config(agents);

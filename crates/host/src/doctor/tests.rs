@@ -183,6 +183,31 @@ fn policy_check_levels() {
 }
 
 #[test]
+fn intents_check_levels() {
+    use app_mcp_hub::{IntentsConfig, IntentsStatus};
+    let one = IntentsConfig::from_json(r#"{"defaults": {"message.send": "mail.compose.send"}}"#).unwrap();
+    let file = |r: Result<IntentsConfig, String>| ("/x/intents.json".to_owned(), r);
+    let mut st = status_with_tools(0);
+    st.intents = Some(IntentsStatus { defaults: one.defaults.clone(), last_error: None });
+    let c = intents_check(file(Ok(one.clone())), Some(&Ok(st.clone())));
+    assert!(matches!(c.status, Level::Info) && c.summary.contains("message.send → mail.compose.send"), "{}", c.summary);
+    let c = intents_check(file(Ok(IntentsConfig::default())), Some(&Ok(st.clone())));
+    assert!(matches!(c.status, Level::Warn) && c.summary.contains("尚未重载"), "{}", c.summary);
+    let c = intents_check(file(Err("坏了".into())), Some(&Ok(st.clone())));
+    assert!(matches!(c.status, Level::Error) && c.summary.contains("继续使用之前的默认表"), "{}", c.summary);
+    assert!(intents_check(file(Err("坏了".into())), None).summary.contains("启动时会因此失败"));
+    let mut failed = st.clone();
+    failed.intents.as_mut().unwrap().last_error = Some("键不合法".into());
+    let c = intents_check(file(Ok(one.clone())), Some(&Ok(failed)));
+    assert!(matches!(c.status, Level::Error) && c.summary.contains("键不合法"), "{}", c.summary);
+    let mut empty = st;
+    empty.intents = Some(IntentsStatus::default());
+    let c = intents_check(file(Ok(IntentsConfig::default())), Some(&Ok(empty)));
+    assert!(matches!(c.status, Level::Ok) && c.summary.contains("未设置默认 App"), "{}", c.summary);
+    assert!(matches!(intents_check(file(Ok(one)), None).status, Level::Skip));
+}
+
+#[test]
 fn agents_check_levels() {
     use app_mcp_hub::{AgentCredential, AgentsConfig};
     let two = AgentsConfig {

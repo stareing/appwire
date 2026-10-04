@@ -473,6 +473,7 @@ mod tests {
             surface: ToolSurface::App,
             page: page.map(str::to_owned),
             background_tool: None,
+            implements: Vec::new(),
         }))
     }
 

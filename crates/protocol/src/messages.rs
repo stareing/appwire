@@ -518,5 +518,10 @@ pub fn is_valid_app_id(id: &str) -> bool {
         && bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
+/// 工具全名 `<appId>.<局部名>`（MCP 出口与 Hub API 的工具名）：appId 满足 [`is_valid_app_id`]，局部名满足 [`is_valid_name`]。
+pub fn is_valid_full_tool_name(name: &str) -> bool {
+    name.split_once('.').is_some_and(|(app_id, local)| is_valid_app_id(app_id) && is_valid_name(local))
+}
+
 #[cfg(test)]
 mod tests;

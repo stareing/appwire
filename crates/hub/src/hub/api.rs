@@ -124,6 +124,17 @@ impl Hub {
         self.shared.set_agents(&config).map_err(|e| HubError(ToolError::new(ErrorKind::InvalidInput, e)))
     }
 
+    /// 替换标准意图的机主默认表（spec/intents.md 第 4 节）。不合法时返回 `INVALID_INPUT`，之前的默认表继续生效（错误记入
+    /// `status().intents.last_error`）。默认表只影响 `apps.intents` 的排序与 `default` 标记，不影响路由与工具列表。
+    pub fn set_intent_defaults(&self, defaults: std::collections::BTreeMap<String, String>) -> Result<(), HubError> {
+        self.shared.set_intent_defaults(defaults).map_err(|e| HubError(ToolError::new(ErrorKind::InvalidInput, e)))
+    }
+
+    /// 生效的意图默认表与最近一次替换失败的原因。
+    pub fn intents(&self) -> crate::intents::IntentsStatus {
+        lock(&self.shared.intents).status()
+    }
+
     /// 生效的策略规则、各规则命中次数与最近的加载错误。
     pub fn policy(&self) -> PolicyStatus {
         lock(&self.shared.policy).status()

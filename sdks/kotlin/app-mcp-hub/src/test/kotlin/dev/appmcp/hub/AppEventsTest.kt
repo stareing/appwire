@@ -40,6 +40,8 @@ class AppEventsTest {
         app.declareEvent("order.shipped", "订单已发货")
         try {
             app.start()
+            // 订阅未知 appId 为 TOOL_NOT_FOUND：先等 App 连上。
+            withTimeout(10.seconds) { while (hub.apps().none { it.appId == "shop" && it.connected }) delay(20) }
             val sub = hub.callTool("apps.events.subscribe", buildJsonObject { put("appId", "shop"); put("event", "order.shipped") }, session = "s1")
             val subId = assertNotNull(sub.data, sub.toString()).jsonObject["subscriptionId"]!!.jsonPrimitive.content
 
@@ -76,6 +78,28 @@ class AppEventsTest {
         } finally {
             app.close()
             hub.close()
+        }
+    }
+
+    /** HubConfig.eventLimits 经绑定生效：maxSubscriptions = 1 时第二个订阅 → RATE_LIMITED（scope events）。 */
+    @Test
+    fun eventLimitsMaxSubscriptionsApplies() = runBlocking {
+        assertNull(HubConfig().eventLimits)
+        val shop = """{"manifestVersion":1,"appId":"shop","name":"商城","tools":[]}"""
+        val config = HubConfig(
+            enableListen = false,
+            enableIpc = false,
+            manifestsJson = listOf(shop),
+            eventLimits = EventLimitOverrides(maxSubscriptions = 1u),
+        )
+        Hub.start(config).use { hub ->
+            fun args(event: String) = buildJsonObject { put("appId", "shop"); put("event", event) }
+            val first = hub.callTool("apps.events.subscribe", args("a"), session = "s1", timeout = 5.seconds)
+            assertNull(first.error, first.toString())
+            val second = hub.callTool("apps.events.subscribe", args("b"), session = "s1", timeout = 5.seconds)
+            assertEquals("RATE_LIMITED", second.error?.kind, second.toString())
+            val details = Json.parseToJsonElement(assertNotNull(second.error?.detailsJson)).jsonObject
+            assertEquals("events", details["scope"]?.jsonPrimitive?.content)
         }
     }
 }

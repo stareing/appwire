@@ -40,6 +40,10 @@ pub struct ToolInfo {
     /// 而不可调用时，Hub 改为调用这个工具（spec/hub-api.md 3.14）。未声明时不序列化（`toolsHash` 不变）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_tool: Option<String>,
+    /// 实现的标准意图（spec/intents.md），每项 `"<动词>@<主版本>"`，如 `message.send@1`；格式见 [`crate::intents`]。
+    /// 空时不序列化（`toolsHash` 不变）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implements: Vec<String>,
 }
 
 /// 工具对界面的依赖（spec/protocol.md 3.4）。

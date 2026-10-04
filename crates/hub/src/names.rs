@@ -40,6 +40,8 @@ pub const TOOL_APPS_EVENTS_UNSUBSCRIBE: &str = "apps.events.unsubscribe";
 pub const TOOL_APPS_EVENTS: &str = "apps.events";
 /// 按"要做什么"检索工具（spec/hub-api.md 3.18，第 16 项 O1）。
 pub const TOOL_APPS_SEARCH: &str = "apps.search";
+/// 按标准意图（通用动词）列出实现者（spec/intents.md 第 4 节，第 16 项 N4）。
+pub const TOOL_APPS_INTENTS: &str = "apps.intents";
 
 /// 读取方事件信箱的资源 URI（spec/hub-api.md 3.17「提醒」）：读取不移出；订阅后自己的信箱有新事件时收到
 /// `resources/updated`。
@@ -55,7 +57,7 @@ pub const RESOURCE_SELF: &str = "self";
 pub const ARG_TASK_ID: &str = "taskId";
 /// 接受 [`ARG_TASK_ID`] 参数的内置工具（持有按任务区分的状态：选择、租约、锁、进行中的调用、事件订阅、渐进暴露集合；
 /// [`TOOL_APPS_TASK_END`] 中为必填）。
-pub const TASK_SCOPED_TOOLS: [&str; 14] = [
+pub const TASK_SCOPED_TOOLS: [&str; 15] = [
     TOOL_APPS_LIST,
     TOOL_APPS_SELECT,
     TOOL_APPS_NAVIGATE,
@@ -70,6 +72,7 @@ pub const TASK_SCOPED_TOOLS: [&str; 14] = [
     TOOL_APPS_EVENTS_UNSUBSCRIBE,
     TOOL_APPS_EVENTS,
     TOOL_APPS_SEARCH,
+    TOOL_APPS_INTENTS,
 ];
 
 // ---- MCP 结果 `_meta`（Hub → Agent）----

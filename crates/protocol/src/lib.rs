@@ -13,12 +13,14 @@
 //! - [`registry`]：单实例锁与登记文件 `~/.app-mcp/run/endpoints.json`（1.7）。
 //! - [`diagnostic`]：连接级错误码与 `app/diagnostic` 上报（第 10 节）。
 //! - [`naming`]：按名寻址的地址格式与各平台名字映射（spec/naming.md）。
+//! - [`intents`]：标准意图词表、`implements` 格式校验与兼容性检查（spec/intents.md）。
 
 pub mod diagnostic;
 pub mod endpoint;
 pub mod error;
 pub mod hash;
 pub mod identity;
+pub mod intents;
 pub mod jsonrpc;
 pub mod messages;
 pub mod mux;

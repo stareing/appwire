@@ -71,6 +71,9 @@ struct SearchHit {
     #[serde(skip_serializing_if = "Option::is_none")]
     page: Option<String>,
     input_schema: Value,
+    /// 声明实现的标准意图（spec/intents.md）；未声明时不序列化。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    implements: Vec<String>,
     score: f64,
 }
 
@@ -134,6 +137,7 @@ impl HubShared {
                     availability: tool.availability,
                     page: tool.page,
                     input_schema: tool.input_schema,
+                    implements: tool.implements,
                     score: total,
                 })
             })

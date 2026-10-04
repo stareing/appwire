@@ -159,6 +159,10 @@ pub struct HubConfig {
     pub agents: crate::agents::AgentsConfig,
     /// 事件订阅与信箱的上限（第 16 项 N3 + P4，spec/hub-api.md 3.17）。默认见 [`crate::events::EventLimits`]。
     pub event_limits: crate::events::EventLimits,
+    /// 标准意图的机主默认表（spec/intents.md 第 4 节）：意图（`message.send` 或 `message.send@1`）→ 工具全名。只是提示：
+    /// `apps.intents` 把默认工具排在最前并标 `default: true`，Hub 不按它路由。默认空；不合法时按空表启动并记入
+    /// `status().intents.last_error`。运行中可用 [`Hub::set_intent_defaults`](crate::Hub::set_intent_defaults) 替换。
+    pub intent_defaults: BTreeMap<String, String>,
 }
 
 /// [`HubConfig::max_task_handles`] 的默认值。
@@ -274,6 +278,7 @@ impl Default for HubConfig {
             max_locks: DEFAULT_MAX_LOCKS,
             agents: crate::agents::AgentsConfig::default(),
             event_limits: crate::events::EventLimits::default(),
+            intent_defaults: BTreeMap::new(),
         }
     }
 }

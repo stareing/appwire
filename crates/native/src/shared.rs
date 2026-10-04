@@ -119,6 +119,7 @@ impl Shared {
                 surface: options.surface,
                 page: options.page,
                 background_tool: options.background_tool,
+                implements: options.implements,
                 concurrency: options.concurrency,
                 exclusive: options.exclusive,
             })

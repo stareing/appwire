@@ -88,6 +88,12 @@ typealias EventsStatus = dev.appmcp.hub.ffi.EventsStatus
 /** 一个订阅：`subscriptionId`、`subscriber`、`appId`、`event`、`delivered`、`dropped`、`pending`。 */
 typealias EventSubscriptionStatus = dev.appmcp.hub.ffi.EventSubscriptionStatus
 
+/**
+ * 事件信箱上限（[HubConfig.eventLimits]）：`maxSubscriptions`、`maxInboxEvents`、`inboxTtlMs`、`perSubscriptionPerMinute`；
+ * 为空的字段取默认值（32 / 100 / 24 小时 / 60）。
+ */
+typealias EventLimitOverrides = dev.appmcp.hub.ffi.EventLimitOverrides
+
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /** 限流与大小上限（[HubConfig.limits]；[HubStatus.limits] 为全部字段给出的生效值）。为空的字段取默认值。 */
 typealias LimitsConfig = dev.appmcp.hub.ffi.LimitsConfig

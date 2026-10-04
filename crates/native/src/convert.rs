@@ -104,6 +104,7 @@ pub(crate) fn core_error(e: CoreError) -> NativeError {
         // @compat 不新增 NativeError 变体（各绑定按变体穷尽匹配）：未声明事件归入名称错误，载荷错误归入 JSON 错误。
         CoreError::UnknownEvent(n) => NativeError::InvalidName(format!("{n}（未声明的事件，请先 declare_event）")),
         CoreError::InvalidEventPayload(m) => NativeError::InvalidJson(format!("事件载荷无效：{m}")),
+        CoreError::InvalidImplements(m) => NativeError::InvalidName(m),
     }
 }
 

@@ -10,7 +10,7 @@ use super::hub_config::hub_config;
 use super::serve::{describe_app_endpoints, running_instance, shutdown_signal};
 use crate::cli::LegacyArgs;
 use crate::config::{AppHome, Settings};
-use crate::{agents, load_file, log_notices, logging, policy};
+use crate::{agents, intents, load_file, log_notices, logging, policy};
 
 pub(crate) async fn run_legacy(args: LegacyArgs) -> anyhow::Result<ExitCode> {
     let home = AppHome::resolve(args.hub.home.home.as_deref())?;
@@ -22,7 +22,12 @@ pub(crate) async fn run_legacy(args: LegacyArgs) -> anyhow::Result<ExitCode> {
         file: None,
     })?;
     log_notices(&s);
-    let config = HubConfig { policy: policy::load(&home)?, agents: agents::load(&home)?, ..hub_config(&s, &home) };
+    let config = HubConfig {
+        policy: policy::load(&home)?,
+        agents: agents::load(&home)?,
+        intent_defaults: intents::load(&home)?.defaults,
+        ..hub_config(&s, &home)
+    };
     let hub = match Hub::start(config).await {
         Ok(h) => h,
         Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => {

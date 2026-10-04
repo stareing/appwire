@@ -51,6 +51,9 @@ pub struct ToolDef {
     /// 后台替代（spec/protocol.md 3.4）：同一 App 中一个 `app` 工具的局部名；本工具因 App 在后台不可调用时 Hub 改调它。
     /// 只对 `View` 工具有意义。`None` = 未声明。
     pub background_tool: Option<String>,
+    /// 实现的标准意图（spec/intents.md），每项 `"<动词>@<主版本>"`，最多 4 项、不重复（格式不合法时注册返回
+    /// [`CoreError::InvalidImplements`]）；动词不在词表中或不满足词表必填参数时产生 [`Event::Warning`]。空 = 未声明。
+    pub implements: Vec<String>,
     /// 本工具同时执行的调用上限（spec/protocol.md 5.3）：0 = 不单独限制（只受 `maxConcurrentCalls` 约束）。只在 SDK 内生效，不同步给 Host。
     pub concurrency: u32,
     /// 互斥组（spec/protocol.md 5.3，`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行（如操作同一份文档的写工具）。
@@ -80,6 +83,8 @@ pub struct ToolUpdate {
     pub page: Option<Option<String>>,
     /// `Some(None)` 清除声明的后台替代。
     pub background_tool: Option<Option<String>>,
+    /// 替换声明的标准意图（`Some(vec![])` 清除）。
+    pub implements: Option<Vec<String>>,
     /// 本工具的并发上限（0 = 不单独限制）。只在 SDK 内生效：只改它不发 `tools/changed`。
     pub concurrency: Option<u32>,
     /// `Some(None)` 清除互斥组。只在 SDK 内生效：只改它不发 `tools/changed`。

@@ -59,9 +59,20 @@ fn app_event_reaches_inbox_status_and_callbacks() {
     assert!(wait_event(&ev_rx, |e| e["type"] == "appConnected"), "App 未连接");
 
     let (tx, rx) = mpsc::channel::<String>();
+    // appConnected 先于 events/sync 到达：等事件声明进入目录，否则未声明的事件名会被接受。
+    let deadline = Instant::now() + WAIT;
+    loop {
+        call(hub, json!({"name":"apps.tools","arguments":{"appId":"notes"},"session":"probe"}), &tx);
+        if recv(&rx)["result"]["ok"]["events"].as_array().is_some_and(|e| !e.is_empty()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "等待事件声明超时");
+        std::thread::sleep(Duration::from_millis(10));
+    }
     // 订阅：未声明的事件名 → INVALID_INPUT；之后按 App 订阅全部事件。
     call(hub, json!({"name":"apps.events.subscribe","arguments":{"appId":"notes","event":"nope"},"session":"s1"}), &tx);
-    assert_eq!(recv(&rx)["result"]["error"]["kind"], "INVALID_INPUT");
+    let bad = recv(&rx);
+    assert_eq!(bad["result"]["error"]["kind"], "INVALID_INPUT", "{bad}");
     call(hub, json!({"name":"apps.events.subscribe","arguments":{"appId":"notes"},"session":"s1"}), &tx);
     let sub = recv(&rx);
     let sub_id = sub["result"]["ok"]["subscriptionId"].as_str().unwrap_or_default().to_owned();
@@ -118,6 +129,31 @@ fn app_event_reaches_inbox_status_and_callbacks() {
     assert_eq!(status(hub)["events"]["subscriptions"], json!([]));
 
     app.client.stop();
+    // SAFETY: 有效句柄。
+    unsafe { am_hub_free(hub) };
+}
+
+/// 配置 eventLimits.maxSubscriptions = 1：第二个订阅 → RATE_LIMITED（scope events）；缺省（32）时可订阅第二个。
+#[test]
+fn event_limits_max_subscriptions_applies() {
+    const SHOP: &str = r#"{"manifestVersion":1,"appId":"shop","name":"商城","tools":[]}"#;
+    let (tx, rx) = mpsc::channel::<String>();
+    let subscribe = |hub: *mut AmHub, event: &str| {
+        call(hub, json!({"name":"apps.events.subscribe","arguments":{"appId":"shop","event":event},"session":"s1"}), &tx);
+        recv(&rx)
+    };
+    let hub = start_hub(&format!(r#"{{"listen":null,"manifests":[{SHOP}],"eventLimits":{{"maxSubscriptions":1}}}}"#));
+    assert!(subscribe(hub, "a")["result"]["ok"]["subscriptionId"].is_string());
+    let err = subscribe(hub, "b");
+    assert_eq!(err["result"]["error"]["kind"], "RATE_LIMITED", "{err}");
+    assert_eq!(err["result"]["error"]["details"]["scope"], "events", "{err}");
+    // SAFETY: 有效句柄。
+    unsafe { am_hub_free(hub) };
+
+    let hub = start_hub(&format!(r#"{{"listen":null,"manifests":[{SHOP}]}}"#));
+    assert!(subscribe(hub, "a")["result"]["ok"]["subscriptionId"].is_string());
+    let ok = subscribe(hub, "b");
+    assert!(ok["result"]["ok"]["subscriptionId"].is_string(), "{ok}");
     // SAFETY: 有效句柄。
     unsafe { am_hub_free(hub) };
 }

@@ -137,7 +137,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     const log = await startShop(hub)
     const builtins = [
       'apps.list', 'apps.select', 'apps.overview', 'apps.tools', 'apps.activate', 'apps.release', 'apps.lock', 'apps.unlock',
-      'apps.calls', 'apps.cancel', 'apps.events.subscribe', 'apps.events.unsubscribe', 'apps.events',
+      'apps.calls', 'apps.cancel', 'apps.events.subscribe', 'apps.events.unsubscribe', 'apps.events', 'apps.search', 'apps.intents',
     ]
     expect(hub.tools().map((t) => t.name)).toEqual(builtins)
     expect(toAnthropicTools(hub, { session: 'c1' }).map((t) => t.name)).toHaveLength(builtins.length)
@@ -824,6 +824,31 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(seen).toHaveLength(1)
     const off = await hub.callTool({ name: 'apps.events.unsubscribe', arguments: { subscriptionId }, session: 's1' })
     expect(off.result.error).toBeUndefined()
+  })
+
+  it('eventLimits：maxSubscriptions / maxInboxEvents 覆盖生效，未知字段启动失败', async () => {
+    const { hub } = await startHub({ eventLimits: { maxSubscriptions: 1, maxInboxEvents: 1 } })
+    const app = createAppMcp({ appId: 'shop', appName: '商城', hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false })
+    apps.push(app)
+    app.declareEvent({ name: 'order.shipped', description: '订单已发货' })
+    app.start()
+    await until(() => app.state.status === 'connected', 'shop 连上')
+
+    const sub = await hub.callTool({ name: 'apps.events.subscribe', arguments: { appId: 'shop', event: 'order.shipped' }, session: 's1' })
+    expect(sub.result.error).toBeUndefined()
+    const second = await hub.callTool({ name: 'apps.events.subscribe', arguments: { appId: 'shop' }, session: 's1' })
+    expect(second.result.error).toMatchObject({ kind: 'RATE_LIMITED', details: { scope: 'events' } })
+
+    expect(app.emitEvent('order.shipped', { n: 1 })).toBe(true)
+    expect(app.emitEvent('order.shipped', { n: 2 })).toBe(true)
+    await until(() => hub.status().events?.subscriptions[0]?.delivered === 2, '两条都入箱')
+    const fetched = await hub.callTool({ name: 'apps.events', session: 's1' })
+    const inbox = fetched.result.ok as { events: AppEvent[]; dropped: number }
+    expect(inbox.events.map((e) => e.payload)).toEqual([{ n: 2 }])
+    expect(inbox.dropped).toBe(1)
+
+    const bogus = { eventLimits: { bogus: 1 } } as unknown as HubStartOptions
+    await expect(Hub.start({ listen: null, ipcEndpoint: null, ...bogus })).rejects.toBeInstanceOf(HubError)
   })
 
   it('navigateTimeoutMs 必须是非负整数', async () => {

@@ -292,6 +292,35 @@ fn limits_config() {
 }
 
 #[test]
+fn event_limits_config() {
+    let d = HubConfig::default().into_hub().unwrap();
+    assert_eq!(d.event_limits, hub::EventLimits::default());
+    let c = HubConfig {
+        event_limits: Some(EventLimitOverrides { max_inbox_events: Some(5), inbox_ttl_ms: Some(1500), ..Default::default() }),
+        ..Default::default()
+    }
+    .into_hub()
+    .unwrap();
+    let expected =
+        hub::EventLimits { max_inbox_events: 5, inbox_ttl: Duration::from_millis(1500), ..hub::EventLimits::default() };
+    assert_eq!(c.event_limits, expected, "只覆盖给出的字段");
+    let c = HubConfig {
+        event_limits: Some(EventLimitOverrides {
+            max_subscriptions: Some(2),
+            max_inbox_events: Some(3),
+            inbox_ttl_ms: Some(0),
+            per_subscription_per_minute: Some(0),
+        }),
+        ..Default::default()
+    }
+    .into_hub()
+    .unwrap();
+    let expected =
+        hub::EventLimits { max_subscriptions: 2, max_inbox_events: 3, inbox_ttl: Duration::ZERO, per_subscription_per_minute: 0 };
+    assert_eq!(c.event_limits, expected);
+}
+
+#[test]
 fn filter_and_event_conversion() {
     let f: hub::ToolFilter = ToolFilter {
         max_risk: Some(Risk::Write),

@@ -431,6 +431,7 @@ fn tool_options_are_read_up_to_struct_size() {
             background_tool: Some("cart.summary".into()),
             concurrency: 2,
             exclusive: Some("doc".into()),
+            implements: Vec::new(),
         })
     );
     // v17 调用方（不含 concurrency / exclusive）：不单独限制、不互斥

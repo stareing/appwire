@@ -263,6 +263,11 @@ fn name_validation() {
     assert!(!is_valid_app_id("Shop"));
     assert!(!is_valid_app_id("2shop"));
     assert!(!is_valid_app_id(""));
+    assert!(is_valid_full_tool_name("mail.compose.send"));
+    assert!(is_valid_full_tool_name("shop.a"));
+    for bad in ["mail", "mail.", ".send", "Mail.send", "mail.se nd", "mail.x y"] {
+        assert!(!is_valid_full_tool_name(bad), "{bad}");
+    }
 }
 
 #[test]

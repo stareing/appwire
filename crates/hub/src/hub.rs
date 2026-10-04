@@ -154,6 +154,8 @@ pub struct HubShared {
     pub(crate) app_events: crate::events::AppEvents,
     /// 按（记账主体, 工具全名）的使用统计（第 16 项 O1，`apps.search` 的排序加成，[`crate::search`]）。
     pub(crate) search_stats: Mutex<crate::search::SearchStats>,
+    /// 标准意图的机主默认表与最近的替换错误（[`HubConfig::intent_defaults`]，运行中由 [`Hub::set_intent_defaults`] 替换）。
+    pub(crate) intents: Mutex<crate::intents::defaults::IntentsState>,
 }
 
 /// 一次调用的进度路由（[`HubShared::progress_routes`]）。
@@ -202,6 +204,7 @@ impl HubShared {
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let policy = PolicyState::new(config.policy.clone(), unix_millis());
         let agents = crate::agents::AgentRegistry::new(&config.agents);
+        let intents = crate::intents::defaults::IntentsState::new(&config.intent_defaults);
         let persist = config.state_dir.as_deref().map(crate::lifecycle::Persist::new);
         let app_events = crate::events::AppEvents::new(config.state_dir.as_deref());
         Self {
@@ -244,6 +247,7 @@ impl HubShared {
             tools_rev: tokio::sync::watch::Sender::new(0),
             activity: crate::activity::Activity::default(),
             search_stats: Mutex::new(crate::search::SearchStats::default()),
+            intents: Mutex::new(intents),
         }
     }
 

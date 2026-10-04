@@ -73,4 +73,20 @@ final class AppEventsTests: XCTestCase {
         XCTAssertNil(second.payloadJson)
         XCTAssertEqual(received.all.count, 1)
     }
+
+    /// `HubConfig.eventLimits` 经绑定生效：maxSubscriptions = 1 时第二个订阅 → RATE_LIMITED（scope events）。
+    func testEventLimitsMaxSubscriptionsApplies() async throws {
+        XCTAssertNil(HubConfig().eventLimits)
+        let shop = #"{"manifestVersion":1,"appId":"shop","name":"商城","tools":[]}"#
+        let hub = try Hub(config: HubConfig(
+            enableListen: false, enableIpc: false, manifestsJson: [shop],
+            eventLimits: EventLimitOverrides(maxSubscriptions: 1)
+        ))
+        defer { hub.close() }
+        let first = try await hub.callTool("apps.events.subscribe", argumentsJSON: #"{"appId":"shop","event":"a"}"#, session: "s1")
+        XCTAssertNil(first.error)
+        let second = try await hub.callTool("apps.events.subscribe", argumentsJSON: #"{"appId":"shop","event":"b"}"#, session: "s1")
+        XCTAssertEqual(second.error?.kind, "RATE_LIMITED")
+        XCTAssertEqual(try json(second.error?.detailsJson)["scope"] as? String, "events")
+    }
 }

@@ -32,6 +32,7 @@ pub(crate) fn app_hub_tool(app_id: &str, info: &ToolDef, availability: Availabil
         output_schema: info.output_schema(),
         surface: Some(info.surface),
         page: info.page.clone(),
+        implements: info.implements.clone(),
     }
 }
 
@@ -90,6 +91,7 @@ pub(crate) fn upstream_hub_tool(name: &str, t: &Tool) -> HubTool {
         output_schema: t.output_schema.as_ref().map(|s| Value::Object((**s).clone())),
         surface: None,
         page: None,
+        implements: Vec::new(),
     }
 }
 

@@ -146,6 +146,11 @@ public sealed class HubOptions
     /// （apps.lock / apps.unlock 不列出，调用为 TOOL_NOT_FOUND）。</summary>
     public int? MaxLocks { get; set; }
 
+    // ---- 事件信箱（spec/hub-api.md 3.17）----
+
+    /// <summary>订阅数、信箱容量、保留时长与每订阅频率上限（默认见 <see cref="HubEventLimits"/>）。</summary>
+    public HubEventLimits? EventLimits { get; set; }
+
     /// <summary>上游 MCP 服务器（名称 → 启动方式）。</summary>
     public IDictionary<string, UpstreamOptions> Upstreams { get; } = new Dictionary<string, UpstreamOptions>();
 
@@ -238,6 +243,7 @@ public sealed class HubOptions
         AddCount(o, "maxListenResources", MaxListenResources, nameof(MaxListenResources));
         AddCount(o, "maxTaskHandles", MaxTaskHandles, nameof(MaxTaskHandles));
         AddCount(o, "maxLocks", MaxLocks, nameof(MaxLocks));
+        if (EventLimits is { } el) o["eventLimits"] = el.ToJson();
         if (Upstreams.Count > 0)
         {
             var ups = new JsonObject();
@@ -307,6 +313,30 @@ public sealed class LeaseOptions
         HubOptions.AddMs(o, "minMs", Min);
         HubOptions.AddMs(o, "maxMs", Max);
         HubOptions.AddMs(o, "idleRevokeMs", IdleRevoke);
+        return o;
+    }
+}
+
+/// <summary>事件信箱上限（spec/hub-api.md 3.17，配置 JSON 的 eventLimits）。为 null 的字段取默认值；负数在生成配置时抛
+/// <see cref="ArgumentOutOfRangeException"/>。</summary>
+public sealed class HubEventLimits
+{
+    /// <summary>每个订阅方最多的订阅数（默认 32）；超出时 apps.events.subscribe 报 RATE_LIMITED（details.scope = "events"）。</summary>
+    public int? MaxSubscriptions { get; set; }
+    /// <summary>每个信箱最多的事件数（默认 100，至少按 1 处理）；满时丢最旧并计数。</summary>
+    public int? MaxInboxEvents { get; set; }
+    /// <summary>信箱中事件的保留时长（默认 24 小时）；过期的在下次读写该信箱时清理。</summary>
+    public TimeSpan? InboxTtl { get; set; }
+    /// <summary>每个订阅每分钟（滑动窗口）最多入箱的事件数（默认 60）；0 不限。</summary>
+    public int? PerSubscriptionPerMinute { get; set; }
+
+    internal JsonObject ToJson()
+    {
+        var o = new JsonObject();
+        HubOptions.AddCount(o, "maxSubscriptions", MaxSubscriptions, nameof(MaxSubscriptions));
+        HubOptions.AddCount(o, "maxInboxEvents", MaxInboxEvents, nameof(MaxInboxEvents));
+        HubOptions.AddMs(o, "inboxTtlMs", InboxTtl);
+        HubOptions.AddCount(o, "perSubscriptionPerMinute", PerSubscriptionPerMinute, nameof(PerSubscriptionPerMinute));
         return o;
     }
 }

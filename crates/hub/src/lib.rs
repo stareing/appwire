@@ -26,6 +26,7 @@ mod heap;
 pub mod http_server;
 pub mod hub;
 pub mod hub_state;
+pub mod intents;
 mod instance;
 mod ipc;
 mod lease;
@@ -69,6 +70,7 @@ pub use lease::{LeaseOverrides, LeasePairStatus, LeasePolicy, LeaseStatus};
 pub use limits::{LimitOverrides, LimitPolicy, OutputValidation, RateLimit};
 pub use activity::PreboundListeners;
 pub use agents::{AgentCredential, AgentsConfig};
+pub use intents::{IntentsConfig, IntentsStatus};
 pub use http_server::{Health, HttpOptions};
 pub use progress::ProgressUpdate;
 pub use policy::{

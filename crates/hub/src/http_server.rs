@@ -83,6 +83,8 @@ pub use app_mcp_protocol::{APP_PATH, HEALTH_PATH, MCP_PATH, STATUS_PATH};
 pub const POLICY_PATH: &str = "/policy";
 /// 替换已登记的 Agent（`POST`，请求体为 [`AgentsConfig`] JSON；第 16 项 N5）。
 pub const AGENTS_PATH: &str = "/agents";
+/// 替换标准意图的机主默认表（`POST`，请求体为 [`crate::IntentsConfig`] JSON；spec/intents.md 第 4 节）；授权同 `/status`。
+pub const INTENTS_PATH: &str = "/intents";
 
 /// `/healthz` 响应中的服务标识（[`app_mcp_protocol::identity::SERVICE_NAME`]）。
 pub const HEALTH_SERVICE: &str = app_mcp_protocol::identity::SERVICE_NAME;
@@ -190,6 +192,19 @@ impl AgentsReply {
     fn error(message: String) -> Self {
         Self { ok: false, agents: None, error: Some(message) }
     }
+}
+
+/// `POST /intents` 的响应体。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntentsReply {
+    pub ok: bool,
+    /// 成功时生效的默认表条数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<usize>,
+    /// 失败原因（之前的默认表继续生效）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// 取 `Authorization: Bearer <令牌>` 中的令牌；空令牌视为未携带。
@@ -338,6 +353,15 @@ impl Router {
                 }
                 self.replace_agents(req).await
             }
+            INTENTS_PATH => {
+                if req.method() != http::Method::POST {
+                    return plain(http::StatusCode::METHOD_NOT_ALLOWED, "只支持 POST");
+                }
+                if let Some(resp) = self.authorize_status(req.headers(), peer) {
+                    return resp;
+                }
+                self.replace_intents(req).await
+            }
             MCP_PATH => {
                 let Some(service) = &self.mcp else {
                     return plain(http::StatusCode::NOT_FOUND, "本端点未开启 MCP HTTP 服务。");
@@ -412,6 +436,31 @@ impl Router {
             Err(e) => {
                 tracing::warn!(error = %e, "Agent 登记不合法，继续使用之前的登记");
                 json(http::StatusCode::BAD_REQUEST, &AgentsReply::error(e))
+            }
+        }
+    }
+
+    /// `POST /intents`：读取请求体（上限 [`MAX_POLICY_BODY`]）并替换意图默认表；不合法时 400，之前的默认表继续生效
+    /// （错误记入 `/status` 的 `intents.lastError`）。
+    async fn replace_intents(&self, req: http::Request<Incoming>) -> http::Response<Body> {
+        let body = http_body_util::Limited::new(req.into_body(), MAX_POLICY_BODY);
+        let reply = |error: String| IntentsReply { ok: false, defaults: None, error: Some(error) };
+        let bytes = match body.collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(e) => {
+                return json(http::StatusCode::PAYLOAD_TOO_LARGE, &reply(format!("读取请求体失败（上限 {MAX_POLICY_BODY} 字节）：{e}")));
+            }
+        };
+        let result = crate::IntentsConfig::from_json(&String::from_utf8_lossy(&bytes)).and_then(|config| {
+            let n = config.defaults.len();
+            self.shared.set_intent_defaults(config.defaults).map(|()| n)
+        });
+        match result {
+            Ok(n) => json(http::StatusCode::OK, &IntentsReply { ok: true, defaults: Some(n), error: None }),
+            Err(e) => {
+                // from_json 失败时也记下错误（set_intent_defaults 内部校验失败已记录）。
+                crate::hub::lock(&self.shared.intents).last_error = Some(e.clone());
+                json(http::StatusCode::BAD_REQUEST, &reply(e))
             }
         }
     }

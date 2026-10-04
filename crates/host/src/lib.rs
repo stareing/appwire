@@ -21,6 +21,7 @@ pub mod data_home;
 pub mod doctor;
 pub mod logging;
 pub mod agents;
+pub mod intents;
 pub mod policy;
 pub mod ports;
 pub mod probe;
@@ -106,6 +107,7 @@ async fn run(cli: Cli, inherited: Result<Option<Inherited>, ActivationError>) ->
         Some(Command::Uninstall(args)) => uninstall_cmd(args).await,
         Some(Command::Policy { action }) => policy::cmd(action).await,
         Some(Command::Agent { action }) => agents::cmd(action).await,
+        Some(Command::Intents { action }) => intents::cmd(action).await,
         Some(Command::App { action }) => app_install::cmd(action).await,
         Some(Command::Token { home, regenerate }) => {
             let home = AppHome::resolve(home.home.as_deref())?;

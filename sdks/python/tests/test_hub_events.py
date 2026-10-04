@@ -89,3 +89,37 @@ def test_app_event_subscribe_fetch_status_and_handler() -> None:
                 app.stop()
 
     asyncio.run(main())
+
+
+def test_event_limits_override_applies() -> None:
+    """``event_limits`` 字典：maxSubscriptions = 1 时第二个订阅 RATE_LIMITED；maxInboxEvents = 1 时只留最新一条、丢弃计数。"""
+
+    async def main() -> None:
+        with Hub(listen="127.0.0.1:0", enable_ipc=False, event_limits={"maxSubscriptions": 1, "maxInboxEvents": 1}) as hub:
+            events = hub.events()
+            app = AppMcp("shop", "商城", host_url=f"ws://{hub.listen_addr}/app")
+            app.declare_event("order.shipped", "订单已发货")
+            app.start()
+            try:
+                await events.wait_for(lambda e: e.is_app_connected() and e.app_id == "shop", 10)
+                sub = await hub.call_tool("apps.events.subscribe", {"appId": "shop", "event": "order.shipped"}, session="s1")
+                assert sub.error is None, sub.error
+                second = await hub.call_tool("apps.events.subscribe", {"appId": "shop"}, session="s1")
+                assert second.error is not None and second.error.kind == "RATE_LIMITED", second.error
+                assert json.loads(second.error.details_json or "{}").get("scope") == "events"
+
+                for n in (1, 2):
+                    await asyncio.to_thread(emit_when_connected, app, "order.shipped", {"n": n})
+                    await events.wait_for(lambda e: e.is_app_event(), 10)
+                inbox = await hub.call_tool("apps.events", session="s1")
+                assert [x["payload"] for x in inbox.data["events"]] == [{"n": 2}]
+                assert inbox.data["dropped"] == 1
+            finally:
+                app.stop()
+
+    asyncio.run(main())
+
+
+def test_event_limits_rejects_unknown_key() -> None:
+    with pytest.raises(ValueError, match="event_limits"):
+        Hub(enable_listen=False, enable_ipc=False, event_limits={"maxEvents": 1})

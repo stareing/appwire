@@ -26,6 +26,8 @@ pub struct JsToolDef {
     pub concurrency: Option<u32>,
     /// 互斥组（spec/protocol.md 5.3）。
     pub exclusive: Option<String>,
+    /// 实现的标准意图（spec/intents.md），如 `["message.send@1"]`。
+    pub implements: Option<Vec<String>>,
     /// 缺省 true。
     pub enabled: Option<bool>,
     pub scope: Option<f64>,
@@ -54,6 +56,7 @@ impl FromJson for JsToolDef {
             background_tool: f.string("backgroundTool"),
             concurrency: f.u32("concurrency"),
             exclusive: f.string("exclusive"),
+            implements: f.strings("implements"),
             enabled: f.bool("enabled"),
             scope: f.f64("scope"),
         };
@@ -79,6 +82,7 @@ impl JsToolDef {
             background_tool: self.background_tool,
             concurrency: self.concurrency.unwrap_or(0),
             exclusive: self.exclusive,
+            implements: self.implements.unwrap_or_default(),
         })
     }
 }
@@ -157,6 +161,8 @@ pub struct JsToolUpdate {
     pub concurrency: Option<u32>,
     /// `null` 清除互斥组。
     pub exclusive: Option<Option<String>>,
+    /// 替换实现的标准意图（空数组 = 清空）。
+    pub implements: Option<Vec<String>>,
 }
 
 impl FromJson for JsToolUpdate {
@@ -185,6 +191,7 @@ impl FromJson for JsToolUpdate {
         let u = JsToolUpdate {
             concurrency: f.u32("concurrency"),
             exclusive,
+            implements: f.strings("implements"),
             surface: f.protocol("surface"),
             page,
             background_tool,
@@ -217,6 +224,7 @@ impl JsToolUpdate {
             background_tool: self.background_tool,
             concurrency: self.concurrency,
             exclusive: self.exclusive,
+            implements: self.implements,
         }
     }
 }

@@ -208,6 +208,8 @@ var outcome = await hub.CallAsync("notes.add", new { text = "买牛奶" });  // 
 - 厂商 / 机主回调：`hub.SetEventHandler(ev => ...)`（`HubAppEvent`：`Id`、`AppId`、`InstanceId`、`Name`、`Payload`、`At`），每个通过校验的
   事件（不论有无订阅）调用一次，在 `Dispatcher` 上执行（null 时在分发线程上，须尽快返回）；传 `null` 清除。`Event` 也收到同一事件
   （`HubEventTypes.AppEvent`），但处理过慢时可能 `lagged`。
+- 上限：`HubOptions.EventLimits = new HubEventLimits { MaxSubscriptions, MaxInboxEvents, InboxTtl, PerSubscriptionPerMinute }`
+  （为 null 的字段取默认值 32 / 100 / 24 小时 / 60；`PerSubscriptionPerMinute = 0` 不限）。
 - `Status().Events`（`EventsStatusInfo`）：`Subscriptions`（`EventSubscriptionStatusInfo`：`SubscriptionId`、`Subscriber`、`AppId`、
   `Event`、`Delivered`、`Dropped`、`Pending`）与 `DroppedInvalid`（未声明 / 载荷不合法而丢弃的事件数）。
 

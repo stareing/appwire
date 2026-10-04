@@ -242,6 +242,7 @@ impl ToolHandle {
             surface: Some(options.surface),
             page: Some(options.page),
             background_tool: Some(options.background_tool),
+            implements: Some(options.implements),
             concurrency: Some(options.concurrency),
             exclusive: Some(options.exclusive),
             ..spec_update(spec)?

@@ -129,6 +129,8 @@ MCP 出口的协议版本与通知（spec/hub-api.md 3.6）：`mcpProtocolMode`�
 报 `RATE_LIMITED`；0 不提供任务句柄，`apps.task.*` 不列出）。
 对象锁（spec/hub-api.md 3.6「对象锁」）：`maxLocks`（每个持有者同时持有的锁数上限，默认 16，超出时 `apps.lock` 报 `RATE_LIMITED`；
 0 关闭，`apps.lock` / `apps.unlock` 不列出）。他人持有时写调用与加锁以 `LOCKED` 结束；`hub.status().locks` 列出未到期的锁。
+事件信箱（spec/hub-api.md 3.17）：`eventLimits: {maxSubscriptions?, maxInboxEvents?, inboxTtlMs?, perSubscriptionPerMinute?}`
+（缺省 32 / 100 / 86400000 / 60；`perSubscriptionPerMinute: 0` 不限），超出订阅数时 `apps.events.subscribe` 报 `RATE_LIMITED`（`scope: 'events'`）。
 
 ## 资源保护与结果校验（spec/hub-api.md 3.11）
 

@@ -750,7 +750,7 @@ async fn no_ws_and_shutdown() {
     .unwrap();
     assert!(hub.listen_addr().is_none());
     assert!(hub.apps().is_empty());
-    assert_eq!(hub.tools(&ToolFilter::default()).len(), 13); // 内置（apps.list / select / overview / activate / release / lock / unlock / calls / cancel / events.subscribe / events.unsubscribe / events / search）
+    assert_eq!(hub.tools(&ToolFilter::default()).len(), 14); // 内置（apps.list / select / overview / activate / release / lock / unlock / calls / cancel / events.subscribe / events.unsubscribe / events / search / intents）
     assert!(hub.tools(&ToolFilter { include_builtin: false, ..Default::default() }).is_empty());
     hub.shutdown().await;
 
@@ -866,7 +866,7 @@ async fn progressive_exposure_api_and_export() {
     wait_tool(&hub, "shop.echo").await;
     wait_tool(&hub, "notes.echo").await;
     let builtins =
-        ["apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release", "apps.lock", "apps.unlock", "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events", "apps.search"];
+        ["apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release", "apps.lock", "apps.unlock", "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events", "apps.search", "apps.intents"];
     assert_eq!(names(&hub.tools(&ToolFilter::default())), builtins);
     assert_eq!(
         exported_names(ToolFormat::Anthropic, &hub.export_tools(ToolFormat::Anthropic, &ToolFilter::default())),
@@ -884,7 +884,8 @@ async fn progressive_exposure_api_and_export() {
             "apps__events__subscribe",
             "apps__events__unsubscribe",
             "apps__events",
-            "apps__search"
+            "apps__search",
+            "apps__intents"
         ]
     );
     // 显式指定 apps 时不受渐进暴露影响
@@ -949,7 +950,7 @@ async fn auto_exposure_switches_at_threshold() {
     let _a = connect(&hub, Spec::new("shop", "i1")).await;
     wait_tool(&hub, "shop.echo").await;
     let listed = names(&hub.tools(&ToolFilter::default()));
-    assert_eq!(listed.len(), 16, "{listed:?}"); // 3 个 App 工具 + 13 个内置
+    assert_eq!(listed.len(), 17, "{listed:?}"); // 3 个 App 工具 + 14 个内置
     assert!(!listed.contains(&"apps.tools".to_string()));
     // apps.tools 任何时候都可调用
     let out = hub.call_tool(CallRequest::new("apps.tools", json!({"appId": "shop"}))).await.unwrap();
@@ -972,5 +973,5 @@ async fn auto_exposure_switches_at_threshold() {
     .unwrap();
     let _c = connect(&all, Spec::new("shop", "i1")).await;
     wait_tool(&all, "shop.echo").await;
-    assert_eq!(all.tools(&ToolFilter::default()).len(), 16);
+    assert_eq!(all.tools(&ToolFilter::default()).len(), 17);
 }

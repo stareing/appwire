@@ -270,6 +270,8 @@ calls `fn(AppEvent)` once per event whether or not anyone subscribed (`AppEvent`
 `payload_json`, `at_ms`). Without a dispatcher `fn` runs on the Hub's app-connection thread and must return quickly;
 `None` clears it. `hub.status().events` is an `EventsStatus` (`subscriptions: [EventSubscriptionStatus]` with
 `delivered` / `dropped` / `pending`, plus `dropped_invalid`).
+Limits: `Hub(event_limits={"maxSubscriptions": 8, "maxInboxEvents": 20})` (or an `EventLimitOverrides`; also
+`inboxTtlMs`, `perSubscriptionPerMinute`; unset fields keep the defaults 32 / 100 / 24 h / 60, `0` per minute = unlimited).
 
 Policy hook points (`spec/hub-api.md` §3.13): `Hub(policy={"rules": [{"id": "no-pay", "action": "deny", "app": "shop",
 "tool": "pay*"}]})` or `hub.set_policy(...)` at runtime. `hide` removes an app / tool from every list (calls get

@@ -102,6 +102,7 @@ mod tests {
                     surface: ToolSurface::App,
                     page: None,
                     background_tool: None,
+                    implements: Vec::new(),
                 },
                 ToolInfo {
                     name: "cart.checkout".into(),
@@ -115,6 +116,7 @@ mod tests {
                     surface: ToolSurface::App,
                     page: None,
                     background_tool: None,
+                    implements: Vec::new(),
                 },
             ],
         }
@@ -166,6 +168,25 @@ mod tests {
         assert!(!parsed.realtime);
         let parsed: ResourceInfo = serde_json::from_value(json!({"name": "a", "description": "d", "realtime": true})).unwrap();
         assert!(parsed.realtime);
+    }
+
+    /// `implements` 只在非空时序列化：未声明的工具摘要不变（固定向量不变），声明后摘要变化（spec/intents.md 第 1 节）。
+    #[test]
+    fn implements_serialized_only_when_non_empty() {
+        let plain = vector_tools();
+        assert!(!serde_json::to_string(&plain).unwrap().contains("implements"));
+        let mut declared = plain.clone();
+        declared.tools[0].implements = vec!["message.send@1".into()];
+        assert!(serde_json::to_string(&declared).unwrap().contains(r#""implements":["message.send@1"]"#));
+        assert_ne!(tools_hash(&declared, &vector_resources()), tools_hash(&plain, &vector_resources()));
+        let parsed: ToolInfo =
+            serde_json::from_value(json!({"name": "a", "description": "d", "inputSchema": {"type": "object"}})).unwrap();
+        assert!(parsed.implements.is_empty());
+        let parsed: ToolInfo = serde_json::from_value(
+            json!({"name": "a", "description": "d", "inputSchema": {"type": "object"}, "implements": ["link.open@1"]}),
+        )
+        .unwrap();
+        assert_eq!(parsed.implements, ["link.open@1"]);
     }
 
     #[test]

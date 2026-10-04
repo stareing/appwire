@@ -11,7 +11,7 @@ use crate::schema::{self, SchemaCheck};
 use crate::names::{
     TOOL_APPS_LIST, TOOL_APPS_LOCK, TOOL_APPS_OVERVIEW, TOOL_APPS_PAGE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN,
     TOOL_APPS_TASK_END, TOOL_APPS_TOOLS, TOOL_APPS_UNLOCK, TOOL_APPS_CALLS, TOOL_APPS_CANCEL, TOOL_APPS_EVENTS,
-    TOOL_APPS_EVENTS_SUBSCRIBE, TOOL_APPS_EVENTS_UNSUBSCRIBE, TOOL_APPS_SEARCH,
+    TOOL_APPS_EVENTS_SUBSCRIBE, TOOL_APPS_EVENTS_UNSUBSCRIBE, TOOL_APPS_SEARCH, TOOL_APPS_INTENTS,
 };
 
 use super::{CallCtx, unknown_app};
@@ -184,6 +184,7 @@ impl HubShared {
             TOOL_APPS_EVENTS_UNSUBSCRIBE => self.builtin_events_unsubscribe(key, args),
             TOOL_APPS_EVENTS => self.builtin_events_fetch(key, args),
             TOOL_APPS_SEARCH => self.builtin_search(ctx, args),
+            TOOL_APPS_INTENTS => self.builtin_intents(ctx, args),
             _ => return None,
         })
     }

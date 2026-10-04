@@ -335,6 +335,19 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
     location?, attendees?, notes?}`、`media.play {query | uri, kind?}`、`file.share {files[], mimeType?, text?, to?}`；原 `navigation.open`
     拆为 `link.open {url}` 与 `navigation.start {destination{name?|address?|lat,lng}, mode?}`。
   - 未知：Apple Entity 型参数如何从平铺 JSON 生成；鸿蒙标准意图是否需平台审核；Xcode 未编译验证。
+  - **实施（2026-10-04，一期 Rust）**：契约 spec/intents.md、spec/protocol.md `ToolInfo.implements`、spec/manifest.md。
+    - 事实：词表与兼容性检查一处定义 `crates/protocol/src/intents.rs`（6 个动词 @1、`IntentRef`、`validate_implements`、`compatibility`）；
+      清单校验（格式 / 重复 / 上限为错误，未知动词与不兼容为警告）；核心 `ToolDef` / `ToolUpdate.implements`、`CoreError::InvalidImplements`
+      （原生映射 `NativeError::InvalidName`）；Hub `crates/hub/src/intents/`（collect / builtin / defaults）：`apps.intents`（复用 apps.search
+      的候选来源，不唤醒、hide 过滤、默认排首位、不兼容列入 incompatible、未知 known:false、命中 App 记入暴露集合）、`HubConfig.intent_defaults`
+      / `Hub::set_intent_defaults` / `Hub::intents` / `HubStatus.intents`、`HubTool.implements`（apps.search 结果带上）；Host `<home>/intents.json`
+      （启动不合法拒绝启动、`POST /intents` 与 `app-mcp-host intents show|validate|reload|set|unset`、doctor）。绑定：WASM / Node / uniffi 透传
+      `implements`；C ABI 未加字段（二期）。
+    - 测试：协议 / 清单 / 核心 / Hub 单元，`crates/hub/tests/intents.rs`、host `serve.rs`；变异 29 个全检出（被中断的前任留下一处未恢复的变异，
+      接手时从备份恢复并核对；host `run_to_exit` 加 30 秒上限，避免"应拒绝启动却启动"时测试挂死）。
+    - 未做（二期）：各语言 SDK 声明 `implements` 的封装（C ABI 字段、Web types、Kotlin / Swift / Python / C++ / C# / Dart / 鸿蒙、`@app-mcp/build`）、
+      Hub 封装 `set_intent_defaults` / `intents()` / `HubStatus.intents`；codegen 输出系统 schema；规范未写的上限（动词名 64、默认表 256、
+      `intent` 参数 80 字符）与 `POST /intents`、`HubStatus.intents` 待补进 spec/hub-api.md。
 - **O1 工具检索**：`apps.search(query)`，按关键词、最近使用、成功率、当前可见界面（4c）排序；可选本地向量索引（U5）。
 - **O3 只读结果缓存**：`read` 工具与资源按 App 声明的 TTL / 版本号缓存，命中时不唤醒 App。
 - **O4 schema 演进**：字段弃用标记、兼容规则与 Agent 侧缓存失效策略，写入 `spec/manifest.md`。

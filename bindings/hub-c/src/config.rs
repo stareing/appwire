@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use hub::{
-    AgentCredential, AgentsConfig, ApprovalPolicy, HubConfig, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PolicyConfig, ToolExposure,
+    AgentCredential, AgentsConfig, ApprovalPolicy, EventLimits, HubConfig, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PolicyConfig, ToolExposure,
     UpstreamConfig, WakerConfig, load_manifests,
 };
 use serde::Deserialize;
@@ -90,6 +90,8 @@ pub(crate) struct ConfigJson {
     pub max_locks: Option<usize>,
     /// v19：Agent 登记（spec/hub-api.md 3.6「Agent 身份」）：`[{"name","token"}]`，缺省空（所有请求为本机主体）。
     pub agents: Option<Vec<AgentCredential>>,
+    /// v22：事件信箱上限（spec/hub-api.md 3.17）：`{"maxSubscriptions","maxInboxEvents","inboxTtlMs","perSubscriptionPerMinute"}`。
+    pub event_limits: Option<EventLimitOverrides>,
     pub upstreams: BTreeMap<String, UpstreamConfig>,
     pub approval: ApprovalPolicy,
     pub worker_threads: Option<usize>,
@@ -141,9 +143,39 @@ impl Default for ConfigJson {
             max_task_handles: None,
             max_locks: None,
             agents: None,
+            event_limits: None,
             upstreams: BTreeMap::new(),
             approval: ApprovalPolicy::default(),
             worker_threads: None,
+        }
+    }
+}
+
+/// 事件信箱上限（[`EventLimits`]）的可选覆盖；缺省字段沿用默认值（32 / 100 / 24 h / 60）。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EventLimitOverrides {
+    /// 每个订阅方最多的订阅数。
+    pub max_subscriptions: Option<usize>,
+    /// 每个信箱最多的事件数（Hub 至少按 1 处理）。
+    pub max_inbox_events: Option<usize>,
+    /// 信箱中事件的保留时长（毫秒）。
+    pub inbox_ttl_ms: Option<u64>,
+    /// 每个订阅每分钟最多入箱的事件数；`0` = 不限。
+    pub per_subscription_per_minute: Option<u32>,
+}
+
+impl EventLimitOverrides {
+    fn apply(&self, target: &mut EventLimits) {
+        if let Some(v) = self.max_subscriptions {
+            target.max_subscriptions = v;
+        }
+        if let Some(v) = self.max_inbox_events {
+            target.max_inbox_events = v;
+        }
+        set_ms(&mut target.inbox_ttl, self.inbox_ttl_ms);
+        if let Some(v) = self.per_subscription_per_minute {
+            target.per_subscription_per_minute = v;
         }
     }
 }
@@ -283,6 +315,9 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     }
     if let Some(agents) = c.agents {
         hub.agents = parse_agents(agents)?;
+    }
+    if let Some(o) = &c.event_limits {
+        o.apply(&mut hub.event_limits);
     }
 
     // 目录与文件：失败的清单由 Hub 记录日志后跳过（与 app-mcp-host 一致）。
@@ -497,6 +532,32 @@ mod tests {
         assert!(e.message.contains("policy"), "{}", e.message);
         let e = parse(Some(r#"{"policy": {"rules": [], "bogus": 1}}"#)).err().map(|e| e.status);
         assert_eq!(e, Some(AmHubStatus::InvalidJson), "policy 内未知字段报错");
+    }
+
+    #[test]
+    fn event_limits_field() {
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert_eq!(p.hub.event_limits, EventLimits::default());
+        let p = parse(Some(r#"{"eventLimits": {"maxInboxEvents": 5, "inboxTtlMs": 1500}}"#)).map_err(|e| e.message).expect("解析");
+        let d = EventLimits::default();
+        assert_eq!(
+            p.hub.event_limits,
+            EventLimits { max_inbox_events: 5, inbox_ttl: Duration::from_millis(1500), ..d },
+            "只覆盖给出的字段"
+        );
+        let p = parse(Some(
+            r#"{"eventLimits": {"maxSubscriptions": 2, "maxInboxEvents": 3, "inboxTtlMs": 0, "perSubscriptionPerMinute": 0}}"#,
+        ))
+        .map_err(|e| e.message)
+        .expect("解析");
+        assert_eq!(
+            p.hub.event_limits,
+            EventLimits { max_subscriptions: 2, max_inbox_events: 3, inbox_ttl: Duration::ZERO, per_subscription_per_minute: 0 }
+        );
+        for bad in [r#"{"eventLimits": {"bogus": 1}}"#, r#"{"eventLimits": {"maxSubscriptions": -1}}"#, r#"{"eventLimits": {"inboxTtlMs": "1h"}}"#] {
+            let e = parse(Some(bad)).err().map(|e| e.status);
+            assert_eq!(e, Some(AmHubStatus::InvalidJson), "{bad}");
+        }
     }
 
     #[test]

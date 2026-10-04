@@ -14,7 +14,7 @@ use crate::activation::{ActivationError, Inherited};
 use crate::cli::ServeArgs;
 use crate::config::{AppHome, AuthMode, Settings};
 use crate::probe::{self, Probe};
-use crate::{agents, doctor, load_file, log_notices, logging, policy, token};
+use crate::{agents, doctor, intents, load_file, log_notices, logging, policy, token};
 
 /// 探测用地址：未指定地址（0.0.0.0 / ::）换成回环。
 pub(crate) fn probe_addr(addr: &str) -> String {
@@ -156,6 +156,7 @@ pub(crate) async fn serve(args: ServeArgs, inherited: Result<Option<Inherited>, 
         mcp_http: true,
         policy: policy::load(&home)?,
         agents: agents::load(&home)?,
+        intent_defaults: intents::load(&home)?.defaults,
         ..hub_config(&s, &home)
     };
     if !prebound.is_empty() {

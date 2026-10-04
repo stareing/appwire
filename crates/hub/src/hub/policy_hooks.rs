@@ -52,6 +52,17 @@ impl HubShared {
         r
     }
 
+    /// 替换意图默认表（[`Hub::set_intent_defaults`]、`POST /intents`）；不合法时之前的默认表继续生效并记下错误。
+    pub(crate) fn set_intent_defaults(&self, defaults: std::collections::BTreeMap<String, String>) -> Result<(), String> {
+        let n = defaults.len();
+        let r = lock(&self.intents).replace(defaults);
+        match &r {
+            Ok(()) => tracing::info!(defaults = n, "意图默认表已更新"),
+            Err(e) => tracing::warn!(error = %e, "意图默认表不合法，继续使用之前的默认表"),
+        }
+        r
+    }
+
     /// 替换已登记的 Agent（[`Hub::set_agents`]、`POST /agents`）；不合法时之前的登记继续生效。
     pub(crate) fn set_agents(&self, config: &crate::agents::AgentsConfig) -> Result<(), String> {
         config.validate()?;

@@ -24,6 +24,7 @@ fn tool(name: &str) -> ToolDef {
         surface: ToolSurface::App,
         page: None,
         background_tool: None,
+        implements: Vec::new(),
         concurrency: 0,
         exclusive: None,
     }

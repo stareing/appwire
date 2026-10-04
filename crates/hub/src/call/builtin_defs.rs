@@ -12,8 +12,9 @@ use crate::names::{
     BUILTIN_APP_ID, TOOL_APPS_ACTIVATE, TOOL_APPS_LIST, TOOL_APPS_LOCK, TOOL_APPS_NAVIGATE, TOOL_APPS_OVERVIEW,
     TOOL_APPS_PAGE, TOOL_APPS_RELEASE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN, TOOL_APPS_TASK_END, TOOL_APPS_TOOLS,
     TOOL_APPS_UNLOCK, TOOL_APPS_CALLS, TOOL_APPS_CANCEL, TOOL_APPS_EVENTS, TOOL_APPS_EVENTS_SUBSCRIBE,
-    TOOL_APPS_EVENTS_UNSUBSCRIBE, TOOL_APPS_SEARCH,
+    TOOL_APPS_EVENTS_UNSUBSCRIBE, TOOL_APPS_SEARCH, TOOL_APPS_INTENTS,
 };
+use crate::intents::MAX_INTENT_ARG_CHARS;
 use crate::events::{MAX_EVENTS_PER_FETCH};
 use crate::search::{DEFAULT_SEARCH_LIMIT, MAX_QUERY_CHARS, MAX_SEARCH_LIMIT};
 use crate::object_lock::{MAX_LOCK_KEY_LEN, MAX_LOCK_TTL_MS, MIN_LOCK_TTL_MS};
@@ -374,6 +375,28 @@ fn base_builtin_tools() -> Vec<Tool> {
         .with_annotations(
             ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(false),
         ),
+        Tool::new(
+            TOOL_APPS_INTENTS,
+            "按通用动作（标准意图，如 message.send 发消息、calendar.create 建日程、media.play 播放、file.share 分享文件、\
+             link.open 打开链接、navigation.start 导航）列出声明实现它的工具，供你选择用哪个 App。default 为机主设置的默认 App\
+             （只是提示）；选定后按工具全名调用。intent 省略 = 列出全部；可写 message.send（任意版本）或 message.send@1。\
+             不会启动 App。",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "intent": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_INTENT_ARG_CHARS,
+                        "description": "标准意图，如 message.send 或 message.send@1（省略 = 全部）"
+                    }
+                },
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(false),
+        ),
     ]
 }
 
@@ -411,6 +434,7 @@ pub(crate) fn builtin_hub_tools(set: BuiltinSet) -> Vec<HubTool> {
                 output_schema: None,
                 surface: None,
                 page: None,
+                implements: Vec::new(),
             }
         })
         .collect()

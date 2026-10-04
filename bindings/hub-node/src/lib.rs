@@ -41,6 +41,10 @@ use napi_derive::napi;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
+mod event_limits;
+
+use event_limits::EventLimitOverrides;
+
 /// 事件回调：参数为事件 JSON 文本，返回值忽略。weak、无 error-first 参数。
 type EventTsfn = ThreadsafeFunction<String, (), String, Status, false, true>;
 /// 审批 / 配对回调：参数为请求 JSON 文本，返回 `Promise<boolean>`。
@@ -195,6 +199,8 @@ struct ConfigJson {
     max_locks: Option<usize>,
     /// Agent 登记（spec/hub-api.md 3.6「Agent 身份」）：`[{"name","token"}]`；不合法时 `Hub.start` 失败。
     agents: Option<Vec<AgentCredential>>,
+    /// 事件信箱上限（spec/hub-api.md 3.17）：`{maxSubscriptions?, maxInboxEvents?, inboxTtlMs?, perSubscriptionPerMinute?}`。
+    event_limits: Option<EventLimitOverrides>,
     upstreams: BTreeMap<String, UpstreamConfig>,
     approval: ApprovalPolicy,
 }
@@ -328,6 +334,9 @@ impl ConfigJson {
         }
         if let Some(agents) = self.agents {
             c.agents = AgentsConfig { agents };
+        }
+        if let Some(o) = &self.event_limits {
+            o.apply(&mut c.event_limits);
         }
         c.upstreams = self.upstreams;
         c.approval = self.approval;
