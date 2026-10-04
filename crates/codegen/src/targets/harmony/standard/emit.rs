@@ -1,5 +1,6 @@
 //! 鸿蒙标准意图的 ArkTS 输出：执行器文件与媒体实体解析文件。
 
+use super::super::entity::{EntityProp, entity_class};
 use super::super::executor::display_description;
 use super::*;
 
@@ -262,23 +263,23 @@ fn media_body(c: &mut Code, model: &Model, plan: &Plan) {
 
 /// 位置实体类、交通方式表与坐标转换函数（导航执行器文件内）。
 fn navigation_helpers(c: &mut Code, model: &Model, nav: &NavigationPlan) {
-    c.line("/** StartNavigate 的地点（系统入口按标准意图 schema 赋值；字段均为字符串）。 */");
-    c.open("@InsightIntentEntity({");
-    c.line("entityCategory: \"location\",");
-    c.close("})");
-    c.open(format!(
-        "export class {} implements insightIntent.IntentEntity {{",
-        location_class(model)
-    ));
-    c.line("public entityId: string = '';");
-    c.line("public poiId?: string;");
-    c.line("public locationName?: string;");
-    c.line("/** 坐标系，缺省为 GCJ-02。 */");
-    c.line("public locationSystem?: string;");
-    c.line("public longitude?: string;");
-    c.line("public latitude?: string;");
-    c.line("public address?: string;");
-    c.close("}");
+    let prop = |name: &str, doc: &[&str]| {
+        EntityProp::new(name, "string", doc.iter().map(|d| d.to_string()).collect())
+    };
+    entity_class(
+        c,
+        &["StartNavigate 的地点（系统入口按标准意图 schema 赋值；字段均为字符串）。".to_string()],
+        "location",
+        &location_class(model),
+        &[
+            prop("poiId", &[]),
+            prop("locationName", &[]),
+            prop("locationSystem", &["坐标系，缺省为 GCJ-02。"]),
+            prop("longitude", &[]),
+            prop("latitude", &[]),
+            prop("address", &[]),
+        ],
+    );
     c.blank();
     if let Some((f, table)) = &nav.mode {
         let ty = mode_import(model, f).unwrap_or_else(|| "string".to_string());

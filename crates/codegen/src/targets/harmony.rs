@@ -11,6 +11,9 @@
 //!
 //! 映射：意图参数由系统入口按 `parameters`（JSON Schema）赋值给执行器的同名属性，因此属性名就是 JSON 属性名；
 //! 含非标识符属性名（如 `is-urgent`）或与执行器基类成员同名的工具不生成意图（给出警告），仍可作为 MCP 工具使用。
+//! 构建工具按 `parameters` 校验执行器属性类型（10110009），顶层属性因此改变表示、执行时转换回工具参数类型
+//! （见 `executor/convert.rs`）：整数为 `number`、枚举为 `string`、对象为 `@InsightIntentEntity` 类、字典与原始 JSON 为 JSON 文本；
+//! 对象参数的属性名不是标识符或为 `entityId` 时同样不生成意图。
 //! `parameters` 由类型模型重新生成（不含 `format`、`$ref`、组合关键字），保证能被构建工具的 ajv 编译。
 //! 需要用户确认的风险等级（destructive / payment / os-sensitive）与 `activation: foreground` 使用前台执行模式，
 //! 其余使用后台执行模式（系统经 Call 调用拉起 UIAbility，不显示界面）。
@@ -32,11 +35,12 @@ use crate::ident::{self, Lang};
 use crate::schema::{Field, Model, ObjectDecl, ToolModel, Ty, TypeDecl, Warning, field_doc};
 use crate::targets::{decl_doc, file, needs_confirmation, risk_name, tool_doc};
 
+mod entity;
 mod executor;
 pub mod standard;
 
 pub use executor::intent_parameters;
-use executor::executor_file;
+use executor::{entity_unsupported, executor_file};
 
 /// 意图版本（`intentVersion`，三段数字）。
 pub const INTENT_VERSION: &str = "1.0.0";
@@ -155,7 +159,7 @@ fn unsupported_reason(model: &Model, tool: &ToolModel) -> Option<String> {
             f.json_name
         ));
     }
-    None
+    params.fields.iter().find_map(|f| entity_unsupported(model, f))
 }
 
 // ---------------------------------------------------------------------------
@@ -349,7 +353,7 @@ fn runtime_file(model: &Model) -> String {
     c.line("/** 意图执行结果码（IntentResult.code）。失败时 result 为 {\"kind\",\"message\"} 的 JSON 文本。 */");
     c.open(format!("export enum {m}IntentCode {{"));
     c.line("OK = 0,");
-    c.line("/** 缺少必填参数。 */");
+    c.line("/** 缺少必填参数或参数无效。 */");
     c.line("INVALID_INPUT = 1,");
     c.line(format!("/** App 未设置 {m}IntentRuntime.handlers。 */"));
     c.line("HANDLERS_NOT_SET = 2,");
@@ -411,6 +415,15 @@ fn runtime_file(model: &Model) -> String {
     ));
     c.close("}");
     c.blank();
+    c.line("/** 参数无效（整数、枚举取值、实体必填属性或 JSON 文本不合要求）。 */");
+    c.open("static invalid(field: string, reason: string): Promise<insightIntent.IntentResult<string>> {");
+    c.line(format!(
+        "return Promise.resolve({m}IntentRuntime.failure({m}IntentCode.INVALID_INPUT, 'INVALID_INPUT', `参数 ${{field}} 无效：${{reason}}`));"
+    ));
+    c.close("}");
+    c.blank();
+    json_text_helpers(&mut c);
+    c.blank();
     c.open(format!(
         "private static success(value: {RESULT_TY}): insightIntent.IntentResult<string> {{"
     ));
@@ -453,6 +466,42 @@ fn runtime_file(model: &Model) -> String {
     c.close("}");
     c.close("}");
     c.finish()
+}
+
+/// JSON 文本参数（字典与原始 JSON，见 `executor/convert.rs`）的校验与解析。
+fn json_text_helpers(c: &mut Code) {
+    c.line("/** 是否为合法 JSON 文本。 */");
+    c.open("static isJson(text: string): boolean {");
+    c.open("try {");
+    c.line("JSON.parse(text);");
+    c.line("return true;");
+    c.dedent();
+    c.line("} catch (error) {");
+    c.indent();
+    c.line("return false;");
+    c.close("}");
+    c.close("}");
+    c.blank();
+    c.line("/** 是否为 JSON 对象文本（不含数组）；allowNull 时 `null` 也可。 */");
+    c.open("static isJsonObject(text: string, allowNull: boolean): boolean {");
+    c.line("let value: Object | null;");
+    c.open("try {");
+    c.line("value = JSON.parse(text) as Object | null;");
+    c.dedent();
+    c.line("} catch (error) {");
+    c.indent();
+    c.line("return false;");
+    c.close("}");
+    c.open("if (value === null) {");
+    c.line("return allowNull;");
+    c.close("}");
+    c.line("return typeof value === 'object' && !Array.isArray(value);");
+    c.close("}");
+    c.blank();
+    c.line("/** 解析已校验的 JSON 文本。 */");
+    c.open("static parseJson(text: string): Object | null {");
+    c.line("return JSON.parse(text) as Object | null;");
+    c.close("}");
 }
 
 // ---------------------------------------------------------------------------

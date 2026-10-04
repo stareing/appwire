@@ -89,8 +89,8 @@ fn parameters_drop_format_and_degraded_constructs() {
             "description": "x",
             "properties": {
                 "when": { "type": "string", "description": "时间" },
-                "n": { "type": "integer", "minimum": 1, "default": 2 },
-                "raw": {},
+                "n": { "type": "number", "description": "整数", "minimum": 1, "default": 2 },
+                "raw": { "type": "string", "description": "JSON 文本" },
                 "tags": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
             },
             "required": ["n"]
@@ -144,4 +144,162 @@ fn custom_domain_and_ability() {
     );
     assert!(exec.contents.contains("abilityName: \"MainAbility\","));
     assert!(exec.contents.contains("const params: AParams = {};"));
+}
+
+fn executor_text(m: &Model, file: &str) -> String {
+    let (files, _) = generate_all(m);
+    files
+        .into_iter()
+        .find(|f| f.path.ends_with(file))
+        .expect("执行器")
+        .contents
+}
+
+fn one_tool(properties: Value, required: Value) -> Model {
+    model(json!([{
+        "name": "a.b",
+        "description": "x",
+        "inputSchema": { "type": "object", "properties": properties, "required": required }
+    }]))
+}
+
+// ets-loader 的 typeToString 永远不会是 `integer`：顶层整数在 parameters 中为 number，执行时校验整数。
+#[test]
+fn integer_param_is_number_checked_at_execution() {
+    let m = one_tool(
+        json!({ "n": { "type": "integer", "description": "数量", "minimum": 1 } }),
+        json!(["n"]),
+    );
+    let schema = intent_parameters(&m, m.params(&m.tools[0]));
+    assert_eq!(
+        schema["properties"]["n"],
+        json!({ "type": "number", "description": "数量（整数）", "minimum": 1 })
+    );
+    let text = executor_text(&m, "ShopABIntent.ets");
+    assert!(text.contains("public n?: number;"), "{text}");
+    assert!(text.contains(
+        "if (typeof nValue === 'number' && !Number.isInteger(nValue)) {\n      return ShopIntentRuntime.invalid(\"n\", \"须为整数\");"
+    ));
+    assert!(text.contains("n: nValue,"));
+}
+
+// 类型别名的 typeToString 是别名名：枚举属性声明为 string，执行时校验取值再转换为枚举类型。
+#[test]
+fn enum_param_is_string_converted_at_execution() {
+    let m = one_tool(
+        json!({ "e": { "enum": ["x", "y"] }, "en": { "enum": ["x", null] } }),
+        json!([]),
+    );
+    let schema = intent_parameters(&m, m.params(&m.tools[0]));
+    assert_eq!(schema["properties"]["e"], json!({ "type": "string", "enum": ["x", "y"] }));
+    let text = executor_text(&m, "ShopABIntent.ets");
+    assert!(text.contains("public e?: string;"), "{text}");
+    assert!(text.contains("public en?: string | null;"));
+    assert!(text.contains("if (typeof eValue === 'string' && ![\"x\", \"y\"].includes(eValue)) {"));
+    assert!(text.contains("return ShopIntentRuntime.invalid(\"e\", \"取值须为 x / y\");"));
+    assert!(text.contains("e: eValue === undefined ? eValue : eValue as ABE,"));
+    assert!(text.contains("en: enValue === undefined || enValue === null ? enValue : enValue as ABEn,"));
+}
+
+// schema 为 object 的顶层属性须是 @InsightIntentEntity 类；嵌套对象在实体内保持参数接口类型。
+#[test]
+fn object_param_is_entity_converted_at_execution() {
+    let m = one_tool(
+        json!({ "o": {
+            "type": "object",
+            "description": "选项",
+            "properties": {
+                "k": { "type": "string" },
+                "q": { "type": "integer" },
+                "sub": { "type": "object", "properties": { "z": { "type": "boolean" } } }
+            },
+            "required": ["k"]
+        } }),
+        json!(["o"]),
+    );
+    let schema = intent_parameters(&m, m.params(&m.tools[0]));
+    assert_eq!(schema["properties"]["o"]["type"], json!("object"));
+    assert_eq!(
+        schema["properties"]["o"]["properties"]["q"],
+        json!({ "type": "integer" }),
+        "嵌套位置不受顶层表示影响"
+    );
+    let text = executor_text(&m, "ShopABIntent.ets");
+    assert!(text.contains(
+        "import { insightIntent, InsightIntentEntity, InsightIntentEntry, InsightIntentEntryExecutor } from '@kit.AbilityKit';"
+    ), "{text}");
+    assert!(text.contains("import { ABO, ABOSub, ABParams, ShopToolHandlers } from '../appmcp/ShopTools';"));
+    assert!(text.contains("@InsightIntentEntity({\n  entityCategory: \"ShopAB.o\",\n})"));
+    assert!(text.contains("export class ShopABOEntity implements insightIntent.IntentEntity {\n  public entityId: string = '';"));
+    assert!(text.contains("  public q?: number;\n  public sub?: ABOSub;\n}"));
+    assert!(text.contains("function toABO(entity: ShopABOEntity): ABO | undefined {"));
+    assert!(text.contains("  const kValue = entity.k;\n  if (kValue === undefined) {\n    return undefined;\n  }"));
+    assert!(text.contains("public o?: ShopABOEntity;"));
+    assert!(text.contains("const oValue = toABO(oEntity);\n    if (oValue === undefined) {"));
+    assert!(text.contains("return ShopIntentRuntime.invalid(\"o\", \"缺少必填属性 k\");"));
+    assert!(text.contains("o: oValue,"));
+}
+
+// 字典与原始 JSON 在 parameters 中为字符串（JSON 文本），执行时校验并解析。
+#[test]
+fn map_and_json_params_are_json_text() {
+    let m = one_tool(
+        json!({
+            "m": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "标签" },
+            "j": { "description": "任意" }
+        }),
+        json!(["j"]),
+    );
+    let schema = intent_parameters(&m, m.params(&m.tools[0]));
+    assert_eq!(schema["properties"]["m"], json!({ "type": "string", "description": "标签（JSON 对象文本）" }));
+    assert_eq!(schema["properties"]["j"], json!({ "type": "string", "description": "任意（JSON 文本）" }));
+    let text = executor_text(&m, "ShopABIntent.ets");
+    assert!(text.contains("public m?: string;") && text.contains("public j?: string;"), "{text}");
+    assert!(text.contains("if (typeof mText === 'string' && !ShopIntentRuntime.isJsonObject(mText, false)) {"));
+    assert!(text.contains("if (typeof jText === 'string' && !ShopIntentRuntime.isJson(jText)) {"));
+    assert!(text.contains("m: mText === undefined ? mText : ShopIntentRuntime.parseJson(mText) as Record<string, number>,"));
+    assert!(text.contains("j: ShopIntentRuntime.parseJson(jText),"));
+}
+
+// 非实体数组不参与构建时的类型校验：数组属性保持参数类型，原样传递。
+#[test]
+fn array_param_keeps_tool_type() {
+    let m = one_tool(
+        json!({ "a": { "type": "array", "items": { "enum": ["p", "q"] } } }),
+        json!([]),
+    );
+    let schema = intent_parameters(&m, m.params(&m.tools[0]));
+    assert_eq!(
+        schema["properties"]["a"],
+        json!({ "type": "array", "items": { "type": "string", "enum": ["p", "q"] } })
+    );
+    let text = executor_text(&m, "ShopABIntent.ets");
+    assert!(text.contains("public a?: ABAItem[];"), "{text}");
+    assert!(text.contains("a: this.a,"));
+}
+
+#[test]
+fn skips_object_params_that_cannot_be_entities() {
+    let m = model(json!([
+        { "name": "a.id", "description": "x", "inputSchema": { "type": "object", "properties": {
+            "o": { "type": "object", "properties": { "entityId": { "type": "string" } } } } } },
+        { "name": "a.dash", "description": "x", "inputSchema": { "type": "object", "properties": {
+            "o": { "type": "object", "properties": { "is-x": { "type": "string" } } } } } }
+    ]));
+    let (files, warnings) = generate_all(&m);
+    let messages: Vec<&str> = warnings.iter().map(|w| w.message.as_str()).collect();
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(messages[0].contains("`entityId` 与 IntentEntity 的成员同名"));
+    assert!(messages[1].contains("`is-x` 不是标识符"));
+    assert!(!files.iter().any(|f| f.path.starts_with("ets/insightintents")));
+}
+
+#[test]
+fn runtime_reports_invalid_input() {
+    let m = one_tool(json!({}), json!([]));
+    let (files, _) = generate_all(&m);
+    let runtime = &files[1].contents;
+    assert!(runtime.contains("static invalid(field: string, reason: string): Promise<insightIntent.IntentResult<string>> {"));
+    assert!(runtime.contains("ShopIntentCode.INVALID_INPUT, 'INVALID_INPUT', `参数 ${field} 无效：${reason}`"));
+    assert!(runtime.contains("return typeof value === 'object' && !Array.isArray(value);"));
 }

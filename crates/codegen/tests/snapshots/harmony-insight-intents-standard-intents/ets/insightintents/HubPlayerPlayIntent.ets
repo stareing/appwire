@@ -48,16 +48,20 @@ import { HubToolHandlers, PlayerPlayKind, PlayerPlayParams } from '../appmcp/Hub
 })
 export default class HubPlayerPlayIntent extends InsightIntentEntryExecutor<string> {
   public query?: string;
-  public kind?: PlayerPlayKind;
+  public kind?: string;
 
   onExecute(): Promise<insightIntent.IntentResult<string>> {
     const queryValue = this.query;
     if (queryValue === undefined) {
       return HubIntentRuntime.missing("query");
     }
+    const kindValue = this.kind;
+    if (typeof kindValue === 'string' && !["song", "album", "artist", "playlist", "podcast", "video"].includes(kindValue)) {
+      return HubIntentRuntime.invalid("kind", "取值须为 song / album / artist / playlist / podcast / video");
+    }
     const params: PlayerPlayParams = {
       query: queryValue,
-      kind: this.kind,
+      kind: kindValue === undefined ? kindValue : kindValue as PlayerPlayKind,
     };
     return HubIntentRuntime.run((handlers: HubToolHandlers) => handlers.playerPlay(params));
   }

@@ -13,7 +13,7 @@ import { ShopToolHandlers } from './ShopTools';
 /** 意图执行结果码（IntentResult.code）。失败时 result 为 {"kind","message"} 的 JSON 文本。 */
 export enum ShopIntentCode {
   OK = 0,
-  /** 缺少必填参数。 */
+  /** 缺少必填参数或参数无效。 */
   INVALID_INPUT = 1,
   /** App 未设置 ShopIntentRuntime.handlers。 */
   HANDLERS_NOT_SET = 2,
@@ -55,6 +55,40 @@ export class ShopIntentRuntime {
   /** 缺少必填参数。 */
   static missing(field: string): Promise<insightIntent.IntentResult<string>> {
     return Promise.resolve(ShopIntentRuntime.failure(ShopIntentCode.INVALID_INPUT, 'INVALID_INPUT', `缺少参数 ${field}`));
+  }
+
+  /** 参数无效（整数、枚举取值、实体必填属性或 JSON 文本不合要求）。 */
+  static invalid(field: string, reason: string): Promise<insightIntent.IntentResult<string>> {
+    return Promise.resolve(ShopIntentRuntime.failure(ShopIntentCode.INVALID_INPUT, 'INVALID_INPUT', `参数 ${field} 无效：${reason}`));
+  }
+
+  /** 是否为合法 JSON 文本。 */
+  static isJson(text: string): boolean {
+    try {
+      JSON.parse(text);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /** 是否为 JSON 对象文本（不含数组）；allowNull 时 `null` 也可。 */
+  static isJsonObject(text: string, allowNull: boolean): boolean {
+    let value: Object | null;
+    try {
+      value = JSON.parse(text) as Object | null;
+    } catch (error) {
+      return false;
+    }
+    if (value === null) {
+      return allowNull;
+    }
+    return typeof value === 'object' && !Array.isArray(value);
+  }
+
+  /** 解析已校验的 JSON 文本。 */
+  static parseJson(text: string): Object | null {
+    return JSON.parse(text) as Object | null;
   }
 
   private static success(value: Object | null): insightIntent.IntentResult<string> {

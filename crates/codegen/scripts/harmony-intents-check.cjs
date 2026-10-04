@@ -8,10 +8,10 @@
 //
 // @why 类型检查器的编译选项取 ets-loader 的 tsconfig.json（构建时的意图解析不开 strict，可选属性的类型不含 undefined）。
 //
-// 类属性检查目前只用于标准意图执行器：自定义意图执行器的整数 / 枚举 / 对象属性与 `parameters` 不一致（构建时报 10110009，
-// 待修），加 `--custom-classes` 时同样检查。
+// 类属性检查对标准意图与自定义意图执行器都开启（自定义意图的整数 / 枚举 / 对象 / JSON 参数曾因与 `parameters` 不一致
+// 在构建时报 10110009，见 src/targets/harmony/executor/convert.rs）。
 //
-// 用法：node harmony-intents-check.cjs <生成目录（含 ets/ 与 resources/）> [--custom-classes]
+// 用法：node harmony-intents-check.cjs <生成目录（含 ets/ 与 resources/）>
 // 环境变量：OHOS_SDK_ETS = <SDK>/ets（缺省 ~/sdk/ohos/sdk/ets）
 'use strict';
 
@@ -32,8 +32,7 @@ const preDefine = require(path.join(loader, 'lib/pre_define.js'));
 const SCHEMA_DIR = path.join(loader, 'insight_intents/schema');
 
 const args = process.argv.slice(2);
-const checkCustomClasses = args.includes('--custom-classes');
-const root = path.resolve(args.find((a) => !a.startsWith('--')) || '.');
+const root = path.resolve(args[0] || '.');
 const config = JSON.parse(fs.readFileSync(path.join(root, 'resources/base/profile/insight_intent.json'), 'utf8'));
 const entries = config.insightIntentsSrcEntry || [];
 let failures = 0;
@@ -53,12 +52,12 @@ parser.clear();
 parser.checker = program.getTypeChecker();
 
 /** 用 ets-loader 的解析器检查一个装饰器与其类；返回解析后的装饰器信息。 */
-function loaderCheck(srcEntry, decorator, classNode, infoChecker, decoratorType, checkClass) {
+function loaderCheck(srcEntry, decorator, classNode, infoChecker, decoratorType) {
   parser.transformLog = [];
   parser.currentNode = decorator;
   const info = {};
   parser.analyzeDecoratorArgs(decorator.expression.arguments, info, infoChecker);
-  if (checkClass && decoratorType === preDefine.COMPONENT_USER_INTENTS_DECORATOR_ENTRY) {
+  if (decoratorType === preDefine.COMPONENT_USER_INTENTS_DECORATOR_ENTRY) {
     const props = parser.parseClassNode(classNode, info.intentName, decoratorType);
     parser.schemaValidateSync(props, info.parameters);
   }
@@ -81,7 +80,7 @@ for (const { srcEntry } of entries) {
   let found = 0;
   const visit = (node) => {
     if (ts.isDecorator(node) && ts.isCallExpression(node.expression) && node.expression.expression.getText() === 'InsightIntentEntity') {
-      loaderCheck(srcEntry, node, node.parent, IntentEntityInfoChecker, preDefine.COMPONENT_USER_INTENTS_DECORATOR_ENTITY, false);
+      loaderCheck(srcEntry, node, node.parent, IntentEntityInfoChecker, preDefine.COMPONENT_USER_INTENTS_DECORATOR_ENTITY);
       const heritage = (node.parent.heritageClauses || []).map((h) => h.getText());
       if (!heritage.some((h) => /implements\b.*\binsightIntent\.IntentEntity\b/.test(h))) {
         fail(srcEntry, '@InsightIntentEntity 类须 implements insightIntent.IntentEntity');
@@ -111,7 +110,7 @@ for (const { srcEntry } of entries) {
         const file = path.join(SCHEMA_DIR, `${schema.text}_${props.get('intentVersion')?.text}.json`);
         if (!fs.existsSync(file)) fail(srcEntry, `SDK 中没有标准意图 ${schema.text} 的该版本定义：${path.basename(file)}`);
       }
-      const info = loaderCheck(srcEntry, node, node.parent, intentEntryInfoChecker, preDefine.COMPONENT_USER_INTENTS_DECORATOR_ENTRY, Boolean(schema) || checkCustomClasses);
+      const info = loaderCheck(srcEntry, node, node.parent, intentEntryInfoChecker, preDefine.COMPONENT_USER_INTENTS_DECORATOR_ENTRY);
       if (schema && info.intentName !== schema.text) fail(srcEntry, `标准意图 ${schema.text} 未被构建工具识别`);
       const intentName = props.get('intentName');
       if (intentName) {

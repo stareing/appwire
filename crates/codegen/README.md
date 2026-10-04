@@ -18,6 +18,11 @@ app-mcp-codegen --manifest app-mcp.json --target <target> --out <dir> \
 
 原生意图 target 只生成 `surface: "app"` 的顶层工具（spec/manifest.md）。降级与跳过都以警告输出到 stderr。
 
+`harmony-insight-intents` 的自定义意图：构建工具（ets-loader）要求执行器属性类型与意图 `parameters` 一致，因此顶层参数在意图中
+改变表示，执行器校验后转换回 `<Module>ToolHandlers` 的参数类型（类型化接口 `<Module>Tools.ets` 不变）：整数在 `parameters` 中为
+`number`（执行时校验整数）、枚举属性为 `string`（校验取值）、对象为生成的 `@InsightIntentEntity` 类（校验必填属性）、字典与原始
+JSON 为 JSON 文本（校验并解析）；校验失败返回 `INVALID_INPUT`。嵌套位置保持原类型与 schema。
+
 ## swift-app-intents 的可选输出
 
 三个选项都只用于 `--target swift-app-intents`，缺省关闭；关闭时输出与原来完全相同。依据与背景见 spec/naming.md 4.5

@@ -44,10 +44,10 @@ import { CatalogSearchCategory, CatalogSearchParams, ShopToolHandlers } from '..
       },
       "limit": {
         "default": 20,
-        "description": "最多返回条数",
+        "description": "最多返回条数（整数）",
         "maximum": 100,
         "minimum": 1,
-        "type": "integer"
+        "type": "number"
       },
       "maxPrice": {
         "description": "价格上限（元）",
@@ -62,7 +62,7 @@ export default class ShopCatalogSearchIntent extends InsightIntentEntryExecutor<
   /** 商品名或分类，如“耳机” */
   public keyword?: string;
   /** 商品分类 */
-  public category?: CatalogSearchCategory;
+  public category?: string;
   /**
    * 最多返回条数
    * 取值范围：≥ 1，≤ 100；默认值：20
@@ -77,10 +77,18 @@ export default class ShopCatalogSearchIntent extends InsightIntentEntryExecutor<
   public maxPrice?: number;
 
   onExecute(): Promise<insightIntent.IntentResult<string>> {
+    const categoryValue = this.category;
+    if (typeof categoryValue === 'string' && !["electronics", "home-goods", "food"].includes(categoryValue)) {
+      return ShopIntentRuntime.invalid("category", "取值须为 electronics / home-goods / food");
+    }
+    const limitValue = this.limit;
+    if (typeof limitValue === 'number' && !Number.isInteger(limitValue)) {
+      return ShopIntentRuntime.invalid("limit", "须为整数");
+    }
     const params: CatalogSearchParams = {
       keyword: this.keyword,
-      category: this.category,
-      limit: this.limit,
+      category: categoryValue === undefined ? categoryValue : categoryValue as CatalogSearchCategory,
+      limit: limitValue,
       inStock: this.inStock,
       maxPrice: this.maxPrice,
     };

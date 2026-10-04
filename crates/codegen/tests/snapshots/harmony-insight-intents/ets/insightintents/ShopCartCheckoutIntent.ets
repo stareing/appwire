@@ -3,9 +3,40 @@
 // 总览：演示用购物商城，可管理待办、浏览商品、操作购物车并结算
 // 工具 `cart.checkout` 的意图执行器（insight_intent.json 的 insightIntentsSrcEntry 引用本文件）。
 
-import { insightIntent, InsightIntentEntry, InsightIntentEntryExecutor } from '@kit.AbilityKit';
+import { insightIntent, InsightIntentEntity, InsightIntentEntry, InsightIntentEntryExecutor } from '@kit.AbilityKit';
 import { ShopIntentRuntime } from '../appmcp/ShopInsightIntents';
-import { CartCheckoutItemsItem, CartCheckoutParams, CartCheckoutShipping, ShopToolHandlers } from '../appmcp/ShopTools';
+import { CartCheckoutItemsItem, CartCheckoutParams, CartCheckoutShipping, CartCheckoutShippingMethod, ShopToolHandlers } from '../appmcp/ShopTools';
+
+/**
+ * 配送选项
+ * 参数 `shipping` 的意图实体（系统入口按 parameters 中该属性的 schema 赋值）。
+ */
+@InsightIntentEntity({
+  entityCategory: "ShopCartCheckout.shipping",
+})
+export class ShopCartCheckoutShippingEntity implements insightIntent.IntentEntity {
+  public entityId: string = '';
+  /** 配送方式 */
+  public method?: CartCheckoutShippingMethod;
+  /**
+   * 最早送达时间
+   * 格式：date-time
+   */
+  public deliverAfter?: string;
+}
+
+/** ShopCartCheckoutShippingEntity → CartCheckoutShipping；缺少必填属性时为 undefined。 */
+function toCartCheckoutShipping(entity: ShopCartCheckoutShippingEntity): CartCheckoutShipping | undefined {
+  const methodValue = entity.method;
+  if (methodValue === undefined) {
+    return undefined;
+  }
+  const converted: CartCheckoutShipping = {
+    method: methodValue,
+    deliverAfter: entity.deliverAfter,
+  };
+  return converted;
+}
 
 /**
  * 提交订单并支付
@@ -92,7 +123,7 @@ export default class ShopCartCheckoutIntent extends InsightIntentEntryExecutor<s
   /** 优惠码 */
   public coupon?: string;
   /** 配送选项 */
-  public shipping?: CartCheckoutShipping;
+  public shipping?: ShopCartCheckoutShippingEntity;
   /**
    * 只结算这些条目；省略时结算全部
    * 元素个数：≥ 1
@@ -106,10 +137,15 @@ export default class ShopCartCheckoutIntent extends InsightIntentEntryExecutor<s
     if (addressIdValue === undefined) {
       return ShopIntentRuntime.missing("addressId");
     }
+    const shippingEntity = this.shipping;
+    const shippingValue = shippingEntity === undefined ? shippingEntity : toCartCheckoutShipping(shippingEntity);
+    if (shippingEntity !== undefined && shippingValue === undefined) {
+      return ShopIntentRuntime.invalid("shipping", "缺少必填属性 method");
+    }
     const params: CartCheckoutParams = {
       addressId: addressIdValue,
       coupon: this.coupon,
-      shipping: this.shipping,
+      shipping: shippingValue,
       items: this.items,
       giftWrap: this.giftWrap,
     };

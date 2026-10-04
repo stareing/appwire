@@ -26,19 +26,21 @@ import { OrdersExportParams, ShopToolHandlers } from '../appmcp/ShopTools';
     "description": "按条件导出订单",
     "properties": {
       "extra": {
-        "description": "透传给导出器的任意 JSON"
+        "description": "透传给导出器的任意 JSON（JSON 文本）",
+        "type": "string"
       },
       "filter": {
-        "description": "筛选条件（任意形式）"
+        "description": "筛选条件（任意形式）（JSON 文本）",
+        "type": "string"
       },
       "labels": {
-        "additionalProperties": {
-          "type": "string"
-        },
-        "description": "附加标签",
-        "type": "object"
+        "description": "附加标签（JSON 对象文本）",
+        "type": "string"
       },
-      "template": {}
+      "template": {
+        "description": "JSON 文本",
+        "type": "string"
+      }
     },
     "type": "object"
   },
@@ -47,21 +49,47 @@ export default class ShopOrdersExportIntent extends InsightIntentEntryExecutor<s
   /**
    * 筛选条件（任意形式）
    * 原始 JSON（不支持一般形式的 `oneOf`）
+   * 意图参数为 JSON 文本，执行时解析。
    */
-  public filter?: Object | null;
-  /** 附加标签 */
-  public labels?: Record<string, string>;
-  /** 透传给导出器的任意 JSON */
-  public extra?: Object | null;
-  /** 原始 JSON（不支持 `$ref`） */
-  public template?: Object | null;
+  public filter?: string;
+  /**
+   * 附加标签
+   * 意图参数为 JSON 文本，执行时解析。
+   */
+  public labels?: string;
+  /**
+   * 透传给导出器的任意 JSON
+   * 意图参数为 JSON 文本，执行时解析。
+   */
+  public extra?: string;
+  /**
+   * 原始 JSON（不支持 `$ref`）
+   * 意图参数为 JSON 文本，执行时解析。
+   */
+  public template?: string;
 
   onExecute(): Promise<insightIntent.IntentResult<string>> {
+    const filterText = this.filter;
+    if (typeof filterText === 'string' && !ShopIntentRuntime.isJson(filterText)) {
+      return ShopIntentRuntime.invalid("filter", "须为 JSON 文本");
+    }
+    const labelsText = this.labels;
+    if (typeof labelsText === 'string' && !ShopIntentRuntime.isJsonObject(labelsText, false)) {
+      return ShopIntentRuntime.invalid("labels", "须为 JSON 对象文本");
+    }
+    const extraText = this.extra;
+    if (typeof extraText === 'string' && !ShopIntentRuntime.isJson(extraText)) {
+      return ShopIntentRuntime.invalid("extra", "须为 JSON 文本");
+    }
+    const templateText = this.template;
+    if (typeof templateText === 'string' && !ShopIntentRuntime.isJson(templateText)) {
+      return ShopIntentRuntime.invalid("template", "须为 JSON 文本");
+    }
     const params: OrdersExportParams = {
-      filter: this.filter,
-      labels: this.labels,
-      extra: this.extra,
-      template: this.template,
+      filter: filterText === undefined ? filterText : ShopIntentRuntime.parseJson(filterText),
+      labels: labelsText === undefined ? labelsText : ShopIntentRuntime.parseJson(labelsText) as Record<string, string>,
+      extra: extraText === undefined ? extraText : ShopIntentRuntime.parseJson(extraText),
+      template: templateText === undefined ? templateText : ShopIntentRuntime.parseJson(templateText),
     };
     return ShopIntentRuntime.run((handlers: ShopToolHandlers) => handlers.ordersExport(params));
   }

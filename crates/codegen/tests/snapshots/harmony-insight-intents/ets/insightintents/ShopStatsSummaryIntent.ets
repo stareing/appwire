@@ -40,11 +40,15 @@ import { ShopToolHandlers, StatsSummaryParams, StatsSummaryPeriod } from '../app
 })
 export default class ShopStatsSummaryIntent extends InsightIntentEntryExecutor<string> {
   /** 统计周期 */
-  public period?: StatsSummaryPeriod | null;
+  public period?: string | null;
 
   onExecute(): Promise<insightIntent.IntentResult<string>> {
+    const periodValue = this.period;
+    if (typeof periodValue === 'string' && !["day", "week", "month"].includes(periodValue)) {
+      return ShopIntentRuntime.invalid("period", "取值须为 day / week / month");
+    }
     const params: StatsSummaryParams = {
-      period: this.period,
+      period: periodValue === undefined || periodValue === null ? periodValue : periodValue as StatsSummaryPeriod,
     };
     return ShopIntentRuntime.run((handlers: ShopToolHandlers) => handlers.statsSummary(params));
   }

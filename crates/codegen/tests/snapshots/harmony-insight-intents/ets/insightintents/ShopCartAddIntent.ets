@@ -34,9 +34,9 @@ import { CartAddParams, ShopToolHandlers } from '../appmcp/ShopTools';
         "type": "string"
       },
       "qty": {
-        "description": "数量",
+        "description": "数量（整数）",
         "minimum": 1,
-        "type": "integer"
+        "type": "number"
       }
     },
     "required": [
@@ -65,6 +65,9 @@ export default class ShopCartAddIntent extends InsightIntentEntryExecutor<string
     const qtyValue = this.qty;
     if (qtyValue === undefined) {
       return ShopIntentRuntime.missing("qty");
+    }
+    if (typeof qtyValue === 'number' && !Number.isInteger(qtyValue)) {
+      return ShopIntentRuntime.invalid("qty", "须为整数");
     }
     const params: CartAddParams = {
       productId: productIdValue,

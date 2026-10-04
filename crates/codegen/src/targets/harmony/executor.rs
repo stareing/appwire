@@ -2,20 +2,9 @@
 
 use super::*;
 
-// ---------------------------------------------------------------------------
-// 意图执行器
-// ---------------------------------------------------------------------------
+mod convert;
 
-/// 字段类型中直接引用的声明名（需从 Tools 文件导入）。
-fn referenced_types(model: &Model, t: &Ty, out: &mut BTreeSet<String>) {
-    match t {
-        Ty::Enum(id) | Ty::Object(id) => {
-            out.insert(model.decl(*id).name().to_string());
-        }
-        Ty::Array(inner) | Ty::Map(inner) => referenced_types(model, inner, out),
-        _ => {}
-    }
-}
+pub(super) use convert::entity_unsupported;
 
 pub(super) fn executor_file(model: &Model, tool: &ToolModel, domain: &str, ability: &str) -> String {
     let m = &model.module;
@@ -27,8 +16,12 @@ pub(super) fn executor_file(model: &Model, tool: &ToolModel, domain: &str, abili
     imports.insert(params.name.clone());
     imports.insert(format!("{m}ToolHandlers"));
     for f in &params.fields {
-        referenced_types(model, &f.ty, &mut imports);
+        convert::imports(model, f, &mut imports);
     }
+    let has_entity = params
+        .fields
+        .iter()
+        .any(|f| matches!(convert::repr(model, &f.ty), convert::Repr::Entity(_)));
 
     let mut c = Code::new("  ");
     let mut header = header_lines(model, "harmony-insight-intents");
@@ -38,7 +31,10 @@ pub(super) fn executor_file(model: &Model, tool: &ToolModel, domain: &str, abili
     ));
     c.comment("// ", &header);
     c.blank();
-    c.line("import { insightIntent, InsightIntentEntry, InsightIntentEntryExecutor } from '@kit.AbilityKit';");
+    let entity_import = if has_entity { "InsightIntentEntity, " } else { "" };
+    c.line(format!(
+        "import {{ insightIntent, {entity_import}InsightIntentEntry, InsightIntentEntryExecutor }} from '@kit.AbilityKit';"
+    ));
     c.line(format!(
         "import {{ {m}IntentRuntime }} from '../appmcp/{m}InsightIntents';"
     ));
@@ -48,6 +44,7 @@ pub(super) fn executor_file(model: &Model, tool: &ToolModel, domain: &str, abili
         names.join(", ")
     ));
     c.blank();
+    convert::emit_entities(&mut c, model, tool, params);
 
     let mut doc = tool_doc(tool);
     if needs_confirmation(tool.info.risk) {
@@ -89,29 +86,18 @@ pub(super) fn executor_file(model: &Model, tool: &ToolModel, domain: &str, abili
         "export default class {class} extends InsightIntentEntryExecutor<string> {{"
     ));
     for f in &params.fields {
-        c.block_doc(&field_doc(f));
-        c.line(format!("public {}?: {};", f.json_name, field_ty(model, f)));
+        c.block_doc(&convert::prop_doc(model, f));
+        c.line(format!("public {}?: {};", f.json_name, convert::prop_ty(model, f)));
     }
     if !params.fields.is_empty() {
         c.blank();
     }
     c.open("onExecute(): Promise<insightIntent.IntentResult<string>> {");
-    let mut values = Vec::new();
-    for f in &params.fields {
-        if f.required {
-            let local = format!("{}Value", f.json_name);
-            c.line(format!("const {local} = this.{};", f.json_name));
-            c.open(format!("if ({local} === undefined) {{"));
-            c.line(format!(
-                "return {m}IntentRuntime.missing({});",
-                lit(&f.json_name)
-            ));
-            c.close("}");
-            values.push(format!("{}: {local}", f.json_name));
-        } else {
-            values.push(format!("{0}: this.{0}", f.json_name));
-        }
-    }
+    let values: Vec<String> = params
+        .fields
+        .iter()
+        .map(|f| format!("{}: {}", f.json_name, convert::emit_value(&mut c, model, f)))
+        .collect();
     if values.is_empty() {
         c.line(format!("const params: {} = {{}};", params.name));
     } else {
@@ -144,8 +130,18 @@ pub(super) fn display_description(tool: &ToolModel) -> &str {
 ///
 /// @why 构建工具用 ajv（默认严格模式）编译 `parameters`：未知 `format` 与 `$ref` 会导致编译失败，
 ///   因此只输出类型、描述、枚举与数值 / 长度约束；降级为原始 JSON 的字段为空 schema（任意值）。
+///
+/// 顶层属性按执行器中的表示调整（整数为 `number`、字典与原始 JSON 为 JSON 文本，见 [`convert`]）；嵌套位置不变。
 pub fn intent_parameters(model: &Model, params: &ObjectDecl) -> Value {
-    object_schema(model, params)
+    let mut schema = object_schema(model, params);
+    if let Some(Value::Object(props)) = schema.get_mut("properties") {
+        for f in &params.fields {
+            if let Some(Value::Object(s)) = props.get_mut(&f.json_name) {
+                convert::patch_root_schema(model, f, s);
+            }
+        }
+    }
+    schema
 }
 
 fn object_schema(model: &Model, o: &ObjectDecl) -> Value {
