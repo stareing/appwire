@@ -1333,6 +1333,29 @@ App 发出的事件（spec/protocol.md 3.5）经 Hub 投递到订阅方的**信�
   - `HubConfig.event_limits: EventLimits {max_subscriptions, max_inbox_events, inbox_ttl, per_subscription_per_minute}`。
 - 实现：`crates/hub/src/events/`（目录、订阅与信箱、持久化、内置工具）。
 
+### 3.18 工具检索 `apps.search`（第 16 项 O1）
+
+工具很多（渐进暴露生效、页面目录、上游服务器）时，Agent 按"要做什么"找工具，而不是逐个 App 翻 `apps.tools`。
+检索只读注册表、休眠快照、清单与页面目录，**不唤醒 App、不连接上游**。默认只做关键词 + 使用统计排序；向量检索（U5）不做。
+
+- **输入** `{query, appId?, limit?}`：`query` 去掉空白后非空、≤ 200 字符（按字符计，否则 `INVALID_INPUT`）；`appId` 限定单个 App
+  （未知或被 `hide` → `TOOL_NOT_FOUND`，同 `apps.tools`）；`limit` 1–50，缺省 10。
+- **候选**：对调用方可见的 App 工具与上游工具（与 `tools/list` 同一过滤：策略 `hide` 不出现；`view` 工具只取首选实例；休眠快照与
+  清单工具照常列出）∪ 各 App 页面目录中的工具（3.14，已过滤 `hide`）。不含内置工具（`apps.*`）。同名只出现一次（优先已注册的）。
+- **分词**：`query` 与工具文本统一转小写；非 CJK 的字母数字（含西里尔、带重音拉丁等）按非字母数字字符切分为词，长度 1 的词丢弃；
+  连续的 CJK 字符（含假名、谚文）切为相邻二字组（单个 CJK 字符作为一个词）。去重。
+- **关键词得分**：每个词在工具全名（`<appId>.<name>`）中出现记 3 分、`title` 中 2 分、`description` 中 1 分、App 名称 / 页面标题与
+  描述中 1 分（同一词按最高一项计，不累加）。得分为 0 的工具不返回。
+- **排序加成**（只加给关键词得分 > 0 的工具）：工具已注册在可见（`visible`）或有焦点的实例上（"当前界面"；未上报可见性的不算）+1；调用方（按记账主体，
+  3.6）24 小时内用过 +1；调用方历史成功率 ≥ 0.8 且调用 ≥ 3 次 +0.5，成功率 < 0.5 且调用 ≥ 3 次 −0.5。总分降序，同分按全名升序（确定性）。
+- **使用统计**：Hub 按（记账主体, 工具全名）记最近调用时刻、调用数、成功数（调用结束时记；`isError` 结果与错误都算失败；内置工具不记）。
+  每个主体最多 512 个工具、最多 512 个主体（满时淘汰最久未用的），只在内存，Hub 重启清零。Hub API 调用方共用主体 `api`。
+- **输出** `{results: [{name, title?, description, appId, availability, page?, inputSchema, score}], total, message}`：`total` 为得分
+  > 0 的总数（截断前）；`message` 面向模型（无结果时提示换词或用 `apps.list` / `apps.tools`）。返回结果（截断后）所属的 App 记入调用方的暴露集合
+  （同 `apps.tools`，3.7），渐进暴露生效时随后出现在 `tools/list`。
+- 注解 `readOnlyHint: true`、`idempotentHint: true`；任务级工具（可带 `taskId`），总是列出。
+- 实现：`crates/hub/src/search/`（分词与打分、使用统计、内置工具）。
+
 ## 4. 进程内 App（可选，M2）
 
 `Hub::attach_local(hello) -> LocalAppChannel`：厂商自带的系统 App 与 Hub 同进程时，

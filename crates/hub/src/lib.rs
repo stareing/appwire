@@ -48,6 +48,7 @@ pub mod registry;
 mod request_meta;
 pub mod routing;
 pub mod schema;
+pub mod search;
 mod subscribers;
 mod task;
 mod task_handle;

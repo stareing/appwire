@@ -12,9 +12,10 @@ use crate::names::{
     BUILTIN_APP_ID, TOOL_APPS_ACTIVATE, TOOL_APPS_LIST, TOOL_APPS_LOCK, TOOL_APPS_NAVIGATE, TOOL_APPS_OVERVIEW,
     TOOL_APPS_PAGE, TOOL_APPS_RELEASE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN, TOOL_APPS_TASK_END, TOOL_APPS_TOOLS,
     TOOL_APPS_UNLOCK, TOOL_APPS_CALLS, TOOL_APPS_CANCEL, TOOL_APPS_EVENTS, TOOL_APPS_EVENTS_SUBSCRIBE,
-    TOOL_APPS_EVENTS_UNSUBSCRIBE,
+    TOOL_APPS_EVENTS_UNSUBSCRIBE, TOOL_APPS_SEARCH,
 };
 use crate::events::{MAX_EVENTS_PER_FETCH};
+use crate::search::{DEFAULT_SEARCH_LIMIT, MAX_QUERY_CHARS, MAX_SEARCH_LIMIT};
 use crate::object_lock::{MAX_LOCK_KEY_LEN, MAX_LOCK_TTL_MS, MIN_LOCK_TTL_MS};
 use crate::names::{ARG_TASK_ID, TASK_SCOPED_TOOLS};
 
@@ -343,6 +344,35 @@ fn base_builtin_tools() -> Vec<Tool> {
         )
         .with_annotations(
             ToolAnnotations::new().read_only(false).destructive(false).idempotent(false).open_world(false),
+        ),
+        Tool::new(
+            TOOL_APPS_SEARCH,
+            "按要做的事检索全部 App 的工具（含未列出的、休眠 App 的与不在当前页面的），返回最相关的工具及其参数 inputSchema，\
+             可直接按全名调用。query 用关键词描述要做的事（中英文皆可，如「导出订单」「send email」）；appId 只在某个 App 中找。\
+             不会启动 App。",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_QUERY_CHARS,
+                        "description": "要做的事（关键词）"
+                    },
+                    "appId": { "type": "string", "description": "只在该 App 中检索（省略 = 全部 App）" },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_SEARCH_LIMIT,
+                        "description": format!("最多返回的条数，默认 {DEFAULT_SEARCH_LIMIT}")
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(false),
         ),
     ]
 }

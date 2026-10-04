@@ -36,6 +36,15 @@ impl Registry {
         self.apps.get(app_id).is_some_and(|e| e.instances.iter().any(|i| i.tools.contains_key(tool)))
     }
 
+    /// 工具是否注册在可见或有焦点的已连接实例上（"当前界面"，spec/hub-api.md 3.18 排序加成）。
+    pub fn tool_on_current_surface(&self, app_id: &str, tool: &str) -> bool {
+        self.apps.get(app_id).is_some_and(|e| {
+            e.instances
+                .iter()
+                .any(|i| i.tools.contains_key(tool) && (i.focused || i.visibility == Some(Visibility::Visible)))
+        })
+    }
+
     /// 指定实例是否注册了该工具。
     pub fn instance_has_tool(&self, app_id: &str, instance_id: &str, tool: &str) -> bool {
         self.instance(app_id, instance_id).is_some_and(|i| i.tools.contains_key(tool))

@@ -152,6 +152,8 @@ pub struct HubShared {
     pub(crate) activity: crate::activity::Activity,
     /// App 事件：目录、订阅与信箱、厂商回调（第 16 项 N3 + P4，[`crate::events`]）。
     pub(crate) app_events: crate::events::AppEvents,
+    /// 按（记账主体, 工具全名）的使用统计（第 16 项 O1，`apps.search` 的排序加成，[`crate::search`]）。
+    pub(crate) search_stats: Mutex<crate::search::SearchStats>,
 }
 
 /// 一次调用的进度路由（[`HubShared::progress_routes`]）。
@@ -241,6 +243,7 @@ impl HubShared {
             agents: Mutex::new(agents),
             tools_rev: tokio::sync::watch::Sender::new(0),
             activity: crate::activity::Activity::default(),
+            search_stats: Mutex::new(crate::search::SearchStats::default()),
         }
     }
 

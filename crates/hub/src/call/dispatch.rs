@@ -74,7 +74,10 @@ impl HubShared {
             }
         };
         let mut combined = std::pin::pin!(combined);
+        let (caller, name) = (ctx.caller.clone(), ctx.name.clone());
         let mut inv = self.call_inner(&call_id, ctx, combined.as_mut()).await;
+        // 使用统计（spec/hub-api.md 3.18）：App 工具与上游工具的结果都在此汇合。
+        self.record_tool_use(&caller, &name, crate::search::call_outcome(&inv.body));
         inv.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut calls = lock(&self.calls);
         if calls.get(&call_id).is_some_and(|e| e.token == token) {
@@ -238,7 +241,7 @@ impl HubShared {
     }
 
     /// 渐进暴露：把 App 加入调用方会话的工具列表；列表因此变化时通知该 MCP 会话。
-    pub(super) fn expose_in_session(self: &Arc<Self>, ctx: &CallCtx, app_id: &str) {
+    pub(crate) fn expose_in_session(self: &Arc<Self>, ctx: &CallCtx, app_id: &str) {
         if self.expose_app(&ctx.caller, app_id)
             && let Some(id) = ctx.mcp_session
         {

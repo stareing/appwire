@@ -305,6 +305,7 @@ interface ToolInfo {
   surface?: ToolSurface    // 对界面的依赖（3.4），缺省 "app"，"app" 时不序列化
   page?: string            // 所在页面名（3.4），[a-zA-Z0-9_.-]{1,64}
   backgroundTool?: string  // 后台替代（3.4）：只对 view 工具有意义，同一 App 中一个 app 工具的局部名
+  implements?: string[]    // 实现的标准意图（spec/intents.md），如 ["message.send@1"]；空时不序列化
 }
 
 type ToolSurface = "app" | "view"

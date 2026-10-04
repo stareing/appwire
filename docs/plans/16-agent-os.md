@@ -321,6 +321,20 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
       `resources/updated` 未验证（不影响拉取）。
 - **N4 标准意图**：定义通用动词 schema（先试点 `message.send`、`calendar.create`、`media.play`、`file.share`、`navigation.open`），App 声明实现；
   Hub 按用户默认 App 路由；codegen 输出到系统意图框架。
+  - **U4 调研结论（2026-10-04）**：四个来源都不完整——Apple App Schemas 无通用分享（`.messages.sendMessage`、`.calendar.createEvent`、
+    `.audio.playAudio`、`.maps.startNavigation`、`.browser.openURLInTab`，多为 iOS 27，参数为 App 自定义 Entity）；Android AppFunctions
+    预置 schema 模块已从 androidx-main 移除（1.0.0-alpha12，调用需特权），标准 Intent 五个都能覆盖；鸿蒙 API 20 标准意图只有媒体与导航
+    （参数以 entityId / GCJ02 坐标为主）；schema.org Actions 不是 JSON Schema；MCP 无标准工具词表。仓库 codegen（swift-app-intents /
+    kotlin-appfunctions / windows-app-actions / harmony-insight-intents）目前一个工具一个自定义意图，不对接任何系统 schema。
+  - **设计（2026-10-04 机主确认：Agent 选 + 机主默认表作提示、拆为 6 个动词、codegen 系统 schema 放二期）**：自定义词表 + 映射表，一处定义 `spec/intents.md`（动词名 `<域>.<动作>`、版本、JSON Schema、各平台映射）；
+    工具在清单 / 运行时声明 `implements: "message.send@1"`（只是声明，Hub 不校验参数是否"真的"实现语义，只校验 inputSchema 与词表兼容：
+    词表必填字段在工具 schema 中存在）。Agent 侧：内置工具 `apps.intents {intent?}` 列出各动词的实现者（不唤醒）；调用仍按工具全名，
+    Hub 不代选 App（"用户默认 App"属策略）。机制上提供可选的机主默认表（`<home>/intents.json` / Hub API），`apps.intents` 把默认实现排在
+    首位并标注 `default: true`，由 Agent 决定是否采用。codegen 只在映射表有对应项时额外输出系统 schema 版本，二期做。
+  - 试点动词（参数取各平台交集）：`message.send {to[], text, subject?, attachments?}`、`calendar.create {title, start, end?, allDay?,
+    location?, attendees?, notes?}`、`media.play {query | uri, kind?}`、`file.share {files[], mimeType?, text?, to?}`；原 `navigation.open`
+    拆为 `link.open {url}` 与 `navigation.start {destination{name?|address?|lat,lng}, mode?}`。
+  - 未知：Apple Entity 型参数如何从平铺 JSON 生成；鸿蒙标准意图是否需平台审核；Xcode 未编译验证。
 - **O1 工具检索**：`apps.search(query)`，按关键词、最近使用、成功率、当前可见界面（4c）排序；可选本地向量索引（U5）。
 - **O3 只读结果缓存**：`read` 工具与资源按 App 声明的 TTL / 版本号缓存，命中时不唤醒 App。
 - **O4 schema 演进**：字段弃用标记、兼容规则与 Agent 侧缓存失效策略，写入 `spec/manifest.md`。
