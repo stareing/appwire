@@ -121,6 +121,7 @@ impl Shared {
                 background_tool: options.background_tool,
                 implements: options.implements,
                 cache: options.cache,
+                deprecated: options.deprecated,
                 concurrency: options.concurrency,
                 exclusive: options.exclusive,
             })

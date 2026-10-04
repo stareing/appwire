@@ -25,5 +25,9 @@ public sealed class HubResultCacheLimits
 }
 
 /// <summary>只读结果缓存的统计（HubStatus.cache），计数自 Hub 启动起累计。Entries：当前条目数（含尚未被访问判定的过期条目）；
-/// Bytes：当前条目的字节数合计；Misses 只计声明了 cache 的请求（绕过不计）；Evictions：因条数 / 字节上限淘汰的条目数。</summary>
-public sealed record CacheStatusInfo(long Entries, ulong Bytes, ulong Hits, ulong Misses, ulong Evictions);
+/// Bytes：当前条目的字节数合计；Misses 只计声明了 cache 的请求（绕过不计）；Evictions：因条数 / 字节上限淘汰的条目数；
+/// Limits：生效上限（旧版 Hub 不报告时为 null）。</summary>
+public sealed record CacheStatusInfo(long Entries, ulong Bytes, ulong Hits, ulong Misses, ulong Evictions, CacheLimitsInfo? Limits = null);
+
+/// <summary>结果缓存的生效上限（HubStatus.cache.limits）。MaxEntries 为 0 表示缓存已关闭。</summary>
+public sealed record CacheLimitsInfo(long MaxEntries, long MaxBytes, long MaxEntryBytes);

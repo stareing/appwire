@@ -224,6 +224,30 @@ impl Manifest {
                 v.warnings.push(Issue::new(at, "cache 只对只读工具（生效注解 readOnlyHint 为 true）生效，Hub 会忽略此声明"));
             }
         }
+        if let Some(dep) = &tool.deprecated {
+            self.validate_deprecation(tool, dep, &format!("{path}.deprecated"), v);
+        }
+        for name in app_mcp_protocol::deprecated_required_params(&tool.input_schema) {
+            v.warnings.push(Issue::new(
+                format!("{path}.inputSchema.properties.{name}"),
+                format!("必填参数 \"{name}\" 标了 deprecated: true：必填与弃用矛盾，应改为可选或去掉弃用标记"),
+            ));
+        }
+    }
+
+    /// 工具 `deprecated`（spec/manifest.md 第 3 节）：格式违反为错误；`replacement` 未在清单中声明为警告（可能只在运行时注册）。
+    fn validate_deprecation(&self, tool: &ToolInfo, dep: &app_mcp_protocol::Deprecation, path: &str, v: &mut Validation) {
+        if let Err(reason) = dep.validate(&tool.name) {
+            v.errors.push(Issue::new(path, reason));
+            return;
+        }
+        let Some(replacement) = &dep.replacement else { return };
+        if self.tool(replacement).is_none() && self.page_tool(replacement).is_none() {
+            v.warnings.push(Issue::new(
+                format!("{path}.replacement"),
+                format!("deprecated.replacement \"{replacement}\" 未在清单中声明：只有 App 运行时注册了该工具后才存在"),
+            ));
+        }
     }
 
     /// `backgroundTool`（spec/manifest.md 2.3）：同一 App 中一个 app 工具的名称。

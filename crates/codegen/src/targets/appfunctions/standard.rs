@@ -18,7 +18,7 @@ use crate::code::{Code, header_lines, string_literal, xml_escape};
 use crate::ident::{self, Lang, NameScope};
 use crate::schema::{Field, Model, ToolModel, Ty, Warning};
 use crate::standard_intents::{self, Binding};
-use crate::targets::{file, risk_name};
+use crate::targets::{file, kotlin, risk_name};
 
 use table::{AndroidIntent, Filter, PLACE_FIELDS, Param, Value};
 
@@ -240,6 +240,10 @@ fn emit_call(c: &mut Code, model: &Model, n: &Names, bound: &[Bound]) -> Vec<Str
         ));
         c.line(format!("override val tool: String get() = {}", string_literal(Lang::Kotlin, &b.tool.info.name)));
         c.line(format!("override val risk: String get() = {}", string_literal(Lang::Kotlin, risk_name(b.tool.info.risk))));
+        if b.tool.deprecation().is_some() {
+            c.comment("// ", &crate::deprecation::tool_doc_lines(b.tool));
+            c.line(kotlin::SUPPRESS_DEPRECATION);
+        }
         c.line(format!(
             "override suspend fun call(handlers: {handlers}): JsonElement = handlers.{}(params)",
             ident::escape(Lang::Kotlin, &b.tool.camel)

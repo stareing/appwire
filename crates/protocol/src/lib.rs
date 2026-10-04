@@ -14,6 +14,7 @@
 //! - [`diagnostic`]：连接级错误码与 `app/diagnostic` 上报（第 10 节）。
 //! - [`naming`]：按名寻址的地址格式与各平台名字映射（spec/naming.md）。
 //! - [`intents`]：标准意图词表、`implements` 格式校验与兼容性检查（spec/intents.md）。
+//! - [`schema_compat`]：同名工具新旧定义的兼容判定（spec/manifest.md 第 6 节）。
 
 pub mod diagnostic;
 pub mod endpoint;
@@ -27,11 +28,12 @@ pub mod mux;
 pub mod naming;
 pub mod platform;
 pub mod registry;
+pub mod schema_compat;
 
 pub use diagnostic::{ConnectionErrorCode, ConnectionIssue, DiagnosticParams, IssueKind};
 pub use endpoint::{Endpoint, TransportKind};
 pub use error::{ErrorKind, ToolError, navigation_reason, user_action_reason};
-pub use hash::{canonical_json, tools_hash};
+pub use hash::{canonical_json, schema_hash, tools_hash};
 pub use jsonrpc::{Message, Notification, ParseError, Request, RequestId, Response, RpcError};
 pub use messages::*;
 pub use mux::{MUX_MAX_CHANNELS, MUX_VERSION, MuxFrame, MuxParams, MuxResult};

@@ -1,6 +1,7 @@
 /** @app-mcp/hub 的公开类型：App、实例、工具与资源（spec/hub-api.md 3.1）。 */
 
 import type { Activation, ContentAnnotations, Risk, ToolAnnotations, ToolSurface, Visibility } from '../types.js'
+import type { ToolDeprecation } from './evolution.js'
 
 export interface InstanceInfo {
   instanceId: string
@@ -68,6 +69,10 @@ export interface HubTool {
   page?: string
   /** App 工具声明实现的标准意图（spec/intents.md，如 `message.send@1`）；未声明、内置与上游工具缺省。 */
   implements?: string[]
+  /** App 工具定义的 `schemaHash`（spec/hub-api.md 3.21）：`inputSchema` / `outputSchema` 变化时随之变化；内置与上游工具缺省。 */
+  schemaHash?: string
+  /** App 工具的弃用声明（原样）；未弃用、内置与上游工具缺省。 */
+  deprecated?: ToolDeprecation
 }
 
 export interface ToolFilter {

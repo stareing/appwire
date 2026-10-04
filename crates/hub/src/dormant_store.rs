@@ -475,6 +475,7 @@ mod tests {
             background_tool: None,
             implements: Vec::new(),
             cache: None,
+            deprecated: None,
         }))
     }
 

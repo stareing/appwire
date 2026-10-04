@@ -50,6 +50,7 @@ mod request_meta;
 pub mod result_cache;
 pub mod routing;
 pub mod schema;
+pub mod schema_evolution;
 pub mod search;
 mod subscribers;
 mod task;
@@ -61,12 +62,14 @@ pub mod upstream;
 pub mod wake;
 
 pub use app_mcp_protocol::{
-    Activation, Audience, CallPriority, ContentAnnotations, ErrorKind, LifecycleMode, ResultStatus, Risk, ToolAnnotations, ToolError,
-    ToolSurface, Visibility,
+    Activation, Audience, CallPriority, ContentAnnotations, Deprecation, ErrorKind, LifecycleMode, ResultStatus, Risk, ToolAnnotations,
+    ToolError, ToolSurface, Visibility,
 };
+pub use app_mcp_protocol::schema_compat::{ChangeLevel, SchemaChange};
 pub use dormant_store::{DormantStoreStatus, StoreFileInfo, StoreIssue};
 pub use events::{AppEvent, EventHandler, EventLimits, EventSubscriptionStatus, EventsStatus, EventsSummary};
 pub use format::ToolFormat;
+pub use schema_evolution::{DEPRECATED_PREFIX, MAX_SCHEMA_CHANGES, SchemaChangeRecord};
 pub use lease::{LeaseOverrides, LeasePairStatus, LeasePolicy, LeaseStatus};
 pub use limits::{LimitOverrides, LimitPolicy, OutputValidation, RateLimit};
 pub use activity::PreboundListeners;

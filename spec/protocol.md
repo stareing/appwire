@@ -580,7 +580,8 @@ spec/intents.md「不兼容只能发新主版本」同一原则）。兼容 / �
   进 `toolsHash`（只在声明时序列化）。SDK 校验 `message` 长度、`replacement` 为合法局部名且不指向自身、`until` 为合法日期
   （违反时注册 / 更新失败，原生为 `InvalidConfig`）；`replacement` 指向未注册的工具不报错（可能稍后注册）。
 - **参数级弃用**：`inputSchema` / `outputSchema` 属性上的 JSON Schema 标准关键字 `deprecated: true`（draft 2019-09 起），
-  原样传递；Hub 不改写。必填参数标 `deprecated` 为矛盾声明（清单校验警告）。
+  原样传递；Hub 不改写。必填参数标 `deprecated` 为矛盾声明：清单校验与 SDK 注册 / 更新都给出警告（照常注册）；只检查
+  `inputSchema` 顶层 `required`，属性的 `deprecated` 须为布尔 `true`（`app_mcp_protocol::deprecated_required_params`）。
 - Agent 侧的呈现与 schema 变化的告知见 spec/hub-api.md 3.21。
 
 ## 4. 错误

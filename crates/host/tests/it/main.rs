@@ -16,3 +16,4 @@ mod on_demand;
 mod serve;
 mod setup;
 mod upstream_http;
+mod validate;

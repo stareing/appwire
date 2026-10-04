@@ -187,6 +187,7 @@ impl HubShared {
             out.instance_id = hit.instance_id;
             out.output_shape = hit.output_shape;
             out.cached_age_ms = Some(hit.age_ms);
+            out.deprecated = self.tool_deprecation(app_id, tool);
             out.overview = self.attach_overview(&ctx.caller, app_id);
             self.expose_in_session(&ctx, app_id);
             return out;
@@ -205,6 +206,7 @@ impl HubShared {
             None => {
                 if let Err(e) = self.guard_call(app_id, tool, &args, &ctx.caller) {
                     let mut out = inv(Some(app_id), Body::App(Err(e)));
+                    out.deprecated = self.tool_deprecation(app_id, tool);
                     out.overview = self.attach_overview(&ctx.caller, app_id);
                     return out;
                 }
@@ -227,9 +229,15 @@ impl HubShared {
         out.output_shape = run.output_shape;
         out.woke = run.woke;
         out.routed_to = routed_to.map(|alt| format!("{app_id}.{alt}"));
+        out.deprecated = self.tool_deprecation(app_id, tool);
         out.overview = self.attach_overview(&ctx.caller, app_id);
         self.expose_in_session(&ctx, app_id);
         out
+    }
+
+    /// 被调用工具（Agent 请求的工具，不是改调的后台替代）的弃用声明；按已知定义（同结果缓存，[`crate::registry::Registry::app_tool`]）。
+    fn tool_deprecation(&self, app_id: &str, tool: &str) -> Option<app_mcp_protocol::Deprecation> {
+        self.registry().app_tool(app_id, tool)?.deprecated.clone()
     }
 
     /// 改调后台替代（spec/hub-api.md 3.14）：策略 `call` 执行点与资源保护按被改调的工具执行，之后与直接调用它相同。

@@ -14,6 +14,7 @@ use std::collections::HashMap;
 
 use crate::GeneratedFile;
 use crate::code::{Code, header_lines, string_literal};
+use crate::deprecation;
 use crate::ident::{self, Lang, NameScope};
 use crate::schema::{Field, Model, ObjectDecl, ToolModel, Ty, TypeId, Warning, field_doc};
 use crate::targets::{file, kotlin, risk_name};
@@ -328,6 +329,9 @@ fn emit_input(
     c.open(format!("data class {name}("));
     for (f, p) in o.fields.iter().zip(&props) {
         let t = af_ty(names, &f.ty);
+        // @why 不标 @Deprecated：同一类的 toJson() 读取该属性，会让生成代码自身产生弃用警告；注释放在 KDoc 之前，
+        // 不打断 KDoc 与属性的关联（isDescribedByKDoc）
+        c.comment("// ", &deprecation::field_doc_lines(f));
         c.block_doc(&field_kdoc(f, t.is_none()));
         if let Some(con) = string_constraint(model, &f.ty) {
             c.line(format!("@property:{con}"));
@@ -411,6 +415,12 @@ fn emit_function(c: &mut Code, model: &Model, names: &InputNames, tool: &ToolMod
     }
     doc.push("@return 工具结果（文本或 JSON）。".to_string());
     c.block_doc(&doc);
+    // 弃用的工具照常生成（App 仍需响应系统入口）。AppFunctions 编译器把 @Deprecated 的消息写进函数元数据
+    // （AppFunctionDeprecationMetadata / XML <deprecation>，alpha12 实测），生成的服务类调用处自带 @Suppress("DEPRECATION")
+    if let Some(message) = deprecation::tool_deprecation(tool) {
+        c.line(kotlin::deprecated_annotation(&message));
+        c.line(kotlin::SUPPRESS_DEPRECATION);
+    }
     c.line("@AppFunction(isDescribedByKDoc = true)");
     if params.fields.is_empty() {
         c.open(format!(
@@ -429,6 +439,7 @@ fn emit_function(c: &mut Code, model: &Model, names: &InputNames, tool: &ToolMod
                 .map(|s| format!("@{s} "))
                 .unwrap_or_default();
             let t = t.clone().unwrap_or_else(|| "String".into());
+            c.comment("// ", &deprecation::field_doc_lines(f));
             c.line(format!("{con}{v}: {t}{},", optional_suffix(f)));
         }
         c.dedent();

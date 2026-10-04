@@ -2,6 +2,7 @@
 
 use crate::GeneratedFile;
 use crate::code::{Code, header_lines, string_literal};
+use crate::deprecation;
 use crate::ident::{self, Lang};
 use crate::schema::{Field, Model, Ty, TypeDecl, field_doc};
 use crate::targets::{decl_doc, file, tool_doc};
@@ -64,7 +65,11 @@ pub fn generate(model: &Model) -> GeneratedFile {
                 } else {
                     c.open(format!("export interface {} {{", o.name));
                     for f in &o.fields {
-                        c.block_doc(&field_doc(f));
+                        let mut doc = field_doc(f);
+                        if f.deprecated {
+                            doc.push(format!("@deprecated {}", deprecation::FIELD_MESSAGE));
+                        }
+                        c.block_doc(&doc);
                         c.line(field_line(model, f));
                     }
                     c.close("}");
@@ -84,7 +89,11 @@ pub fn generate(model: &Model) -> GeneratedFile {
     ]);
     c.open(format!("export interface {m}ToolHandlers {{"));
     for tool in &model.tools {
-        c.block_doc(&tool_doc(tool));
+        let mut doc = tool_doc(tool);
+        if let Some(message) = deprecation::tool_deprecation(tool) {
+            doc.extend(deprecation::prefixed_lines("@deprecated ", &message));
+        }
+        c.block_doc(&doc);
         let params = model.params(tool);
         c.line(format!(
             "{}(params: {}): unknown | Promise<unknown>;",

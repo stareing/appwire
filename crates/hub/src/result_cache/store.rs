@@ -143,6 +143,7 @@ impl<V: Clone> ResultCache<V> {
             hits: self.hits,
             misses: self.misses,
             evictions: self.evictions,
+            limits: Some(self.limits),
         }
     }
 

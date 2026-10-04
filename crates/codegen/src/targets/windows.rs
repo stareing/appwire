@@ -12,11 +12,15 @@
 //! 官方文档没有表示 App Actions 已被 agent connector 取代，两者并列；App Actions 的输入只能是实体
 //! （Text、File、Photo 等），因此只有全部参数为标量的工具生成 Action（以 Text 实体传入），其余工具
 //! 给出警告，可通过 agent connector（MCP）调用。
+//!
+//! 弃用（spec/protocol.md 3.7）：弃用的工具照常生成 Action（App 仍需响应系统入口）；Action 定义 JSON 不加弃用字段（仓库内无该格式的
+//! 弃用字段资料，未核实），只在提供者分派处注释，参数级 `deprecated: true` 随 agent connector 的 inputSchema 原样输出。
 
 use serde_json::{Value, json};
 
 use crate::GeneratedFile;
 use crate::code::{Code, header_lines, string_literal, xml_escape};
+use crate::deprecation;
 use crate::ident::{self, Lang};
 use crate::schema::{Model, ToolModel, Ty, Warning};
 use crate::targets::{csharp, file, needs_confirmation, risk_name};
@@ -349,6 +353,11 @@ fn provider_cs(model: &Model, namespace: &str, tools: &[&ToolModel], clsid: &str
     c.close("}");
     c.close("}");
     c.blank();
+    // 弃用的工具照常响应系统入口；分派处调用已弃用的 handler / 设置已弃用的属性，局部关闭 CS0618
+    let suppress = model.has_deprecations();
+    if suppress {
+        c.line(csharp::SUPPRESS_OBSOLETE);
+    }
     c.line("object? result = context.ActionId switch");
     c.open("{");
     for tool in tools {
@@ -370,6 +379,7 @@ fn provider_cs(model: &Model, namespace: &str, tools: &[&ToolModel], clsid: &str
         } else {
             format!(" {{ {} }}", inits.join(", "))
         };
+        c.comment("// ", &deprecation::tool_doc_lines(tool));
         if needs_confirmation(tool.info.risk) {
             c.line(format!(
                 "// 风险 {}：App Actions 没有系统级确认，handler 应在执行前向用户确认。",
@@ -385,6 +395,9 @@ fn provider_cs(model: &Model, namespace: &str, tools: &[&ToolModel], clsid: &str
     }
     c.line("_ => throw new ArgumentException($\"未知 Action：{context.ActionId}\"),");
     c.close("};");
+    if suppress {
+        c.line(csharp::RESTORE_OBSOLETE);
+    }
     c.blank();
     c.line(format!(
         "var output = result as string ?? JsonSerializer.Serialize(result, {m}Tools.JsonOptions);"

@@ -67,6 +67,18 @@ fn to_value<T: serde::Serialize>(v: &T) -> Value {
     serde_json::to_value(v).unwrap_or(Value::Null)
 }
 
+/// 单个工具的 `schemaHash`（spec/hub-api.md 3.21）：`sha256(规范化 JSON({"inputSchema": I, "outputSchema": O}))` 的前 16 个
+/// 十六进制字符；无 `outputSchema` 时省略该键。Agent 据此判断工具定义是否变化。
+pub fn schema_hash(input_schema: &Value, output_schema: Option<&Value>) -> String {
+    let mut doc = serde_json::Map::new();
+    doc.insert("inputSchema".to_owned(), input_schema.clone());
+    if let Some(o) = output_schema {
+        doc.insert("outputSchema".to_owned(), o.clone());
+    }
+    let digest = Sha256::digest(canonical_json(&Value::Object(doc)).as_bytes());
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
 /// 计算 `toolsHash`。输入顺序无关（内部按名称排序）。
 pub fn tools_hash(tools: &ToolsSyncParams, resources: &ResourcesSyncParams) -> String {
     let t: Vec<&ToolInfo> =
@@ -104,6 +116,7 @@ mod tests {
                     background_tool: None,
                     implements: Vec::new(),
                     cache: None,
+                    deprecated: None,
                 },
                 ToolInfo {
                     name: "cart.checkout".into(),
@@ -119,6 +132,7 @@ mod tests {
                     background_tool: None,
                     implements: Vec::new(),
                     cache: None,
+                    deprecated: None,
                 },
             ],
         }
@@ -218,5 +232,14 @@ mod tests {
     fn sorted_order_is_byte_order_and_stable_for_equal_names() {
         assert_eq!(sorted_order(["b", "a", "b", "é", "Z"].into_iter()), [4, 1, 0, 2, 3]);
         assert!(sorted_order(std::iter::empty()).is_empty());
+    }
+
+    /// `schemaHash` 固定向量（Python `hashlib.sha256` 对规范化文本独立复算）；键顺序无关、无 outputSchema 时省略该键。
+    #[test]
+    fn schema_hash_vectors() {
+        assert_eq!(schema_hash(&json!({"type": "object"}), None), "3d0ab6531f113ff5");
+        let input = json!({"type": "object", "properties": {"q": {"type": "string"}}});
+        assert_eq!(schema_hash(&input, Some(&json!({"type": "string"}))), "7f49e522b7ad9a0e");
+        assert_ne!(schema_hash(&input, None), schema_hash(&input, Some(&json!({"type": "string"}))));
     }
 }

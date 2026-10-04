@@ -1,0 +1,30 @@
+<!--
+  由 app-mcp-codegen 生成（target: windows-app-actions），请勿手动修改。
+  App：弃用示例（legacy）
+  简介：演示工具级与参数级弃用的生成结果
+  把以下扩展合并进 Package.appxmanifest 的 <Application><Extensions>。
+  App Actions 需要包标识（MSIX）与 mediumIL；目标 SDK 10.0.26100.0+。
+  MCP agent connector 需要 Windows 26220.7262+（预发布功能）。
+-->
+<Extensions>
+  <!-- App Actions：Action 定义 -->
+  <uap3:Extension Category="windows.appExtension">
+    <uap3:AppExtension Name="com.microsoft.windows.ai.actions" DisplayName="弃用示例" Id="LegacyActions" PublicFolder="Assets">
+      <uap3:Properties><Registration>LegacyActions.json</Registration></uap3:Properties>
+    </uap3:AppExtension>
+  </uap3:Extension>
+  <!-- App Actions：COM 激活 IActionProvider -->
+  <com2:Extension Category="windows.comServer">
+    <com2:ComServer>
+      <com3:ExeServer Executable="Legacy.exe" DisplayName="弃用示例">
+        <com:Class Id="D4CEEC76-3502-4597-8B6C-2CCFA3EF1C6A" DisplayName="LegacyActionProvider" />
+      </com3:ExeServer>
+    </com2:ComServer>
+  </com2:Extension>
+  <!-- MCP agent connector（On-Device Registry） -->
+  <uap3:Extension Category="windows.appExtension">
+    <uap3:AppExtension Name="com.microsoft.windows.ai.mcpServer" DisplayName="弃用示例" Id="LegacyMcpServer" PublicFolder="Assets\McpServer">
+      <uap3:Properties><Registration>manifest.json</Registration></uap3:Properties>
+    </uap3:AppExtension>
+  </uap3:Extension>
+</Extensions>

@@ -48,12 +48,31 @@ impl Registry {
         self.apps.get(app_id)?.dormant_ordered(None, |_| true).first().map(|d| (*d).clone())
     }
 
+    /// 本实例此前的工具声明（回连前的快照，或已同步过的当前列表）；实例未知时为空。
+    fn own_prior_tools(&self, app_id: &str, conn_id: u64) -> Option<&BTreeMap<String, SharedTool>> {
+        self.own_instance(app_id, conn_id).map(|i| i.prior_tools.as_ref().unwrap_or(&i.tools))
+    }
+
     /// `tools/sync` 的声明（已经过 [`super::sanitize_tools`]）是否与此前已知的不同。须在同步写入注册表之前调用。
     pub(crate) fn tools_declaration_differs(&self, app_id: &str, conn_id: u64, tools: &[SharedTool]) -> bool {
         let empty = BTreeMap::new();
-        let own = self.own_instance(app_id, conn_id).map_or(&empty, |i| i.prior_tools.as_ref().unwrap_or(&i.tools));
+        let own = self.own_prior_tools(app_id, conn_id).unwrap_or(&empty);
         let new: Vec<(&str, &SharedTool)> = tools.iter().map(|t| (t.name.as_str(), t)).collect();
         differs(own, &new, |name| self.app_tool(app_id, name))
+    }
+
+    /// 新声明中定义变了的同名工具：`(此前已知, 新)`，基准同 [`Self::tools_declaration_differs`]（本实例此前的声明 →
+    /// 其他已连接实例 → 休眠快照 → 清单）；此前未知的（新工具）与本实例删除的不列出（spec/hub-api.md 3.21）。
+    /// 须在写入注册表之前调用（`tools/sync` 与 `tools/changed` 的 `upserted`）。
+    pub(crate) fn redefined_tools(&self, app_id: &str, conn_id: u64, tools: &[SharedTool]) -> Vec<(SharedTool, SharedTool)> {
+        let own = self.own_prior_tools(app_id, conn_id);
+        tools
+            .iter()
+            .filter_map(|new| {
+                let prev = own.and_then(|o| o.get(&new.name).cloned()).or_else(|| self.app_tool(app_id, &new.name))?;
+                (prev != *new).then(|| (prev, new.clone()))
+            })
+            .collect()
     }
 
     /// `resources/sync` 的声明（已经过 [`super::sanitize_resources`]）是否与此前已知的不同。须在同步写入注册表之前调用。

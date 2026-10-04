@@ -131,3 +131,23 @@ fn result_cache_max_entries_zero_disables_cache() {
         assert!(out.is_null());
     }
 }
+
+/// 上限在 Hub 启动时校验（spec/hub-api.md 3.20）：开启时单条大于总量 / 总量为 0 → am_hub_start 失败（与 limits / lease 等
+/// 启动时校验相同，Hub::start 的 InvalidInput 映射为 AM_HUB_ERR_IO），最近错误指出字段；
+/// status.cache.limits 为生效上限（只给 maxBytes 时单条上限随之收窄）。
+#[test]
+fn result_cache_invalid_limits_fail_start_and_status_reports_limits() {
+    for bad in [r#"{"listen":null,"resultCache":{"maxBytes":100,"maxEntryBytes":200}}"#, r#"{"listen":null,"resultCache":{"maxBytes":0}}"#] {
+        let cfg = c(bad);
+        let mut out = ptr::null_mut();
+        // SAFETY: 有效参数。
+        assert_eq!(unsafe { am_hub_start(cfg.as_ptr(), &mut out) }, AmHubStatus::Io, "{bad}");
+        assert!(out.is_null());
+        assert!(last_error().contains("resultCache."), "{bad}：{}", last_error());
+    }
+    let hub = start_hub(r#"{"listen":null,"resultCache":{"maxBytes":1000}}"#);
+    let limits = &cache_status(hub)["limits"];
+    assert_eq!(*limits, json!({"maxEntries": 1024, "maxBytes": 1000, "maxEntryBytes": 1000}), "{limits}");
+    // SAFETY: 测试结束。
+    unsafe { am_hub_free(hub) };
+}

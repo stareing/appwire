@@ -1,0 +1,13 @@
+{
+  "insightIntentsSrcEntry": [
+    {
+      "srcEntry": "./ets/insightintents/LegacyOrdersListIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/LegacyOrdersFindIntent.ets"
+    },
+    {
+      "srcEntry": "./ets/insightintents/LegacyCartLegacyClearIntent.ets"
+    }
+  ]
+}

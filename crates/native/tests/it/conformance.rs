@@ -58,6 +58,7 @@ fn tool_spec(decl: &Value) -> (ToolSpec, ToolOptions) {
         background_tool: text(&decl["backgroundTool"]),
         implements: parse(&decl["implements"]).unwrap_or_default(),
         cache: parse(&decl["cache"]),
+        deprecated: parse(&decl["deprecated"]),
         concurrency: decl["concurrency"].as_u64().map_or(0, |n| n as u32),
         exclusive: text(&decl["exclusive"]),
     };

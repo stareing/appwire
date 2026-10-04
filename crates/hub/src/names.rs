@@ -94,6 +94,14 @@ pub const META_DURATION_MS: &str = "dev.appwire/durationMs";
 pub const META_WOKE: &str = "dev.appwire/woke";
 /// 结果来自 Hub 的只读结果缓存（spec/hub-api.md 3.20）：`{ageMs}`，距 App 产出的毫秒数；未命中不写。
 pub const META_CACHED: &str = "dev.appwire/cached";
+/// 调用的是弃用工具时（spec/hub-api.md 3.21）：原样的弃用声明 `{message, replacement?, until?}`；也出现在 MCP `tools/list`
+/// 工具的 `_meta` 中。
+pub const META_DEPRECATED: &str = "dev.appwire/deprecated";
+
+// ---- MCP `tools/list` 工具 `_meta`（Hub → Agent）----
+
+/// App 工具定义的 `schemaHash`（spec/hub-api.md 3.21，[`app_mcp_protocol::schema_hash`]）；上游与内置工具不带。
+pub const META_SCHEMA_HASH: &str = "dev.appwire/schemaHash";
 
 // ---- MCP 请求 `_meta`（Agent → Hub，`tools/call`）----
 

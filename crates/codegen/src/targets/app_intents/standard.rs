@@ -21,7 +21,7 @@ use app_mcp_protocol::intents::IntentDef;
 
 use super::confirmation_action;
 use crate::code::{Code, header_lines, string_literal};
-use crate::ident::{self, Lang, NameScope};
+use crate::ident::{Lang, NameScope};
 use crate::schema::{Model, ToolModel, Ty, Warning};
 use crate::standard_intents::{self, Binding};
 use crate::targets::{needs_confirmation, swift};
@@ -269,10 +269,9 @@ fn emit_perform(c: &mut Code, model: &Model, tool: &ToolModel, args: &[String]) 
         ));
     }
     c.line(format!("let params = {}({})", model.params(tool).name, args.join(", ")));
-    c.line(format!(
-        "_ = try await {m}IntentRuntime.requireHandlers().{}(params)",
-        ident::escape(Lang::Swift, &tool.camel)
-    ));
+    c.comment("// ", &crate::deprecation::tool_doc_lines(tool));
+    let call = crate::targets::swift::handler_call(model, tool, &format!("{m}IntentRuntime.requireHandlers()"), "params");
+    c.line(format!("_ = try await {call}"));
     c.line("return .result()");
     c.close("}");
 }

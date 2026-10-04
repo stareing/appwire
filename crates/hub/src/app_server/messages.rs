@@ -123,6 +123,9 @@ pub(super) fn handle_notification(
             let p = params!(ToolsSyncParams);
             warn_prefixed_names(conn, app_id, &p.tools);
             let tools = sanitize_tools(app_id, p.tools);
+            // 运行时告警（spec/hub-api.md 3.21）：与下面的缓存比较同一基准，写注册表之前取。
+            let redefined = shared.registry().redefined_tools(app_id, conn.id, &tools);
+            shared.note_schema_changes(app_id, redefined);
             // @why 握手时的全量同步只在声明变化时清缓存：冷启动后的数据新旧由条目 TTL 兜底（spec/hub-api.md 3.20）。
             if shared.registry().tools_declaration_differs(app_id, conn.id, &tools) {
                 shared.invalidate_app_cache(app_id);
@@ -134,10 +137,13 @@ pub(super) fn handle_notification(
         method::TOOLS_CHANGED => {
             let p = params!(ToolsChangedParams);
             warn_prefixed_names(conn, app_id, &p.upserted);
+            let upserted = sanitize_tools(app_id, p.upserted);
+            let redefined = shared.registry().redefined_tools(app_id, conn.id, &upserted);
+            shared.note_schema_changes(app_id, redefined);
             shared.invalidate_app_cache(app_id);
             if shared
                 .registry()
-                .change_tools(app_id, conn.id, p.upserted, p.removed)
+                .change_sanitized_tools(app_id, conn.id, upserted, p.removed)
             {
                 shared.mark_tools_changed();
             }

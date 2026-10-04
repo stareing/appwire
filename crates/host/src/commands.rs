@@ -5,3 +5,4 @@ pub(crate) mod legacy;
 pub(crate) mod serve;
 pub(crate) mod service_cmd;
 pub(crate) mod setup_cmd;
+pub(crate) mod validate_cmd;

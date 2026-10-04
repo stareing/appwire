@@ -28,7 +28,10 @@ pub const DEFAULT_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_CACHE_MAX_ENTRY_BYTES: usize = 64 * 1024;
 
 /// 结果缓存的资源上限（`HubConfig::result_cache`，B-07）。只在内存，Hub 重启清空。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// 序列化形式（`HubStatus.cache.limits`）：`{"maxEntries","maxBytes","maxEntryBytes"}`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CacheLimits {
     /// 条目数上限；超出时淘汰最久未用的条目。`0` = 关闭缓存（不查、不存）。
     pub max_entries: usize,
@@ -53,6 +56,41 @@ impl CacheLimits {
     pub fn enabled(&self) -> bool {
         self.max_entries > 0
     }
+
+    /// 由可选覆盖得到上限（Host 配置 `resultCache`、各绑定的 `resultCache` 共用）：未给的字段取默认值。
+    ///
+    /// @why 只调小 `max_bytes` 时，未给出的单条上限随之收窄（不超过 `max_bytes`），不因用户未写的字段使 [`Self::validate`] 失败。
+    pub fn with_overrides(max_entries: Option<usize>, max_bytes: Option<usize>, max_entry_bytes: Option<usize>) -> Self {
+        let max_bytes = max_bytes.unwrap_or(DEFAULT_CACHE_MAX_BYTES);
+        Self {
+            max_entries: max_entries.unwrap_or(DEFAULT_CACHE_MAX_ENTRIES),
+            max_bytes,
+            max_entry_bytes: max_entry_bytes.unwrap_or(DEFAULT_CACHE_MAX_ENTRY_BYTES.min(max_bytes)),
+        }
+    }
+
+    /// 校验上限（Hub 启动时，[`crate::Hub::start`]）；关闭缓存（`max_entries == 0`）时不校验其余字段。
+    ///
+    /// @error 开启时 `max_bytes` / `max_entry_bytes` 为 0，或 `max_entry_bytes` 大于 `max_bytes`；消息按配置形式
+    /// （`resultCache.*`）称呼字段。
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled() {
+            return Ok(());
+        }
+        if self.max_bytes == 0 {
+            return Err("resultCache.maxBytes 必须大于 0（关闭结果缓存请设 resultCache.maxEntries 为 0）".to_owned());
+        }
+        if self.max_entry_bytes == 0 {
+            return Err("resultCache.maxEntryBytes 必须大于 0（关闭结果缓存请设 resultCache.maxEntries 为 0）".to_owned());
+        }
+        if self.max_entry_bytes > self.max_bytes {
+            return Err(format!(
+                "resultCache.maxEntryBytes（{}）不能大于 resultCache.maxBytes（{}）",
+                self.max_entry_bytes, self.max_bytes
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// 结果缓存的统计（`HubStatus.cache`、`app-mcp://apps/hub`）。计数自 Hub 启动起累计。
@@ -69,4 +107,14 @@ pub struct CacheStatus {
     pub misses: u64,
     /// 因条数 / 字节上限淘汰的条目数（失效与过期不计）。
     pub evictions: u64,
+    /// 生效上限（[`CacheLimits`]，含关闭时的 `maxEntries: 0`）；旧版 Hub 不报告时为 `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limits: Option<CacheLimits>,
+}
+
+impl CacheStatus {
+    /// 是否尚无缓存活动（条目、字节与各计数都为 0；不看 `limits`）。
+    pub fn is_idle(&self) -> bool {
+        Self { limits: None, ..*self } == Self::default()
+    }
 }

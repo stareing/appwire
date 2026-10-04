@@ -123,6 +123,8 @@ impl From<ToolSpec> for (native::ToolSpec, native::ToolOptions) {
             exclusive: s.exclusive,
             implements: s.implements,
             cache: s.cache.map(Into::into),
+            // @compat 弃用声明（第 16 项 O4）的 Kotlin / Swift / Python 透传属于二期，此前不声明。
+            deprecated: None,
         };
         (n, options)
     }

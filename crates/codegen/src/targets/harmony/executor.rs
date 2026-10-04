@@ -47,6 +47,8 @@ pub(super) fn executor_file(model: &Model, tool: &ToolModel, domain: &str, abili
     convert::emit_entities(&mut c, model, tool, params);
 
     let mut doc = tool_doc(tool);
+    // 弃用的工具照常生成执行器（App 仍需响应系统入口）；意图装饰器没有弃用字段，只写进注释
+    doc.extend(crate::deprecation::tool_doc_lines(tool));
     if needs_confirmation(tool.info.risk) {
         doc.push(format!(
             "风险 {}：意图框架没有系统级确认，以前台模式执行，handler 应在执行前向用户确认。",

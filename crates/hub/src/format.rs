@@ -491,6 +491,8 @@ mod tests {
             surface: None,
             page: None,
             implements: Vec::new(),
+            schema_hash: None,
+            deprecated: None,
         }
     }
 

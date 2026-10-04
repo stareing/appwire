@@ -87,6 +87,8 @@ impl JsToolDef {
             exclusive: self.exclusive,
             implements: self.implements.unwrap_or_default(),
             cache: self.cache,
+            // @compat 弃用声明（第 16 项 O4）的 JS 透传属于二期，此前不声明。
+            deprecated: None,
         })
     }
 }
@@ -247,6 +249,7 @@ impl JsToolUpdate {
             exclusive: self.exclusive,
             implements: self.implements,
             cache: self.cache,
+            deprecated: None,
         }
     }
 }

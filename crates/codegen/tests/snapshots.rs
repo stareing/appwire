@@ -19,8 +19,12 @@ fn generate_fixture(fixture: &str, target: Target, options: &Options) -> Output 
         .expect("读取示例清单");
     let (output, manifest_warnings) =
         generate_from_str(&text, target, options).expect("示例清单应当合法");
-    // intents.json 有意声明词表外动词（清单校验只给警告），其余示例清单不应有警告
-    let expected: &[&str] = if fixture == "intents.json" { &["tools[7].implements[0]"] } else { &[] };
+    // intents.json 有意声明词表外动词、deprecated.json 有意给必填参数标 deprecated（清单校验只给警告），其余示例清单不应有警告
+    let expected: &[&str] = match fixture {
+        "intents.json" => &["tools[7].implements[0]"],
+        "deprecated.json" => &["tools[0].inputSchema.properties.status"],
+        _ => &[],
+    };
     let paths: Vec<String> = manifest_warnings.iter().map(|w| w.path.clone()).collect();
     assert_eq!(paths, expected, "{manifest_warnings:?}");
     output
@@ -429,4 +433,65 @@ fn standard_intents_off_ignores_implements() {
         let off = app_mcp_codegen::generate(&without, target, &Options::default());
         assert_eq!(on.files, off.files, "{target} 关闭 --standard-intents 时输出应与未声明 implements 相同");
     }
+}
+
+/// 弃用声明（spec/protocol.md 3.7）：tests/fixtures/deprecated.json 含工具级弃用（有 / 无 replacement 与 until）、可选与必填的
+/// 弃用参数、嵌套对象中的弃用参数，message 含引号、`*/`、`$`、反斜杠、`<&`、换行等需按目标语言转义的字符。
+#[test]
+fn snapshot_deprecated_all_targets() {
+    for target in Target::ALL {
+        check_fixture_snapshot("deprecated.json", target, &Options::default(), &format!("deprecated-{}", target.name()));
+    }
+}
+
+/// 弃用标注只来自声明：去掉 deprecated.json 中全部工具级与参数级弃用后，任何 target 的输出都不含弃用标注与说明。
+#[test]
+fn deprecation_markers_only_from_declarations() {
+    let text = std::fs::read_to_string(crate_dir().join("tests/fixtures/deprecated.json")).expect("读取清单");
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+    fn strip(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                map.remove("deprecated");
+                map.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    strip(&mut value);
+    let plain = value.to_string();
+    for target in Target::ALL {
+        let (out, _) = generate_from_str(&plain, target, &Options::default()).expect("清单合法");
+        let all: String = out.files.iter().map(|f| f.contents.as_str()).collect();
+        for marker in ["deprecated", "Deprecated", "Obsolete", "CS0618", "DEPRECATION", "已弃用"] {
+            assert!(!all.contains(marker), "{target}: 未声明弃用时不应输出 {marker}");
+        }
+        let (with, _) = generate_from_str(&text, target, &Options::default()).expect("清单合法");
+        let all: String = with.files.iter().map(|f| f.contents.as_str()).collect();
+        assert!(all.contains("已弃用") || all.contains("eprecated") || all.contains("Obsolete"), "{target}: 声明弃用时应有标注");
+        assert_eq!(out.files.len(), with.files.len(), "{target}: 弃用的工具照常生成，文件数不变");
+    }
+}
+
+/// 系统意图版本（`--standard-intents`）调用弃用的 handler 时同样不让生成代码自身产生弃用警告：
+/// Swift 经 `<Module>DeprecatedToolCaller` 转发，Kotlin 局部 `@Suppress("DEPRECATION")`。
+#[test]
+fn standard_intents_call_deprecated_handlers_without_warnings() {
+    let text = std::fs::read_to_string(crate_dir().join("tests/fixtures/intents.json")).expect("读取清单");
+    let mut manifest = app_mcp_manifest::load_str(&text).expect("清单").manifest;
+    let tool = manifest.tools.iter_mut().find(|t| t.name == "browser.open").expect("browser.open");
+    tool.deprecated = Some(app_mcp_protocol::Deprecation { message: "改用 browser.visit".into(), replacement: None, until: None });
+    let options = Options { standard_intents: true, ..Options::default() };
+    let find = |out: &Output, suffix: &str| {
+        out.files.iter().find(|f| f.path.to_string_lossy().ends_with(suffix)).unwrap_or_else(|| panic!("缺少 {suffix}")).contents.clone()
+    };
+    let swift = app_mcp_codegen::generate(&manifest, Target::SwiftAppIntents, &options);
+    let standard = find(&swift, "HubStandardIntents.swift");
+    assert!(standard.contains("HubDeprecatedToolCaller.shared.browserOpen(HubIntentRuntime.requireHandlers(), params)"), "{standard}");
+    assert!(standard.contains("// 已弃用：改用 browser.visit"));
+    let kotlin = app_mcp_codegen::generate(&manifest, Target::KotlinAppFunctions, &options);
+    let standard = find(&kotlin, "HubStandardIntents.kt");
+    let call = standard.lines().position(|l| l.contains("handlers.browserOpen(params)")).expect("browserOpen 调用");
+    assert_eq!(standard.lines().nth(call - 1).map(str::trim), Some("@Suppress(\"DEPRECATION\")"), "{standard}");
 }

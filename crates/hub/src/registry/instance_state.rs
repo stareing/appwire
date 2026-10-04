@@ -72,7 +72,17 @@ impl Registry {
         upserted: Vec<ToolInfo>,
         removed: Vec<String>,
     ) -> bool {
-        let upserted = sanitize_tools(app_id, upserted);
+        self.change_sanitized_tools(app_id, conn_id, sanitize_tools(app_id, upserted), removed)
+    }
+
+    /// [`Self::change_tools`] 的后半段：`upserted` 已经过 [`sanitize_tools`]。
+    pub(crate) fn change_sanitized_tools(
+        &mut self,
+        app_id: &str,
+        conn_id: u64,
+        upserted: Vec<SharedTool>,
+        removed: Vec<String>,
+    ) -> bool {
         if self.instance_mut(app_id, conn_id).is_some() {
             self.learn_pages(app_id, upserted.iter());
         }

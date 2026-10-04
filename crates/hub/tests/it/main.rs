@@ -4,6 +4,7 @@
 //! @why `naming.rs`（统计本进程 fd / 线程数）与 `naming_pipe.rs`（修改进程环境变量）依赖"本程序只有这些测试"，仍为独立程序。
 
 mod support {
+    pub mod fake_app;
     #[cfg(feature = "mcp-server")]
     pub mod mcp_http;
 }
@@ -32,5 +33,6 @@ mod power;
 mod progress;
 mod result_cache;
 mod safety;
+mod schema_evolution;
 mod search;
 mod transport;

@@ -1,0 +1,1 @@
+工具 orders.find：windows-app-actions：App Actions 的输入只能是实体（Text 等），含对象 / 数组 / 原始 JSON 参数的工具未生成 Action，可通过 agent connector（MCP）调用

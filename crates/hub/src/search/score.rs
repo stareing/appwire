@@ -45,6 +45,8 @@ pub(crate) struct Signals {
     pub calls: u64,
     /// 调用方的成功率（无调用时为 `None`）。
     pub success_rate: Option<f64>,
+    /// 工具已弃用（spec/hub-api.md 3.21：得分 −1，仍可检索到）。
+    pub deprecated: bool,
 }
 
 /// 一条排序加成规则。
@@ -58,11 +60,12 @@ fn rate_at_least_calls(s: &Signals, pred: fn(f64) -> bool) -> bool {
 }
 
 /// 排序加成（只加给关键词得分 > 0 的工具）。
-pub(crate) const BONUS_RULES: [BonusRule; 4] = [
+pub(crate) const BONUS_RULES: [BonusRule; 5] = [
     BonusRule { applies: |s| s.on_current_surface, delta: 1.0 },
     BonusRule { applies: |s| s.used_recently, delta: 1.0 },
     BonusRule { applies: |s| rate_at_least_calls(s, |r| r >= GOOD_RATE), delta: 0.5 },
     BonusRule { applies: |s| rate_at_least_calls(s, |r| r < POOR_RATE), delta: -0.5 },
+    BonusRule { applies: |s| s.deprecated, delta: -1.0 },
 ];
 
 /// 字符类别：词字符、CJK 字符、分隔符。
@@ -263,14 +266,14 @@ mod tests {
 
     #[test]
     fn zero_keyword_score_is_not_returned_even_with_bonuses() {
-        let all = Signals { on_current_surface: true, used_recently: true, calls: 10, success_rate: Some(1.0) };
+        let all = Signals { on_current_surface: true, used_recently: true, calls: 10, success_rate: Some(1.0), deprecated: false };
         assert_eq!(total_score(0.0, &all), None);
         assert_eq!(total_score(1.0, &Signals::default()), Some(1.0));
     }
 
     #[test]
     fn each_bonus_rule() {
-        let cases: [(&str, Signals, f64); 9] = [
+        let cases: [(&str, Signals, f64); 11] = [
             ("current-surface", Signals { on_current_surface: true, ..Signals::default() }, 1.0),
             ("recently-used", Signals { used_recently: true, ..Signals::default() }, 1.0),
             ("reliable", Signals { calls: 3, success_rate: Some(0.8), ..Signals::default() }, 0.5),
@@ -279,10 +282,16 @@ mod tests {
             ("unreliable 调用不足", Signals { calls: 2, success_rate: Some(0.0), ..Signals::default() }, 0.0),
             ("中间成功率", Signals { calls: 5, success_rate: Some(0.5), ..Signals::default() }, 0.0),
             ("中间成功率 0.79", Signals { calls: 5, success_rate: Some(0.79), ..Signals::default() }, 0.0),
+            ("deprecated", Signals { deprecated: true, ..Signals::default() }, -1.0),
             (
                 "全部叠加",
-                Signals { on_current_surface: true, used_recently: true, calls: 4, success_rate: Some(1.0) },
+                Signals { on_current_surface: true, used_recently: true, calls: 4, success_rate: Some(1.0), deprecated: false },
                 2.5,
+            ),
+            (
+                "弃用叠加",
+                Signals { on_current_surface: true, used_recently: true, calls: 4, success_rate: Some(1.0), deprecated: true },
+                1.5,
             ),
         ];
         for (what, s, delta) in cases {
@@ -290,7 +299,9 @@ mod tests {
         }
         // 每条规则至少被上面一个用例单独触发
         let deltas: Vec<f64> = BONUS_RULES.iter().map(|r| r.delta).collect();
-        assert_eq!(deltas, [1.0, 1.0, 0.5, -0.5]);
+        assert_eq!(deltas, [1.0, 1.0, 0.5, -0.5, -1.0]);
+        let low = Signals { deprecated: true, ..Signals::default() };
+        assert_eq!(total_score(0.5, &low), Some(-0.5), "弃用后总分可为负，仍返回（仍可检索到）");
     }
 
     #[test]

@@ -4,8 +4,9 @@
 
 use crate::GeneratedFile;
 use crate::code::{Code, header_lines, string_literal};
+use crate::deprecation;
 use crate::ident::{self, Lang, NameScope};
-use crate::schema::{EnumDecl, Field, Model, ObjectDecl, Ty, TypeDecl, field_doc};
+use crate::schema::{EnumDecl, Field, Model, ObjectDecl, ToolModel, Ty, TypeDecl, field_doc};
 use crate::targets::{decl_doc, file, tool_doc};
 
 pub fn file_name(model: &Model) -> String {
@@ -74,11 +75,12 @@ fn emit_object(c: &mut Code, model: &Model, o: &ObjectDecl) {
     let names = property_names(o);
     for (f, name) in o.fields.iter().zip(&names) {
         c.comment("/// ", &field_doc(f));
-        c.line(format!(
-            "public var {}: {}",
-            ident::escape(Lang::Swift, name),
-            field_ty(model, f)
-        ));
+        let ty = field_ty(model, f);
+        if f.deprecated {
+            emit_deprecated_property(c, name, &ty);
+        } else {
+            c.line(format!("public var {}: {ty}", ident::escape(Lang::Swift, name)));
+        }
     }
     if !o.fields.is_empty() {
         c.blank();
@@ -101,9 +103,10 @@ fn emit_object(c: &mut Code, model: &Model, o: &ObjectDecl) {
         c.line("public init() {}");
     } else {
         c.open(format!("public init({}) {{", params.join(", ")));
-        for name in &names {
+        for (f, name) in o.fields.iter().zip(&names) {
             c.line(format!(
-                "self.{name} = {}",
+                "self.{} = {}",
+                stored_name(f, name),
                 ident::escape(Lang::Swift, name)
             ));
         }
@@ -111,15 +114,90 @@ fn emit_object(c: &mut Code, model: &Model, o: &ObjectDecl) {
         c.blank();
         c.open("enum CodingKeys: String, CodingKey {");
         for (f, name) in o.fields.iter().zip(&names) {
-            c.line(format!(
-                "case {} = {}",
-                ident::escape(Lang::Swift, name),
-                string_literal(Lang::Swift, &f.json_name)
-            ));
+            let case = if f.deprecated { backing_name(name) } else { ident::escape(Lang::Swift, name) };
+            c.line(format!("case {case} = {}", string_literal(Lang::Swift, &f.json_name)));
         }
         c.close("}");
     }
     c.close("}");
+}
+
+/// 弃用字段的存储属性名：`_<属性名>`（属性名是 camelCase，不以下划线开头，不会与其他属性冲突）。
+fn backing_name(name: &str) -> String {
+    format!("_{name}")
+}
+
+/// 初始化器中赋值的目标：弃用字段写存储属性，避免生成代码自身产生弃用警告。
+fn stored_name(f: &Field, name: &str) -> String {
+    if f.deprecated { backing_name(name) } else { name.to_string() }
+}
+
+/// 弃用字段：公开的计算属性带 `@available(*, deprecated)`，值存于私有存储属性（Codable / Equatable 按存储属性合成，
+/// CodingKeys 指向存储属性）。
+///
+/// @why Swift 没有局部关闭警告的写法；直接给存储属性标弃用会让生成的初始化器产生弃用警告（`-warnings-as-errors` 下失败）。
+fn emit_deprecated_property(c: &mut Code, name: &str, ty: &str) {
+    let backing = backing_name(name);
+    c.line(available_deprecated(deprecation::FIELD_MESSAGE));
+    c.open(format!("public var {}: {ty} {{", ident::escape(Lang::Swift, name)));
+    c.line(format!("get {{ {backing} }}"));
+    c.line(format!("set {{ {backing} = newValue }}"));
+    c.close("}");
+    c.line(format!("private var {backing}: {ty}"));
+}
+
+/// `@available(*, deprecated, message: "…")`（消息按 Swift 字符串字面量转义）。
+pub fn available_deprecated(message: &str) -> String {
+    format!("@available(*, deprecated, message: {})", string_literal(Lang::Swift, message))
+}
+
+/// 生成代码调用某个工具 handler 的表达式（不含 `try await`）。弃用的工具经 `<Module>DeprecatedToolCaller` 转发。
+pub fn handler_call(model: &Model, tool: &ToolModel, handlers: &str, params: &str) -> String {
+    let method = ident::escape(Lang::Swift, &tool.camel);
+    if tool.deprecation().is_some() {
+        format!("{}.shared.{method}({handlers}, {params})", caller_name(model))
+    } else {
+        format!("{handlers}.{method}({params})")
+    }
+}
+
+fn caller_name(model: &Model) -> String {
+    format!("{}DeprecatedToolCaller", model.module)
+}
+
+/// 弃用 handler 的转发：经未弃用的协议要求调用，转发实现处于弃用上下文，分派代码自身不产生弃用警告；
+/// App 的实现与直接调用这些方法处仍有提示。没有弃用工具时不输出。
+fn emit_deprecated_caller(c: &mut Code, model: &Model) {
+    let m = &model.module;
+    let tools: Vec<&ToolModel> = model.tools.iter().filter(|t| t.deprecation().is_some()).collect();
+    if tools.is_empty() {
+        return;
+    }
+    let signature = |tool: &ToolModel| {
+        format!(
+            "func {}(_ handlers: any {m}ToolHandlers, _ params: {}) async throws -> any Encodable & Sendable",
+            ident::escape(Lang::Swift, &tool.camel),
+            model.params(tool).name
+        )
+    };
+    c.line("/// 生成代码调用已弃用 handler 的转发协议（Swift 没有局部关闭弃用警告的写法）。");
+    c.open(format!("protocol {m}DeprecatedToolCalls {{"));
+    for tool in &tools {
+        c.line(signature(tool));
+    }
+    c.close("}");
+    c.blank();
+    c.open(format!("struct {}: {m}DeprecatedToolCalls {{", caller_name(model)));
+    c.line(format!("static var shared: any {m}DeprecatedToolCalls {{ {}() }}", caller_name(model)));
+    for tool in &tools {
+        c.blank();
+        c.line("@available(*, deprecated)");
+        c.open(format!("{} {{", signature(tool)));
+        c.line(format!("try await handlers.{}(params)", ident::escape(Lang::Swift, &tool.camel)));
+        c.close("}");
+    }
+    c.close("}");
+    c.blank();
 }
 
 const JSON_VALUE: &str = r#"/// 任意 JSON 值（用于 schema 未约束或不支持的构造）。
@@ -196,6 +274,9 @@ pub fn generate(model: &Model) -> GeneratedFile {
     c.open(format!("public protocol {m}ToolHandlers: Sendable {{"));
     for tool in &model.tools {
         c.comment("/// ", &tool_doc(tool));
+        if let Some(message) = deprecation::tool_deprecation(tool) {
+            c.line(available_deprecated(&message));
+        }
         c.line(format!(
             "func {}(_ params: {}) async throws -> any Encodable & Sendable",
             ident::escape(Lang::Swift, &tool.camel),
@@ -205,6 +286,7 @@ pub fn generate(model: &Model) -> GeneratedFile {
     c.close("}");
     c.blank();
 
+    emit_deprecated_caller(&mut c, model);
     c.line(format!("public enum {m}ToolError: Error, Equatable {{"));
     c.indent();
     c.line("/// 未知的工具名。");
@@ -236,11 +318,8 @@ pub fn generate(model: &Model) -> GeneratedFile {
             string_literal(Lang::Swift, &tool.info.name)
         ));
         c.indent();
-        c.line(format!(
-            "return try await handlers.{}(decoder.decode({}.self, from: data))",
-            ident::escape(Lang::Swift, &tool.camel),
-            model.params(tool).name
-        ));
+        let decode = format!("decoder.decode({}.self, from: data)", model.params(tool).name);
+        c.line(format!("return try await {}", handler_call(model, tool, "handlers", &decode)));
         c.dedent();
     }
     c.line("default:");

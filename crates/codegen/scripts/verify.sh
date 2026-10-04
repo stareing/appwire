@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 用各语言的真实编译器 / 分析器验证 app-mcp-codegen 的输出（tests/fixtures/shop.json）。
+# 用各语言的真实编译器 / 分析器验证 app-mcp-codegen 的输出（tests/fixtures/shop.json；`deprecated` 步骤用 deprecated.json）。
 #
 # 用法：bash crates/codegen/scripts/verify.sh [target ...]
 #   不带参数时验证全部；缺少对应工具链的步骤标记为 SKIP，不算失败。
@@ -731,6 +731,160 @@ EOF_HARMONY_STANDARD
     record SKIP harmony-insight-intents-standard-intents "未找到 node 或 OpenHarmony SDK（OHOS_SDK_ETS）"
   fi
   record NOTE harmony-insight-intents-standard-intents "未经小艺等系统入口调用（标准意图需 App 提供实体 / 平台接入，见报告）"
+fi
+
+# ---------------------------------------------------------------- 弃用标注（tests/fixtures/deprecated.json）
+# 工具级与参数级弃用（spec/protocol.md 3.7）在各语言的标注：生成代码自身（分派、初始化器、提供者、意图）不得产生弃用警告，
+# 各步骤沿用上面的严格选项（-warnings-as-errors、TreatWarningsAsErrors、allWarningsAsErrors、--fatal-infos、mypy --strict）；
+# App 的实现（scripts/deprecated/ 下的用法文件）照常编译运行。
+if want deprecated; then
+  DW="$WORK/deprecated"
+  DS="$CRATE_DIR/scripts/deprecated"
+  dgen() { # dgen <target> <输出目录> [额外参数]
+    local target="$1" out="$2"; shift 2
+    rm -rf "$out" && mkdir -p "$out"
+    "$BIN" --manifest "$CRATE_DIR/tests/fixtures/deprecated.json" --target "$target" --out "$out" "$@" \
+      2>"$WORK/logs/gen-deprecated-$target.log"
+  }
+
+  dgen typescript "$DW/typescript/src"
+  cp "$DS/usage.ts" "$DW/typescript/src/"
+  printf '%s\n' '{"compilerOptions": {"target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext", "strict": true,' \
+    '  "noUnusedLocals": true, "noUnusedParameters": true, "exactOptionalPropertyTypes": true, "noEmit": true}, "include": ["src"]}' \
+    >"$DW/typescript/tsconfig.json"
+  if [[ -x "$REPO_DIR/node_modules/.bin/tsc" ]]; then
+    run_step deprecated-typescript "$REPO_DIR/node_modules/.bin/tsc" -p "$DW/typescript/tsconfig.json"
+  else
+    record SKIP deprecated-typescript "未找到 tsc"
+  fi
+
+  dgen python "$DW/python"
+  cp "$DS/usage.py" "$DW/python/"
+  DPY=""
+  for cand in python3.13 python3.12 python3.11 python3; do
+    if command -v "$cand" >/dev/null && "$cand" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then DPY="$cand"; break; fi
+  done
+  if [[ -n "$DPY" ]]; then
+    run_step deprecated-python bash -c "cd '$DW/python' && '$DPY' -W error -m py_compile legacy_tools.py && '$DPY' usage.py"
+    UVX="$(command -v uvx || echo "$HOME/.local/bin/uvx")"
+    if [[ -x "$UVX" ]]; then
+      run_step deprecated-python-mypy bash -c "cd '$DW/python' && '$UVX' --quiet mypy --strict --python-version 3.11 legacy_tools.py usage.py"
+    else
+      record SKIP deprecated-python-mypy "未找到 uvx"
+    fi
+  else
+    record SKIP deprecated-python "需要 Python 3.11+"
+  fi
+
+  dgen dart "$DW/dart/lib"
+  mkdir -p "$DW/dart/bin" && cp "$DS/main.dart" "$DW/dart/bin/"
+  printf 'name: codegen_verify_deprecated\npublish_to: none\nenvironment:\n  sdk: ^3.5.0\n' >"$DW/dart/pubspec.yaml"
+  DDART="$HOME/.local/dart-sdk/bin/dart"
+  command -v dart >/dev/null && DDART="$(command -v dart)"
+  if [[ -x "$DDART" ]]; then
+    run_step deprecated-dart bash -c "cd '$DW/dart' && '$DDART' analyze --fatal-infos lib/legacy_tools.dart && '$DDART' run bin/main.dart"
+  else
+    record SKIP deprecated-dart "未找到 dart"
+  fi
+
+  if command -v dotnet >/dev/null; then
+    dgen csharp "$DW/csharp"
+    cp "$DS/Program.cs" "$DW/csharp/"
+    printf '%s\n' '<Project Sdk="Microsoft.NET.Sdk">' '  <PropertyGroup>' '    <OutputType>Exe</OutputType>' \
+      '    <TargetFramework>net9.0</TargetFramework>' '    <Nullable>enable</Nullable>' '    <ImplicitUsings>disable</ImplicitUsings>' \
+      '    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>' '    <GenerateDocumentationFile>true</GenerateDocumentationFile>' \
+      '    <NoWarn>CS1591</NoWarn>' '  </PropertyGroup>' '</Project>' >"$DW/csharp/Verify.csproj"
+    run_step deprecated-csharp bash -c "dotnet build '$DW/csharp/Verify.csproj' -nologo -v q && dotnet run --project '$DW/csharp/Verify.csproj' --no-build"
+    if [[ "${VERIFY_WINDOWS:-1}" != "0" ]]; then
+      dgen windows-app-actions "$DW/windows"
+      printf '%s\n' '<Project Sdk="Microsoft.NET.Sdk">' '  <PropertyGroup>' '    <OutputType>Library</OutputType>' \
+        '    <TargetFramework>net9.0-windows10.0.26100.0</TargetFramework>' '    <WindowsSdkPackageVersion>10.0.26100.87</WindowsSdkPackageVersion>' \
+        '    <EnableWindowsTargeting>true</EnableWindowsTargeting>' '    <Nullable>enable</Nullable>' '    <ImplicitUsings>disable</ImplicitUsings>' \
+        '    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>' '  </PropertyGroup>' '</Project>' >"$DW/windows/Provider.csproj"
+      run_step deprecated-windows-provider dotnet build "$DW/windows/Provider.csproj" -nologo -v q
+    else
+      record SKIP deprecated-windows-provider "VERIFY_WINDOWS=0"
+    fi
+  else
+    record SKIP deprecated-csharp "未找到 dotnet"
+  fi
+
+  if [[ -n "$SWIFTC" ]]; then
+    dgen swift "$DW/swift"
+    cp "$DS/main.swift" "$DW/swift/"
+    run_step deprecated-swift bash -c "cd '$DW/swift' &&
+      '$SWIFTC' -swift-version 6 -parse-as-library -warnings-as-errors -emit-library -module-name LegacyTypes -o libLegacyTypes.so LegacyTools.swift &&
+      '$SWIFTC' -swift-version 6 -warnings-as-errors -o verify LegacyTools.swift main.swift && ./verify"
+    dgen swift-app-intents "$DW/swift-app-intents/src"
+    mkdir -p "$DW/swift-app-intents/stub"
+    run_step deprecated-app-intents-stub-typecheck bash -c "
+      '$SWIFTC' -swift-version 6 -parse-as-library -emit-module -emit-library -module-name AppIntents \
+        -o '$DW/swift-app-intents/stub/libAppIntents.so' -emit-module-path '$DW/swift-app-intents/stub/AppIntents.swiftmodule' '$STUBS/AppIntents.swift' &&
+      '$SWIFTC' -swift-version 6 -typecheck -warnings-as-errors -I '$DW/swift-app-intents/stub' \
+        '$DW/swift-app-intents/src/LegacyTools.swift' '$DW/swift-app-intents/src/LegacyAppIntents.swift'"
+  else
+    record SKIP deprecated-swift "未找到 swiftc"
+  fi
+  record NOTE deprecated-app-intents "弃用 intent 的 @available 只对照桩检查；真实 AppIntents 元数据是否反映弃用需 Xcode 验证"
+
+  if [[ -n "$GRADLE" ]]; then
+    K="$DW/kotlin"
+    rm -rf "$K/typed/src" "$K/af/src"
+    mkdir -p "$K/typed/src/main/kotlin/verify"
+    dgen kotlin "$K/typed/src/main/kotlin/generated"
+    cp "$DS/Main.kt" "$K/typed/src/main/kotlin/verify/Main.kt"
+    cp "$CRATE_DIR/scripts/kotlin/typed.gradle.kts" "$K/typed/build.gradle.kts"
+    DAF=0
+    if [[ "${VERIFY_ANDROID:-1}" != "0" && -d "$ANDROID_SDK/platforms/android-36" ]]; then
+      DAF=1
+      dgen kotlin-appfunctions "$K/af/src/main/kotlin/generated"
+      cp "$CRATE_DIR/scripts/kotlin/af.gradle.kts" "$K/af/build.gradle.kts"
+      sed -i 's/namespace = "appmcp.generated.shop"/namespace = "appmcp.generated.legacy"/' "$K/af/build.gradle.kts"
+      printf '<?xml version="1.0" encoding="utf-8"?>\n<manifest xmlns:android="http://schemas.android.com/apk/res/android" />\n' \
+        >"$K/af/src/main/AndroidManifest.xml"
+    fi
+    {
+      echo 'pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }'
+      echo 'dependencyResolutionManagement { repositories { google(); mavenCentral() } }'
+      echo 'rootProject.name = "codegen-verify-deprecated"'
+      echo 'include(":typed")'
+      [[ $DAF == 1 ]] && echo 'include(":af")'
+    } >"$K/settings.gradle.kts"
+    {
+      echo 'plugins {'
+      echo "    kotlin(\"jvm\") version \"$KOTLIN_VERSION\" apply false"
+      echo "    kotlin(\"android\") version \"$KOTLIN_VERSION\" apply false"
+      echo "    kotlin(\"plugin.serialization\") version \"$KOTLIN_VERSION\" apply false"
+      echo "    id(\"com.android.library\") version \"$AGP_VERSION\" apply false"
+      echo "    id(\"com.google.devtools.ksp\") version \"$KSP_VERSION\" apply false"
+      echo '}'
+    } >"$K/build.gradle.kts"
+    printf 'org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\n' >"$K/gradle.properties"
+    echo "sdk.dir=$ANDROID_SDK" >"$K/local.properties"
+    run_step deprecated-kotlin-jvm bash -c "cd '$K' && '$GRADLE' --console=plain -q :typed:run"
+    if [[ $DAF == 1 ]]; then
+      # AppFunctions 模块不开 allWarningsAsErrors（KSP 生成代码不受本库控制）：检查日志中没有弃用警告，且 KSP 把两个弃用工具的
+      # @Deprecated 写进了函数元数据（<deprecation>）
+      run_step deprecated-kotlin-appfunctions-ksp bash -c "cd '$K' && '$GRADLE' --console=plain :af:compileReleaseKotlin 2>&1 | tee '$WORK/logs/deprecated-af-gradle.log' &&
+        ! grep -E '^w: .*(deprecated|Deprecated)' '$WORK/logs/deprecated-af-gradle.log' &&
+        [[ \$(grep -c '<deprecation>' af/build/generated/ksp/release/resources/assets/legacy_app_function_service.xml) == 2 ]]"
+    else
+      record SKIP deprecated-kotlin-appfunctions "需要 Android SDK platforms/android-36（或 VERIFY_ANDROID=0）"
+    fi
+  else
+    record SKIP deprecated-kotlin "未找到 gradle"
+  fi
+
+  OHOS_SDK_ETS="${OHOS_SDK_ETS:-$HOME/sdk/ohos/sdk/ets}"
+  if command -v node >/dev/null && [[ -d "$OHOS_SDK_ETS/build-tools/ets-loader" ]]; then
+    export OHOS_SDK_ETS
+    dgen harmony-insight-intents "$DW/harmony/src/main"
+    cp "$DS/Usage.ets" "$DW/harmony/src/main/ets/Usage.ets"
+    run_step deprecated-harmony-arkts node "$REPO_DIR/sdks/harmony/scripts/arkts-check.cjs" "$DW/harmony/src/main/ets"
+    run_step deprecated-harmony-intents node "$CRATE_DIR/scripts/harmony-intents-check.cjs" "$DW/harmony/src/main"
+  else
+    record SKIP deprecated-harmony "未找到 node 或 OpenHarmony SDK（OHOS_SDK_ETS）"
+  fi
 fi
 
 # ---------------------------------------------------------------- 结果

@@ -46,4 +46,8 @@ public sealed record HubToolInfo(
     public string? Page { get; init; }
     /// <summary>App 声明实现的标准意图（spec/intents.md，如 <c>message.send@1</c>）；未声明为 null。</summary>
     public IReadOnlyList<string>? Implements { get; init; }
+    /// <summary>App 工具定义的 schemaHash（spec/hub-api.md 3.21）：inputSchema / outputSchema 变化时随之变化；内置与上游工具为 null。</summary>
+    public string? SchemaHash { get; init; }
+    /// <summary>App 工具的弃用声明；未弃用、内置与上游工具为 null。</summary>
+    public ToolDeprecationInfo? Deprecated { get; init; }
 }

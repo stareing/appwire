@@ -472,11 +472,13 @@ pub struct LeaseParams {
 }
 
 mod cache;
+mod deprecation;
 mod events;
 mod resources;
 mod tools;
 
 pub use cache::*;
+pub use deprecation::*;
 pub use events::*;
 pub use resources::*;
 pub use tools::*;

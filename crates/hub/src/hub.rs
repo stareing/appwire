@@ -158,6 +158,8 @@ pub struct HubShared {
     pub(crate) intents: Mutex<crate::intents::defaults::IntentsState>,
     /// 只读结果缓存（第 16 项 O3，[`crate::result_cache`]）。
     pub(crate) result_cache: Mutex<crate::result_cache::ResultCache<crate::result_cache::CachedValue>>,
+    /// 工具定义的不兼容变化记录（第 16 项 O4，[`crate::schema_evolution`]）。
+    pub(crate) schema_changes: Mutex<crate::schema_evolution::SchemaChangeLog>,
 }
 
 /// 一次调用的进度路由（[`HubShared::progress_routes`]）。
@@ -252,6 +254,7 @@ impl HubShared {
             search_stats: Mutex::new(crate::search::SearchStats::default()),
             intents: Mutex::new(intents),
             result_cache: Mutex::new(result_cache),
+            schema_changes: Mutex::new(crate::schema_evolution::SchemaChangeLog::default()),
         }
     }
 

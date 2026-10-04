@@ -54,6 +54,7 @@ fn tool_info(def: &ToolDef) -> ToolInfo {
         background_tool: def.background_tool.clone(),
         implements: def.implements.clone(),
         cache: def.cache,
+        deprecated: def.deprecated.clone(),
     }
 }
 
@@ -81,6 +82,18 @@ fn validate_implements(list: &[String]) -> Result<(), CoreError> {
 
 fn validate_cache(cache: Option<&proto::CachePolicy>) -> Result<(), CoreError> {
     cache.map_or(Ok(()), |c| c.validate().map_err(CoreError::InvalidCache))
+}
+
+fn validate_deprecation(name: &str, deprecated: Option<&proto::Deprecation>) -> Result<(), CoreError> {
+    deprecated.map_or(Ok(()), |d| d.validate(name).map_err(CoreError::InvalidDeprecation))
+}
+
+/// `inputSchema` 的必填参数标了 `deprecated: true`（spec/protocol.md 3.7：矛盾声明，SDK 注册给出警告）。
+pub(crate) fn deprecated_required_warnings(def: &ToolDef) -> Vec<String> {
+    proto::deprecated_required_params(&def.input_schema)
+        .into_iter()
+        .map(|p| format!("工具 \"{}\" 的必填参数 \"{p}\" 标了 deprecated: true：必填与弃用矛盾，应改为可选或去掉弃用标记", def.name))
+        .collect()
 }
 
 /// 声明了 `cache` 但生效注解不是只读的工具（spec/protocol.md 3.6：Hub 忽略，SDK 注册给出警告）。
@@ -191,6 +204,7 @@ impl Registry {
         validate_schema(&def.input_schema)?;
         validate_implements(&def.implements)?;
         validate_cache(def.cache.as_ref())?;
+        validate_deprecation(&def.name, def.deprecated.as_ref())?;
         self.check_scope(def.scope)?;
         if self.tool_names.contains_key(&def.name) {
             return Err(CoreError::DuplicateName(def.name));
@@ -216,6 +230,9 @@ impl Registry {
             validate_cache(cache.as_ref())?;
         }
         let def = self.tools.get_mut(&tool).ok_or(CoreError::UnknownTool(tool))?;
+        if let Some(dep) = &update.deprecated {
+            validate_deprecation(&def.name, dep.as_ref())?;
+        }
         let ToolUpdate {
             description,
             input_schema,
@@ -230,6 +247,7 @@ impl Registry {
             background_tool,
             implements,
             cache,
+            deprecated,
             concurrency,
             exclusive,
         } = update;
@@ -246,7 +264,8 @@ impl Registry {
             || page.is_some()
             || background_tool.is_some()
             || implements.is_some()
-            || cache.is_some();
+            || cache.is_some()
+            || deprecated.is_some();
         if let Some(v) = concurrency {
             def.concurrency = v;
         }
@@ -291,6 +310,9 @@ impl Registry {
         }
         if let Some(v) = cache {
             def.cache = v;
+        }
+        if let Some(v) = deprecated {
+            def.deprecated = v;
         }
         if synced {
             let name = def.name.clone();
@@ -490,6 +512,7 @@ mod tests {
             background_tool: None,
             implements: Vec::new(),
             cache: None,
+            deprecated: None,
             concurrency: 0,
             exclusive: None,
         }

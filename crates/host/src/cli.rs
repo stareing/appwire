@@ -90,6 +90,9 @@ pub enum Command {
         #[command(subcommand)]
         action: AppAction,
     },
+    /// 校验静态清单 app-mcp.json；给出 --against 时另按兼容规则（spec/manifest.md 第 6 节）与旧清单比较顶层工具与页面内工具，
+    /// 存在破坏性变更时退出码 3（只有可能破坏时退出码 0 并列出）。清单无效时退出码 1。
+    Validate(ValidateArgs),
     /// 打印本地访问令牌（不存在时生成），供 MCP 客户端配置 `Authorization: Bearer <令牌>`。
     Token {
         #[command(flatten)]
@@ -145,6 +148,19 @@ pub struct UninstallArgs {
     pub dry_run: bool,
     /// 输出 JSON（机器可读）。
     #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ValidateArgs {
+    /// 要校验的（新版）清单。
+    #[arg(value_name = "MANIFEST")]
+    pub manifest: PathBuf,
+    /// 旧版清单：与之比较工具定义的兼容性。
+    #[arg(long, value_name = "OLD_MANIFEST")]
+    pub against: Option<PathBuf>,
+    /// 输出 JSON：各工具的变化（ToolChanges 数组，页面内工具带 page）。需要 --against。
+    #[arg(long, requires = "against")]
     pub json: bool,
 }
 

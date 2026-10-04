@@ -166,3 +166,25 @@ fn type_names_are_unique() {
     assert_eq!(model.module, "Shop");
     assert_eq!(build(&manifest, Some("my-shop"), None).module, "MyShop");
 }
+
+/// 参数级弃用只认 `deprecated: true`（JSON Schema 关键字）；嵌套对象与 `[T, null]` 外层上的声明同样生效。
+#[test]
+fn reads_property_deprecated_flag() {
+    let model = model_for(json!({
+        "type": "object",
+        "properties": {
+            "a": { "type": "string", "deprecated": true },
+            "b": { "type": "string", "deprecated": false },
+            "c": { "type": "string", "deprecated": "yes" },
+            "d": { "type": "string" },
+            "e": { "anyOf": [{ "type": "string" }, { "type": "null" }], "deprecated": true },
+            "f": { "type": "object", "properties": { "g": { "type": "integer", "deprecated": true } } }
+        }
+    }));
+    let flags: Vec<(&str, bool)> = ["a", "b", "c", "d", "e"].iter().map(|n| (*n, field(&model, n).deprecated)).collect();
+    assert_eq!(flags, [("a", true), ("b", false), ("c", false), ("d", false), ("e", true)]);
+    let Ty::Object(id) = field(&model, "f").ty else { panic!("f 应为对象") };
+    assert!(model.object(id).expect("嵌套对象").fields[0].deprecated);
+    assert!(model.has_deprecations());
+    assert!(!model_for(json!({ "type": "object", "properties": { "d": { "type": "string" } } })).has_deprecations());
+}

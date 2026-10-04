@@ -319,6 +319,8 @@ impl ToolSpecInit {
             exclusive: self.exclusive.take(),
             implements: self.implements.take().unwrap_or_default(),
             cache: self.cache.take().map(CachePolicyInit::into_policy).transpose()?,
+            // @compat 弃用声明（第 16 项 O4）的 JS 透传属于二期，此前不声明。
+            deprecated: None,
         };
         Ok((self.into_spec()?, options))
     }

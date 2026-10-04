@@ -2,12 +2,13 @@
 
 use std::sync::Arc;
 
-use app_mcp_protocol::{ErrorKind, ToolError};
+use app_mcp_protocol::ToolError;
 use serde_json::{Value, json};
 
 use crate::hub::HubShared;
 use crate::navigate::PageTool;
 use crate::schema::{self, SchemaCheck};
+use crate::schema_evolution::invalid_arguments;
 use crate::types::{Availability, HubTool};
 
 use super::{CallCtx, CancelFut};
@@ -35,10 +36,7 @@ impl HubShared {
         }
         if !approved {
             if let SchemaCheck::Invalid(msg) = schema::check_json(target.tool.input_schema_json(), arguments) {
-                return Err(ToolError::new(
-                    ErrorKind::InvalidInput,
-                    format!("参数不符合工具「{app_id}.{tool_name}」的 inputSchema：{msg}"),
-                ));
+                return Err(invalid_arguments(app_id, tool_name, &target.tool, &msg));
             }
             let hub_tool = app_hub_tool(app_id, &target.tool, Availability::NotRegistered);
             let req = self.approval_request(call_id, &hub_tool, arguments, ctx);

@@ -342,8 +342,31 @@ fn result_cache_config_and_status() {
     .into_hub()
     .unwrap();
     assert_eq!(c.result_cache, hub::CacheLimits { max_entries: 3, max_bytes: 4096, max_entry_bytes: 512 });
-    let s = CacheStatus::from(hub::CacheStatus { entries: 2, bytes: 300, hits: 5, misses: 4, evictions: 1 });
-    assert_eq!(s, CacheStatus { entries: 2, bytes: 300, hits: 5, misses: 4, evictions: 1 });
+    let limits = Some(hub::CacheLimits { max_entries: 7, max_bytes: 4096, max_entry_bytes: 512 });
+    let s = CacheStatus::from(hub::CacheStatus { entries: 2, bytes: 300, hits: 5, misses: 4, evictions: 1, limits });
+    let expected = CacheStatus {
+        entries: 2,
+        bytes: 300,
+        hits: 5,
+        misses: 4,
+        evictions: 1,
+        max_entries: 7,
+        max_bytes: 4096,
+        max_entry_bytes: 512,
+    };
+    assert_eq!(s, expected, "状态带生效上限");
+}
+
+#[test]
+fn schema_change_record_converts() {
+    let r: hub::SchemaChangeRecord = serde_json::from_value(serde_json::json!({
+        "appId": "chat", "tool": "send", "level": "breaking", "at": 9,
+        "changes": [{"level": "warning", "path": "/outputSchema", "message": "m"}, {"level": "breaking", "path": "/inputSchema", "message": "n"}]
+    }))
+    .unwrap();
+    let r = SchemaChangeRecord::from(r);
+    assert_eq!((r.app_id.as_str(), r.tool.as_str(), r.level, r.at), ("chat", "send", ChangeLevel::Breaking, 9));
+    assert_eq!(r.changes[0], SchemaChange { level: ChangeLevel::Warning, path: "/outputSchema".into(), message: "m".into() });
 }
 
 #[test]

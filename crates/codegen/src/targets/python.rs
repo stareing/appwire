@@ -1,9 +1,13 @@
 //! Python（3.11+）：TypedDict 参数类型 + `Literal` 枚举 + `Protocol` handler + 分派函数。
 //!
 //! TypedDict 的键与 JSON 属性名一致；属性名不是合法标识符或是关键字时改用函数式写法。
+//!
+//! 弃用只写进 docstring / 注释（`已弃用：…`）：`warnings.deprecated` 需要 Python 3.13，`typing_extensions.deprecated`
+//! 是新的运行时依赖，而生成的文件只依赖 3.11+ 标准库；TypedDict 的键也没有标注弃用的写法。
 
 use crate::GeneratedFile;
 use crate::code::{Code, header_lines, string_literal};
+use crate::deprecation;
 use crate::ident::{self, Lang};
 use crate::schema::{Field, Model, ObjectDecl, Ty, TypeDecl, field_doc};
 use crate::targets::{decl_doc, file, tool_doc};
@@ -55,6 +59,12 @@ fn docstring(c: &mut Code, lines: &[String]) {
     }
 }
 
+fn doc_with_deprecation(f: &Field) -> Vec<String> {
+    let mut doc = field_doc(f);
+    doc.extend(deprecation::field_doc_lines(f));
+    doc
+}
+
 fn emit_object(c: &mut Code, model: &Model, o: &ObjectDecl) {
     let class_syntax = o.fields.iter().all(|f| {
         ident::is_plain_identifier(&f.json_name) && !ident::is_reserved(Lang::Python, &f.json_name)
@@ -68,7 +78,7 @@ fn emit_object(c: &mut Code, model: &Model, o: &ObjectDecl) {
         }
         for f in &o.fields {
             c.line(format!("{}: {}", f.json_name, field_ty(model, f)));
-            docstring(c, &field_doc(f));
+            docstring(c, &doc_with_deprecation(f));
         }
         c.dedent();
     } else {
@@ -77,7 +87,7 @@ fn emit_object(c: &mut Code, model: &Model, o: &ObjectDecl) {
         c.line(format!("{},", string_literal(Lang::Python, &o.name)));
         c.open("{");
         for f in &o.fields {
-            c.comment("# ", &field_doc(f));
+            c.comment("# ", &doc_with_deprecation(f));
             c.line(format!(
                 "{}: {},",
                 string_literal(Lang::Python, &f.json_name),
@@ -157,7 +167,9 @@ pub fn generate(model: &Model) -> GeneratedFile {
             ident::escape(Lang::Python, &tool.snake),
             model.params(tool).name
         ));
-        docstring(&mut c, &tool_doc(tool));
+        let mut doc = tool_doc(tool);
+        doc.extend(deprecation::tool_doc_lines(tool));
+        docstring(&mut c, &doc);
         c.line("...");
         c.dedent();
     }

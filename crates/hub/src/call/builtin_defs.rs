@@ -435,6 +435,8 @@ pub(crate) fn builtin_hub_tools(set: BuiltinSet) -> Vec<HubTool> {
                 surface: None,
                 page: None,
                 implements: Vec::new(),
+                schema_hash: None,
+                deprecated: None,
             }
         })
         .collect()

@@ -23,6 +23,8 @@
 //! - `@ohos.app.ability.InsightIntentEntryExecutor.d.ts`、`@ohos.app.ability.insightIntent.d.ts`（`ExecuteMode`、`IntentResult`）；
 //! - ets-loader `lib/userIntents_parser/intentType.js`（必填字段、`parameters` 须为对象字面量且可被 ajv 编译）；
 //! - docs `application-models/insight-intent-decorator-development.md`（`insight_intent.json` 的 `insightIntentsSrcEntry`）。
+//! - 弃用（spec/protocol.md 3.7）：ets-loader `intentType.js` 的 `allowFields` 与 `IntentDecoratorInfo` 没有弃用字段，弃用的工具照常生成
+//!   执行器，弃用只写进 ArkTS 注释（`<Module>Tools.ets` 的 handler 与参数用 `@deprecated`）。
 
 use std::collections::BTreeSet;
 
@@ -32,6 +34,7 @@ use serde_json::{Map, Value, json};
 use crate::GeneratedFile;
 use crate::code::{Code, header_lines, string_literal};
 use crate::ident::{self, Lang};
+use crate::deprecation;
 use crate::schema::{Field, Model, ObjectDecl, ToolModel, Ty, TypeDecl, Warning, field_doc};
 use crate::targets::{decl_doc, file, needs_confirmation, risk_name, tool_doc};
 
@@ -239,7 +242,11 @@ fn tools_file(model: &Model) -> String {
                 } else {
                     c.open(format!("export interface {} {{", o.name));
                     for f in &o.fields {
-                        c.block_doc(&field_doc(f));
+                        let mut doc = field_doc(f);
+                        if f.deprecated {
+                            doc.push(format!("@deprecated {}", deprecation::FIELD_MESSAGE));
+                        }
+                        c.block_doc(&doc);
                         let q = if f.required { "" } else { "?" };
                         c.line(format!(
                             "{}{q}: {};",
@@ -263,7 +270,11 @@ fn tools_file(model: &Model) -> String {
     ]);
     c.open(format!("export interface {m}ToolHandlers {{"));
     for tool in &model.tools {
-        c.block_doc(&tool_doc(tool));
+        let mut doc = tool_doc(tool);
+        if let Some(message) = deprecation::tool_deprecation(tool) {
+            doc.extend(deprecation::prefixed_lines("@deprecated ", &message));
+        }
+        c.block_doc(&doc);
         c.line(format!(
             "{}(params: {}): {HANDLER_RETURN};",
             tool.camel,

@@ -25,4 +25,13 @@ export interface CacheStatus {
   misses: number
   /** 因条数 / 字节上限淘汰的条目数（失效与过期不计）。 */
   evictions: number
+  /** 生效上限（全部字段给出；`maxEntries: 0` 表示已关闭）。旧版 Hub 不报告时缺省。 */
+  limits?: CacheLimits
+}
+
+/** 结果缓存的生效上限（`HubStatus.cache.limits`）。 */
+export interface CacheLimits {
+  maxEntries: number
+  maxBytes: number
+  maxEntryBytes: number
 }

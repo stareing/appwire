@@ -1,0 +1,87 @@
+{
+  "actions": [
+    {
+      "allowedAppInvokers": [
+        "*"
+      ],
+      "description": "按状态列出订单（旧版）",
+      "displaysUI": false,
+      "icon": "ms-resource://Files/Assets/StoreLogo.png",
+      "id": "Legacy.OrdersList",
+      "inputCombinations": [
+        {
+          "description": "列出订单：${status.Text}",
+          "inputs": [
+            "status"
+          ]
+        },
+        {
+          "description": "列出订单：${status.Text}，${page.Text}，${limit.Text}",
+          "inputs": [
+            "status",
+            "page",
+            "limit"
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "Text",
+          "name": "status",
+          "required": true
+        },
+        {
+          "kind": "Text",
+          "name": "page",
+          "required": false
+        },
+        {
+          "kind": "Text",
+          "name": "limit",
+          "required": false
+        }
+      ],
+      "invocation": {
+        "clsid": "{D4CEEC76-3502-4597-8B6C-2CCFA3EF1C6A}",
+        "type": "COM"
+      },
+      "isAvailable": true,
+      "outputs": [
+        {
+          "kind": "Text",
+          "name": "response"
+        }
+      ],
+      "usesGenerativeAI": false
+    },
+    {
+      "allowedAppInvokers": [
+        "*"
+      ],
+      "description": "清空购物车（旧版）",
+      "displaysUI": false,
+      "icon": "ms-resource://Files/Assets/StoreLogo.png",
+      "id": "Legacy.CartLegacyClear",
+      "inputCombinations": [
+        {
+          "description": "清空购物车",
+          "inputs": []
+        }
+      ],
+      "inputs": [],
+      "invocation": {
+        "clsid": "{D4CEEC76-3502-4597-8B6C-2CCFA3EF1C6A}",
+        "type": "COM"
+      },
+      "isAvailable": true,
+      "outputs": [
+        {
+          "kind": "Text",
+          "name": "response"
+        }
+      ],
+      "usesGenerativeAI": false
+    }
+  ],
+  "version": 3
+}

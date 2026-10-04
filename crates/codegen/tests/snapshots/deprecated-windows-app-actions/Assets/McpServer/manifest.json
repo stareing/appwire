@@ -1,0 +1,130 @@
+{
+  "_meta": {
+    "com.microsoft.windows": {
+      "static_responses": {
+        "initialize": {
+          "capabilities": {
+            "tools": {
+              "listChanged": true
+            }
+          },
+          "protocolVersion": "2025-06-18",
+          "serverInfo": {
+            "name": "app-mcp-host",
+            "version": "0.1.0"
+          }
+        },
+        "tools/list": {
+          "tools": [
+            {
+              "description": "按状态列出订单（旧版）",
+              "inputSchema": {
+                "properties": {
+                  "limit": {
+                    "description": "最多返回条数",
+                    "type": "integer"
+                  },
+                  "page": {
+                    "deprecated": true,
+                    "description": "页码",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "status": {
+                    "deprecated": true,
+                    "description": "订单状态",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status"
+                ],
+                "type": "object"
+              },
+              "name": "legacy.orders.list",
+              "title": "列出订单"
+            },
+            {
+              "description": "按状态查找订单",
+              "inputSchema": {
+                "properties": {
+                  "cursor": {
+                    "description": "分页游标",
+                    "type": "string"
+                  },
+                  "filter": {
+                    "description": "过滤条件",
+                    "properties": {
+                      "keyword": {
+                        "description": "关键词",
+                        "type": "string"
+                      },
+                      "legacyTag": {
+                        "deprecated": true,
+                        "description": "旧标签",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "state": {
+                    "description": "订单状态",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state"
+                ],
+                "type": "object"
+              },
+              "name": "legacy.orders.find",
+              "title": "查找订单"
+            },
+            {
+              "description": "清空购物车（旧版）",
+              "inputSchema": {
+                "type": "object"
+              },
+              "name": "legacy.cart.legacyClear",
+              "title": "清空购物车"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "author": {
+    "name": "弃用示例"
+  },
+  "description": "演示工具级与参数级弃用的生成结果",
+  "display_name": "弃用示例",
+  "manifest_version": "0.1",
+  "name": "legacy",
+  "server": {
+    "entry_point": "app-mcp-host.exe",
+    "mcp_config": {
+      "args": [
+        "--manifest",
+        "app-mcp.json"
+      ],
+      "command": "app-mcp-host.exe"
+    },
+    "type": "binary"
+  },
+  "tools": [
+    {
+      "description": "按状态列出订单（旧版）",
+      "name": "legacy.orders.list"
+    },
+    {
+      "description": "按状态查找订单",
+      "name": "legacy.orders.find"
+    },
+    {
+      "description": "清空购物车（旧版）",
+      "name": "legacy.cart.legacyClear"
+    }
+  ],
+  "tools_generated": false,
+  "version": "0.1.0"
+}

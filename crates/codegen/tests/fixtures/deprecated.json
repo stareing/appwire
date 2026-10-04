@@ -1,0 +1,61 @@
+{
+  "manifestVersion": 1,
+  "appId": "legacy",
+  "name": "弃用示例",
+  "description": "演示工具级与参数级弃用的生成结果",
+  "tools": [
+    {
+      "name": "orders.list",
+      "title": "列出订单",
+      "description": "按状态列出订单（旧版）",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "description": "订单状态", "deprecated": true },
+          "page": { "type": "integer", "minimum": 1, "description": "页码", "deprecated": true },
+          "limit": { "type": "integer", "description": "最多返回条数" }
+        },
+        "required": ["status"]
+      },
+      "risk": "read",
+      "activation": "headless",
+      "deprecated": {
+        "message": "旧版 \"列表\" 接口 */ 不再维护：$x ${y} \\(z) 'q' <b>&amp; #{w}\n请改用分页更好的新版",
+        "replacement": "orders.find",
+        "until": "2027-06-30"
+      }
+    },
+    {
+      "name": "orders.find",
+      "title": "查找订单",
+      "description": "按状态查找订单",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "state": { "type": "string", "description": "订单状态" },
+          "cursor": { "type": "string", "description": "分页游标" },
+          "filter": {
+            "type": "object",
+            "description": "过滤条件",
+            "properties": {
+              "keyword": { "type": "string", "description": "关键词" },
+              "legacyTag": { "type": "string", "description": "旧标签", "deprecated": true }
+            }
+          }
+        },
+        "required": ["state"]
+      },
+      "risk": "read",
+      "activation": "headless"
+    },
+    {
+      "name": "cart.legacyClear",
+      "title": "清空购物车",
+      "description": "清空购物车（旧版）",
+      "inputSchema": { "type": "object" },
+      "risk": "write",
+      "activation": "background",
+      "deprecated": { "message": "改用 cart.clear" }
+    }
+  ]
+}

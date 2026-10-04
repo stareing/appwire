@@ -10,6 +10,7 @@ use crate::hub::HubShared;
 use crate::mcp_convert::OutputShape;
 use crate::registry::WakeTargetPresence;
 use crate::schema::{self, SchemaCheck};
+use crate::schema_evolution::invalid_arguments;
 use crate::types::Availability;
 
 use super::{CallCtx, CancelFut, ToolRun, cancelled};
@@ -77,13 +78,7 @@ impl HubShared {
             }
             if let Some(tool) = &plan.tool {
                 if let SchemaCheck::Invalid(msg) = schema::check_json(tool.input_schema_json(), &arguments) {
-                    return (
-                        Err(ToolError::new(
-                            ErrorKind::InvalidInput,
-                            format!("参数不符合工具「{app_id}.{tool_name}」的 inputSchema：{msg}"),
-                        )),
-                        plan.instance_id.clone(),
-                    );
+                    return (Err(invalid_arguments(app_id, tool_name, tool, &msg)), plan.instance_id.clone());
                 }
                 let hub_tool = app_hub_tool(app_id, tool, Availability::Dormant);
                 let req = self.approval_request(call_id, &hub_tool, &arguments, ctx);
@@ -148,13 +143,7 @@ impl HubShared {
         match schema::check_json(target.tool.input_schema_json(), &arguments) {
             SchemaCheck::Valid => {}
             SchemaCheck::Invalid(msg) => {
-                return (
-                    Err(ToolError::new(
-                        ErrorKind::InvalidInput,
-                        format!("参数不符合工具「{app_id}.{tool_name}」的 inputSchema：{msg}"),
-                    )),
-                    instance,
-                );
+                return (Err(invalid_arguments(app_id, tool_name, &target.tool, &msg)), instance);
             }
             SchemaCheck::BadSchema(e) => {
                 tracing::warn!(app_id, tool = tool_name, error = %e, "工具的 inputSchema 无法编译，跳过 Hub 侧校验");

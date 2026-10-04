@@ -17,14 +17,6 @@ pub(crate) struct CacheLimitOverrides {
 
 impl CacheLimitOverrides {
     pub(crate) fn apply(&self, target: &mut CacheLimits) {
-        if let Some(v) = self.max_entries {
-            target.max_entries = v;
-        }
-        if let Some(v) = self.max_bytes {
-            target.max_bytes = v;
-        }
-        if let Some(v) = self.max_entry_bytes {
-            target.max_entry_bytes = v;
-        }
+        *target = CacheLimits::with_overrides(self.max_entries, self.max_bytes, self.max_entry_bytes);
     }
 }

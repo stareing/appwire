@@ -2,7 +2,8 @@
 //!
 //! 支持的构造：`type`（含 `["T", "null"]` 与 `nullable: true`）、`enum` / `const`、`required`、
 //! `description` / `title`、数值与长度约束、`format`、`default`、嵌套 `properties`（生成嵌套类型）、
-//! `items`（数组）、仅含 `additionalProperties` 的对象（字典）、`anyOf` / `oneOf` 中 `[T, null]` 形式。
+//! `items`（数组）、仅含 `additionalProperties` 的对象（字典）、`anyOf` / `oneOf` 中 `[T, null]` 形式、
+//! 属性上的 `deprecated: true`（参数级弃用，spec/protocol.md 3.7）。
 //!
 //! 不支持的构造（`$ref`、一般的 `oneOf` / `anyOf`、`allOf`、`not`、`if`、元组数组、多类型联合等）
 //! 记录警告，并降级为"原始 JSON"类型。
@@ -10,7 +11,7 @@
 use std::fmt;
 
 use app_mcp_manifest::{Manifest, ToolInfo};
-use app_mcp_protocol::AppOverview;
+use app_mcp_protocol::{AppOverview, Deprecation};
 use serde_json::{Map, Number, Value};
 
 use crate::ident::{self, NameScope};
@@ -105,6 +106,8 @@ pub struct Field {
     pub constraints: Constraints,
     /// 降级原因（不支持的构造）。
     pub degraded: Option<String>,
+    /// 属性 schema 声明了 `deprecated: true`（参数级弃用）。
+    pub deprecated: bool,
 }
 
 impl Field {
@@ -164,6 +167,11 @@ impl ToolModel {
     pub fn display_title(&self) -> &str {
         self.info.title.as_deref().unwrap_or(&self.info.name)
     }
+
+    /// 工具级弃用声明（`ToolInfo.deprecated`）。
+    pub fn deprecation(&self) -> Option<&Deprecation> {
+        self.info.deprecated.as_ref()
+    }
 }
 
 /// 整个清单的模型。
@@ -206,6 +214,12 @@ impl Model {
         self.object(tool.params).unwrap_or(&EMPTY_OBJECT)
     }
 
+    /// 是否有工具或字段声明了弃用（决定是否输出抑制生成代码自身弃用警告的辅助代码；无弃用时输出不变）。
+    pub fn has_deprecations(&self) -> bool {
+        self.tools.iter().any(|t| t.deprecation().is_some())
+            || self.types.iter().any(|t| matches!(t, TypeDecl::Object(o) if o.fields.iter().any(|f| f.deprecated)))
+    }
+
     /// 是否有任何字段用到原始 JSON 类型。
     pub fn uses_json(&self) -> bool {
         fn ty_uses(ty: &Ty) -> bool {
@@ -244,6 +258,8 @@ pub fn reserved_type_names(module: &str) -> Vec<String> {
         format!("{module}ToolHandlersProvider"),
         format!("{module}AppFunctionService"),
         format!("Base{module}AppFunctionService"),
+        format!("{module}DeprecatedToolCalls"),
+        format!("{module}DeprecatedToolCaller"),
         "JSONValue".to_string(),
     ]
 }

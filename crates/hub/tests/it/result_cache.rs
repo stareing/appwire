@@ -10,14 +10,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use app_mcp_hub::{
-    Availability, CacheStatus, CallOutcome, CallRequest, ErrorKind, Hub, HubConfig, HubError, PolicyConfig, ToolFilter, WakeRequest,
+    Availability, CacheLimits, CacheStatus, CallOutcome, CallRequest, ErrorKind, Hub, HubConfig, HubError, PolicyConfig, ToolFilter, WakeRequest,
     Waker, async_trait,
 };
 use serde_json::{Value, json};
 
-mod fake_app;
-
-use fake_app::{FakeApp, resource, tool};
+use crate::support::fake_app::{FakeApp, resource, tool};
 
 const T: Duration = Duration::from_secs(10);
 const APP: &str = "shop";
@@ -350,8 +348,36 @@ async fn disabled_cache_always_invokes() {
     call(&hub, "shop.list", json!({})).await;
     call(&hub, "shop.list", json!({})).await;
     assert_eq!(app.invokes("list"), 2);
-    assert_eq!(cache_status(&hub), CacheStatus::default());
+    let status = cache_status(&hub);
+    assert!(status.is_idle(), "关闭时不计数：{status:?}");
+    assert_eq!(status.limits.map(|l| l.max_entries), Some(0), "状态带生效上限（已关闭）");
     hub.shutdown().await;
+}
+
+/// `HubStatus.cache.limits` 为生效上限（spec/hub-api.md 3.20）。
+#[tokio::test(flavor = "multi_thread")]
+async fn status_reports_effective_limits() {
+    let limits = CacheLimits { max_entries: 9, max_bytes: 4096, max_entry_bytes: 1024 };
+    let (hub, _app) = start_with(HubConfig { result_cache: limits, ..config() }).await;
+    assert_eq!(cache_status(&hub).limits, Some(limits));
+    hub.shutdown().await;
+}
+
+/// 上限在 Hub 启动时校验：开启时总量 / 单条为 0 或单条大于总量 → `InvalidInput`（各绑定由此得到启动错误）。
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_limits_rejected_at_start() {
+    for (max_bytes, max_entry_bytes) in [(0, 0), (4096, 0), (100, 200)] {
+        let mut c = config();
+        c.listen = None;
+        c.result_cache = CacheLimits { max_entries: 4, max_bytes, max_entry_bytes };
+        let err = Hub::start(c).await.err().expect("非法上限应启动失败");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{max_bytes}/{max_entry_bytes}");
+        assert!(err.to_string().contains("resultCache."), "{err}");
+    }
+    let mut off = config();
+    off.listen = None;
+    off.result_cache = CacheLimits { max_entries: 0, max_bytes: 0, max_entry_bytes: 0 };
+    Hub::start(off).await.expect("关闭时不校验其余字段").shutdown().await;
 }
 
 /// MCP 出口（无会话请求，经 `/mcp`）：private 按 Agent 主体隔离、shared 共用；命中结果 `_meta` 带 `dev.appwire/cached`；

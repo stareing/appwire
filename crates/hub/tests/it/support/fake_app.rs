@@ -1,5 +1,6 @@
-//! 结果缓存测试用的手写 App（WebSocket 直连 `/app`）：声明里直接给出 `cache`（不依赖各语言 SDK 的注册选项），
+//! 手写 App（WebSocket 直连 `/app`）：声明原样发送（`cache`、`deprecated` 等不依赖各语言 SDK 的注册选项），
 //! 自动回答 `tools/invoke` / `resources/read` 并计数——计数不变即 Hub 没有转发（命中缓存）。
+//! 结果缓存（`result_cache`）与工具演进（`schema_evolution`）的集成测试共用。
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};

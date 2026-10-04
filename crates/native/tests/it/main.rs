@@ -15,6 +15,7 @@ mod test_bus;
 mod cache;
 mod channel;
 mod conformance;
+mod deprecation;
 mod events;
 mod fake_host;
 mod lifecycle;

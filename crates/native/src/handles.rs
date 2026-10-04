@@ -244,6 +244,7 @@ impl ToolHandle {
             background_tool: Some(options.background_tool),
             implements: Some(options.implements),
             cache: Some(options.cache),
+            deprecated: Some(options.deprecated),
             concurrency: Some(options.concurrency),
             exclusive: Some(options.exclusive),
             ..spec_update(spec)?

@@ -77,6 +77,7 @@ fn routed_result_meta() {
         duration_ms: 0,
         woke: false,
         cached_age_ms: None,
+        deprecated: None,
     };
     let pending = ToolsInvokeResult { status: crate::ResultStatus::Pending, ..ToolsInvokeResult::default() };
     let r = inv(Some("shop.cart.add"), Ok(pending.clone())).to_mcp().unwrap();
@@ -106,6 +107,7 @@ fn call_meta_keys_and_result_type() {
         duration_ms: 42,
         woke,
         cached_age_ms: None,
+        deprecated: None,
     };
     let r = inv(Body::App(Ok(ToolsInvokeResult::default())), Some("shop-1"), true).to_mcp().unwrap();
     assert_eq!(r.result_type, Some(ResultType::COMPLETE));
@@ -120,6 +122,11 @@ fn call_meta_keys_and_result_type() {
     let meta = hit.to_mcp().unwrap().meta.unwrap();
     assert_eq!(meta.get(names::META_CACHED), Some(&json!({"ageMs": 1500})), "命中缓存：dev.appwire/cached");
     assert_eq!(meta.get(names::META_WOKE), Some(&json!(false)));
+    assert!(meta.get(names::META_DEPRECATED).is_none(), "未弃用不写 deprecated");
+    let mut dep = inv(Body::App(Err(ToolError::new(ErrorKind::HandlerError, "x"))), None, false);
+    dep.deprecated = Some(app_mcp_protocol::Deprecation { message: "旧".into(), replacement: Some("b".into()), until: None });
+    let meta = dep.to_mcp().unwrap().meta.unwrap();
+    assert_eq!(meta.get(names::META_DEPRECATED), Some(&json!({"message": "旧", "replacement": "b"})), "弃用工具：错误结果同样标出");
 
     let err = ToolError::new(ErrorKind::Timeout, "x");
     let meta = inv(Body::App(Err(err.clone())), None, false).to_mcp().unwrap().meta.unwrap();

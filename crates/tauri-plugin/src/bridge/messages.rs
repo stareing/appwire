@@ -15,6 +15,8 @@ impl ToolSpecMessage {
             exclusive: self.exclusive.take(),
             implements: std::mem::take(&mut self.implements),
             cache: self.cache.take(),
+            // @compat 弃用声明（第 16 项 O4）的页面透传属于二期，此前不声明。
+            deprecated: None,
         };
         (self.into_spec(name), options)
     }

@@ -108,6 +108,7 @@ impl Builder {
                     ty: converted.ty,
                     constraints: converted.constraints,
                     degraded: converted.degraded,
+                    deprecated: prop.get("deprecated") == Some(&Value::Bool(true)),
                 });
             }
         } else if obj

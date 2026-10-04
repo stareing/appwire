@@ -148,6 +148,8 @@ pub(crate) struct Invocation {
     pub woke: bool,
     /// 结果来自只读结果缓存时距 App 产出的毫秒数（spec/hub-api.md 3.20）；未命中为 `None`。
     pub cached_age_ms: Option<u64>,
+    /// 调用的 App 工具已弃用时为其弃用声明（spec/hub-api.md 3.21，MCP 结果 `_meta` `dev.appwire/deprecated`）。
+    pub deprecated: Option<app_mcp_protocol::Deprecation>,
 }
 
 impl Invocation {
@@ -164,6 +166,7 @@ impl Invocation {
             duration_ms: 0,
             woke: false,
             cached_age_ms: None,
+            deprecated: None,
         }
     }
 
@@ -197,6 +200,9 @@ impl Invocation {
         }
         if let Some(age) = self.cached_age_ms {
             meta.insert(names::META_CACHED.to_owned(), json!({ "ageMs": age }));
+        }
+        if let Some(d) = &self.deprecated {
+            meta.insert(names::META_DEPRECATED.to_owned(), serde_json::to_value(d).unwrap_or(Value::Null));
         }
         Ok(r)
     }

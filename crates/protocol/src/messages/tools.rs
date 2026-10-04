@@ -48,6 +48,9 @@ pub struct ToolInfo {
     /// （`toolsHash` 不变）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<CachePolicy>,
+    /// 工具弃用声明（spec/protocol.md 3.7）：照常列出与调用，Hub 只呈现。未声明时不序列化（`toolsHash` 不变）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<Deprecation>,
 }
 
 /// 工具对界面的依赖（spec/protocol.md 3.4）。

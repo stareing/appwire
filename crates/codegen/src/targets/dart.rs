@@ -3,6 +3,7 @@
 
 use crate::GeneratedFile;
 use crate::code::{Code, header_lines, string_literal};
+use crate::deprecation;
 use crate::ident::{self, Lang, NameScope};
 use crate::schema::{EnumDecl, Field, Model, ObjectDecl, Ty, TypeDecl, field_doc};
 use crate::targets::{decl_doc, file, tool_doc};
@@ -149,6 +150,11 @@ fn encode(t: &Ty, expr: &str, depth: usize) -> String {
     }
 }
 
+/// `@Deprecated("…")`（消息按 Dart 字符串字面量转义）。同一库内的使用（分派、`toJson`）分析器不报告。
+fn deprecated_annotation(message: &str) -> String {
+    format!("@Deprecated({})", string_literal(Lang::Dart, message))
+}
+
 fn emit_enum(c: &mut Code, e: &EnumDecl) {
     c.comment("/// ", &decl_doc(e.description.as_deref()));
     c.open(format!("enum {} {{", e.name));
@@ -220,6 +226,9 @@ fn emit_object(c: &mut Code, model: &Model, o: &ObjectDecl) {
     for (f, name) in o.fields.iter().zip(&names) {
         c.blank();
         c.comment("/// ", &field_doc(f));
+        if f.deprecated {
+            c.line(deprecated_annotation(deprecation::FIELD_MESSAGE));
+        }
         c.line(format!("final {} {name};", field_ty(model, f)));
     }
     c.blank();
@@ -282,6 +291,9 @@ pub fn generate(model: &Model) -> GeneratedFile {
             c.blank();
         }
         c.comment("/// ", &tool_doc(tool));
+        if let Some(message) = deprecation::tool_deprecation(tool) {
+            c.line(deprecated_annotation(&message));
+        }
         c.line(format!(
             "FutureOr<Object?> {}({} params);",
             ident::escape(Lang::Dart, &tool.camel),

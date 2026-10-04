@@ -73,6 +73,7 @@ def test_cache_hit_bypass_and_status() -> None:
                 assert cache is not None
                 assert (cache.entries, cache.hits, cache.misses) == (2, 3, 2), cache
                 assert cache.bytes > 0
+                assert (cache.max_entries, cache.max_bytes, cache.max_entry_bytes) == (1024, 8 << 20, 64 << 10), "生效上限"
             finally:
                 app.close()
 
@@ -107,3 +108,9 @@ def test_result_cache_config_forms() -> None:
     assert _result_cache(limits) is limits
     with pytest.raises(ValueError):
         _result_cache({"maxEntris": 1})
+
+
+def test_invalid_limits_fail_start() -> None:
+    """上限在 Hub 启动时校验（spec/hub-api.md 3.20）：单条大于总量 → 启动失败，信息指出字段。"""
+    with pytest.raises(Exception, match=r"resultCache\.maxEntryBytes"):
+        Hub(listen=None, enable_ipc=False, result_cache={"maxBytes": 100, "maxEntryBytes": 200})

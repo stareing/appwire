@@ -3,6 +3,7 @@
 
 use crate::GeneratedFile;
 use crate::code::{Code, header_lines, string_literal};
+use crate::deprecation;
 use crate::ident::{self, Lang, NameScope};
 use crate::schema::{EnumDecl, Field, Model, ObjectDecl, Ty, TypeDecl, field_doc};
 use crate::targets::{decl_doc, file, tool_doc};
@@ -84,6 +85,9 @@ fn emit_object(c: &mut Code, model: &Model, o: &ObjectDecl) {
     c.open(format!("data class {}(", o.name));
     for (f, name) in o.fields.iter().zip(property_names(o)) {
         c.block_doc(&field_doc(f));
+        if f.deprecated {
+            c.line(deprecated_annotation(deprecation::FIELD_MESSAGE));
+        }
         // 非必填字段默认 null；必填但可为 null 的字段不给默认值（JSON 中必须出现）
         let default = if f.required { "" } else { " = null" };
         c.line(format!(
@@ -94,6 +98,16 @@ fn emit_object(c: &mut Code, model: &Model, o: &ObjectDecl) {
         ));
     }
     c.close(")");
+}
+
+/// 生成代码自身调用已弃用 handler 处的局部抑制（App 的实现与其他调用处仍有提示）。
+pub const SUPPRESS_DEPRECATION: &str = "@Suppress(\"DEPRECATION\")";
+
+/// `@Deprecated("…")`（消息按 Kotlin 字符串字面量转义）。
+///
+/// @why 不生成 `ReplaceWith`：替代工具的参数类型不同，给不出能直接替换的合法表达式。
+pub fn deprecated_annotation(message: &str) -> String {
+    format!("@Deprecated({})", string_literal(Lang::Kotlin, message))
 }
 
 pub const IMPORTS: &[&str] = &[
@@ -135,6 +149,9 @@ pub fn generate(model: &Model, package: &str) -> GeneratedFile {
     c.open(format!("interface {m}ToolHandlers {{"));
     for tool in &model.tools {
         c.block_doc(&tool_doc(tool));
+        if let Some(message) = deprecation::tool_deprecation(tool) {
+            c.line(deprecated_annotation(&message));
+        }
         c.line(format!(
             "suspend fun {}(params: {}): JsonElement",
             ident::escape(Lang::Kotlin, &tool.camel),
@@ -160,6 +177,9 @@ pub fn generate(model: &Model, package: &str) -> GeneratedFile {
     c.line("val json: Json = Json { ignoreUnknownKeys = true }");
     c.blank();
     c.line("/** 按工具名把调用分派到对应的 handler。参数应已由 Host 按 inputSchema 校验。 */");
+    if model.tools.iter().any(|t| t.deprecation().is_some()) {
+        c.line(SUPPRESS_DEPRECATION);
+    }
     c.open(format!(
         "suspend fun dispatch(handlers: {m}ToolHandlers, name: String, arguments: JsonElement?): JsonElement {{"
     ));

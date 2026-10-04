@@ -14,7 +14,7 @@ use crate::tool_def::ToolDef;
 use crate::types::{Availability, HubTool, ToolDeclaration};
 
 #[cfg(feature = "mcp-server")]
-use super::UNAVAILABLE_PREFIX;
+use crate::schema_evolution;
 
 /// App 工具的 Hub API 形式（解析 schema 文本，只在需要完整定义时构造）。
 pub(crate) fn app_hub_tool(app_id: &str, info: &ToolDef, availability: Availability) -> HubTool {
@@ -33,6 +33,8 @@ pub(crate) fn app_hub_tool(app_id: &str, info: &ToolDef, availability: Availabil
         surface: Some(info.surface),
         page: info.page.clone(),
         implements: info.implements.clone(),
+        schema_hash: Some(info.schema_hash().to_owned()),
+        deprecated: info.deprecated.clone(),
     }
 }
 
@@ -92,6 +94,8 @@ pub(crate) fn upstream_hub_tool(name: &str, t: &Tool) -> HubTool {
         surface: None,
         page: None,
         implements: Vec::new(),
+        schema_hash: None,
+        deprecated: None,
     }
 }
 
@@ -103,14 +107,10 @@ pub(crate) fn to_mcp_tool(app_id: &str, info: &ToolDef, availability: Availabili
         m.insert("type".into(), json!("object"));
         m
     });
-    let description = match availability {
-        Availability::NotRegistered => format!("{UNAVAILABLE_PREFIX}{}", info.description),
-        Availability::Available | Availability::Disconnected | Availability::Dormant => {
-            info.description.clone()
-        }
-    };
+    let description = schema_evolution::mcp_description(app_id, info, availability);
     let mut tool = Tool::new(format!("{app_id}.{}", info.name), description, schema)
-        .with_annotations(mcp_convert::tool_annotations(&info.effective_annotations()));
+        .with_annotations(mcp_convert::tool_annotations(&info.effective_annotations()))
+        .with_meta(schema_evolution::mcp_tool_meta(info));
     if let Some(title) = &info.title {
         tool = tool.with_title(title.clone());
     }

@@ -349,6 +349,9 @@ pub struct HubStatus {
     /// 只读结果缓存的条目与命中统计（第 16 项 O3，spec/hub-api.md 3.20）；旧 Host 为空。
     #[uniffi(default = None)]
     pub cache: Option<super::CacheStatus>,
+    /// 工具定义的不兼容变化（第 16 项 O4，spec/hub-api.md 3.21）：最近 32 条，旧的在前；旧 Host 为空。
+    #[uniffi(default = None)]
+    pub schema_changes: Option<Vec<super::SchemaChangeRecord>>,
 }
 
 /// 调用方的种类（spec/hub-api.md 3.6）。
@@ -559,6 +562,7 @@ impl From<hub::HubStatus> for HubStatus {
             events: s.events.map(Into::into),
             intents: s.intents.map(Into::into),
             cache: s.cache.map(Into::into),
+            schema_changes: s.schema_changes.map(|r| r.into_iter().map(Into::into).collect()),
         }
     }
 }

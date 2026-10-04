@@ -151,6 +151,9 @@ pub enum CoreError {
     /// 工具 / 资源 `cache.ttlMs` 不在 1..=[`MAX_CACHE_TTL_MS`] 内（spec/protocol.md 3.6）。
     #[error("invalid cache: {0}")]
     InvalidCache(String),
+    /// 工具 `deprecated` 格式不合法（spec/protocol.md 3.7：`message` 长度、`replacement` 局部名且不指向自身、`until` 日期）。
+    #[error("invalid deprecated: {0}")]
+    InvalidDeprecation(String),
 }
 
 impl ConnectionState {

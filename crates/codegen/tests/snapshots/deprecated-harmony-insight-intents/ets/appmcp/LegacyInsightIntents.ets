@@ -1,0 +1,118 @@
+// 由 app-mcp-codegen 生成（target: harmony-insight-intents），请勿手动修改。
+// App：弃用示例（legacy）
+// 简介：演示工具级与参数级弃用的生成结果
+//
+// 意图执行器（ets/insightintents/*.ets）调用 LegacyToolHandlers 的入口。
+// 在 AbilityStage.onCreate 中设置 `LegacyIntentRuntime.handlers = <实现 LegacyToolHandlers 的对象>`
+// （意图在后台执行时系统经 Call 调用拉起 UIAbility，不经过页面；可与 MCP 共用同一个实现）。
+
+import { insightIntent } from '@kit.AbilityKit';
+import { ToolCallError, ToolResult } from "@app-mcp/harmony";
+import { LegacyToolHandlers } from './LegacyTools';
+
+/** 意图执行结果码（IntentResult.code）。失败时 result 为 {"kind","message"} 的 JSON 文本。 */
+export enum LegacyIntentCode {
+  OK = 0,
+  /** 缺少必填参数或参数无效。 */
+  INVALID_INPUT = 1,
+  /** App 未设置 LegacyIntentRuntime.handlers。 */
+  HANDLERS_NOT_SET = 2,
+  /** handler 抛出异常或返回值无法序列化。 */
+  FAILED = 3,
+}
+
+/** 失败结果的内容。 */
+class LegacyIntentFailure {
+  kind: string;
+  message: string;
+
+  constructor(kind: string, message: string) {
+    this.kind = kind;
+    this.message = message;
+  }
+}
+
+export class LegacyIntentRuntime {
+  /** 由 App 在启动时设置；未设置时意图返回 LegacyIntentCode.HANDLERS_NOT_SET。 */
+  static handlers: LegacyToolHandlers | undefined = undefined;
+
+  /** 调用 handler 并把结果转换为 IntentResult。 */
+  static run(call: (handlers: LegacyToolHandlers) => Object | null | Promise<Object | null>): Promise<insightIntent.IntentResult<string>> {
+    const handlers = LegacyIntentRuntime.handlers;
+    if (handlers === undefined) {
+      return Promise.resolve(LegacyIntentRuntime.failure(LegacyIntentCode.HANDLERS_NOT_SET, 'HANDLER_ERROR', '未设置 LegacyIntentRuntime.handlers'));
+    }
+    let pending: Promise<Object | null>;
+    try {
+      pending = Promise.resolve(call(handlers));
+    } catch (error) {
+      return Promise.resolve(LegacyIntentRuntime.fromError(error as Object));
+    }
+    return pending.then((value: Object | null): insightIntent.IntentResult<string> => LegacyIntentRuntime.success(value),
+      (error: Object): insightIntent.IntentResult<string> => LegacyIntentRuntime.fromError(error));
+  }
+
+  /** 缺少必填参数。 */
+  static missing(field: string): Promise<insightIntent.IntentResult<string>> {
+    return Promise.resolve(LegacyIntentRuntime.failure(LegacyIntentCode.INVALID_INPUT, 'INVALID_INPUT', `缺少参数 ${field}`));
+  }
+
+  /** 参数无效（整数、枚举取值、实体必填属性或 JSON 文本不合要求）。 */
+  static invalid(field: string, reason: string): Promise<insightIntent.IntentResult<string>> {
+    return Promise.resolve(LegacyIntentRuntime.failure(LegacyIntentCode.INVALID_INPUT, 'INVALID_INPUT', `参数 ${field} 无效：${reason}`));
+  }
+
+  /** 是否为合法 JSON 文本。 */
+  static isJson(text: string): boolean {
+    try {
+      JSON.parse(text);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /** 是否为 JSON 对象文本（不含数组）；allowNull 时 `null` 也可。 */
+  static isJsonObject(text: string, allowNull: boolean): boolean {
+    let value: Object | null;
+    try {
+      value = JSON.parse(text) as Object | null;
+    } catch (error) {
+      return false;
+    }
+    if (value === null) {
+      return allowNull;
+    }
+    return typeof value === 'object' && !Array.isArray(value);
+  }
+
+  /** 解析已校验的 JSON 文本。 */
+  static parseJson(text: string): Object | null {
+    return JSON.parse(text) as Object | null;
+  }
+
+  private static success(value: Object | null): insightIntent.IntentResult<string> {
+    const data: Object | null = value instanceof ToolResult ? (value as ToolResult<Object | null>).data : value;
+    let text: string | undefined;
+    try {
+      text = JSON.stringify(data);
+    } catch (error) {
+      return LegacyIntentRuntime.failure(LegacyIntentCode.FAILED, 'HANDLER_ERROR', `返回值无法序列化为 JSON：${(error as Error).message}`);
+    }
+    const result: insightIntent.IntentResult<string> = { code: 0, result: text ?? 'null' };
+    return result;
+  }
+
+  private static fromError(error: Object): insightIntent.IntentResult<string> {
+    if (error instanceof ToolCallError) {
+      return LegacyIntentRuntime.failure(LegacyIntentCode.FAILED, error.kind, error.message);
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return LegacyIntentRuntime.failure(LegacyIntentCode.FAILED, 'HANDLER_ERROR', message);
+  }
+
+  private static failure(code: LegacyIntentCode, kind: string, message: string): insightIntent.IntentResult<string> {
+    const result: insightIntent.IntentResult<string> = { code: code, result: JSON.stringify(new LegacyIntentFailure(kind, message)) };
+    return result;
+  }
+}

@@ -28,9 +28,9 @@
 use std::sync::Arc;
 
 pub use app_mcp_core::{
-    Activation, AppOverview, Audience, BusyPolicy, CachePolicy, CacheScope, CallDedupPolicy, ClientKind, ContentAnnotations, EventInfo, HeartbeatMode, LifecycleMode, LifecyclePolicy,
+    Activation, AppOverview, Audience, BusyPolicy, CachePolicy, CacheScope, CallDedupPolicy, ClientKind, ContentAnnotations, Deprecation, EventInfo, HeartbeatMode, LifecycleMode, LifecyclePolicy,
     Residency, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolSurface, TransportKind, Visibility, WakeDescriptor,
-    WakeKind, WakeReason, MAX_CACHE_TTL_MS, MAX_EVENT_PAYLOAD_BYTES, parse_wake_token,
+    WakeKind, WakeReason, MAX_CACHE_TTL_MS, MAX_DEPRECATION_MESSAGE_CHARS, MAX_EVENT_PAYLOAD_BYTES, parse_wake_token,
 };
 pub use app_mcp_protocol::{ConnectionErrorCode, ErrorKind, navigation_reason, user_action_reason};
 
@@ -183,6 +183,9 @@ pub struct ToolOptions {
     /// 结果缓存声明（spec/protocol.md 3.6）：只对生效注解只读的工具生效（否则照常注册并记警告）；`ttlMs` 越界时注册 / 更新返回
     /// [`NativeError::InvalidConfig`]。`None`（缺省）= 未声明。
     pub cache: Option<CachePolicy>,
+    /// 工具弃用声明（spec/protocol.md 3.7）：照常列出与调用；格式不合法（`message` 长度、`replacement` 局部名且不指向自身、
+    /// `until` 日期）时注册 / 更新返回 [`NativeError::InvalidConfig`]。`None`（缺省）= 未声明。
+    pub deprecated: Option<Deprecation>,
     /// 本工具同时执行的调用上限（spec/protocol.md 5.3）：0（缺省）= 不单独限制，只受 `max_concurrent_calls` 约束。只在 SDK 内生效。
     pub concurrency: u32,
     /// 互斥组（spec/protocol.md 5.3，`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行。`None` = 不互斥。只在 SDK 内生效。

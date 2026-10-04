@@ -34,6 +34,7 @@ use app_mcp_protocol::{Activation, Risk};
 
 use crate::GeneratedFile;
 use crate::code::{Code, header_lines, string_literal};
+use crate::deprecation;
 use crate::ident::{self, Lang, NameScope};
 use crate::schema::{Field, Model, ToolModel, Ty, TypeDecl, Warning, field_notes};
 use crate::targets::{file, swift};
@@ -419,7 +420,8 @@ fn intents_file(model: &Model, options: &AppIntentsOptions, warnings: &mut Vec<W
         }
         let params = model.params(tool);
         let eligible = matches!(tool.info.risk, Risk::Read | Risk::Write)
-            && params.fields.iter().all(|f| f.optional());
+            && params.fields.iter().all(|f| f.optional())
+            && tool.deprecation().is_none(); // 弃用的工具不推广为 App Shortcut
         if eligible {
             shortcuts.push((intent, tool));
         }
@@ -637,6 +639,10 @@ fn emit_intent(c: &mut Code, model: &Model, options: &AppIntentsOptions, tool: &
         .collect();
 
     c.comment("/// ", &crate::targets::tool_doc(tool));
+    // 弃用的工具照常生成 intent（App 仍需响应系统入口）；App Intents 的声明没有弃用字段，只加 Swift 弃用标注
+    if let Some(message) = deprecation::tool_deprecation(tool) {
+        c.line(swift::available_deprecated(&message));
+    }
     c.open(format!("public struct {intent}: AppIntent {{"));
     c.line(format!(
         "public static let title: LocalizedStringResource = {}",
@@ -684,6 +690,7 @@ fn emit_intent(c: &mut Code, model: &Model, options: &AppIntentsOptions, tool: &
         if let Some(note) = note {
             c.line(format!("// {note}"));
         }
+        c.comment("// ", &deprecation::field_doc_lines(f));
         let mut args = vec![format!(
             "title: {}",
             string_literal(Lang::Swift, &f.json_name)
@@ -741,10 +748,7 @@ fn emit_intent(c: &mut Code, model: &Model, options: &AppIntentsOptions, tool: &
         args.push(format!("{}: {expr}", arg_label(prop)));
     }
     c.line(format!("let params = {}({})", params.name, args.join(", ")));
-    let call = format!(
-        "try await {m}IntentRuntime.requireHandlers().{}(params)",
-        ident::escape(Lang::Swift, &tool.camel)
-    );
+    let call = format!("try await {}", swift::handler_call(model, tool, &format!("{m}IntentRuntime.requireHandlers()"), "params"));
     if options.cancellable {
         c.line("let result: any Encodable & Sendable");
         c.open(format!("if #available({CANCELLABLE_AVAILABILITY}) {{"));

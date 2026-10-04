@@ -69,29 +69,31 @@ fn describe_limits(l: &CacheLimits) -> String {
     format!("上限 {} 条、{}、单条 {}", l.max_entries, describe_bytes(l.max_bytes), describe_bytes(l.max_entry_bytes))
 }
 
-/// 只读结果缓存（spec/hub-api.md 3.20）：有缓存活动为信息，尚无可缓存的请求为通过，按配置关闭为信息；旧 Host 不报告时跳过。
+/// 只读结果缓存（spec/hub-api.md 3.20）：有缓存活动为信息，尚无可缓存的请求为通过，关闭为信息；旧 Host 不报告时跳过。
 ///
-/// @input `limits`：本配置目录的设置解析出的上限（`resultCache`）；运行中的 Host 若以不同的命令行参数启动，以其为准。
-pub(super) fn cache_check(status: Option<&Result<HubStatus, String>>, limits: &CacheLimits) -> Check {
+/// 上限取运行中 Host 状态报告的生效值（`cache.limits`）；旧 Host 不报告时退回本配置目录的设置（`config_limits`）并注明。
+pub(super) fn cache_check(status: Option<&Result<HubStatus, String>>, config_limits: &CacheLimits) -> Check {
     let Some(Ok(st)) = status else {
         return Check::new(CACHE_ID, CACHE_TITLE, Level::Skip, "Host 未运行或状态不可读");
     };
     let Some(cache) = &st.cache else {
         return Check::new(CACHE_ID, CACHE_TITLE, Level::Skip, "运行中的 Host 版本不报告结果缓存");
     };
-    let details = json!({
-        "cache": cache,
-        "limits": {"maxEntries": limits.max_entries, "maxBytes": limits.max_bytes, "maxEntryBytes": limits.max_entry_bytes},
-    });
+    let (limits, source, note) = match &cache.limits {
+        Some(l) => (l, "host", ""),
+        None => (config_limits, "config", "（按本配置推算，运行中的 Host 未报告上限）"),
+    };
+    let details = json!({ "cache": cache, "limits": limits, "limitsSource": source });
     if !limits.enabled() {
-        return Check::new(CACHE_ID, CACHE_TITLE, Level::Info, "已关闭（resultCache.maxEntries 为 0）").details(details);
+        let summary = format!("已关闭（resultCache.maxEntries 为 0）{note}");
+        return Check::new(CACHE_ID, CACHE_TITLE, Level::Info, summary).details(details);
     }
-    if *cache == CacheStatus::default() {
-        let summary = format!("启动以来没有可缓存的请求（App 未声明 cache）；{}", describe_limits(limits));
+    if cache.is_idle() {
+        let summary = format!("启动以来没有可缓存的请求（App 未声明 cache）；{}{note}", describe_limits(limits));
         return Check::new(CACHE_ID, CACHE_TITLE, Level::Ok, summary).details(details);
     }
-    Check::new(CACHE_ID, CACHE_TITLE, Level::Info, format!("{}；{}", describe_cache(cache), describe_limits(limits)))
-        .details(details)
+    let summary = format!("{}；{}{note}", describe_cache(cache), describe_limits(limits));
+    Check::new(CACHE_ID, CACHE_TITLE, Level::Info, summary).details(details)
 }
 
 #[cfg(test)]
@@ -136,20 +138,40 @@ mod tests {
         let limits = CacheLimits::default();
         assert!(matches!(cache_check(Some(&Ok(st.clone())), &limits).status, Level::Skip), "旧 Host 不报告");
         assert_eq!(cache_text(&st), "");
-        st.cache = Some(CacheStatus::default());
+        st.cache = Some(CacheStatus { limits: Some(limits), ..CacheStatus::default() });
         let c = cache_check(Some(&Ok(st.clone())), &limits);
         assert!(matches!(c.status, Level::Ok), "{c:?}");
         assert!(c.summary.ends_with("；上限 1024 条、8.0 MiB、单条 64.0 KiB"), "{c:?}");
         assert_eq!(c.details["limits"], json!({"maxEntries": 1024, "maxBytes": 8_388_608, "maxEntryBytes": 65_536}));
-        st.cache = Some(CacheStatus { entries: 3, bytes: 1536, hits: 10, misses: 4, evictions: 1 });
+        assert_eq!(c.details["limitsSource"], "host");
+        st.cache = Some(CacheStatus { entries: 3, bytes: 1536, hits: 10, misses: 4, evictions: 1, limits: Some(limits) });
         let c = cache_check(Some(&Ok(st.clone())), &limits);
         assert!(matches!(c.status, Level::Info), "{c:?}");
         assert_eq!(c.summary, "3 条（1.5 KiB），命中 10、未命中 4、淘汰 1；上限 1024 条、8.0 MiB、单条 64.0 KiB");
         assert_eq!(cache_text(&st), "，结果缓存 3 条（1.5 KiB），命中 10、未命中 4、淘汰 1");
         assert!(matches!(cache_check(None, &limits).status, Level::Skip));
-        let off = CacheLimits { max_entries: 0, ..limits };
+    }
+
+    /// 上限以运行中 Host 报告的为准（命令行参数可能与本配置不同）；旧 Host 不报告时退回本配置并注明。
+    #[test]
+    fn cache_limits_prefer_running_host() {
+        let mut st = status(json!(null));
+        let config = CacheLimits::default();
+        let running = CacheLimits { max_entries: 5, max_bytes: 2048, max_entry_bytes: 1024 };
+        st.cache = Some(CacheStatus { hits: 1, limits: Some(running), ..CacheStatus::default() });
+        let c = cache_check(Some(&Ok(st.clone())), &config);
+        assert!(c.summary.ends_with("；上限 5 条、2.0 KiB、单条 1.0 KiB"), "{c:?}");
+        assert_eq!(c.details["limits"]["maxEntries"], 5);
+
+        let off = CacheLimits { max_entries: 0, ..config };
+        st.cache = Some(CacheStatus { limits: Some(off), ..CacheStatus::default() });
+        let c = cache_check(Some(&Ok(st.clone())), &config);
+        assert!(matches!(c.status, Level::Info) && c.summary == "已关闭（resultCache.maxEntries 为 0）", "{c:?}");
+
+        st.cache = Some(CacheStatus::default());
         let c = cache_check(Some(&Ok(st.clone())), &off);
-        assert!(matches!(c.status, Level::Info) && c.summary.starts_with("已关闭"), "{c:?}");
+        assert!(c.summary.starts_with("已关闭") && c.summary.ends_with("（按本配置推算，运行中的 Host 未报告上限）"), "{c:?}");
+        assert_eq!(c.details["limitsSource"], "config");
         assert_eq!(c.details["limits"]["maxEntries"], 0);
     }
 }

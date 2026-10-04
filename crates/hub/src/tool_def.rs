@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use app_mcp_manifest::{Manifest, Page};
-use app_mcp_protocol::{Activation, CachePolicy, Risk, ToolAnnotations, ToolInfo, ToolSurface};
+use app_mcp_protocol::{Activation, CachePolicy, Deprecation, Risk, ToolAnnotations, ToolInfo, ToolSurface};
 use serde_json::{Map, Value};
 
 /// 共享的工具定义。
@@ -29,9 +29,28 @@ pub struct ToolDef {
     pub implements: Vec<String>,
     /// 结果缓存声明（spec/protocol.md 3.6）；只在生效注解 `readOnlyHint` 为真时执行（spec/hub-api.md 3.20）。
     pub cache: Option<CachePolicy>,
+    /// 弃用声明（spec/protocol.md 3.7）；Hub 只呈现（spec/hub-api.md 3.21）。
+    pub deprecated: Option<Deprecation>,
     /// @invariant 由 `serde_json` 序列化一个 `Value` 得到，总能解析回同一个值。
     input_schema: Box<str>,
     output_schema: Option<Box<str>>,
+    /// `schemaHash`（spec/hub-api.md 3.21）的 16 个 ASCII 十六进制字符，构造时由两份 schema 算一次。
+    ///
+    /// @why 每次 `tools/list` / `apps.tools` 都要带上；在此缓存，列表热路径不解析 schema、不重算（第 4f 项 d），
+    /// 定长数组不另分配。@invariant 只由 [`schema_hash_bytes`] 写入，与两份 schema 一致。
+    schema_hash: [u8; SCHEMA_HASH_LEN],
+}
+
+/// `schemaHash` 的长度（十六进制字符数）。
+const SCHEMA_HASH_LEN: usize = 16;
+
+/// 计算 `schemaHash` 并存为定长 ASCII；协议函数的结果不是 16 个 ASCII 字符（不应发生）时记错误日志，按全 `0` 保存。
+fn schema_hash_bytes(input: &Value, output: Option<&Value>) -> [u8; SCHEMA_HASH_LEN] {
+    let hash = app_mcp_protocol::schema_hash(input, output);
+    hash.as_bytes().try_into().unwrap_or_else(|_| {
+        tracing::error!(%hash, "schemaHash 长度不是 16（不应发生），按全 0 保存");
+        [b'0'; SCHEMA_HASH_LEN]
+    })
 }
 
 /// 序列化 schema 为紧凑文本。`Value` 序列化不会失败（键都是字符串）；万一失败按 `null` 保存并记错误日志。
@@ -69,6 +88,7 @@ impl ToolDef {
             background_tool,
             implements,
             cache,
+            deprecated,
         } = info;
         Self {
             name,
@@ -82,6 +102,8 @@ impl ToolDef {
             background_tool,
             implements,
             cache,
+            deprecated,
+            schema_hash: schema_hash_bytes(&input_schema, output_schema.as_ref()),
             input_schema: schema_text(&input_schema),
             output_schema: output_schema.as_ref().map(schema_text),
         }
@@ -103,6 +125,7 @@ impl ToolDef {
             background_tool,
             implements,
             cache,
+            deprecated,
         } = info;
         Self {
             name: name.clone(),
@@ -116,6 +139,8 @@ impl ToolDef {
             background_tool: background_tool.clone(),
             implements: implements.clone(),
             cache: *cache,
+            deprecated: deprecated.clone(),
+            schema_hash: schema_hash_bytes(input_schema, output_schema.as_ref()),
             input_schema: schema_text(input_schema),
             output_schema: output_schema.as_ref().map(schema_text),
         }
@@ -137,6 +162,7 @@ impl ToolDef {
             background_tool: self.background_tool.clone(),
             implements: self.implements.clone(),
             cache: self.cache,
+            deprecated: self.deprecated.clone(),
         }
     }
 
@@ -163,6 +189,12 @@ impl ToolDef {
     /// 解析后的 `outputSchema`。
     pub fn output_schema(&self) -> Option<Value> {
         self.output_schema.as_deref().map(parse_schema)
+    }
+
+    /// 工具定义的 `schemaHash`（spec/hub-api.md 3.21）：`inputSchema` 与 `outputSchema` 的规范化哈希前 16 个十六进制字符。
+    pub fn schema_hash(&self) -> &str {
+        // @invariant 字段只含 ASCII 十六进制字符（或兜底的 `0`），转换不会失败。
+        std::str::from_utf8(&self.schema_hash).unwrap_or_default()
     }
 
     pub fn has_output_schema(&self) -> bool {
@@ -306,6 +338,7 @@ mod tests {
             background_tool: Some("orders.searchBg".into()),
             implements: vec!["message.send@1".into()],
             cache: Some(CachePolicy { ttl_ms: 5000, scope: app_mcp_protocol::CacheScope::Shared }),
+            deprecated: Some(Deprecation { message: "改用 b".into(), replacement: Some("b".into()), until: None }),
         }
     }
 
@@ -320,6 +353,24 @@ mod tests {
         assert_eq!(def.input_schema_object().unwrap()["type"], "object");
         assert!(def.has_output_schema());
         assert_eq!(def.effective_annotations(), info.effective_annotations());
+        let expected = app_mcp_protocol::schema_hash(&info.input_schema, info.output_schema.as_ref());
+        assert_eq!(def.schema_hash(), expected, "构造时算好 schemaHash");
+        assert_eq!(ToolDef::copy_of(&info, None).schema_hash(), expected, "复制路径同样计算");
+    }
+
+    /// `schemaHash` 只随两份 schema 变化：描述、弃用等其他字段不影响；`outputSchema` 增删改都会改变。
+    #[test]
+    fn schema_hash_tracks_schemas_only() {
+        let base = full();
+        let hash = |i: ToolInfo| ToolDef::from_info(i).schema_hash().to_owned();
+        let h0 = hash(base.clone());
+        assert_eq!(h0.len(), 16);
+        assert_eq!(hash(ToolInfo { description: "别的描述".into(), deprecated: None, ..base.clone() }), h0);
+        let mut input = base.clone();
+        input.input_schema["properties"]["n"] = json!({"type": "integer"});
+        assert_ne!(hash(input), h0, "inputSchema 变化");
+        assert_ne!(hash(ToolInfo { output_schema: None, ..base.clone() }), h0, "去掉 outputSchema");
+        assert_ne!(hash(ToolInfo { output_schema: Some(json!({"type": "object"})), ..base }), h0, "outputSchema 变化");
     }
 
     #[test]
@@ -338,6 +389,7 @@ mod tests {
             background_tool: None,
             implements: Vec::new(),
             cache: None,
+            deprecated: None,
         };
         let def = ToolDef::from(info.clone());
         assert_eq!(def.to_info(), info);

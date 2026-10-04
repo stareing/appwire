@@ -340,6 +340,27 @@ HTTP 端口（`/app`、`/mcp`、`/healthz`）的防护分三层；App 连接（`
 - `/status`（实例、最近错误、SDK 上报）经 IPC 直接可读；经 TCP 必须带有效令牌，未配置令牌（`--auth off`）时 TCP 上一律 403。
 - 令牌比较为常量时间；`app-mcp-host token --regenerate` 轮换令牌（运行中的实例需重启）。
 
+## 清单校验与兼容判定：`validate`
+
+```bash
+app-mcp-host validate app-mcp.json                          # 只校验清单（警告写 stderr；无效时退出码 1）
+app-mcp-host validate app-mcp.json --against old/app-mcp.json [--json]
+```
+
+`--against` 按兼容规则（spec/manifest.md 第 6 节）比较新旧清单的顶层工具与页面内工具（按页面名 + 工具名配对），按工具分组列出
+`breaking` / `warning`，JSON 为 `[{page?, tool, removed, changes: [{level, path, message}]}]`。删除已标 `deprecated` 的工具只提示。
+退出码：有破坏性变更 3；只有可能破坏或无变化 0；任一清单无效、两份清单 appId 不同 1。用于开发期与 CI；破坏性变更应改用新工具名，
+旧工具标 `deprecated` 并以 `replacement` 指向新工具（spec/protocol.md 3.7）。
+
+```text
+mail.list
+  warning   /inputSchema/properties/limit/maximum  约束 maximum 收紧或改变：100 → 50
+  breaking  /outputSchema/properties/total  属性 `total` 从 required 中移除：结果中可能不再出现
+mail.send
+  breaking  /inputSchema/properties/subject  新增必填参数 `subject`
+2 处破坏性变化（breaking）、1 处可能破坏：破坏性变更应改用新工具名，旧工具标 deprecated 并以 replacement 指向新工具（spec/protocol.md 3.7）
+```
+
 ## stdio 模式（兼容 / 测试）
 
 ```bash

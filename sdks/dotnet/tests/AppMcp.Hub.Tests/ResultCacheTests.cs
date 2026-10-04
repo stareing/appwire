@@ -96,6 +96,7 @@ public class ResultCacheTests
         Assert.Equal(2UL, cache.Misses);
         Assert.True(cache.Bytes > 0);
         Assert.Equal(0UL, cache.Evictions);
+        Assert.Equal(new CacheLimitsInfo(1024, 8 * 1024 * 1024, 64 * 1024), cache.Limits);
     }
 
     [Fact]
@@ -116,7 +117,7 @@ public class ResultCacheTests
             Assert.Equal(n, outcome.Data!.Value.GetProperty("n").GetInt32());
             Assert.Null(outcome.CachedAgeMs);
         }
-        Assert.Equal(new CacheStatusInfo(0, 0, 0, 0, 0), hub.Status().Cache);
+        Assert.Equal(new CacheStatusInfo(0, 0, 0, 0, 0, new CacheLimitsInfo(0, 8 * 1024 * 1024, 64 * 1024)), hub.Status().Cache);
     }
 
     [Fact]
@@ -129,6 +130,15 @@ public class ResultCacheTests
             Dispatcher = null,
             ResultCache = new HubResultCacheLimits { MaxBytes = -1 },
         }));
+        // 上限在 Hub 启动时校验：单条大于总量 → 启动失败（AM_HUB_ERR_IO），信息指出字段。
+        var e = Assert.Throws<HubException>(() => AppMcpHub.Start(new HubOptions
+        {
+            DisableIpc = true,
+            DisableListen = true,
+            Dispatcher = null,
+            ResultCache = new HubResultCacheLimits { MaxBytes = 100, MaxEntryBytes = 200 },
+        }));
+        Assert.Contains("resultCache.maxEntryBytes", e.Message);
         var json = new HubResultCacheLimits { MaxEntries = 8, MaxEntryBytes = 512 }.ToJson().ToJsonString();
         Assert.Equal("""{"maxEntries":8,"maxEntryBytes":512}""", json);
     }

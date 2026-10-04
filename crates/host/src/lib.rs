@@ -9,6 +9,7 @@
 //! - `doctor`：逐项诊断（[`doctor`]）；`status`：一行状态摘要。
 //! - `setup` / `uninstall`：一条命令安装（二进制就位、自启、写入已装 Agent 的 MCP 配置、自检）与撤销（[`setup`]）。
 //! - `policy show|validate|reload|hide|deny|remove`：策略规则 `<home>/policy.json`（[`policy`]）。
+//! - `validate <清单> [--against <旧清单>] [--json]`：清单校验与工具定义的兼容判定（spec/manifest.md 第 6 节）。
 //! - `stdio` / 不带子命令：单客户端 stdio 模式（兼容旧用法）。
 //!
 //! stdout 在 stdio 模式下专用于 MCP 协议，所有日志写 stderr（常驻模式另写 `<home>/logs/`）。
@@ -42,6 +43,7 @@ use crate::commands::legacy::run_legacy;
 use crate::commands::serve::serve;
 use crate::commands::service_cmd::{service_cmd, status_line};
 use crate::commands::setup_cmd::{setup_cmd, uninstall_cmd};
+use crate::commands::validate_cmd::validate_cmd;
 use crate::config::{AppHome, FileConfig, Settings};
 
 pub(crate) use crate::commands::serve::{probe_addr, running_host, running_instance};
@@ -109,6 +111,7 @@ async fn run(cli: Cli, inherited: Result<Option<Inherited>, ActivationError>) ->
         Some(Command::Agent { action }) => agents::cmd(action).await,
         Some(Command::Intents { action }) => intents::cmd(action).await,
         Some(Command::App { action }) => app_install::cmd(action).await,
+        Some(Command::Validate(args)) => validate_cmd(&args),
         Some(Command::Token { home, regenerate }) => {
             let home = AppHome::resolve(home.home.as_deref())?;
             let t = if regenerate {

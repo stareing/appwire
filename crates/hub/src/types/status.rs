@@ -71,6 +71,10 @@ pub struct HubStatus {
     /// 只读结果缓存的条目、字节与命中统计（第 16 项 O3，spec/hub-api.md 3.20）；旧版 Hub 无此字段。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<crate::result_cache::CacheStatus>,
+    /// 工具定义的不兼容变化（第 16 项 O4，spec/hub-api.md 3.21）：最近 [`crate::MAX_SCHEMA_CHANGES`] 条，旧的在前，只在内存。
+    /// 旧版 Hub 无此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_changes: Option<Vec<crate::schema_evolution::SchemaChangeRecord>>,
 }
 
 /// 一个 Agent 任务（[`HubStatus::tasks`]）。

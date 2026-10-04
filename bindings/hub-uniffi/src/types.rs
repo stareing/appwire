@@ -33,6 +33,7 @@ mod intents;
 mod calls_status;
 mod locks;
 mod policy;
+mod schema_changes;
 mod status;
 mod usage;
 
@@ -52,6 +53,7 @@ pub use intents::*;
 pub use calls_status::*;
 pub use locks::*;
 pub use policy::*;
+pub use schema_changes::*;
 pub use status::*;
 pub use usage::*;
 

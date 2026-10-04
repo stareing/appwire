@@ -441,6 +441,7 @@ fn tool_options_are_read_up_to_struct_size() {
             exclusive: Some("doc".into()),
             implements: vec!["message.send@1".into()],
             cache: None,
+            deprecated: None,
         })
     );
     // v20 调用方（不含 implements）：按未声明处理，其余字段照读

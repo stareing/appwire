@@ -1,6 +1,6 @@
 //! 只读结果缓存的上限：配置文件 `resultCache`、命令行 `--cache-max-*`（第 16 项 O3，spec/hub-api.md 3.20）。
 
-use app_mcp_hub::{CacheLimits, DEFAULT_CACHE_MAX_BYTES, DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_MAX_ENTRY_BYTES};
+use app_mcp_hub::CacheLimits;
 use serde::{Deserialize, Serialize};
 
 /// `resultCache` 分节：`{"maxEntries","maxBytes","maxEntryBytes"}`，缺省字段取默认值；`maxEntries: 0` 关闭缓存。
@@ -33,27 +33,12 @@ impl ResultCacheSection {
         take(&mut self.max_entry_bytes, other.max_entry_bytes);
     }
 
-    /// 解析为生效上限。
+    /// 解析为生效上限（默认值与校验都在 Hub：[`CacheLimits::with_overrides`]、[`CacheLimits::validate`]）。
     ///
-    /// @error 开启缓存（`maxEntries > 0`）时 `maxBytes` / `maxEntryBytes` 为 0，或显式给出的 `maxEntryBytes` 大于 `maxBytes`。
+    /// @error 开启缓存（`maxEntries > 0`）时 `maxBytes` / `maxEntryBytes` 为 0，或 `maxEntryBytes` 大于 `maxBytes`。
     pub fn resolve(&self) -> anyhow::Result<CacheLimits> {
-        let max_entries = self.max_entries.unwrap_or(DEFAULT_CACHE_MAX_ENTRIES);
-        let max_bytes = self.max_bytes.unwrap_or(DEFAULT_CACHE_MAX_BYTES);
-        // @why 只调小 maxBytes 时，默认的单条上限随之收窄，不因用户未写的字段报错。
-        let max_entry_bytes = self.max_entry_bytes.unwrap_or(DEFAULT_CACHE_MAX_ENTRY_BYTES.min(max_bytes));
-        let limits = CacheLimits { max_entries, max_bytes, max_entry_bytes };
-        if !limits.enabled() {
-            return Ok(limits);
-        }
-        anyhow::ensure!(max_bytes > 0, "resultCache.maxBytes 必须大于 0（关闭结果缓存请设 resultCache.maxEntries 为 0）");
-        anyhow::ensure!(
-            max_entry_bytes > 0,
-            "resultCache.maxEntryBytes 必须大于 0（关闭结果缓存请设 resultCache.maxEntries 为 0）"
-        );
-        anyhow::ensure!(
-            max_entry_bytes <= max_bytes,
-            "resultCache.maxEntryBytes（{max_entry_bytes}）不能大于 resultCache.maxBytes（{max_bytes}）"
-        );
+        let limits = CacheLimits::with_overrides(self.max_entries, self.max_bytes, self.max_entry_bytes);
+        limits.validate().map_err(anyhow::Error::msg)?;
         Ok(limits)
     }
 }

@@ -263,6 +263,94 @@ fn cache_rules() {
     assert_eq!(warning_paths(&v), vec!["pages[0].tools[0].cache"]);
 }
 
+fn warning_paths(v: &Validation) -> Vec<&str> {
+    v.warnings.iter().map(|w| w.path.as_str()).collect()
+}
+
+/// 顶层工具声明 `deprecated` 的清单。
+fn top_deprecated(dep: Value) -> Manifest {
+    let mut m = example();
+    m["tools"][0]["deprecated"] = dep;
+    serde_json::from_value(m).expect("parses")
+}
+
+#[test]
+fn deprecated_valid_roundtrip_and_absent_not_serialized() {
+    // replacement 指向清单中的页面内工具：无错误、无警告，往返不丢
+    let mut m = example();
+    m["tools"][0]["deprecated"] = json!({ "message": "改用 orders.find", "replacement": "orders.find", "until": "2027-06-30" });
+    m["pages"] = json!([{ "name": "p", "tools": [page_tool("orders.find")] }]);
+    let m: Manifest = serde_json::from_value(m).expect("parses");
+    let v = m.validate();
+    assert!(v.is_ok() && v.warnings.is_empty(), "{:?} {:?}", v.errors, v.warnings);
+    assert_eq!(
+        serde_json::to_value(&m).unwrap()["tools"][0]["deprecated"],
+        json!({ "message": "改用 orders.find", "replacement": "orders.find", "until": "2027-06-30" })
+    );
+    let plain = serde_json::to_value(serde_json::from_value::<Manifest>(example()).unwrap()).unwrap();
+    assert!(plain["tools"][0].get("deprecated").is_none());
+}
+
+/// 格式规则逐条（`Deprecation::validate`）：每条违反都是 `tools[0].deprecated` 处的错误。
+#[test]
+fn deprecated_format_errors() {
+    for dep in [
+        json!({ "message": "" }),
+        json!({ "message": "x".repeat(501) }),
+        json!({ "message": "m", "replacement": "bad name" }),
+        json!({ "message": "m", "replacement": "orders.search" }),
+        json!({ "message": "m", "until": "2027-02-30" }),
+    ] {
+        let v = top_deprecated(dep.clone()).validate();
+        assert_eq!(error_paths(&v), vec!["tools[0].deprecated"], "{dep}");
+    }
+    // message 缺失：解析失败（与其他字段类型错误一致）
+    let mut m = example();
+    m["tools"][0]["deprecated"] = json!({ "replacement": "x" });
+    assert!(serde_json::from_value::<Manifest>(m).is_err());
+}
+
+#[test]
+fn deprecated_replacement_undeclared_warns() {
+    let v = top_deprecated(json!({ "message": "m", "replacement": "orders.find" })).validate();
+    assert!(v.is_ok(), "{:?}", v.errors);
+    assert_eq!(warning_paths(&v), vec!["tools[0].deprecated.replacement"]);
+    // 指向顶层工具：无警告
+    let mut m = example();
+    m["tools"].as_array_mut().unwrap().push(json!({ "name": "orders.find", "description": "d", "inputSchema": { "type": "object" }, "risk": "read" }));
+    m["tools"][0]["deprecated"] = json!({ "message": "m", "replacement": "orders.find" });
+    let v = serde_json::from_value::<Manifest>(m).unwrap().validate();
+    assert!(v.is_ok() && v.warnings.is_empty(), "{:?} {:?}", v.errors, v.warnings);
+}
+
+#[test]
+fn deprecated_required_param_warns() {
+    let schema = json!({
+        "type": "object",
+        "properties": { "keyword": { "type": "string", "deprecated": true }, "q": { "type": "string", "deprecated": true } },
+        "required": ["keyword"]
+    });
+    let v = with(example(), "/tools/0/inputSchema", schema.clone()).validate();
+    assert!(v.is_ok(), "{:?}", v.errors);
+    assert_eq!(warning_paths(&v), vec!["tools[0].inputSchema.properties.keyword"], "可选参数 q 标弃用不警告");
+    // 页面内工具同样适用
+    let mut t = page_tool("p.t");
+    t["inputSchema"] = schema;
+    let v = with_pages(json!([{ "name": "p", "tools": [t] }])).validate();
+    assert_eq!(warning_paths(&v), vec!["pages[0].tools[0].inputSchema.properties.keyword"]);
+}
+
+#[test]
+fn deprecated_page_tool_follows_rules() {
+    let mut t = page_tool("p.t");
+    t["deprecated"] = json!({ "message": "m", "replacement": "p.t" });
+    let mut u = page_tool("p.u");
+    u["deprecated"] = json!({ "message": "m", "replacement": "nowhere" });
+    let v = with_pages(json!([{ "name": "p", "tools": [t, u] }])).validate();
+    assert_eq!(error_paths(&v), vec!["pages[0].tools[0].deprecated"]);
+    assert_eq!(warning_paths(&v), vec!["pages[0].tools[1].deprecated.replacement"]);
+}
+
 #[test]
 fn tool_names_unique_across_pages() {
     // 与顶层工具重名、与其他页面的工具重名

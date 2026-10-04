@@ -79,6 +79,7 @@ pub(in crate::targets::harmony) fn prop_ty(model: &Model, f: &Field) -> String {
 /// 执行器类属性的注释。
 pub(in crate::targets::harmony) fn prop_doc(model: &Model, f: &Field) -> Vec<String> {
     let mut doc = field_doc(f);
+    doc.extend(crate::deprecation::field_doc_lines(f));
     if let Repr::JsonText(_) = repr(model, &f.ty) {
         doc.push("意图参数为 JSON 文本，执行时解析。".to_string());
     }

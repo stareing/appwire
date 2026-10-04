@@ -75,6 +75,34 @@ JSON 为 JSON 文本（校验并解析）；校验失败返回 `INVALID_INPUT`�
   执行器在 `ets/insightintents/standard/`，并追加到 `insight_intent.json`；`--ability` 生效，`--intent-domain` 不生效（垂域由标准意图固定）。
   上线还需华为意图框架的接入申请与审核；未经 hvigor 打包与小艺实际调用验证。
 
+## 弃用声明（spec/protocol.md 3.7）
+
+工具级 `deprecated {message, replacement?, until?}` 与参数级 `deprecated: true` 映射为各语言的弃用标注；消息为 `message`，有
+`replacement` / `until` 时追加「（改用工具 X；计划于 YYYY-MM-DD 移除）」，按目标语言转义。参数级标注的消息固定为
+「参数已弃用（inputSchema 中 deprecated: true）」。生成代码自身（分派、初始化器、意图）调用弃用成员时局部抑制警告，App 的
+实现与直接调用处照常收到提示。没有任何弃用声明时输出不变。
+
+| target | 工具级（handler 方法） | 参数级（字段） |
+|---|---|---|
+| `typescript` | JSDoc `@deprecated` | JSDoc `@deprecated` |
+| `csharp` | `[Obsolete("…")]`；分派处 `#pragma warning disable CS0618` | 可选属性 `[Obsolete]`；必填属性只写文档（`required` 成员标 `[Obsolete]` 是 CS9042 错误） |
+| `swift` | `@available(*, deprecated, message:)`；分派经 `<Module>DeprecatedToolCaller` 转发 | 计算属性带 `@available`，值存于私有存储属性（初始化器不产生警告） |
+| `kotlin` | `@Deprecated("…")`（不生成 `ReplaceWith`：替代工具参数类型不同）；分派 `@Suppress("DEPRECATION")` | 构造属性 `@Deprecated` |
+| `python` | docstring「已弃用：…」 | docstring / 注释 |
+| `dart` | `@Deprecated("…")` | 字段 `@Deprecated`（同一库内使用不报告） |
+
+Python 不用 `warnings.deprecated`（3.13+）或 `typing_extensions`（新的运行时依赖），生成文件只依赖 3.11+ 标准库。
+
+原生意图 target 中弃用的工具**照常生成**（App 仍需响应系统入口）：
+
+- `swift-app-intents`：intent 结构体加 `@available(*, deprecated, message:)`，不再列入 App Shortcuts；弃用参数在 `@Parameter` 前注释。
+  App Intents 的声明（`title`、`IntentDescription`）不变。
+- `kotlin-appfunctions`：`@AppFunction` 方法加 `@Deprecated("…")`——AppFunctions 编译器把消息写进函数元数据
+  （`AppFunctionDeprecationMetadata`、XML `<deprecation>`，alpha12 实测）；参数只注释。
+- `windows-app-actions`：Action 定义 JSON 不加字段（无资料可核实），提供者分派处注释并局部关闭 CS0618；agent connector
+  的 `inputSchema` 原样带参数级 `deprecated`。
+- `harmony-insight-intents`：意图装饰器没有弃用字段（ets-loader `allowFields`），执行器只写注释；`<Module>Tools.ets` 用 `@deprecated`。
+
 ## 测试与验证
 
 ```bash
@@ -82,4 +110,5 @@ cargo test -p app-mcp-codegen                      # 快照：tests/snapshots/<t
 bash crates/codegen/scripts/verify.sh [target ...] # 用各语言真实编译器检查输出；缺少工具链的步骤记为 SKIP
 bash crates/codegen/scripts/verify.sh swift-app-intents swift-app-intents-extension
 bash crates/codegen/scripts/verify.sh kotlin-appfunctions-standard-intents   # Android 系统意图：manifest 合并 + Robolectric
+bash crates/codegen/scripts/verify.sh deprecated   # tests/fixtures/deprecated.json：各语言弃用标注在严格选项下编译运行
 ```

@@ -2,6 +2,7 @@
 
 use crate::GeneratedFile;
 use crate::code::{Code, header_lines, string_literal};
+use crate::deprecation;
 use crate::ident::{self, Lang, NameScope};
 use crate::schema::{EnumDecl, Field, Model, ObjectDecl, Ty, TypeDecl, field_doc};
 use crate::targets::{decl_doc, file, tool_doc};
@@ -85,7 +86,15 @@ fn emit_object(c: &mut Code, model: &Model, o: &ObjectDecl) {
         if i > 0 {
             c.blank();
         }
-        c.xml_doc(&field_doc(f));
+        let mut doc = field_doc(f);
+        if f.deprecated && f.required {
+            // @why 必填成员标 [Obsolete] 是编译错误 CS9042，只能写进文档注释
+            doc.push(format!("{}；必填属性不能标 [Obsolete]（CS9042）。", deprecation::FIELD_MESSAGE));
+        }
+        c.xml_doc(&doc);
+        if f.deprecated && !f.required {
+            c.line(obsolete(deprecation::FIELD_MESSAGE));
+        }
         c.line(format!(
             "[JsonPropertyName({})]",
             string_literal(Lang::CSharp, &f.json_name)
@@ -124,6 +133,9 @@ pub fn emit_body(c: &mut Code, model: &Model) {
             c.blank();
         }
         c.xml_doc(&tool_doc(tool));
+        if let Some(message) = deprecation::tool_deprecation(tool) {
+            c.line(obsolete(&message));
+        }
         c.line(format!(
             "Task<object?> {}({} args, CancellationToken cancellationToken);",
             method_name(&tool.pascal),
@@ -150,6 +162,10 @@ pub fn emit_body(c: &mut Code, model: &Model) {
     c.xml_doc(&["反序列化参数使用的选项（属性名由特性指定，这里只放宽数字处理）。".to_string()]);
     c.line("public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);");
     c.blank();
+    let suppress = model.tools.iter().any(|t| t.deprecation().is_some());
+    if suppress {
+        c.line(SUPPRESS_OBSOLETE);
+    }
     c.xml_doc(&["按工具名把调用分派到对应的 handler。".to_string()]);
     c.line(format!(
         "public static Task<object?> DispatchAsync(I{m}ToolHandlers handlers, string name, JsonElement arguments, CancellationToken cancellationToken = default) =>"
@@ -168,6 +184,9 @@ pub fn emit_body(c: &mut Code, model: &Model) {
     c.line("_ => throw new ArgumentException($\"未知工具：{name}\", nameof(name)),");
     c.close("};");
     c.dedent();
+    if suppress {
+        c.line(RESTORE_OBSOLETE);
+    }
     c.blank();
     c.xml_doc(&["把参数 JSON 反序列化为参数类型；缺省或 null 视为空对象。".to_string()]);
     c.line("public static T Parse<T>(JsonElement arguments)");
@@ -180,6 +199,15 @@ pub fn emit_body(c: &mut Code, model: &Model) {
     c.line("return value ?? throw new JsonException($\"无法解析 {typeof(T).Name}\");");
     c.close("}");
     c.close("}");
+}
+
+/// 生成代码自身调用已弃用的 handler / 设置已弃用的属性时关闭 CS0618（实现方与其他调用处仍有提示）。
+pub const SUPPRESS_OBSOLETE: &str = "#pragma warning disable CS0618 // 生成代码需调用已弃用的成员";
+pub const RESTORE_OBSOLETE: &str = "#pragma warning restore CS0618";
+
+/// `[Obsolete("…")]`（消息按 C# 字符串字面量转义）。
+pub fn obsolete(message: &str) -> String {
+    format!("[Obsolete({})]", string_literal(Lang::CSharp, message))
 }
 
 pub const USINGS: &[&str] = &[

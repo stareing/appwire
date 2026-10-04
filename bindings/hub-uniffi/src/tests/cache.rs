@@ -97,3 +97,23 @@ fn zero_max_entries_disables_cache() {
     app.stop();
     hub.shutdown();
 }
+
+/// 上限在 Hub 启动时校验（spec/hub-api.md 3.20）：开启时单条大于总量 / 总量为 0 → 启动失败，信息指出字段；
+/// 状态带生效上限（只给 `max_bytes` 时单条上限随之收窄，不报错）。
+#[test]
+fn invalid_limits_fail_start_and_status_reports_limits() {
+    for bad in [
+        CacheLimitOverrides { max_bytes: Some(100), max_entry_bytes: Some(200), ..Default::default() },
+        CacheLimitOverrides { max_bytes: Some(0), ..Default::default() },
+    ] {
+        let r = AppMcpHub::start(HubConfig { enable_listen: false, enable_ipc: false, result_cache: Some(bad.clone()), ..Default::default() });
+        match r {
+            Err(e) => assert!(format!("{e:?}").contains("resultCache."), "{bad:?}：{e:?}"),
+            Ok(_) => panic!("非法上限应启动失败：{bad:?}"),
+        }
+    }
+    let (hub, _rx) = start_cache_hub(Some(CacheLimitOverrides { max_bytes: Some(1000), ..Default::default() }));
+    let cache = hub.status().expect("status").cache.expect("cache 状态");
+    assert_eq!((cache.max_entries, cache.max_bytes, cache.max_entry_bytes), (1024, 1000, 1000), "{cache:?}");
+    hub.shutdown();
+}

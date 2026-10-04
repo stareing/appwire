@@ -102,7 +102,7 @@ typealias IntentsStatus = dev.appmcp.hub.ffi.IntentsStatus
  * 为空的字段取默认值（1024 / 8 MiB / 64 KiB），`maxEntries = 0u` 关闭缓存。
  */
 typealias CacheLimitOverrides = dev.appmcp.hub.ffi.CacheLimitOverrides
-/** 结果缓存统计（`HubStatus.cache`）：`entries`、`bytes`、`hits`、`misses`、`evictions`。 */
+/** 结果缓存统计（`HubStatus.cache`）：`entries`、`bytes`、`hits`、`misses`、`evictions`，生效上限 `maxEntries`、`maxBytes`、`maxEntryBytes`。 */
 typealias CacheStatus = dev.appmcp.hub.ffi.CacheStatus
 
 // 资源保护与工具声明（spec/hub-api.md 3.11）。

@@ -125,7 +125,8 @@ fn oversized_entry_is_not_stored_and_drops_old_value() {
     assert!(c.insert(key.clone(), "small", 100, TTL, now), "恰好等于上限可存");
     assert!(!c.insert(key.clone(), "big", 101, TTL, now), "超过 max_entry_bytes 不存");
     assert!(c.get(&key, now, any).is_none(), "以新结果为准：旧值也不再命中");
-    assert_eq!(c.status(), CacheStatus { entries: 0, bytes: 0, hits: 0, misses: 1, evictions: 0 });
+    let limits = Some(CacheLimits { max_entries: 8, max_bytes: 1 << 20, max_entry_bytes: limit });
+    assert_eq!(c.status(), CacheStatus { entries: 0, bytes: 0, hits: 0, misses: 1, evictions: 0, limits });
 }
 
 #[test]
@@ -393,5 +394,43 @@ fn disabled_cache_neither_looks_up_nor_stores() {
     settle(&s, "list", &ok_run(&[], ResultStatus::Done));
     assert!(!cached(&s, "list"));
     assert!(s.resource_cache_policy("shop", "cart").is_none());
-    assert_eq!(s.cache_status(), CacheStatus::default(), "关闭时不计未命中");
+    let status = s.cache_status();
+    assert!(status.is_idle(), "关闭时不计未命中：{status:?}");
+    assert_eq!(status.limits, Some(CacheLimits { max_entries: 0, ..CacheLimits::default() }), "状态带生效上限");
+}
+
+// ---------------------------------------------------------------------------
+// 上限：覆盖、校验与状态（spec/hub-api.md 3.20）
+
+#[test]
+fn limits_with_overrides_fill_defaults_and_narrow_entry_limit() {
+    assert_eq!(CacheLimits::with_overrides(None, None, None), CacheLimits::default());
+    let l = CacheLimits::with_overrides(Some(5), Some(4096), Some(512));
+    assert_eq!(l, CacheLimits { max_entries: 5, max_bytes: 4096, max_entry_bytes: 512 });
+    let narrowed = CacheLimits::with_overrides(None, Some(1000), None);
+    assert_eq!((narrowed.max_bytes, narrowed.max_entry_bytes), (1000, 1000), "未给单条上限时不超过总量");
+    assert!(narrowed.validate().is_ok());
+}
+
+#[test]
+fn limits_validate_rejects_zero_and_oversized_entry_when_enabled() {
+    let l = |max_entries, max_bytes, max_entry_bytes| CacheLimits { max_entries, max_bytes, max_entry_bytes };
+    assert_eq!(CacheLimits::default().validate(), Ok(()));
+    assert_eq!(l(1, 100, 100).validate(), Ok(()), "单条恰好等于总量可以");
+    assert!(l(1, 0, 0).validate().unwrap_err().contains("resultCache.maxBytes 必须大于 0"));
+    assert!(l(1, 100, 0).validate().unwrap_err().contains("resultCache.maxEntryBytes 必须大于 0"));
+    let e = l(1, 100, 200).validate().unwrap_err();
+    assert!(e.contains("不能大于") && e.contains("200") && e.contains("100"), "{e}");
+    assert_eq!(l(0, 0, 0).validate(), Ok(()), "关闭时不校验其余字段");
+}
+
+#[test]
+fn cache_status_serializes_limits_and_old_status_has_none() {
+    let st = cache(3, 4096, 512).status();
+    let v = serde_json::to_value(st).unwrap();
+    assert_eq!(v["limits"], serde_json::json!({"maxEntries": 3, "maxBytes": 4096, "maxEntryBytes": 512}));
+    assert_eq!(serde_json::from_value::<CacheStatus>(v).unwrap(), st);
+    let old: CacheStatus = serde_json::from_value(serde_json::json!({"entries": 1, "bytes": 2})).unwrap();
+    assert_eq!(old.limits, None, "旧版 Hub 不报告上限");
+    assert!(!old.is_idle());
 }

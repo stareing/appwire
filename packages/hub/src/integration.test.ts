@@ -1043,10 +1043,13 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect((await hub.readResource('app-mcp://feed/feed')).text).toContain('"v":1')
     expect(reads).toBe(1)
     // 命中：工具 2 次、资源 1 次；未命中：工具首调 1 次、资源首读 1 次（绕过不计）
-    expect(hub.status().cache).toEqual({ entries: 2, bytes: expect.any(Number), hits: 3, misses: 2, evictions: 0 })
+    expect(hub.status().cache).toEqual({
+      entries: 2, bytes: expect.any(Number), hits: 3, misses: 2, evictions: 0,
+      limits: { maxEntries: 1024, maxBytes: 8 * 1024 * 1024, maxEntryBytes: 64 * 1024 },
+    })
   })
 
-  it('resultCache 配置：maxEntries 0 关闭缓存；maxEntryBytes 过小时结果不存（其余字段取默认值）', async () => {
+  it('resultCache 配置：maxEntries 0 关闭缓存；maxEntryBytes 过小时结果不存（其余字段取默认值）；非法上限启动失败', async () => {
     const declare = (hub: Hub, appId: string, runs: { n: number }) => {
       const app = createAppMcp({ appId, appName: appId, hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false })
       apps.push(app)
@@ -1068,8 +1071,11 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     await tiny.callTool({ name: 'tiny.list' })
     await tiny.callTool({ name: 'tiny.list' })
     expect(tinyRuns.n).toBe(2)
-    expect(tiny.status().cache).toMatchObject({ entries: 0, hits: 0, misses: 2 })
+    expect(tiny.status().cache).toMatchObject({ entries: 0, hits: 0, misses: 2, limits: { maxEntryBytes: 8 } })
     await expect(startHub({ resultCache: { maxEntries: 1, bogus: 1 } as never })).rejects.toBeInstanceOf(HubError)
+    // 上限在 Hub 启动时校验：单条大于总量 / 总量为 0 → 启动失败（第 16 项 O3 遗留修正）
+    await expect(startHub({ resultCache: { maxBytes: 100, maxEntryBytes: 200 } })).rejects.toThrow(/resultCache\.maxEntryBytes/)
+    await expect(startHub({ resultCache: { maxBytes: 0 } })).rejects.toThrow(/resultCache\.maxBytes/)
   })
 
   it('shutdown 后调用抛 SHUTDOWN', async () => {

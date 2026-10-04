@@ -166,7 +166,7 @@
 - `cache`（工具与资源，顶层与页面内工具相同）：`ttlMs` 为 0 或超过 86 400 000 为错误；`ttlMs` 不是非负整数、`scope` 不是
   `private` / `shared` 时清单解析失败（同 `annotations` 字段类型错误）；
   工具的生效注解 `readOnlyHint` 不为 `true` 时给出警告（Hub 忽略写工具上的声明）。
-- 工具 `deprecated`：`message` 为空或超过 500 字符、`replacement` 不是合法局部名或指向自身、`until` 不是 RFC 3339 full-date
+- 工具 `deprecated`：缺少 `message` 时清单解析失败（同其他字段类型错误）；`message` 为空或超过 500 字符、`replacement` 不是合法局部名或指向自身、`until` 不是 RFC 3339 full-date
   为错误；`replacement` 指向清单中未声明的工具给出警告（可能只在运行时注册）。`inputSchema` 中 `required` 列出的属性标了
   `deprecated: true` 给出警告。
 - 工具 `inputSchema` 必须是对象且 `type` 为 `"object"`；`outputSchema` 若给出必须是对象（根类型不限）。
@@ -207,11 +207,13 @@ spec/protocol.md 3.7）。判定规则只在 `crates/protocol/src/schema_compat.
 
 | 位置 | 破坏性（breaking） | 可能破坏（warning） | 兼容 |
 |---|---|---|---|
-| `inputSchema`（调用方传入） | 新增 `required` 项；删除属性；`type` 取值集合收窄；`enum` 删除取值；`additionalProperties` 由允许变为 `false` | 新增或收紧 `minimum` / `maximum` / `minLength` / `maxLength` / `minItems` / `maxItems` / `pattern` / `format`；组合关键字变化 | 新增可选属性；`required` 减少；放宽类型或约束；`enum` 增加取值；描述、`title`、`default`、`deprecated` 变化 |
-| `outputSchema`（调用方读取） | 删除属性；`type` 取值集合变化（非放宽为子集）；从 `required` 中移除属性 | `enum` 增加取值；组合关键字变化 | 新增属性；新增 `required` 项；描述变化 |
-| 工具本身 | 删除工具（未经弃用）；`surface` 由 `app` 变为 `view` | 生效注解由只读变为非只读；`risk` 升高 | 新增工具；描述、`title`、`deprecated`、`implements`、`cache` 变化 |
+| `inputSchema`（调用方传入） | 新增 `required` 项；删除属性；`type` 取值集合收窄；`enum` 删除取值（含新增 `enum`）；`additionalProperties` 由允许变为 `false` | 新增或收紧上下限（`minimum` / `exclusiveMinimum` / `maximum` / `exclusiveMaximum` / `minLength` / `maxLength` / `minItems` / `maxItems` / `minProperties` / `maxProperties`）；新增或改变 `pattern` / `format` / `const` / `multipleOf` / `uniqueItems` / `patternProperties` / `prefixItems` / `dependentRequired`；组合关键字（含 `if` / `then` / `else`、`$defs`）变化 | 新增可选属性；`required` 减少；放宽类型或约束；`enum` 增加取值；描述、`title`、`default`、`deprecated` 变化 |
+| `outputSchema`（调用方读取） | 删除属性；`type` 取值集合变化（新集合不是旧集合的子集）；从 `required` 中移除属性 | `enum` 增加取值或取消 `enum`；删除整个 `outputSchema`；组合关键字变化 | 新增属性；新增 `required` 项；描述变化 |
+| 工具本身 | 删除工具（未经弃用）；`surface` 由 `app` 变为 `view` | 生效注解由只读变为非只读；`risk` 升高；在顶层与页面之间或页面之间移动 | 新增工具；描述、`title`、`deprecated`、`implements`、`cache` 变化 |
 
-- `type` 取值集合：`type` 为字符串视为单元素集合，缺省视为任意；`integer` 视为 `number` 的子集。
+- 工具按名称配对（清单内工具名唯一，顶层与页面内工具共用一个命名空间）。
+- `type` 取值集合：`type` 为字符串视为单元素集合，缺省视为任意（因此给原本没写 `type` 的属性补上 `type` 也算收窄）；`integer` 视为 `number` 的子集。
+- 递归深度上限 32 层，超出时记一条可能破坏并停止深入。
 - 工具新增 `deprecated` 且未删除、只是删除已标 `deprecated` 的工具：兼容（删除给出提示，不算破坏）。
 - `app-mcp-host validate <新清单> --against <旧清单>`：列出每个工具的变化（`--json` 结构化），存在破坏性变更时退出码 3，
   只有可能破坏时退出码 0 并打印警告。用于开发期与 CI；Hub 运行时的行为见 spec/hub-api.md 3.21。

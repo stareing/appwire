@@ -3,6 +3,7 @@
 mod support;
 mod calls;
 mod dedup;
+mod deprecation;
 mod diagnostics;
 mod events;
 mod handshake;

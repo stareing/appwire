@@ -74,6 +74,12 @@ struct SearchHit {
     /// 声明实现的标准意图（spec/intents.md）；未声明时不序列化。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     implements: Vec<String>,
+    /// App 工具的 `schemaHash`（spec/hub-api.md 3.21）；上游工具不带。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_hash: Option<String>,
+    /// 弃用声明（原样）；未弃用时不序列化。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deprecated: Option<app_mcp_protocol::Deprecation>,
     score: f64,
 }
 
@@ -126,6 +132,7 @@ impl HubShared {
                     used_recently: stat.is_some_and(|s| s.used_within_window(now)),
                     calls: stat.map_or(0, |s| s.calls),
                     success_rate: stat.and_then(|s| s.success_rate()),
+                    deprecated: t.deprecated.is_some(),
                 };
                 let total = score::total_score(keyword, &signals)?;
                 let tool = c.tool;
@@ -138,6 +145,8 @@ impl HubShared {
                     page: tool.page,
                     input_schema: tool.input_schema,
                     implements: tool.implements,
+                    schema_hash: tool.schema_hash,
+                    deprecated: tool.deprecated,
                     score: total,
                 })
             })

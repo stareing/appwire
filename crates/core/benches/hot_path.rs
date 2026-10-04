@@ -211,6 +211,7 @@ fn tool_def(i: usize) -> ToolDef {
         background_tool: None,
         implements: Vec::new(),
         cache: None,
+        deprecated: None,
         concurrency: 0,
         exclusive: None,
     }

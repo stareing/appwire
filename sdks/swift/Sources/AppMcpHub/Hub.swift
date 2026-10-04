@@ -95,7 +95,7 @@ public typealias IntentsStatus = AppMcpHubBindings.IntentsStatus
 /// 只读结果缓存上限（`HubConfig.resultCache`，spec/hub-api.md 3.20）：`maxEntries`、`maxBytes`、`maxEntryBytes`；
 /// 为空的字段取默认值（1024 / 8 MiB / 64 KiB），`maxEntries: 0` 关闭缓存。
 public typealias CacheLimitOverrides = AppMcpHubBindings.CacheLimitOverrides
-/// 结果缓存统计（`HubStatus.cache`）：`entries`、`bytes`、`hits`、`misses`、`evictions`。
+/// 结果缓存统计（`HubStatus.cache`）：`entries`、`bytes`、`hits`、`misses`、`evictions`，生效上限 `maxEntries`、`maxBytes`、`maxEntryBytes`。
 public typealias CacheStatus = AppMcpHubBindings.CacheStatus
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。

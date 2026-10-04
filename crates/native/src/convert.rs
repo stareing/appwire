@@ -105,7 +105,7 @@ pub(crate) fn core_error(e: CoreError) -> NativeError {
         CoreError::UnknownEvent(n) => NativeError::InvalidName(format!("{n}（未声明的事件，请先 declare_event）")),
         CoreError::InvalidEventPayload(m) => NativeError::InvalidJson(format!("事件载荷无效：{m}")),
         CoreError::InvalidImplements(m) => NativeError::InvalidName(m),
-        CoreError::InvalidCache(m) => NativeError::InvalidConfig(m),
+        CoreError::InvalidCache(m) | CoreError::InvalidDeprecation(m) => NativeError::InvalidConfig(m),
     }
 }
 

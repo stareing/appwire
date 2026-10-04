@@ -8,6 +8,7 @@
 //! JSON Schema → 类型的映射在 [`schema`] 中一处实现，各 target 共用。
 
 pub mod code;
+pub mod deprecation;
 pub mod ident;
 pub mod ordered;
 pub mod schema;

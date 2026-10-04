@@ -47,6 +47,12 @@ pub struct HubTool {
     /// App 工具声明实现的标准意图（spec/intents.md，如 `message.send@1`）；未声明、内置与上游工具为空（空时不序列化）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub implements: Vec<String>,
+    /// App 工具定义的 `schemaHash`（spec/hub-api.md 3.21）：`inputSchema` / `outputSchema` 变化时随之变化；内置与上游工具为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_hash: Option<String>,
+    /// App 工具的弃用声明（原样，spec/protocol.md 3.7）；未弃用、内置与上游工具为 `None`。弃用工具照常列出与调用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<app_mcp_protocol::Deprecation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

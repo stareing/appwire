@@ -126,6 +126,14 @@
  *   · am_hub_start 配置新增可选字段 resultCache（{"maxEntries","maxBytes","maxEntryBytes"}）。
  *   · CallRequest 新增可选字段 cacheBypass（bool，缺省 false）；CallOutcome 新增 cachedAgeMs?（命中缓存时）。
  *   · JSON 中新增：HubStatus.cache：{entries, bytes, hits, misses, evictions}。
+ * - v25（工具演进，第 16 项 O4，spec/hub-api.md 3.21；O3 遗留修正）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · JSON 中新增：HubTool（am_hub_tools_json）与 apps.tools / apps.search 的工具条目带 schemaHash?（App 工具，16 个十六进制
+ *     字符，inputSchema / outputSchema 变化时随之变化）、deprecated?（{message, replacement?, until?}，App 声明原样）；
+ *     apps.search 对弃用工具得分 −1；参数不符 inputSchema 的 INVALID_INPUT 错误 details 带 schemaHash；
+ *     HubStatus.cache.limits：{maxEntries, maxBytes, maxEntryBytes}（生效上限）；
+ *     HubStatus.schemaChanges：[{appId, tool, level（"breaking" | "warning"）, changes: [{level, path, message}], at（Unix 毫秒）}]。
+ *   · am_hub_start：resultCache 开启（maxEntries > 0）时 maxBytes / maxEntryBytes 为 0 或 maxEntryBytes 大于 maxBytes 报
+ *     AM_HUB_ERR_IO（Hub 启动时校验，同 limits / lease；只给 maxBytes 时 maxEntryBytes 缺省取 min(64 KiB, maxBytes)）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -318,7 +326,9 @@ void am_hub_string_free(char *s);
  *   resultCache          {"maxEntries": 1024, "maxBytes": 8388608, "maxEntryBytes": 65536}（缺省字段取这些默认值）：
  *                        App 在只读工具 / 资源上声明了 cache 时 Hub 在其 ttl 内复用结果（命中不唤醒 App）；条目数 /
  *                        总字节数（键 + 序列化结果）超出时淘汰最久未用的条目，单条超过 maxEntryBytes 的结果不存；
- *                        maxEntries = 0 关闭缓存。只在内存。未知字段报 AM_HUB_ERR_INVALID_JSON
+ *                        maxEntries = 0 关闭缓存。只在内存。未知字段报 AM_HUB_ERR_INVALID_JSON；开启时 maxBytes /
+ *                        maxEntryBytes 为 0 或 maxEntryBytes 大于 maxBytes 报 AM_HUB_ERR_IO（v25；只给 maxBytes 时
+ *                        maxEntryBytes 缺省取 min(65536, maxBytes)）
  *   workerThreads        tokio 工作线程数（默认 2）
  * 未知字段报 AM_HUB_ERR_INVALID_JSON。清单无效报 AM_HUB_ERR_INVALID_CONFIG；地址无法绑定报 AM_HUB_ERR_IO。 */
 AmHubStatus am_hub_start(const char *config_json, AmHub **out_hub);
@@ -385,7 +395,10 @@ AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **ou
  *   delivered（经本订阅入箱数）, dropped（因频率上限丢弃数）, pending（订阅方信箱当前条数）}], droppedInvalid（不合法而丢弃的事件数）}。
  * v23 起另有 intents：{defaults, lastError?}（同 am_hub_intents_json）。
  * v24 起另有 cache：只读结果缓存统计 {entries（当前条目数）, bytes（当前字节数）, hits, misses（只计声明了 cache 的请求，
- *   绕过不计）, evictions（因上限淘汰数）}，计数自 Hub 启动起累计。 */
+ *   绕过不计）, evictions（因上限淘汰数）}，计数自 Hub 启动起累计；v25 起另有 limits：{maxEntries, maxBytes, maxEntryBytes}
+ *   （生效上限，maxEntries = 0 表示已关闭）。
+ * v25 起另有 schemaChanges：工具定义的不兼容变化（spec/hub-api.md 3.21），最近 32 条、旧的在前：[{appId, tool,
+ *   level（"breaking" | "warning"）, changes: [{level, path, message}], at（Unix 毫秒）}]，只在内存。 */
 AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------
