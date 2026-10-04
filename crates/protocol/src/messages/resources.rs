@@ -22,6 +22,9 @@ pub struct ResourceInfo {
     /// 资源内容的标注，Hub 原样放到 MCP `resources/list` 的资源注解上。未声明时不序列化（`toolsHash` 不变）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<ContentAnnotations>,
+    /// 读取结果缓存声明（spec/protocol.md 3.6）。未声明时不序列化（`toolsHash` 不变）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<CachePolicy>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

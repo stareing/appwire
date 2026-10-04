@@ -92,6 +92,8 @@ pub const META_INSTANCE_ID: &str = "dev.appwire/instanceId";
 pub const META_DURATION_MS: &str = "dev.appwire/durationMs";
 /// 本次 App 工具调用是否经历了唤醒（调用时目标未连接，唤醒回连后才送达；只在 App 工具结果中出现）。
 pub const META_WOKE: &str = "dev.appwire/woke";
+/// 结果来自 Hub 的只读结果缓存（spec/hub-api.md 3.20）：`{ageMs}`，距 App 产出的毫秒数；未命中不写。
+pub const META_CACHED: &str = "dev.appwire/cached";
 
 // ---- MCP 请求 `_meta`（Agent → Hub，`tools/call`）----
 
@@ -105,6 +107,11 @@ pub const META_PRIORITY: &str = "dev.appwire/priority";
 /// 可选的任务句柄通道：与工具参数 [`ARG_TASK_ID`] 等价，且对任何工具调用（含 App 工具）生效
 /// （供自己实现客户端的 Agent 宿主；模型写不进 `_meta`，见 spec/hub-api.md 3.6「任务句柄」）。
 pub const META_TASK_ID: &str = "dev.appwire/taskId";
+
+/// 结果缓存控制（`tools/call` / `resources/read`，spec/hub-api.md 3.20）：取值只能是 [`CACHE_BYPASS`]。
+pub const META_CACHE: &str = "dev.appwire/cache";
+/// [`META_CACHE`] 的取值：不查缓存、照常调用并以新结果覆盖。
+pub const CACHE_BYPASS: &str = "bypass";
 
 /// 弃用期内仍接受的旧请求键（[`META_TIMEOUT_MS`] 的旧名；与新键同时出现且取值不同时显式失败）。
 pub const LEGACY_META_TIMEOUT_MS: &str = "app-mcp/timeoutMs";

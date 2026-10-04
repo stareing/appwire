@@ -175,6 +175,7 @@ impl HubShared {
             calls: Some(self.call_statuses()),
             events: Some(self.events_status()),
             intents: Some(lock(&self.intents).status()),
+            cache: Some(self.cache_status()),
         }
     }
 

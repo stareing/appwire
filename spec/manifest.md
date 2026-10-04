@@ -82,10 +82,10 @@
 | `overview` | object | 否 | App 总览：`summary`（≤ 100 字符）、`body`（Markdown，≤ 2000 字符）、`locale`；模型首次接触该 App 时由 Host 附带，规则见 spec/protocol.md 第 7 节 |
 | `launch` | object | 否 | 各平台启动方式（冷启动，不带令牌），键为 `web` / `windows` / `macos` / `linux`，值为按顺序尝试的数组 |
 | `wake` | object | 否 | 各平台唤醒描述（spec/lifecycle.md 第 5 节），键为 `web` / `windows` / `macos` / `linux` / `android` / `ios`，值为按顺序尝试的 WakeDescriptor 数组；规则见 2.2 节 |
-| `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo`：含可选 `annotations`（标准 MCP 工具注解）与 `outputSchema`（结果的 JSON Schema），语义见 spec/protocol.md 3.2；`risk` 为旧写法（与 `annotations` 同时出现时声明的注解字段优先）；可选 `surface`（`app` / `view`）与 `page`（所在页面名），语义见 spec/protocol.md 3.4；可选 `implements`（实现的标准意图，spec/intents.md） |
+| `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo`：含可选 `annotations`（标准 MCP 工具注解）与 `outputSchema`（结果的 JSON Schema），语义见 spec/protocol.md 3.2；`risk` 为旧写法（与 `annotations` 同时出现时声明的注解字段优先）；可选 `surface`（`app` / `view`）与 `page`（所在页面名），语义见 spec/protocol.md 3.4；可选 `implements`（实现的标准意图，spec/intents.md）；可选 `cache`（结果缓存声明，spec/protocol.md 3.6） |
 | `pages` | array | 否 | 页面目录（第 4c 项）：App 内各页面的说明、导航参数与页面内工具，结构见 2.3 节 |
 | `events` | array | 否 | App 可发出的事件（第 16 项 N3），结构见 2.4 节；Agent 据此订阅，语义见 spec/protocol.md 3.5 |
-| `resources` | array | 否 | 静态资源，结构同协议中的 `ResourceInfo`（含可选 `realtime`：需实时推送，被订阅时 App 保持连接，spec/lifecycle.md 第 13 节 B3；可选 `annotations`：标准 MCP 内容注解，spec/protocol.md 3.2） |
+| `resources` | array | 否 | 静态资源，结构同协议中的 `ResourceInfo`（含可选 `realtime`：需实时推送，被订阅时 App 保持连接，spec/lifecycle.md 第 13 节 B3；可选 `annotations`：标准 MCP 内容注解，spec/protocol.md 3.2；可选 `cache`：读取结果缓存声明，spec/protocol.md 3.6） |
 
 ### 2.1 `launch` 条目
 
@@ -163,6 +163,9 @@
   名称以 `<appId>.` 开头给出与工具相同的前缀警告。
 - 工具 `implements`（顶层与页面内工具相同）：每项须为 `<动词>@<主版本>` 形式、不重复、最多 4 项（违反为错误）；动词或版本不在
   spec/intents.md 词表中、或词表必填参数不在 `inputSchema.properties` 中给出警告。
+- `cache`（工具与资源，顶层与页面内工具相同）：`ttlMs` 为 0 或超过 86 400 000 为错误；`ttlMs` 不是非负整数、`scope` 不是
+  `private` / `shared` 时清单解析失败（同 `annotations` 字段类型错误）；
+  工具的生效注解 `readOnlyHint` 不为 `true` 时给出警告（Hub 忽略写工具上的声明）。
 - 工具 `inputSchema` 必须是对象且 `type` 为 `"object"`；`outputSchema` 若给出必须是对象（根类型不限）。
 - 工具 `backgroundTool`（顶层与页面内工具相同）：名称不合法、指向自身、指向清单中 `surface` 不是 `app` 的工具为错误；指向清单中
   未声明的工具（只在运行时注册）、或声明在 `surface` 为 `app` 的工具上（无意义，Hub 忽略）给出警告。

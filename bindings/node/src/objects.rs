@@ -300,6 +300,7 @@ impl ToolSpecInit {
             concurrency: self.concurrency.take().unwrap_or(0),
             exclusive: self.exclusive.take(),
             implements: self.implements.take().unwrap_or_default(),
+            cache: None,
         };
         Ok((self.into_spec()?, options))
     }
@@ -334,6 +335,7 @@ impl ResourceSpecInit {
         let options = native::ResourceOptions {
             realtime: self.realtime.unwrap_or(false),
             annotations: self.annotations.map(ContentAnnotationsInit::into_annotations).transpose()?,
+            cache: None,
         };
         let spec = native::ResourceSpec { name: self.name, description: self.description, mime_type: self.mime_type };
         Ok((spec, options))

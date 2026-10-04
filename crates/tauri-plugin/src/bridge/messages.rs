@@ -14,6 +14,7 @@ impl ToolSpecMessage {
             concurrency: self.concurrency,
             exclusive: self.exclusive.take(),
             implements: std::mem::take(&mut self.implements),
+            cache: None,
         };
         (self.into_spec(name), options)
     }

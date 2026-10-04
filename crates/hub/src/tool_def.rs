@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use app_mcp_manifest::{Manifest, Page};
-use app_mcp_protocol::{Activation, Risk, ToolAnnotations, ToolInfo, ToolSurface};
+use app_mcp_protocol::{Activation, CachePolicy, Risk, ToolAnnotations, ToolInfo, ToolSurface};
 use serde_json::{Map, Value};
 
 /// 共享的工具定义。
@@ -27,6 +27,8 @@ pub struct ToolDef {
     pub background_tool: Option<String>,
     /// 实现的标准意图（spec/intents.md）；空 = 未声明。
     pub implements: Vec<String>,
+    /// 结果缓存声明（spec/protocol.md 3.6）；只在生效注解 `readOnlyHint` 为真时执行（spec/hub-api.md 3.20）。
+    pub cache: Option<CachePolicy>,
     /// @invariant 由 `serde_json` 序列化一个 `Value` 得到，总能解析回同一个值。
     input_schema: Box<str>,
     output_schema: Option<Box<str>>,
@@ -66,6 +68,7 @@ impl ToolDef {
             page,
             background_tool,
             implements,
+            cache,
         } = info;
         Self {
             name,
@@ -78,6 +81,7 @@ impl ToolDef {
             page,
             background_tool,
             implements,
+            cache,
             input_schema: schema_text(&input_schema),
             output_schema: output_schema.as_ref().map(schema_text),
         }
@@ -98,6 +102,7 @@ impl ToolDef {
             page: declared_page,
             background_tool,
             implements,
+            cache,
         } = info;
         Self {
             name: name.clone(),
@@ -110,6 +115,7 @@ impl ToolDef {
             page: page.map(str::to_owned).or_else(|| declared_page.clone()),
             background_tool: background_tool.clone(),
             implements: implements.clone(),
+            cache: *cache,
             input_schema: schema_text(input_schema),
             output_schema: output_schema.as_ref().map(schema_text),
         }
@@ -130,6 +136,7 @@ impl ToolDef {
             page: self.page.clone(),
             background_tool: self.background_tool.clone(),
             implements: self.implements.clone(),
+            cache: self.cache,
         }
     }
 
@@ -165,6 +172,16 @@ impl ToolDef {
     /// Agent 看到的注解（[`ToolInfo::effective_annotations`]）。
     pub fn effective_annotations(&self) -> ToolAnnotations {
         ToolAnnotations::effective(self.risk, self.annotations.as_ref())
+    }
+
+    /// 生效的结果缓存声明（spec/hub-api.md 3.20）：只在生效注解 `readOnlyHint` 为真时返回 `cache`；写工具上的声明被忽略。
+    pub fn effective_cache(&self) -> Option<CachePolicy> {
+        self.cache.filter(|_| self.is_read_only())
+    }
+
+    /// 生效注解 `readOnlyHint` 是否为真（缓存的存入条件与写调用失效的判据）。
+    pub fn is_read_only(&self) -> bool {
+        self.effective_annotations().read_only_hint == Some(true)
     }
 
     /// 同 [`ToolInfo`]：`activation` 未声明时取缺省。
@@ -288,6 +305,7 @@ mod tests {
             page: Some("orders".into()),
             background_tool: Some("orders.searchBg".into()),
             implements: vec!["message.send@1".into()],
+            cache: Some(CachePolicy { ttl_ms: 5000, scope: app_mcp_protocol::CacheScope::Shared }),
         }
     }
 
@@ -319,6 +337,7 @@ mod tests {
             page: None,
             background_tool: None,
             implements: Vec::new(),
+            cache: None,
         };
         let def = ToolDef::from(info.clone());
         assert_eq!(def.to_info(), info);

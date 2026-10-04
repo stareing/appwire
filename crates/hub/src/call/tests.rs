@@ -76,6 +76,7 @@ fn routed_result_meta() {
         routed_to: routed_to.map(str::to_owned),
         duration_ms: 0,
         woke: false,
+        cached_age_ms: None,
     };
     let pending = ToolsInvokeResult { status: crate::ResultStatus::Pending, ..ToolsInvokeResult::default() };
     let r = inv(Some("shop.cart.add"), Ok(pending.clone())).to_mcp().unwrap();
@@ -104,6 +105,7 @@ fn call_meta_keys_and_result_type() {
         routed_to: None,
         duration_ms: 42,
         woke,
+        cached_age_ms: None,
     };
     let r = inv(Body::App(Ok(ToolsInvokeResult::default())), Some("shop-1"), true).to_mcp().unwrap();
     assert_eq!(r.result_type, Some(ResultType::COMPLETE));
@@ -112,6 +114,12 @@ fn call_meta_keys_and_result_type() {
     assert_eq!(meta.get(names::META_INSTANCE_ID), Some(&json!("shop-1")));
     assert_eq!(meta.get(names::META_DURATION_MS), Some(&json!(42)));
     assert_eq!(meta.get(names::META_WOKE), Some(&json!(true)));
+    assert!(meta.get(names::META_CACHED).is_none(), "未命中缓存不写 cached");
+    let mut hit = inv(Body::App(Ok(ToolsInvokeResult::default())), Some("shop-1"), false);
+    hit.cached_age_ms = Some(1500);
+    let meta = hit.to_mcp().unwrap().meta.unwrap();
+    assert_eq!(meta.get(names::META_CACHED), Some(&json!({"ageMs": 1500})), "命中缓存：dev.appwire/cached");
+    assert_eq!(meta.get(names::META_WOKE), Some(&json!(false)));
 
     let err = ToolError::new(ErrorKind::Timeout, "x");
     let meta = inv(Body::App(Err(err.clone())), None, false).to_mcp().unwrap().meta.unwrap();

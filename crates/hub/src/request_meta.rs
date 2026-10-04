@@ -8,7 +8,8 @@ use app_mcp_protocol::{CallPriority, ErrorKind, MAX_IDEMPOTENCY_KEY_LEN, ToolErr
 use serde_json::{Map, Value};
 
 use crate::names::{
-    LEGACY_META_IDEMPOTENCY_KEY, LEGACY_META_TIMEOUT_MS, META_IDEMPOTENCY_KEY, META_PRIORITY, META_TASK_ID, META_TIMEOUT_MS,
+    CACHE_BYPASS, LEGACY_META_IDEMPOTENCY_KEY, LEGACY_META_TIMEOUT_MS, META_CACHE, META_IDEMPOTENCY_KEY, META_PRIORITY, META_TASK_ID,
+    META_TIMEOUT_MS,
 };
 
 /// Agent 给出的调用控制。
@@ -22,6 +23,8 @@ pub(crate) struct AgentCallMeta {
     pub task_id: Option<String>,
     /// [`META_PRIORITY`]：原样转交 App（省略 = normal）。
     pub priority: CallPriority,
+    /// [`META_CACHE`] 为 [`CACHE_BYPASS`]：不查结果缓存（spec/hub-api.md 3.20）。
+    pub cache_bypass: bool,
 }
 
 fn invalid(message: String) -> ToolError {
@@ -90,7 +93,20 @@ pub(crate) fn parse(meta: &Map<String, Value>) -> Result<AgentCallMeta, ToolErro
             }
         },
     };
-    Ok(AgentCallMeta { timeout, idempotency_key, task_id, priority })
+    let cache_bypass = parse_cache_bypass(meta)?;
+    Ok(AgentCallMeta { timeout, idempotency_key, task_id, priority, cache_bypass })
+}
+
+/// 请求 `_meta` 的 [`META_CACHE`]（`tools/call` 与 `resources/read` 共用）：缺省 `false`。
+///
+/// @error `INVALID_INPUT`：取值不是 `"bypass"`。
+#[cfg_attr(not(feature = "mcp-server"), allow(dead_code))]
+pub(crate) fn parse_cache_bypass(meta: &Map<String, Value>) -> Result<bool, ToolError> {
+    match meta.get(META_CACHE) {
+        None => Ok(false),
+        Some(v) if v.as_str() == Some(CACHE_BYPASS) => Ok(true),
+        Some(v) => Err(invalid(format!("_meta「{META_CACHE}」只能是 \"{CACHE_BYPASS}\"，收到 {v}。"))),
+    }
 }
 
 /// 本次调用的等待上限：Agent 的截止时间与配置值取较小者；Agent 没给时为 `None`（用配置值）。
@@ -155,6 +171,18 @@ mod tests {
             let e = parse(&meta(json!({ META_PRIORITY: bad }))).unwrap_err();
             assert_eq!(e.kind, ErrorKind::InvalidInput);
             assert!(e.message.contains(META_PRIORITY), "{}", e.message);
+        }
+    }
+
+    #[test]
+    fn cache_bypass_is_validated() {
+        assert_eq!(META_CACHE, "dev.appwire/cache");
+        assert!(!parse(&meta(json!({}))).unwrap().cache_bypass);
+        assert!(parse(&meta(json!({ META_CACHE: "bypass" }))).unwrap().cache_bypass);
+        for bad in [json!("refresh"), json!(true), json!(null)] {
+            let e = parse(&meta(json!({ META_CACHE: bad }))).unwrap_err();
+            assert_eq!(e.kind, ErrorKind::InvalidInput);
+            assert!(e.message.contains(META_CACHE), "{}", e.message);
         }
     }
 

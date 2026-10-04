@@ -224,3 +224,61 @@ fn implements_validation_sync_and_warnings() {
     let msgs = sends(&h.drain());
     assert!(msgs[0]["params"]["upserted"][0].get("implements").is_none(), "清除后不再序列化");
 }
+
+/// 第 16 项 O3：`cache` 范围校验（注册 / 更新、工具与资源）、随定义同步、写工具警告（spec/protocol.md 3.6）。
+#[test]
+fn cache_validation_sync_and_warnings() {
+    let mut h = Harness::new();
+    let policy = |ttl_ms: u64, scope: CacheScope| Some(CachePolicy { ttl_ms, scope });
+    let cached = |name: &str, cache: Option<CachePolicy>| ToolDef { cache, ..tool(name) };
+    // 越界：工具与资源注册失败
+    for ttl in [0, MAX_CACHE_TTL_MS + 1] {
+        let r = h.c.register_tool(cached("bad", policy(ttl, CacheScope::Private)));
+        assert!(matches!(r, Err(CoreError::InvalidCache(ref m)) if m.contains("ttlMs")), "{ttl}: {r:?}");
+        let r = h.c.register_resource(ResourceDef { cache: policy(ttl, CacheScope::Private), ..resource("bad") });
+        assert!(matches!(r, Err(CoreError::InvalidCache(_))), "{ttl}: {r:?}");
+    }
+    // 只读工具（risk: Read）：无警告；上界合法
+    let ok = h.c.register_tool(cached("ok", policy(MAX_CACHE_TTL_MS, CacheScope::Shared))).unwrap();
+    assert_eq!(warnings(&h.drain()), 0);
+    // 写工具 / 声明的注解覆盖为非只读：照常注册并警告
+    h.c.register_tool(ToolDef { risk: Risk::Write, ..cached("write", policy(1000, CacheScope::Private)) }).unwrap();
+    let not_ro = ToolAnnotations { read_only_hint: Some(false), ..Default::default() };
+    h.c.register_tool(ToolDef { annotations: Some(not_ro.clone()), ..cached("annotated", policy(1000, CacheScope::Private)) })
+        .unwrap();
+    let ev = h.drain();
+    let texts: Vec<&String> = ev.iter().filter_map(|e| if let Event::Warning(w) = e { Some(w) } else { None }).collect();
+    assert_eq!(texts.len(), 2, "{texts:?}");
+    assert!(texts[0].contains("\"write\"") && texts[1].contains("\"annotated\""), "{texts:?}");
+    h.c.register_resource(ResourceDef { cache: policy(5000, CacheScope::Private), ..resource("r") }).unwrap();
+    h.c.register_resource(resource("plain")).unwrap();
+
+    // 同步：声明的才序列化，scope 缺省 private 不序列化
+    let ev = h.connect();
+    let msgs = sends(&ev);
+    let sync = msgs.iter().find(|m| m["method"] == "tools/sync").unwrap();
+    let tools = sync["params"]["tools"].as_array().unwrap();
+    let by_name = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
+    assert_eq!(by_name("ok")["cache"], json!({"ttlMs": MAX_CACHE_TTL_MS, "scope": "shared"}));
+    assert_eq!(by_name("write")["cache"], json!({"ttlMs": 1000}));
+    let res = msgs.iter().find(|m| m["method"] == "resources/sync").unwrap();
+    let resources = res["params"]["resources"].as_array().unwrap();
+    assert_eq!(resources.iter().find(|r| r["name"] == "r").unwrap()["cache"], json!({"ttlMs": 5000}));
+    assert!(resources.iter().find(|r| r["name"] == "plain").unwrap().get("cache").is_none());
+
+    // 更新：越界拒绝且不变；合法发 tools/changed；改成非只读重新警告；清除后不再序列化
+    let r = h.c.update_tool(ok, ToolUpdate { cache: Some(policy(0, CacheScope::Private)), ..Default::default() });
+    assert!(matches!(r, Err(CoreError::InvalidCache(_))));
+    assert_eq!(h.c.tool_def(ok).unwrap().cache, policy(MAX_CACHE_TTL_MS, CacheScope::Shared));
+    assert!(h.drain().is_empty());
+    h.c.update_tool(ok, ToolUpdate { cache: Some(policy(10, CacheScope::Private)), ..Default::default() }).unwrap();
+    let ev = h.drain();
+    assert_eq!(warnings(&ev), 0);
+    assert_eq!(sends(&ev)[0]["params"]["upserted"][0]["cache"], json!({"ttlMs": 10}));
+    h.c.update_tool(ok, ToolUpdate { annotations: Some(Some(not_ro)), ..Default::default() }).unwrap();
+    assert_eq!(warnings(&h.drain()), 1, "改成非只读后重新警告");
+    h.c.update_tool(ok, ToolUpdate { cache: Some(None), ..Default::default() }).unwrap();
+    let ev = h.drain();
+    assert_eq!(warnings(&ev), 0, "清除声明后不再警告");
+    assert!(sends(&ev)[0]["params"]["upserted"][0].get("cache").is_none());
+}

@@ -377,7 +377,7 @@ fn resource_options_are_read_up_to_struct_size() {
     let want = ContentAnnotations { audience: Some(vec![app_mcp_native::Audience::User]), priority: Some(0.5), last_modified: None };
     assert_eq!(
         unsafe { read_resource_options(&full) }.ok(),
-        Some(ResourceOptions { realtime: true, annotations: Some(want) })
+        Some(ResourceOptions { realtime: true, annotations: Some(want), cache: None })
     );
     assert_eq!(unsafe { read_resource_options(ptr::null()) }.ok(), Some(ResourceOptions::default()));
     // v8–v12 调用方（到 realtime 为止）：annotations 不读取
@@ -387,7 +387,7 @@ fn resource_options_are_read_up_to_struct_size() {
     };
     assert_eq!(
         unsafe { read_resource_options(&v8) }.ok(),
-        Some(ResourceOptions { realtime: true, annotations: None })
+        Some(ResourceOptions { realtime: true, annotations: None, cache: None })
     );
     // 只含 struct_size 的调用方：realtime 取默认值
     let short = AmResourceOptions { struct_size: std::mem::size_of::<u32>() as u32, ..full };
@@ -436,6 +436,7 @@ fn tool_options_are_read_up_to_struct_size() {
             concurrency: 2,
             exclusive: Some("doc".into()),
             implements: vec!["message.send@1".into()],
+            cache: None,
         })
     );
     // v20 调用方（不含 implements）：按未声明处理，其余字段照读

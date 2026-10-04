@@ -172,10 +172,11 @@ fn outcome_and_error_conversion() {
         routed_to: None,
         duration_ms: 0,
         woke: false,
+        cached_age_ms: None,
     }
     .into();
     assert_eq!(o.status, ResultStatus::Done);
-    assert_eq!((o.duration_ms, o.woke), (0, false));
+    assert_eq!((o.duration_ms, o.woke, o.cached_age_ms), (0, false, None));
     let e = o.error.unwrap();
     assert_eq!(e.kind, "USER_REJECTED");
     assert_eq!(e.details_json.as_deref(), Some(r#"{"a":1}"#));
@@ -217,10 +218,11 @@ fn structured_outcome_conversion() {
         routed_to: Some("shop.cart.addItem".into()),
         duration_ms: 1234,
         woke: true,
+        cached_age_ms: Some(1500),
     }
     .into();
     assert_eq!(o.status, ResultStatus::Pending);
-    assert_eq!((o.duration_ms, o.woke), (1234, true));
+    assert_eq!((o.duration_ms, o.woke, o.cached_age_ms), (1234, true, Some(1500)));
     assert_eq!(o.routed_to.as_deref(), Some("shop.cart.addItem"));
     assert_eq!(o.state_resource.as_deref(), Some("app-mcp://shop/order.state"));
     assert_eq!(o.summary.as_deref(), Some("等待付款"));

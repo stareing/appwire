@@ -210,6 +210,7 @@ fn tool_def(i: usize) -> ToolDef {
         page: None,
         background_tool: None,
         implements: Vec::new(),
+        cache: None,
         concurrency: 0,
         exclusive: None,
     }
@@ -223,6 +224,7 @@ fn resource_def(i: usize) -> ResourceDef {
         scope: None,
         realtime: false,
         annotations: None,
+        cache: None,
     }
 }
 

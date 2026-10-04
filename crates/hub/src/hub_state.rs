@@ -29,6 +29,9 @@ pub struct HubStateView {
     /// 按 appId 排序（含上游）。
     pub apps: Vec<AppStateView>,
     pub locks: Vec<LockView>,
+    /// 只读结果缓存的统计（spec/hub-api.md 3.20）。
+    #[serde(default)]
+    pub cache: crate::result_cache::CacheStatus,
 }
 
 /// 一个 App 的概况（实例详情用 `apps.list`）。
@@ -179,7 +182,7 @@ impl HubShared {
             })
             .collect();
         let locks = status.locks.unwrap_or_default().into_iter().filter(|l| !self.app_hidden(&l.app_id)).map(lock_view).collect();
-        HubStateView { apps, locks }
+        HubStateView { apps, locks, cache: status.cache.unwrap_or_default() }
     }
 
     #[cfg(test)]

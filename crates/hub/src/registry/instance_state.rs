@@ -45,6 +45,11 @@ impl Registry {
     /// 全量替换工具列表。返回列表是否变化。
     pub fn sync_tools(&mut self, app_id: &str, conn_id: u64, tools: Vec<ToolInfo>) -> bool {
         let tools = sanitize_tools(app_id, tools);
+        self.sync_sanitized_tools(app_id, conn_id, tools)
+    }
+
+    /// [`Self::sync_tools`] 的后半段：`tools` 已经过 [`sanitize_tools`]。同步后不再保留本实例此前的声明。
+    pub(crate) fn sync_sanitized_tools(&mut self, app_id: &str, conn_id: u64, tools: Vec<SharedTool>) -> bool {
         if self.instance_mut(app_id, conn_id).is_some() {
             self.learn_pages(app_id, tools.iter());
         }
@@ -55,6 +60,7 @@ impl Registry {
             tools.into_iter().map(|t| (t.name.clone(), t)).collect();
         let changed = inst.tools != new;
         inst.tools = new;
+        inst.prior_tools = None;
         changed
     }
 
@@ -92,6 +98,16 @@ impl Registry {
         resources: Vec<ResourceInfo>,
     ) -> bool {
         let resources = sanitize_resources(app_id, resources);
+        self.sync_sanitized_resources(app_id, conn_id, resources)
+    }
+
+    /// [`Self::sync_resources`] 的后半段：`resources` 已经过 [`sanitize_resources`]。同步后不再保留本实例此前的声明。
+    pub(crate) fn sync_sanitized_resources(
+        &mut self,
+        app_id: &str,
+        conn_id: u64,
+        resources: Vec<ResourceInfo>,
+    ) -> bool {
         let Some(inst) = self.instance_mut(app_id, conn_id) else {
             return false;
         };
@@ -99,6 +115,7 @@ impl Registry {
             resources.into_iter().map(|r| (r.name.clone(), r)).collect();
         let changed = inst.resources != new;
         inst.resources = new;
+        inst.prior_resources = None;
         let resources = &inst.resources;
         inst.subscriptions.retain(|n| resources.contains_key(n));
         changed

@@ -54,12 +54,21 @@ pub async fn http(addr: SocketAddr, method: &str, path: &str, headers: &[(&str, 
 }
 
 /// 无会话（2026-07-28）请求；`token` 为 `None` 时不带 `Authorization`。`name`：`Mcp-Name` 头（工具名 / 资源 URI）。
+/// `params` 已有的 `_meta` 键保留（协议键由本函数补上）。
 pub async fn modern_request(addr: SocketAddr, token: Option<&str>, method: &str, name: &str, mut params: Value) -> Reply {
-    params["_meta"] = json!({
+    let protocol = json!({
         "io.modelcontextprotocol/protocolVersion": "2026-07-28",
         "io.modelcontextprotocol/clientCapabilities": {},
         "io.modelcontextprotocol/clientInfo": {"name": "spoofed-claude", "version": "1"}
     });
+    if !params["_meta"].is_object() {
+        params["_meta"] = json!({});
+    }
+    if let Value::Object(m) = protocol {
+        for (k, v) in m {
+            params["_meta"][k] = v;
+        }
+    }
     let req = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).to_string();
     let auth = token.map(|t| format!("Bearer {t}"));
     let mut headers = vec![

@@ -25,6 +25,7 @@ fn tool(name: &str) -> ToolDef {
         page: None,
         background_tool: None,
         implements: Vec::new(),
+        cache: None,
         concurrency: 0,
         exclusive: None,
     }
@@ -152,6 +153,7 @@ fn resource_read_reply_bytes_match_legacy() {
             scope: None,
             realtime: false,
             annotations: None,
+            cache: None,
         })
         .unwrap();
     drain(&mut c);
@@ -324,7 +326,7 @@ fn tools_hash_cache_tracks_every_registry_change() {
     let mut mirror = Client::new(cfg);
     mirror.register_tool(tool("a")).unwrap();
     let a = ToolId(1);
-    let res = ResourceDef { name: "r".into(), description: "资源".into(), mime_type: None, scope: None, realtime: false, annotations: None };
+    let res = ResourceDef { name: "r".into(), description: "资源".into(), mime_type: None, scope: None, realtime: false, annotations: None, cache: None };
 
     let mut seen: Vec<String> = Vec::new();
     let mut verify = |c: &mut Client, mirror: &Client, what: &str| {

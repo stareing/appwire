@@ -208,6 +208,62 @@ fn implements_rules() {
 }
 
 #[test]
+fn cache_rules() {
+    let warning_paths = |v: &Validation| v.warnings.iter().map(|w| w.path.clone()).collect::<Vec<_>>();
+    let top = |cache: Value, annotations: Option<Value>| {
+        let mut m = example();
+        m["tools"][0]["cache"] = cache;
+        if let Some(a) = annotations {
+            m["tools"][0]["annotations"] = a;
+        }
+        serde_json::from_value::<Manifest>(m).expect("parses")
+    };
+    // 合法（只读工具，risk: read）：无错误、无警告，往返不丢；未声明时不序列化
+    let m = top(json!({ "ttlMs": 60000, "scope": "shared" }), None);
+    let v = m.validate();
+    assert!(v.is_ok() && v.warnings.is_empty(), "{:?} {:?}", v.errors, v.warnings);
+    assert_eq!(serde_json::to_value(&m).unwrap()["tools"][0]["cache"], json!({ "ttlMs": 60000, "scope": "shared" }));
+    let plain = serde_json::to_value(serde_json::from_value::<Manifest>(example()).unwrap()).unwrap();
+    assert!(plain["tools"][0].get("cache").is_none() && plain["resources"][0].get("cache").is_none());
+    // 上下界：1 与 86 400 000 合法
+    assert!(top(json!({ "ttlMs": 1 }), None).validate().is_ok());
+    assert!(top(json!({ "ttlMs": 86_400_000 }), None).validate().is_ok());
+    // ttlMs 为 0 / 超上限：错误
+    assert_eq!(error_paths(&top(json!({ "ttlMs": 0 }), None).validate()), vec!["tools[0].cache.ttlMs"]);
+    assert_eq!(error_paths(&top(json!({ "ttlMs": 86_400_001 }), None).validate()), vec!["tools[0].cache.ttlMs"]);
+    // scope 非法取值、ttlMs 非整数 / 负数 / 缺失：解析失败（与注解字段类型错误的处理一致）
+    for bad in [json!({ "ttlMs": 1, "scope": "public" }), json!({ "ttlMs": 1.5 }), json!({ "ttlMs": -1 }), json!({ "scope": "shared" })] {
+        let mut m = example();
+        m["tools"][0]["cache"] = bad.clone();
+        assert!(serde_json::from_value::<Manifest>(m).is_err(), "{bad}");
+    }
+    // 生效注解不是只读（声明的注解优先于 risk:read）：警告，不报错
+    let v = top(json!({ "ttlMs": 1000 }), Some(json!({ "readOnlyHint": false }))).validate();
+    assert!(v.is_ok());
+    assert_eq!(warning_paths(&v), vec!["tools[0].cache"]);
+    // 无 risk、无注解（生效注解 readOnlyHint 未声明）：警告
+    let mut m = example();
+    m["tools"][0].as_object_mut().unwrap().remove("risk");
+    m["tools"][0]["cache"] = json!({ "ttlMs": 1000 });
+    let v = serde_json::from_value::<Manifest>(m).unwrap().validate();
+    assert_eq!((v.is_ok(), warning_paths(&v)), (true, vec!["tools[0].cache".to_owned()]));
+    // 资源：同一范围规则，无只读警告
+    let mut m = example();
+    m["resources"][0]["cache"] = json!({ "ttlMs": 0 });
+    let v = serde_json::from_value::<Manifest>(m.clone()).unwrap().validate();
+    assert_eq!(error_paths(&v), vec!["resources[0].cache.ttlMs"]);
+    m["resources"][0]["cache"] = json!({ "ttlMs": 5000 });
+    let v = serde_json::from_value::<Manifest>(m).unwrap().validate();
+    assert!(v.is_ok() && v.warnings.is_empty(), "{:?} {:?}", v.errors, v.warnings);
+    // 页面内工具：同一规则（page_tool 无注解 → 另有只读警告）
+    let mut t = page_tool("p");
+    t["cache"] = json!({ "ttlMs": 86_400_001 });
+    let v = with_pages(json!([{ "name": "a", "tools": [t] }])).validate();
+    assert_eq!(error_paths(&v), vec!["pages[0].tools[0].cache.ttlMs"]);
+    assert_eq!(warning_paths(&v), vec!["pages[0].tools[0].cache"]);
+}
+
+#[test]
 fn tool_names_unique_across_pages() {
     // 与顶层工具重名、与其他页面的工具重名
     let v = with_pages(json!([

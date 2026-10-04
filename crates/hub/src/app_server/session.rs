@@ -86,7 +86,7 @@ where
                 }
                 shared.remember_pairing(&hello.app_id, origin.as_deref(), &token, true);
                 send_pairing_result(&conn, PairingStatus::Paired, Some(token), None);
-                registered = Some(register_instance_with(&shared, &conn, hello, origin.as_deref(), peer, None));
+                registered = Some(register_instance_with(&shared, &conn, hello, origin.as_deref(), peer, None, false));
                 last_rx = Instant::now();
             }
             // 等待配对确认期间 SDK 不发心跳，暂停空闲超时（配对本身有 pairing_timeout）。

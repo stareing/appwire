@@ -27,6 +27,7 @@ fn res(name: &str) -> ResourceInfo {
         mime_type: None,
         realtime: false,
         annotations: None,
+        cache: None,
     }
 }
 
@@ -536,4 +537,64 @@ fn tool_definitions_are_shared_not_copied() {
     // 静态清单的工具也只有一份：列表与路由取到的是同一个。
     let static_listed = reg.tools().into_iter().find(|t| t.info.name == "cart.add").unwrap();
     assert!(Arc::ptr_eq(&static_listed.info, reg.manifest("shop").unwrap().tool("cart.add").unwrap()));
+}
+
+fn shared(tools: Vec<ToolInfo>) -> Vec<SharedTool> {
+    sanitize_tools("shop", tools)
+}
+
+fn described(name: &str, description: &str) -> ToolInfo {
+    ToolInfo { description: description.into(), ..tool(name) }
+}
+
+/// 全量同步的声明比较（结果缓存失效依据）：此前已知 = 本实例此前的声明 → 其他已连接实例 → 休眠快照 → 清单；
+/// 此前未知按不同处理。
+#[test]
+fn sync_declaration_compared_with_known() {
+    let mut reg = Registry::new();
+    let (a, _) = add(&mut reg, "shop", "a", 1);
+    assert!(reg.tools_declaration_differs("shop", a.id, &shared(vec![tool("x")])), "一无所知：不同");
+    assert!(!reg.tools_declaration_differs("shop", a.id, &[]), "空对空：相同");
+    reg.sync_tools("shop", a.id, vec![tool("x")]);
+    assert!(!reg.tools_declaration_differs("shop", a.id, &shared(vec![tool("x")])), "本实例已同步的列表");
+
+    let (b, _) = add(&mut reg, "shop", "b", 2);
+    assert!(!reg.tools_declaration_differs("shop", b.id, &shared(vec![tool("x")])), "其他已连接实例");
+    assert!(reg.tools_declaration_differs("shop", b.id, &shared(vec![described("x", "新")])), "定义不等");
+    assert!(reg.tools_declaration_differs("shop", b.id, &shared(vec![tool("x"), tool("y")])), "多出未知工具");
+
+    // 同一实例换连接：被替换连接的声明作为基准；少一项即不同；同步后基准清除。
+    let (a2, old) = add(&mut reg, "shop", "a", 3);
+    assert!(old.is_some());
+    assert!(!reg.tools_declaration_differs("shop", a2.id, &shared(vec![tool("x")])));
+    assert!(reg.tools_declaration_differs("shop", a2.id, &[]), "本实例此前声明过的被移除");
+    reg.sync_tools("shop", a2.id, vec![tool("x")]);
+    assert!(reg.instance("shop", "a").is_some_and(|i| i.prior_tools.is_none()), "同步后清除基准");
+
+    // 休眠快照：其他实例的快照，或回连时取出的本实例快照（remember_prior）。
+    reg.remove_instance("shop", b.id);
+    reg.make_dormant("shop", a2.id, "tok".into(), String::new(), None);
+    let (c, _) = add(&mut reg, "shop", "c", 4);
+    assert!(!reg.tools_declaration_differs("shop", c.id, &shared(vec![tool("x")])), "其他实例的休眠快照");
+    let snap = reg.take_dormant("shop", "a").expect("快照");
+    assert!(reg.tools_declaration_differs("shop", c.id, &shared(vec![tool("x")])), "快照已取出：未知");
+    reg.remember_prior("shop", c.id, snap);
+    assert!(!reg.tools_declaration_differs("shop", c.id, &shared(vec![tool("x")])), "回连时取出的快照");
+}
+
+#[test]
+fn sync_resource_declaration_compared_with_known() {
+    let mut reg = Registry::new();
+    reg.set_manifest(manifest());
+    let (a, _) = add(&mut reg, "shop", "a", 1);
+    let declared = ResourceInfo { description: "购物车".into(), ..res("cart.state") };
+    assert!(!reg.resources_declaration_differs("shop", a.id, std::slice::from_ref(&declared)), "与清单声明相同");
+    let search = shared(vec![described("orders.search", "搜索")]);
+    assert!(!reg.tools_declaration_differs("shop", a.id, &search), "工具与清单声明相同");
+    assert!(reg.resources_declaration_differs("shop", a.id, &[res("cart.state")]), "描述与清单不同");
+    assert!(reg.resources_declaration_differs("shop", a.id, &[declared.clone(), res("other")]), "未知资源");
+    reg.sync_resources("shop", a.id, vec![declared.clone()]);
+    let (a2, _) = add(&mut reg, "shop", "a", 2);
+    assert!(reg.resources_declaration_differs("shop", a2.id, &[]), "被替换连接声明过的被移除");
+    assert!(!reg.resources_declaration_differs("shop", a2.id, &[declared]));
 }

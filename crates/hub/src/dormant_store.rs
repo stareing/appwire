@@ -474,6 +474,7 @@ mod tests {
             page: page.map(str::to_owned),
             background_tool: None,
             implements: Vec::new(),
+            cache: None,
         }))
     }
 

@@ -178,10 +178,10 @@ impl Hub {
 
     /// 读取资源（`app-mcp://<appId>/<name>`）。
     pub async fn read_resource(&self, uri: &str) -> Result<ResourceContent, HubError> {
-        call::read_resource(&self.shared, uri, &CallerKey::api(None))
+        call::read_resource(&self.shared, uri, &CallerKey::api(None), false)
             .await
             .map_err(|e| HubError(call::mcp_resource_error_to_tool(&e)))
-            .map(|r| call::first_content(uri, r))
+            .map(|(r, _)| call::first_content(uri, r))
     }
 
     /// 订阅资源变化，之后收到 [`HubEvent::ResourceUpdated`]。
@@ -381,6 +381,7 @@ impl Hub {
             client_name: None,
             task_id: None,
             priority: Default::default(),
+            cache_bypass: false,
         };
         let inv = self.shared.call(ctx, std::future::pending()).await;
         let r = match inv.to_mcp() {

@@ -28,9 +28,9 @@
 use std::sync::Arc;
 
 pub use app_mcp_core::{
-    Activation, AppOverview, Audience, BusyPolicy, CallDedupPolicy, ClientKind, ContentAnnotations, EventInfo, HeartbeatMode, LifecycleMode, LifecyclePolicy,
+    Activation, AppOverview, Audience, BusyPolicy, CachePolicy, CacheScope, CallDedupPolicy, ClientKind, ContentAnnotations, EventInfo, HeartbeatMode, LifecycleMode, LifecyclePolicy,
     Residency, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolSurface, TransportKind, Visibility, WakeDescriptor,
-    WakeKind, WakeReason, MAX_EVENT_PAYLOAD_BYTES, parse_wake_token,
+    WakeKind, WakeReason, MAX_CACHE_TTL_MS, MAX_EVENT_PAYLOAD_BYTES, parse_wake_token,
 };
 pub use app_mcp_protocol::{ConnectionErrorCode, ErrorKind, navigation_reason, user_action_reason};
 
@@ -180,6 +180,9 @@ pub struct ToolOptions {
     /// 实现的标准意图（spec/intents.md），每项 `"<动词>@<主版本>"`，最多 4 项、不重复；格式不合法时注册 / 更新返回
     /// [`NativeError::InvalidName`]。空（缺省）= 未声明。
     pub implements: Vec<String>,
+    /// 结果缓存声明（spec/protocol.md 3.6）：只对生效注解只读的工具生效（否则照常注册并记警告）；`ttlMs` 越界时注册 / 更新返回
+    /// [`NativeError::InvalidConfig`]。`None`（缺省）= 未声明。
+    pub cache: Option<CachePolicy>,
     /// 本工具同时执行的调用上限（spec/protocol.md 5.3）：0（缺省）= 不单独限制，只受 `max_concurrent_calls` 约束。只在 SDK 内生效。
     pub concurrency: u32,
     /// 互斥组（spec/protocol.md 5.3，`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行。`None` = 不互斥。只在 SDK 内生效。
@@ -210,8 +213,11 @@ pub struct CallResult {
 pub struct ResourceOptions {
     /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被 Host 订阅时阻止休眠，休眠期间变化时回连推送。
     /// 默认 `false`：订阅不阻止休眠，变化在下次连接时补发。
-    pub realtime: bool,    /// 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；`None` = 未声明。
+    pub realtime: bool,
+    /// 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；`None` = 未声明。
     pub annotations: Option<ContentAnnotations>,
+    /// 读取结果缓存声明（spec/protocol.md 3.6）；`ttlMs` 越界时注册返回 [`NativeError::InvalidConfig`]。`None`（缺省）= 未声明。
+    pub cache: Option<CachePolicy>,
 }
 
 // ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ mod navigation;
 mod policy;
 mod power;
 mod progress;
+mod result_cache;
 mod safety;
 mod search;
 mod transport;

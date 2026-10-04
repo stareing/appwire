@@ -3,7 +3,7 @@
 //! 检查项：Host 运行 / 版本 / 身份、单实例锁、运行时目录权限、本地 IPC 端点（路径、权限、所有者、可连通）、
 //! 监听端口与备选端口（空闲 / 本 Host / 其他 app-mcp / 其他进程及其 pid 与名称）、Windows 排除端口段、防火墙说明、
 //! 令牌与鉴权模式、各 App 实例状态与最近错误、各工具的声明（risk 与 MCP 注解）、资源保护（限流 / 大小上限与拒绝次数）、
-//! 网页 SDK 的拦截上报、Android `adb reverse`、按名寻址的名字服务（`naming.*`，见 [`naming`]）。
+//! 调用方用量与只读结果缓存统计、网页 SDK 的拦截上报、Android `adb reverse`、按名寻址的名字服务（`naming.*`，见 [`naming`]）。
 //!
 //! 只读：不加锁（锁状态从 `/proc/locks` 或锁文件中的进程号推断）、不修改任何文件。
 
@@ -29,7 +29,8 @@ mod report;
 use checks_apps::{apps_check, dormant_store_check, lease_check, limits_check, reports_check, tools_check, wake_check};
 use checks_host::{adb_check, auth_check, excluded_check, ipc_check, run_dir_check};
 use checks_policy::{agents_check, intents_check, policy_check, read_agents_file, validate_intents_file, validate_policy_file};
-use checks_usage::usage_check;
+use checks_usage::{cache_check, usage_check};
+pub(crate) use checks_usage::cache_text;
 pub(crate) use checks_apps::callers_text;
 pub(crate) use checks_host::find_in_path;
 pub use port_scan::{PortPreflight, PortState, candidate_addrs, describe_port_state, port_owner, port_preflight, port_state};
@@ -233,6 +234,7 @@ pub async fn run(home: &AppHome, s: &Settings) -> Report {
     checks.push(agents_check(&read_agents_file(home), status.as_ref()));
     checks.push(intents_check(validate_intents_file(home), status.as_ref()));
     checks.push(usage_check(status.as_ref()));
+    checks.push(cache_check(status.as_ref()));
 
     // 10. 网页拦截上报
     checks.push(reports_check(status.as_ref()));

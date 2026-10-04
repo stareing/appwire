@@ -57,6 +57,7 @@ fn tool_spec(decl: &Value) -> (ToolSpec, ToolOptions) {
         page: text(&decl["page"]),
         background_tool: text(&decl["backgroundTool"]),
         implements: parse(&decl["implements"]).unwrap_or_default(),
+        cache: parse(&decl["cache"]),
         concurrency: decl["concurrency"].as_u64().map_or(0, |n| n as u32),
         exclusive: text(&decl["exclusive"]),
     };
@@ -84,7 +85,7 @@ impl App {
             description: decl["description"].as_str().unwrap_or_default().to_owned(),
             mime_type: text(&decl["mimeType"]),
         };
-        let options = ResourceOptions { realtime: decl["realtime"].as_bool().unwrap_or(false), annotations: parse(&decl["annotations"]) };
+        let options = ResourceOptions { realtime: decl["realtime"].as_bool().unwrap_or(false), annotations: parse(&decl["annotations"]), cache: parse(&decl["cache"]) };
         let reader = Arc::new(CaseResource(decl["read"].clone()));
         self.client.register_resource_with(spec, options, reader).expect("注册资源");
     }

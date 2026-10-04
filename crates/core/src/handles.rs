@@ -54,6 +54,9 @@ pub struct ToolDef {
     /// 实现的标准意图（spec/intents.md），每项 `"<动词>@<主版本>"`，最多 4 项、不重复（格式不合法时注册返回
     /// [`CoreError::InvalidImplements`]）；动词不在词表中或不满足词表必填参数时产生 [`Event::Warning`]。空 = 未声明。
     pub implements: Vec<String>,
+    /// 结果缓存声明（spec/protocol.md 3.6），原样同步给 Host；`ttlMs` 越界时注册返回 [`CoreError::InvalidCache`]，
+    /// 生效注解不是只读时照常注册并产生 [`Event::Warning`]（Hub 忽略）。`None` = 未声明。
+    pub cache: Option<CachePolicy>,
     /// 本工具同时执行的调用上限（spec/protocol.md 5.3）：0 = 不单独限制（只受 `maxConcurrentCalls` 约束）。只在 SDK 内生效，不同步给 Host。
     pub concurrency: u32,
     /// 互斥组（spec/protocol.md 5.3，`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行（如操作同一份文档的写工具）。
@@ -85,6 +88,8 @@ pub struct ToolUpdate {
     pub background_tool: Option<Option<String>>,
     /// 替换声明的标准意图（`Some(vec![])` 清除）。
     pub implements: Option<Vec<String>>,
+    /// `Some(None)` 清除结果缓存声明。
+    pub cache: Option<Option<CachePolicy>>,
     /// 本工具的并发上限（0 = 不单独限制）。只在 SDK 内生效：只改它不发 `tools/changed`。
     pub concurrency: Option<u32>,
     /// `Some(None)` 清除互斥组。只在 SDK 内生效：只改它不发 `tools/changed`。
@@ -100,9 +105,13 @@ pub struct ResourceDef {
     pub scope: Option<ScopeId>,
     /// 需实时推送（spec/lifecycle.md 第 13 节 B3）：被 Host 订阅时阻止休眠，休眠期间变化时回连推送。
     /// `false`（常用）时订阅不阻止休眠，变化在下次连接时补发 `resources/updated`。
-    pub realtime: bool,    /// 资源内容的标注（MCP 内容注解：`audience` / `priority` / `lastModified`），原样同步给 Host，Hub 放到
+    pub realtime: bool,
+    /// 资源内容的标注（MCP 内容注解：`audience` / `priority` / `lastModified`），原样同步给 Host，Hub 放到
     /// MCP `resources/list` 的资源注解上；`None` = 未声明（不序列化，`toolsHash` 不变）。
     pub annotations: Option<ContentAnnotations>,
+    /// 读取结果缓存声明（spec/protocol.md 3.6），原样同步给 Host；`ttlMs` 越界时注册返回 [`CoreError::InvalidCache`]。
+    /// `None` = 未声明（不序列化，`toolsHash` 不变）。
+    pub cache: Option<CachePolicy>,
 }
 
 /// handler 成功返回的内容。

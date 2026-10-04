@@ -140,6 +140,9 @@ impl Manifest {
                     "description 不能为空字符串",
                 ));
             }
+            if let Some(cache) = &res.cache {
+                validate_cache(cache, &format!("{path}.cache"), &mut v);
+            }
         }
 
         self.validate_events(&mut v);
@@ -214,6 +217,13 @@ impl Manifest {
             self.validate_background_tool(tool, alt, &format!("{path}.backgroundTool"), v);
         }
         validate_implements(tool, &format!("{path}.implements"), v);
+        if let Some(cache) = &tool.cache {
+            let at = format!("{path}.cache");
+            validate_cache(cache, &at, v);
+            if tool.effective_annotations().read_only_hint != Some(true) {
+                v.warnings.push(Issue::new(at, "cache 只对只读工具（生效注解 readOnlyHint 为 true）生效，Hub 会忽略此声明"));
+            }
+        }
     }
 
     /// `backgroundTool`（spec/manifest.md 2.3）：同一 App 中一个 app 工具的名称。
@@ -389,6 +399,13 @@ fn validate_implements(tool: &ToolInfo, path: &str, v: &mut Validation) {
                 format!("工具不满足 \"{item}\" 的必填参数（{reason}）：Hub 不把它列为实现者，工具本身照常可调用"),
             )),
         }
+    }
+}
+
+/// `cache`（spec/manifest.md 第 3 节）：`ttlMs` 范围违反为错误；`scope` 取值在解析阶段已限定。
+fn validate_cache(cache: &app_mcp_protocol::CachePolicy, path: &str, v: &mut Validation) {
+    if let Err(reason) = cache.validate() {
+        v.errors.push(Issue::new(format!("{path}.ttlMs"), reason));
     }
 }
 

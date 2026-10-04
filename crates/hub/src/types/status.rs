@@ -68,6 +68,9 @@ pub struct HubStatus {
     /// 标准意图的机主默认表与最近的替换错误（spec/intents.md 第 4 节）；旧版 Hub 无此字段。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intents: Option<crate::intents::IntentsStatus>,
+    /// 只读结果缓存的条目、字节与命中统计（第 16 项 O3，spec/hub-api.md 3.20）；旧版 Hub 无此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<crate::result_cache::CacheStatus>,
 }
 
 /// 一个 Agent 任务（[`HubStatus::tasks`]）。

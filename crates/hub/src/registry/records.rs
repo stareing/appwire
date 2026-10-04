@@ -63,6 +63,11 @@ pub struct Instance {
     pub resources: BTreeMap<String, ResourceInfo>,
     /// Host 已向该实例订阅的资源名。
     pub subscriptions: HashSet<String>,
+    /// 本实例此前的工具声明（回连时取出的休眠快照、被替换的旧连接）：首次 `tools/sync` 据此判断声明是否变化
+    /// （结果缓存失效，spec/hub-api.md 3.20），同步后清除。
+    pub(crate) prior_tools: Option<BTreeMap<String, SharedTool>>,
+    /// 同 [`Self::prior_tools`]，对应 `resources/sync`。
+    pub(crate) prior_resources: Option<BTreeMap<String, ResourceInfo>>,
 }
 
 impl Instance {

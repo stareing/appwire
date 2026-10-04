@@ -171,6 +171,14 @@ fn error_for_version(mut e: McpError, version: Option<&ProtocolVersion>) -> McpE
 /// [`McpProtocolMode::Auto`] 声明的最高协议版本（第 12 项 S7 适配并验证过的版本）。
 const MAX_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2026_07_28;
 
+/// App 声明的缓存范围 → MCP `cacheScope`（spec/hub-api.md 3.20）：shared → public，private → private。
+fn mcp_cache_scope(scope: app_mcp_protocol::CacheScope) -> CacheScope {
+    match scope {
+        app_mcp_protocol::CacheScope::Shared => CacheScope::Public,
+        app_mcp_protocol::CacheScope::Private => CacheScope::Private,
+    }
+}
+
 fn millis(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
@@ -305,6 +313,7 @@ impl ServerHandler for McpSession {
             client_name: context.client_info().map(|i| i.name),
             task_id: agent.task_id,
             priority: agent.priority,
+            cache_bypass: agent.cache_bypass,
         };
         let ct = context.ct.clone();
         let inv = self
@@ -382,13 +391,19 @@ impl ServerHandler for McpSession {
     ) -> Result<ReadResourceResponse, McpError> {
         let caller = self.caller(&context);
         let version = context.protocol_version();
-        let r = call::read_resource(&self.shared, &request.uri, &caller.key)
+        let bypass = request_meta::parse_cache_bypass(&context.meta)
+            .map_err(|e| error_for_version(call::to_mcp_error(&e), version.as_ref()))?;
+        let (r, hint) = call::read_resource(&self.shared, &request.uri, &caller.key, bypass)
             .await
             .map_err(|e| error_for_version(e, version.as_ref()))?;
-        // 资源内容随 App 状态随时变化：无会话请求的结果标为立即过期（`ttlMs: 0`）、`private`。
-        Ok(match caller.key.is_stateless() {
-            true => r.with_ttl_ms(0).with_cache_scope(CacheScope::Private),
-            false => r,
+        // 资源内容随 App 状态随时变化：无会话请求的结果默认标为立即过期（`ttlMs: 0`）、`private`；App 声明了 `cache` 的
+        // 资源按其剩余有效期与范围（spec/hub-api.md 3.20）。legacy 会话的结果不带这两个字段（3.7）。
+        if !caller.key.is_stateless() {
+            return Ok(r.into());
+        }
+        Ok(match hint {
+            Some(h) => r.with_ttl_ms(h.ttl_ms).with_cache_scope(mcp_cache_scope(h.scope)),
+            None => r.with_ttl_ms(0).with_cache_scope(CacheScope::Private),
         }
         .into())
     }

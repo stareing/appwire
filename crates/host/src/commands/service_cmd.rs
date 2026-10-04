@@ -94,11 +94,12 @@ pub(crate) async fn status_line(home: &Option<std::path::PathBuf>) -> anyhow::Re
                     };
                     let errors = st.apps.iter().filter(|a| a.last_error.is_some()).count();
                     format!(
-                        "App 在线 {}、休眠 {}、唤醒中 {}，{}{}",
+                        "App 在线 {}、休眠 {}、唤醒中 {}，{}{}{}",
                         n(app_mcp_hub::AppState::Connected),
                         n(app_mcp_hub::AppState::Dormant),
                         n(app_mcp_hub::AppState::Waking),
                         doctor::callers_text(&st),
+                        doctor::cache_text(&st),
                         if errors > 0 { format!("，{errors} 个 App 有最近错误（app-mcp-host doctor 查看）") } else { String::new() }
                     )
                 }

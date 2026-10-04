@@ -47,6 +47,7 @@ pub mod origin;
 pub mod overview;
 pub mod registry;
 mod request_meta;
+pub mod result_cache;
 pub mod routing;
 pub mod schema;
 pub mod search;
@@ -73,6 +74,9 @@ pub use agents::{AgentCredential, AgentsConfig};
 pub use intents::{IntentsConfig, IntentsStatus};
 pub use http_server::{Health, HttpOptions};
 pub use progress::ProgressUpdate;
+pub use result_cache::{
+    CacheLimits, CacheStatus, DEFAULT_CACHE_MAX_BYTES, DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_MAX_ENTRY_BYTES,
+};
 pub use policy::{
     AnnotationMatch, MAX_POLICY_RULES, PolicyAction, PolicyConfig, PolicyHook, PolicyLoadError, PolicyRule, PolicyRuleStatus,
     PolicyStatus,

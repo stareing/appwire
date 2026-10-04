@@ -44,6 +44,10 @@ pub struct ToolInfo {
     /// 空时不序列化（`toolsHash` 不变）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub implements: Vec<String>,
+    /// 结果缓存声明（spec/protocol.md 3.6）：只在生效注解 `readOnlyHint` 为 `true` 时由 Hub 执行。未声明时不序列化
+    /// （`toolsHash` 不变）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<CachePolicy>,
 }
 
 /// 工具对界面的依赖（spec/protocol.md 3.4）。

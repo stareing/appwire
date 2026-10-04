@@ -123,12 +123,15 @@ async fn doctor_and_status_with_running_host() {
     assert_eq!(line.trim().lines().count(), 1, "{line}");
     assert!(line.contains(&format!("pid {}", reg.identity.pid)), "{line}");
     assert!(line.contains("listen 流 0 个、Agent 任务 0 个"), "{line}");
+    assert!(line.contains("结果缓存 0 条（0.0 KiB），命中 0、未命中 0、淘汰 0"), "第 16 项 O3：{line}");
 
     let (code, report) = doctor_json(&home.0);
     assert_eq!(check(&report, "host")["status"], "ok", "{report:#}");
     assert_eq!(check(&report, "ipc")["status"], "ok", "{report:#}");
     assert_eq!(check(&report, "ports")["status"], "ok", "{report:#}");
     assert_eq!(check(&report, "run_dir")["status"], "ok", "{report:#}");
+    assert_eq!(check(&report, "cache")["status"], "ok", "没有可缓存的请求：{report:#}");
+    assert_eq!(check(&report, "cache")["details"]["cache"]["entries"], 0, "{report:#}");
     #[cfg(target_os = "linux")]
     assert_eq!(check(&report, "lock")["status"], "ok", "{report:#}");
     let apps = check(&report, "apps");

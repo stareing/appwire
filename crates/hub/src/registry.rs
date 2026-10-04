@@ -16,6 +16,7 @@ use crate::pages::LearnedPages;
 use crate::routing::{self, Candidate};
 use crate::tool_def::{SharedTool, StaticManifest, ToolDef};
 
+mod declared;
 mod dormant;
 mod instance_state;
 mod listing;
@@ -240,7 +241,11 @@ impl Registry {
             .instances
             .iter()
             .position(|i| i.instance_id == new.instance_id)
-            .map(|pos| entry.instances.remove(pos).conn);
+            .map(|pos| entry.instances.remove(pos));
+        let (prior_tools, prior_resources) = match &old {
+            Some(i) => (Some(i.tools.clone()), Some(i.resources.clone())),
+            None => (None, None),
+        };
         entry.instances.push(Instance {
             instance_id: new.instance_id,
             app_name: new.app_name,
@@ -263,8 +268,10 @@ impl Registry {
             tools: BTreeMap::new(),
             resources: BTreeMap::new(),
             subscriptions: HashSet::new(),
+            prior_tools,
+            prior_resources,
         });
-        old
+        old.map(|i| i.conn)
     }
 
     /// 移除某连接对应的实例。连接已被替换时不做任何事，返回 `None`。

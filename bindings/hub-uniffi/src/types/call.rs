@@ -49,6 +49,7 @@ impl CallRequest {
             session: self.session,
             idempotency_key: self.idempotency_key,
             priority: self.priority.map(Into::into).unwrap_or_default(),
+            cache_bypass: false,
         })
     }
 }
@@ -110,6 +111,9 @@ pub struct CallOutcome {
     /// 本次 App 工具调用是否经历了唤醒；内置工具与上游工具恒为 false（第 19 项 R4）。
     #[uniffi(default = false)]
     pub woke: bool,
+    /// 结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数；未命中为空（spec/hub-api.md 3.20）。
+    #[uniffi(default = None)]
+    pub cached_age_ms: Option<u64>,
 }
 
 impl From<hub::CallOutcome> for CallOutcome {
@@ -139,6 +143,7 @@ impl From<hub::CallOutcome> for CallOutcome {
             routed_to: o.routed_to,
             duration_ms: o.duration_ms,
             woke: o.woke,
+            cached_age_ms: o.cached_age_ms,
         }
     }
 }

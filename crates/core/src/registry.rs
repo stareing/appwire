@@ -53,6 +53,7 @@ fn tool_info(def: &ToolDef) -> ToolInfo {
         page: def.page.clone(),
         background_tool: def.background_tool.clone(),
         implements: def.implements.clone(),
+        cache: def.cache,
     }
 }
 
@@ -63,6 +64,7 @@ fn resource_info(def: &ResourceDef) -> ResourceInfo {
         mime_type: def.mime_type.clone(),
         realtime: def.realtime,
         annotations: def.annotations.clone(),
+        cache: def.cache,
     }
 }
 
@@ -75,6 +77,18 @@ fn validate_schema(schema: &Value) -> Result<(), CoreError> {
 
 fn validate_implements(list: &[String]) -> Result<(), CoreError> {
     proto::intents::validate_implements(list).map_err(|e| CoreError::InvalidImplements(e.to_string()))
+}
+
+fn validate_cache(cache: Option<&proto::CachePolicy>) -> Result<(), CoreError> {
+    cache.map_or(Ok(()), |c| c.validate().map_err(CoreError::InvalidCache))
+}
+
+/// 声明了 `cache` 但生效注解不是只读的工具（spec/protocol.md 3.6：Hub 忽略，SDK 注册给出警告）。
+pub(crate) fn cache_warning(def: &ToolDef) -> Option<String> {
+    let read_only = proto::ToolAnnotations::effective(def.risk, def.annotations.as_ref()).read_only_hint == Some(true);
+    (def.cache.is_some() && !read_only).then(|| {
+        format!("工具 \"{}\" 声明了 cache 但生效注解 readOnlyHint 不为 true：Hub 只缓存只读工具，此声明被忽略", def.name)
+    })
 }
 
 /// 声明的标准意图中不在词表里、或工具 `inputSchema` 不满足词表必填参数的项（spec/intents.md 第 1 节：SDK 给出警告）。
@@ -176,6 +190,7 @@ impl Registry {
         }
         validate_schema(&def.input_schema)?;
         validate_implements(&def.implements)?;
+        validate_cache(def.cache.as_ref())?;
         self.check_scope(def.scope)?;
         if self.tool_names.contains_key(&def.name) {
             return Err(CoreError::DuplicateName(def.name));
@@ -197,6 +212,9 @@ impl Registry {
         if let Some(list) = &update.implements {
             validate_implements(list)?;
         }
+        if let Some(cache) = &update.cache {
+            validate_cache(cache.as_ref())?;
+        }
         let def = self.tools.get_mut(&tool).ok_or(CoreError::UnknownTool(tool))?;
         let ToolUpdate {
             description,
@@ -211,6 +229,7 @@ impl Registry {
             page,
             background_tool,
             implements,
+            cache,
             concurrency,
             exclusive,
         } = update;
@@ -226,7 +245,8 @@ impl Registry {
             || surface.is_some()
             || page.is_some()
             || background_tool.is_some()
-            || implements.is_some();
+            || implements.is_some()
+            || cache.is_some();
         if let Some(v) = concurrency {
             def.concurrency = v;
         }
@@ -269,6 +289,9 @@ impl Registry {
         if let Some(v) = implements {
             def.implements = v;
         }
+        if let Some(v) = cache {
+            def.cache = v;
+        }
         if synced {
             let name = def.name.clone();
             self.mark_tool(&name);
@@ -300,6 +323,7 @@ impl Registry {
 
     pub fn register_resource(&mut self, def: ResourceDef) -> Result<ResourceId, CoreError> {
         validate_name(&def.name)?;
+        validate_cache(def.cache.as_ref())?;
         self.check_scope(def.scope)?;
         if self.resource_names.contains_key(&def.name) {
             return Err(CoreError::DuplicateName(def.name));
@@ -465,6 +489,7 @@ mod tests {
             page: None,
             background_tool: None,
             implements: Vec::new(),
+            cache: None,
             concurrency: 0,
             exclusive: None,
         }
@@ -484,7 +509,7 @@ mod tests {
         r.register_tool(tool("a", None)).unwrap();
         assert_eq!(r.register_tool(tool("a", None)), Err(CoreError::DuplicateName("a".into())));
         // 工具与资源可以同名
-        r.register_resource(ResourceDef { name: "a".into(), description: "r".into(), mime_type: None, scope: None, realtime: false, annotations: None })
+        r.register_resource(ResourceDef { name: "a".into(), description: "r".into(), mime_type: None, scope: None, realtime: false, annotations: None, cache: None })
             .unwrap();
     }
 

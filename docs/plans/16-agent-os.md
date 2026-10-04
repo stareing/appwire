@@ -374,6 +374,15 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
       PlayAudio 为推断；Android smsto 的 `;` 分隔、老系统自定义 Parcelable。
 - **O1 工具检索**：`apps.search(query)`，按关键词、最近使用、成功率、当前可见界面（4c）排序；可选本地向量索引（U5）。
 - **O3 只读结果缓存**：`read` 工具与资源按 App 声明的 TTL / 版本号缓存，命中时不唤醒 App。
+  - **设计（2026-10-04 机主确认）**：缓存资格由 App 显式声明 `cache: {ttlMs, scope?}`（只读 ≠ 可缓存：读时钟、实时行情），不从 risk /
+    注解推导；缺省按记账主体隔离，App 可声明 `shared`；同 App 写调用完成后整 App 失效（App 漏写 stateHints 时也不读到写前旧值）。
+    不做版本号 / ETag（App 侧无对应协议，TTL + 失效事件已覆盖）。契约 spec/protocol.md 3.6、spec/hub-api.md 3.20、spec/manifest.md。
+  - **实施（一期 Rust）**：
+    - 事实：rmcp 3.5 只在列表与 `ReadResourceResult` 上有 `ttlMs` / `cacheScope`，`CallToolResult` 无缓存字段（`rmcp-3.5.0/src/model.rs`）；
+      serde_json 未启用 `preserve_order`（键规范化仍显式排序）；App 看不到调用方（`ToolsInvokeParams` 无身份），但实例选择 / 策略 / 锁按调用方。
+    - 决定：查询放在策略与锁之后（hide / deny 不被缓存绕过）；命中不记 `UsageEvent::Call`；调用期间发生失效则不存（全局代数）；
+      握手 sync 以"本实例回连前的声明"为首要基准（休眠快照在 `app/hello` 时已被取出，单靠注册表会把每次冷启动都判为变化）。
+    - 未知 / 风险：冷启动后数据新旧只靠 TTL；`scope: shared` 的正确性依赖 App 判断；多实例声明不同的 App 握手时偏保守地清空。
 - **O4 schema 演进**：字段弃用标记、兼容规则与 Agent 侧缓存失效策略，写入 `spec/manifest.md`。
 - ~~O5 冷启动预算与预测预热~~：**已删除（2026-10-02，机主同意，见 `TASKS.md` 4f）**——预测预热属于策略（`CLAUDE.md`「微内核范围」）；改为 Agent 显式调用的内置工具 `apps.activate(appId)`（只唤醒不调用）/ `apps.release(appId)`（收回本会话在该 App 的租约），由 4f 实施。
 

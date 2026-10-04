@@ -83,6 +83,7 @@ impl JsToolDef {
             concurrency: self.concurrency.unwrap_or(0),
             exclusive: self.exclusive,
             implements: self.implements.unwrap_or_default(),
+            cache: None,
         })
     }
 }
@@ -225,6 +226,7 @@ impl JsToolUpdate {
             concurrency: self.concurrency,
             exclusive: self.exclusive,
             implements: self.implements,
+            cache: None,
         }
     }
 }
@@ -265,6 +267,7 @@ impl JsResourceDef {
             scope: scope_handle(self.scope)?,
             realtime: self.realtime,
             annotations: self.annotations,
+            cache: None,
         })
     }
 }

@@ -295,6 +295,7 @@ fn tools_hash_fixed_vector() {
         page: None,
         background_tool: None,
         implements: Vec::new(),
+        cache: None,
         concurrency: 0,
         exclusive: None,
     })
@@ -316,6 +317,7 @@ fn tools_hash_fixed_vector() {
             page: None,
             background_tool: None,
             implements: Vec::new(),
+            cache: None,
             concurrency: 0,
             exclusive: None,
         })
@@ -327,6 +329,7 @@ fn tools_hash_fixed_vector() {
         scope: None,
         realtime: false,
         annotations: None,
+        cache: None,
     })
     .unwrap();
     assert_eq!(h.c.tools_hash(), "ba703035ddca2f91");

@@ -87,6 +87,8 @@ pub(crate) struct CallCtx {
     pub task_id: Option<String>,
     /// Agent 给出的调用优先级（[`CallRequest::priority`] / MCP 请求 `_meta`），原样转交 App。
     pub priority: CallPriority,
+    /// 不查只读结果缓存（[`CallRequest::cache_bypass`] / MCP 请求 `_meta` 的 `dev.appwire/cache`）。
+    pub cache_bypass: bool,
 }
 
 /// 合并后的进度出口（[`CallCtx::progress`]）。
@@ -114,6 +116,7 @@ impl CallCtx {
             client_name: None,
             task_id: None,
             priority: req.priority,
+            cache_bypass: req.cache_bypass,
         }
     }
 }
@@ -143,6 +146,8 @@ pub(crate) struct Invocation {
     pub duration_ms: u64,
     /// 本次 App 工具调用是否经历了唤醒（[`ToolRun::woke`]）。
     pub woke: bool,
+    /// 结果来自只读结果缓存时距 App 产出的毫秒数（spec/hub-api.md 3.20）；未命中为 `None`。
+    pub cached_age_ms: Option<u64>,
 }
 
 impl Invocation {
@@ -158,6 +163,7 @@ impl Invocation {
             routed_to: None,
             duration_ms: 0,
             woke: false,
+            cached_age_ms: None,
         }
     }
 
@@ -188,6 +194,9 @@ impl Invocation {
         }
         if matches!(self.body, Body::App(_)) {
             meta.insert(names::META_WOKE.to_owned(), json!(self.woke));
+        }
+        if let Some(age) = self.cached_age_ms {
+            meta.insert(names::META_CACHED.to_owned(), json!({ "ageMs": age }));
         }
         Ok(r)
     }
@@ -227,6 +236,7 @@ impl Invocation {
             routed_to: self.routed_to,
             duration_ms: self.duration_ms,
             woke: self.woke,
+            cached_age_ms: self.cached_age_ms,
         })
     }
 }

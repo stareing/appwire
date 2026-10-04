@@ -40,8 +40,8 @@ use app_mcp_protocol as proto;
 use serde_json::Value;
 
 pub use proto::{
-    Activation, AppOverview, Audience, ClientKind, ConnectionErrorCode, ConnectionIssue, ContentAnnotations,
-    DiagnosticParams, EventInfo, LifecycleMode, MAX_EVENT_PAYLOAD_BYTES, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolError, ToolSurface, TransportKind,
+    Activation, AppOverview, Audience, CachePolicy, CacheScope, ClientKind, ConnectionErrorCode, ConnectionIssue, ContentAnnotations,
+    DiagnosticParams, EventInfo, LifecycleMode, MAX_CACHE_TTL_MS, MAX_EVENT_PAYLOAD_BYTES, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolError, ToolSurface, TransportKind,
     Visibility, WakeDescriptor, WakeKind, WakeReason, navigation_reason,
 };
 pub use config::*;
@@ -207,29 +207,34 @@ impl Client {
     ///
     /// `implements`（spec/intents.md）格式不合法返回 [`CoreError::InvalidImplements`]；动词不在词表中或不满足词表必填参数时
     /// 照常注册，产生 [`Event::Warning`]。
+    ///
+    /// `cache`（spec/protocol.md 3.6）`ttlMs` 越界返回 [`CoreError::InvalidCache`]；生效注解不是只读时照常注册，产生
+    /// [`Event::Warning`]。
     pub fn register_tool(&mut self, def: ToolDef) -> Result<ToolId, CoreError> {
         let prefixed = proto::has_app_id_prefix(&def.name, &self.config.app_id).then(|| def.name.clone());
-        let intent_warnings = registry::intent_warnings(&def);
+        let warnings = registry::intent_warnings(&def).into_iter().chain(registry::cache_warning(&def));
         let id = self.registry.register_tool(def)?;
         if let Some(name) = prefixed {
             self.warn(proto::app_id_prefix_warning(&name, &self.config.app_id));
         }
-        for w in intent_warnings {
+        for w in warnings {
             self.warn(w);
         }
         Ok(id)
     }
 
     /// 更新工具。放宽了并发声明（`concurrency` / `exclusive`）时排队中的调用随即可能开始。
-    /// 改了 `implements` 或 `inputSchema` 时按 [`Client::register_tool`] 的规则重新给出标准意图的警告。
+    /// 改了 `implements` 或 `inputSchema` 时按 [`Client::register_tool`] 的规则重新给出标准意图的警告；改了 `cache`、`risk`
+    /// 或 `annotations` 时重新给出 `cache` 的只读警告。
     pub fn update_tool(&mut self, tool: ToolId, update: ToolUpdate) -> Result<(), CoreError> {
-        let recheck = update.implements.is_some() || update.input_schema.is_some();
+        let recheck_intents = update.implements.is_some() || update.input_schema.is_some();
+        let recheck_cache = update.cache.is_some() || update.risk.is_some() || update.annotations.is_some();
         self.registry.update_tool(tool, update)?;
-        if recheck {
-            let warnings = self.registry.tool(tool).map(registry::intent_warnings).unwrap_or_default();
-            for w in warnings {
-                self.warn(w);
-            }
+        let def = self.registry.tool(tool);
+        let intent_warnings = def.filter(|_| recheck_intents).map(registry::intent_warnings).unwrap_or_default();
+        let cache_warning = def.filter(|_| recheck_cache).and_then(registry::cache_warning);
+        for w in intent_warnings.into_iter().chain(cache_warning) {
+            self.warn(w);
         }
         self.settle_busy();
         Ok(())

@@ -426,6 +426,7 @@ fn subscribed_hour(realtime: bool, legacy: bool) -> Sim {
             scope: None,
             realtime,
             annotations: None,
+            cache: None,
         })
         .unwrap();
     s.start();

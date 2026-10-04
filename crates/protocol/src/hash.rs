@@ -103,6 +103,7 @@ mod tests {
                     page: None,
                     background_tool: None,
                     implements: Vec::new(),
+                    cache: None,
                 },
                 ToolInfo {
                     name: "cart.checkout".into(),
@@ -117,6 +118,7 @@ mod tests {
                     page: None,
                     background_tool: None,
                     implements: Vec::new(),
+                    cache: None,
                 },
             ],
         }
@@ -124,7 +126,7 @@ mod tests {
 
     fn vector_resources() -> ResourcesSyncParams {
         ResourcesSyncParams {
-            resources: vec![ResourceInfo { name: "cart.state".into(), description: "购物车".into(), mime_type: None, realtime: false, annotations: None }],
+            resources: vec![ResourceInfo { name: "cart.state".into(), description: "购物车".into(), mime_type: None, realtime: false, annotations: None, cache: None }],
         }
     }
 
@@ -187,6 +189,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parsed.implements, ["link.open@1"]);
+    }
+
+    /// `cache` 只在声明时序列化：未声明的固定向量不变；声明后摘要变化，且有独立的固定向量（spec/protocol.md 3.6）。
+    #[test]
+    fn cache_serialized_only_when_declared() {
+        use crate::{CachePolicy, CacheScope};
+        let (plain_t, plain_r) = (vector_tools(), vector_resources());
+        assert!(!serde_json::to_string(&plain_t).unwrap().contains("cache"));
+        assert!(!serde_json::to_string(&plain_r).unwrap().contains("cache"));
+        let mut t = plain_t.clone();
+        t.tools[0].cache = Some(CachePolicy { ttl_ms: 60_000, scope: CacheScope::Private });
+        let mut r = plain_r.clone();
+        r.resources[0].cache = Some(CachePolicy { ttl_ms: 5_000, scope: CacheScope::Shared });
+        let base = tools_hash(&plain_t, &plain_r);
+        assert_ne!(tools_hash(&t, &plain_r), base, "工具 cache 进摘要");
+        assert_ne!(tools_hash(&plain_t, &r), base, "资源 cache 进摘要");
+        // sha256('{"resources":[{"cache":{"scope":"shared","ttlMs":5000},…}],"tools":[…{"cache":{"ttlMs":60000},…"name":"todo.add"…}]}')
+        assert_eq!(tools_hash(&t, &r), "88a35869a3622734");
+        let parsed: ToolInfo = serde_json::from_value(
+            json!({"name": "a", "description": "d", "inputSchema": {"type": "object"}, "cache": {"ttlMs": 1, "scope": "shared"}}),
+        )
+        .unwrap();
+        assert_eq!(parsed.cache, Some(CachePolicy { ttl_ms: 1, scope: CacheScope::Shared }));
     }
 
     #[test]

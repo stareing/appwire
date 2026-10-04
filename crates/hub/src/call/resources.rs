@@ -3,13 +3,14 @@
 use std::sync::Arc;
 
 use app_mcp_protocol::ErrorKind;
-use rmcp::model::{ErrorCode, ReadResourceRequestParams, ReadResourceResult, ResourceContents, ResultType};
+use rmcp::model::{ErrorCode, MetaObject, ReadResourceRequestParams, ReadResourceResult, ResourceContents, ResultType};
 use rmcp::{ErrorData as McpError, Peer, RoleClient, ServiceError};
 use serde_json::{Value, json};
 
 use crate::hub::{DEFAULT_MIME, HubShared, parse_resource_uri};
 use crate::limits::Payload;
-use crate::names::BUILTIN_APP_ID;
+use crate::names::{BUILTIN_APP_ID, META_CACHED};
+use crate::result_cache::ResourceCacheHint;
 use crate::task::CallerKey;
 use crate::types::ResourceContent;
 use crate::upstream::decode_uri_component;
@@ -17,11 +18,15 @@ use crate::upstream::decode_uri_component;
 use super::results::to_mcp_error;
 
 /// 读取资源（MCP 出口与 Hub API 共用）。上游的协议错误原样返回。
+///
+/// @input bypass 不查只读结果缓存（请求 `_meta` 的 `dev.appwire/cache: "bypass"`，spec/hub-api.md 3.20）。
+/// @output App 资源声明了 `cache` 时另返回缓存提示（MCP 出口据此设 `ttlMs` / `cacheScope`）。
 pub(crate) async fn read_resource(
     shared: &Arc<HubShared>,
     uri: &str,
     caller: &CallerKey,
-) -> Result<ReadResourceResult, McpError> {
+    bypass: bool,
+) -> Result<(ReadResourceResult, Option<ResourceCacheHint>), McpError> {
     let Some((app_id, name)) = parse_resource_uri(uri) else {
         return Err(McpError::resource_not_found(
             format!("无法识别的资源 URI：{uri}"),
@@ -30,24 +35,37 @@ pub(crate) async fn read_resource(
     };
     let _activity = shared.session_request(caller);
     if uri == crate::names::RESOURCE_APPS_EVENTS_URI {
-        return shared.read_events_self(uri, caller);
+        return shared.read_events_self(uri, caller).map(|r| (r, None));
     }
     if app_id == BUILTIN_APP_ID {
-        return crate::hub_state::read_hub_state(shared, name, uri, caller);
+        return crate::hub_state::read_hub_state(shared, name, uri, caller).map(|r| (r, None));
     }
     if shared.app_hidden_hit(app_id) {
         return Err(McpError::resource_not_found(format!("资源「{uri}」不存在"), Some(json!({ "kind": ErrorKind::ResourceNotFound }))));
     }
     if let Some(peer) = shared.upstream_peer(app_id) {
-        return read_upstream_resource(shared, app_id, name, uri, peer).await;
+        return read_upstream_resource(shared, app_id, name, uri, peer).await.map(|r| (r, None));
     }
+    // 只读结果缓存（spec/hub-api.md 3.20）：命中不唤醒、不转发。
+    let policy = shared.resource_cache_policy(app_id, name);
+    if let Some(policy) = policy.filter(|_| !bypass)
+        && let Some((contents, hint)) = shared.lookup_resource_cache(caller, app_id, name, policy)
+    {
+        let mut r = ReadResourceResult::new(vec![contents]);
+        if let Some(age) = hint.age_ms {
+            r.meta.get_or_insert_with(MetaObject::new).insert(META_CACHED.to_owned(), json!({ "ageMs": age }));
+        }
+        return Ok((r, Some(hint)));
+    }
+    let epoch = shared.cache_epoch();
     let (info, result) = shared
         .read_app_resource(app_id, name, shared.selected_for(caller, app_id), caller)
         .await
         .map_err(|e| to_mcp_error(&e))?;
     let contents = resource_contents(uri, info.mime_type.as_deref(), result);
     check_resource_size(shared, app_id, uri, std::slice::from_ref(&contents))?;
-    Ok(ReadResourceResult::new(vec![contents]))
+    let hint = policy.map(|p| shared.store_resource_cache(caller, app_id, name, p, &contents, epoch));
+    Ok((ReadResourceResult::new(vec![contents]), hint))
 }
 
 async fn read_upstream_resource(

@@ -105,6 +105,7 @@ impl Session {
                 let options = ResourceOptions {
                     realtime,
                     annotations,
+                    cache: None,
                 };
                 let handle = match registrar {
                     Some(scope) => scope.register_resource_with(spec, options, reader)?,

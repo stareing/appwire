@@ -306,6 +306,13 @@ interface ToolInfo {
   page?: string            // 所在页面名（3.4），[a-zA-Z0-9_.-]{1,64}
   backgroundTool?: string  // 后台替代（3.4）：只对 view 工具有意义，同一 App 中一个 app 工具的局部名
   implements?: string[]    // 实现的标准意图（spec/intents.md），如 ["message.send@1"]；空时不序列化
+  cache?: CachePolicy      // 结果可由 Hub 缓存（3.6）；只对生效注解 readOnlyHint 为 true 的工具生效
+}
+
+// 结果缓存声明（3.6，第 16 项 O3）
+interface CachePolicy {
+  ttlMs: number            // 1..=86_400_000（24 h）
+  scope?: "private" | "shared"   // 缺省 private（按调用方主体隔离）；shared 时所有调用方共用，private 时不序列化
 }
 
 type ToolSurface = "app" | "view"
@@ -350,6 +357,7 @@ interface ResourceInfo {
   mimeType?: string
   realtime?: boolean       // 需实时推送：被订阅时 SDK 保持连接（spec/lifecycle.md 第 13 节 B3）；缺省 false，只在 true 时序列化
   annotations?: ContentAnnotations  // 资源内容的标注（3.2）
+  cache?: CachePolicy      // 读取结果可由 Hub 缓存（3.6）
 }
 interface ResourcesSyncParams { resources: ResourceInfo[] }
 interface ResourcesChangedParams { upserted: ResourceInfo[]; removed: string[] }
@@ -534,6 +542,21 @@ interface EventEmitParams { name: string; eventId: string; payload?: object }
 - **Host 行为**：按 `(连接, eventId)` 去重（SDK 不重发事件，`eventId` 只在进程内唯一，不跨连接去重）；名称不在该实例的运行时声明与清单 `events` 中、载荷超限或不是对象 → 丢弃，记一条 Hub
   日志并计入 `HubStatus.events` 的丢弃数，不回复（通知）。
 - 旧 Host 不认识 `events/*` 时按未知通知忽略（只记日志），SDK 无从得知；需要确认送达时 App 不应依赖事件。
+
+### 3.6 结果缓存声明（第 16 项 O3）
+
+App 可在工具或资源声明中给出 `cache`，表示**在 `ttlMs` 内相同请求的结果可以复用**——缓存多久、能否跨调用方共用是 App 的判断
+（它知道数据多快变化、是否与调用方有关），Hub 只执行（spec/hub-api.md 3.20）。未声明的一律不缓存；"只读"不等于可缓存
+（读时钟、读实时行情），所以不从 `risk` / 注解推导。
+
+- 工具：只在生效注解（3.2）`readOnlyHint` 为 `true` 时生效；写工具上的 `cache` 被忽略（清单校验与 SDK 注册给出警告，不报错）。
+  相同请求 = 同一工具、规范化后相同的 `arguments`（对象键按字节序排序）。
+- 资源：相同请求 = 同一资源名。
+- `scope: "shared"` 只应用于结果与调用方无关的数据；缺省 `private`。
+- 声明进 `toolsHash`（8.4，只在给出时序列化）。SDK 只校验格式（`ttlMs` 范围、`scope` 取值；越界时注册 / 更新失败，原生为
+  `InvalidConfig`），不缓存。
+- 失效（Hub 执行）：TTL 到期；同一 App 的写调用完成、`tools/changed` / `tools/sync` / `resources/changed` / `resources/sync`；
+  资源另按 `resources/updated` 与调用结果的 `stateHints` 定向失效。休眠与断开**不**使缓存失效。
 
 ## 4. 错误
 

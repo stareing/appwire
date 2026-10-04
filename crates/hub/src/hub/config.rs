@@ -163,6 +163,8 @@ pub struct HubConfig {
     /// `apps.intents` 把默认工具排在最前并标 `default: true`，Hub 不按它路由。默认空；不合法时按空表启动并记入
     /// `status().intents.last_error`。运行中可用 [`Hub::set_intent_defaults`](crate::Hub::set_intent_defaults) 替换。
     pub intent_defaults: BTreeMap<String, String>,
+    /// 只读结果缓存的上限（第 16 项 O3，spec/hub-api.md 3.20）；`max_entries: 0` 关闭缓存。默认见 [`crate::CacheLimits`]。
+    pub result_cache: crate::result_cache::CacheLimits,
 }
 
 /// [`HubConfig::max_task_handles`] 的默认值。
@@ -279,6 +281,7 @@ impl Default for HubConfig {
             agents: crate::agents::AgentsConfig::default(),
             event_limits: crate::events::EventLimits::default(),
             intent_defaults: BTreeMap::new(),
+            result_cache: crate::result_cache::CacheLimits::default(),
         }
     }
 }

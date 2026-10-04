@@ -120,6 +120,7 @@ impl Shared {
                 page: options.page,
                 background_tool: options.background_tool,
                 implements: options.implements,
+                cache: options.cache,
                 concurrency: options.concurrency,
                 exclusive: options.exclusive,
             })
@@ -158,6 +159,7 @@ impl Shared {
                 scope,
                 realtime: options.realtime,
                 annotations: options.annotations,
+                cache: options.cache,
             })
             .map_err(core_error)?;
         st.resources.insert(id, ResourceEntry { reader, scope });

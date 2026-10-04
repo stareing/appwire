@@ -12,6 +12,7 @@ mod test_support;
 #[allow(dead_code)]
 mod test_bus;
 
+mod cache;
 mod channel;
 mod conformance;
 mod events;

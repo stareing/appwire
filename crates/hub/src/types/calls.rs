@@ -31,6 +31,9 @@ pub struct CallRequest {
     /// 调用优先级（第 16 项 P6）：原样转交 App（`ToolsInvokeParams.priority`），App SDK 的调用队列先按它、再按到达顺序调度；
     /// MCP 出口取自请求 `_meta` 的 `dev.appwire/priority`（spec/hub-api.md 3.15）。默认 normal。
     pub priority: CallPriority,
+    /// 不查只读结果缓存、照常调用并以新结果覆盖（spec/hub-api.md 3.20）；MCP 出口取自请求 `_meta` 的
+    /// `dev.appwire/cache: "bypass"`。默认 `false`。
+    pub cache_bypass: bool,
 }
 
 impl CallRequest {
@@ -77,6 +80,10 @@ pub struct CallOutcome {
     /// （`apps.activate` / `apps.navigate` 的结果自带 `woke`）。
     #[serde(default)]
     pub woke: bool,
+    /// 结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数；未命中为 `None`（spec/hub-api.md 3.20，
+    /// 与 MCP 结果 `_meta` 的 `dev.appwire/cached.ageMs` 相同）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_age_ms: Option<u64>,
 }
 
 /// Hub 操作失败：[`ToolError`] 的包装（同一套错误码，spec/protocol.md §4）。

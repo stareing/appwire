@@ -73,11 +73,17 @@ fn json_shapes() {
         routed_to: None,
         duration_ms: 5,
         woke: true,
+        cached_age_ms: None,
     };
     let v = serde_json::to_value(&o).unwrap();
+    assert!(v.get("cachedAgeMs").is_none(), "未命中时不序列化");
     assert_eq!((v["durationMs"].clone(), v["woke"].clone()), (json!(5), json!(true)));
     assert_eq!(v["result"]["error"]["kind"], "USER_REJECTED");
     assert!(v.get("routedTo").is_none(), "未改调时不序列化");
     let back: CallOutcome = serde_json::from_value(v).unwrap();
     assert_eq!(back, o);
+    let hit = CallOutcome { cached_age_ms: Some(1500), ..o };
+    let v = serde_json::to_value(&hit).unwrap();
+    assert_eq!(v["cachedAgeMs"], 1500);
+    assert_eq!(serde_json::from_value::<CallOutcome>(v).unwrap(), hit);
 }

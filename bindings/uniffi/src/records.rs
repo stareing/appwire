@@ -102,6 +102,7 @@ impl From<ToolSpec> for (native::ToolSpec, native::ToolOptions) {
             concurrency: s.concurrency,
             exclusive: s.exclusive,
             implements: s.implements,
+            cache: None,
         };
         (n, options)
     }
@@ -185,7 +186,7 @@ pub struct ResourceSpec {
 impl From<ResourceSpec> for (native::ResourceSpec, native::ResourceOptions) {
     fn from(s: ResourceSpec) -> Self {
         let spec = native::ResourceSpec { name: s.name, description: s.description, mime_type: s.mime_type };
-        let options = native::ResourceOptions { realtime: s.realtime, annotations: s.annotations.map(Into::into) };
+        let options = native::ResourceOptions { realtime: s.realtime, annotations: s.annotations.map(Into::into), cache: None };
         (spec, options)
     }
 }

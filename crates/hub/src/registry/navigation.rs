@@ -101,6 +101,18 @@ impl Registry {
         registered.or_else(dormant).or_else(|| entry.manifest.as_ref()?.tool(name)).cloned()
     }
 
+    /// App 的某个资源的已知声明：已连接实例（按路由优先级）→ 休眠实例快照 → 清单（同 [`Self::app_tool`] 的顺序）。
+    pub fn app_resource(&self, app_id: &str, name: &str) -> Option<app_mcp_protocol::ResourceInfo> {
+        let entry = self.apps.get(app_id)?;
+        let registered =
+            entry.ordered(None, |i| i.resources.contains_key(name)).into_iter().next().and_then(|i| i.resources.get(name));
+        let dormant = || {
+            entry.dormant_ordered(None, |d| d.resources.contains_key(name)).into_iter().next().and_then(|d| d.resources.get(name))
+        };
+        let declared = || entry.manifest.as_ref()?.meta().resources.iter().find(|r| r.name == name);
+        registered.or_else(dormant).or_else(declared).cloned()
+    }
+
     /// App 没有已连接实例时的唤醒计划（不针对具体工具）：最近活跃（或选定）的休眠实例，否则按清单冷启动。
     /// 已有连接时为 `None`。
     pub fn wake_plan_app(&self, app_id: &str, selected: Option<&str>) -> Option<WakePlan> {

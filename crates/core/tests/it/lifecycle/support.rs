@@ -31,13 +31,14 @@ pub(crate) fn tool(name: &str) -> ToolDef {
         page: None,
         background_tool: None,
         implements: Vec::new(),
+        cache: None,
         concurrency: 0,
         exclusive: None,
     }
 }
 
 pub(crate) fn resource(name: &str) -> ResourceDef {
-    ResourceDef { name: name.into(), description: format!("{name} 资源"), mime_type: None, scope: None, realtime: false, annotations: None }
+    ResourceDef { name: name.into(), description: format!("{name} 资源"), mime_type: None, scope: None, realtime: false, annotations: None, cache: None }
 }
 
 pub(crate) fn sends(events: &[Event]) -> Vec<Value> {

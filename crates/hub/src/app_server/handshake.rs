@@ -235,19 +235,20 @@ pub(super) fn handle_handshake_request(
         req.id,
         hello_result(shared, conn, PairingStatus::Paired, Some(token), None, tools_current),
     ));
-    let snapshot = snapshot.filter(|_| tools_current);
-    Flow::Paired(register_instance_with(shared, conn, hello, origin, peer, snapshot))
+    Flow::Paired(register_instance_with(shared, conn, hello, origin, peer, snapshot, tools_current))
 }
 
 /// 实例（重新）连接：取出其休眠记录，并判断能否快速恢复。
-/// 同一 appId 以新的实例 ID 连接时，按配置移除该 App 的全部休眠记录。
+/// 同一 appId 以新的实例 ID 连接时，按配置移除该 App 的全部休眠记录；此时返回其中最近活跃的一条（不能快速恢复，
+/// 只作首次全量同步的比较基准）。
 fn take_resume(shared: &Arc<HubShared>, hello: &HelloParams) -> (Option<DormantInstance>, bool) {
     let mut reg = shared.registry();
     let Some(d) = reg.take_dormant(&hello.app_id, &hello.instance_id) else {
-        let removed = if shared.config.dormant_replaced_by_new_instance {
-            reg.clear_dormant(&hello.app_id)
+        let (removed, latest) = if shared.config.dormant_replaced_by_new_instance {
+            let latest = reg.latest_dormant(&hello.app_id);
+            (reg.clear_dormant(&hello.app_id), latest)
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
         drop(reg);
         shared.dormant_removed(
@@ -256,7 +257,7 @@ fn take_resume(shared: &Arc<HubShared>, hello: &HelloParams) -> (Option<DormantI
                 .map(|i| (hello.app_id.clone(), i))
                 .collect(),
         );
-        return (None, false);
+        return (latest, false);
     };
     drop(reg);
     shared.mark_dormant_dirty(&hello.app_id);
@@ -288,7 +289,8 @@ pub(super) fn send_pairing_result(
     );
 }
 
-/// 登记已配对的实例并通知变化。`snapshot` 为快速恢复时沿用的休眠快照。
+/// 登记已配对的实例并通知变化。`snapshot` 为回连时取出的休眠快照：`tools_current` 时快速恢复沿用，
+/// 否则只作首次全量同步的比较基准（[`crate::registry::Registry::remember_prior`]）。
 pub(super) fn register_instance_with(
     shared: &Arc<HubShared>,
     conn: &Arc<Connection>,
@@ -296,6 +298,7 @@ pub(super) fn register_instance_with(
     origin: Option<&str>,
     peer: Peer,
     snapshot: Option<DormantInstance>,
+    tools_current: bool,
 ) -> Registered {
     let replaced = shared.registry().add_instance(
         &hello.app_id,
@@ -317,9 +320,13 @@ pub(super) fn register_instance_with(
         tracing::info!(cid = %conn.cid, old_cid = %old.cid, app_id = %hello.app_id, instance_id = %hello.instance_id, "同一实例重新连接，替换旧连接");
         old.close();
     }
-    if let Some(snap) = &snapshot {
-        shared.registry().restore_snapshot(&hello.app_id, conn.id, snap);
-        shared.ensure_subscriptions(&hello.app_id);
+    match snapshot {
+        Some(snap) if tools_current => {
+            shared.registry().restore_snapshot(&hello.app_id, conn.id, &snap);
+            shared.ensure_subscriptions(&hello.app_id);
+        }
+        Some(snap) => shared.registry().remember_prior(&hello.app_id, conn.id, snap),
+        None => {}
     }
     tracing::info!(cid = %conn.cid, app_id = %hello.app_id, instance_id = %hello.instance_id, ?origin, %peer, "实例已配对");
     shared.emit(HubEvent::AppConnected {

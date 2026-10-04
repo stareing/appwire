@@ -179,6 +179,20 @@ impl HubShared {
         if let Err(e) = self.check_call_policy(app_id, tool, ctx.agent()).and_then(|()| self.check_app_lock(app_id, Some(tool), &ctx.caller)) {
             return inv(Some(app_id), Body::App(Err(e)));
         }
+        // 只读结果缓存（spec/hub-api.md 3.20）：策略与对象锁之后、限流 / 唤醒 / 派发之前；命中不唤醒、不转发。
+        if !ctx.cache_bypass
+            && let Some(hit) = self.lookup_tool_cache(&ctx.caller, app_id, tool, &args, ctx.instance_id.as_deref())
+        {
+            let mut out = inv(Some(app_id), Body::App(Ok(hit.result)));
+            out.instance_id = hit.instance_id;
+            out.output_shape = hit.output_shape;
+            out.cached_age_ms = Some(hit.age_ms);
+            out.overview = self.attach_overview(&ctx.caller, app_id);
+            self.expose_in_session(&ctx, app_id);
+            return out;
+        }
+        let cache_epoch = self.cache_epoch();
+        let cache_args = args.clone();
         // 后台替代（spec/hub-api.md 3.14）：view 工具够不着且已知 App 在后台 → 直接改调声明的 app 工具；
         // 否则照常（导航），导航因 App 不能自行回到前台被拒（USER_ACTION_REQUIRED / foreground）时再改调。
         let prefer = ctx.instance_id.clone().or_else(|| self.selected_for(&ctx.caller, app_id));
@@ -206,6 +220,8 @@ impl HubShared {
             run.woke |= first_woke;
             routed_to = Some(alt);
         }
+        let invoked = routed_to.as_deref().unwrap_or(tool);
+        self.settle_tool_cache(&ctx.caller, app_id, invoked, routed_to.is_some(), &cache_args, &run, cache_epoch);
         let mut out = inv(Some(app_id), Body::App(run.result));
         out.instance_id = run.instance_id;
         out.output_shape = run.output_shape;

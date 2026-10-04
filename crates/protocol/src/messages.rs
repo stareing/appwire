@@ -471,10 +471,12 @@ pub struct LeaseParams {
     pub adaptive: bool,
 }
 
+mod cache;
 mod events;
 mod resources;
 mod tools;
 
+pub use cache::*;
 pub use events::*;
 pub use resources::*;
 pub use tools::*;

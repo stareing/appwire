@@ -148,6 +148,9 @@ pub enum CoreError {
     /// 工具 `implements` 格式不合法、重复或超过 4 项（spec/intents.md 第 1 节）。
     #[error("invalid implements: {0}")]
     InvalidImplements(String),
+    /// 工具 / 资源 `cache.ttlMs` 不在 1..=[`MAX_CACHE_TTL_MS`] 内（spec/protocol.md 3.6）。
+    #[error("invalid cache: {0}")]
+    InvalidCache(String),
 }
 
 impl ConnectionState {

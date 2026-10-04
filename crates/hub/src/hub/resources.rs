@@ -190,6 +190,8 @@ impl HubShared {
 
     /// SDK 报告资源内容变化：发事件，并通知订阅了该资源的订阅方（legacy 会话与 listen 流）。
     pub(crate) fn resource_updated(self: &Arc<Self>, app_id: &str, name: &str) {
+        // 只读结果缓存（spec/hub-api.md 3.20）：隐藏的 App 同样失效（策略撤销后不应读到旧内容）。
+        self.invalidate_resource_cache(app_id, name);
         // 被 `hide` 隐藏的 App 的资源变化不通知（隐藏前建立的订阅也不再收到）。
         if self.app_hidden(app_id) {
             return;

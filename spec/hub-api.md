@@ -1121,6 +1121,8 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `dev.appwire/idempotencyKey` | 请求 `_meta`（`tools/call`） | Agent 的幂等键（下文） |
 | `dev.appwire/priority` | 请求 `_meta`（`tools/call`） | Agent 给出的调用优先级（下文）；无旧前缀键 |
 | `dev.appwire/taskId` | 请求 `_meta`（`tools/call`，可选） | 任务句柄，与参数 `taskId` 等价、对任何工具调用生效（3.6「任务句柄」）；无旧前缀键 |
+| `dev.appwire/cache` | 请求 `_meta`（`tools/call` / `resources/read`，可选） | `"bypass"`：不查缓存、照常调用并以新结果覆盖（3.20）；其他值 `INVALID_INPUT`；无旧前缀键 |
+| `dev.appwire/cached` | 结果 `_meta`（命中缓存时） | `{ageMs}`：结果来自缓存，距 App 产出的毫秒数（3.20）；未命中不写 |
 
 **调用元信息**（第 19 项 R4）：`callId`、`durationMs` 在每个工具调用结果（含错误结果、内置与上游工具）的 `_meta` 中；`instanceId`、
 `woke` 见上表。只增字段：各 Hub 绑定按 JSON 透传 `CallOutcome` 的（hub-c v14、hub-node、`@app-mcp/hub`）带 `durationMs`、`woke`；
@@ -1361,6 +1363,38 @@ App 发出的事件（spec/protocol.md 3.5）经 Hub 投递到订阅方的**信�
 行为、上限与各语言接口的唯一定义在 `spec/intents.md` 第 4、5 节，这里只列入口：内置工具 `apps.intents {intent?}`（不唤醒，总是列出）；
 `HubConfig.intent_defaults`、`Hub::set_intent_defaults`、`Hub::intents()`、`HubStatus.intents`；`HubTool.implements`；
 Host `POST /intents` 与 `app-mcp-host intents` 子命令。实现：`crates/hub/src/intents/`。
+
+### 3.20 只读结果缓存（第 16 项 O3）
+
+App 在工具 / 资源声明中给出 `cache: {ttlMs, scope?}`（spec/protocol.md 3.6）时，Hub 在 TTL 内复用结果：**命中不唤醒 App、不发
+`tools/invoke` / `resources/read`**。缓存多久、能否跨调用方共用是 App 的策略，Hub 只执行；未声明的不缓存。
+
+- **适用**：App 工具（生效注解 `readOnlyHint: true` 且声明了 `cache`）与 App 资源（声明了 `cache`）；不含内置工具、上游工具、
+  页面目录中尚未注册的工具（声明以 App 实际注册 / 休眠快照 / 清单中的为准，同 `tools/list`）。
+- **键**：（范围, appId, 工具局部名 + 规范化 `arguments` | 资源名）。范围：`scope: "private"`（缺省）为调用方的记账主体
+  （3.6，`agent:<名>` / `local` / 任务句柄的主体 / Hub API 调用方 `api`），`"shared"` 为全体调用方共用。
+- **查询顺序**：策略（`hide` / `deny`，3.13）、对象锁（3.6）、参数校验照常先做；随后查缓存，命中直接返回；未命中按原路径调用
+  （限流、唤醒、导航、派发），得到结果后按下文条件存入。命中不消耗每 App 调用限流与唤醒配额（它们保护 App），计入调用日志与
+  `apps.search` 使用统计（成功）；参数先按已知定义的 `inputSchema` 校验，不通过走原路径。
+- **存入条件**：成功结果（非 `isError`）、`status` 为 `done`（缺省）或 `noop`（`pending` / `partial` 不存）、键与序列化后的结果合计
+  ≤ `max_entry_bytes`（超出时不存，并作废同键旧值）；结果的 `stateHints` 先使所点名资源失效再存。调用进行期间该 Hub 发生过任何失效
+  （写调用完成、`resources/updated`、`stateHints`）时本次结果不存（全局代数计数，无定时器）。
+- **实例**：调用指定了实例（`CallRequest.instance_id`）时只命中该实例产出的结果。定义查不到的工具按非只读处理（完成时清空该 App）。
+- **失效**：TTL 到期（访问时惰性判断，**不设定时器**）；同一 App 的任一非只读工具调用完成（含失败、超时、取消）、
+  `tools/changed` / `resources/changed` → 清空该 App 全部条目；`tools/sync` / `resources/sync`（握手时发送）只在与 Hub 此前已知的
+  声明不同时清空：按名称逐项比较新列表中的每一项与此前已知的定义（本实例回连前的声明 → 其他已连接实例 → 休眠快照 → 清单），
+  本实例此前声明过而新列表没有的名称也算不同——冷启动后的数据新旧由 TTL 兜底，与休眠期间相同；`resources/updated` 与任一调用结果的
+  `stateHints` → 清该资源的条目。休眠、断开、Hub API 的 `set_policy` **不**清（策略在查缓存前检查）。
+- **绕过**：请求 `_meta` `dev.appwire/cache: "bypass"`（Hub API `CallRequest.cache_bypass`）不查缓存，照常调用后以新结果覆盖。
+- **命中时的结果**：内容与原结果相同；`_meta` 照常带新的 `callId`、`durationMs`，`woke: false`，`instanceId` 为原结果的实例，
+  另加 `dev.appwire/cached: {ageMs}`（Hub API 为 `CallOutcome.cached_age_ms`）。命中不记 `UsageEvent::Call`（按 Agent 记账的是
+  App 的实际执行）。MCP 出口 `resources/read` 对声明了 `cache` 的资源把 `ttlMs` 设为剩余 TTL、`cacheScope`
+  按 `scope`（`shared` → `public`，`private` → `private`）；未声明的仍为 `ttlMs: 0`（3.7）；有会话（legacy）的
+  `resources/read` 不带这两个字段（同 3.7）。
+- **上限**（`HubConfig.result_cache`，`CacheLimits`）：`max_entries` 1024、`max_bytes` 8 MiB（键 + 序列化结果）、`max_entry_bytes` 64 KiB；超出时淘汰最久未用的
+  条目；`max_entries: 0` 关闭缓存。只在内存，Hub 重启清空。
+- **观测**：`HubStatus.cache {entries, bytes, hits, misses, evictions}`；Host `status` 摘要与 `doctor` 列出；`app-mcp://apps/hub` 同。
+- 实现：`crates/hub/src/result_cache/`。
 
 ## 4. 进程内 App（可选，M2）
 

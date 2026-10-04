@@ -13,6 +13,7 @@ use tokio::time::Instant;
 use crate::connection::Connection;
 use crate::hub::{HubShared, lock};
 use crate::lifecycle::SLEEP_RETRY_AFTER_MS;
+use crate::registry::{sanitize_resources, sanitize_tools};
 use crate::types::{DiagnosticReport, HubEvent};
 
 use super::{Registered, parse_params};
@@ -121,13 +122,19 @@ pub(super) fn handle_notification(
         method::TOOLS_SYNC => {
             let p = params!(ToolsSyncParams);
             warn_prefixed_names(conn, app_id, &p.tools);
-            if shared.registry().sync_tools(app_id, conn.id, p.tools) {
+            let tools = sanitize_tools(app_id, p.tools);
+            // @why 握手时的全量同步只在声明变化时清缓存：冷启动后的数据新旧由条目 TTL 兜底（spec/hub-api.md 3.20）。
+            if shared.registry().tools_declaration_differs(app_id, conn.id, &tools) {
+                shared.invalidate_app_cache(app_id);
+            }
+            if shared.registry().sync_sanitized_tools(app_id, conn.id, tools) {
                 shared.mark_tools_changed();
             }
         }
         method::TOOLS_CHANGED => {
             let p = params!(ToolsChangedParams);
             warn_prefixed_names(conn, app_id, &p.upserted);
+            shared.invalidate_app_cache(app_id);
             if shared
                 .registry()
                 .change_tools(app_id, conn.id, p.upserted, p.removed)
@@ -137,9 +144,14 @@ pub(super) fn handle_notification(
         }
         method::RESOURCES_SYNC => {
             let p = params!(ResourcesSyncParams);
+            let resources = sanitize_resources(app_id, p.resources);
+            // @why 同 `tools/sync`：声明未变时保留缓存，数据新旧由 TTL 兜底。
+            if shared.registry().resources_declaration_differs(app_id, conn.id, &resources) {
+                shared.invalidate_app_cache(app_id);
+            }
             if shared
                 .registry()
-                .sync_resources(app_id, conn.id, p.resources)
+                .sync_sanitized_resources(app_id, conn.id, resources)
             {
                 shared.mark_resources_changed();
             }
@@ -147,6 +159,7 @@ pub(super) fn handle_notification(
         }
         method::RESOURCES_CHANGED => {
             let p = params!(ResourcesChangedParams);
+            shared.invalidate_app_cache(app_id);
             if shared
                 .registry()
                 .change_resources(app_id, conn.id, p.upserted, p.removed)

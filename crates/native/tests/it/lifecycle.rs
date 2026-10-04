@@ -379,6 +379,7 @@ fn realtime_resource_and_background_sleep_reach_the_wire() {
     let options = ResourceOptions {
         realtime: true,
         annotations: Some(ContentAnnotations { priority: Some(0.8), ..ContentAnnotations::default() }),
+        cache: None,
     };
     let _order = client
         .register_resource_with(spec, options, Arc::new(Order))
