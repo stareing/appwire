@@ -15,6 +15,7 @@ function fakeBinding() {
     shutdown: false,
     policy: undefined as unknown,
     agents: undefined as unknown,
+    intentDefaults: undefined as unknown,
   }
   const native: NativeHub = {
     get listenAddr() {
@@ -50,6 +51,12 @@ function fakeBinding() {
     },
     setAgents: (json) => {
       state.agents = JSON.parse(json)
+    },
+    intents: () => JSON.stringify({ defaults: state.intentDefaults ?? {}, lastError: 'x' }),
+    setIntentDefaults: (json) => {
+      const d = JSON.parse(json) as Record<string, string>
+      if ('bad verb' in d) throw new Error('[INVALID_INPUT] 动词名不合法')
+      state.intentDefaults = d
     },
     tools: (f) => JSON.stringify([{ name: 'a.b', filter: f ? JSON.parse(f) : null }]),
     resources: () => '[]',
@@ -148,6 +155,18 @@ describe('Hub 封装', () => {
     })()
     expect(e).toBeInstanceOf(HubError)
     expect(e).toMatchObject({ kind: 'INVALID_INPUT' })
+  })
+
+  it('标准意图默认表：配置透传、setIntentDefaults 序列化、intents() 解析、不合法转为 HubError(INVALID_INPUT)', async () => {
+    const { binding, state } = fakeBinding()
+    const intentDefaults = { 'message.send': 'mail.compose.send' }
+    const hub = await Hub.start({ binding, keepAlive: false, intentDefaults })
+    expect(state.config).toEqual({ intentDefaults })
+    hub.setIntentDefaults({ 'message.send@1': 'chat.send' })
+    expect(state.intentDefaults).toEqual({ 'message.send@1': 'chat.send' })
+    expect(hub.intents()).toEqual({ defaults: { 'message.send@1': 'chat.send' }, lastError: 'x' })
+    expect(() => hub.setIntentDefaults({ 'bad verb': 'x.y' })).toThrow(expect.objectContaining({ kind: 'INVALID_INPUT' }))
+    expect(state.intentDefaults).toEqual({ 'message.send@1': 'chat.send' })
   })
 
   it('Agent 登记：配置透传、setAgents 序列化为数组', async () => {

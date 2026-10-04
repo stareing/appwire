@@ -77,6 +77,8 @@ public struct ToolDeclaration {
     public var concurrency: Int
     /// 互斥组名；`nil` = 未声明（spec/protocol.md 5.3）。
     public var exclusive: String?
+    /// 实现的标准意图（spec/intents.md）；`[]` = 未声明。
+    public var implements: [String]
 
     init(_ spec: ToolSpec) {
         description = spec.description
@@ -91,6 +93,7 @@ public struct ToolDeclaration {
         backgroundTool = spec.backgroundTool
         concurrency = Int(spec.concurrency)
         exclusive = spec.exclusive
+        implements = spec.implements
     }
 
     func applied(to spec: ToolSpec) -> ToolSpec {
@@ -107,6 +110,7 @@ public struct ToolDeclaration {
         next.backgroundTool = backgroundTool
         next.concurrency = UInt32(clamping: max(0, concurrency))
         next.exclusive = exclusive
+        next.implements = implements
         return next
     }
 }

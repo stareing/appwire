@@ -3,6 +3,7 @@
 import type { LimitsConfig, OutputValidation, PolicyStatus, Risk, ToolAnnotations, Visibility } from '../types.js'
 import type { InstanceInfo } from './apps.js'
 import type { EventsStatus } from './events.js'
+import type { IntentsStatus } from './intents.js'
 
 /** 主 HTTP 服务的令牌策略。 */
 export interface AuthStatus {
@@ -147,6 +148,8 @@ export interface HubStatus {
   calls?: CallStatus[]
   /** 事件订阅与丢弃统计（第 16 项 N3，spec/hub-api.md 3.17）；旧 Hub 不报告。 */
   events?: EventsStatus
+  /** 标准意图的机主默认表与最近的替换错误（spec/intents.md 第 4 节）；旧 Hub 不报告。 */
+  intents?: IntentsStatus
 }
 
 /**

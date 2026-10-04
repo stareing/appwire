@@ -81,6 +81,9 @@ appMcp.tool('notes.archive', {
 - No return value (`undefined` / `null`, no `summary`, status `done`): the Hub gives the model the fixed text
   "已完成" ("done") instead of `null`.
 - `handle.update({ annotations: undefined })` / `{ outputSchema: undefined }` clears a declaration.
+- `implements: ['message.send@1']` declares the standard intents (spec/intents.md) a tool implements, so agents can find it
+  via the built-in `apps.intents`; a malformed entry makes registration throw, an unknown verb only logs a warning.
+  `handle.update({ implements: undefined })` clears it.
 - Resources take optional `annotations` too (MCP content annotations, shown on the resource in MCP
   `resources/list`): `appMcp.resource('notes.list', { description, annotations: { audience: ['user'], priority: 0.5 }, read })`.
   A `read` that throws `ToolCallError` (including `ToolCallError.userActionRequired`) fails the read with that kind

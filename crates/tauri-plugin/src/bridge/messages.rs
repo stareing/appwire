@@ -13,6 +13,7 @@ impl ToolSpecMessage {
             background_tool: self.background_tool.take(),
             concurrency: self.concurrency,
             exclusive: self.exclusive.take(),
+            implements: std::mem::take(&mut self.implements),
         };
         (self.into_spec(name), options)
     }

@@ -500,6 +500,11 @@ export interface ToolDefinition<I = unknown, O = unknown> {
    * 只在 SDK 内调度，不发给 Host。
    */
   exclusive?: string
+  /**
+   * 实现的标准意图（spec/intents.md），如 `['message.send@1']`：每项 `<动词>@<主版本>`，最多 4 项、不重复；格式不合法时注册抛错，
+   * 未知动词或缺少词表必填参数只记警告。
+   */
+  implements?: string[]
   /** 网页中用于高亮的元素；Node 中忽略（保留字段以便与 @app-mcp/web 共用定义）。 */
   anchor?: unknown
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
@@ -529,7 +534,7 @@ export interface ToolHandle {
   readonly name: string
   /**
    * 更新描述、schema、风险、注解或启用状态；未提供的字段保持不变，显式给出 `undefined` 的字段恢复默认
-   * （`annotations` / `outputSchema` / `page` / `backgroundTool` / `exclusive` 为清除声明，`concurrency` 回到不限，`surface` 回到 `'app'`；旧版原生模块不支持清除，保持原声明）。
+   * （`annotations` / `outputSchema` / `page` / `backgroundTool` / `exclusive` / `implements` 为清除声明，`concurrency` 回到不限，`surface` 回到 `'app'`；旧版原生模块不支持清除，保持原声明）。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void
   /** 替换 handler（不产生协议消息）。 */

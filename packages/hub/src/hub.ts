@@ -24,6 +24,8 @@ import type {
   HubResource,
   HubStatus,
   HubTool,
+  IntentDefaults,
+  IntentsStatus,
   PairingHandler,
   PairingRequest,
   PolicyConfig,
@@ -178,6 +180,19 @@ export class Hub {
    */
   setPolicy(policy: PolicyConfig): void {
     wrapSync(() => this.#native.setPolicy(JSON.stringify(policy)))
+  }
+
+  /** 标准意图的机主默认表与最近一次替换失败的原因（spec/intents.md 第 4 节）。 */
+  intents(): IntentsStatus {
+    return wrapSync(() => JSON.parse(this.#native.intents()) as IntentsStatus)
+  }
+
+  /**
+   * 整体替换标准意图的机主默认表（spec/intents.md 第 4 节）；传 `{}` 清空。默认只是提示，Hub 不按它路由。
+   * 表不合法时抛 {@link HubError}（`kind = 'INVALID_INPUT'`），之前的默认表继续生效，原因记入 `intents().lastError`。
+   */
+  setIntentDefaults(defaults: IntentDefaults): void {
+    wrapSync(() => this.#native.setIntentDefaults(JSON.stringify(defaults)))
   }
 
   /**

@@ -111,6 +111,7 @@ export class ToolEntry implements ToolHandle, Child, LazySlot {
     if (d.backgroundTool !== undefined) spec.backgroundTool = d.backgroundTool
     if (d.concurrency !== undefined) spec.concurrency = d.concurrency
     if (d.exclusive !== undefined) spec.exclusive = d.exclusive
+    if (d.implements !== undefined && d.implements.length > 0) spec.implements = [...d.implements]
     return spec
   }
 

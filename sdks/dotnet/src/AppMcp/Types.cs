@@ -344,6 +344,10 @@ public sealed class ToolOptions
     public int Concurrency { get; init; }
     /// <summary>互斥组名（<c>[a-zA-Z0-9_.-]{1,64}</c>）：同组的工具同一时刻至多一个在执行；为 null 时不互斥（spec/protocol.md 5.3）。</summary>
     public string? Exclusive { get; init; }
+    /// <summary>实现的标准意图（spec/intents.md），每项 <c>"&lt;动词&gt;@&lt;主版本&gt;"</c>（如 <c>"message.send@1"</c>），最多 4 项、不重复；
+    /// 为 null 或空时不声明。格式不合法时注册 / 更新抛出 <see cref="AppMcpStatus.InvalidName"/> 的 <see cref="AppMcpException"/>。
+    /// Agent 用内置工具 <c>apps.intents</c> 按动词找到实现者。</summary>
+    public IReadOnlyList<string>? Implements { get; init; }
 }
 
 /// <summary>工具对界面的依赖（spec/protocol.md 3.4）。</summary>

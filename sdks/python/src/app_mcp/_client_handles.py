@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from . import app_mcp_uniffi as ffi
@@ -12,6 +13,7 @@ from ._client_convert import (
     SurfaceLike,
     ToolAnnotationsLike,
     _activation,
+    _implements,
     _risk,
     _schema_json,
     _surface,
@@ -56,12 +58,13 @@ class ToolHandle:
         background_tool: str | None | _Unset = _UNSET,
         concurrency: int | _Unset = _UNSET,
         exclusive: str | None | _Unset = _UNSET,
+        implements: Sequence[str] | _Unset = _UNSET,
     ) -> None:
         """修改定义：未给出的字段保持不变；显式传 ``None`` 清除该声明（恢复注册时的缺省）。
 
         ``input_schema=None`` 为无参数，``risk=None`` 为缺省风险，``surface=None`` 为 ``"app"``，``title`` /
         ``activation`` / ``annotations`` / ``output_schema`` / ``page`` / ``background_tool`` /
-        ``exclusive`` 为 ``None`` 时清除声明。``description`` 不可清除；``concurrency=0`` 为不单独限制。
+        ``exclusive`` 为 ``None`` 时清除声明。``description`` 不可清除；``concurrency=0`` 为不单独限制；``implements=[]`` 清除意图声明。
         """
         s = self._spec
         spec = _replace_spec(
@@ -78,6 +81,7 @@ class ToolHandle:
             background_tool=s.background_tool if background_tool is _UNSET else background_tool,
             concurrency=s.concurrency if concurrency is _UNSET else concurrency,
             exclusive=s.exclusive if exclusive is _UNSET else exclusive,
+            implements=s.implements if implements is _UNSET else _implements(implements),
         )
         self._inner.update(spec)
         self._spec = spec
@@ -103,6 +107,7 @@ def _replace_spec(spec: ffi.ToolSpec, **changes: Any) -> ffi.ToolSpec:
         "background_tool": spec.background_tool,
         "concurrency": spec.concurrency,
         "exclusive": spec.exclusive,
+        "implements": spec.implements,
     }
     fields.update(changes)
     return ffi.ToolSpec(**fields)

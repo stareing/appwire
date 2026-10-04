@@ -57,6 +57,8 @@ public sealed record HubStatusInfo(
     public IReadOnlyList<CallStatusInfo>? Calls { get; init; }
     /// <summary>事件订阅（各订阅的投递 / 丢弃数与订阅方积压）与丢弃的不合法事件数（第 16 项 N3，spec/hub-api.md 3.17）；旧 Hub 为 null。</summary>
     public EventsStatusInfo? Events { get; init; }
+    /// <summary>标准意图的机主默认表与最近的替换错误（第 16 项 N4，spec/intents.md 第 4 节）；旧 Hub 为 null。</summary>
+    public IntentsStatusInfo? Intents { get; init; }
 }
 
 /// <summary>调用阶段（只前进，不需要的阶段跳过）。</summary>

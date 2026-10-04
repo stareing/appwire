@@ -96,6 +96,8 @@ mcp.tool<OrderParams, Object | null>('order.submit', {
   `maxQueuedCalls`（排队中的调用数，缺省 64，0 = 不限；队列满时新调用以 `RATE_LIMITED` 拒绝，`data` 为 `{ scope: 'queue', limit }`）；
   工具可声明 `concurrency`（本工具同时执行的上限，缺省 / 0 = 不单独限制）与 `exclusive`（互斥组名，同组工具同一时刻至多一个在执行，
   如操作同一份文档的写工具），`update` 中给出 `null` 清除。
+- 标准意图（spec/intents.md）：工具可声明 `implements: ['message.send@1']`（每项 `<动词>@<主版本>`，最多 4 项），Agent 用 `apps.intents`
+  按动作找 App；格式不合法时注册抛错，`update` 中给出 `null` 清除。
 - 事件（spec/protocol.md 3.5）：`mcp.declareEvent({ name: 'order.shipped', description: '订单已发货', payloadSchema: '{"type":"object"}' })`
   声明（`payloadSchema` 为 JSON 文本，同名替换；已连接时随即同步给 Host，否则下次握手后同步，不触发连接），
   `mcp.emitEvent('order.shipped', { orderId: 'o1' } as Record<string, Object>)` 发出：已连接返回 `true`；未连接（休眠、断线、重连中）

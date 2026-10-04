@@ -20,7 +20,7 @@ const _sdk = 'dart';
 const _features = {
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', //
   'readFailure', 'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey',
-  'callScheduling', 'busy', 'events',
+  'callScheduling', 'busy', 'events', 'implements',
 };
 
 final String _repoRoot = Directory('${Directory.current.path}/../../..').absolute.path;
@@ -123,6 +123,7 @@ final class _CaseApp {
         backgroundTool: decl['backgroundTool'] as String?,
         concurrency: (decl['concurrency'] as num?)?.toInt() ?? 0,
         exclusive: decl['exclusive'] as String?,
+        implements: _strings(decl['implements']) ?? const [],
         handler: (args, ctx) => _runHandler(spec, ++runs, args, ctx));
   }
 
@@ -232,8 +233,12 @@ final class _CaseApp {
         'annotations' => _toolAnnotations(v),
         'inputSchema' || 'outputSchema' => _map(v),
         'surface' => v == null ? null : (v == 'view' ? ToolSurface.view : ToolSurface.app),
+        'implements' => _strings(v), // null 清除
         _ => v,
       };
+
+  /// JSON 字符串数组 → `List<String>`；null / 缺省为 null。
+  static List<String>? _strings(Object? v) => v == null ? null : [for (final e in v as List) e as String];
 
   /// handler 的 `mutate` 操作（conformance/README.md 2.3）。
   void _mutate(Map<String, Object?> op) {

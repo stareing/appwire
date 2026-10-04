@@ -136,6 +136,8 @@ public sealed class ToolScope : IDisposable
         Surface = (int)options.Surface,
         BackgroundTool = strings.Add(options.BackgroundTool),
         Exclusive = strings.Add(options.Exclusive),
+        Implements = strings.AddArray(options.Implements),
+        ImplementsLen = (nuint)(options.Implements?.Count ?? 0),
     };
 
     /// <summary>注册资源。reader 返回的对象序列化为资源内容。</summary>

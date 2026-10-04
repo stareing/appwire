@@ -83,6 +83,7 @@ appMcp.tool('cart.clear', { description: '清空购物车', handler: () => cart.
   插件原样转给 Rust 侧；信封字段取值不合法（如未知的 `status`）时与 web / node 一致，整个返回值作为 `data`（状态 `done`）；
   `annotations` 是对象但字段不合法时该次调用以 `HANDLER_ERROR` 结束。资源读取失败时页面错误的 `details`（如
   `USER_ACTION_REQUIRED` 的 `reason` / `uri`）同样随错误发给 Host。
+- **标准意图**：页面工具定义的 `implements`（spec/intents.md，如 `["link.open@1"]`）转为原生 `ToolOptions.implements`；`tool.update` 缺省即清除，格式不合法时登记被拒绝。
 
 ```rust
 use tauri_plugin_app_mcp::{CallResult, ResultStatus, ToolAnnotations, ToolOptions};

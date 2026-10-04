@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "app_mcp.hpp"
 
@@ -35,6 +36,13 @@ int g_passed = 0;
             std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
         }                                                                     \
     } while (0)
+
+/// 本测试共用的指针数组存储：返回值中的 implements 只在下一次调用前有效。
+std::vector<const char*> g_implements;
+
+AmToolOptions c_options(const app_mcp::ToolOptions& options) {
+    return app_mcp::detail::tool_options(options, std::nullopt, g_implements);
+}
 
 AmStatus status_of(const std::function<void()>& f) {
     try {
@@ -422,10 +430,10 @@ void test_navigation() {
     options.page = "cart";
     auto t = client.register_tool("cart.checkout", "结算", handler, options);
     EXPECT(static_cast<bool>(t));
-    EXPECT(app_mcp::detail::tool_options(options, std::nullopt).surface == AM_SURFACE_VIEW);
-    EXPECT(std::strcmp(app_mcp::detail::tool_options(options, std::nullopt).page, "cart") == 0);
-    EXPECT(app_mcp::detail::tool_options(app_mcp::ToolOptions{}, std::nullopt).page == nullptr);
-    EXPECT(app_mcp::detail::tool_options(app_mcp::ToolOptions{}, std::nullopt).surface == AM_SURFACE_APP);
+    EXPECT(c_options(options).surface == AM_SURFACE_VIEW);
+    EXPECT(std::strcmp(c_options(options).page, "cart") == 0);
+    EXPECT(c_options(app_mcp::ToolOptions{}).page == nullptr);
+    EXPECT(c_options(app_mcp::ToolOptions{}).surface == AM_SURFACE_APP);
     // 声明影响 toolsHash；页面名非法时注册失败。
     std::string before = client.tools_hash();
     options.page = "orders";
@@ -436,9 +444,9 @@ void test_navigation() {
     EXPECT(status_of([&] { client.register_tool("bad.page", "x", handler, bad); }) != AM_OK);
 
     // v15：backgroundTool 随声明传给 C 接口（影响 toolsHash），名称非法时更新失败；navigateInBackground 可设置。
-    EXPECT(app_mcp::detail::tool_options(app_mcp::ToolOptions{}, std::nullopt).background_tool == nullptr);
+    EXPECT(c_options(app_mcp::ToolOptions{}).background_tool == nullptr);
     options.background_tool = "cart.summary";
-    EXPECT(std::strcmp(app_mcp::detail::tool_options(options, std::nullopt).background_tool, "cart.summary") == 0);
+    EXPECT(std::strcmp(c_options(options).background_tool, "cart.summary") == 0);
     before = client.tools_hash();
     EXPECT(status_of([&] { t.update("结算", options); }) == AM_OK);
     EXPECT(client.tools_hash() != before);
@@ -446,16 +454,31 @@ void test_navigation() {
     bad_bg.background_tool = "bad tool!";
     EXPECT(status_of([&] { t.update("结算", bad_bg); }) != AM_OK);
     // v18：concurrency / exclusive 随声明传给 C 接口；互斥组名非法时更新失败。
-    const AmToolOptions plain = app_mcp::detail::tool_options(app_mcp::ToolOptions{}, std::nullopt);
+    const AmToolOptions plain = c_options(app_mcp::ToolOptions{});
     EXPECT(plain.concurrency == 0 && plain.exclusive == nullptr);
     options.concurrency = 2;
     options.exclusive = "doc";
-    const AmToolOptions scheduled = app_mcp::detail::tool_options(options, std::nullopt);
+    const AmToolOptions scheduled = c_options(options);
     EXPECT(scheduled.concurrency == 2 && std::strcmp(scheduled.exclusive, "doc") == 0);
     EXPECT(status_of([&] { t.update("结算", options); }) == AM_OK);
     app_mcp::ToolOptions bad_group = options;
     bad_group.exclusive = "bad group!";
     EXPECT(status_of([&] { t.update("结算", bad_group); }) != AM_OK);
+    // v21：implements 随声明传给 C 接口（影响 toolsHash）；格式不合法时更新失败（InvalidName）、清空即清除声明。
+    EXPECT(plain.implements == nullptr && plain.implements_len == 0);
+    options.implements = {"link.open@1", "file.share@1"};
+    const AmToolOptions verbs = c_options(options);
+    EXPECT(verbs.implements_len == 2 && std::strcmp(verbs.implements[0], "link.open@1") == 0 &&
+           std::strcmp(verbs.implements[1], "file.share@1") == 0);
+    before = client.tools_hash();
+    EXPECT(status_of([&] { t.update("结算", options); }) == AM_OK);
+    EXPECT(client.tools_hash() != before);
+    app_mcp::ToolOptions bad_verb = options;
+    bad_verb.implements = {"link.open"};
+    EXPECT(status_of([&] { t.update("结算", bad_verb); }) == AM_ERR_INVALID_NAME);
+    options.implements.clear();
+    EXPECT(status_of([&] { t.update("结算", options); }) == AM_OK);
+    EXPECT(client.tools_hash() == before);
     EXPECT(status_of([&] { client.set_navigate_in_background(false); }) == AM_OK);
     EXPECT(status_of([&] { client.set_navigate_in_background(true); }) == AM_OK);
 

@@ -41,7 +41,8 @@ public:
         spec.title = detail::c_str_or_null(options.title);
         spec.enabled = options.enabled;
         auto annotations = detail::annotations_json(options);
-        AmToolOptions topts = detail::tool_options(options, annotations);
+        std::vector<const char*> implements;
+        AmToolOptions topts = detail::tool_options(options, annotations, implements);
         detail::check(am_tool_update_ex(h_, &spec, &topts));
     }
     void set_enabled(bool enabled) { detail::check(am_tool_set_enabled(h_, enabled)); }
@@ -114,7 +115,8 @@ public:
         spec.title = detail::c_str_or_null(options.title);
         spec.enabled = options.enabled;
         auto annotations = detail::annotations_json(options);
-        AmToolOptions topts = detail::tool_options(options, annotations);
+        std::vector<const char*> implements;
+        AmToolOptions topts = detail::tool_options(options, annotations, implements);
         // 所有权交给库：无论成功与否，库都会调用 delete_fn 释放。
         auto* holder = new ToolHandler(std::move(handler));
         AmTool* out = nullptr;

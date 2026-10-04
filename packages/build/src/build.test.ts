@@ -258,6 +258,37 @@ describe('generateManifest', () => {
     expect(warnings).toEqual([expect.stringContaining('annotations.fooHint 不是标准 MCP 工具注解字段')])
   })
 
+  it('标准意图 implements：写入清单（缺省或空数组不写）；格式 / 重复 / 上限与 crates/manifest 一致报错（spec/intents.md）', () => {
+    const manifest = generateManifest({ appId: 'mail', name: '邮件' }, [
+      { name: 'compose.send', description: '发信', implements: ['message.send@1'] },
+      { name: 'plain', description: 'd' },
+      { name: 'empty', description: 'd', implements: [] },
+    ])
+    expect(manifest.tools?.[0]?.implements).toEqual(['message.send@1'])
+    expect(manifest.tools?.[1]).not.toHaveProperty('implements')
+    expect(manifest.tools?.[2]).not.toHaveProperty('implements')
+    // 未知动词只由 crates/manifest 警告，这里不报错
+    expect(validateManifest({ ...manifest, tools: [{ ...manifest.tools![0]!, implements: ['x.y@1', 'a-b.c_d@12'] }] }).errors).toEqual([])
+
+    const tool = (list: unknown) => ({ name: 't', description: 'd', inputSchema: { type: 'object' }, implements: list })
+    const errorsOf = (list: unknown) =>
+      validateManifest({ manifestVersion: 1, appId: 'mail', name: 'm', tools: [tool(list)] } as unknown as AppMcpManifest).errors
+    expect(errorsOf(['message.send', 'ok.verb@1', 'a.b@0', 'a.b.c@1'])).toEqual([
+      expect.stringContaining('implements[0] 标准意图 "message.send" 格式不合法'),
+      expect.stringContaining('implements[2]'),
+      expect.stringContaining('implements[3]'),
+    ])
+    expect(errorsOf(['1a.b@1', 'a.b@01', 'a.b@1@2', 'a.b@4294967296'])).toHaveLength(4)
+    expect(errorsOf([7])).toEqual([expect.stringContaining('implements[0] 标准意图 7 格式不合法')])
+    expect(errorsOf(['a.b@4294967295'])).toEqual([])
+    // 动词名最长 64 字符
+    expect(errorsOf([`${'a'.repeat(30)}.${'b'.repeat(34)}@1`])).toEqual([expect.stringContaining('implements[0]')])
+    expect(errorsOf([`${'a'.repeat(30)}.${'b'.repeat(33)}@1`])).toEqual([])
+    expect(errorsOf(['x.y@1', 'x.y@1'])).toEqual([expect.stringContaining('implements[1] "x.y@1" 重复')])
+    expect(errorsOf(['a.b@1', 'a.b@2', 'a.b@3', 'a.b@4', 'a.b@5'])).toEqual([expect.stringContaining('implements 最多 4 项')])
+    expect(errorsOf('message.send@1')).toEqual([expect.stringContaining('implements 必须是字符串数组')])
+  })
+
   it('toInputSchema 拒绝非对象输入', () => {
     expect(() => toInputSchema('x')).toThrow(/input 必须是/)
   })

@@ -13,7 +13,7 @@ final class ConformanceTests: XCTestCase {
     private static let features: Set<String> = [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
         "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-        "callScheduling", "busy", "events",
+        "callScheduling", "busy", "events", "implements",
     ]
     private static let verdictOK: Set<String> = ["pass", "xfail", "xpass", "skip"]
 
@@ -191,7 +191,8 @@ private final class CaseApp {
             page: decl["page"]?.stringValue,
             backgroundTool: decl["backgroundTool"]?.stringValue,
             concurrency: Int(decl["concurrency"]?.doubleValue ?? 0),
-            exclusive: decl["exclusive"]?.stringValue
+            exclusive: decl["exclusive"]?.stringValue,
+            implements: Self.strings(decl["implements"])
         ) { [weak self] (args: JSONValue, ctx: ToolContext) async throws -> ToolResult<JSONValue> in
             runs += 1
             return try await self?.run(spec, count: runs, args: args, ctx: ctx) ?? ToolResult(data: nil)
@@ -269,6 +270,11 @@ private final class CaseApp {
         }
     }
 
+    /// 字符串数组；nil / 缺省为空数组。
+    private static func strings(_ v: JSONValue?) -> [String] {
+        (v?.arrayValue ?? []).compactMap(\.stringValue)
+    }
+
     private static func setField(_ d: inout ToolDeclaration, _ key: String, _ v: JSONValue?) {
         switch key {
         case "description": d.description = v?.stringValue ?? ""
@@ -283,6 +289,7 @@ private final class CaseApp {
         case "backgroundTool": d.backgroundTool = v?.stringValue
         case "concurrency": d.concurrency = Int(v?.doubleValue ?? 0)
         case "exclusive": d.exclusive = v?.stringValue
+        case "implements": d.implements = strings(v) // [] = 清除
         default: break
         }
     }

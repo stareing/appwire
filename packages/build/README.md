@@ -79,6 +79,9 @@ export async function cancelOrder(orderId: string): Promise<{ refunded: boolean 
 
 Static tools accept the same declarations as `annotations` and `outputSchema` (JSON Schema, zod v4 converted in its
 output shape, or an object with `toJSONSchema()`); both are validated and written to the manifest.
+Static tools and page tools found by the route scanner may also declare `implements: ['message.send@1']`
+(standard intents, spec/intents.md); the format (`<verb>@<major>`, at most 4, no duplicates) is checked like
+`crates/manifest`, and vocabulary warnings come from `app-mcp-host validate`. `@mcp` JSDoc comments do not support it yet.
 
 Register the annotated tools at runtime through the generated virtual module (add
 `/// <reference types="@app-mcp/build/client" />` to `src/vite-env.d.ts` for its types):

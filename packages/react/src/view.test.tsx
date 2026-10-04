@@ -126,6 +126,24 @@ describe('useTool 的调用调度声明', () => {
   })
 })
 
+describe('useTool 的标准意图声明', () => {
+  it('implements 随定义注册；内联数组内容不变不 update，变化 / 移除时 update', () => {
+    function T({ verbs }: { verbs?: string[] }) {
+      useTool('t', { description: 't', ...(verbs && { implements: [...verbs] }), handler: () => null })
+      return null
+    }
+    const { app, rerender } = setup(<T verbs={['message.send@1']} />)
+    expect(app.getTool('t')?.implements).toEqual(['message.send@1'])
+    rerender(<T verbs={['message.send@1']} />)
+    expect(app.count('tool.update', 't')).toBe(0)
+    rerender(<T verbs={['message.send@1', 'link.open@1']} />)
+    expect(app.getTool('t')?.implements).toEqual(['message.send@1', 'link.open@1'])
+    rerender(<T />)
+    expect(app.getTool('t')?.implements).toBeUndefined()
+    expect(app.count('tool.update', 't')).toBe(2)
+  })
+})
+
 describe('路由导航适配', () => {
   it('useRouterNavigation：页面表 → navigate(地址)；参数填入路由，其余进查询串', async () => {
     const navigate = vi.fn()

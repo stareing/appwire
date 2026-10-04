@@ -106,6 +106,8 @@ export interface NativeToolSpec {
   concurrency?: number
   /** 互斥组（spec/protocol.md 5.3）：同组的工具同一时刻至多一个在执行（旧版原生模块忽略）。 */
   exclusive?: string
+  /** 实现的标准意图（spec/intents.md）；缺省 / 空 = 未声明（旧版原生模块忽略）。 */
+  implements?: string[]
 }
 
 export interface NativeToolAnnotations {

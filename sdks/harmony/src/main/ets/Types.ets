@@ -274,6 +274,11 @@ export interface ToolDefinition<I, O> {
    * 只在 SDK 内调度，不发给 Host。
    */
   exclusive?: string;
+  /**
+   * 实现的标准意图（spec/intents.md），如 `['message.send@1']`：每项 `<动词>@<主版本>`，最多 4 项、不重复；格式不合法时注册抛错，
+   * 未知动词或缺少词表必填参数只记警告。
+   */
+  implements?: string[];
   handler: ToolHandler<I, O>;
 }
 
@@ -296,7 +301,7 @@ export type NavigationHandler = (request: NavigationRequest) => void | Promise<v
 
 /**
  * `ToolHandle.update` 的变更：未提供（或 `undefined`）的字段保持不变；显式给出 `null` 清除该声明
- * （`title` / `annotations` / `outputSchema` / `activation` / `page` / `backgroundTool` / `exclusive` 删除，`concurrency` 恢复不限，`inputSchema` 变为无参数，`risk` 恢复 `write`，
+ * （`title` / `annotations` / `outputSchema` / `activation` / `page` / `backgroundTool` / `exclusive` / `implements` 删除，`concurrency` 恢复不限，`inputSchema` 变为无参数，`risk` 恢复 `write`，
  * `enabled` 恢复 true，`surface` 恢复 `app`）。`description` 不可清除，`null` 时保持不变。
  */
 export interface ToolChanges {
@@ -313,6 +318,7 @@ export interface ToolChanges {
   backgroundTool?: string | null;
   concurrency?: number | null;
   exclusive?: string | null;
+  implements?: string[] | null;
 }
 
 export interface ToolHandle {

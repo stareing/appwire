@@ -57,6 +57,7 @@ work on both sides: main-process tools use them as documented in
 (standard MCP hints, passed to the agent unchanged; AppWire does not gate calls on them) and `outputSchema`, and
 return `{ data, stateHints?, status?, stateResource?, summary?, annotations? }`. The bridge forwards all of these to
 the main process unchanged, and `handle.update({ annotations: undefined })` clears a declaration.
+Renderer tools may also declare `implements: ['message.send@1']` (standard intents, spec/intents.md), forwarded the same way.
 Identity and connection belong to the main process: `appId`, `appName` and `hostUrl` are ignored in the page.
 Each webContents gets its own scope, unregistered on reload, navigation, destroy or renderer crash
 (in-flight calls fail with `APP_DISCONNECTED`).

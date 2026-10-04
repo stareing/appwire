@@ -118,6 +118,10 @@
  *     droppedInvalid}；apps.tools 的结果增加 events（App 的事件声明）。
  *   · am_hub_start 配置新增可选字段 eventLimits（{"maxSubscriptions","maxInboxEvents","inboxTtlMs","perSubscriptionPerMinute"}，
  *     缺省字段取默认值 32 / 100 / 86400000 / 60）。
+ * - v23（标准意图，第 16 项 N4，spec/intents.md）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · 函数 am_hub_set_intent_defaults（运行中替换机主默认表）、am_hub_intents_json（生效的默认表与最近的替换错误）。
+ *   · 新内置工具 apps.intents（总是列出）；apps.tools / apps.search 的工具条目与 HubTool 带 implements（非空时）。
+ *   · JSON 中新增：HubStatus.intents：{defaults: {<意图>: <工具全名>}, lastError?}；HubTool.implements?（字符串数组）。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -369,7 +373,8 @@ AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **ou
  * v20 起另有 locks：未到期的对象锁，按 appId、key 排序：[{appId, key?（命名锁）, caller（持有者的调用方键）,
  *   holder（记账主体 "agent:<名>" | "local" | "api"）, expiresInMs}]。
  * v22 起另有 events：{subscriptions: [{subscriptionId, subscriber（"agent:<名>" 或调用方键）, appId, event?（省略 = 该 App 全部事件）,
- *   delivered（经本订阅入箱数）, dropped（因频率上限丢弃数）, pending（订阅方信箱当前条数）}], droppedInvalid（不合法而丢弃的事件数）}。 */
+ *   delivered（经本订阅入箱数）, dropped（因频率上限丢弃数）, pending（订阅方信箱当前条数）}], droppedInvalid（不合法而丢弃的事件数）}。
+ * v23 起另有 intents：{defaults, lastError?}（同 am_hub_intents_json）。 */
 AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------
@@ -420,6 +425,15 @@ AmHubStatus am_hub_set_policy(AmHub *hub, const char *policy_json);
 /* v19：替换 Agent 登记（JSON 形式同配置 agents；"[]" 清空），只影响之后到达的 MCP 请求。
  * 不是合法 JSON 或结构不符 → AM_HUB_ERR_INVALID_JSON；登记不合法 → AM_HUB_ERR_INVALID_CONFIG（之前的登记继续生效）。 */
 AmHubStatus am_hub_set_agents(AmHub *hub, const char *agents_json);
+/* v23：替换标准意图的机主默认表（spec/intents.md 第 4 节）。defaults_json 为
+ * {"<动词>" | "<动词>@<主版本>": "<工具全名>", ...}（如 {"message.send": "mail.compose.send"}；"{}" 清空），
+ * 至多 256 条。默认只是提示：apps.intents 把默认工具排在最前并标 default: true，Hub 不据此路由。
+ * 不是合法 JSON 或不是字符串到字符串的对象 → AM_HUB_ERR_INVALID_JSON；默认表不合法 → AM_HUB_ERR_INVALID_CONFIG
+ * （之前的默认表继续生效，原因记入 intents.lastError）。 */
+AmHubStatus am_hub_set_intent_defaults(AmHub *hub, const char *defaults_json);
+/* v23：IntentsStatus：{"defaults": {<意图>: <工具全名>}, "lastError"?: <最近一次替换失败的原因，之后成功时清除>}
+ * （同 am_hub_status_json 的 intents）。 */
+AmHubStatus am_hub_intents_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------
  * 工具格式导出与分派（spec/hub-api.md 第 5 节）

@@ -66,6 +66,8 @@ export interface HubTool {
   surface?: ToolSurface
   /** App 工具所在页面（spec/hub-api.md 3.14）；不属于页面时缺省。 */
   page?: string
+  /** App 工具声明实现的标准意图（spec/intents.md，如 `message.send@1`）；未声明、内置与上游工具缺省。 */
+  implements?: string[]
 }
 
 export interface ToolFilter {

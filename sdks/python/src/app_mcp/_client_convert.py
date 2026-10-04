@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, TypeVar, Union
 
 from . import app_mcp_uniffi as ffi
@@ -178,6 +178,13 @@ def _schema_json(schema: dict[str, Any] | str | None) -> str | None:
     if schema is None:
         return None
     return json.dumps(json.loads(schema) if isinstance(schema, str) else schema)
+
+
+def _implements(value: Iterable[str]) -> list[str]:
+    """意图名序列 → 列表；单个字符串视为一项（避免被拆成字符）。"""
+    if isinstance(value, str):
+        return [value]
+    return list(value)
 
 
 def _surface(value: SurfaceLike | None) -> ffi.ToolSurface | None:

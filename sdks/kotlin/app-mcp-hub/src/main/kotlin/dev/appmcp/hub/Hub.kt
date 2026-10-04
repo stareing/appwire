@@ -94,6 +94,9 @@ typealias EventSubscriptionStatus = dev.appmcp.hub.ffi.EventSubscriptionStatus
  */
 typealias EventLimitOverrides = dev.appmcp.hub.ffi.EventLimitOverrides
 
+/** 标准意图的机主默认表状态（[Hub.intents]、`HubStatus.intents`，spec/intents.md 第 4 节）：`defaults`、`lastError`。 */
+typealias IntentsStatus = dev.appmcp.hub.ffi.IntentsStatus
+
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /** 限流与大小上限（[HubConfig.limits]；[HubStatus.limits] 为全部字段给出的生效值）。为空的字段取默认值。 */
 typealias LimitsConfig = dev.appmcp.hub.ffi.LimitsConfig
@@ -338,6 +341,15 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
      * （`kind = "INVALID_INPUT"`），之前的登记继续生效。
      */
     fun setAgents(agents: List<AgentCredential>) = inner.setAgents(agents)
+
+    /** 生效的标准意图默认表与最近一次替换失败的原因（spec/intents.md 第 4 节）。已停止时抛出 `HubException.Shutdown`。 */
+    fun intents(): IntentsStatus = inner.intents()
+
+    /**
+     * 替换意图默认表（动词或 `动词@主版本` → 工具全名；空表清空），只影响 `apps.intents` 的排序与 `default` 标记。
+     * 不合法时抛出 `HubException.Tool`（`kind = "INVALID_INPUT"`），之前的继续生效，原因记入 [intents] 的 `lastError`。
+     */
+    fun setIntentDefaults(defaults: Map<String, String>) = inner.setIntentDefaults(defaults)
 
     /** 设置全局默认实例（`null` 恢复按规则路由）。 */
     fun selectInstance(appId: String, instanceId: String?) = inner.selectInstance(appId, instanceId)

@@ -36,7 +36,7 @@ from ._client_convert import (  # noqa: F401
     ResultStatusLike, _Unset, _UNSET, _RISKS, _ACTIVATIONS, _VISIBILITIES, _MODES, _RESIDENCIES, _WAKE_KINDS,
     _HEARTBEATS, _WAKE_REASONS, _RESULT_STATUSES, _SURFACES, _AUDIENCES, _TOOL_ANNOTATION_KEYS,
     _SLEEP_REASONS, ERROR_KINDS, _ms, _lifecycle_to_ffi, _enum_arg, _risk, _tool_annotations,
-    _content_annotations, _schema_json, _surface, _activation,
+    _content_annotations, _schema_json, _surface, _activation, _implements,
 )
 from ._client_types import (  # noqa: F401
     CallDedup, ToolCallError, UserActionReason, Hold, ToolResult, ToolContext, _CancelListener,
@@ -94,6 +94,7 @@ class _Registrar:
         background_tool: str | None = None,
         concurrency: int = 0,
         exclusive: str | None = None,
+        implements: Sequence[str] = (),
     ) -> ToolHandle:
         """注册函数为工具，返回句柄。``input_schema`` 缺省时从函数签名生成。
 
@@ -109,6 +110,10 @@ class _Registrar:
         ``concurrency``：本工具同时执行的调用上限（``0`` 缺省 = 不单独限制，只受 ``max_concurrent_calls`` 约束）；
         ``exclusive``：互斥组名（命名规则同工具名），同组工具同一时刻最多执行一个调用。两者只在 SDK 内排队生效，
         不发给 Host（spec/protocol.md 5.3）。
+
+        ``implements``：本工具实现的标准意图（spec/intents.md，每项 ``"<动词>@<主版本>"``，如 ``["message.send@1"]``，
+        单个字符串视为一项），Agent 经 ``apps.intents`` 按动词找到实现者；格式不合法时抛 ``AppMcpError.InvalidName``，
+        未知动词或缺少词表必填参数只给出警告。
         """
         binder = ArgumentBinder(fn, ToolContext)
         if input_schema is None:
@@ -130,6 +135,7 @@ class _Registrar:
             background_tool=background_tool,
             concurrency=concurrency,
             exclusive=exclusive,
+            implements=_implements(implements),
         )
         adapter = _ToolAdapter(_Registration(self._owner, fn, binder))
         return ToolHandle(self._raw().register_tool(spec, adapter), spec)
@@ -151,6 +157,7 @@ class _Registrar:
         background_tool: str | None = None,
         concurrency: int = 0,
         exclusive: str | None = None,
+        implements: Sequence[str] = (),
     ) -> Callable[[F], F]:
         """装饰器形式的 :meth:`add_tool`。返回原函数；句柄可用 ``client.tools[name]`` 取得。"""
 
@@ -171,6 +178,7 @@ class _Registrar:
                 background_tool=background_tool,
                 concurrency=concurrency,
                 exclusive=exclusive,
+                implements=implements,
             )
             self._owner.tools[handle.name] = handle
             return fn

@@ -96,6 +96,8 @@ export interface CoreToolDef {
   concurrency?: number
   /** 互斥组（spec/protocol.md 5.3）：同组的工具同一时刻至多一个在执行。 */
   exclusive?: string
+  /** 实现的标准意图（spec/intents.md）；缺省 / 空 = 未声明。 */
+  implements?: string[]
 }
 
 /**
@@ -116,6 +118,8 @@ export interface CoreToolUpdate {
   backgroundTool?: string | null
   concurrency?: number
   exclusive?: string | null
+  /** 整体替换；`[]` 表示清除。 */
+  implements?: string[]
 }
 
 export interface CoreResourceDef {

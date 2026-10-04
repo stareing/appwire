@@ -390,6 +390,41 @@ void main() {
     expect(toolSchedule('doc.edit'), '0|-');
   }, skip: path == null);
 
+  testWidgets('McpTool：implements 传入注册，变化时整体替换（v21）', (tester) async {
+    final lib = DynamicLibrary.open(path!);
+    final implementsOf = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
+        Pointer<Utf8> Function(Pointer<Utf8>)>('fake_tool_implements');
+    final stringFree = lib.lookupFunction<Void Function(Pointer<Utf8>),
+        void Function(Pointer<Utf8>)>('am_string_free');
+    String? toolImplements(String name) {
+      final p = using((a) => implementsOf(name.toNativeUtf8(allocator: a)));
+      if (p == nullptr) return null;
+      final s = p.toDartString();
+      stringFree(p);
+      return s;
+    }
+
+    final client = AppMcp(appId: 'browser', appName: '浏览器', libraryPath: path);
+    addTearDown(client.dispose);
+
+    Widget app(List<String> implements) => AppMcpScope(
+          client: client,
+          trackLifecycle: false,
+          child: McpTool(
+              name: 'link.open',
+              description: '打开链接',
+              implements: implements,
+              handler: (a, c) => null),
+        );
+
+    await tester.pumpWidget(app(['link.open@1']));
+    expect(toolImplements('link.open'), 'link.open@1');
+    await tester.pumpWidget(app(['link.open@1', 'file.share@1']));
+    expect(toolImplements('link.open'), 'link.open@1,file.share@1');
+    await tester.pumpWidget(app(const []));
+    expect(toolImplements('link.open'), '-');
+  }, skip: path == null);
+
   testWidgets('view 工具（v14）：路由栈顶时启用，被新页面 / 对话框盖住时禁用；McpViewGate 显式门控；声明 surface / page', (tester) async {
     final lib = DynamicLibrary.open(path!);
     final enabled = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>('fake_tool_enabled');

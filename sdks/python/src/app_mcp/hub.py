@@ -47,6 +47,7 @@ _log = logging.getLogger("app_mcp.hub")
 
 from ._hub_config import (  # noqa: E402  字典形式的配置 → 生成的记录类型
     AgentsLike,
+    IntentDefaultsLike,
     EventLimitsLike as EventLimitsLike,
     LimitsLike as LimitsLike,
     OutputValidationLike as OutputValidationLike,
@@ -55,6 +56,7 @@ from ._hub_config import (  # noqa: E402  字典形式的配置 → 生成的记
     _agents,
     _enum,
     _event_limits,
+    _intent_defaults,
     _limits,
     _output_validation,
     _policy,
@@ -180,6 +182,8 @@ PolicyRuleStatus = ffi.PolicyRuleStatus
 PolicyLoadError = ffi.PolicyLoadError
 #: Agent 访问令牌（``HubConfig.agents``、:meth:`Hub.set_agents`，spec/hub-api.md 3.6「Agent 身份」）；``repr`` 不含令牌。
 AgentCredential = ffi.AgentCredential
+#: 意图默认表状态（:meth:`Hub.intents`、``HubStatus.intents``，spec/intents.md 第 4 节）。
+IntentsStatus = ffi.IntentsStatus
 
 FormatLike = Union[ToolFormat, str]
 #: :data:`CallPriority` 或其名称（``"interactive"`` / ``"normal"`` / ``"background"``，不区分大小写）。
@@ -222,6 +226,7 @@ __all__ = [
     "InstanceInfo",
     "InstanceState",
     "InstanceStatus",
+    "IntentsStatus",
     "LastError",
     "LimitsConfig",
     "LockStatus",
@@ -443,6 +448,8 @@ class Hub:
                 kwargs["policy"] = _policy(kwargs["policy"])
             if kwargs.get("agents") is not None:
                 kwargs["agents"] = _agents(kwargs["agents"])
+            if kwargs.get("intent_defaults") is not None:
+                kwargs["intent_defaults"] = _intent_defaults(kwargs["intent_defaults"])
             config = HubConfig(**kwargs)
         elif kwargs:
             raise TypeError("config 与关键字参数不能同时使用")
@@ -530,6 +537,16 @@ class Hub:
         """替换 Agent 登记（``[{"name", "token"}]`` 或 ``AgentCredential`` 列表；``[]`` 清空），只影响之后到达的 MCP 请求。
         不合法时抛 ``HubError.Tool``（``kind == "INVALID_INPUT"``），之前的登记继续生效。"""
         self._inner.set_agents(_agents(agents))
+
+    def intents(self) -> IntentsStatus:
+        """生效的标准意图默认表与最近一次替换失败的原因（spec/intents.md 第 4 节）。"""
+        return self._inner.intents()
+
+    def set_intent_defaults(self, defaults: IntentDefaultsLike) -> None:
+        """替换意图默认表（``{"message.send": "mail.send"}``，键可带 ``@主版本``；``{}`` 清空），只影响 ``apps.intents``
+        的排序与 ``default`` 标记。不合法时抛 ``HubError.Tool``（``kind == "INVALID_INPUT"``），之前的继续生效，原因记入
+        ``intents().last_error``。"""
+        self._inner.set_intent_defaults(_intent_defaults(defaults))
 
     def select_instance(self, app_id: str, instance_id: str | None) -> None:
         """设置全局默认实例（``None`` 恢复按规则路由）。"""

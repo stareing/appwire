@@ -22,7 +22,7 @@ import type {
 //
 // @compat 版本 1 内只做可选字段的新增，旧页面忽略、新页面缺省为 undefined，因此不升版本
 // （升版本会让 findElectronBridge 拒绝新旧混用）。已有新增：`HelloReply.connectionId`、`state` 事件的 `connectionId`、
-// `ToolSpecMessage.annotations` / `outputSchema` / `surface` / `page` / `backgroundTool` / `concurrency` / `exclusive`、导航消息（`navigation.set`、`navigate`、
+// `ToolSpecMessage.annotations` / `outputSchema` / `surface` / `page` / `backgroundTool` / `concurrency` / `exclusive` / `implements`、导航消息（`navigation.set`、`navigate`、
 // `navigate.result`，见 {@link NavigationOp}；旧主进程对未知 op 回复错误，页面据此得知不支持；`navigate.result` 的
 // `USER_ACTION_REQUIRED` 与 `details`：旧主进程 / Rust 侧按失败处理）、成功 `Outcome` 的 `status` / `stateResource` / `summary` / `annotations`、
 // 失败 `Outcome` 的 `details`、用户正在操作 `busy.set`（旧主进程对未知 op 回复错误，页面记警告）、事件 {@link EventOp}
@@ -56,6 +56,8 @@ export interface ToolSpecMessage {
   concurrency?: number
   /** 互斥组（spec/protocol.md 5.3）；`tool.update` 时缺省表示清除。 */
   exclusive?: string
+  /** 实现的标准意图（spec/intents.md）；`tool.update` 时缺省表示清除。 */
+  implements?: string[]
 }
 
 /**

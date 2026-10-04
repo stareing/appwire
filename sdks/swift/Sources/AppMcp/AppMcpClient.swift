@@ -234,6 +234,13 @@ public final class ToolHandle: @unchecked Sendable {
 
     public var name: String { inner.name() }
 
+    /// 当前定义（测试用）。
+    var specForTest: ToolSpec {
+        lock.lock()
+        defer { lock.unlock() }
+        return spec
+    }
+
     public func setEnabled(_ enabled: Bool) throws {
         lock.lock()
         defer { lock.unlock() }
@@ -269,7 +276,8 @@ public final class ToolHandle: @unchecked Sendable {
         page: String? = nil,
         backgroundTool: String? = nil,
         concurrency: Int? = nil,
-        exclusive: String? = nil
+        exclusive: String? = nil,
+        implements: [String]? = nil
     ) throws {
         try update { d in
             if let description { d.description = description }
@@ -283,6 +291,7 @@ public final class ToolHandle: @unchecked Sendable {
             if let backgroundTool { d.backgroundTool = backgroundTool }
             if let concurrency { d.concurrency = concurrency }
             if let exclusive { d.exclusive = exclusive }
+            if let implements { d.implements = implements }
         }
     }
 
@@ -318,7 +327,7 @@ public class ToolRegistrar: @unchecked Sendable {
         _ name: String, _ description: String, _ inputSchema: String?, _ risk: Risk, _ activation: Activation?,
         _ title: String?, _ enabled: Bool, _ annotations: ToolAnnotations?, _ outputSchema: String?,
         _ surface: ToolSurface, _ page: String?, _ backgroundTool: String?,
-        _ concurrency: Int, _ exclusive: String?,
+        _ concurrency: Int, _ exclusive: String?, _ implements: [String],
         _ target: ExecutionTarget, _ body: @escaping ErasedTool
     ) throws -> ToolHandle {
         let spec = ToolSpec(
@@ -326,7 +335,7 @@ public class ToolRegistrar: @unchecked Sendable {
             activation: activation, title: title, enabled: enabled,
             annotations: annotations, outputSchemaJson: outputSchema,
             surface: surface == .app ? nil : surface, page: page, backgroundTool: backgroundTool,
-            concurrency: UInt32(clamping: max(0, concurrency)), exclusive: exclusive
+            concurrency: UInt32(clamping: max(0, concurrency)), exclusive: exclusive, implements: implements
         )
         let raw = try registerRaw(spec, ToolBridge(target: target, timeout: dispatchTimeout, body: body))
         return ToolHandle(inner: raw, spec: spec)
@@ -350,6 +359,8 @@ public class ToolRegistrar: @unchecked Sendable {
     /// Hub 改调该工具（spec/protocol.md 3.4「后台与前台」）。
     /// `concurrency` 为本工具同时执行的调用上限（`0` 缺省 = 不单独限制，只受 `maxConcurrentCalls` 约束）；`exclusive` 为互斥组名
     /// （命名规则同工具名），同组工具同一时刻最多执行一个调用。两者只在 SDK 内排队生效，不发给 Host（spec/protocol.md 5.3）。
+    /// `implements` 为实现的标准意图（spec/intents.md，每项 `"<动词>@<主版本>"`，如 `["message.send@1"]`），Agent 经
+    /// `apps.intents` 按动词找到实现者；格式不合法时抛 `AppMcpError.InvalidName`。
     @discardableResult
     public func tool<Args: Decodable, Output: Encodable>(
         _ name: String,
@@ -366,9 +377,10 @@ public class ToolRegistrar: @unchecked Sendable {
         backgroundTool: String? = nil,
         concurrency: Int = 0,
         exclusive: String? = nil,
+        implements: [String] = [],
         handler: @escaping @MainActor (Args, ToolContext) async throws -> Output
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             let output = try await handler(args, ctx)
             return plainResult(try encodeJSON(output))
@@ -392,9 +404,10 @@ public class ToolRegistrar: @unchecked Sendable {
         backgroundTool: String? = nil,
         concurrency: Int = 0,
         exclusive: String? = nil,
+        implements: [String] = [],
         handler: @escaping @MainActor (Args, ToolContext) async throws -> ToolResult<Output>
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return try await handler(args, ctx).ffi()
         }
@@ -417,9 +430,10 @@ public class ToolRegistrar: @unchecked Sendable {
         backgroundTool: String? = nil,
         concurrency: Int = 0,
         exclusive: String? = nil,
+        implements: [String] = [],
         handler: @escaping @MainActor (Args, ToolContext) async throws -> Void
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             try await handler(args, ctx)
             return plainResult(nil)
@@ -443,9 +457,10 @@ public class ToolRegistrar: @unchecked Sendable {
         backgroundTool: String? = nil,
         concurrency: Int = 0,
         exclusive: String? = nil,
+        implements: [String] = [],
         handler: @escaping @Sendable (Args, ToolContext) async throws -> Output
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, .background) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, .background) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return plainResult(try encodeJSON(try await handler(args, ctx)))
         }
@@ -468,9 +483,10 @@ public class ToolRegistrar: @unchecked Sendable {
         backgroundTool: String? = nil,
         concurrency: Int = 0,
         exclusive: String? = nil,
+        implements: [String] = [],
         handler: @escaping @Sendable (Args, ToolContext) async throws -> ToolResult<Output>
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, .background) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, .background) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return try await handler(args, ctx).ffi()
         }

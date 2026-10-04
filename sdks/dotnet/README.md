@@ -74,6 +74,22 @@ client.RemoveEvent("order.shipped");
   （`InvalidName`），载荷不是对象或超过 8 KiB 为 `InvalidJson`；`EmitEventJson(name, json)` 直接传 JSON 文本。
 - Agent 经 Hub 内置工具 `apps.events.subscribe` / `apps.events` 订阅与取件（spec/hub-api.md 3.17）。
 
+## 标准意图（spec/intents.md）
+
+工具可声明自己实现了通用动词（如"发消息""打开链接"），Agent 用 Hub 内置工具 `apps.intents` 按动词找到实现者，不必先知道有哪些 App：
+
+```csharp
+client.RegisterTool("compose.send", "发邮件", handler, new ToolOptions
+{
+    InputSchemaJson = """{"type":"object","properties":{"to":{"type":"array","items":{"type":"string"}},"text":{"type":"string"}},"required":["to","text"]}""",
+    Implements = ["message.send@1"],
+});
+```
+
+- 每项为 `"<动词>@<主版本>"`，最多 4 项、不重复；格式不合法抛 `AppMcpException`（`InvalidName`）。参数名按词表（spec/intents.md 第 2 节），
+  词表的必填参数须出现在 `inputSchema.properties` 中，否则 Hub 不把它列为实现者（工具照常可调用）。
+- `ToolRegistration.Update(description, options)` 中 `Implements` 为 null 或空表示清除声明。需要 C ABI v21（`AmToolOptions.implements`）。
+
 ## 界面级暴露与导航（spec/protocol.md 3.4）
 
 ```csharp
@@ -212,6 +228,14 @@ var outcome = await hub.CallAsync("notes.add", new { text = "买牛奶" });  // 
   （为 null 的字段取默认值 32 / 100 / 24 小时 / 60；`PerSubscriptionPerMinute = 0` 不限）。
 - `Status().Events`（`EventsStatusInfo`）：`Subscriptions`（`EventSubscriptionStatusInfo`：`SubscriptionId`、`Subscriber`、`AppId`、
   `Event`、`Delivered`、`Dropped`、`Pending`）与 `DroppedInvalid`（未声明 / 载荷不合法而丢弃的事件数）。
+
+### 标准意图（spec/intents.md 第 4 节）
+
+- Agent 用内置工具 `apps.intents {intent?}`（总是列出，不唤醒 App）按动词列出实现者；`HubToolInfo.Implements` 为 App 声明的动词。
+- 机主默认表：`hub.SetIntentDefaults(new Dictionary<string, string> { ["message.send"] = "mail.compose.send" })`（键为动词或
+  `动词@主版本`，值为工具全名；空表清空）。默认工具在 `apps.intents` 中排首位并标 `default: true`，只是提示，Hub 不据此路由。
+  不合法时抛 `HubException`（`InvalidConfig`），之前的默认表继续生效。
+- `hub.Intents()` / `Status().Intents`（`IntentsStatusInfo`）：生效的 `Defaults` 与最近一次替换失败的 `LastError`。
 
 ### 休眠与唤醒（spec/hub-api.md 3.5）
 

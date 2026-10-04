@@ -926,6 +926,91 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(hub.policy()).toMatchObject({ rules: [] })
   })
 
+  it('标准意图：App 声明 implements → apps.intents 列出实现者；setIntentDefaults 后默认排首位；非法默认表被拒且旧值保留（第 16 项 N4）', async () => {
+    const { hub } = await startHub()
+    const message = {
+      type: 'object' as const,
+      properties: { to: { type: 'array', items: { type: 'string' } }, text: { type: 'string' } },
+      required: ['to', 'text'],
+    }
+    const start = (appId: string, declare: (app: AppMcp) => void) => {
+      const app = createAppMcp({ appId, appName: appId, hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false })
+      apps.push(app)
+      declare(app)
+      app.start()
+    }
+    start('mail', (app) => {
+      app.tool('compose.send', { description: '发邮件', input: message, implements: ['message.send@1'], handler: () => null })
+      // 格式不合法：原生核心拒绝，注册同步抛错
+      expect(() => app.tool('bad', { description: 'x', implements: ['no-version'], handler: () => null })).toThrow()
+      // 缺少词表必填参数 text：不作为实现者，列入 incompatible
+      app.tool('compose.draft', {
+        description: '草稿',
+        input: { type: 'object', properties: { to: { type: 'array' } } },
+        implements: ['message.send@1'],
+        handler: () => null,
+      })
+    })
+    start('chat', (app) => {
+      app.tool('send', { description: '发消息', input: message, implements: ['message.send@1'], handler: () => null })
+      app.tool('plain', { description: '普通', handler: () => null })
+    })
+    const tools = await until(() => {
+      const list = hub.tools({ apps: ['mail', 'chat'], onlyAvailable: true, includeBuiltin: false })
+      return list.length === 4 ? list : undefined
+    }, 'mail / chat 工具登记')
+    expect(tools.find((t) => t.name === 'mail.compose.send')?.implements).toEqual(['message.send@1'])
+    expect(tools.find((t) => t.name === 'chat.plain')).not.toHaveProperty('implements')
+
+    type Listing = {
+      intents: {
+        intent: string
+        known: boolean
+        implementations: { tool: string; appId: string; default?: boolean }[]
+        incompatible?: { tool: string; reason: string }[]
+      }[]
+    }
+    const listIntent = async () => {
+      const out = await hub.callTool({ name: 'apps.intents', arguments: { intent: 'message.send' }, session: 'i1' })
+      expect(out.result.error).toBeUndefined()
+      const entry = (out.result.ok as Listing).intents.find((i) => i.intent === 'message.send@1')
+      expect(entry?.known).toBe(true)
+      return entry!
+    }
+    const before = await listIntent()
+    expect(before.implementations.map((i) => [i.tool, i.default ?? false])).toEqual([
+      ['chat.send', false],
+      ['mail.compose.send', false],
+    ])
+    expect(before.incompatible?.map((i) => i.tool)).toEqual(['mail.compose.draft'])
+
+    hub.setIntentDefaults({ 'message.send': 'mail.compose.send' })
+    const after = await listIntent()
+    expect(after.implementations.map((i) => [i.tool, i.default ?? false])).toEqual([
+      ['mail.compose.send', true],
+      ['chat.send', false],
+    ])
+    expect(hub.intents()).toEqual({ defaults: { 'message.send': 'mail.compose.send' } })
+    expect(hub.status().intents).toEqual({ defaults: { 'message.send': 'mail.compose.send' } })
+
+    expect(() => hub.setIntentDefaults({ 'Message send': 'mail' })).toThrow(expect.objectContaining({ kind: 'INVALID_INPUT' }))
+    expect(() => hub.setIntentDefaults('nope' as never)).toThrow(expect.objectContaining({ kind: 'INVALID_ARG' }))
+    expect(hub.intents().defaults).toEqual({ 'message.send': 'mail.compose.send' })
+    expect(hub.intents().lastError).toContain('Message send')
+    expect((await listIntent()).implementations[0]).toMatchObject({ tool: 'mail.compose.send', default: true })
+
+    hub.setIntentDefaults({})
+    expect(hub.intents()).toEqual({ defaults: {} })
+  })
+
+  it('intentDefaults 配置：合法时生效，不合法时以空表启动并记下原因', async () => {
+    const { hub } = await startHub({ listen: null, intentDefaults: { 'link.open': 'web.open' } })
+    expect(hub.intents()).toEqual({ defaults: { 'link.open': 'web.open' } })
+    const { hub: bad } = await startHub({ listen: null, intentDefaults: { bad: 'worse' } })
+    expect(bad.intents().defaults).toEqual({})
+    expect(bad.intents().lastError).toBeTruthy()
+  })
+
   it('shutdown 后调用抛 SHUTDOWN', async () => {
     const { hub } = await startHub({ listen: null })
     expect(hub.listenAddr).toBeNull()

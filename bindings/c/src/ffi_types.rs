@@ -119,6 +119,9 @@ pub struct AmToolOptions {
     pub concurrency: u32,
     /// v18：互斥组（`[a-zA-Z0-9_.-]{1,64}`）；NULL = 不互斥。
     pub exclusive: *const c_char,
+    /// v21（spec/intents.md）：实现的标准意图（`"<动词>@<主版本>"`）；`implements_len` 为 0 时可为 NULL。
+    pub implements: *const *const c_char,
+    pub implements_len: usize,
 }
 
 /// v9：`am_call_complete_ex` 的调用结果（带 `struct_size`，按调用方给出的大小读取；`status` 用 c_int 接收）。

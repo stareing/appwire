@@ -303,6 +303,26 @@ public sealed class AppMcpHub : IDisposable, IAsyncDisposable
         HubNativeMethods.Check(HubNativeMethods.am_hub_set_agents(_handle, s.Add(HubAgentCredential.ToJson(agents).ToJsonString())));
     }
 
+    /// <summary>替换标准意图的机主默认表（spec/intents.md 第 4 节）：键为动词（<c>message.send</c>，对其所有版本生效）或
+    /// <c>动词@主版本</c>（优先于不带版本的键），值为工具全名；传空表清空。默认只是提示：<c>apps.intents</c> 把默认工具排在最前并标
+    /// <c>default: true</c>，Hub 不据此路由。</summary>
+    /// <exception cref="HubException">默认表不合法（<see cref="HubStatus.InvalidConfig"/>）：之前的默认表继续生效，
+    /// 原因记入 <see cref="Intents"/> 的 LastError。</exception>
+    public unsafe void SetIntentDefaults(IReadOnlyDictionary<string, string> defaults)
+    {
+        ArgumentNullException.ThrowIfNull(defaults);
+        using var s = new Utf8Strings();
+        HubNativeMethods.Check(HubNativeMethods.am_hub_set_intent_defaults(_handle, s.Add(JsonSerializer.Serialize(defaults))));
+    }
+
+    /// <summary>生效的意图默认表与最近一次 <see cref="SetIntentDefaults"/> 失败的原因（同 <see cref="HubStatusInfo.Intents"/>）。</summary>
+    public IntentsStatusInfo Intents()
+    {
+        HubNativeMethods.Check(HubNativeMethods.am_hub_intents_json(_handle, out var json));
+        return TakeJson(json).Deserialize<IntentsStatusInfo>(WireOptions)
+            ?? throw new HubException(HubStatus.Internal, "意图状态 JSON 为空");
+    }
+
     // -----------------------------------------------------------------------
     // 工具格式导出与分派
     // -----------------------------------------------------------------------

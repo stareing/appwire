@@ -384,6 +384,7 @@ function toolDefinition(spec: ToolSpecMessage) {
     backgroundTool: spec.backgroundTool,
     concurrency: spec.concurrency,
     exclusive: spec.exclusive,
+    implements: spec.implements,
   }
 }
 

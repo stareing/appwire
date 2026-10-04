@@ -135,6 +135,7 @@ export function OrdersPage() {
     input: { type: 'object', properties: { status: { type: 'string', enum: ['paid', 'shipped'] } } } as const,
     annotations: { readOnlyHint: true },
     surface: 'view',
+    implements: ['link.open@1'],
     handler: () => [],
     enabled: true,
   })
@@ -170,6 +171,7 @@ describe('scanRoutes（React Router）', () => {
         input: { type: 'object', properties: { status: { type: 'string', enum: ['paid', 'shipped'] } } },
         annotations: { readOnlyHint: true },
         surface: 'view',
+        implements: ['link.open@1'],
       },
     ])
     expect(result.dependencies.some((d) => d.endsWith('OrdersPage.tsx'))).toBe(true)

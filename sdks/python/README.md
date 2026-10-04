@@ -102,6 +102,25 @@ def submit() -> ToolResult:
 - `AppMcp(..., max_queued_calls=N)` bounds the wait queue (default 64, `0` = unlimited); a call arriving at a full
   queue fails with `RATE_LIMITED` (`data.scope == "queue"`).
 
+### Standard intents (optional, `spec/intents.md`)
+
+Declare that a tool implements a shared verb so agents can find it by action ("send a message") without knowing your
+app first:
+
+```python
+@client.tool("mail.compose.send", "Send an email", implements=["message.send@1"])
+def send(to: list[str], text: str, subject: str | None = None) -> dict:
+    ...
+```
+
+- Each item is `"<verb>@<major version>"` (at most 4, no duplicates); a single string counts as one item.
+  A malformed item raises `AppMcpError.InvalidName`. Unknown verbs, or an input schema missing the verb's required
+  parameters (`message.send@1` needs `to` and `text`), only log a warning; the Hub then lists the tool as
+  `known: false` or under `incompatible`.
+- `handle.update(implements=[...])` replaces the list (`[]` clears it); other updates keep it.
+- Agents list implementers with the built-in tool `apps.intents {intent?}` and then call the chosen tool by its full
+  name as usual. The Hub never routes by verb.
+
 ### User is busy (optional, `spec/protocol.md` §5.3)
 
 While the user is actively working in the app (a text field has focus, a drag is in progress — your call), declare it so
@@ -272,6 +291,13 @@ calls `fn(AppEvent)` once per event whether or not anyone subscribed (`AppEvent`
 `delivered` / `dropped` / `pending`, plus `dropped_invalid`).
 Limits: `Hub(event_limits={"maxSubscriptions": 8, "maxInboxEvents": 20})` (or an `EventLimitOverrides`; also
 `inboxTtlMs`, `perSubscriptionPerMinute`; unset fields keep the defaults 32 / 100 / 24 h / 60, `0` per minute = unlimited).
+
+Standard intents (`spec/intents.md` §4): `HubTool.implements` lists the intents an app tool declares. The owner's
+defaults (verb, or `verb@major`, → full tool name) only mark and reorder `apps.intents` results (`default: true` first):
+`Hub(intent_defaults={"message.send": "mail.compose.send"})` or `hub.set_intent_defaults({...})` at runtime (`{}`
+clears). An invalid table raises `HubError.Tool` (`kind == "INVALID_INPUT"`) and the previous table stays; an invalid
+`intent_defaults` at start-up starts with an empty table instead. `hub.intents()` (also `hub.status().intents`) returns
+an `IntentsStatus` (`defaults`, `last_error`).
 
 Policy hook points (`spec/hub-api.md` §3.13): `Hub(policy={"rules": [{"id": "no-pay", "action": "deny", "app": "shop",
 "tool": "pay*"}]})` or `hub.set_policy(...)` at runtime. `hide` removes an app / tool from every list (calls get

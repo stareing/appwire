@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { Activation, AppOverview, Risk, ToolAnnotations, ToolSurface } from '@app-mcp/web'
 import type { PageDefinition, StaticToolDefinition } from './define'
+import { checkImplements } from './intents'
 import { validateOverview } from './overview'
 
 // ---------------------------------------------------------------------------
@@ -61,6 +62,8 @@ export interface ManifestTool {
   surface?: ToolSurface
   /** 所在页面名。 */
   page?: string
+  /** 实现的标准意图（spec/intents.md），每项 `<动词>@<主版本>`。 */
+  implements?: string[]
 }
 
 /** 清单 `pages` 条目（spec/manifest.md 2.3）。 */
@@ -384,7 +387,7 @@ function checkEvents(events: unknown, appId: string, errors: string[], warnings:
 
 /**
  * 单个工具（顶层或页面内）的规则：名称、唯一性（`toolNames` 跨顶层与页面共享）、appId 前缀、description、inputSchema、
- * risk / activation / surface / page、annotations、outputSchema。
+ * risk / activation / surface / page、annotations、outputSchema、implements。
  */
 function checkTool(
   tool: ManifestTool,
@@ -431,6 +434,7 @@ function checkTool(
   if (tool.outputSchema !== undefined && !isJsonObject(tool.outputSchema)) {
     errors.push(`${label} outputSchema 必须是对象`)
   }
+  if (tool.implements !== undefined) checkImplements(tool.implements, label, errors)
 }
 
 /** `pages` 的规则（spec/manifest.md 第 3 节），返回已声明的页面名。 */
@@ -686,6 +690,7 @@ function toManifestTool(
   if (outputSchema !== undefined) entry.outputSchema = outputSchema
   if (tool.surface !== undefined && tool.surface !== 'app') entry.surface = tool.surface
   if (tool.page !== undefined) entry.page = tool.page
+  if (tool.implements !== undefined && tool.implements.length > 0) entry.implements = [...tool.implements]
   return entry
 }
 

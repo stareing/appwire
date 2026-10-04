@@ -220,6 +220,7 @@ export abstract class DriverRegistry extends DriverTransport {
       if (def.backgroundTool !== undefined) coreDef.backgroundTool = def.backgroundTool
       if (def.concurrency !== undefined) coreDef.concurrency = def.concurrency
       if (def.exclusive !== undefined) coreDef.exclusive = def.exclusive
+      if (def.implements !== undefined && def.implements.length > 0) coreDef.implements = [...def.implements]
       rec.coreEnabled = this.effectiveEnabled(rec)
       if (!rec.coreEnabled || def.enabled !== undefined) coreDef.enabled = rec.coreEnabled
       if (scope) {
@@ -299,6 +300,7 @@ export abstract class DriverRegistry extends DriverTransport {
         if ('backgroundTool' in changes) update.backgroundTool = changes.backgroundTool ?? null
         if ('concurrency' in changes) update.concurrency = changes.concurrency ?? 0
         if ('exclusive' in changes) update.exclusive = changes.exclusive ?? null
+        if ('implements' in changes) update.implements = [...(changes.implements ?? [])]
         if ('outputSchema' in changes && changes.outputSchema === undefined) update.outputSchema = null
         const schema = 'input' in changes ? this.convertSchema(rec.name, changes.input) : undefined
         const output =

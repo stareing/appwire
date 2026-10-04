@@ -60,6 +60,9 @@ export class ToolEntry<I, O> implements ToolHandle, Child {
     spec.backgroundTool = d.backgroundTool;
     spec.concurrency = d.concurrency;
     spec.exclusive = d.exclusive;
+    if (d.implements !== undefined && d.implements.length > 0) {
+      spec.implements = d.implements.slice();
+    }
     return spec;
   }
 
@@ -82,6 +85,7 @@ export class ToolEntry<I, O> implements ToolHandle, Child {
       backgroundTool: patchField<string>(changes.backgroundTool, d.backgroundTool),
       concurrency: patchField<number>(changes.concurrency, d.concurrency),
       exclusive: patchField<string>(changes.exclusive, d.exclusive),
+      implements: patchField<string[]>(changes.implements, d.implements),
       handler: d.handler,
     };
     this.def = next;

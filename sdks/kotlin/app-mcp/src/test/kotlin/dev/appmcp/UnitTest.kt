@@ -242,6 +242,26 @@ class UnitTest {
     }
 
     @Test
+    fun implementsReachSpec() {
+        assertEquals(emptyList(), client.tool("i.plain", "缺省") { _, _ -> null }.specForTest().implements)
+        val handle = client.tool("i.send", "发消息", implements = listOf("message.send@1")) { _, _ -> null }
+        assertEquals(listOf("message.send@1"), handle.specForTest().implements)
+        handle.update(description = "新")
+        handle.setEnabled(false)
+        assertEquals(listOf("message.send@1"), handle.specForTest().implements, "补丁型 update 不得重置意图声明")
+        handle.update { implements = emptyList() }
+        assertEquals(emptyList(), handle.specForTest().implements)
+        handle.update(implements = listOf("link.open@1"))
+        assertEquals(listOf("link.open@1"), handle.specForTest().implements)
+        val typed = client.typedTool<Unit, Unit>("i.typed", "带类型", implements = listOf("link.open@1")) { _, _ -> }
+        assertEquals(listOf("link.open@1"), typed.specForTest().implements)
+        assertFailsWith<AppMcpException.InvalidName> {
+            client.tool("i.bad", "缺版本", implements = listOf("message.send")) { _, _ -> null }
+        }
+        assertFailsWith<AppMcpException.InvalidName> { handle.update(implements = listOf("Bad Verb@1")) }
+    }
+
+    @Test
     fun maxQueuedCallsMapsToFfi() {
         assertEquals(null, AppMcpConfig("kotlin-unit", "排队").toFfi().maxQueuedCalls, "为空时交给核心缺省（64）")
         assertEquals(0u, AppMcpConfig("kotlin-unit", "排队", maxQueuedCalls = 0).toFfi().maxQueuedCalls)

@@ -81,7 +81,7 @@
  *   旧调用方不受影响）：App 在系统名字服务登记名字，Hub 按名拨号时接受通道（握手方向不变：SDK 先发 app/hello，
  *   wakeReason 为 "os-activation"）；通道关闭后 on-demand / idle 回到 DORMANT、不重连。由 D-Bus 激活启动的进程
  *   （命令行带 --app-mcp-activation）按"由唤醒冷启动"处理（AM_RESIDENCY_EXIT_WHEN_IDLE 生效）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v20 仍为 3。）
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v21 仍为 3。）
  * - v18（第 4f 项 k / 第 16 项 N6，spec/protocol.md 5.3）：只在结构体末尾追加字段（按 struct_size 读取，旧调用方不受影响）。
  *   · AmToolOptions 末尾追加 concurrency（本工具同时执行的调用上限，0 = 不单独限制）与 exclusive（互斥组名，同组工具
  *     同一时刻至多一个在执行；NULL = 不互斥）。只在 SDK 内调度，不同步给 Host。
@@ -91,6 +91,8 @@
  *   am_client_set_busy_policy 与枚举 AmBusyPolicy；结构体不变。
  * - v20（第 16 项 N3，spec/protocol.md 3.5「事件」）：新增 am_client_declare_event / am_client_remove_event /
  *   am_client_emit_event；结构体与枚举不变。
+ * - v21（第 16 项 N4，spec/intents.md）：只在 AmToolOptions 末尾追加 implements 与 implements_len（实现的标准意图，
+ *   字符串数组，写法同 AmCallResult.state_hints），按 struct_size 读取；旧调用方视为未声明。
  * - 第 16 项 N6（spec/hub-api.md 3.6「对象锁」）：am_call_fail 认可的错误类别新增 "LOCKED"（-31003，由 Host 的对象锁产生，
  *   App 一般不用）；函数与结构体不变。
  *
@@ -385,6 +387,11 @@ typedef struct AmToolOptions {
     uint32_t concurrency;
     /* v18：可为 NULL：不互斥。互斥组名（命名规则同工具名）：同组的工具同一时刻至多一个在执行。 */
     const char *exclusive;
+    /* v21（spec/intents.md）：实现的标准意图，每项 "<动词>@<主版本>"（如 "message.send@1"），最多 4 项、不重复；
+     * implements_len 为 0 时可为 NULL（= 未声明）。格式不合法时注册 / 更新返回 AM_ERR_INVALID_NAME。
+     * 旧调用方的 struct_size 不含 implements_len 时按未声明处理；更新时空表示清除。 */
+    const char *const *implements;
+    size_t implements_len;
 } AmToolOptions;
 
 typedef struct AmResourceSpec {

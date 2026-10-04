@@ -78,6 +78,8 @@ Identity and connection are owned by the Rust side: `appId`, `appName` and `host
 - Call scheduling (spec/protocol.md 5.3): page tool options `concurrency` / `exclusive` are forwarded to the plugin and
   scheduled by the native runtime (the limits `max_concurrent_calls` / `max_queued_calls` are set in the plugin's
   `NativeConfig` on the Rust side).
+- Standard intents (spec/intents.md): the page tool option `implements` (e.g. `['link.open@1']`) is forwarded to the plugin;
+  omitting it in an update clears it.
 - Events (spec/protocol.md 3.5): `appMcp.declareEvent({ name, description, payloadSchema? })`,
   `emitEvent(name, payload?)` and `removeEvent(name)` go over the plugin bridge (`event.declare` / `event.emit` /
   `event.remove`) and are emitted by the Rust-side client. Declarations belong to the page and are withdrawn when it

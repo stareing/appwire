@@ -22,6 +22,8 @@ export interface StaticToolDefinition<I = unknown> {
   surface?: ToolSurface
   /** 所在页面名；写在 {@link PageDefinition.tools} 中时可省略（写了必须等于页面名）。 */
   page?: string
+  /** 实现的标准意图（spec/intents.md），如 `['message.send@1']`：每项 `<动词>@<主版本>`，最多 4 项、不重复。 */
+  implements?: string[]
 }
 
 /**

@@ -90,6 +90,8 @@ public typealias EventSubscriptionStatus = AppMcpHubBindings.EventSubscriptionSt
 /// 事件信箱上限（`HubConfig.eventLimits`）：`maxSubscriptions`、`maxInboxEvents`、`inboxTtlMs`、`perSubscriptionPerMinute`；
 /// 为空的字段取默认值（32 / 100 / 24 小时 / 60）。
 public typealias EventLimitOverrides = AppMcpHubBindings.EventLimitOverrides
+/// 标准意图的机主默认表状态（`Hub.intents()`、`HubStatus.intents`，spec/intents.md 第 4 节）：`defaults`、`lastError`。
+public typealias IntentsStatus = AppMcpHubBindings.IntentsStatus
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。
 public typealias LimitsConfig = AppMcpHubBindings.LimitsConfig
@@ -364,6 +366,13 @@ public final class Hub: @unchecked Sendable {
     /// 替换 Agent 登记（空数组清空），只影响之后到达的 MCP 请求。
     /// 不合法时抛 `HubError.Tool`（`kind == "INVALID_INPUT"`），之前的登记继续生效。
     public func setAgents(_ agents: [AgentCredential]) throws { try inner.setAgents(agents: agents) }
+
+    /// 生效的标准意图默认表与最近一次替换失败的原因（spec/intents.md 第 4 节）。已停止时抛 `HubError.Shutdown`。
+    public func intents() throws -> IntentsStatus { try inner.intents() }
+
+    /// 替换意图默认表（动词或 `动词@主版本` → 工具全名；`[:]` 清空），只影响 `apps.intents` 的排序与 `default` 标记。
+    /// 不合法时抛 `HubError.Tool`（`kind == "INVALID_INPUT"`），之前的继续生效，原因记入 `intents().lastError`。
+    public func setIntentDefaults(_ defaults: [String: String]) throws { try inner.setIntentDefaults(defaults: defaults) }
 
     /// 设置全局默认实例（`nil` 恢复按规则路由）。
     public func selectInstance(appId: String, instanceId: String?) {

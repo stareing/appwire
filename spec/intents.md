@@ -61,3 +61,37 @@ implements?: string[]   // 如 ["message.send@1"]；每项为 "<动词>@<主版�
   Host 读 `<home>/intents.json`（`{"defaults": {"message.send": "mail.compose.send"}}`，读写方式同 `policy.json`，`reload` 重新加载，
   不合法时启动报错 / reload 保留旧值）。默认只是提示：Hub 不按它路由，Agent 仍按工具全名调用。
 - 调用：Agent 用 `apps.intents` 选定工具后照常按全名调用；Hub 不提供"按动词调用"的入口。
+- 默认表键：动词（对其所有版本生效）或 `动词@主版本`（优先于不带版本的键）；值为工具全名。最多 256 条（`MAX_INTENT_DEFAULTS`），
+  动词名最长 64 字符（`MAX_VERB_LEN`），`apps.intents` 的 `intent` 参数最长 80 字符。不合法的默认表整体拒绝、之前的继续生效。
+- 机主接口：
+  - Rust：`Hub::set_intent_defaults(map) -> Result`、`Hub::intents() -> IntentsStatus {defaults, lastError?}`；`HubStatus.intents`（同结构）。
+    `HubConfig.intent_defaults` 不合法时 Hub 以空表启动并在 `lastError` 记录原因（Host 则拒绝启动）。
+  - HTTP（Host 管理端点，鉴权同 `/status`）：`POST /intents`，请求体同 `intents.json`，回复 `{ok, defaults?: 条数, error?}`。
+  - Host 命令：`app-mcp-host intents show | validate [文件] | reload | set <动词> <工具全名> | unset <动词>`（`set` / `unset` 写
+    `intents.json` 后通知运行中的 Host 重新加载）。
+- `apps.tools`、`apps.search` 的工具条目与 Hub API `HubTool` 带 `implements`（非空时）。
+
+## 5. 各语言 SDK
+
+App 侧在工具声明中给出 `implements`（字符串数组，名称按各语言惯例），注册时缺省或空数组等于未声明；更新时整体替换，
+清除方式按各 SDK 的更新惯例（补丁型传 `null` / `undefined`，Python 传 `[]`）。格式不合法（第 1 节）注册即失败（各 SDK 的
+"名称不合法"错误），未知动词与不兼容只记警告。
+
+| 端 | 入口 |
+|---|---|
+| Rust native / tauri 插件 | `ToolOptions.implements` |
+| Web / Node / Electron / Tauri 页面 / React / 鸿蒙 | `ToolDefinition.implements`；`@app-mcp/build` 写入清单（只校验格式） |
+| Python / Kotlin / Swift | `implements` 参数与 `update(implements=)` |
+| C ABI（`app_mcp.h` v21） | `AmToolOptions` 末尾 `implements` + `implements_len`（`struct_size` 不含时视为未声明；长度非 0 而数组或元素为 NULL → `AM_ERR_INVALID_ARGUMENT`） |
+| C++ / C# / Dart / Flutter | `ToolOptions::implements`、`ToolOptions.Implements`、`ToolSpec.implements`、`McpTool.implements` |
+
+Hub 封装（第 4 节机主接口）：
+
+| 端 | 设置默认表 | 读取 |
+|---|---|---|
+| `@app-mcp/hub` | `setIntentDefaults(map)`、配置 `intentDefaults` | `intents()`、`status().intents`、`HubTool.implements` |
+| hub-uniffi → Python / Kotlin / Swift | `set_intent_defaults` / `setIntentDefaults`、配置 `intent_defaults` | `intents()`、`HubStatus.intents`、`HubTool.implements` |
+| hub-c（`app_mcp_hub.h` v23） | `am_hub_set_intent_defaults(hub, json)`（JSON 不合法 `AM_HUB_ERR_INVALID_JSON`，表不合法 `AM_HUB_ERR_INVALID_CONFIG`） | `am_hub_intents_json`、状态 JSON `intents` |
+| C# | `SetIntentDefaults(dict)` | `Intents()`、`HubStatusInfo.Intents`、`HubToolInfo.Implements` |
+
+不合法的表一律整体拒绝（`INVALID_INPUT` 或上表的对应错误），之前的继续生效，原因记在 `lastError`。启动配置中的表不合法时以空表启动。

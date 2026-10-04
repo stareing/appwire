@@ -524,6 +524,22 @@ test('backgroundTool 声明；update 以 null 清除', () => {
   assert.equal(client.tools.get('cart.viewAdd').spec.backgroundTool, undefined);
 });
 
+test('标准意图 implements 声明（缺省或空数组不带）；update 替换、未给出保持、null 清除', () => {
+  const { mcp, client } = create();
+  mcp.tool('plain', { description: 'P', handler: () => 1 });
+  mcp.tool('empty', { description: 'E', implements: [], handler: () => 1 });
+  assert.equal(client.tools.get('plain').spec.implements, undefined);
+  assert.equal(client.tools.get('empty').spec.implements, undefined);
+  const t = mcp.tool('mail.send', { description: 'S', implements: ['message.send@1'], handler: () => 1 });
+  assert.deepEqual(client.tools.get('mail.send').spec.implements, ['message.send@1']);
+  t.update({ description: 'S2' });
+  assert.deepEqual(client.tools.get('mail.send').spec.implements, ['message.send@1']);
+  t.update({ implements: ['message.send@1', 'file.share@1'] });
+  assert.deepEqual(client.tools.get('mail.send').spec.implements, ['message.send@1', 'file.share@1']);
+  t.update({ implements: null });
+  assert.equal(client.tools.get('mail.send').spec.implements, undefined);
+});
+
 test('调用调度声明 concurrency / exclusive；update 以 null 清除', () => {
   const { mcp, client } = create();
   mcp.tool('plain', { description: 'P', handler: () => 1 });

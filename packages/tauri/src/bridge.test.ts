@@ -199,6 +199,15 @@ describe('createTauriAppMcp', () => {
     appMcp.dispose()
   })
 
+  it('标准意图：工具的 implements 经注入脚本随 tool.register 送到 Rust 侧', async () => {
+    const fake = createFakeTauri()
+    const appMcp = createTauriAppMcp({ appId: 'web', appName: '浏览器', bridge: bridgeOf(fake.window), logger: quiet })
+    appMcp.tool('open', { description: '打开链接', implements: ['link.open@1'], handler: () => null })
+    const reg = await fake.waitFor((op) => op.op === 'tool.register')
+    expect(reg).toMatchObject({ name: 'open', spec: { implements: ['link.open@1'] } })
+    appMcp.dispose()
+  })
+
   it('USER_ACTION_REQUIRED 的类别与 reason / uri 经注入脚本送到 Rust 侧；缺省字段省略', async () => {
     const fake = createFakeTauri()
     const appMcp = createTauriAppMcp({ appId: 'shop', appName: '示例商城', bridge: bridgeOf(fake.window), logger: quiet })

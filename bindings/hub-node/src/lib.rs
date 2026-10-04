@@ -174,6 +174,8 @@ struct ConfigJson {
     output_validation: Option<OutputValidation>,
     /// 策略挂点（spec/hub-api.md 3.13）：`{"rules": [...]}`；规则不合法时 `Hub.start` 失败。
     policy: Option<PolicyConfig>,
+    /// 标准意图的机主默认表（spec/intents.md 第 4 节）：`{动词: 工具全名}`；不合法时以空表启动、原因记入 `intents().lastError`。
+    intent_defaults: Option<BTreeMap<String, String>>,
     /// `"system"` / `"none"` / `{"exec": [...]}`（spec/hub-api.md 3.5）。
     waker: Option<WakerConfig>,
     /// 渐进暴露（spec/hub-api.md 3.7）。
@@ -295,6 +297,9 @@ impl ConfigJson {
         }
         if let Some(p) = self.policy {
             c.policy = p;
+        }
+        if let Some(d) = self.intent_defaults {
+            c.intent_defaults = d;
         }
         if let Some(w) = self.waker {
             c.waker = w;
@@ -547,6 +552,21 @@ impl JsHub {
         let policy: PolicyConfig = serde_json::from_str(&policy_json)
             .map_err(|e| invalid_arg(format!("policy 不是合法的 JSON：{e}")))?;
         self.hub()?.set_policy(policy).map_err(hub_error)
+    }
+
+    /// `IntentsStatus` 的 JSON：标准意图的机主默认表与最近一次替换失败的原因（spec/intents.md 第 4 节）。
+    #[napi]
+    pub fn intents(&self) -> Result<String> {
+        to_json(&self.hub()?.intents())
+    }
+
+    /// 整体替换意图默认表（`{动词: 工具全名}` 的 JSON，`{}` 清空）。JSON 不合法 → `INVALID_ARG`；
+    /// 表不合法 → `INVALID_INPUT`（之前的默认表继续生效，原因记入 `intents().lastError`）。
+    #[napi]
+    pub fn set_intent_defaults(&self, defaults_json: String) -> Result<()> {
+        let defaults: BTreeMap<String, String> = serde_json::from_str(&defaults_json)
+            .map_err(|e| invalid_arg(format!("intentDefaults 不是合法的 JSON：{e}")))?;
+        self.hub()?.set_intent_defaults(defaults).map_err(hub_error)
     }
 
     /// 替换 Agent 登记（`[{"name","token"}]` 的 JSON，`[]` 清空），只影响之后到达的 MCP 请求。JSON 不合法 → `INVALID_ARG`；

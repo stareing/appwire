@@ -73,6 +73,40 @@ void main() {
     }
   });
 
+  test('v21 字段偏移与 C 一致（AmToolOptions.implements / implements_len）', () {
+    final tool = calloc<AmToolOptions>();
+    try {
+      tool.ref.implements = Pointer<Pointer<Utf8>>.fromAddress(0x9abc);
+      tool.ref.implements_len = 3;
+      expect(Pointer<IntPtr>.fromAddress(tool.address + fake.sizeOf(27)).value, 0x9abc);
+      expect(Pointer<Size>.fromAddress(tool.address + fake.sizeOf(28)).value, 3);
+    } finally {
+      calloc.free(tool);
+    }
+  });
+
+  test('implements 经 AmToolOptions（v21）传入；update 未提供保持、null 清除', () {
+    final t = client.tool('link.open',
+        description: '打开链接', implements: ['link.open@1', 'file.share@1'], handler: (args, ctx) => null);
+    expect(fake.toolImplements('link.open'), 'link.open@1,file.share@1');
+    t.update(description: '打开链接（新）');
+    expect(fake.toolImplements('link.open'), 'link.open@1,file.share@1');
+    t.update(implements: ['link.open@1']);
+    expect(fake.toolImplements('link.open'), 'link.open@1');
+    t.update(implements: null);
+    expect(fake.toolImplements('link.open'), '-');
+    expect(t.spec.implements, isEmpty);
+    expect(() => t.update(implements: 'link.open@1'), throwsArgumentError);
+    expect(ToolSpec(name: 'a', description: 'b', implements: ['x.y@1']), isNot(ToolSpec(name: 'a', description: 'b')));
+    expect(ToolSpec(name: 'a', description: 'b', implements: ['x.y@1']),
+        ToolSpec(name: 'a', description: 'b', implements: ['x.y@1']));
+    expect(ToolSpec(name: 'a', description: 'b', implements: ['x.y@1']).hashCode,
+        ToolSpec(name: 'a', description: 'b', implements: ['x.y@1']).hashCode);
+    expect(ToolSpec(name: 'a', description: 'b').copyWith(implements: ['x.y@1']).implements, ['x.y@1']);
+    client.tool('plain.app4', description: '普通', handler: (args, ctx) => null);
+    expect(fake.toolImplements('plain.app4'), '-');
+  });
+
   test('surface / page 经 AmToolOptions（v14）传入；update 未提供保持、null 清除', () {
     final t = client.tool('cart.checkout',
         description: '结算', surface: ToolSurface.view, page: 'cart', handler: (args, ctx) => null);

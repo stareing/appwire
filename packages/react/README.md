@@ -86,6 +86,8 @@ the hooks are no-ops. A tool can also be loaded lazily: pass `load: () => import
   decides, and confirmation of high-risk actions belongs in your app.
 - `outputSchema` - schema of the result `data` (JSON Schema, zod v4 schema or an object with `toJSONSchema()`);
   a non-`object` root is wrapped by the Hub as `{ result: <schema> }`.
+- `implements` - standard intents the tool implements (spec/intents.md), e.g. `['message.send@1']`; an inline array is
+  compared by content, and removing it clears the declaration.
 - Handlers may return `{ data, stateHints?, status?, stateResource?, summary?, annotations? }` with `status` one of
   `'done' | 'pending' | 'partial' | 'noop'`. It is unpacked only if it has a `data` key and every other key is one
   of these with a valid value; any other value is returned as `data` as a whole. Returning nothing (`undefined` /

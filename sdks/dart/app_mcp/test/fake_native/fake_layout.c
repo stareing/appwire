@@ -36,6 +36,8 @@ size_t fake_sizeof(int which) {
     case 24: return offsetof(AmClientOptions, name_instance);
     case 25: return offsetof(AmClientOptions, max_queued_calls);
     case 26: return offsetof(AmToolOptions, exclusive);
+    case 27: return offsetof(AmToolOptions, implements);
+    case 28: return offsetof(AmToolOptions, implements_len);
     default: return 0;
     }
 }

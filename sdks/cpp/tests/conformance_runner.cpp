@@ -49,7 +49,7 @@ const std::vector<std::string> kFeatures = {"toolOptions", "mutate",      "lifec
                                             "userAction",  "progress",    "resourceOptions", "readFailure",
                                             "surface",     "navigation",  "backgroundTool",  "backgroundNavigation",
                                             "idempotencyKey", "callScheduling", "busy",
-                                            "events"};
+                                            "events",      "implements"};
 
 // ---------------------------------------------------------------------------
 // 用例字段 → SDK 枚举（协议同名字符串，spec/protocol.md 第 3 节）
@@ -341,6 +341,7 @@ app_mcp::ToolOptions cpp_tool_options(const Json& decl) {
     o.background_tool = decl["backgroundTool"].str();
     o.concurrency = static_cast<uint32_t>(to_u64(decl["concurrency"], 0));
     o.exclusive = decl["exclusive"].str();
+    o.implements = strings(decl["implements"]);
     return o;
 }
 
@@ -550,6 +551,8 @@ void check_c(AmStatus s, const char* what) {
 struct CToolDecl {
     std::string name, description;
     std::optional<std::string> input_schema, title, annotations, output_schema, page, background_tool, exclusive;
+    std::vector<std::string> implements;
+    std::vector<const char*> implements_ptrs;
     AmToolSpec spec{};
     AmToolOptions options{};
 
@@ -562,7 +565,8 @@ struct CToolDecl {
           output_schema(json_text(decl["outputSchema"])),
           page(decl["page"].str()),
           background_tool(decl["backgroundTool"].str()),
-          exclusive(decl["exclusive"].str()) {
+          exclusive(decl["exclusive"].str()),
+          implements(strings(decl["implements"])) {
         spec.name = name.c_str();
         spec.description = description.c_str();
         spec.input_schema_json = input_schema ? input_schema->c_str() : nullptr;
@@ -578,6 +582,9 @@ struct CToolDecl {
         options.background_tool = background_tool ? background_tool->c_str() : nullptr;
         options.concurrency = static_cast<uint32_t>(to_u64(decl["concurrency"], 0));
         options.exclusive = exclusive ? exclusive->c_str() : nullptr;
+        for (const auto& verb : implements) implements_ptrs.push_back(verb.c_str());
+        options.implements = implements_ptrs.empty() ? nullptr : implements_ptrs.data();
+        options.implements_len = implements_ptrs.size(); // 更新时 0 = 清除
     }
     CToolDecl(const CToolDecl&) = delete;
     CToolDecl& operator=(const CToolDecl&) = delete;

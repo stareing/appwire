@@ -406,6 +406,8 @@ fn tool_options_are_read_up_to_struct_size() {
     let page = CString::new("cart").unwrap_or_default();
     let background = CString::new("cart.summary").unwrap_or_default();
     let group = CString::new("doc").unwrap_or_default();
+    let verb = CString::new("message.send@1").unwrap_or_default();
+    let verbs = [verb.as_ptr()];
     let full = AmToolOptions {
         struct_size: std::mem::size_of::<AmToolOptions>() as u32,
         annotations_json: ann.as_ptr(),
@@ -415,6 +417,8 @@ fn tool_options_are_read_up_to_struct_size() {
         background_tool: background.as_ptr(),
         concurrency: 2,
         exclusive: group.as_ptr(),
+        implements: verbs.as_ptr(),
+        implements_len: 1,
     };
     let options = unsafe { read_tool_options(&full) }.ok();
     assert_eq!(
@@ -431,9 +435,21 @@ fn tool_options_are_read_up_to_struct_size() {
             background_tool: Some("cart.summary".into()),
             concurrency: 2,
             exclusive: Some("doc".into()),
-            implements: Vec::new(),
+            implements: vec!["message.send@1".into()],
         })
     );
+    // v20 调用方（不含 implements）：按未声明处理，其余字段照读
+    let v20 = AmToolOptions { struct_size: std::mem::offset_of!(AmToolOptions, implements) as u32, ..full };
+    let options = unsafe { read_tool_options(&v20) }.ok();
+    assert!(options.as_ref().is_some_and(|o| o.implements.is_empty() && o.exclusive.as_deref() == Some("doc")));
+    // implements_len 为 0 时 implements 可为 NULL；非 0 时 NULL / 元素为 NULL 均为 AM_ERR_INVALID_ARGUMENT
+    let empty = AmToolOptions { implements: ptr::null(), implements_len: 0, ..full };
+    assert!(unsafe { read_tool_options(&empty) }.is_ok_and(|o| o.implements.is_empty()));
+    let null_items = AmToolOptions { implements: ptr::null(), implements_len: 1, ..full };
+    assert_eq!(unsafe { read_tool_options(&null_items) }.err().map(|e| e.status), Some(AmStatus::InvalidArgument));
+    let null_entry = [ptr::null::<c_char>()];
+    let null_elem = AmToolOptions { implements: null_entry.as_ptr(), implements_len: 1, ..full };
+    assert_eq!(unsafe { read_tool_options(&null_elem) }.err().map(|e| e.status), Some(AmStatus::InvalidArgument));
     // v17 调用方（不含 concurrency / exclusive）：不单独限制、不互斥
     let v17 = AmToolOptions { struct_size: std::mem::offset_of!(AmToolOptions, concurrency) as u32, ..full };
     let options = unsafe { read_tool_options(&v17) }.ok();
@@ -674,6 +690,8 @@ fn tool_options_and_call_result_reach_host() {
     };
     let ann = CString::new(r#"{"idempotentHint":false,"openWorldHint":true}"#).unwrap_or_default();
     let schema = CString::new(r#"{"type":"object","properties":{"orderId":{"type":"string"}}}"#).unwrap_or_default();
+    let verb = CString::new("link.open@1").unwrap_or_default();
+    let verbs = [verb.as_ptr()];
     let options = AmToolOptions {
         struct_size: std::mem::size_of::<AmToolOptions>() as u32,
         annotations_json: ann.as_ptr(),
@@ -683,6 +701,8 @@ fn tool_options_and_call_result_reach_host() {
         background_tool: ptr::null(),
         concurrency: 0,
         exclusive: ptr::null(),
+        implements: verbs.as_ptr(),
+        implements_len: verbs.len(),
     };
     let mut tool: *mut AmTool = ptr::null_mut();
     assert_eq!(
@@ -693,6 +713,11 @@ fn tool_options_and_call_result_reach_host() {
     let bad = CString::new("{").unwrap_or_default();
     let bad_options = AmToolOptions { output_schema_json: bad.as_ptr(), ..options };
     assert_eq!(unsafe { am_tool_update_ex(tool, &spec, &bad_options) }, AmStatus::InvalidSchema);
+    // v21：implements 格式不合法（缺主版本）：AM_ERR_INVALID_NAME，工具保持原定义
+    let bad_verb = CString::new("link.open").unwrap_or_default();
+    let bad_verbs = [bad_verb.as_ptr()];
+    let bad_implements = AmToolOptions { implements: bad_verbs.as_ptr(), ..options };
+    assert_eq!(unsafe { am_tool_update_ex(tool, &spec, &bad_implements) }, AmStatus::InvalidName);
     // am_tool_update 保留已声明的选项
     assert_eq!(unsafe { am_tool_update(tool, &spec) }, AmStatus::Ok);
 

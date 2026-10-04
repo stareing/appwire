@@ -76,6 +76,27 @@ final class UnitTests: XCTestCase {
         XCTAssertEqual(box.value?.0, ErrorKind.cancelled)
     }
 
+    func testImplementsReachSpec() throws {
+        let client = try AppMcpClient(config: AppMcpConfig(appId: "swift-unit", appName: "Swift 单元测试", hostURL: "ws://127.0.0.1:9"))
+        defer { client.stop() }
+        XCTAssertEqual(try client.tool("i.plain", description: "缺省") { (_: NoArguments, _) in }.specForTest.implements, [])
+        let h = try client.tool("i.send", description: "发消息", implements: ["message.send@1"]) { (_: NoArguments, _) in }
+        XCTAssertEqual(h.specForTest.implements, ["message.send@1"])
+        try h.update(description: "新")
+        try h.setEnabled(false)
+        XCTAssertEqual(h.specForTest.implements, ["message.send@1"], "补丁型 update 不得重置意图声明")
+        try h.update { $0.implements = [] }
+        XCTAssertEqual(h.specForTest.implements, [])
+        try h.update(implements: ["link.open@1"])
+        XCTAssertEqual(h.specForTest.implements, ["link.open@1"])
+        let bg = try client.backgroundTool("i.bg", description: "后台", implements: ["link.open@1"]) { (_: NoArguments, _) in 1 }
+        XCTAssertEqual(bg.specForTest.implements, ["link.open@1"])
+        XCTAssertThrowsError(try client.tool("i.bad", description: "缺版本", implements: ["message.send"]) { (_: NoArguments, _) in }) { err in
+            guard case AppMcpError.InvalidName = err else { return XCTFail("期望 InvalidName，得到 \(err)") }
+        }
+        XCTAssertThrowsError(try h.update(implements: ["Bad Verb@1"]))
+    }
+
     func testRegistrationErrors() throws {
         let client = try AppMcpClient(config: AppMcpConfig(appId: "swift-unit", appName: "Swift 单元测试", hostURL: "ws://127.0.0.1:9"))
         defer { client.stop() }

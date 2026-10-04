@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Union
 
 from app_mcp_hub import app_mcp_hub_uniffi as ffi
@@ -26,6 +27,7 @@ EventLimitsLike = Union[EventLimitOverrides, dict[str, int]]
 OutputValidationLike = Union[OutputValidation, str]
 PolicyLike = Union[PolicyConfig, dict[str, Any]]
 AgentsLike = list[Union[AgentCredential, dict[str, str]]]
+IntentDefaultsLike = Mapping[str, str]
 
 # LimitsConfig 字段 ← JSON 配置键（与 app-mcp-host 配置文件 ``limits`` 相同；也接受 snake_case）。
 _LIMIT_KEYS = {
@@ -141,3 +143,14 @@ def _agents(value: AgentsLike) -> list[AgentCredential]:
         a if isinstance(a, AgentCredential) else AgentCredential(**_fields(a, {"name": "name", "token": "token"}, "agent"))
         for a in value
     ]
+
+
+def _intent_defaults(value: IntentDefaultsLike) -> dict[str, str]:
+    """意图默认表（动词或 ``动词@主版本`` → 工具全名，与 ``intents.json`` 的 ``defaults`` 相同）；键或值不是字符串抛
+    ``TypeError``（格式校验由 Hub 完成）。"""
+    if not isinstance(value, Mapping):
+        raise TypeError(f"intent_defaults 应为字典，实际为 {type(value).__name__}")
+    for k, v in value.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            raise TypeError(f"intent_defaults 的键和值都应为字符串：{k!r}: {v!r}")
+    return dict(value)

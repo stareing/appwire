@@ -122,6 +122,8 @@ internal struct AmToolOptions
     public nint BackgroundTool;   // v15：后台时代替本 view 工具的 app 工具本地名；0 = 未声明
     public uint Concurrency;      // v18：本工具同时执行的调用上限；0 = 不单独限制
     public nint Exclusive;        // v18：互斥组名；0 = 不互斥
+    public nint Implements;       // v21：const char* const*，实现的标准意图；ImplementsLen 为 0 时可为 0
+    public nuint ImplementsLen;
 }
 
 /// <summary>v9：am_call_complete_ex 的调用结果。StructSize = sizeof(AmCallResult)。</summary>

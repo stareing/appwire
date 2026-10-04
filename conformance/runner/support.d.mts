@@ -65,6 +65,8 @@ export interface ToolDecl {
   surface?: 'app' | 'view'
   page?: string
   backgroundTool?: string
+  /** 标准意图声明（spec/intents.md 1，能力 implements）。 */
+  implements?: string[]
   handler?: HandlerSpec
 }
 

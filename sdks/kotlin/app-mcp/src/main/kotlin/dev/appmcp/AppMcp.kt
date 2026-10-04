@@ -122,6 +122,7 @@ class ToolHandle internal constructor(private val inner: FfiTool, @Volatile priv
         backgroundTool: String? = null,
         concurrency: Int? = null,
         exclusive: String? = null,
+        implements: List<String>? = null,
     ) = update {
         description?.let { this.description = it }
         inputSchema?.let { this.inputSchema = it }
@@ -134,6 +135,7 @@ class ToolHandle internal constructor(private val inner: FfiTool, @Volatile priv
         backgroundTool?.let { this.backgroundTool = it }
         concurrency?.let { this.concurrency = it }
         exclusive?.let { this.exclusive = it }
+        implements?.let { this.implements = it }
     }
 
     /**
@@ -196,6 +198,8 @@ abstract class AppMcpRegistrar internal constructor() {
      * @param concurrency 本工具同时执行的调用上限；0（缺省）= 不单独限制，只受 [AppMcpConfig.maxConcurrentCalls] 约束。
      * @param exclusive 互斥组名（命名规则同工具名）：同组工具同一时刻最多执行一个调用，其余按到达顺序排队。
      *   [concurrency] 与本项只在 SDK 内生效，不发给 Host（spec/protocol.md 5.3）。
+     * @param implements 实现的标准意图（spec/intents.md，每项 `"<动词>@<主版本>"`，如 `listOf("message.send@1")`）；
+     *   Agent 经 `apps.intents` 按动词找到实现者。格式不合法时抛 `AppMcpException.InvalidName`。
      */
     fun tool(
         name: String,
@@ -212,6 +216,7 @@ abstract class AppMcpRegistrar internal constructor() {
         backgroundTool: String? = null,
         concurrency: Int = 0,
         exclusive: String? = null,
+        implements: List<String> = emptyList(),
         handler: ToolFunction,
     ): ToolHandle {
         val spec = ToolSpec(
@@ -229,6 +234,7 @@ abstract class AppMcpRegistrar internal constructor() {
             backgroundTool = backgroundTool,
             concurrency = concurrency.coerceAtLeast(0).toUInt(),
             exclusive = exclusive,
+            implements = implements,
         )
         val o = owner
         val raw = registerRaw(spec, object : ToolHandler {
@@ -255,10 +261,11 @@ abstract class AppMcpRegistrar internal constructor() {
         backgroundTool: String? = null,
         concurrency: Int = 0,
         exclusive: String? = null,
+        implements: List<String> = emptyList(),
         noinline handler: suspend (args: A, ctx: ToolContext) -> R,
     ): ToolHandle = typedToolImpl(
         name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool,
-        concurrency, exclusive, serializer<A>(), serializer<R>(), handler,
+        concurrency, exclusive, implements, serializer<A>(), serializer<R>(), handler,
     )
 
     @PublishedApi
@@ -277,12 +284,13 @@ abstract class AppMcpRegistrar internal constructor() {
         backgroundTool: String?,
         concurrency: Int,
         exclusive: String?,
+        implements: List<String>,
         argSerializer: KSerializer<A>,
         resultSerializer: KSerializer<R>,
         handler: suspend (A, ToolContext) -> R,
     ): ToolHandle = tool(
         name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool,
-        concurrency, exclusive,
+        concurrency, exclusive, implements,
     ) { args, ctx ->
         val decoded = try {
             AppMcpJson.decodeFromJsonElement(argSerializer, args)

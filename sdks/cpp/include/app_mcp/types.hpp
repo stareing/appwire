@@ -110,6 +110,9 @@ struct ToolOptions {
     uint32_t concurrency = 0;
     /// 互斥组名 [a-zA-Z0-9_.-]{1,64}：同组的工具同一时刻至多一个在执行；为空表示不互斥（v18）。
     std::optional<std::string> exclusive;
+    /// 实现的标准意图（spec/intents.md），每项 "<动词>@<主版本>"（如 "message.send@1"），最多 4 项、不重复；
+    /// 为空表示不声明（v21）。格式不合法时注册 / 更新抛出 InvalidName。
+    std::vector<std::string> implements;
 };
 
 /// 内容面向谁（MCP 内容注解 audience）。
@@ -346,8 +349,12 @@ inline std::string to_json(const ContentAnnotations& a) {
 }
 
 /// ToolOptions → AmToolOptions。
-/// @invariant 指针借用 annotations_json（由调用方保持存活）与 options 的字符串。
-inline AmToolOptions tool_options(const ToolOptions& options, const std::optional<std::string>& annotations_json) {
+/// @invariant 指针借用 annotations_json、implements（均由调用方保持存活）与 options 的字符串。
+inline AmToolOptions tool_options(const ToolOptions& options, const std::optional<std::string>& annotations_json,
+                                  std::vector<const char*>& implements) {
+    implements.clear();
+    implements.reserve(options.implements.size());
+    for (const auto& verb : options.implements) implements.push_back(verb.c_str());
     AmToolOptions o{};
     o.struct_size = sizeof(AmToolOptions);
     o.annotations_json = c_str_or_null(annotations_json);
@@ -357,6 +364,8 @@ inline AmToolOptions tool_options(const ToolOptions& options, const std::optiona
     o.background_tool = c_str_or_null(options.background_tool);
     o.concurrency = options.concurrency;
     o.exclusive = c_str_or_null(options.exclusive);
+    o.implements = implements.empty() ? nullptr : implements.data();
+    o.implements_len = implements.size();
     return o;
 }
 

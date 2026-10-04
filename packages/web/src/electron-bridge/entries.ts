@@ -87,6 +87,7 @@ export class ToolEntry implements ToolHandle, Detachable, LazySlot {
       ...(d.backgroundTool !== undefined && { backgroundTool: d.backgroundTool }),
       ...(d.concurrency !== undefined && { concurrency: d.concurrency }),
       ...(d.exclusive !== undefined && { exclusive: d.exclusive }),
+      ...(d.implements !== undefined && d.implements.length > 0 && { implements: [...d.implements] }),
     }
   }
 

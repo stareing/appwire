@@ -442,6 +442,11 @@ export interface ToolDefinition<I = unknown, O = unknown> {
   exclusive?: string
   /** `view` 工具的可见性门控，缺省继承所在 scope，再缺省 `auto`。 */
   visibility?: ViewVisibility
+  /**
+   * 实现的标准意图（spec/intents.md），如 `['message.send@1']`：每项 `<动词>@<主版本>`，最多 4 项、不重复；格式不合法时注册失败，
+   * 未知动词或缺少词表必填参数只给出警告。不继承 scope。
+   */
+  implements?: string[]
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
   /** 与 `handler` 二选一：只声明元数据、首次调用时加载 handler，见 {@link LazyToolDefinition}。 */
   load?: undefined
@@ -469,7 +474,7 @@ export interface ToolHandle {
   readonly name: string
   /**
    * 更新描述、schema、风险、注解、启用状态或界面声明（`surface` / `page` / `visibility` / `anchor`）；未提供的字段保持不变，
-   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` / `backgroundTool` / `exclusive` 为清除声明，`concurrency` 恢复为不限，`surface` / `page` / `visibility` 恢复为继承值）。
+   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` / `backgroundTool` / `exclusive` / `implements` 为清除声明，`concurrency` 恢复为不限，`surface` / `page` / `visibility` 恢复为继承值）。
    * `enabled` 是 App 的意愿：`view` 工具还要满足可见性门控才对 Host 可见。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void

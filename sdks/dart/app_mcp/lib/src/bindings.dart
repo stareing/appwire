@@ -327,6 +327,10 @@ final class AmToolOptions extends Struct {
   external int concurrency;
   /// v18：互斥组名；NULL = 不互斥。
   external Pointer<Utf8> exclusive;
+  /// v21：实现的标准意图（`const char *const *`）；implements_len 为 0 时可为 NULL。
+  external Pointer<Pointer<Utf8>> implements;
+  @Size()
+  external int implements_len;
 }
 
 /// v9：`am_call_complete_ex` 的调用结果。

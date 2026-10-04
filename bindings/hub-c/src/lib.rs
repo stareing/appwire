@@ -21,6 +21,7 @@ mod config;
 mod dispatch;
 mod ffi_util;
 mod handle;
+mod intents;
 mod json;
 mod lifecycle;
 mod query;
@@ -37,6 +38,7 @@ use ffi_util::last_error_ptr;
 pub use handle::{
     AmHub, AmHubApproval, AmHubApprovalFn, AmHubEventFn, AmHubPairing, AmHubPairingFn, AmHubWake, AmHubWakerFn,
 };
+pub use intents::{am_hub_intents_json, am_hub_set_intent_defaults};
 pub use lifecycle::*;
 pub use query::*;
 

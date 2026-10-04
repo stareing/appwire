@@ -139,6 +139,8 @@ class ToolUpdate internal constructor() {
     var concurrency: Int by field { s, v -> s.copy(concurrency = v.coerceAtLeast(0).toUInt()) }
     /** 互斥组名；null = 清除（spec/protocol.md 5.3）。 */
     var exclusive: String? by field { s, v -> s.copy(exclusive = v) }
+    /** 实现的标准意图（spec/intents.md）；空列表 = 清除。 */
+    var implements: List<String> by field { s, v -> s.copy(implements = v) }
 
     private fun <T> field(patch: (FfiToolSpec, T) -> FfiToolSpec) =
         object : kotlin.properties.ReadWriteProperty<ToolUpdate, T> {

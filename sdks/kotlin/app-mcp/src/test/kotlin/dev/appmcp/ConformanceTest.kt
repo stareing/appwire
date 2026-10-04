@@ -35,7 +35,7 @@ class ConformanceTest {
         val FEATURES = setOf(
             "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
             "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-            "callScheduling", "busy", "events",
+            "callScheduling", "busy", "events", "implements",
         )
         val VERDICT_OK = setOf("pass", "xfail", "xpass", "skip")
         val repoRoot: File = FakeHostSupport.repoRoot.canonicalFile
@@ -170,6 +170,7 @@ class ConformanceTest {
             "backgroundTool" -> u.backgroundTool = str
             "concurrency" -> u.concurrency = str?.toIntOrNull() ?: 0
             "exclusive" -> u.exclusive = str
+            "implements" -> u.implements = strings(v) // 封装层空列表 = 清除
             else -> error("未知的工具字段 $key")
         }
     }
@@ -223,6 +224,7 @@ class ConformanceTest {
             backgroundTool = decl.str("backgroundTool"),
             concurrency = decl.long("concurrency")?.toInt() ?: 0,
             exclusive = decl.str("exclusive"),
+            implements = strings(decl["implements"]),
         ) { args, ctx -> runHandler(client, tools, handler, runs.incrementAndGet(), args, ctx) }
     }
 
@@ -303,6 +305,10 @@ class ConformanceTest {
     private fun risk(value: String) = Risk.valueOf(enumName(value))
     private fun lifecycleMode(value: String) = LifecycleMode.valueOf(enumName(value))
     private fun surface(value: String) = ToolSurface.valueOf(enumName(value))
+
+    /** 字符串数组；null / 缺省为空列表。 */
+    private fun strings(v: kotlinx.serialization.json.JsonElement?): List<String> =
+        (v as? kotlinx.serialization.json.JsonArray).orEmpty().map { it.jsonPrimitive.content }
 
     private fun JsonObject.obj(key: String): JsonObject? = (this[key] as? JsonObject)
     private fun JsonObject.prim(key: String): JsonPrimitive? = (this[key] as? JsonPrimitive)?.takeIf { it !is JsonNull }

@@ -425,6 +425,7 @@ final class AppMcp {
     String? backgroundTool,
     int concurrency = 0,
     String? exclusive,
+    List<String> implements = const [],
     required ToolHandler handler,
   }) =>
       _root.tool(name,
@@ -441,6 +442,7 @@ final class AppMcp {
           backgroundTool: backgroundTool,
           concurrency: concurrency,
           exclusive: exclusive,
+          implements: implements,
           handler: handler);
 
   /// 在根作用域注册资源。见 [McpScope.resource]。

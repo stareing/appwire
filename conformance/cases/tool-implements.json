@@ -1,0 +1,41 @@
+{
+  "id": "tool-implements",
+  "title": "标准意图声明 implements 原样到达 Host（未声明时省略；未知动词照常发送）；连接后更新替换、null 清除，经 tools/changed 到达",
+  "spec": ["intents.md 1", "protocol.md 3.2"],
+  "requires": ["implements", "mutate"],
+  "app": {
+    "tools": [
+      { "name": "i.plain", "description": "未声明意图", "handler": { "return": {} } },
+      { "name": "i.send", "description": "发消息",
+        "inputSchema": { "type": "object", "properties": { "to": { "type": "array", "items": { "type": "string" } }, "text": { "type": "string" } }, "required": ["to", "text"] },
+        "implements": ["message.send@1"],
+        "handler": { "return": { "sent": true } } },
+      { "name": "i.multi", "description": "多个意图（含词表外动词）",
+        "inputSchema": { "type": "object", "properties": { "url": { "type": "string" } } },
+        "implements": ["link.open@1", "x.custom@2"],
+        "handler": { "return": {} } },
+      { "name": "ctl.mutate", "description": "更新意图声明",
+        "handler": { "mutate": [
+          { "op": "update", "name": "i.send", "set": { "implements": ["message.send@1", "file.share@1"] } },
+          { "op": "update", "name": "i.multi", "set": { "implements": null } }
+        ], "return": { "ok": true } } }
+    ]
+  },
+  "host": { "ops": [
+    { "catalog": 0 },
+    { "invoke": "ctl.mutate" },
+    { "catalog": 50 }
+  ] },
+  "expect": [
+    { "type": "catalog", "tools": {
+        "i.plain": { "implements": { "$absent": true } },
+        "i.send": { "implements": ["message.send@1"] },
+        "i.multi": { "implements": ["link.open@1", "x.custom@2"] },
+        "ctl.mutate": { "implements": { "$absent": true } } } },
+    { "type": "invoke", "name": "ctl.mutate", "result": { "data": { "ok": true } } },
+    { "type": "catalog", "tools": {
+        "i.plain": { "implements": { "$absent": true } },
+        "i.send": { "implements": ["message.send@1", "file.share@1"] },
+        "i.multi": { "implements": { "$absent": true } } } }
+  ]
+}

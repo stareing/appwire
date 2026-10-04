@@ -27,6 +27,7 @@ mod free_functions;
 pub mod naming;
 pub mod types;
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -303,6 +304,20 @@ impl AppMcpHub {
     pub fn set_agents(&self, agents: Vec<AgentCredential>) -> Result<(), HubError> {
         let hub = self.hub()?;
         hub.set_agents(types::agents_config(agents)).map_err(Into::into)
+    }
+
+    /// 替换标准意图的机主默认表（spec/intents.md 第 4 节，键为动词或 `动词@主版本`，值为工具全名）。不合法时返回
+    /// `HubError::Tool`（`kind = "INVALID_INPUT"`），之前的默认表继续生效，错误记入 `intents().last_error`。
+    /// 默认表只影响 `apps.intents` 的排序与 `default` 标记，不影响路由。
+    pub fn set_intent_defaults(&self, defaults: HashMap<String, String>) -> Result<(), HubError> {
+        let hub = self.hub()?;
+        hub.set_intent_defaults(defaults.into_iter().collect()).map_err(Into::into)
+    }
+
+    /// 生效的意图默认表与最近一次替换失败的原因。已停止时返回 `Shutdown`。
+    pub fn intents(&self) -> Result<IntentsStatus, HubError> {
+        let hub = self.hub()?;
+        Ok(hub.intents().into())
     }
 
     // ---- 操作 ----

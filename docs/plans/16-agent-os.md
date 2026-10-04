@@ -348,6 +348,14 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
     - 未做（二期）：各语言 SDK 声明 `implements` 的封装（C ABI 字段、Web types、Kotlin / Swift / Python / C++ / C# / Dart / 鸿蒙、`@app-mcp/build`）、
       Hub 封装 `set_intent_defaults` / `intents()` / `HubStatus.intents`；codegen 输出系统 schema；规范未写的上限（动词名 64、默认表 256、
       `intent` 参数 80 字符）与 `POST /intents`、`HubStatus.intents` 待补进 spec/hub-api.md。
+  - **实施（2026-10-04，二期各语言）**：各语言入口一处定义在 spec/intents.md 第 5 节（上限与机主接口补进第 4 节，spec/hub-api.md 3.19 只引用）。
+    - 事实：C ABI 选指针 + 长度（同 `AmCallResult.state_hints`，抽出 `read_str_array`），v21；hub-c v23 默认表收平铺 JSON 对象；
+      `@app-mcp/build` 只做格式校验（规则同 `implements_errors`），词表兼容性警告仍由 `app-mcp-host validate` 给出，避免在 TS 再抄一份词表；
+      napi 不支持跨文件 `#[napi] impl`，hub-node 新方法留在 lib.rs（788 行）。
+    - 测试：各族真实 App → Hub → Agent 会话 `apps.intents` 集成测试（Rust hub-uniffi / hub-c、Python、Kotlin、Swift、`@app-mcp/hub`、C#）；
+      一致性 `tool-implements`（声明原样到达、未声明省略、词表外动词照常发送、更新替换、null 清除）；变异 36 个全检出。
+    - 未知：bindings/c 端到端测试未断言字段到达 Host（fake_host `--tool-info` 不含 implements），由一致性 `c` runner 与 C# Hub 集成测试覆盖。
+    - 未做：codegen 系统 schema（Apple `@AppIntent(schema:)`、Android intent filter、鸿蒙标准意图）。
 - **O1 工具检索**：`apps.search(query)`，按关键词、最近使用、成功率、当前可见界面（4c）排序；可选本地向量索引（U5）。
 - **O3 只读结果缓存**：`read` 工具与资源按 App 声明的 TTL / 版本号缓存，命中时不唤醒 App。
 - **O4 schema 演进**：字段弃用标记、兼容规则与 Agent 侧缓存失效策略，写入 `spec/manifest.md`。

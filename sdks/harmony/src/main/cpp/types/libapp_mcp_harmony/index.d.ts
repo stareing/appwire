@@ -115,6 +115,8 @@ export interface ToolSpecInit {
   concurrency?: number;
   /** 互斥组（spec/protocol.md 5.3）：同组的工具同一时刻至多一个在执行。 */
   exclusive?: string;
+  /** 实现的标准意图（spec/intents.md），如 `["message.send@1"]`。 */
+  implements?: string[];
 }
 
 export interface ToolAnnotationsInit {

@@ -39,6 +39,7 @@ final class McpScope {
     String? backgroundTool,
     int concurrency = 0,
     String? exclusive,
+    List<String> implements = const [],
     required ToolHandler handler,
   }) =>
       registerTool(
@@ -56,7 +57,8 @@ final class McpScope {
               page: page,
               backgroundTool: backgroundTool,
               concurrency: concurrency,
-              exclusive: exclusive),
+              exclusive: exclusive,
+              implements: implements),
           handler);
 
   /// 用 [ToolSpec] 注册工具。
@@ -213,6 +215,18 @@ Pointer<AmToolOptions> _toolOptions(ToolSpec spec, Allocator arena) {
     ..surface = surfaceToNative(spec.surface)
     ..background_tool = _optStr(spec.backgroundTool, arena)
     ..concurrency = toolConcurrencyToNative(spec.concurrency)
-    ..exclusive = _optStr(spec.exclusive, arena);
+    ..exclusive = _optStr(spec.exclusive, arena)
+    ..implements = _strArray(spec.implements, arena)
+    ..implements_len = spec.implements.length;
   return o;
+}
+
+/// 字符串数组（`const char *const *`，分配在 [arena]）；空时为 NULL。
+Pointer<Pointer<Utf8>> _strArray(List<String> items, Allocator arena) {
+  if (items.isEmpty) return nullptr;
+  final array = arena<Pointer<Utf8>>(items.length);
+  for (var i = 0; i < items.length; i++) {
+    array[i] = items[i].toNativeUtf8(allocator: arena);
+  }
+  return array;
 }

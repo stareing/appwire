@@ -441,6 +441,7 @@ final class ToolSpec {
     this.backgroundTool,
     this.concurrency = 0,
     this.exclusive,
+    this.implements = const [],
   });
 
   /// App 内唯一，`[a-zA-Z0-9_.-]{1,64}`。
@@ -480,6 +481,10 @@ final class ToolSpec {
   /// 互斥组名（`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行；为 null 时不互斥（spec/protocol.md 5.3）。
   final String? exclusive;
 
+  /// 实现的标准意图（spec/intents.md），每项 `"<动词>@<主版本>"`（如 `message.send@1`），最多 4 项、不重复；
+  /// 空表示不声明。格式不合法时注册 / 更新抛出 [AppMcpException]（`invalidName`）。Agent 用内置工具 `apps.intents` 按动词找到实现者。
+  final List<String> implements;
+
   ToolSpec copyWith({
     String? description,
     Map<String, Object?>? inputSchema,
@@ -494,6 +499,7 @@ final class ToolSpec {
     String? backgroundTool,
     int? concurrency,
     String? exclusive,
+    List<String>? implements,
   }) =>
       ToolSpec(
         name: name,
@@ -510,6 +516,7 @@ final class ToolSpec {
         backgroundTool: backgroundTool ?? this.backgroundTool,
         concurrency: concurrency ?? this.concurrency,
         exclusive: exclusive ?? this.exclusive,
+        implements: implements ?? this.implements,
       );
 
   @override
@@ -527,12 +534,22 @@ final class ToolSpec {
       other.backgroundTool == backgroundTool &&
       other.concurrency == concurrency &&
       other.exclusive == exclusive &&
+      _listEquals(other.implements, implements) &&
       _schemaText(other.inputSchema) == _schemaText(inputSchema) &&
       _schemaText(other.outputSchema) == _schemaText(outputSchema);
 
   @override
   int get hashCode => Object.hash(name, description, risk, activation, title, enabled, annotations,
-      _schemaText(inputSchema), _schemaText(outputSchema), surface, page, backgroundTool, concurrency, exclusive);
+      _schemaText(inputSchema), _schemaText(outputSchema), surface, page, backgroundTool, concurrency, exclusive,
+      Object.hashAll(implements));
+
+  static bool _listEquals(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
 
   static String? _schemaText(Map<String, Object?>? schema) =>
       schema == null ? null : jsonEncode(schema);

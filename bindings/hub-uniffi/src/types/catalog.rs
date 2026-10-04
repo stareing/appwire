@@ -29,6 +29,9 @@ pub struct HubTool {
     /// App 工具所在页面（spec/hub-api.md 3.14）；不属于页面时为空。
     #[uniffi(default = None)]
     pub page: Option<String>,
+    /// App 工具实现的标准意图（spec/intents.md，如 `["message.send@1"]`）；未声明时为空。
+    #[uniffi(default = [])]
+    pub implements: Vec<String>,
 }
 
 impl From<hub::HubTool> for HubTool {
@@ -47,6 +50,7 @@ impl From<hub::HubTool> for HubTool {
             output_schema_json: t.output_schema.map(|v| v.to_string()),
             surface: t.surface.map(Into::into),
             page: t.page,
+            implements: t.implements,
         }
     }
 }

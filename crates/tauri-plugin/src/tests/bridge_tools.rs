@@ -311,3 +311,30 @@ async fn annotations_output_schema_and_structured_results() {
     fx.bridge.client().stop();
     shutdown(fx.hub).await;
 }
+
+/// 第 16 项 N4：页面工具的 `implements` 经桥接到达 Hub；格式不合法时登记被拒绝；整体更新缺省即清除。
+#[tokio::test(flavor = "multi_thread")]
+async fn page_tool_implements() {
+    let fx = Fixture::new("intent", None).await;
+    let page = Arc::new(FakePage::default());
+    fx.op(&page, "main", "main", json!({ "op": "hello" }));
+    let spec = json!({ "description": "打开链接", "implements": ["link.open@1"],
+        "inputSchema": { "type": "object", "properties": { "url": { "type": "string" } } } });
+    let reply = fx.op(&page, "main", "main", json!({ "op": "tool.register", "id": 1, "name": "web.open", "spec": spec }));
+    assert_eq!(reply, json!({ "ok": true }));
+    let bad = json!({ "op": "tool.register", "id": 2, "name": "web.bad",
+        "spec": { "description": "x", "implements": ["no-version"] } });
+    assert_eq!(fx.op(&page, "main", "main", bad)["ok"], json!(false));
+    fx.connected("intent").await;
+    eventually("Hub 看到页面工具", || tool_names(&fx.hub, "intent") == vec!["web.open"]).await;
+    let tool = hub_tool(&fx.hub, "intent.web.open").expect("页面工具");
+    assert_eq!(tool.implements, vec!["link.open@1".to_owned()]);
+
+    fx.op(&page, "main", "main", json!({ "op": "tool.update", "id": 1, "spec": { "description": "打开链接" } }));
+    eventually("Hub 看到 implements 被清除", || {
+        hub_tool(&fx.hub, "intent.web.open").is_some_and(|t| t.implements.is_empty())
+    })
+    .await;
+    fx.bridge.client().stop();
+    shutdown(fx.hub).await;
+}

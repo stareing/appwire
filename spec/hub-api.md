@@ -1350,11 +1350,17 @@ App 发出的事件（spec/protocol.md 3.5）经 Hub 投递到订阅方的**信�
   3.6）24 小时内用过 +1；调用方历史成功率 ≥ 0.8 且调用 ≥ 3 次 +0.5，成功率 < 0.5 且调用 ≥ 3 次 −0.5。总分降序，同分按全名升序（确定性）。
 - **使用统计**：Hub 按（记账主体, 工具全名）记最近调用时刻、调用数、成功数（调用结束时记；`isError` 结果与错误都算失败；内置工具不记）。
   每个主体最多 512 个工具、最多 512 个主体（满时淘汰最久未用的），只在内存，Hub 重启清零。Hub API 调用方共用主体 `api`。
-- **输出** `{results: [{name, title?, description, appId, availability, page?, inputSchema, score}], total, message}`：`total` 为得分
+- **输出** `{results: [{name, title?, description, appId, availability, page?, inputSchema, implements?, score}], total, message}`：`total` 为得分
   > 0 的总数（截断前）；`message` 面向模型（无结果时提示换词或用 `apps.list` / `apps.tools`）。返回结果（截断后）所属的 App 记入调用方的暴露集合
   （同 `apps.tools`，3.7），渐进暴露生效时随后出现在 `tools/list`。
 - 注解 `readOnlyHint: true`、`idempotentHint: true`；任务级工具（可带 `taskId`），总是列出。
 - 实现：`crates/hub/src/search/`（分词与打分、使用统计、内置工具）。
+
+### 3.19 标准意图 `apps.intents` 与机主默认表（第 16 项 N4）
+
+行为、上限与各语言接口的唯一定义在 `spec/intents.md` 第 4、5 节，这里只列入口：内置工具 `apps.intents {intent?}`（不唤醒，总是列出）；
+`HubConfig.intent_defaults`、`Hub::set_intent_defaults`、`Hub::intents()`、`HubStatus.intents`；`HubTool.implements`；
+Host `POST /intents` 与 `app-mcp-host intents` 子命令。实现：`crates/hub/src/intents/`。
 
 ## 4. 进程内 App（可选，M2）
 

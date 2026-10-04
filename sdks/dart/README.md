@@ -64,6 +64,27 @@ client.removeEvent('order.shipped');
   一个 `McpEvent` 声明），发出用 `AppMcpScope.of(context).emitEvent(...)`。整个 App 都会发出的事件在创建客户端后直接 `declareEvent`。
 - Agent 经 Hub 内置工具 `apps.events.subscribe` / `apps.events` 订阅与取件（spec/hub-api.md 3.17）。
 
+## 标准意图（spec/intents.md）
+
+工具可声明自己实现了通用动词（如"发消息""打开链接"），Agent 用 Hub 内置工具 `apps.intents` 按动词找到实现者，不必先知道有哪些 App：
+
+```dart
+client.tool('compose.send',
+    description: '发邮件',
+    inputSchema: {
+      'type': 'object',
+      'properties': {'to': {'type': 'array', 'items': {'type': 'string'}}, 'text': {'type': 'string'}},
+      'required': ['to', 'text'],
+    },
+    implements: ['message.send@1'],
+    handler: (args, ctx) => send(args));
+```
+
+- 每项为 `"<动词>@<主版本>"`，最多 4 项、不重复；格式不合法抛 `AppMcpException`（`AppMcpErrorCode.invalidName`）。参数名按词表
+  （spec/intents.md 第 2 节），词表的必填参数须出现在 `inputSchema.properties` 中，否则 Hub 不把它列为实现者（工具照常可调用）。
+- `McpTool`、`useMcpTool`、`McpScope.tool`、`ToolSpec` 接受同样的 `implements`；`ToolHandle.update(implements: null)` 清除声明。
+  需要 C ABI v21（`AmToolOptions.implements`）。
+
 ## 界面级暴露与导航（spec/protocol.md 3.4）
 
 ```dart

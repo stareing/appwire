@@ -317,4 +317,42 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     })
     core.free?.()
   })
+
+  it('标准意图 implements（spec/intents.md）：注册进 tools/sync，格式不合法时注册抛错，更新为空即清除', async () => {
+    const factory = await loadRealCore()
+    const core = factory({ appId: 'mail', appName: 'm', instanceId: 'i' })
+    const drain = (): any[] => {
+      const out: any[] = []
+      for (let e = core.pollEvent(); e; e = core.pollEvent()) out.push(e)
+      return out
+    }
+    const send = core.registerTool({
+      name: 'compose.send',
+      description: '发信',
+      inputSchema: { type: 'object', properties: { to: { type: 'array', items: { type: 'string' } }, text: { type: 'string' } } },
+      implements: ['message.send@1'],
+    })
+    core.registerTool({ name: 'plain', description: '普通', inputSchema: { type: 'object', properties: {} } })
+    expect(() =>
+      core.registerTool({ name: 'bad', description: 'x', inputSchema: { type: 'object', properties: {} }, implements: ['no-version'] }),
+    ).toThrow()
+    core.start(0)
+    core.connectNow(0)
+    core.handleConnected(0)
+    const hello = drain().find((e) => e.type === 'send')
+    core.handleMessage(
+      JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(hello.text).id, result: { status: 'paired', protocolVersion: '1', hostVersion: 'x', service: 'app-mcp' } }),
+      1,
+    )
+    const sync = drain().map((e) => (e.type === 'send' ? JSON.parse(e.text) : null)).find((m) => m?.method === 'tools/sync')
+    const byName = (n: string) => sync.params.tools.find((t: { name: string }) => t.name === n)
+    expect(byName('compose.send').implements).toEqual(['message.send@1'])
+    expect(byName('plain')).not.toHaveProperty('implements')
+    expect(byName('bad')).toBeUndefined()
+    core.updateTool(send, { implements: [] })
+    const changed = JSON.stringify(drain().filter((e) => e.type === 'send').map((e) => JSON.parse(e.text)))
+    expect(changed).toContain('compose.send')
+    expect(changed).not.toContain('message.send@1')
+    core.free?.()
+  })
 })

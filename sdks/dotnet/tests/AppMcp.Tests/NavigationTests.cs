@@ -11,11 +11,11 @@ namespace AppMcp.Tests;
 public class NavigationTests(ITestOutputHelper output)
 {
     [Fact]
-    public void ToolOptionsUseV18Layout()
+    public void ToolOptionsUseV21Layout()
     {
-        // @why 回归：v13 的 AmToolOptions 没有 page / surface、v14 没有 background_tool、v17 没有 concurrency / exclusive，
-        //      struct_size 按旧布局传入时库不读取这些字段。
-        Assert.Equal(IntPtr.Size == 8 ? 64 : 32, Unsafe.SizeOf<AmToolOptions>());
+        // @why 回归：v13 的 AmToolOptions 没有 page / surface、v14 没有 background_tool、v17 没有 concurrency / exclusive、
+        //      v20 没有 implements，struct_size 按旧布局传入时库不读取这些字段。
+        Assert.Equal(IntPtr.Size == 8 ? 80 : 40, Unsafe.SizeOf<AmToolOptions>());
         using var strings = new Utf8Strings();
         var o = ToolScope.BuildOptions(strings, new ToolOptions { Surface = ToolSurface.View, Page = "cart" });
         Assert.Equal((uint)Unsafe.SizeOf<AmToolOptions>(), o.StructSize);

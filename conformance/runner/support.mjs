@@ -278,6 +278,7 @@ function jsToolFields(decl) {
     backgroundTool: decl.backgroundTool,
     concurrency: decl.concurrency,
     exclusive: decl.exclusive,
+    implements: decl.implements,
   });
 }
 

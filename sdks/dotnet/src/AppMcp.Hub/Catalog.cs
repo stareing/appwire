@@ -44,4 +44,6 @@ public sealed record HubToolInfo(
     public string? Surface { get; init; }
     /// <summary>App 工具所在页面（spec/hub-api.md 3.14）；不属于页面时为 null。</summary>
     public string? Page { get; init; }
+    /// <summary>App 声明实现的标准意图（spec/intents.md，如 <c>message.send@1</c>）；未声明为 null。</summary>
+    public IReadOnlyList<string>? Implements { get; init; }
 }

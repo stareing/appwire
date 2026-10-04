@@ -56,6 +56,7 @@ FEATURES = frozenset(
         "callScheduling",
         "busy",
         "events",
+        "implements",
     }
 )
 ROOT = Path(__file__).resolve().parents[3]
@@ -122,6 +123,7 @@ class CaseApp:
             background_tool=decl.get("backgroundTool"),
             concurrency=decl.get("concurrency", 0),
             exclusive=decl.get("exclusive"),
+            implements=decl.get("implements", ()),
         )
         with self._lock:
             self.tools[decl["name"]] = handle
@@ -195,6 +197,9 @@ class CaseApp:
                 "exclusive": "exclusive",
             }
             changes = {keys[k]: v for k, v in op["set"].items() if k in keys}
+            if "implements" in op["set"]:
+                # SDK 约定 implements=[] 清除意图声明（None 不是合法值）
+                changes["implements"] = op["set"]["implements"] or []
             if "annotations" in op["set"]:
                 changes["annotations"] = _rename(op["set"]["annotations"], _TOOL_ANNOTATION_KEYS)
             handle.update(**changes)

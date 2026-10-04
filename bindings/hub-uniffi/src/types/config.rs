@@ -188,6 +188,11 @@ pub struct HubConfig {
     /// 订阅数、信箱容量、保留时长与每订阅频率上限（默认见 [`EventLimitOverrides`]）。
     #[uniffi(default = None)]
     pub event_limits: Option<EventLimitOverrides>,
+    // ---- 标准意图（spec/intents.md 第 4 节）----
+    /// 机主默认表：动词（或 `动词@主版本`）→ 工具全名，只影响 `apps.intents` 的排序与 `default` 标记。
+    /// 不合法时 Hub 以空表启动、原因记入 `intents().last_error`（不使 `start` 失败）；运行中用 `AppMcpHub::set_intent_defaults` 替换。
+    #[uniffi(default = None)]
+    pub intent_defaults: Option<HashMap<String, String>>,
 }
 
 impl Default for HubConfig {
@@ -242,6 +247,7 @@ impl Default for HubConfig {
             agents: None,
             max_locks: None,
             event_limits: None,
+            intent_defaults: None,
         }
     }
 }
@@ -509,6 +515,9 @@ impl HubConfig {
         }
         if let Some(o) = &self.event_limits {
             o.apply(&mut c.event_limits);
+        }
+        if let Some(defaults) = self.intent_defaults {
+            c.intent_defaults = defaults.into_iter().collect();
         }
         if let Some(agents) = self.agents {
             let agents = super::agents_config(agents);

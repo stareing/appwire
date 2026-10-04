@@ -20,7 +20,7 @@ public class ConformanceTests(ITestOutputHelper output)
     [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure",
         "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-        "callScheduling", "busy", "events",
+        "callScheduling", "busy", "events", "implements",
     ];
 
     private static readonly IReadOnlyDictionary<string, ToolRisk> Risks = new Dictionary<string, ToolRisk>
@@ -229,6 +229,7 @@ public class ConformanceTests(ITestOutputHelper output)
         BackgroundTool = Text(Get(decl, "backgroundTool")),
         Concurrency = Get(decl, "concurrency").ValueKind == JsonValueKind.Number ? Get(decl, "concurrency").GetInt32() : 0,
         Exclusive = Text(Get(decl, "exclusive")),
+        Implements = IsSet(Get(decl, "implements")) ? Items(Get(decl, "implements")).Select(i => i.GetString()!).ToList() : null,
     };
 
     private static string? FindRepoRoot()

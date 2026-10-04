@@ -640,6 +640,30 @@ def test_call_scheduling_options(client):
         client.add_tool(lambda: None, "s.bad", "非法组名", exclusive="bad group")
 
 
+def test_implements_declaration(client):
+    # implements 原样进入 ToolSpec（spec/intents.md 第 1 节），缺省为空；补丁型 update / set_enabled 不得丢失
+    assert client.add_tool(lambda: None, "i.plain", "缺省")._spec.implements == []
+    handle = client.add_tool(lambda to, text: None, "i.send", "发消息", implements=("message.send@1",))
+    assert handle._spec.implements == ["message.send@1"]
+    handle.update(description="新")
+    handle.set_enabled(False)
+    assert handle._spec.implements == ["message.send@1"], "补丁型 update 不得重置意图声明"
+    handle.update(implements=[])
+    assert handle._spec.implements == []
+    single = client.add_tool(lambda url: None, "i.open", "打开链接", implements="link.open@1")
+    assert single._spec.implements == ["link.open@1"], "单个字符串视为一项"
+
+    @client.tool("i.deco", "装饰器", implements=["link.open@1"])
+    def deco(url: str) -> None:
+        return None
+
+    assert client.tools["i.deco"]._spec.implements == ["link.open@1"]
+    with pytest.raises(app_mcp.AppMcpError.InvalidName):
+        client.add_tool(lambda: None, "i.bad", "缺版本", implements=["message.send"])
+    with pytest.raises(app_mcp.AppMcpError.InvalidName):
+        handle.update(implements=["Bad Verb@1"])
+
+
 def test_max_queued_calls_option():
     for queued in (None, 0, 1):
         c = AppMcp(app_id="unit-queue", app_name="Unit", host_url="ws://127.0.0.1:9", max_queued_calls=queued)

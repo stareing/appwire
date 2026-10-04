@@ -392,6 +392,11 @@ pub(crate) unsafe fn read_tool_options(p: *const AmToolOptions) -> FfiResult<Too
         let text = unsafe { std::ptr::addr_of!((*p).exclusive).read() };
         options.exclusive = unsafe { opt_str(text, "options->exclusive") }?.map(str::to_owned);
     }
+    if size >= offset_of!(AmToolOptions, implements_len) + size_of::<usize>() {
+        let items = unsafe { std::ptr::addr_of!((*p).implements).read() };
+        let len = unsafe { std::ptr::addr_of!((*p).implements_len).read() };
+        options.implements = unsafe { read_str_array(items, len, "options->implements") }?;
+    }
     Ok(options)
 }
 
@@ -509,18 +514,26 @@ pub(crate) unsafe fn prepare_out<T>(out: *mut *mut T) -> FfiResult<&'static mut 
 }
 
 pub(crate) unsafe fn read_hints(hints: *const *const c_char, len: usize) -> FfiResult<Vec<String>> {
+    unsafe { read_str_array(hints, len, "state_hints") }
+}
+
+/// C 字符串数组（指针 + 长度）→ `Vec<String>`；`len` 为 0 时 `items` 可为 NULL。
+///
+/// # Safety
+/// `items` 为 NULL 或指向 `len` 个 NULL / 有效 C 字符串指针。
+pub(crate) unsafe fn read_str_array(items: *const *const c_char, len: usize, what: &str) -> FfiResult<Vec<String>> {
     if len == 0 {
         return Ok(Vec::new());
     }
-    if hints.is_null() {
-        return Err(FfiError::null("state_hints"));
+    if items.is_null() {
+        return Err(FfiError::null(what));
     }
-    // SAFETY: 调用方保证 hints 指向 len 个元素。
-    let slice = unsafe { std::slice::from_raw_parts(hints, len) };
+    // SAFETY: 调用方保证 items 指向 len 个元素。
+    let slice = unsafe { std::slice::from_raw_parts(items, len) };
     slice
         .iter()
         .enumerate()
-        .map(|(i, p)| unsafe { req_str(*p, &format!("state_hints[{i}]")) }.map(str::to_owned))
+        .map(|(i, p)| unsafe { req_str(*p, &format!("{what}[{i}]")) }.map(str::to_owned))
         .collect()
 }
 

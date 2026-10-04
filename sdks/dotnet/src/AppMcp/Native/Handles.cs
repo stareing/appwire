@@ -86,6 +86,19 @@ internal sealed class Utf8Strings : IDisposable
 
     public unsafe byte* AddPtr(string? s) => (byte*)Add(s);
 
+    /// <summary>字符串数组（<c>const char* const*</c>，非托管内存）；null 或空时返回 0。元素与数组本身随 Dispose 释放。</summary>
+    public nint AddArray(IReadOnlyList<string>? items)
+    {
+        if (items is null || items.Count == 0) return 0;
+        var array = Marshal.AllocCoTaskMem(items.Count * IntPtr.Size);
+        _allocations.Add(array);
+        for (var i = 0; i < items.Count; i++)
+        {
+            Marshal.WriteIntPtr(array, i * IntPtr.Size, Add(items[i] ?? throw new ArgumentException($"第 {i} 项为 null", nameof(items))));
+        }
+        return array;
+    }
+
     public void Dispose()
     {
         foreach (var p in _allocations) Marshal.FreeCoTaskMem(p);

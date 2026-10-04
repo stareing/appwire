@@ -22,6 +22,7 @@ void _report(Object e, StackTrace st, String what) {
 /// [McpViewGate] / [McpRouteGate]，否则所在路由是否为栈顶），否则禁用；[page] 声明所在页面，Hub 据此导航；
 /// [backgroundTool] 声明 App 在后台时 Hub 改调的同 App app 工具（spec/protocol.md 3.4「后台与前台」）。
 /// [concurrency] / [exclusive] 为 SDK 内的调用调度声明（spec/protocol.md 5.3，见 [ToolSpec.concurrency]、[ToolSpec.exclusive]）。
+/// [implements] 声明实现的标准意图（spec/intents.md，见 [ToolSpec.implements]）。
 ///
 /// ```dart
 /// McpTool(
@@ -49,6 +50,7 @@ class McpTool extends StatefulWidget {
     this.backgroundTool,
     this.concurrency = 0,
     this.exclusive,
+    this.implements = const [],
     required this.handler,
     this.child,
   });
@@ -83,6 +85,9 @@ class McpTool extends StatefulWidget {
 
   /// 互斥组名：同组的工具同一时刻至多一个在执行；为 null 时不互斥。
   final String? exclusive;
+
+  /// 实现的标准意图（如 `message.send@1`）；空表示不声明。
+  final List<String> implements;
   final ToolHandler handler;
   final Widget? child;
 
@@ -101,6 +106,7 @@ class McpTool extends StatefulWidget {
         backgroundTool: backgroundTool,
         concurrency: concurrency,
         exclusive: exclusive,
+        implements: implements,
       );
 
   @override
@@ -324,6 +330,7 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
     String? backgroundTool,
     int concurrency = 0,
     String? exclusive,
+    List<String> implements = const [],
     required ToolHandler handler,
   }) {
     final scope = AppMcpScope.scopeOf(context);
@@ -351,7 +358,8 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
         page: page,
         backgroundTool: backgroundTool,
         concurrency: concurrency,
-        exclusive: exclusive);
+        exclusive: exclusive,
+        implements: implements);
     final existing = _mcpTools[name];
     try {
       if (existing != null && !existing.isDisposed) {

@@ -94,6 +94,9 @@ struct ToolSpecMessage {
     /// 互斥组（spec/protocol.md 5.3）；`tool.update` 时缺省表示清除。
     #[serde(default)]
     exclusive: Option<String>,
+    /// 实现的标准意图（spec/intents.md）；`tool.update` 时缺省表示清除。格式由核心校验，不合法时登记被拒绝。
+    #[serde(default)]
+    implements: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -520,5 +523,16 @@ mod spec_tests {
         let options = parse(json!({ "description": "结算" }));
         assert_eq!(options.ok().map(|o| o.background_tool), Some(None));
         assert!(parse(json!({ "description": "结算", "backgroundTool": 1 })).is_err());
+    }
+
+    /// 页面工具定义的 `implements`（spec/intents.md）进入原生选项；缺省（`tool.update` 时即清除）为空。
+    #[test]
+    fn tool_spec_implements() {
+        let parse = |v: Value| serde_json::from_value::<ToolSpecMessage>(v).map(|m| m.into_parts("mail.send".into()).1);
+        let options = parse(json!({ "description": "发信", "implements": ["message.send@1"] }));
+        assert_eq!(options.ok().map(|o| o.implements), Some(vec!["message.send@1".to_owned()]));
+        let options = parse(json!({ "description": "发信" }));
+        assert_eq!(options.ok().map(|o| o.implements), Some(Vec::new()));
+        assert!(parse(json!({ "description": "发信", "implements": [1] })).is_err());
     }
 }

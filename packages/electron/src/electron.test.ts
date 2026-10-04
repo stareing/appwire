@@ -755,6 +755,17 @@ describe('导航（spec/protocol.md 3.4）', () => {
     expect(native.tools.get('cart.checkout')?.spec).not.toHaveProperty('backgroundTool')
   })
 
+  it('页面工具的 implements 转到主进程（update 缺省清除）', async () => {
+    const { ipcMain, native } = setupNav()
+    const wc = new FakeWebContents(10)
+    const bridge = getBridge(ipcMain, wc)
+    const spec = { description: '打开', implements: ['link.open@1'] }
+    await bridge.request({ op: 'tool.register', id: 1, name: 'web.open', spec } as never)
+    expect(native.tools.get('web.open')?.spec).toMatchObject({ implements: ['link.open@1'] })
+    await bridge.request({ op: 'tool.update', id: 1, spec: { description: '打开' } } as never)
+    expect(native.tools.get('web.open')?.spec).not.toHaveProperty('implements')
+  })
+
   it('页面工具的 concurrency / exclusive 转到主进程（update 缺省清除）', async () => {
     const { ipcMain, native } = setupNav()
     const wc = new FakeWebContents(9)

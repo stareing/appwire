@@ -3,6 +3,7 @@
  */
 
 import type { EventLimitsConfig } from './types/events.js'
+import type { IntentDefaults } from './types/intents.js'
 
 // ---------------------------------------------------------------------------
 // 基础枚举
@@ -302,6 +303,9 @@ export interface HubConfig {
   // ---- 策略挂点（spec/hub-api.md 3.13）----
   /** 隐藏 / 拒绝规则；缺省无规则（行为不变）。规则不合法时 `Hub.start` 失败。运行中用 `Hub.setPolicy` 替换。 */
   policy?: PolicyConfig
+  // ---- 标准意图（spec/intents.md 第 4 节）----
+  /** 机主默认表；缺省为空。不合法时 Hub 以空表启动、原因记入 `intents().lastError`。运行中用 `Hub.setIntentDefaults` 替换。 */
+  intentDefaults?: IntentDefaults
   // ---- 渐进暴露（spec/hub-api.md 3.7）----
   /** 工具暴露方式，缺省 `auto`。 */
   toolExposure?: ToolExposure
@@ -362,3 +366,4 @@ export type * from './types/status.js'
 export type * from './types/callbacks.js'
 export type * from './types/formats.js'
 export type * from './types/events.js'
+export type * from './types/intents.js'
