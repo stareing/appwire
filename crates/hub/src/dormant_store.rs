@@ -476,6 +476,7 @@ mod tests {
             implements: Vec::new(),
             cache: None,
             deprecated: None,
+            undoable: false,
         }))
     }
 

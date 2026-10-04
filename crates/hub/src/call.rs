@@ -150,11 +150,15 @@ pub(crate) struct Invocation {
     pub cached_age_ms: Option<u64>,
     /// 调用的 App 工具已弃用时为其弃用声明（spec/hub-api.md 3.21，MCP 结果 `_meta` `dev.appwire/deprecated`）。
     pub deprecated: Option<app_mcp_protocol::Deprecation>,
+    /// 本次调用已登记撤销时写进 `_meta` `dev.appwire/undo` 的内容（spec/hub-api.md 3.23）。
+    pub undo: Option<crate::undo::UndoGrant>,
+    /// `apps.undo` 的结果：被撤销调用的 callId（`_meta` `dev.appwire/undoOf`）。
+    pub undo_of: Option<String>,
 }
 
 impl Invocation {
     /// 未路由到实例的结果（内置工具、名称无法解析、调用开始前即失败）；其余字段由调用方补填。
-    fn bare(call_id: &str, app_id: Option<&str>, body: Body) -> Self {
+    pub(crate) fn bare(call_id: &str, app_id: Option<&str>, body: Body) -> Self {
         Self {
             call_id: call_id.to_owned(),
             app_id: app_id.map(str::to_owned),
@@ -167,6 +171,8 @@ impl Invocation {
             woke: false,
             cached_age_ms: None,
             deprecated: None,
+            undo: None,
+            undo_of: None,
         }
     }
 
@@ -203,6 +209,12 @@ impl Invocation {
         }
         if let Some(d) = &self.deprecated {
             meta.insert(names::META_DEPRECATED.to_owned(), serde_json::to_value(d).unwrap_or(Value::Null));
+        }
+        if let Some(u) = &self.undo {
+            meta.insert(names::META_UNDO.to_owned(), serde_json::to_value(u).unwrap_or(Value::Null));
+        }
+        if let Some(of) = &self.undo_of {
+            meta.insert(names::META_UNDO_OF.to_owned(), json!(of));
         }
         Ok(r)
     }

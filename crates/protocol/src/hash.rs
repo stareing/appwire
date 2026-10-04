@@ -117,6 +117,7 @@ mod tests {
                     implements: Vec::new(),
                     cache: None,
                     deprecated: None,
+                    undoable: false,
                 },
                 ToolInfo {
                     name: "cart.checkout".into(),
@@ -133,6 +134,7 @@ mod tests {
                     implements: Vec::new(),
                     cache: None,
                     deprecated: None,
+                    undoable: false,
                 },
             ],
         }
@@ -226,6 +228,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parsed.cache, Some(CachePolicy { ttl_ms: 1, scope: CacheScope::Shared }));
+    }
+
+    /// `undoable` 只在为 true 时序列化：未声明的固定向量不变；声明后摘要变化（spec/protocol.md 3.8）。
+    #[test]
+    fn undoable_serialized_only_when_true() {
+        let plain = vector_tools();
+        assert!(!serde_json::to_string(&plain).unwrap().contains("undoable"));
+        let mut declared = plain.clone();
+        declared.tools[0].undoable = true;
+        assert!(serde_json::to_string(&declared).unwrap().contains(r#""undoable":true"#));
+        assert_ne!(tools_hash(&declared, &vector_resources()), tools_hash(&plain, &vector_resources()));
+        let parsed: ToolInfo =
+            serde_json::from_value(json!({"name": "a", "description": "d", "inputSchema": {"type": "object"}, "undoable": true})).unwrap();
+        assert!(parsed.undoable);
     }
 
     #[test]

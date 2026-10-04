@@ -60,6 +60,7 @@ impl Hub {
             .and_then(|()| config.policy.validate())
             .and_then(|()| config.agents.validate())
             .and_then(|()| config.result_cache.validate())
+            .and_then(|()| config.undo.validate())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         // 锁先于任何监听：并发启动的两个 Host 只有一个能走到绑定。
         let instance = config.run_dir.as_deref().map(Instance::acquire).transpose()?;

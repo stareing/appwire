@@ -351,6 +351,39 @@ fn deprecated_page_tool_follows_rules() {
     assert_eq!(warning_paths(&v), vec!["pages[0].tools[1].deprecated.replacement"]);
 }
 
+/// `undoable`（spec/protocol.md 3.8）：布尔，`true` 往返保留，`false` / 缺省不序列化；类型错误即解析失败；页面内工具同样解析。
+#[test]
+fn undoable_parse_roundtrip_and_type_errors() {
+    let mut m = example();
+    m["tools"][0]["undoable"] = json!(true);
+    let parsed: Manifest = serde_json::from_value(m).expect("parses");
+    assert!(parsed.tools[0].undoable);
+    let v = parsed.validate();
+    assert!(v.is_ok() && v.warnings.is_empty(), "{:?} {:?}", v.errors, v.warnings);
+    assert_eq!(serde_json::to_value(&parsed).unwrap()["tools"][0]["undoable"], json!(true));
+    let mut m = example();
+    m["tools"][0]["undoable"] = json!(false);
+    let parsed: Manifest = serde_json::from_value(m).expect("parses");
+    assert!(!parsed.tools[0].undoable);
+    assert!(serde_json::to_value(&parsed).unwrap()["tools"][0].get("undoable").is_none());
+    let plain: Manifest = serde_json::from_value(example()).unwrap();
+    assert!(!plain.tools[0].undoable);
+    for bad in [json!("true"), json!(1), json!(null), json!({})] {
+        let mut m = example();
+        m["tools"][0]["undoable"] = bad.clone();
+        assert!(serde_json::from_value::<Manifest>(m).is_err(), "{bad}");
+    }
+    let mut t = page_tool("p");
+    t["undoable"] = json!(true);
+    let m = with_pages(json!([{ "name": "a", "tools": [t] }]));
+    assert!(m.pages[0].tools[0].undoable);
+    let mut t = page_tool("p");
+    t["undoable"] = json!("yes");
+    let mut m = example();
+    m["pages"] = json!([{ "name": "a", "tools": [t] }]);
+    assert!(serde_json::from_value::<Manifest>(m).is_err());
+}
+
 #[test]
 fn tool_names_unique_across_pages() {
     // 与顶层工具重名、与其他页面的工具重名

@@ -41,8 +41,8 @@ use serde_json::Value;
 
 pub use proto::{
     Activation, AppOverview, Audience, CachePolicy, CacheScope, ClientKind, ConnectionErrorCode, ConnectionIssue, ContentAnnotations,
-    Deprecation, DiagnosticParams, EventInfo, LifecycleMode, MAX_CACHE_TTL_MS, MAX_DEPRECATION_MESSAGE_CHARS, MAX_EVENT_PAYLOAD_BYTES, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolError, ToolSurface, TransportKind,
-    Visibility, WakeDescriptor, WakeKind, WakeReason, navigation_reason,
+    Deprecation, DiagnosticParams, EventInfo, LifecycleMode, MAX_CACHE_TTL_MS, MAX_DEPRECATION_MESSAGE_CHARS, MAX_EVENT_PAYLOAD_BYTES, MAX_UNDO_ARGUMENTS_BYTES, MAX_UNDO_LABEL_CHARS, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolError, ToolSurface, TransportKind,
+    UndoAction, Visibility, WakeDescriptor, WakeKind, WakeReason, navigation_reason,
 };
 pub use config::*;
 pub use dedup::CallDedupPolicy;

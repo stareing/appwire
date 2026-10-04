@@ -165,6 +165,9 @@ pub struct HubConfig {
     pub intent_defaults: BTreeMap<String, String>,
     /// 只读结果缓存的上限（第 16 项 O3，spec/hub-api.md 3.20）；`max_entries: 0` 关闭缓存。默认见 [`crate::CacheLimits`]。
     pub result_cache: crate::result_cache::CacheLimits,
+    /// 撤销记录的上限（第 15 项 X2，spec/hub-api.md 3.23）；`max_per_task: 0` 关闭撤销（不登记、不列出 `apps.undo`）。
+    /// 默认见 [`crate::UndoLimits`]。
+    pub undo: crate::undo::UndoLimits,
 }
 
 /// [`HubConfig::max_task_handles`] 的默认值。
@@ -282,6 +285,7 @@ impl Default for HubConfig {
             event_limits: crate::events::EventLimits::default(),
             intent_defaults: BTreeMap::new(),
             result_cache: crate::result_cache::CacheLimits::default(),
+            undo: crate::undo::UndoLimits::default(),
         }
     }
 }

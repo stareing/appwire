@@ -60,6 +60,9 @@ pub struct ToolDef {
     /// 工具弃用声明（spec/protocol.md 3.7），原样同步给 Host；格式不合法时注册返回 [`CoreError::InvalidDeprecation`]。
     /// `replacement` 指向未注册的工具不报错。`None` = 未声明（不序列化，`toolsHash` 不变）。
     pub deprecated: Option<Deprecation>,
+    /// 成功结果可能带 [`CallOutput::undo`]（spec/protocol.md 3.8），原样同步给 Host，只用于展示、不约束结果。
+    /// `false` = 未声明（不序列化，`toolsHash` 不变）。
+    pub undoable: bool,
     /// 本工具同时执行的调用上限（spec/protocol.md 5.3）：0 = 不单独限制（只受 `maxConcurrentCalls` 约束）。只在 SDK 内生效，不同步给 Host。
     pub concurrency: u32,
     /// 互斥组（spec/protocol.md 5.3，`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行（如操作同一份文档的写工具）。
@@ -95,6 +98,7 @@ pub struct ToolUpdate {
     pub cache: Option<Option<CachePolicy>>,
     /// `Some(None)` 清除弃用声明。
     pub deprecated: Option<Option<Deprecation>>,
+    pub undoable: Option<bool>,
     /// 本工具的并发上限（0 = 不单独限制）。只在 SDK 内生效：只改它不发 `tools/changed`。
     pub concurrency: Option<u32>,
     /// `Some(None)` 清除互斥组。只在 SDK 内生效：只改它不发 `tools/changed`。
@@ -133,4 +137,8 @@ pub struct CallOutput {
     pub state_resource: Option<String>,
     /// 一句结论摘要。
     pub summary: Option<String>,
+    /// 撤销本次调用的逆操作（spec/protocol.md 3.8）。发送前按 [`UndoAction::validate`] 校验：不合法时去掉并产生
+    /// [`Event::Warning`]，结果照常发送（操作已执行，不能让调用失败）。任何 `status` 都照原样发送（`Pending` / `Noop`
+    /// 时由 Host 忽略，规则只在 Hub 一处）。
+    pub undo: Option<UndoAction>,
 }

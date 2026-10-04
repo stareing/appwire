@@ -31,6 +31,8 @@ pub struct ToolDef {
     pub cache: Option<CachePolicy>,
     /// 弃用声明（spec/protocol.md 3.7）；Hub 只呈现（spec/hub-api.md 3.21）。
     pub deprecated: Option<Deprecation>,
+    /// 成功结果可能带 `undo`（spec/protocol.md 3.8）；Hub 只呈现（spec/hub-api.md 3.23）。
+    pub undoable: bool,
     /// @invariant 由 `serde_json` 序列化一个 `Value` 得到，总能解析回同一个值。
     input_schema: Box<str>,
     output_schema: Option<Box<str>>,
@@ -89,6 +91,7 @@ impl ToolDef {
             implements,
             cache,
             deprecated,
+            undoable,
         } = info;
         Self {
             name,
@@ -103,6 +106,7 @@ impl ToolDef {
             implements,
             cache,
             deprecated,
+            undoable,
             schema_hash: schema_hash_bytes(&input_schema, output_schema.as_ref()),
             input_schema: schema_text(&input_schema),
             output_schema: output_schema.as_ref().map(schema_text),
@@ -126,6 +130,7 @@ impl ToolDef {
             implements,
             cache,
             deprecated,
+            undoable,
         } = info;
         Self {
             name: name.clone(),
@@ -140,6 +145,7 @@ impl ToolDef {
             implements: implements.clone(),
             cache: *cache,
             deprecated: deprecated.clone(),
+            undoable: *undoable,
             schema_hash: schema_hash_bytes(input_schema, output_schema.as_ref()),
             input_schema: schema_text(input_schema),
             output_schema: output_schema.as_ref().map(schema_text),
@@ -163,6 +169,7 @@ impl ToolDef {
             implements: self.implements.clone(),
             cache: self.cache,
             deprecated: self.deprecated.clone(),
+            undoable: self.undoable,
         }
     }
 
@@ -339,6 +346,7 @@ mod tests {
             implements: vec!["message.send@1".into()],
             cache: Some(CachePolicy { ttl_ms: 5000, scope: app_mcp_protocol::CacheScope::Shared }),
             deprecated: Some(Deprecation { message: "改用 b".into(), replacement: Some("b".into()), until: None }),
+            undoable: true,
         }
     }
 
@@ -390,6 +398,7 @@ mod tests {
             implements: Vec::new(),
             cache: None,
             deprecated: None,
+            undoable: false,
         };
         let def = ToolDef::from(info.clone());
         assert_eq!(def.to_info(), info);

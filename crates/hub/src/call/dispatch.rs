@@ -162,6 +162,10 @@ impl HubShared {
         if let Some(r) = self.call_control_builtin(&ctx, &name, &args, cancel.as_mut()).await {
             return inv(None, Body::Builtin(r));
         }
+        // 撤销（spec/hub-api.md 3.23）：结果是逆调用的结果本身（App 工具结果），不是内置工具结果。
+        if name == crate::names::TOOL_APPS_UNDO {
+            return self.call_undo(call_id, &ctx, &args, cancel.as_mut()).await;
+        }
 
         // App 工具
         let Some((app_id, tool)) = name.split_once('.') else {
@@ -224,7 +228,9 @@ impl HubShared {
         }
         let invoked = routed_to.as_deref().unwrap_or(tool);
         self.settle_tool_cache(&ctx.caller, app_id, invoked, routed_to.is_some(), &cache_args, &run, cache_epoch);
+        let undo = self.register_undo(&ctx.caller, call_id, app_id, run.instance_id.as_deref(), &run.result);
         let mut out = inv(Some(app_id), Body::App(run.result));
+        out.undo = undo;
         out.instance_id = run.instance_id;
         out.output_shape = run.output_shape;
         out.woke = run.woke;

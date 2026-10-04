@@ -476,12 +476,14 @@ mod deprecation;
 mod events;
 mod resources;
 mod tools;
+mod undo;
 
 pub use cache::*;
 pub use deprecation::*;
 pub use events::*;
 pub use resources::*;
 pub use tools::*;
+pub use undo::*;
 
 /// 空结果 `{}`。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -78,6 +78,7 @@ impl JsCallOutcome {
                 state_resource: self.state_resource,
                 status: self.status.unwrap_or_default(),
                 summary: self.summary,
+                undo: None,
             }),
         }
     }

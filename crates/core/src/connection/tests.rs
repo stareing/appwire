@@ -43,7 +43,14 @@ fn invoke_result_json_matches_value_serialization() {
         CallOutput { state_hints: vec!["a".into(), "b\"".into()], ..base.clone() },
         CallOutput { state_resource: Some("job".into()), status: proto::ResultStatus::Pending, ..base.clone() },
         CallOutput { status: proto::ResultStatus::Noop, summary: Some("无变化".into()), ..base.clone() },
-        CallOutput { annotations: Some(proto::ContentAnnotations { priority: Some(1.0), ..Default::default() }), ..base },
+        CallOutput { annotations: Some(proto::ContentAnnotations { priority: Some(1.0), ..Default::default() }), ..base.clone() },
+        CallOutput { undo: Some(proto::UndoAction::new("t")), ..base.clone() },
+        CallOutput {
+            undo: Some(proto::UndoAction { tool: "t".into(), arguments: json!({"z": [1], "a": "\"é"}), label: Some("撤销".into()) }),
+            summary: Some("s".into()),
+            status: proto::ResultStatus::Partial,
+            ..base
+        },
     ];
     for out in variants {
         let legacy = to_value(&proto::ToolsInvokeResult {
@@ -53,6 +60,7 @@ fn invoke_result_json_matches_value_serialization() {
             status: out.status,
             state_resource: out.state_resource.clone(),
             summary: out.summary.clone(),
+            undo: out.undo.as_ref().map(to_value),
         })
         .to_string();
         assert_eq!(invoke_result_json(&out), legacy);

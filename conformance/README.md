@@ -70,7 +70,7 @@ App 固定为 `appId: "conf"`、`appName: "Conformance"`；runner 连接 fake_ho
 ### 2.1 工具声明
 
 `name`、`description`（必填）；`inputSchema`、`risk`、`activation`、`title`、`annotations`、`outputSchema`、`surface`、`page`、
-`backgroundTool`、`implements`（需能力 `implements`）、`cache`（`{ttlMs, scope?}`，需能力 `cache`）、`deprecated`（`{message, replacement?, until?}`，需能力 `deprecated`）、`enabled`（缺省 true）按协议同名字段原样传给 SDK 的注册 API；`concurrency`、`exclusive`（SDK 内的调用调度，
+`backgroundTool`、`implements`（需能力 `implements`）、`cache`（`{ttlMs, scope?}`，需能力 `cache`）、`deprecated`（`{message, replacement?, until?}`，需能力 `deprecated`）、`undoable`（布尔，需能力 `undo`）、`enabled`（缺省 true）按协议同名字段原样传给 SDK 的注册 API；`concurrency`、`exclusive`（SDK 内的调用调度，
 spec/protocol.md 5.3，需能力 `callScheduling`）同样传给注册 API。未给出的字段不传（SDK 用自己的缺省值）。`handler` 描述 handler 的行为：
 
 | 键 | 含义 |
@@ -82,7 +82,7 @@ spec/protocol.md 5.3，需能力 `callScheduling`）同样传给注册 API。未
 | 结果（以下取第一个出现的） | |
 | `throw: "消息"` | 以该语言最普通的方式失败（抛异常 / 返回 Err / 回调 fail），期望 `HANDLER_ERROR` |
 | `userAction: {message, reason?, uri?}` | SDK 的"需要用户操作"构造（`USER_ACTION_REQUIRED`） |
-| `result: {data?, status?, stateResource?, summary?, stateHints?, annotations?}` | SDK 的完整结果 API；缺 `data` = 无返回值 |
+| `result: {data?, status?, stateResource?, summary?, stateHints?, annotations?, undo?}` | SDK 的完整结果 API；缺 `data` = 无返回值；`undo`（`{tool, arguments?, label?}`，需能力 `undo`）原样交给 SDK 的撤销信息字段，不合法的由 SDK 去掉 |
 | `return: <JSON>` | 直接返回该值（含 `null`：显式返回 null） |
 | `echo: true` | 返回调用参数 |
 | `returnIdempotencyKey: true` | 返回 `{"idempotencyKey": <handler 上下文中的幂等键，没有时为 null>}`（spec/protocol.md 3.3） |
@@ -188,6 +188,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `implements` | 工具 `implements` 声明与更新 / null 清除（spec/intents.md 1） |
 | `cache` | 工具与资源 `cache` 声明与更新 / null 清除（spec/protocol.md 3.6） |
 | `deprecated` | 工具 `deprecated` 声明与更新 / null 清除（spec/protocol.md 3.7） |
+| `undo` | 工具 `undoable` 声明与更新、handler `result.undo`（spec/protocol.md 3.8；第 15 项 X2 一期只有 Rust runner 支持） |
 
 ## 5. 各 SDK 的 runner
 

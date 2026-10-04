@@ -27,6 +27,7 @@ fn tool(name: &str) -> ToolDef {
         implements: Vec::new(),
         cache: None,
         deprecated: None,
+        undoable: false,
         concurrency: 0,
         exclusive: None,
     }
@@ -90,6 +91,7 @@ fn invoke_reply_bytes_match_legacy_serialization() {
         status: ResultStatus::Pending,
         state_resource: Some("job.status".into()),
         summary: Some("已提交".into()),
+        undo: Some(UndoAction { tool: "job.cancel".into(), arguments: json!({"z": 1, "a": "é"}), label: Some("取消".into()) }),
     };
     let plain = CallOutput { data: json!(null), ..Default::default() };
     for (id, out) in [(json!(7), &full), (json!("req-\"x\""), &full), (json!(-1), &plain)] {
@@ -108,6 +110,7 @@ fn invoke_reply_bytes_match_legacy_serialization() {
                 status: out.status,
                 state_resource: out.state_resource.clone(),
                 summary: out.summary.clone(),
+                undo: out.undo.as_ref().map(|u| serde_json::to_value(u).unwrap()),
             },
         );
         assert_eq!(got, vec![want]);

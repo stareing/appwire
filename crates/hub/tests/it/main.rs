@@ -36,3 +36,4 @@ mod safety;
 mod schema_evolution;
 mod search;
 mod transport;
+mod undo;

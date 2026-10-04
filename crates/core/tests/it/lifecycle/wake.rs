@@ -297,6 +297,7 @@ fn tools_hash_fixed_vector() {
         implements: Vec::new(),
         cache: None,
         deprecated: None,
+        undoable: false,
         concurrency: 0,
         exclusive: None,
     })
@@ -320,6 +321,7 @@ fn tools_hash_fixed_vector() {
             implements: Vec::new(),
             cache: None,
             deprecated: None,
+            undoable: false,
             concurrency: 0,
             exclusive: None,
         })

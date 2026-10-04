@@ -9,11 +9,13 @@ use anyhow::Context;
 mod file;
 mod overrides;
 mod result_cache;
+mod undo;
 mod settings;
 
 pub use file::{AuthMode, FileConfig, HttpSection, LifecycleSection, LogSection, McpSection, ToolsSection};
 pub use overrides::Overrides;
 pub use result_cache::ResultCacheSection;
+pub use undo::UndoSection;
 pub use settings::Settings;
 
 /// 默认的 HTTP 监听地址：同一端口承载 `/app`（App 连接）、`/mcp`、`/healthz`。

@@ -42,6 +42,8 @@ pub const TOOL_APPS_EVENTS: &str = "apps.events";
 pub const TOOL_APPS_SEARCH: &str = "apps.search";
 /// 按标准意图（通用动词）列出实现者（spec/intents.md 第 4 节，第 16 项 N4）。
 pub const TOOL_APPS_INTENTS: &str = "apps.intents";
+/// 撤销本任务一次可撤销的调用（spec/hub-api.md 3.23，第 15 项 X2）。
+pub const TOOL_APPS_UNDO: &str = "apps.undo";
 
 /// 读取方事件信箱的资源 URI（spec/hub-api.md 3.17「提醒」）：读取不移出；订阅后自己的信箱有新事件时收到
 /// `resources/updated`。
@@ -57,7 +59,7 @@ pub const RESOURCE_SELF: &str = "self";
 pub const ARG_TASK_ID: &str = "taskId";
 /// 接受 [`ARG_TASK_ID`] 参数的内置工具（持有按任务区分的状态：选择、租约、锁、进行中的调用、事件订阅、渐进暴露集合；
 /// [`TOOL_APPS_TASK_END`] 中为必填）。
-pub const TASK_SCOPED_TOOLS: [&str; 15] = [
+pub const TASK_SCOPED_TOOLS: [&str; 16] = [
     TOOL_APPS_LIST,
     TOOL_APPS_SELECT,
     TOOL_APPS_NAVIGATE,
@@ -73,6 +75,7 @@ pub const TASK_SCOPED_TOOLS: [&str; 15] = [
     TOOL_APPS_EVENTS,
     TOOL_APPS_SEARCH,
     TOOL_APPS_INTENTS,
+    TOOL_APPS_UNDO,
 ];
 
 // ---- MCP 结果 `_meta`（Hub → Agent）----
@@ -97,11 +100,17 @@ pub const META_CACHED: &str = "dev.appwire/cached";
 /// 调用的是弃用工具时（spec/hub-api.md 3.21）：原样的弃用声明 `{message, replacement?, until?}`；也出现在 MCP `tools/list`
 /// 工具的 `_meta` 中。
 pub const META_DEPRECATED: &str = "dev.appwire/deprecated";
+/// 本次调用已登记撤销（spec/hub-api.md 3.23）：`{label?, expiresInMs}`，可用 `apps.undo` 撤销；未登记不写。
+pub const META_UNDO: &str = "dev.appwire/undo";
+/// `apps.undo` 的结果：被撤销调用的 callId（spec/hub-api.md 3.23）。
+pub const META_UNDO_OF: &str = "dev.appwire/undoOf";
 
 // ---- MCP `tools/list` 工具 `_meta`（Hub → Agent）----
 
 /// App 工具定义的 `schemaHash`（spec/hub-api.md 3.21，[`app_mcp_protocol::schema_hash`]）；上游与内置工具不带。
 pub const META_SCHEMA_HASH: &str = "dev.appwire/schemaHash";
+/// 工具声明了 `undoable`（spec/protocol.md 3.8）：`true`；未声明不写。只是提示。
+pub const META_UNDOABLE: &str = "dev.appwire/undoable";
 
 // ---- MCP 请求 `_meta`（Agent → Hub，`tools/call`）----
 

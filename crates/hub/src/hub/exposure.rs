@@ -128,6 +128,7 @@ impl HubShared {
             apps_page: self.has_pages(),
             tasks: self.task_handles_for(key),
             locks: self.locks_enabled(),
+            undo: self.undo_enabled(),
         });
         self.registry().visit_tools(listed, |app_id, t, availability| {
             if policy.tool_hidden(app_id, &t.name, Some(&t.effective_annotations())).is_none() {

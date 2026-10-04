@@ -122,6 +122,7 @@ impl Shared {
                 implements: options.implements,
                 cache: options.cache,
                 deprecated: options.deprecated,
+                undoable: options.undoable,
                 concurrency: options.concurrency,
                 exclusive: options.exclusive,
             })

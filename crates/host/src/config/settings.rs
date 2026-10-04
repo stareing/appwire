@@ -53,6 +53,8 @@ pub struct Settings {
     pub limits: LimitPolicy,
     /// 只读结果缓存的上限；`max_entries == 0` = 关闭。
     pub result_cache: CacheLimits,
+    /// 撤销记录的上限；`max_per_task == 0` = 关闭。
+    pub undo: app_mcp_hub::UndoLimits,
     pub output_validation: OutputValidation,
     pub progress_interval_ms: u64,
     pub stateless_tool_exposure: ToolExposure,
@@ -123,6 +125,7 @@ impl Settings {
         c.limits.apply(&mut limits);
         limits.validate().map_err(|e| anyhow::anyhow!("配置无效：{e}"))?;
         let result_cache = c.result_cache.resolve().map_err(|e| anyhow::anyhow!("配置无效：{e}"))?;
+        let undo = c.undo.resolve().map_err(|e| anyhow::anyhow!("配置无效：{e}"))?;
         let listen_explicit = listen.is_some();
         let listen = listen.unwrap_or_else(|| DEFAULT_LISTEN_ADDR.to_owned());
         let compat_http_addr = c.http.addr.filter(|a| *a != listen);
@@ -176,6 +179,7 @@ impl Settings {
                 .unwrap_or(app_mcp_hub::DEFAULT_TOOL_EXPOSURE_THRESHOLD),
             limits,
             result_cache,
+            undo,
             output_validation: c.tools.output_validation.unwrap_or_default(),
             progress_interval_ms: c
                 .tools

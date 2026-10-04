@@ -51,6 +51,9 @@ pub struct ToolInfo {
     /// 工具弃用声明（spec/protocol.md 3.7）：照常列出与调用，Hub 只呈现。未声明时不序列化（`toolsHash` 不变）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deprecated: Option<Deprecation>,
+    /// 成功结果可能带 `undo`（spec/protocol.md 3.8），只用于展示，不约束结果。`false` 时不序列化（`toolsHash` 不变）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub undoable: bool,
 }
 
 /// 工具对界面的依赖（spec/protocol.md 3.4）。
@@ -269,6 +272,10 @@ pub struct ToolsInvokeResult {
     /// 一句面向模型 / 用户的结论（`partial` 时说明完成了哪部分）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// 撤销本次调用的逆操作（spec/protocol.md 3.8）。保留原始 JSON：Host 用 [`UndoAction::parse`] 宽松解析，不合法时只忽略
+    /// 该字段，结果其余部分照常（强类型字段会让整个结果解析失败）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

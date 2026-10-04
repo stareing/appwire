@@ -180,6 +180,9 @@ pub struct FileConfig {
     /// 只读结果缓存的上限（spec/hub-api.md 3.20）：`{"maxEntries","maxBytes","maxEntryBytes"}`，缺省字段取默认值。
     #[serde(skip_serializing_if = "is_default")]
     pub result_cache: super::ResultCacheSection,
+    /// 撤销记录的上限（spec/hub-api.md 3.23）：`{"ttlMs","maxPerTask"}`，缺省字段取默认值；`maxPerTask: 0` 关闭撤销。
+    #[serde(skip_serializing_if = "is_default")]
+    pub undo: super::UndoSection,
     #[serde(skip_serializing_if = "is_default")]
     pub log: LogSection,
 }

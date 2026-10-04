@@ -55,6 +55,7 @@ pub mod search;
 mod subscribers;
 mod task;
 mod task_handle;
+pub mod undo;
 pub mod tool_def;
 pub mod types;
 pub mod usage;
@@ -80,6 +81,7 @@ pub use progress::ProgressUpdate;
 pub use result_cache::{
     CacheLimits, CacheStatus, DEFAULT_CACHE_MAX_BYTES, DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_MAX_ENTRY_BYTES,
 };
+pub use undo::{DEFAULT_UNDO_MAX_PER_TASK, DEFAULT_UNDO_TTL, UndoLimits};
 pub use policy::{
     AnnotationMatch, MAX_POLICY_RULES, PolicyAction, PolicyConfig, PolicyHook, PolicyLoadError, PolicyRule, PolicyRuleStatus,
     PolicyStatus,

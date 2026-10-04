@@ -308,6 +308,7 @@ interface ToolInfo {
   implements?: string[]    // 实现的标准意图（spec/intents.md），如 ["message.send@1"]；空时不序列化
   cache?: CachePolicy      // 结果可由 Hub 缓存（3.6）；只对生效注解 readOnlyHint 为 true 的工具生效
   deprecated?: Deprecation // 工具已弃用（3.7）；未声明时不序列化
+  undoable?: boolean       // 成功结果可能带 undo（3.8），只用于展示；true 时序列化
 }
 
 // 工具弃用声明（3.7，第 16 项 O4）
@@ -353,6 +354,13 @@ interface ToolsInvokeResult {
   stateResource?: string   // status 为 pending 时：可读取后续状态的资源名（局部名）
   summary?: string         // 一句面向模型 / 用户的结论；partial 时说明完成了哪部分
   annotations?: ContentAnnotations  // 结果内容的标注
+  undo?: UndoAction        // 撤销本次调用的逆操作（3.8）；status 为 done / partial 时有效
+}
+// 撤销本次调用的逆操作（3.8，第 15 项 X2）
+interface UndoAction {
+  tool: string             // 同一 App 的工具局部名（可为自身）
+  arguments?: object       // 调用逆工具的参数，缺省 {}；序列化后 ≤ 64 KiB
+  label?: string           // 1..=200 字符，面向用户：撤销会做什么
 }
 type ResultStatus = "done" | "pending" | "partial" | "noop"
 interface ToolsCancelParams { callId: string; reason?: string }
@@ -583,6 +591,25 @@ spec/intents.md「不兼容只能发新主版本」同一原则）。兼容 / �
   原样传递；Hub 不改写。必填参数标 `deprecated` 为矛盾声明：清单校验与 SDK 注册 / 更新都给出警告（照常注册）；只检查
   `inputSchema` 顶层 `required`，属性的 `deprecated` 须为布尔 `true`（`app_mcp_protocol::deprecated_required_params`）。
 - Agent 侧的呈现与 schema 变化的告知见 spec/hub-api.md 3.21。
+
+### 3.8 撤销（第 15 项 X2）
+
+能否撤销、怎么撤销只有执行后的 handler 知道：由 App 在结果里**显式给出逆操作**，Hub 原样记录、按 Agent 的请求转发，不推断、
+不核对（docs/plans/15-experience-ecosystem.md U3）。逆操作就是同一 App 的普通工具调用。
+
+- **结果 `undo`**（`UndoAction`）：`tool` 为同一 App 的工具局部名（可为自身，如开关类工具）；`arguments` 为调用它的参数（对象，
+  缺省 `{}`）；`label` 为一句面向用户的说明（1..=200 字符）。只在 `status` 为 `done` / `partial` 时有效（`pending` 尚未完成、
+  `noop` 无改动，Host 忽略）。Host 不在登记时核对逆工具是否存在或参数是否符合其 schema，撤销时照常校验。
+- **宽松解析**：`undo` 不合法（非对象、`tool` 不是合法局部名、`arguments` 非对象或序列化后超过 64 KiB、`label` 为空或超长）时
+  Host 只忽略该字段并记 warn 日志，结果其余部分照常；规则唯一定义 `app_mcp_protocol::UndoAction::parse`。SDK 核心在发送结果前
+  按同一规则校验：不合法时去掉 `undo`、产生警告事件（原生 `Event::Warning`，各语言按其日志通道输出），结果照常发送——操作已经执行，
+  不能因撤销信息有误让调用失败（Agent 会以为没做而重试）。
+- **声明 `undoable`**：`ToolInfo.undoable: true` 表示该工具的成功结果可能带 `undo`，只用于展示（Agent 可提示"此操作可撤销"），
+  不约束结果；进 `toolsHash`（只在 `true` 时序列化）。
+- **冲突由 App 判断**：撤销前对象已被用户或其他调用改动、撤销已无意义时，逆工具的 handler 自行返回错误或 `noop`；Host 不检查。
+- `undo` 计入结果大小上限（spec/hub-api.md 3.11）。Agent 侧的记录、`apps.undo` 与只能撤销一次的规则见 spec/hub-api.md 3.23。
+- 各语言入口（第 15 项 X2 二期）：Rust native `CallResult.undo`（核心 `CallOutput.undo`，类型 `UndoAction`）、`ToolOptions.undoable`；其余语言随二期补齐，在此之前 handler 无法给出 `undo`
+  （结果中没有该字段，等同不可撤销）。
 
 ## 4. 错误
 

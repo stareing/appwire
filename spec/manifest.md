@@ -82,7 +82,7 @@
 | `overview` | object | 否 | App 总览：`summary`（≤ 100 字符）、`body`（Markdown，≤ 2000 字符）、`locale`；模型首次接触该 App 时由 Host 附带，规则见 spec/protocol.md 第 7 节 |
 | `launch` | object | 否 | 各平台启动方式（冷启动，不带令牌），键为 `web` / `windows` / `macos` / `linux`，值为按顺序尝试的数组 |
 | `wake` | object | 否 | 各平台唤醒描述（spec/lifecycle.md 第 5 节），键为 `web` / `windows` / `macos` / `linux` / `android` / `ios`，值为按顺序尝试的 WakeDescriptor 数组；规则见 2.2 节 |
-| `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo`：含可选 `annotations`（标准 MCP 工具注解）与 `outputSchema`（结果的 JSON Schema），语义见 spec/protocol.md 3.2；`risk` 为旧写法（与 `annotations` 同时出现时声明的注解字段优先）；可选 `surface`（`app` / `view`）与 `page`（所在页面名），语义见 spec/protocol.md 3.4；可选 `implements`（实现的标准意图，spec/intents.md）；可选 `cache`（结果缓存声明，spec/protocol.md 3.6）；可选 `deprecated`（工具弃用声明，spec/protocol.md 3.7） |
+| `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo`：含可选 `annotations`（标准 MCP 工具注解）与 `outputSchema`（结果的 JSON Schema），语义见 spec/protocol.md 3.2；`risk` 为旧写法（与 `annotations` 同时出现时声明的注解字段优先）；可选 `surface`（`app` / `view`）与 `page`（所在页面名），语义见 spec/protocol.md 3.4；可选 `implements`（实现的标准意图，spec/intents.md）；可选 `cache`（结果缓存声明，spec/protocol.md 3.6）；可选 `deprecated`（工具弃用声明，spec/protocol.md 3.7）；可选 `undoable`（布尔，成功结果可能带撤销信息，只用于展示，spec/protocol.md 3.8） |
 | `pages` | array | 否 | 页面目录（第 4c 项）：App 内各页面的说明、导航参数与页面内工具，结构见 2.3 节 |
 | `events` | array | 否 | App 可发出的事件（第 16 项 N3），结构见 2.4 节；Agent 据此订阅，语义见 spec/protocol.md 3.5 |
 | `resources` | array | 否 | 静态资源，结构同协议中的 `ResourceInfo`（含可选 `realtime`：需实时推送，被订阅时 App 保持连接，spec/lifecycle.md 第 13 节 B3；可选 `annotations`：标准 MCP 内容注解，spec/protocol.md 3.2；可选 `cache`：读取结果缓存声明，spec/protocol.md 3.6） |
@@ -209,7 +209,7 @@ spec/protocol.md 3.7）。判定规则只在 `crates/protocol/src/schema_compat.
 |---|---|---|---|
 | `inputSchema`（调用方传入） | 新增 `required` 项；删除属性；`type` 取值集合收窄；`enum` 删除取值（含新增 `enum`）；`additionalProperties` 由允许变为 `false` | 新增或收紧上下限（`minimum` / `exclusiveMinimum` / `maximum` / `exclusiveMaximum` / `minLength` / `maxLength` / `minItems` / `maxItems` / `minProperties` / `maxProperties`）；新增或改变 `pattern` / `format` / `const` / `multipleOf` / `uniqueItems` / `patternProperties` / `prefixItems` / `dependentRequired`；组合关键字（含 `if` / `then` / `else`、`$defs`）变化 | 新增可选属性；`required` 减少；放宽类型或约束；`enum` 增加取值；描述、`title`、`default`、`deprecated` 变化 |
 | `outputSchema`（调用方读取） | 删除属性；`type` 取值集合变化（新集合不是旧集合的子集）；从 `required` 中移除属性 | `enum` 增加取值或取消 `enum`；删除整个 `outputSchema`；组合关键字变化 | 新增属性；新增 `required` 项；描述变化 |
-| 工具本身 | 删除工具（未经弃用）；`surface` 由 `app` 变为 `view` | 生效注解由只读变为非只读；`risk` 升高；在顶层与页面之间或页面之间移动 | 新增工具；描述、`title`、`deprecated`、`implements`、`cache` 变化 |
+| 工具本身 | 删除工具（未经弃用）；`surface` 由 `app` 变为 `view` | 生效注解由只读变为非只读；`risk` 升高；在顶层与页面之间或页面之间移动 | 新增工具；描述、`title`、`deprecated`、`implements`、`cache`、`undoable` 变化 |
 
 - 工具按名称配对（清单内工具名唯一，顶层与页面内工具共用一个命名空间）。
 - `type` 取值集合：`type` 为字符串视为单元素集合，缺省视为任意（因此给原本没写 `type` 的属性补上 `type` 也算收窄）；`integer` 视为 `number` 的子集。

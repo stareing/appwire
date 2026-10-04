@@ -29,8 +29,9 @@ use std::sync::Arc;
 
 pub use app_mcp_core::{
     Activation, AppOverview, Audience, BusyPolicy, CachePolicy, CacheScope, CallDedupPolicy, ClientKind, ContentAnnotations, Deprecation, EventInfo, HeartbeatMode, LifecycleMode, LifecyclePolicy,
-    Residency, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolSurface, TransportKind, Visibility, WakeDescriptor,
-    WakeKind, WakeReason, MAX_CACHE_TTL_MS, MAX_DEPRECATION_MESSAGE_CHARS, MAX_EVENT_PAYLOAD_BYTES, parse_wake_token,
+    Residency, ResultStatus, Risk, SleepReason, ToolAnnotations, ToolSurface, TransportKind, UndoAction, Visibility, WakeDescriptor,
+    WakeKind, WakeReason, MAX_CACHE_TTL_MS, MAX_DEPRECATION_MESSAGE_CHARS, MAX_EVENT_PAYLOAD_BYTES, MAX_UNDO_ARGUMENTS_BYTES,
+    MAX_UNDO_LABEL_CHARS, parse_wake_token,
 };
 pub use app_mcp_protocol::{ConnectionErrorCode, ErrorKind, navigation_reason, user_action_reason};
 
@@ -186,6 +187,9 @@ pub struct ToolOptions {
     /// 工具弃用声明（spec/protocol.md 3.7）：照常列出与调用；格式不合法（`message` 长度、`replacement` 局部名且不指向自身、
     /// `until` 日期）时注册 / 更新返回 [`NativeError::InvalidConfig`]。`None`（缺省）= 未声明。
     pub deprecated: Option<Deprecation>,
+    /// 成功结果可能带 [`CallResult::undo`]（spec/protocol.md 3.8）：只用于展示（Agent 可提示"此操作可撤销"），不约束结果。
+    /// `false`（缺省）= 未声明。
+    pub undoable: bool,
     /// 本工具同时执行的调用上限（spec/protocol.md 5.3）：0（缺省）= 不单独限制，只受 `max_concurrent_calls` 约束。只在 SDK 内生效。
     pub concurrency: u32,
     /// 互斥组（spec/protocol.md 5.3，`[a-zA-Z0-9_.-]{1,64}`）：同组的工具同一时刻至多一个在执行。`None` = 不互斥。只在 SDK 内生效。
@@ -207,6 +211,9 @@ pub struct CallResult {
     pub summary: Option<String>,
     /// 结果内容的标注（MCP 内容注解），Hub 原样转发。
     pub annotations: Option<ContentAnnotations>,
+    /// 撤销本次调用的逆操作（spec/protocol.md 3.8）：同一 App 的工具名、参数与面向用户的说明，Hub 记录后供 Agent 撤销。
+    /// 不合法（[`UndoAction::validate`]）时核心去掉它并记警告，结果照常发送；`Pending` / `Noop` 时 Hub 忽略。`None` = 不可撤销。
+    pub undo: Option<UndoAction>,
 }
 
 /// 资源的附加选项（`register_resource_with`）。

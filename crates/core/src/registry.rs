@@ -55,6 +55,7 @@ fn tool_info(def: &ToolDef) -> ToolInfo {
         implements: def.implements.clone(),
         cache: def.cache,
         deprecated: def.deprecated.clone(),
+        undoable: def.undoable,
     }
 }
 
@@ -248,6 +249,7 @@ impl Registry {
             implements,
             cache,
             deprecated,
+            undoable,
             concurrency,
             exclusive,
         } = update;
@@ -265,7 +267,8 @@ impl Registry {
             || background_tool.is_some()
             || implements.is_some()
             || cache.is_some()
-            || deprecated.is_some();
+            || deprecated.is_some()
+            || undoable.is_some();
         if let Some(v) = concurrency {
             def.concurrency = v;
         }
@@ -313,6 +316,9 @@ impl Registry {
         }
         if let Some(v) = deprecated {
             def.deprecated = v;
+        }
+        if let Some(v) = undoable {
+            def.undoable = v;
         }
         if synced {
             let name = def.name.clone();
@@ -513,6 +519,7 @@ mod tests {
             implements: Vec::new(),
             cache: None,
             deprecated: None,
+            undoable: false,
             concurrency: 0,
             exclusive: None,
         }

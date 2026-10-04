@@ -35,6 +35,7 @@ pub(crate) fn tool(name: &str) -> ToolDef {
         implements: Vec::new(),
         cache: None,
         deprecated: None,
+        undoable: false,
         concurrency: 0,
         exclusive: None,
     }

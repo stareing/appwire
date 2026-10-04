@@ -238,6 +238,8 @@ pub(crate) struct AgentTask {
     pub exposed: HashSet<String>,
     /// 对象锁（第 16 项 N6）：随任务移除一并释放。
     pub locks: locks::TaskLocks,
+    /// 撤销记录（第 15 项 X2，[`crate::undo`]）：随任务移除一并清除。
+    pub undo: crate::undo::TaskUndo,
 }
 
 impl AgentTask {
@@ -249,6 +251,7 @@ impl AgentTask {
             leases: HashMap::new(),
             exposed: HashSet::new(),
             locks: locks::TaskLocks::default(),
+            undo: crate::undo::TaskUndo::default(),
         }
     }
 

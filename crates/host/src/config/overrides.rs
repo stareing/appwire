@@ -8,7 +8,7 @@ use app_mcp_hub::{
     WakerConfig,
 };
 
-use super::{AuthMode, FileConfig, ResultCacheSection, absolute};
+use super::{AuthMode, FileConfig, ResultCacheSection, UndoSection, absolute};
 
 /// 命令行给出的覆盖项（`None` / 空 = 未指定，沿用配置文件）。
 #[derive(Clone, Debug, Default)]
@@ -40,6 +40,8 @@ pub struct Overrides {
     pub limits: LimitOverrides,
     /// 结果缓存上限的命令行覆盖项（字段级合并到配置文件的 `resultCache`）。
     pub result_cache: ResultCacheSection,
+    /// 撤销上限的命令行覆盖项（字段级合并到配置文件的 `undo`）。
+    pub undo: UndoSection,
     pub output_validation: Option<OutputValidation>,
     pub log_level: Option<String>,
     pub log_file: Option<bool>,
@@ -100,6 +102,7 @@ impl FileConfig {
         set(&mut self.tools.output_validation, &o.output_validation);
         self.limits.merge(&o.limits);
         self.result_cache.merge(&o.result_cache);
+        self.undo.merge(&o.undo);
         set(&mut self.log.level, &o.log_level);
         set(&mut self.log.file, &o.log_file);
         for m in &o.manifests {

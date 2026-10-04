@@ -147,6 +147,7 @@ impl From<ToolSpec> for (native::ToolSpec, native::ToolOptions) {
             implements: s.implements,
             cache: s.cache.map(Into::into),
             deprecated: s.deprecated.map(Into::into),
+            undoable: false,
         };
         (n, options)
     }
@@ -207,6 +208,7 @@ impl From<CallResult> for native::CallResult {
             state_resource: r.state_resource,
             summary: r.summary,
             annotations: r.annotations.map(Into::into),
+            undo: None,
         }
     }
 }

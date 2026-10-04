@@ -7,7 +7,7 @@ use app_mcp_hub::{LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidat
 use clap::Args;
 
 use super::HomeArg;
-use crate::config::{AuthMode, Overrides, ResultCacheSection};
+use crate::config::{AuthMode, Overrides, ResultCacheSection, UndoSection};
 
 /// stdio / serve 共用的 Hub 参数。都是可选的：未指定时用配置文件或默认值。
 #[derive(Debug, Clone, Default, Args)]
@@ -159,6 +159,14 @@ pub struct HubArgs {
     #[arg(long, value_name = "BYTES")]
     pub cache_max_entry_bytes: Option<usize>,
 
+    /// 撤销记录的有效期（毫秒，spec/hub-api.md 3.23），默认 1800000（30 分钟）。
+    #[arg(long, value_name = "MS")]
+    pub undo_ttl_ms: Option<u64>,
+
+    /// 每个 Agent 任务保留的撤销记录数上限，默认 32；0 关闭撤销（不登记、不列出 apps.undo）。
+    #[arg(long, value_name = "N")]
+    pub undo_max_per_task: Option<usize>,
+
     /// App 结果与其声明的 outputSchema 不符时：log（默认，只记日志）/ reject（调用以 HANDLER_ERROR 结束）/ off（不校验）。
     #[arg(long, value_name = "off|log|reject", value_parser = parse_output_validation)]
     pub output_validation: Option<OutputValidation>,
@@ -264,6 +272,7 @@ impl HubArgs {
                 max_bytes: self.cache_max_bytes,
                 max_entry_bytes: self.cache_max_entry_bytes,
             },
+            undo: UndoSection { ttl_ms: self.undo_ttl_ms, max_per_task: self.undo_max_per_task },
             output_validation: self.output_validation,
             log_level: self.log_level.clone(),
             name_service: self.name_service.then_some(true),

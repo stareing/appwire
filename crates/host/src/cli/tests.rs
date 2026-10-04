@@ -266,3 +266,19 @@ fn parses_result_cache_limits() {
     assert_eq!(s.hub.overrides().unwrap().result_cache, Default::default());
     assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--cache-max-entries", "-1"]).is_err());
 }
+
+#[test]
+fn parses_undo_limits() {
+    let cli = Cli::try_parse_from(["app-mcp-host", "serve", "--undo-ttl-ms", "5000", "--undo-max-per-task", "0"]).unwrap();
+    let Some(Command::Serve(s)) = cli.command else {
+        panic!()
+    };
+    let o = s.hub.overrides().unwrap();
+    assert_eq!(o.undo, crate::config::UndoSection { ttl_ms: Some(5000), max_per_task: Some(0) });
+    let cli = Cli::try_parse_from(["app-mcp-host", "serve"]).unwrap();
+    let Some(Command::Serve(s)) = cli.command else {
+        panic!()
+    };
+    assert_eq!(s.hub.overrides().unwrap().undo, Default::default());
+    assert!(Cli::try_parse_from(["app-mcp-host", "serve", "--undo-max-per-task", "-1"]).is_err());
+}

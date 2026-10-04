@@ -11,7 +11,7 @@ use crate::schema::{self, SchemaCheck};
 use crate::names::{
     TOOL_APPS_LIST, TOOL_APPS_LOCK, TOOL_APPS_OVERVIEW, TOOL_APPS_PAGE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN,
     TOOL_APPS_TASK_END, TOOL_APPS_TOOLS, TOOL_APPS_UNLOCK, TOOL_APPS_CALLS, TOOL_APPS_CANCEL, TOOL_APPS_EVENTS,
-    TOOL_APPS_EVENTS_SUBSCRIBE, TOOL_APPS_EVENTS_UNSUBSCRIBE, TOOL_APPS_SEARCH, TOOL_APPS_INTENTS,
+    TOOL_APPS_EVENTS_SUBSCRIBE, TOOL_APPS_EVENTS_UNSUBSCRIBE, TOOL_APPS_SEARCH, TOOL_APPS_INTENTS, TOOL_APPS_UNDO,
 };
 
 use super::{CallCtx, unknown_app};
@@ -134,7 +134,7 @@ impl HubShared {
                 };
                 let mut body = json!({
                     "appId": app_id,
-                    "tools": tools,
+                    "tools": self.tool_entries(&tools),
                     "pages": pages,
                     "message": message,
                 });
@@ -175,6 +175,10 @@ impl HubShared {
             TOOL_APPS_LOCK | TOOL_APPS_UNLOCK if !self.locks_enabled() => Err(ToolError::new(
                 ErrorKind::ToolNotFound,
                 format!("工具「{name}」不存在：本 Hub 未启用对象锁（max_locks = 0）。"),
+            )),
+            TOOL_APPS_UNDO if !self.undo_enabled() => Err(ToolError::new(
+                ErrorKind::ToolNotFound,
+                format!("工具「{name}」不存在：本 Hub 未启用撤销（undo.maxPerTask = 0）。"),
             )),
             TOOL_APPS_LOCK => self.builtin_lock(ctx, args),
             TOOL_APPS_UNLOCK => self.builtin_unlock(ctx, args),

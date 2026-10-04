@@ -321,6 +321,7 @@ impl CallResultInit {
             state_resource: self.state_resource,
             summary: self.summary,
             annotations: self.annotations.map(ContentAnnotationsInit::into_annotations).transpose()?,
+            undo: None,
         })
     }
 }
@@ -339,6 +340,7 @@ impl ToolSpecInit {
             implements: self.implements.take().unwrap_or_default(),
             cache: self.cache.take().map(CachePolicyInit::into_policy).transpose()?,
             deprecated: self.deprecated.take().map(Deprecation::from),
+            undoable: false,
         };
         Ok((self.into_spec()?, options))
     }

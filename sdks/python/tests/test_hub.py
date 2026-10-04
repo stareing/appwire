@@ -197,6 +197,7 @@ def test_formats_and_shutdown() -> None:
     assert {t.name for t in hub.tools()} == {
         "apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.lock", "apps.unlock",
         "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events", "apps.search", "apps.intents",
+        "apps.undo",
     }
     gemini = hub.export_tools("gemini")
     assert "functionDeclarations" in gemini
@@ -262,6 +263,7 @@ def test_progressive_exposure() -> None:
             builtins = [
                 "apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release",
                 "apps.lock", "apps.unlock", "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events", "apps.search", "apps.intents",
+                "apps.undo",
             ]
             assert [t.name for t in hub.tools(session="c1")] == builtins
             r = hub.call_tool_sync("apps.tools", {"appId": "notes"}, session="c1")

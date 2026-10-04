@@ -6,6 +6,9 @@
 //! 声明不变不记录，均照常发工具列表变化）；MCP 出口（`mcp-server`）：`tools/list` 的描述前缀与 `_meta`、调用结果的
 //! `dev.appwire/deprecated`。
 
+// @why 参数校验用例只在 `schema-validation` 下编译，其辅助项在其他 feature 组合下未被使用。
+#![cfg_attr(not(feature = "schema-validation"), allow(unused_imports, dead_code))]
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

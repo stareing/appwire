@@ -445,6 +445,7 @@ fn tool_options_are_read_up_to_struct_size() {
             implements: vec!["message.send@1".into()],
             cache: None,
             deprecated: None,
+            undoable: false,
         })
     );
     // v20 调用方（不含 implements）：按未声明处理，其余字段照读
@@ -521,6 +522,7 @@ fn call_result_is_read_up_to_struct_size() {
             status: ResultStatus::Pending,
             state_resource: Some("order.state".into()),
             summary: Some("已提交".into()),
+            undo: None,
             annotations: Some(ContentAnnotations {
                 audience: Some(vec![app_mcp_native::Audience::User]),
                 priority: Some(0.5),

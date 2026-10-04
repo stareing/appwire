@@ -91,6 +91,7 @@ impl JsToolDef {
             implements: self.implements.unwrap_or_default(),
             cache: self.cache,
             deprecated: self.deprecated,
+            undoable: false,
         })
     }
 }
@@ -267,6 +268,7 @@ impl JsToolUpdate {
             implements: self.implements,
             cache: self.cache,
             deprecated: self.deprecated,
+            undoable: None,
         }
     }
 }

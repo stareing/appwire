@@ -143,7 +143,7 @@ fn push_json_str(out: &mut String, s: &str) {
 /// `tools/invoke` 成功结果（[`proto::ToolsInvokeResult`] 的线上形式）的 JSON 文本。
 ///
 /// @invariant 与 `to_value(&ToolsInvokeResult { .. }).to_string()` 逐字节相同：键按字节序
-/// （annotations < data < stateHints < stateResource < status < summary），省略规则同 `ToolsInvokeResult` 的 serde 属性。
+/// （annotations < data < stateHints < stateResource < status < summary < undo），省略规则同 `ToolsInvokeResult` 的 serde 属性。
 fn invoke_result_json(out: &CallOutput) -> String {
     let mut s = String::new();
     s.push('{');
@@ -175,6 +175,10 @@ fn invoke_result_json(out: &CallOutput) -> String {
     if let Some(summary) = &out.summary {
         s.push_str(r#","summary":"#);
         push_json_str(&mut s, summary);
+    }
+    if let Some(undo) = &out.undo {
+        s.push_str(r#","undo":"#);
+        push_json(&mut s, &to_value(undo));
     }
     s.push('}');
     s

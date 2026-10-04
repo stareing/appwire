@@ -26,7 +26,7 @@ const SDK: &str = "rust";
 const FEATURES: &[&str] = &[
     "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
     "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey", "callScheduling",
-    "busy", "events", "implements", "cache", "deprecated",
+    "busy", "events", "implements", "cache", "deprecated", "undo",
 ];
 
 fn repo_root() -> PathBuf {
@@ -59,6 +59,7 @@ fn tool_spec(decl: &Value) -> (ToolSpec, ToolOptions) {
         implements: parse(&decl["implements"]).unwrap_or_default(),
         cache: parse(&decl["cache"]),
         deprecated: parse(&decl["deprecated"]),
+        undoable: decl["undoable"].as_bool().unwrap_or(false),
         concurrency: decl["concurrency"].as_u64().map_or(0, |n| n as u32),
         exclusive: text(&decl["exclusive"]),
     };
@@ -241,6 +242,7 @@ fn complete(spec: &Value, count: u64, emitted: Option<Value>, call: &CallHandle)
             state_resource: text(&r["stateResource"]),
             summary: text(&r["summary"]),
             annotations: parse(&r["annotations"]),
+            undo: parse(&r["undo"]),
         });
     }
     if let Some(v) = spec.get("return") {

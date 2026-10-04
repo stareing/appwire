@@ -1,0 +1,56 @@
+{
+  "id": "result-undo",
+  "title": "撤销：工具 undoable 声明原样到达 Host（未声明 / false 时省略），更新经 tools/changed 到达；handler 结果的 undo 原样到达（完整与只有 tool 的最小形式）；不合法的 undo 由 SDK 去掉，结果其余部分照常",
+  "spec": ["protocol.md 3.8"],
+  "requires": ["undo", "richResult", "mutate"],
+  "app": {
+    "tools": [
+      { "name": "u.add", "description": "添加待办", "undoable": true, "handler": { "result": {
+          "data": { "id": 3 }, "summary": "已添加",
+          "undo": { "tool": "u.remove", "arguments": { "id": 3 }, "label": "删除刚添加的待办" } } } },
+      { "name": "u.toggle", "description": "开关", "undoable": true, "handler": { "result": {
+          "data": { "on": true }, "undo": { "tool": "u.toggle" } } } },
+      { "name": "u.remove", "description": "删除待办", "handler": { "result": { "data": { "removed": 3 } } } },
+      { "name": "u.badName", "description": "逆工具名不合法", "undoable": true, "handler": { "result": {
+          "data": { "ok": true }, "status": "partial", "summary": "完成一半",
+          "undo": { "tool": "bad name", "arguments": { "id": 1 } } } } },
+      { "name": "u.badArgs", "description": "逆操作参数不是对象", "handler": { "result": {
+          "data": { "ok": 2 }, "undo": { "tool": "u.remove", "arguments": [1] } } } },
+      { "name": "ctl.mutate", "description": "更新 undoable 声明", "handler": { "mutate": [
+          { "op": "update", "name": "u.remove", "set": { "undoable": true } },
+          { "op": "update", "name": "u.toggle", "set": { "undoable": false } }
+        ], "return": { "ok": true } } }
+    ]
+  },
+  "host": { "ops": [
+    { "catalog": 0 },
+    { "invoke": "u.add" },
+    { "invoke": "u.toggle" },
+    { "invoke": "u.remove" },
+    { "invoke": "u.badName" },
+    { "invoke": "u.badArgs" },
+    { "invoke": "ctl.mutate" },
+    { "catalog": 50 }
+  ] },
+  "expect": [
+    { "type": "catalog", "tools": {
+        "u.add": { "undoable": true },
+        "u.toggle": { "undoable": true },
+        "u.remove": { "undoable": { "$absent": true } },
+        "u.badName": { "undoable": true },
+        "u.badArgs": { "undoable": { "$absent": true } } } },
+    { "type": "invoke", "name": "u.add", "result": {
+        "data": { "id": 3 }, "summary": "已添加",
+        "undo": { "tool": "u.remove", "arguments": { "id": 3 }, "label": "删除刚添加的待办" } } },
+    { "type": "invoke", "name": "u.toggle", "result": {
+        "data": { "on": true }, "undo": { "tool": "u.toggle", "label": { "$absent": true } } } },
+    { "type": "invoke", "name": "u.remove", "result": { "data": { "removed": 3 }, "undo": { "$absent": true } } },
+    { "type": "invoke", "name": "u.badName", "result": {
+        "data": { "ok": true }, "status": "partial", "summary": "完成一半", "undo": { "$absent": true } } },
+    { "type": "invoke", "name": "u.badArgs", "result": { "data": { "ok": 2 }, "undo": { "$absent": true } } },
+    { "type": "invoke", "name": "ctl.mutate", "result": { "data": { "ok": true } } },
+    { "type": "catalog", "tools": {
+        "u.remove": { "undoable": true },
+        "u.toggle": { "undoable": { "$absent": true } } } }
+  ]
+}

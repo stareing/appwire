@@ -123,11 +123,23 @@ impl Client {
     pub(crate) fn finish_call(&mut self, call: Call, outcome: Result<CallOutput, ToolError>) {
         // @why 直接序列化为文本：经 `to_value` 再 `to_json` 会深拷贝两次（1 MiB 对象数组约 20 ms / 36 万次分配）。
         let outcome = match outcome {
-            Ok(out) => Ok(invoke_result_json(&out)),
+            Ok(out) => Ok(invoke_result_json(&self.checked_undo(&call.name, out))),
             Err(e) => Err(RpcError::from(e)),
         };
         self.respond_call(call, outcome, true);
         self.pump_calls();
+    }
+
+    /// 发送前校验 `undo`（spec/protocol.md 3.8 宽松解析）：不合法时去掉并产生警告，结果其余部分不变。
+    ///
+    /// @why 操作已经执行，撤销信息有误不能让调用失败（Agent 会以为没做而重试）；不按 `status` 过滤，
+    /// `Pending` / `Noop` 的忽略规则只在 Hub 一处。
+    fn checked_undo(&mut self, tool: &str, mut out: CallOutput) -> CallOutput {
+        if let Some(Err(reason)) = out.undo.as_ref().map(proto::UndoAction::validate) {
+            self.warn(format!("工具 \"{tool}\" 的结果 undo 不合法，已去掉（结果照常发送）：{reason}"));
+            out.undo = None;
+        }
+        out
     }
 
     pub(super) fn on_invoke(&mut self, id: RequestId, p: ToolsInvokeParams, now: Millis) {

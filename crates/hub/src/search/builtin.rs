@@ -80,6 +80,9 @@ struct SearchHit {
     /// 弃用声明（原样）；未弃用时不序列化。
     #[serde(skip_serializing_if = "Option::is_none")]
     deprecated: Option<app_mcp_protocol::Deprecation>,
+    /// 声明了 `undoable`（spec/hub-api.md 3.23）；未声明时不序列化。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    undoable: bool,
     score: f64,
 }
 
@@ -136,6 +139,7 @@ impl HubShared {
                 };
                 let total = score::total_score(keyword, &signals)?;
                 let tool = c.tool;
+                let undoable = self.tool_undoable(&tool.app_id, &tool.tool);
                 Some(SearchHit {
                     name: tool.name,
                     title: tool.title,
@@ -147,6 +151,7 @@ impl HubShared {
                     implements: tool.implements,
                     schema_hash: tool.schema_hash,
                     deprecated: tool.deprecated,
+                    undoable,
                     score: total,
                 })
             })

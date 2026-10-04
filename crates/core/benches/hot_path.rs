@@ -212,6 +212,7 @@ fn tool_def(i: usize) -> ToolDef {
         implements: Vec::new(),
         cache: None,
         deprecated: None,
+        undoable: false,
         concurrency: 0,
         exclusive: None,
     }

@@ -59,6 +59,7 @@ impl CallHandle {
             status: result.status,
             state_resource: result.state_resource,
             summary: result.summary,
+            undo: result.undo,
         }))
     }
     /// 失败完成。
@@ -245,6 +246,7 @@ impl ToolHandle {
             implements: Some(options.implements),
             cache: Some(options.cache),
             deprecated: Some(options.deprecated),
+            undoable: Some(options.undoable),
             concurrency: Some(options.concurrency),
             exclusive: Some(options.exclusive),
             ..spec_update(spec)?

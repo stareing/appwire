@@ -267,7 +267,8 @@ class HubIntegrationTest {
         assertEquals(null, hub.ipcEndpoint)
         assertEquals(
             setOf("apps.list", "apps.select", "apps.overview", "apps.activate", "apps.release", "apps.lock", "apps.unlock",
-                "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events", "apps.search", "apps.intents"),
+                "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events", "apps.search", "apps.intents",
+                "apps.undo"),
             hub.tools().map { it.name }.toSet(),
         )
         val st = hub.status()
@@ -312,6 +313,7 @@ class HubIntegrationTest {
             listOf(
                 "apps.list", "apps.select", "apps.overview", "apps.tools", "apps.activate", "apps.release",
                 "apps.lock", "apps.unlock", "apps.calls", "apps.cancel", "apps.events.subscribe", "apps.events.unsubscribe", "apps.events", "apps.search", "apps.intents",
+                "apps.undo",
             ),
             hub.tools(ToolFilter(session = "c1")).map { it.name },
         )

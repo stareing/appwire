@@ -12,7 +12,7 @@ use crate::names::{
     BUILTIN_APP_ID, TOOL_APPS_ACTIVATE, TOOL_APPS_LIST, TOOL_APPS_LOCK, TOOL_APPS_NAVIGATE, TOOL_APPS_OVERVIEW,
     TOOL_APPS_PAGE, TOOL_APPS_RELEASE, TOOL_APPS_SELECT, TOOL_APPS_TASK_BEGIN, TOOL_APPS_TASK_END, TOOL_APPS_TOOLS,
     TOOL_APPS_UNLOCK, TOOL_APPS_CALLS, TOOL_APPS_CANCEL, TOOL_APPS_EVENTS, TOOL_APPS_EVENTS_SUBSCRIBE,
-    TOOL_APPS_EVENTS_UNSUBSCRIBE, TOOL_APPS_SEARCH, TOOL_APPS_INTENTS,
+    TOOL_APPS_EVENTS_UNSUBSCRIBE, TOOL_APPS_SEARCH, TOOL_APPS_INTENTS, TOOL_APPS_UNDO,
 };
 use crate::intents::MAX_INTENT_ARG_CHARS;
 use crate::events::{MAX_EVENTS_PER_FETCH};
@@ -41,6 +41,8 @@ pub(crate) struct BuiltinSet {
     pub tasks: bool,
     /// `apps.lock` / `apps.unlock`：启用对象锁时列出（[`HubShared::locks_enabled`]）。
     pub locks: bool,
+    /// `apps.undo`：撤销开启时列出（[`HubShared::undo_enabled`]）。
+    pub undo: bool,
 }
 
 /// 内置工具（MCP 形式），按 [`BuiltinSet`] 取舍。
@@ -54,6 +56,7 @@ pub(crate) fn builtin_tools(set: BuiltinSet) -> Vec<Tool> {
             && (set.apps_page || !page_tool(&t.name))
             && (set.tasks || !task_tool(&t.name))
             && (set.locks || !lock_tool(&t.name))
+            && (set.undo || t.name != TOOL_APPS_UNDO)
     });
     if !set.tasks {
         for t in &mut tools {
@@ -396,6 +399,22 @@ fn base_builtin_tools() -> Vec<Tool> {
         )
         .with_annotations(
             ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(false),
+        ),
+        Tool::new(
+            TOOL_APPS_UNDO,
+            "撤销你（本任务）之前的一次调用：结果 _meta 带 dev.appwire/undo 的调用可以撤销，Hub 按 App 给出的逆操作调用同一 App \
+             的工具，返回其结果。callId 省略 = 最近一次可撤销的调用。每次调用只能撤销一次；记录过期（见 expiresInMs）或已撤销时\
+             返回 TOOL_NOT_FOUND。撤销是否还有意义由 App 判断（对象已被改动时它可能拒绝）。",
+            obj(json!({
+                "type": "object",
+                "properties": {
+                    "callId": { "type": "string", "minLength": 1, "description": "要撤销的调用（其结果 _meta 的 dev.appwire/callId）；省略 = 最近一次" }
+                },
+                "additionalProperties": false
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(false),
         ),
     ]
 }

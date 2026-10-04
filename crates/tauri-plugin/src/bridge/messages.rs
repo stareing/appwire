@@ -16,6 +16,7 @@ impl ToolSpecMessage {
             implements: std::mem::take(&mut self.implements),
             cache: self.cache.take(),
             deprecated: self.deprecated.take(),
+            undoable: false,
         };
         (self.into_spec(name), options)
     }
@@ -119,6 +120,7 @@ impl Outcome {
             state_resource: text(self.state_resource),
             summary: text(self.summary),
             annotations,
+            undo: None,
         })
     }
 

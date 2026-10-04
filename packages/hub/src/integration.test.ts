@@ -138,6 +138,7 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     const builtins = [
       'apps.list', 'apps.select', 'apps.overview', 'apps.tools', 'apps.activate', 'apps.release', 'apps.lock', 'apps.unlock',
       'apps.calls', 'apps.cancel', 'apps.events.subscribe', 'apps.events.unsubscribe', 'apps.events', 'apps.search', 'apps.intents',
+      'apps.undo',
     ]
     expect(hub.tools().map((t) => t.name)).toEqual(builtins)
     expect(toAnthropicTools(hub, { session: 'c1' }).map((t) => t.name)).toHaveLength(builtins.length)

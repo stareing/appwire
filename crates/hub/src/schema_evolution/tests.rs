@@ -24,9 +24,11 @@ fn info(deprecated: Option<Deprecation>, description: &str) -> ToolInfo {
         implements: Vec::new(),
         cache: None,
         deprecated,
+        undoable: false,
     }
 }
 
+#[cfg(feature = "mcp-server")]
 fn deprecation(replacement: Option<&str>) -> Deprecation {
     Deprecation { message: "旧版发送".into(), replacement: replacement.map(str::to_owned), until: None }
 }

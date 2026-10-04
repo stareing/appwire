@@ -36,6 +36,7 @@ pub(super) fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
         tool_exposure_threshold: s.tool_exposure_threshold,
         limits: s.limits.clone(),
         result_cache: s.result_cache,
+        undo: s.undo,
         output_validation: s.output_validation,
         progress_interval: Duration::from_millis(s.progress_interval_ms),
         connectors: name_service_connectors(s.name_service),
@@ -160,5 +161,25 @@ mod tests {
         let s = Settings::resolve(&file, &Overrides::default(), &home).unwrap();
         let c = hub_config(&s, &home).result_cache;
         assert_eq!((c.max_entries, c.max_bytes, c.max_entry_bytes), (3, 2048, 256));
+    }
+
+    /// 撤销上限：缺省为 Hub 默认值；配置文件给出的字段生效，命令行字段级覆盖；非法值启动前报错。
+    #[test]
+    fn hub_config_carries_undo_limits() {
+        let home = AppHome { dir: std::env::temp_dir().join(format!("app-mcp-hubcfg-undo-{}", std::process::id())) };
+        let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home).unwrap();
+        assert_eq!(hub_config(&s, &home).undo, HubConfig::default().undo);
+        let file: FileConfig = serde_json::from_str(r#"{"undo":{"ttlMs":5000,"maxPerTask":4}}"#).unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home).unwrap();
+        let u = hub_config(&s, &home).undo;
+        assert_eq!((u.ttl, u.max_per_task), (Duration::from_secs(5), 4));
+        let flags = Overrides { undo: crate::config::UndoSection { max_per_task: Some(0), ..Default::default() }, ..Default::default() };
+        let mut merged = file.clone();
+        merged.apply(&flags).unwrap();
+        let u = hub_config(&Settings::resolve(&merged, &Overrides::default(), &home).unwrap(), &home).undo;
+        assert_eq!((u.ttl, u.max_per_task), (Duration::from_secs(5), 0), "命令行只覆盖给出的字段");
+        let bad: FileConfig = serde_json::from_str(r#"{"undo":{"ttlMs":0}}"#).unwrap();
+        let e = Settings::resolve(&bad, &Overrides::default(), &home).unwrap_err().to_string();
+        assert!(e.contains("undo.ttlMs"), "{e}");
     }
 }

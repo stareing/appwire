@@ -11,3 +11,4 @@ mod heartbeat;
 mod navigate;
 mod registration;
 mod resources;
+mod undo;

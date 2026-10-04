@@ -1109,8 +1109,9 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `apps.task.begin` / `apps.task.end` | 内置工具（只对无会话请求列出） | 签发 / 结束任务句柄（3.6「任务句柄」） |
 | `apps.lock` / `apps.unlock` | 内置工具（`max_locks > 0` 时列出） | 加锁 / 解锁（3.6「对象锁」） |
 | `apps.calls` / `apps.cancel` | 内置工具 | 列出 / 取消自己的进行中调用（3.6「调用对象」） |
+| `apps.undo` | 内置工具（撤销开启时列出） | 撤销本任务一次可撤销的调用（3.23） |
 | `app-mcp://apps/hub` / `app-mcp://apps/self` | 只读资源（MCP `resources/list`） | Hub 状态 / 读取方自己的状态（3.6「Hub 状态资源」） |
-| `taskId` | 内置工具参数（`apps.list` / `select` / `navigate` / `activate` / `release` / `lock` / `unlock` / `calls` / `cancel` 可选，`apps.task.end` 必填） | 任务句柄（3.6「任务句柄」） |
+| `taskId` | 内置工具参数（`apps.list` / `select` / `navigate` / `activate` / `release` / `lock` / `unlock` / `calls` / `cancel` / `undo` 可选，`apps.task.end` 必填） | 任务句柄（3.6「任务句柄」） |
 | `dev.appwire/status`、`dev.appwire/stateResource` | 结果 `_meta` | 结果状态（spec/protocol.md 3.2，3.2） |
 | `dev.appwire/routedTo` | 结果 `_meta` | 改调后台替代时实际调用的工具全名（3.14） |
 | `dev.appwire/callId` | 结果 `_meta`（每个工具调用结果） | 本次调用的 callId：即转交 App 的 `tools/invoke` 参数 `callId`（App handler 所见，如原生 `CallHandle::call_id()`）与 Hub 日志「转发工具调用」记录的 `call_id` 字段（同一记录带该 App 连接的 `cid`，spec/protocol.md 10.3）；Hub API 为 `CallOutcome.call_id` |
@@ -1125,6 +1126,9 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `dev.appwire/cached` | 结果 `_meta`（命中缓存时） | `{ageMs}`：结果来自缓存，距 App 产出的毫秒数（3.20）；未命中不写 |
 | `dev.appwire/schemaHash` | MCP 工具 `_meta`（`tools/list`） | 该工具 inputSchema + outputSchema 的摘要（3.21） |
 | `dev.appwire/deprecated` | MCP 工具 `_meta`、调用结果 `_meta` | 工具的弃用声明（spec/protocol.md 3.7，3.21）；未弃用不写 |
+| `dev.appwire/undoable` | MCP 工具 `_meta`（`tools/list`） | `true`：工具声明了 `undoable`（spec/protocol.md 3.8）；未声明不写 |
+| `dev.appwire/undo` | 调用结果 `_meta`（已登记撤销时） | `{label?, expiresInMs}`：可用 `apps.undo` 撤销本次调用（3.23）；未登记不写 |
+| `dev.appwire/undoOf` | `apps.undo` 结果 `_meta` | 被撤销调用的 callId（3.23） |
 
 **调用元信息**（第 19 项 R4）：`callId`、`durationMs` 在每个工具调用结果（含错误结果、内置与上游工具）的 `_meta` 中；`instanceId`、
 `woke` 见上表。只增字段：各 Hub 绑定按 JSON 透传 `CallOutcome` 的（hub-c v14、hub-node、`@app-mcp/hub`）带 `durationMs`、`woke`；
@@ -1449,6 +1453,34 @@ MCP Apps（扩展 `io.modelcontextprotocol/ui`，modelcontextprotocol/ext-apps �
   Agent 未声明该扩展时界面元信息照常透传，由其忽略。
 - 未覆盖：iframe 经宿主代理发来的 `tools/call` 与模型发起的调用不可区分（规范未给来源标记）；`apps.tools` / `apps.search` 的上游工具
   条目不按 `ui.visibility` 过滤。
+
+### 3.23 撤销 `apps.undo`（第 15 项 X2）
+
+契约见 spec/protocol.md 3.8：逆操作由 App 在结果中给出，Hub 只记录与转发；能否撤销、撤销是否还有意义由 App 判断，要不要撤销、
+跨 App 的逆序补偿（第 16 项 N7b）由 Agent 编排——Hub 不代 Agent 发起调用（`CLAUDE.md`「微内核范围」）。
+
+- **登记**：App 工具调用成功、结果 `status` 为 `done` / `partial`、带合法 `undo`（`UndoAction::parse`）且撤销已开启时，登记到调用方的
+  Agent 任务（3.6，`CallerKey`；带任务句柄的调用登记到句柄任务）：`{callId, appId, instanceId, 逆工具局部名, arguments, label, 登记时刻}`。
+  后台替代改调（3.14）按实际调用的工具登记；缓存命中（3.20）不经 App、不登记；上游工具与内置工具不登记。登记成功时原调用结果的
+  `_meta` 写 `dev.appwire/undo: {label?, expiresInMs}`。
+- **上限**（`HubConfig.undo: UndoLimits`，唯一定义 `crates/hub/src/undo/`）：`ttl`（默认 30 分钟）、`max_per_task`（默认 32，`0` = 关闭：
+  不登记、不列出 `apps.undo`）。只在内存、不设定时器：取用时惰性丢弃过期记录；超过条数时丢弃最早的一条；任务回收（3.6）时一并清除。
+  Hub 重启后记录丢失（与 SDK 去重表一致）。Host：配置文件 `undo: {ttlMs, maxPerTask}`、命令行 `--undo-ttl-ms` / `--undo-max-per-task`。
+- **`apps.undo {callId?, taskId?}`**（撤销开启时列出；注解 `readOnlyHint: false`、`destructiveHint: true`、`idempotentHint: false`、
+  `openWorldHint: false`）：`callId` 缺省时取本任务最近登记、未过期的一条。只查调用方自己任务的记录：不存在、已过期、已撤销、属于其他任务
+  一律 `TOOL_NOT_FOUND`（`data.callId`：请求给出的 callId，缺省取最近一条时为 `null`；与 `apps.cancel` 相同，不泄露他人调用）。
+  - **只能撤销一次**：找到后立即从表中取出，再发起逆调用；之后同一 `callId` 视为不存在。
+  - **逆调用**：以同一调用方对 `<appId>.<逆工具>` 发起普通 App 工具调用——策略挂点（3.13）、对象锁、资源保护（3.11）、参数校验、
+    审批（3.3）、唤醒、结果缓存失效（3.20）全部照常；callId 为 `apps.undo` 这次调用自己的 callId（对被撤销的调用是新 ID，结果 `_meta`
+    `dev.appwire/callId`、`apps.calls` / `apps.cancel` 与"重做"登记都指向它），不带原调用的幂等键，优先级 normal。原实例仍在线时发往原实例，
+    否则按常规路由（选定实例或唤醒）。
+  - **结果**：逆调用的结果原样作为 `apps.undo` 的结果，`_meta` 另写 `dev.appwire/undoOf: <原 callId>`；逆调用结果本身带合法 `undo` 时
+    照常登记（即"重做"）。逆调用失败时错误原样返回，`data.undo` 为 `{tool: <全名>, arguments}`（合并进错误 `data`；App 返回的 `data` 不是对象时保留原样、不写 `undo`）——记录已取出，是否重试由 Agent 决定
+    （可直接调用该工具）。
+- **声明 `undoable` 的呈现**：MCP `tools/list` 工具 `_meta` `dev.appwire/undoable: true`；`apps.tools` / `apps.search` 条目 `undoable: true`。
+  只是提示：未声明的工具结果带 `undo` 同样登记。
+- Hub API：`call_tool("apps.undo", …)` 与 MCP 相同；`CallOutcome` 的撤销字段、`HubStatus` 中的撤销统计随二期补齐。
+- 未覆盖：逆调用不核对原调用之后对象是否被改动（App 判断）；多实例 App 的原实例已断开时改发其他实例，由逆 handler 判断能否执行。
 
 ## 4. 进程内 App（可选，M2）
 

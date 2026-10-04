@@ -78,6 +78,8 @@ fn routed_result_meta() {
         woke: false,
         cached_age_ms: None,
         deprecated: None,
+        undo: None,
+        undo_of: None,
     };
     let pending = ToolsInvokeResult { status: crate::ResultStatus::Pending, ..ToolsInvokeResult::default() };
     let r = inv(Some("shop.cart.add"), Ok(pending.clone())).to_mcp().unwrap();
@@ -108,6 +110,8 @@ fn call_meta_keys_and_result_type() {
         woke,
         cached_age_ms: None,
         deprecated: None,
+        undo: None,
+        undo_of: None,
     };
     let r = inv(Body::App(Ok(ToolsInvokeResult::default())), Some("shop-1"), true).to_mcp().unwrap();
     assert_eq!(r.result_type, Some(ResultType::COMPLETE));
@@ -127,6 +131,15 @@ fn call_meta_keys_and_result_type() {
     dep.deprecated = Some(app_mcp_protocol::Deprecation { message: "旧".into(), replacement: Some("b".into()), until: None });
     let meta = dep.to_mcp().unwrap().meta.unwrap();
     assert_eq!(meta.get(names::META_DEPRECATED), Some(&json!({"message": "旧", "replacement": "b"})), "弃用工具：错误结果同样标出");
+    assert!(meta.get(names::META_UNDO).is_none() && meta.get(names::META_UNDO_OF).is_none(), "未登记撤销不写 undo / undoOf");
+    let mut undo = inv(Body::App(Ok(ToolsInvokeResult::default())), None, false);
+    undo.undo = Some(crate::undo::UndoGrant { label: Some("删除待办".into()), expires_in_ms: 1000 });
+    undo.undo_of = Some("call-1".into());
+    let meta = undo.to_mcp().unwrap().meta.unwrap();
+    assert_eq!(meta.get(names::META_UNDO), Some(&json!({"label": "删除待办", "expiresInMs": 1000})), "X2：已登记撤销");
+    assert_eq!(meta.get(names::META_UNDO_OF), Some(&json!("call-1")), "X2：apps.undo 的结果标出被撤销的调用");
+    undo.undo = Some(crate::undo::UndoGrant { label: None, expires_in_ms: 5 });
+    assert_eq!(undo.to_mcp().unwrap().meta.unwrap().get(names::META_UNDO), Some(&json!({"expiresInMs": 5})), "无 label 时省略");
 
     let err = ToolError::new(ErrorKind::Timeout, "x");
     let meta = inv(Body::App(Err(err.clone())), None, false).to_mcp().unwrap().meta.unwrap();
@@ -190,6 +203,7 @@ fn success_result_status_and_annotations() {
             summary: Some("已提交，等待付款".into()),
             annotations: Some(app_mcp_protocol::ContentAnnotations { priority: Some(0.5), ..Default::default() }),
             state_hints: vec!["cart.state".into()],
+            undo: None,
         },
         OutputShape::Object,
     );

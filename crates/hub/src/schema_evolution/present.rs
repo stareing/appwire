@@ -12,7 +12,7 @@ use serde_json::{Value, to_value};
 #[cfg(feature = "mcp-server")]
 use crate::call::UNAVAILABLE_PREFIX;
 #[cfg(feature = "mcp-server")]
-use crate::names::{META_DEPRECATED, META_SCHEMA_HASH};
+use crate::names::{META_DEPRECATED, META_SCHEMA_HASH, META_UNDOABLE};
 use crate::tool_def::ToolDef;
 #[cfg(feature = "mcp-server")]
 use crate::types::Availability;
@@ -49,13 +49,17 @@ pub(crate) fn mcp_description(app_id: &str, def: &ToolDef, availability: Availab
     format!("{unavailable}{deprecation} {}", def.description)
 }
 
-/// MCP `tools/list` 工具的 `_meta`：`dev.appwire/schemaHash`，弃用时另有 `dev.appwire/deprecated`（原声明）。
+/// MCP `tools/list` 工具的 `_meta`：`dev.appwire/schemaHash`，弃用时另有 `dev.appwire/deprecated`（原声明），声明了 `undoable` 时
+/// 另有 `dev.appwire/undoable: true`（spec/hub-api.md 3.23）。
 #[cfg(feature = "mcp-server")]
 pub(crate) fn mcp_tool_meta(def: &ToolDef) -> MetaObject {
     let mut meta = MetaObject::new();
     meta.insert(META_SCHEMA_HASH.to_owned(), json!(def.schema_hash()));
     if let Some(d) = &def.deprecated {
         meta.insert(META_DEPRECATED.to_owned(), to_value(d).unwrap_or(Value::Null));
+    }
+    if def.undoable {
+        meta.insert(META_UNDOABLE.to_owned(), Value::Bool(true));
     }
     meta
 }
