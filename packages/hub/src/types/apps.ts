@@ -73,6 +73,8 @@ export interface HubTool {
   schemaHash?: string
   /** App 工具的弃用声明（原样）；未弃用、内置与上游工具缺省。 */
   deprecated?: ToolDeprecation
+  /** App 工具声明了 `undoable`（spec/protocol.md 3.8，只用于展示：结果可能带撤销）；未声明、内置与上游工具缺省。 */
+  undoable?: boolean
 }
 
 export interface ToolFilter {

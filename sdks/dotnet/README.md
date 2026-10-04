@@ -124,6 +124,25 @@ client.RegisterTool("orders.list", "列出订单", handler, new ToolOptions
 - Hub 侧（`AppMcp.Hub`）：`HubToolInfo.Deprecated`（原样声明）、`HubToolInfo.SchemaHash`（inputSchema / outputSchema 变化时随之变化）；
   不兼容变化记录见 `hub.Status().SchemaChanges`（spec/hub-api.md 3.21）。
 
+## 撤销（spec/protocol.md 3.8）
+
+能否撤销、怎么撤销只有执行后的 handler 知道：在结果里给出逆操作（同一 App 的工具与参数），Hub 记录后 Agent 可用 `apps.undo` 撤销：
+
+```csharp
+client.RegisterTool("todo.add", "添加待办", async (args, ctx) =>
+{
+    var id = await AddTodoAsync(args.GetProperty("title").GetString()!);
+    return new ToolResult(new { id }) { Undo = new UndoAction("todo.remove", new { id }, "删除刚添加的待办") };
+}, new ToolOptions { Undoable = true }); // Undoable 只用于展示：Agent 可提示"此操作可撤销"
+```
+
+- `UndoAction.Tool` 为同一 App 的工具局部名（可为自身，如开关类工具），`Arguments` 用客户端的序列化选项转成 JSON 对象（null 表示 `{}`），
+  `Label` 为 1..=200 个字符；只在 `Status` 为 Done / Partial 时有效。格式不合法时 SDK 去掉撤销信息并记警告日志，结果照常发送（不让调用失败）。
+- 撤销前对象已被改动、撤销已无意义时，由逆工具的 handler 自行抛错或返回 `ToolResultStatus.Noop`。需要 C ABI v24。
+- Hub 侧（`AppMcp.Hub`）：`HubToolInfo.Undoable`、`CallOutcome.Undo`（`UndoOfferInfo`：已登记，可用 `apps.undo` 撤销）与
+  `CallOutcome.UndoOf`（`apps.undo` 结果中被撤销调用的 callId）、`hub.Status().Undo`；上限见 `HubOptions.Undo`（`HubUndoLimits`，
+  `MaxPerTask = 0` 关闭撤销；spec/hub-api.md 3.23）。
+
 ## 界面级暴露与导航（spec/protocol.md 3.4）
 
 ```csharp

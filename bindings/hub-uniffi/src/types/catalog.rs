@@ -38,6 +38,9 @@ pub struct HubTool {
     /// App 工具的弃用声明（原样，spec/protocol.md 3.7）；未弃用、内置与上游工具为空。弃用工具照常列出与调用。
     #[uniffi(default = None)]
     pub deprecated: Option<Deprecation>,
+    /// App 工具声明了 `undoable`（spec/protocol.md 3.8，只用于展示）；内置与上游工具为 `false`。
+    #[uniffi(default = false)]
+    pub undoable: bool,
 }
 
 impl From<hub::HubTool> for HubTool {
@@ -59,6 +62,7 @@ impl From<hub::HubTool> for HubTool {
             implements: t.implements,
             schema_hash: t.schema_hash,
             deprecated: t.deprecated.map(Into::into),
+            undoable: t.undoable,
         }
     }
 }

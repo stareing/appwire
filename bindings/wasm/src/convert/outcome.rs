@@ -30,7 +30,7 @@ impl FromJson for JsToolError {
     }
 }
 
-/// handler / 资源读取的结果：`{ data, stateHints?, annotations?, status?, stateResource?, summary? }` 或
+/// handler / 资源读取的结果：`{ data, stateHints?, annotations?, status?, stateResource?, summary?, undo? }` 或
 /// `{ error: { kind, message, details? } }`。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct JsCallOutcome {
@@ -40,6 +40,8 @@ pub struct JsCallOutcome {
     pub status: Option<ResultStatus>,
     pub state_resource: Option<String>,
     pub summary: Option<String>,
+    /// 撤销信息（spec/protocol.md 3.8）；语义（局部名、参数为对象、长度）由核心在发送前校验，不合法时去掉并告警。
+    pub undo: Option<UndoAction>,
     pub error: Option<JsToolError>,
 }
 
@@ -53,9 +55,24 @@ impl FromJson for JsCallOutcome {
             status: f.keyword("status", "无效的 status", parse_result_status),
             state_resource: f.string("stateResource"),
             summary: f.string("summary"),
+            undo: f.object("undo"),
             error: f.object("error"),
         };
         f.finish(o)
+    }
+}
+
+/// 撤销信息：`tool` 必填、`label` 为字符串；`arguments` 取任意 JSON 值（缺省 `{}`），不是对象时由核心去掉整个 `undo`。
+///
+/// @why 与 [`ToolAnnotations`] 相同，逐字段读取而不用 serde 派生（WASM 体积）；只拒绝类型错误，语义校验唯一在核心
+/// （`UndoAction::validate`），保证不合法的 `undo` 不致调用失败。
+impl FromJson for UndoAction {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        let tool = f.required_string("tool");
+        let arguments = f.value("arguments").unwrap_or_else(|| Value::Object(Map::new()));
+        let u = UndoAction { tool, arguments, label: f.string("label") };
+        f.finish(u)
     }
 }
 
@@ -78,7 +95,7 @@ impl JsCallOutcome {
                 state_resource: self.state_resource,
                 status: self.status.unwrap_or_default(),
                 summary: self.summary,
-                undo: None,
+                undo: self.undo,
             }),
         }
     }

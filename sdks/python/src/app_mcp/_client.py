@@ -37,7 +37,7 @@ from ._client_convert import (  # noqa: F401
     _HEARTBEATS, _WAKE_REASONS, _RESULT_STATUSES, _SURFACES, _AUDIENCES, _TOOL_ANNOTATION_KEYS,
     _SLEEP_REASONS, ERROR_KINDS, _ms, _lifecycle_to_ffi, _enum_arg, _risk, _tool_annotations,
     _content_annotations, _schema_json, _surface, _activation, _implements, CacheLike, _cache,
-    DeprecationLike, _deprecation,
+    DeprecationLike, _deprecation, UndoActionLike, _undo,
 )
 from ._client_types import (  # noqa: F401
     CallDedup, ToolCallError, UserActionReason, Hold, ToolResult, ToolContext, _CancelListener,
@@ -98,6 +98,7 @@ class _Registrar:
         implements: Sequence[str] = (),
         cache: CacheLike | None = None,
         deprecated: DeprecationLike | None = None,
+        undoable: bool = False,
     ) -> ToolHandle:
         """注册函数为工具，返回句柄。``input_schema`` 缺省时从函数签名生成。
 
@@ -127,6 +128,9 @@ class _Registrar:
         "until": "2027-06-30"}``、纯字符串（即 ``message``）或 ``Deprecation``；弃用的工具照常列出与调用，Agent 看到
         弃用提示。``message`` 为 1..=500 个字符，``replacement`` 为同 App 内另一工具的局部名，``until`` 为
         ``YYYY-MM-DD``（只作提示）；不合法时抛 ``AppMcpError.InvalidConfig``。
+
+        ``undoable``：本工具的成功结果可能带撤销信息（``ToolResult(undo=...)``，spec/protocol.md 3.8）；只用于展示
+        （Agent 可提示"此操作可撤销"），不约束结果。
         """
         binder = ArgumentBinder(fn, ToolContext)
         if input_schema is None:
@@ -151,6 +155,7 @@ class _Registrar:
             implements=_implements(implements),
             cache=_cache(cache),
             deprecated=_deprecation(deprecated),
+            undoable=undoable,
         )
         adapter = _ToolAdapter(_Registration(self._owner, fn, binder))
         return ToolHandle(self._raw().register_tool(spec, adapter), spec)
@@ -175,6 +180,7 @@ class _Registrar:
         implements: Sequence[str] = (),
         cache: CacheLike | None = None,
         deprecated: DeprecationLike | None = None,
+        undoable: bool = False,
     ) -> Callable[[F], F]:
         """装饰器形式的 :meth:`add_tool`。返回原函数；句柄可用 ``client.tools[name]`` 取得。"""
 
@@ -198,6 +204,7 @@ class _Registrar:
                 implements=implements,
                 cache=cache,
                 deprecated=deprecated,
+                undoable=undoable,
             )
             self._owner.tools[handle.name] = handle
             return fn

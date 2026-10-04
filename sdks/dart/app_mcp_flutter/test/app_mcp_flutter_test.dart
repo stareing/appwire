@@ -505,6 +505,36 @@ void main() {
     expect(deprecated('orders.hook'), '-');
   }, skip: path == null);
 
+  testWidgets('McpTool / useMcpTool：undoable 传入注册，变化时整体替换（v24）', (tester) async {
+    final lib = DynamicLibrary.open(path!);
+    final undoableOf = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
+        Pointer<Utf8> Function(Pointer<Utf8>)>('fake_undoable_of');
+    final stringFree = lib.lookupFunction<Void Function(Pointer<Utf8>),
+        void Function(Pointer<Utf8>)>('am_string_free');
+    String? undoable(String tool) {
+      final p = using((a) => undoableOf(tool.toNativeUtf8(allocator: a)));
+      if (p == nullptr) return null;
+      final s = p.toDartString();
+      stringFree(p);
+      return s;
+    }
+
+    final client = AppMcp(appId: 'todo', appName: '待办', libraryPath: path);
+    addTearDown(client.dispose);
+
+    Widget app(bool u) => AppMcpScope(
+          client: client,
+          trackLifecycle: false,
+          child: McpTool(
+              name: 'todo.add', description: '添加待办', undoable: u, handler: (a, c) => null, child: _UndoHookTool(undoable: u)),
+        );
+
+    await tester.pumpWidget(app(true));
+    expect((undoable('todo.add'), undoable('todo.hook')), ('1', '1'));
+    await tester.pumpWidget(app(false));
+    expect((undoable('todo.add'), undoable('todo.hook')), ('0', '0'));
+  }, skip: path == null);
+
   testWidgets('view 工具（v14）：路由栈顶时启用，被新页面 / 对话框盖住时禁用；McpViewGate 显式门控；声明 surface / page', (tester) async {
     final lib = DynamicLibrary.open(path!);
     final enabled = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>('fake_tool_enabled');
@@ -641,6 +671,24 @@ class _DeprecatedHookToolState extends State<_DeprecatedHookTool> with McpToolsM
   @override
   Widget build(BuildContext context) {
     useMcpTool('orders.hook', description: '钩子工具', deprecated: widget.deprecated, handler: (a, c) => null);
+    return const SizedBox();
+  }
+}
+
+/// [McpToolsMixin.useMcpTool] 的 undoable 透传（v24）。
+class _UndoHookTool extends StatefulWidget {
+  const _UndoHookTool({required this.undoable});
+
+  final bool undoable;
+
+  @override
+  State<_UndoHookTool> createState() => _UndoHookToolState();
+}
+
+class _UndoHookToolState extends State<_UndoHookTool> with McpToolsMixin {
+  @override
+  Widget build(BuildContext context) {
+    useMcpTool('todo.hook', description: '钩子工具', undoable: widget.undoable, handler: (a, c) => null);
     return const SizedBox();
   }
 }

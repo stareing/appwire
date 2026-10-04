@@ -139,7 +139,6 @@ impl HubShared {
                 };
                 let total = score::total_score(keyword, &signals)?;
                 let tool = c.tool;
-                let undoable = self.tool_undoable(&tool.app_id, &tool.tool);
                 Some(SearchHit {
                     name: tool.name,
                     title: tool.title,
@@ -151,7 +150,7 @@ impl HubShared {
                     implements: tool.implements,
                     schema_hash: tool.schema_hash,
                     deprecated: tool.deprecated,
-                    undoable,
+                    undoable: tool.undoable,
                     score: total,
                 })
             })

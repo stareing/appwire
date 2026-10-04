@@ -354,6 +354,9 @@ public sealed class ToolOptions
     public CachePolicy? Cache { get; init; }
     /// <summary>弃用声明（spec/protocol.md 3.7）：照常列出与调用，Hub 把声明原样交给 Agent 并在描述前标注。为 null 时不声明（更新时清除）。</summary>
     public ToolDeprecation? Deprecated { get; init; }
+    /// <summary>本工具的成功结果可能带撤销信息（<see cref="ToolResult.Undo"/>，spec/protocol.md 3.8）：只用于展示（Agent 可提示
+    /// "此操作可撤销"），不约束结果。false 时不声明（更新时清除）。</summary>
+    public bool Undoable { get; init; }
 }
 
 /// <summary>工具弃用声明（spec/protocol.md 3.7）。<paramref name="Message"/>：1..=500 个字符，面向模型说明为什么弃用、该怎么做；
@@ -442,4 +445,13 @@ public sealed record ToolResult
     public ContentAnnotations? Annotations { get; init; }
     /// <summary>调用后内容可能已变化的资源名；与 <see cref="ToolContext.AddStateHint"/> 添加的合并。</summary>
     public IReadOnlyList<string>? StateHints { get; init; }
+    /// <summary>撤销本次调用的逆操作（spec/protocol.md 3.8）：Hub 记录后供 Agent 用 <c>apps.undo</c> 撤销；只在
+    /// <see cref="ToolResultStatus.Done"/> / <see cref="ToolResultStatus.Partial"/> 时有效。为 null 时不可撤销。</summary>
+    public UndoAction? Undo { get; init; }
 }
+
+/// <summary>撤销本次调用的逆操作（spec/protocol.md 3.8）：调用同一 App 的工具 <paramref name="Tool"/>（局部名，可为本工具自身），
+/// 参数 <paramref name="Arguments"/>（用客户端的序列化选项转成 JSON 对象；null 表示 <c>{}</c>），<paramref name="Label"/> 为一句
+/// 面向用户的说明（1..=200 个字符）。格式不合法（工具名、参数不是对象或超过 64 KiB、说明为空或超长）时 SDK 去掉撤销信息并记警告日志，
+/// 结果其余部分照常发送。</summary>
+public sealed record UndoAction(string Tool, object? Arguments = null, string? Label = null);

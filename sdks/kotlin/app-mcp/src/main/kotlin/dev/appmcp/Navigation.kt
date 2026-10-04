@@ -145,6 +145,8 @@ class ToolUpdate internal constructor() {
     var cache: CachePolicy? by field { s, v -> s.copy(cache = v) }
     /** 弃用声明（spec/protocol.md 3.7）；null = 取消弃用。 */
     var deprecated: Deprecation? by field { s, v -> s.copy(deprecated = v) }
+    /** 成功结果可能带撤销信息（spec/protocol.md 3.8，只用于展示）；false = 取消声明。 */
+    var undoable: Boolean by field { s, v -> s.copy(undoable = v) }
 
     private fun <T> field(patch: (FfiToolSpec, T) -> FfiToolSpec) =
         object : kotlin.properties.ReadWriteProperty<ToolUpdate, T> {

@@ -20,7 +20,7 @@ public class ConformanceTests(ITestOutputHelper output)
     [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure",
         "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-        "callScheduling", "busy", "events", "implements", "cache", "deprecated",
+        "callScheduling", "busy", "events", "implements", "cache", "deprecated", "undo",
     ];
 
     private static readonly IReadOnlyDictionary<string, ToolRisk> Risks = new Dictionary<string, ToolRisk>
@@ -232,7 +232,13 @@ public class ConformanceTests(ITestOutputHelper output)
         Implements = IsSet(Get(decl, "implements")) ? Items(Get(decl, "implements")).Select(i => i.GetString()!).ToList() : null,
         Cache = Cache(Get(decl, "cache")),
         Deprecated = Deprecation(Get(decl, "deprecated")),
+        Undoable = Get(decl, "undoable").ValueKind == JsonValueKind.True,
     };
+
+    /// <summary>用例 result.undo（<c>{tool, arguments?, label?}</c>，spec/protocol.md 3.8）原样；格式由 SDK 核心校验。未给出时为 null。</summary>
+    private static UndoAction? Undo(JsonElement v) => IsSet(v)
+        ? new UndoAction(Text(Get(v, "tool")) ?? "", IsSet(Get(v, "arguments")) ? Get(v, "arguments") : null, Text(Get(v, "label")))
+        : null;
 
     /// <summary>用例 cache（<c>{ttlMs, scope?}</c>，spec/protocol.md 3.6）；未给出或 null 时为 null。</summary>
     /// <summary>用例 deprecated（<c>{message, replacement?, until?}</c>，spec/protocol.md 3.7）；未给出或 null 时为 null。</summary>
@@ -367,6 +373,7 @@ public class ConformanceTests(ITestOutputHelper output)
                     Summary = Text(Get(r, "summary")),
                     Annotations = As<ContentAnnotations>(Get(r, "annotations")),
                     StateHints = Items(Get(r, "stateHints")).Select(h => h.GetString()!).ToList(),
+                    Undo = Undo(Get(r, "undo")),
                 };
             }
             if (Has(spec, "return")) return Get(spec, "return");

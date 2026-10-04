@@ -156,6 +156,11 @@ public sealed class HubOptions
     /// <summary>结果缓存的条数 / 字节上限（默认见 <see cref="HubResultCacheLimits"/>；MaxEntries = 0 关闭缓存）。</summary>
     public HubResultCacheLimits? ResultCache { get; set; }
 
+    // ---- 撤销（spec/hub-api.md 3.23）----
+
+    /// <summary>撤销记录的有效期与每个任务的条数上限（默认见 <see cref="HubUndoLimits"/>；MaxPerTask = 0 关闭撤销）。</summary>
+    public HubUndoLimits? Undo { get; set; }
+
     /// <summary>上游 MCP 服务器（名称 → 启动方式）。</summary>
     public IDictionary<string, UpstreamOptions> Upstreams { get; } = new Dictionary<string, UpstreamOptions>();
 
@@ -250,6 +255,7 @@ public sealed class HubOptions
         AddCount(o, "maxLocks", MaxLocks, nameof(MaxLocks));
         if (EventLimits is { } el) o["eventLimits"] = el.ToJson();
         if (ResultCache is { } rc) o["resultCache"] = rc.ToJson();
+        if (Undo is { } undo) o["undo"] = undo.ToJson();
         if (Upstreams.Count > 0)
         {
             var ups = new JsonObject();

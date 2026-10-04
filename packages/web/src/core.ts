@@ -104,11 +104,13 @@ export interface CoreToolDef {
   cache?: CachePolicy
   /** 弃用声明（spec/protocol.md 3.7）；缺省 = 未声明。 */
   deprecated?: ToolDeprecation
+  /** 成功结果可能带 `undo`（spec/protocol.md 3.8）；缺省 false。 */
+  undoable?: boolean
 }
 
 /**
  * 部分更新；缺省字段不变，`activation` / `title` / `annotations` / `outputSchema` / `page` / `backgroundTool` /
- * `exclusive` / `cache` / `deprecated` 为 null 表示清除；`concurrency` 为 0 表示不单独限制。
+ * `exclusive` / `cache` / `deprecated` 为 null 表示清除；`concurrency` 为 0 表示不单独限制；`undoable` 为 false 表示取消声明。
  */
 export interface CoreToolUpdate {
   description?: string
@@ -130,6 +132,7 @@ export interface CoreToolUpdate {
   cache?: CachePolicy | null
   /** 整体替换。 */
   deprecated?: ToolDeprecation | null
+  undoable?: boolean
 }
 
 export interface CoreResourceDef {

@@ -13,9 +13,11 @@ from ._client_convert import (
     _RESULT_STATUSES,
     ContentAnnotationsLike,
     ResultStatusLike,
+    UndoActionLike,
     _content_annotations,
     _enum_arg,
     _ms,
+    _undo,
     logger,
 )
 
@@ -129,11 +131,14 @@ class ToolResult:
     - ``summary``：一句面向模型 / 用户的结论（``partial`` 时说明完成了哪部分）。
     - ``annotations``：结果内容的标注（``{"audience": ["user"], "priority": 0.5, "last_modified": "…"}``
       或 ``ContentAnnotations``），Hub 原样转发。
+    - ``undo``：撤销本次调用的逆操作（spec/protocol.md 3.8），``{"tool": "todo.remove", "arguments": {"id": 3},
+      "label": "删除刚添加的待办"}`` 或 ``UndoAction``；``tool`` 为同一 App 的工具局部名（可为自身）。Hub 记录后 Agent 可用
+      ``apps.undo`` 撤销；内容不合法时核心去掉它并记警告，结果照常发送。只在 ``done`` / ``partial`` 时有效。
 
-    ``status`` / ``annotations`` 非法时构造即抛 ``ValueError``（handler 内抛出 → ``HANDLER_ERROR``）。
+    ``status`` / ``annotations`` / ``undo`` 形状非法时构造即抛 ``ValueError``（handler 内抛出 → ``HANDLER_ERROR``）。
     """
 
-    __slots__ = ("data", "state_hints", "status", "state_resource", "summary", "annotations")
+    __slots__ = ("data", "state_hints", "status", "state_resource", "summary", "annotations", "undo")
 
     def __init__(
         self,
@@ -144,6 +149,7 @@ class ToolResult:
         state_resource: str | None = None,
         summary: str | None = None,
         annotations: ContentAnnotationsLike | None = None,
+        undo: UndoActionLike | None = None,
     ) -> None:
         self.data = data
         self.state_hints = list(state_hints or [])
@@ -151,6 +157,7 @@ class ToolResult:
         self.state_resource = state_resource
         self.summary = summary
         self.annotations = _content_annotations(annotations)
+        self.undo = _undo(undo)
 
     def _ffi(self, data_json: str, state_hints: list[str]) -> ffi.CallResult:
         return ffi.CallResult(
@@ -160,6 +167,7 @@ class ToolResult:
             state_resource=self.state_resource,
             summary=self.summary,
             annotations=self.annotations,
+            undo=self.undo,
         )
 
 

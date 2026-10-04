@@ -355,6 +355,9 @@ final class AmToolOptions extends Struct {
   external Pointer<Utf8> deprecated_replacement;
   /// v23：计划移除日期（YYYY-MM-DD）；NULL = 未给出。
   external Pointer<Utf8> deprecated_until;
+  /// v24：成功结果可能带撤销信息（只用于展示）；false = 未声明（更新时清除）。
+  @Bool()
+  external bool undoable;
 }
 
 /// v9：`am_call_complete_ex` 的调用结果。
@@ -370,6 +373,12 @@ final class AmCallResult extends Struct {
   external Pointer<Utf8> state_resource;
   external Pointer<Utf8> summary;
   external Pointer<Utf8> annotations_json;
+  /// v24：逆工具局部名；三个 undo_* 均为 NULL = 不可撤销。
+  external Pointer<Utf8> undo_tool;
+  /// v24：调用逆工具的参数（JSON 文本）；NULL = `{}`。
+  external Pointer<Utf8> undo_arguments_json;
+  /// v24：面向用户的撤销说明；NULL = 未给出。
+  external Pointer<Utf8> undo_label;
 }
 
 final class AmResourceSpec extends Struct {

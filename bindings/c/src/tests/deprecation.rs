@@ -37,14 +37,13 @@ fn header_declares_deprecation() {
 #[test]
 #[cfg(target_pointer_width = "64")]
 fn v23_layout() {
-    use std::mem::size_of;
     let offsets = (
         offset_of!(AmToolOptions, deprecated_message),
         offset_of!(AmToolOptions, deprecated_replacement),
         offset_of!(AmToolOptions, deprecated_until),
     );
     assert_eq!(offsets, (96, 104, 112));
-    assert_eq!(size_of::<AmToolOptions>(), 120);
+    assert_eq!(offset_of!(AmToolOptions, undoable), 120, "v23 结束于 120（v24 字段由此开始）");
 }
 
 /// NULL 组合（T-09）：全 NULL = 未声明；只缺 message 时以空 message 交给核心；非法 UTF-8 → INVALID_ARGUMENT。

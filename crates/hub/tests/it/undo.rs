@@ -107,6 +107,10 @@ async fn registers_only_completed_results_with_valid_undo() {
         script_add(&app, 1, json!({"status": status}));
         let o = call(&hub, "todo.add", json!({})).await;
         assert_eq!(o.result.as_ref().expect("调用成功"), &json!({"id": 1}), "{status}");
+        assert_eq!(o.undo.is_some(), registered, "CallOutcome.undo：{status}");
+        if registered {
+            assert_eq!(hub.status().undo.expect("status.undo").records, 1, "HubStatus.undo.records：{status}");
+        }
         let before = app.invokes("remove");
         let r = undo(&hub, json!({})).await;
         assert_eq!(r.is_ok(), registered, "{status}: {r:?}");
@@ -167,8 +171,12 @@ async fn latest_by_id_and_only_once() {
         script_add(&app, id, json!({}));
         ids.push(call(&hub, "todo.add", json!({})).await.call_id);
     }
+    let st = hub.status().undo.expect("status.undo");
+    assert_eq!((st.records, st.max_per_task, st.ttl_ms), (3, app_mcp_hub::DEFAULT_UNDO_MAX_PER_TASK, 30 * 60 * 1000));
     app.script("remove", json!({"result": {"data": {"removed": 3}}}));
-    assert_eq!(undo(&hub, json!({})).await.expect("最近一条"), json!({"removed": 3}), "逆调用的结果原样返回");
+    let o = call(&hub, "apps.undo", json!({})).await;
+    assert_eq!(o.undo_of.as_deref(), Some(ids[2].as_str()), "CallOutcome.undo_of");
+    assert_eq!(o.result.expect("最近一条"), json!({"removed": 3}), "逆调用的结果原样返回");
     app.script("remove", json!({"result": {"data": {"removed": 1}}}));
     assert_eq!(undo(&hub, json!({"callId": ids[0]})).await.expect("指定 callId"), json!({"removed": 1}));
     let again = undo(&hub, json!({"callId": ids[0]})).await;
@@ -308,6 +316,9 @@ async fn undoable_in_listings() {
     let tools = call(&hub, "apps.tools", json!({"appId": APP})).await.result.expect("apps.tools");
     let entry = |name: &str| tools["tools"].as_array().unwrap().iter().find(|t| t["name"] == name).cloned().unwrap();
     assert_eq!(entry("todo.add")["undoable"], json!(true), "{tools}");
+    let hub_tools = hub.tools(&Default::default());
+    let declared = |name: &str| hub_tools.iter().find(|t| t.name == name).map(|t| t.undoable);
+    assert_eq!((declared("todo.add"), declared("todo.remove")), (Some(true), Some(false)), "HubTool.undoable");
     assert!(entry("todo.remove").get("undoable").is_none());
     let found = call(&hub, "apps.search", json!({"query": "add", "appId": APP})).await.result.expect("apps.search");
     let hit = found["results"].as_array().unwrap().iter().find(|t| t["name"] == "todo.add").cloned().expect("命中 add");

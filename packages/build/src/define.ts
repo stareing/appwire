@@ -37,6 +37,8 @@ export interface StaticToolDefinition<I = unknown> {
   cache?: CachePolicy
   /** 弃用声明（spec/protocol.md 3.7）：弃用工具照常可调用；破坏性变更应改用新工具名（spec/manifest.md 第 6 节）。 */
   deprecated?: ToolDeprecation
+  /** 成功结果可能带 `undo`（spec/protocol.md 3.8）：只用于展示（Agent 可提示"此操作可撤销"）；`false` / 缺省不写进清单。 */
+  undoable?: boolean
 }
 
 /**

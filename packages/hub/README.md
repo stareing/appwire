@@ -174,6 +174,10 @@ hub.setPolicy({ rules: [{ id: 'no-destructive', action: 'hide', app: '*', annota
 `resultCache: { maxEntries?, maxBytes?, maxEntryBytes? }` 配置（缺省 1024 条 / 8 MiB / 64 KiB，`maxEntries: 0` 关闭），
 `status().cache` 查看条目与命中统计。缓存多久、能否跨调用方共用（`shared` 只用于与调用方无关的数据）由 App 决定。
 
+撤销（spec/hub-api.md 3.23）：App 工具结果带 `undo` 时 Hub 登记到调用方的任务，`CallOutcome.undo`（`{label?, expiresInMs}`）表示可撤销；
+`hub.callTool({ name: 'apps.undo', arguments: { callId } })` 撤销一次（缺省 `callId` 取最近一条），结果的 `CallOutcome.undoOf` 为被撤销的
+callId。`HubTool.undoable` 为 App 的声明（只用于展示），`status().undo` 为生效上限与记录数（`{ttlMs, maxPerTask, records}`）。
+
 **注解如实传递，不用于放行**：App 声明的标准 MCP 工具注解（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` / `title`）
 原样出现在 `HubTool.annotations`、`ApprovalRequest.annotations` 与 `exportTools('mcp')` 中（缺少的字段按 `risk` 推导）。
 `approval.requireAtOrAbove` 仍按 `risk` 决定是否询问；要按注解决定是否确认，在 `setApprovalHandler` 的回调里自行判断。

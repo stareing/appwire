@@ -14,7 +14,7 @@ export {
   EventDefinition,
   ErrorKind, HeartbeatMode, HoldHandle, LifecycleMode, LifecycleOptions, Logger, NavigationHandler, NavigationRequest, Registrar, Residency, ResourceDefinition,
   ResourceHandle, ResultStatus, Risk, Scope, ToolAnnotations, ToolChanges, ToolContext, ToolDefinition, ToolDeprecation, ToolHandle,
-  ToolHandler, ToolResult, ToolResultOptions, ToolSurface, UserActionRequiredOptions, Visibility, WakeDescriptor, WakeKind,
+  ToolHandler, ToolResult, ToolResultOptions, ToolSurface, UndoAction, UserActionRequiredOptions, Visibility, WakeDescriptor, WakeKind,
   WakeReason,
 } from './src/main/ets/Types';
 export { HarmonyUiFallback, UiFallbackOptions } from './src/main/ets/uifallback/HarmonyUiFallback';

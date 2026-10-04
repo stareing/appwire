@@ -11,9 +11,8 @@ use tokio::time::Instant;
 use crate::call::{Body, CallCtx, CancelFut, Invocation};
 use crate::hub::HubShared;
 use crate::task::CallerKey;
-use crate::types::HubTool;
 
-use super::{UndoGrant, UndoRecord};
+use super::{UndoOffer, UndoRecord};
 
 /// 结果状态是否允许登记撤销（spec/protocol.md 3.8：`pending` 尚未完成、`noop` 无改动）。
 fn undoable_status(status: ResultStatus) -> bool {
@@ -51,25 +50,11 @@ impl HubShared {
         self.config.undo.enabled()
     }
 
-    /// App 工具 `app_id.tool` 的已知定义声明了 `undoable`（上游工具与未知工具为 `false`）。
-    pub(crate) fn tool_undoable(&self, app_id: &str, tool: &str) -> bool {
-        self.registry().app_tool(app_id, tool).is_some_and(|d| d.undoable)
-    }
-
-    /// `apps.tools` 的工具条目：声明了 `undoable` 的追加 `undoable: true`（spec/hub-api.md 3.23；Hub API `HubTool` 二期补齐）。
-    pub(crate) fn tool_entries(&self, tools: &[HubTool]) -> Vec<Value> {
-        tools
-            .iter()
-            .map(|t| {
-                let mut v = serde_json::to_value(t).unwrap_or(Value::Null);
-                if self.tool_undoable(&t.app_id, &t.tool)
-                    && let Value::Object(m) = &mut v
-                {
-                    m.insert("undoable".to_owned(), Value::Bool(true));
-                }
-                v
-            })
-            .collect()
+    /// [`crate::HubStatus::undo`]：生效上限与各任务记录数合计。
+    pub(crate) fn undo_status(&self) -> super::UndoStatus {
+        let limits = &self.config.undo;
+        let records = self.agent_tasks().values().map(|t| t.undo.len()).sum();
+        super::UndoStatus { ttl_ms: u64::try_from(limits.ttl.as_millis()).unwrap_or(u64::MAX), max_per_task: limits.max_per_task, records }
     }
 
     /// App 工具调用结果的登记（spec/hub-api.md 3.23）：成功、`done` / `partial`、带合法 `undo` 且撤销开启时登记到调用方的任务，
@@ -81,7 +66,7 @@ impl HubShared {
         app_id: &str,
         instance_id: Option<&str>,
         result: &Result<ToolsInvokeResult, ToolError>,
-    ) -> Option<UndoGrant> {
+    ) -> Option<UndoOffer> {
         let limits = self.config.undo;
         let Ok(r) = result else { return None };
         let raw = r.undo.as_ref()?;
@@ -107,7 +92,7 @@ impl HubShared {
         };
         self.agent_tasks().entry(caller).undo.push(record, limits.ttl, limits.max_per_task);
         let expires_in_ms = u64::try_from(limits.ttl.as_millis()).unwrap_or(u64::MAX);
-        Some(UndoGrant { label, expires_in_ms })
+        Some(UndoOffer { label, expires_in_ms })
     }
 
     /// `apps.undo {callId?}`：从调用方任务取出记录（只能取出一次），以同一调用方对 `<appId>.<逆工具>` 发起普通 App 工具调用，

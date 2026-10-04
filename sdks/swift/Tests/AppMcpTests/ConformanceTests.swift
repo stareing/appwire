@@ -13,7 +13,7 @@ final class ConformanceTests: XCTestCase {
     private static let features: Set<String> = [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
         "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-        "callScheduling", "busy", "events", "implements", "cache", "deprecated",
+        "callScheduling", "busy", "events", "implements", "cache", "deprecated", "undo",
     ]
     private static let verdictOK: Set<String> = ["pass", "xfail", "xpass", "skip"]
 
@@ -194,7 +194,8 @@ private final class CaseApp {
             exclusive: decl["exclusive"]?.stringValue,
             implements: Self.strings(decl["implements"]),
             cache: cachePolicy(decl["cache"]),
-            deprecated: deprecation(decl["deprecated"])
+            deprecated: deprecation(decl["deprecated"]),
+            undoable: decl["undoable"]?.boolValue ?? false
         ) { [weak self] (args: JSONValue, ctx: ToolContext) async throws -> ToolResult<JSONValue> in
             runs += 1
             return try await self?.run(spec, count: runs, args: args, ctx: ctx) ?? ToolResult(data: nil)
@@ -222,7 +223,8 @@ private final class CaseApp {
                 status: r["status"]?.stringValue.map(resultStatus) ?? .done,
                 stateResource: r["stateResource"]?.stringValue,
                 summary: r["summary"]?.stringValue,
-                annotations: r["annotations"].map(contentAnnotations)
+                annotations: r["annotations"].map(contentAnnotations),
+                undo: try undoAction(r["undo"])
             )
         }
         if let v = spec["return"] { return ToolResult(data: v) } // 含 null：显式返回 null
@@ -294,6 +296,7 @@ private final class CaseApp {
         case "implements": d.implements = strings(v) // [] = 清除
         case "cache": d.cache = cachePolicy(v) // null = 清除
         case "deprecated": d.deprecated = deprecation(v) // null = 清除
+        case "undoable": d.undoable = v?.boolValue ?? false // null / false = 取消声明
         default: break
         }
     }
@@ -372,6 +375,12 @@ private func cachePolicy(_ v: JSONValue?) -> CachePolicy? {
 }
 
 /// `{message, replacement?, until?}` → `Deprecation`；缺省或 `null` 为 `nil`。
+/// `undo` 原样交给 SDK（参数非对象等不合法内容由核心去掉）。
+private func undoAction(_ v: JSONValue?) throws -> UndoAction? {
+    guard let v, v != .null, let tool = v["tool"]?.stringValue else { return nil }
+    return UndoAction(tool: tool, argumentsJson: try v["arguments"].map(text), label: v["label"]?.stringValue)
+}
+
 private func deprecation(_ v: JSONValue?) -> Deprecation? {
     guard let v, v != .null, let message = v["message"]?.stringValue else { return nil }
     return Deprecation(message: message, replacement: v["replacement"]?.stringValue, until: v["until"]?.stringValue)

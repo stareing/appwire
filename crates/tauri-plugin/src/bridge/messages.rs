@@ -16,7 +16,7 @@ impl ToolSpecMessage {
             implements: std::mem::take(&mut self.implements),
             cache: self.cache.take(),
             deprecated: self.deprecated.take(),
-            undoable: false,
+            undoable: self.undoable,
         };
         (self.into_spec(name), options)
     }
@@ -45,14 +45,14 @@ pub(super) fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<V
 const RESULT_STATUSES: [&str; 4] = ["done", "pending", "partial", "noop"];
 
 /// 信封字段的取值是否合法；与 @app-mcp/web 的 `ENVELOPE_FIELDS`（packages/web/src/result.ts，`isToolResultEnvelope`）
-/// 为同一规则：缺省或 stateHints 为数组、status 为合法取值、stateResource / summary 为字符串、annotations 为对象。
+/// 为同一规则：缺省或 stateHints 为数组、status 为合法取值、stateResource / summary 为字符串、annotations / undo 为对象。
 pub(super) fn envelope_field_valid(key: &str, value: Option<&Value>) -> bool {
     let Some(v) = value else { return true };
     match key {
         "stateHints" => v.is_array(),
         "status" => v.as_str().is_some_and(|s| RESULT_STATUSES.contains(&s)),
         "stateResource" | "summary" => v.is_string(),
-        "annotations" => v.is_object(),
+        "annotations" | "undo" => v.is_object(),
         _ => false,
     }
 }
@@ -63,19 +63,21 @@ impl Outcome {
     }
 
     /// 信封字段（键名 → 原始值）。
-    fn envelope_fields(&self) -> [(&'static str, Option<&Value>); 5] {
+    fn envelope_fields(&self) -> [(&'static str, Option<&Value>); 6] {
         [
             ("stateHints", self.state_hints.as_ref()),
             ("status", self.status.as_ref()),
             ("stateResource", self.state_resource.as_ref()),
             ("summary", self.summary.as_ref()),
             ("annotations", self.annotations.as_ref()),
+            ("undo", self.undo.as_ref()),
         ]
     }
 
     /// 成功结果：信封合法时拆开；任一字段取值不合法时整个结果（`data` 与出现的信封字段）作为 `data`、状态 `done`。
     ///
-    /// @error `annotations` 是对象但字段不合法时返回说明（与 node 原生层拒绝时一样以 `HANDLER_ERROR` 结束）。
+    /// @error `annotations` 是对象但字段不合法、`undo` 字段类型不对（`tool` 不是字符串等）时返回说明（与 node 原生层拒绝时一样以
+    /// `HANDLER_ERROR` 结束）。`undo` 的语义校验（局部名、参数为对象、长度）在核心：不合法时去掉并告警，结果照常发送。
     pub(super) fn call_result(self) -> Result<CallResult, String> {
         let fields = self.envelope_fields();
         if !fields.iter().all(|(k, v)| envelope_field_valid(k, *v)) {
@@ -99,6 +101,10 @@ impl Outcome {
                 serde_json::from_value::<ContentAnnotations>(v).map_err(|e| format!("结果的 annotations 不合法：{e}"))
             })
             .transpose()?;
+        let undo = self
+            .undo
+            .map(|v| serde_json::from_value::<UndoAction>(v).map_err(|e| format!("结果的 undo 不合法：{e}")))
+            .transpose()?;
         let state_hints = match self.state_hints {
             Some(Value::Array(items)) => items
                 .into_iter()
@@ -120,7 +126,7 @@ impl Outcome {
             state_resource: text(self.state_resource),
             summary: text(self.summary),
             annotations,
-            undo: None,
+            undo,
         })
     }
 

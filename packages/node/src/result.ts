@@ -3,7 +3,7 @@
  * （本包不依赖 @app-mcp/web，按结构重复实现；两边的测试覆盖同一组用例）。
  */
 
-import type { ContentAnnotations, ResultStatus } from './types.js'
+import type { ContentAnnotations, ResultStatus, UndoAction } from './types.js'
 
 /** 规范化后的成功结果；`data` 为原始值（提交时再序列化），可选字段只在给出时出现。 */
 export interface NormalizedResult {
@@ -13,6 +13,7 @@ export interface NormalizedResult {
   stateResource?: string
   summary?: string
   annotations?: ContentAnnotations
+  undo?: UndoAction
 }
 
 const RESULT_STATUSES: readonly unknown[] = ['done', 'pending', 'partial', 'noop'] satisfies ResultStatus[]
@@ -32,6 +33,7 @@ const ENVELOPE_FIELDS: Readonly<Record<keyof NormalizedResult, (v: unknown) => b
   stateResource: isOptional(isString),
   summary: isOptional(isString),
   annotations: isOptional(isPlainObject),
+  undo: isOptional(isPlainObject),
 }
 
 function isEnvelope(result: unknown): result is NormalizedResult {
@@ -51,6 +53,7 @@ export function normalizeToolResult(result: unknown): NormalizedResult {
   if (result.stateResource !== undefined) out.stateResource = result.stateResource
   if (result.summary !== undefined) out.summary = result.summary
   if (result.annotations !== undefined) out.annotations = result.annotations
+  if (result.undo !== undefined) out.undo = result.undo
   return out
 }
 
@@ -60,6 +63,7 @@ export function hasResultExtras(result: NormalizedResult): boolean {
     result.status !== undefined ||
     result.stateResource !== undefined ||
     result.summary !== undefined ||
-    result.annotations !== undefined
+    result.annotations !== undefined ||
+    result.undo !== undefined
   )
 }

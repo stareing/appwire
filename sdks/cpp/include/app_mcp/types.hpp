@@ -64,6 +64,18 @@ struct Deprecation {
     std::optional<std::string> until;
 };
 
+/// 撤销本次调用的逆操作（spec/protocol.md 3.8，app_mcp.h v24）：同一 App 的工具与参数，Hub 记录后供 Agent 撤销。
+/// 格式不合法（tool 不是局部名、arguments 不是对象或超过 64 KiB、label 为空或超过 200 个字符）时由核心去掉并记警告日志，
+/// 结果其余部分照常发送；arguments_json 不是合法 JSON 时 complete 抛出 Error 且调用仍待完成。
+struct UndoAction {
+    /// 逆工具在同一 App 中的局部名（可为本工具自身，如开关类工具）。
+    std::string tool;
+    /// 调用逆工具的参数（JSON 对象文本）；为空表示 {}。
+    std::optional<std::string> arguments_json;
+    /// 一句面向用户的说明（撤销会做什么）；为空表示不给出。
+    std::optional<std::string> label;
+};
+
 /// 本实例的唤醒描述（spec/lifecycle.md 第 5 节），随 app/sleep 上报。
 struct WakeDescriptor {
     WakeKind kind = AM_WAKE_NONE;
@@ -144,6 +156,8 @@ struct ToolOptions {
     std::optional<CachePolicy> cache;
     /// 弃用声明（v23）；为空表示不声明（更新时清除）。
     std::optional<Deprecation> deprecated;
+    /// 成功结果可能带撤销信息（CallResult::undo，v24），只用于展示；false 表示不声明（更新时清除）。
+    bool undoable = false;
 };
 
 /// 内容面向谁（MCP 内容注解 audience）。
@@ -170,6 +184,8 @@ struct CallResult {
     /// 一句面向模型 / 用户的结论（PARTIAL 时说明完成了哪部分）。
     std::optional<std::string> summary;
     std::optional<ContentAnnotations> annotations;
+    /// 撤销本次调用的逆操作（v24）；为空表示不可撤销。只在 status 为 DONE / PARTIAL 时有效。
+    std::optional<UndoAction> undo;
 };
 
 struct ResourceOptions {
@@ -414,6 +430,7 @@ inline AmToolOptions tool_options(const ToolOptions& options, const std::optiona
         o.deprecated_replacement = c_str_or_null(options.deprecated->replacement);
         o.deprecated_until = c_str_or_null(options.deprecated->until);
     }
+    o.undoable = options.undoable;
     return o;
 }
 

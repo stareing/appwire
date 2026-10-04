@@ -184,7 +184,7 @@ public:
         detail::check(s);
     }
 
-    /// 成功完成，附带业务状态、摘要与内容注解。data_json 非法时抛出 Error 且调用仍待完成。
+    /// 成功完成，附带业务状态、摘要、内容注解与撤销信息。data_json / undo->arguments_json 非法时抛出 Error 且调用仍待完成。
     void complete(const CallResult& result) {
         std::vector<const char*> hints;
         hints.reserve(result.state_hints.size());
@@ -200,6 +200,11 @@ public:
         r.state_resource = detail::c_str_or_null(result.state_resource);
         r.summary = detail::c_str_or_null(result.summary);
         r.annotations_json = detail::c_str_or_null(annotations);
+        if (result.undo) {
+            r.undo_tool = result.undo->tool.c_str();
+            r.undo_arguments_json = detail::c_str_or_null(result.undo->arguments_json);
+            r.undo_label = detail::c_str_or_null(result.undo->label);
+        }
         AmCall* c = take();
         AmStatus s = am_call_complete_ex(c, &r);
         if (s == AM_ERR_INVALID_JSON) state_->put_back(c);

@@ -5,7 +5,7 @@ use std::time::Duration;
 use app_mcp_hub as hub;
 use serde_json::Value;
 
-use super::{AppOverviewInfo, CallPriority, ContentAnnotations, HubError, ResultStatus, parse_json};
+use super::{AppOverviewInfo, CallPriority, ContentAnnotations, HubError, ResultStatus, UndoOffer, parse_json};
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct CallRequest {
@@ -117,6 +117,12 @@ pub struct CallOutcome {
     /// 结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数；未命中为空（spec/hub-api.md 3.20）。
     #[uniffi(default = None)]
     pub cached_age_ms: Option<u64>,
+    /// 本次调用已登记撤销（spec/hub-api.md 3.23），可用 `apps.undo` 撤销；未登记为空。
+    #[uniffi(default = None)]
+    pub undo: Option<UndoOffer>,
+    /// `apps.undo` 的结果：被撤销调用的 callId；其他调用为空。
+    #[uniffi(default = None)]
+    pub undo_of: Option<String>,
 }
 
 impl From<hub::CallOutcome> for CallOutcome {
@@ -147,6 +153,8 @@ impl From<hub::CallOutcome> for CallOutcome {
             duration_ms: o.duration_ms,
             woke: o.woke,
             cached_age_ms: o.cached_age_ms,
+            undo: o.undo.map(Into::into),
+            undo_of: o.undo_of,
         }
     }
 }

@@ -86,6 +86,10 @@ Identity and connection are owned by the Rust side: `appId`, `appName` and `host
 - Deprecation (spec/protocol.md 3.7): page tools may declare `deprecated: { message, replacement?, until? }`, forwarded to
   the plugin's native `ToolOptions.deprecated`; omitting it in an update clears it. A deprecated tool stays listed and
   callable; for a breaking change register a new tool name instead (spec/manifest.md section 6).
+- Undo (spec/protocol.md 3.8): page tools may declare `undoable: true` (forwarded to the plugin's native
+  `ToolOptions.undoable`; omitting it in an update clears it) and handlers may return
+  `{ data, undo: { tool, arguments?, label? } }`, forwarded with the result to `CallResult.undo`. An invalid `undo` is
+  dropped by the native core with a warning; a wrongly typed one (e.g. `tool` not a string) fails the call with `HANDLER_ERROR`.
 - Events (spec/protocol.md 3.5): `appMcp.declareEvent({ name, description, payloadSchema? })`,
   `emitEvent(name, payload?)` and `removeEvent(name)` go over the plugin bridge (`event.declare` / `event.emit` /
   `event.remove`) and are emitted by the Rust-side client. Declarations belong to the page and are withdrawn when it

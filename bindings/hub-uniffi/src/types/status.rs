@@ -352,6 +352,9 @@ pub struct HubStatus {
     /// 工具定义的不兼容变化（第 16 项 O4，spec/hub-api.md 3.21）：最近 32 条，旧的在前；旧 Host 为空。
     #[uniffi(default = None)]
     pub schema_changes: Option<Vec<super::SchemaChangeRecord>>,
+    /// 撤销记录的生效上限与记录数（第 15 项 X2，spec/hub-api.md 3.23）；旧 Host 为空。
+    #[uniffi(default = None)]
+    pub undo: Option<super::UndoStatus>,
 }
 
 /// 调用方的种类（spec/hub-api.md 3.6）。
@@ -563,6 +566,7 @@ impl From<hub::HubStatus> for HubStatus {
             intents: s.intents.map(Into::into),
             cache: s.cache.map(Into::into),
             schema_changes: s.schema_changes.map(|r| r.into_iter().map(Into::into).collect()),
+            undo: s.undo.map(Into::into),
         }
     }
 }

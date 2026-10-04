@@ -62,6 +62,8 @@ Renderer tools and resources may declare `cache: { ttlMs, scope? }` (result cach
 only, `scope: 'shared'` only for caller-independent data), forwarded the same way; omitting it in an update clears it.
 Renderer tools may declare `deprecated: { message, replacement?, until? }` (spec/protocol.md 3.7) the same way; a
 deprecated tool stays callable, and breaking changes should use a new tool name (spec/manifest.md section 6).
+Renderer tools may declare `undoable: true` and their handlers may return `{ data, undo: { tool, arguments?, label? } }`
+(spec/protocol.md 3.8), forwarded the same way; an invalid `undo` is dropped by the native core with a warning.
 Identity and connection belong to the main process: `appId`, `appName` and `hostUrl` are ignored in the page.
 Each webContents gets its own scope, unregistered on reload, navigation, destroy or renderer crash
 (in-flight calls fail with `APP_DISCONNECTED`).

@@ -69,6 +69,7 @@ export class ToolEntry<I, O> implements ToolHandle, Child {
     if (d.deprecated !== undefined) {
       spec.deprecated = deprecationInit(d.deprecated);
     }
+    spec.undoable = d.undoable;
     return spec;
   }
 
@@ -94,6 +95,7 @@ export class ToolEntry<I, O> implements ToolHandle, Child {
       implements: patchField<string[]>(changes.implements, d.implements),
       cache: patchField<CachePolicy>(changes.cache, d.cache),
       deprecated: patchField<ToolDeprecation>(changes.deprecated, d.deprecated),
+      undoable: patchField<boolean>(changes.undoable, d.undoable),
       handler: d.handler,
     };
     this.def = next;

@@ -35,6 +35,7 @@ class ToolHandle internal constructor(private val inner: FfiTool, @Volatile priv
         implements: List<String>? = null,
         cache: CachePolicy? = null,
         deprecated: Deprecation? = null,
+        undoable: Boolean? = null,
     ) = update {
         description?.let { this.description = it }
         inputSchema?.let { this.inputSchema = it }
@@ -50,6 +51,7 @@ class ToolHandle internal constructor(private val inner: FfiTool, @Volatile priv
         implements?.let { this.implements = it }
         cache?.let { this.cache = it }
         deprecated?.let { this.deprecated = it }
+        undoable?.let { this.undoable = it }
     }
 
     /**

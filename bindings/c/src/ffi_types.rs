@@ -136,6 +136,8 @@ pub struct AmToolOptions {
     pub deprecated_replacement: *const c_char,
     /// v23：计划移除日期（`YYYY-MM-DD`）；NULL = 未给出。
     pub deprecated_until: *const c_char,
+    /// v24（spec/protocol.md 3.8）：成功结果可能带撤销信息（只用于展示）；false = 未声明（更新时清除）。
+    pub undoable: bool,
 }
 
 /// v9：`am_call_complete_ex` 的调用结果（带 `struct_size`，按调用方给出的大小读取；`status` 用 c_int 接收）。
@@ -150,6 +152,12 @@ pub struct AmCallResult {
     pub summary: *const c_char,
     /// 内容注解（MCP `Annotations`，JSON 对象文本）；NULL = 无。
     pub annotations_json: *const c_char,
+    /// v24（spec/protocol.md 3.8）：逆工具局部名；三个 `undo_*` 均为 NULL = 不可撤销。
+    pub undo_tool: *const c_char,
+    /// v24：调用逆工具的参数（JSON 文本）；NULL = `{}`。
+    pub undo_arguments_json: *const c_char,
+    /// v24：面向用户的撤销说明；NULL = 未给出。
+    pub undo_label: *const c_char,
 }
 
 #[repr(C)]

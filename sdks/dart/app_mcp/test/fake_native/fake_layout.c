@@ -45,6 +45,10 @@ size_t fake_sizeof(int which) {
     case 33: return offsetof(AmToolOptions, deprecated_message);
     case 34: return offsetof(AmToolOptions, deprecated_replacement);
     case 35: return offsetof(AmToolOptions, deprecated_until);
+    case 36: return offsetof(AmToolOptions, undoable);
+    case 37: return offsetof(AmCallResult, undo_tool);
+    case 38: return offsetof(AmCallResult, undo_arguments_json);
+    case 39: return offsetof(AmCallResult, undo_label);
     default: return 0;
     }
 }

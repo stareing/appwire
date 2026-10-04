@@ -134,6 +134,21 @@ export interface ToolDeprecation {
   until?: string
 }
 
+/**
+ * 撤销本次调用的逆操作（spec/protocol.md 3.8）：调用同一 App 的工具 `tool`，参数为 `arguments`。Hub 记录后 Agent 可经
+ * `apps.undo` 撤销（只能撤销一次）；撤销已无意义时由逆工具的 handler 返回错误或 `noop`。
+ * 不合法（`tool` 不是合法局部名、`arguments` 不是对象或序列化后超过 64 KiB、`label` 为空或超过 200 字符）时 SDK 去掉它并给出警告，
+ * 结果照常发送（操作已经执行，不让调用失败）。
+ */
+export interface UndoAction {
+  /** 同一 App 的工具局部名（可为自身，如开关类工具）。 */
+  tool: string
+  /** 调用逆工具的参数，缺省 `{}`。 */
+  arguments?: Record<string, unknown>
+  /** 一句面向用户的说明（1..=200 字符）：撤销会做什么。 */
+  label?: string
+}
+
 /** 内容的接收方（MCP `Role`）。 */
 export type Audience = 'user' | 'assistant'
 
@@ -404,6 +419,8 @@ export interface ToolResultEnvelope<O> {
   summary?: string
   /** 结果内容的标注。 */
   annotations?: ContentAnnotations
+  /** 撤销本次调用的逆操作（{@link UndoAction}）；只在 `status` 为 `done` / `partial` 时有效。 */
+  undo?: UndoAction
 }
 
 /**
@@ -478,6 +495,11 @@ export interface ToolDefinition<I = unknown, O = unknown> {
   cache?: CachePolicy
   /** 弃用声明（{@link ToolDeprecation}）；不继承 scope。 */
   deprecated?: ToolDeprecation
+  /**
+   * 成功结果可能带 `undo`（{@link UndoAction}，spec/protocol.md 3.8）：只用于展示（Agent 可提示"此操作可撤销"），不约束结果；
+   * 未声明的工具返回 `undo` 同样可撤销。缺省 false；不继承 scope。
+   */
+  undoable?: boolean
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
   /** 与 `handler` 二选一：只声明元数据、首次调用时加载 handler，见 {@link LazyToolDefinition}。 */
   load?: undefined
@@ -505,7 +527,7 @@ export interface ToolHandle {
   readonly name: string
   /**
    * 更新描述、schema、风险、注解、启用状态或界面声明（`surface` / `page` / `visibility` / `anchor`）；未提供的字段保持不变，
-   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` / `backgroundTool` / `exclusive` / `implements` / `cache` / `deprecated` 为清除声明，`concurrency` 恢复为不限，`surface` / `page` / `visibility` 恢复为继承值）。
+   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` / `backgroundTool` / `exclusive` / `implements` / `cache` / `deprecated` 为清除声明，`undoable` 恢复为 false，`concurrency` 恢复为不限，`surface` / `page` / `visibility` 恢复为继承值）。
    * `enabled` 是 App 的意愿：`view` 工具还要满足可见性门控才对 Host 可见。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void

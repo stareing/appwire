@@ -134,7 +134,7 @@ impl HubShared {
                 };
                 let mut body = json!({
                     "appId": app_id,
-                    "tools": self.tool_entries(&tools),
+                    "tools": tools,
                     "pages": pages,
                     "message": message,
                 });

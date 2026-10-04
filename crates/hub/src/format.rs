@@ -493,6 +493,7 @@ mod tests {
             implements: Vec::new(),
             schema_hash: None,
             deprecated: None,
+            undoable: false,
         }
     }
 

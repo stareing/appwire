@@ -158,6 +158,33 @@ fn tool_deprecated() {
     assert!(u(json!({ "deprecated": { "replacement": "b" } })).is_err());
 }
 
+/// 第 15 项 X2：工具 `undoable` 透传（缺省 false）；更新时缺省 / `null` 不变、给值替换；结果 `undo` 原样进入核心
+/// （`arguments` 缺省 `{}`，不是对象时照样交给核心去掉），类型错误在转换时拒绝。
+#[test]
+fn tool_undoable_and_outcome_undo() {
+    use app_mcp_core::UndoAction;
+    let tool = |v: Value| JsToolDef::from_json(v).and_then(JsToolDef::into_core).map(|d| d.undoable);
+    assert!(tool(json!({ "name": "a", "inputSchema": {}, "undoable": true })).unwrap());
+    assert!(!tool(json!({ "name": "a", "inputSchema": {} })).unwrap());
+    assert_eq!(tool(json!({ "name": "a", "inputSchema": {}, "undoable": 1 })).unwrap_err(), "字段 undoable 应为布尔值");
+    let u = |v: Value| JsToolUpdate::from_json(v).map(JsToolUpdate::into_core).map(|u| u.undoable);
+    assert_eq!(u(json!({})).unwrap(), None);
+    assert_eq!(u(json!({ "undoable": null })).unwrap(), None);
+    assert_eq!(u(json!({ "undoable": false })).unwrap(), Some(false));
+    assert_eq!(u(json!({ "undoable": true })).unwrap(), Some(true));
+
+    let undo = |v: Value| JsCallOutcome::from_json(json!({ "data": 1, "undo": v })).map(|o| o.into_call().unwrap().undo);
+    let full = UndoAction { tool: "u.remove".into(), arguments: json!({ "id": 3 }), label: Some("删除".into()) };
+    assert_eq!(undo(json!({ "tool": "u.remove", "arguments": { "id": 3 }, "label": "删除" })).unwrap(), Some(full));
+    assert_eq!(undo(json!({ "tool": "u.toggle" })).unwrap(), Some(UndoAction::new("u.toggle")));
+    let odd = undo(json!({ "tool": "bad name", "arguments": [1] })).unwrap().unwrap();
+    assert_eq!((odd.tool.as_str(), odd.arguments), ("bad name", json!([1])));
+    assert_eq!(undo(json!({ "arguments": {} })).unwrap_err(), "undo.缺少字段 tool");
+    assert_eq!(undo(json!({ "tool": "t", "label": 1 })).unwrap_err(), "undo.字段 label 应为字符串");
+    let plain = JsCallOutcome::from_json(json!({ "data": 1 })).unwrap().into_call().unwrap();
+    assert_eq!(plain.undo, None);
+}
+
 #[test]
 fn tool_surface_and_page() {
     let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "surface": "view", "page": "cart" }))

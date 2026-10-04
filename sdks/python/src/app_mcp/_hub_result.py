@@ -12,6 +12,7 @@ ToolErrorInfo = ffi.ToolErrorInfo
 AppOverviewInfo = ffi.AppOverviewInfo
 ResultStatus = ffi.ResultStatus
 ContentAnnotations = ffi.ContentAnnotations
+UndoOffer = ffi.UndoOffer
 
 
 def _loads(text: str | None) -> Any:
@@ -59,6 +60,11 @@ class CallResult:
     #: 结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数（``dev.appwire/cached.ageMs``，spec/hub-api.md 3.20）；
     #: 未命中为 ``None``。
     cached_age_ms: int | None = None
+    #: 本次调用已登记撤销（spec/hub-api.md 3.23，``dev.appwire/undo``）：``label``、``expires_in_ms``；可用 ``apps.undo`` 撤销。
+    #: 未登记为 ``None``。
+    undo: UndoOffer | None = None
+    #: ``apps.undo`` 的结果：被撤销调用的 callId（``dev.appwire/undoOf``）；其他调用为 ``None``。
+    undo_of: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -88,4 +94,6 @@ def _call_result(out: ffi.CallOutcome) -> CallResult:
         duration_ms=out.duration_ms,
         woke=out.woke,
         cached_age_ms=out.cached_age_ms,
+        undo=out.undo,
+        undo_of=out.undo_of,
     )

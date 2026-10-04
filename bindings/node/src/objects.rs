@@ -2,7 +2,7 @@
 
 use app_mcp_native as native;
 use napi_derive::napi;
-use native::{CachePolicy, ContentAnnotations, Deprecation, LifecyclePolicy, StateInfo, ToolAnnotations, WakeDescriptor};
+use native::{CachePolicy, ContentAnnotations, Deprecation, LifecyclePolicy, StateInfo, ToolAnnotations, UndoAction, WakeDescriptor};
 
 use super::convert::{
     parse_activation, parse_audience, parse_cache_scope, parse_cache_ttl, parse_lifecycle_mode, parse_millis, parse_residency, parse_result_status,
@@ -219,6 +219,8 @@ pub struct ToolSpecInit {
     pub cache: Option<CachePolicyInit>,
     /// 弃用声明（spec/protocol.md 3.7）：弃用工具照常列出与调用；格式不合法时 `INVALID_CONFIG`（核心校验）。`updateWith` 时缺省即清除。
     pub deprecated: Option<DeprecationInit>,
+    /// 成功结果可能带 `undo`（spec/protocol.md 3.8），只用于展示、不约束结果。缺省 false；`updateWith` 时缺省即取消。
+    pub undoable: Option<bool>,
 }
 
 /// 工具弃用声明（spec/protocol.md 3.7）。
@@ -310,6 +312,32 @@ pub struct CallResultInit {
     /// 一句面向模型 / 用户的结论。
     pub summary: Option<String>,
     pub annotations: Option<ContentAnnotationsInit>,
+    /// 撤销本次调用的逆操作（spec/protocol.md 3.8）；不合法时核心去掉并产生警告事件，结果照常发送。
+    pub undo: Option<UndoInit>,
+}
+
+/// 撤销信息（spec/protocol.md 3.8）：调用同一 App 的工具 `tool`，参数为 `argumentsJson`。
+#[napi(object)]
+pub struct UndoInit {
+    /// 同一 App 的工具局部名（可为自身）。
+    pub tool: String,
+    /// 参数 JSON 文本（应为对象；缺省 `{}`）。不是对象、超过 64 KiB 时由核心去掉整个 `undo`。
+    pub arguments_json: Option<String>,
+    /// 1..=200 个字符，面向用户：撤销会做什么。
+    pub label: Option<String>,
+}
+
+impl UndoInit {
+    /// @error `INVALID_JSON`：`argumentsJson` 不是合法 JSON 文本。
+    pub(super) fn into_action(self) -> Result<UndoAction, String> {
+        let mut action = UndoAction::new(self.tool);
+        if let Some(text) = self.arguments_json {
+            action.arguments = serde_json::from_str(&text)
+                .map_err(|e| napi::Error::new("INVALID_JSON".to_string(), format!("undo.argumentsJson 不是合法的 JSON：{e}")))?;
+        }
+        action.label = self.label;
+        Ok(action)
+    }
 }
 
 impl CallResultInit {
@@ -321,7 +349,7 @@ impl CallResultInit {
             state_resource: self.state_resource,
             summary: self.summary,
             annotations: self.annotations.map(ContentAnnotationsInit::into_annotations).transpose()?,
-            undo: None,
+            undo: self.undo.map(UndoInit::into_action).transpose()?,
         })
     }
 }
@@ -340,7 +368,7 @@ impl ToolSpecInit {
             implements: self.implements.take().unwrap_or_default(),
             cache: self.cache.take().map(CachePolicyInit::into_policy).transpose()?,
             deprecated: self.deprecated.take().map(Deprecation::from),
-            undoable: false,
+            undoable: self.undoable.take().unwrap_or(false),
         };
         Ok((self.into_spec()?, options))
     }

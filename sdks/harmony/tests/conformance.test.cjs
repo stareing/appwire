@@ -19,7 +19,7 @@ const SDK = 'harmony';
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
-  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey', 'callScheduling', 'busy', 'events', 'implements', 'cache', 'deprecated',
+  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey', 'callScheduling', 'busy', 'events', 'implements', 'cache', 'deprecated', 'undo',
 ];
 
 const build = process.env.APP_MCP_HARMONY_BUILD;
@@ -67,6 +67,7 @@ function toolFields(decl) {
     implements: decl.implements,
     cache: decl.cache,
     deprecated: decl.deprecated,
+    undoable: decl.undoable,
   });
 }
 
@@ -79,7 +80,9 @@ function settle(outcome) {
       throw ToolCallError.userActionRequired(outcome.message, defined({ reason: outcome.reason, uri: outcome.uri }));
     case 'result': {
       const r = outcome.result;
-      const options = defined({ status: r.status, stateResource: r.stateResource, summary: r.summary, annotations: r.annotations });
+      const options = defined({
+        status: r.status, stateResource: r.stateResource, summary: r.summary, annotations: r.annotations, undo: r.undo,
+      });
       return new ToolResult(r.data, r.stateHints ?? [], options);
     }
     case 'value':

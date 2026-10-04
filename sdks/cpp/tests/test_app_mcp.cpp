@@ -715,6 +715,28 @@ void test_deprecated() {
     EXPECT(client.tools_hash() == base);  // 不声明即清除
 }
 
+void test_undoable() {
+    // 撤销声明（app_mcp.h v24，spec/protocol.md 3.8）：undoable 原样传给 C 接口（影响 toolsHash）；false 即清除。
+    // handler 结果的 undo 到达 Host 由一致性用例 result-undo（conformance_cpp / conformance_c）覆盖。
+    EXPECT(!c_options(app_mcp::ToolOptions{}).undoable);
+    app_mcp::ToolOptions options;
+    options.undoable = true;
+    EXPECT(c_options(options).undoable);
+
+    app_mcp::ClientConfig config;
+    config.app_id = "cpp-undoable";
+    config.app_name = "C++ Undoable";
+    config.host_url = "ws://127.0.0.1:1";  // 不会 start，不连接
+    app_mcp::Client client(config);
+    auto handler = [](app_mcp::Call call) { call.complete(); };
+    auto t = client.register_tool("todo.add", "添加待办", handler);
+    const std::string base = client.tools_hash();
+    EXPECT(status_of([&] { t.update("添加待办", options); }) == AM_OK);
+    EXPECT(client.tools_hash() != base);
+    EXPECT(status_of([&] { t.update("添加待办", app_mcp::ToolOptions{}); }) == AM_OK);
+    EXPECT(client.tools_hash() == base);
+}
+
 }  // namespace
 
 int main() {
@@ -731,6 +753,7 @@ int main() {
         test_navigation();
         test_cache();
         test_deprecated();
+        test_undoable();
     } catch (const std::exception& e) {
         ++g_failed;
         std::fprintf(stderr, "FAIL 未捕获的异常：%s\n", e.what());

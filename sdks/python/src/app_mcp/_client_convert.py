@@ -27,6 +27,7 @@ ContentAnnotationsLike = Union[ffi.ContentAnnotations, Mapping[str, Any]]
 ResultStatusLike = Union[str, ffi.ResultStatus]
 CacheLike = Union[ffi.CachePolicy, Mapping[str, Any], int]
 DeprecationLike = Union[ffi.Deprecation, Mapping[str, Any], str]
+UndoActionLike = Union[ffi.UndoAction, Mapping[str, Any]]
 
 
 class _Unset(enum.Enum):
@@ -238,6 +239,32 @@ def _deprecation(value: DeprecationLike | None) -> ffi.Deprecation | None:
         if v is not None and not isinstance(v, str):
             raise ValueError(f"deprecated.{key} 须为字符串：{v!r}")
     return ffi.Deprecation(message=message, **optional)
+
+
+def _undo(value: UndoActionLike | None) -> ffi.UndoAction | None:
+    """撤销信息（spec/protocol.md 3.8）：``dict`` 键为 ``tool``、``arguments``（JSON 对象，缺省 ``{}``）、``label``。
+    只做形状转换；内容（``tool`` 局部名、``arguments`` 为对象且 ≤ 64 KiB、``label`` 1..=200 字符）由核心在发送前校验，
+    不合法时去掉 ``undo`` 并记警告、结果照常发送。
+
+    @error 不是 dict / ``UndoAction``、未知键、``tool`` / ``label`` 不是字符串、``arguments`` 无法序列化为 JSON → ``ValueError``。
+    """
+    if value is None or isinstance(value, ffi.UndoAction):
+        return value
+    if not isinstance(value, Mapping):
+        raise ValueError(f"undo 须为 UndoAction 或 dict：{value!r}")
+    unknown = set(value) - {"tool", "arguments", "label"}
+    if unknown:
+        raise ValueError(f"未知的 undo 字段：{sorted(unknown)}（可选 tool、arguments、label）")
+    tool, label, arguments = value.get("tool"), value.get("label"), value.get("arguments")
+    if not isinstance(tool, str):
+        raise ValueError(f"undo.tool 须为字符串：{tool!r}")
+    if label is not None and not isinstance(label, str):
+        raise ValueError(f"undo.label 须为字符串：{label!r}")
+    try:
+        arguments_json = None if arguments is None else json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"undo.arguments 无法序列化为 JSON：{e}") from e
+    return ffi.UndoAction(tool=tool, arguments_json=arguments_json, label=label)
 
 
 def _surface(value: SurfaceLike | None) -> ffi.ToolSurface | None:

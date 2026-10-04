@@ -4,12 +4,12 @@
 
 import type {
   CachePolicyInit, Call, CallResultInit, ContentAnnotationsInit, DeprecationInit, Hold, LifecycleInit, Navigate, Read, Resource, ResourceSpecInit,
-  Scope as NativeScope, Tool, ToolAnnotationsInit, ToolSpecInit,
+  Scope as NativeScope, Tool, ToolAnnotationsInit, ToolSpecInit, UndoInit,
 } from 'libapp_mcp_harmony.so';
 import { Failure, ToolCallError, toFailure } from './Errors';
 import {
   BusyHandle, CachePolicy, CancelReason, ContentAnnotations, HoldHandle, LifecycleOptions, Logger, ToolAnnotations, ToolContext, ToolDeprecation,
-  ToolResult,
+  ToolResult, UndoAction,
 } from './Types';
 
 /** 原生注册入口（客户端或 scope）。 */
@@ -251,7 +251,7 @@ export function contentAnnotationsInit(a: ContentAnnotations): ContentAnnotation
 /** 是否带有 data / stateHints 以外的字段（需要 `completeWith`）。 */
 export function hasResultExtras<O>(r: ToolResult<O>): boolean {
   return r.status !== undefined || r.stateResource !== undefined || r.summary !== undefined ||
-    r.annotations !== undefined;
+    r.annotations !== undefined || r.undo !== undefined;
 }
 
 export function callResultInit<O>(json: string, r: ToolResult<O>): CallResultInit {
@@ -262,6 +262,22 @@ export function callResultInit<O>(json: string, r: ToolResult<O>): CallResultIni
   if (r.annotations !== undefined) {
     init.annotations = contentAnnotationsInit(r.annotations);
   }
+  if (r.undo !== undefined) {
+    init.undo = undoInit(r.undo);
+  }
+  return init;
+}
+
+/**
+ * 撤销信息 → 原生 `UndoInit`：`arguments` 序列化为 JSON 文本（缺省时原生取 `{}`）。只转换不校验——不合法的由原生核心去掉并告警。
+ * @error `arguments` 无法序列化为 JSON 时抛出（调用方以 `HANDLER_ERROR` 失败完成）。
+ */
+export function undoInit(u: UndoAction): UndoInit {
+  const init: UndoInit = { tool: u.tool };
+  if (u.arguments !== undefined) {
+    init.argumentsJson = stringifyJson(u.arguments);
+  }
+  init.label = u.label;
   return init;
 }
 

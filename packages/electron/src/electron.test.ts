@@ -152,6 +152,24 @@ describe('Electron 桥接', () => {
     expect(await native.call('order.create', {})).toEqual({ ok: true, data: { key: null, has: false }, stateHints: [] })
   })
 
+  it('撤销：页面工具的 undoable 转到主进程（update 缺省即取消）；结果的 undo 经桥接到达原生', async () => {
+    const { ipcMain, native } = setupMain()
+    const { page } = setupPage(ipcMain, new FakeWebContents(1))
+    const undo = { tool: 'todo.remove', arguments: { id: 3 }, label: '删除刚添加的待办' }
+    const t = page.tool('todo.add', { description: '添加', undoable: true, handler: () => ({ data: { id: 3 }, undo }) })
+    await flush()
+    expect(native.tools.get('todo.add')?.spec.undoable).toBe(true)
+    expect(await native.call('todo.add')).toEqual({
+      ok: true,
+      data: { id: 3 },
+      stateHints: [],
+      undo: { tool: 'todo.remove', argumentsJson: '{"id":3}', label: '删除刚添加的待办' },
+    })
+    t.update({ undoable: undefined })
+    await flush()
+    expect(native.tools.get('todo.add')?.spec).not.toHaveProperty('undoable')
+  })
+
   it('注解、outputSchema 与结构化结果经桥接往返；update 可清除声明', async () => {
     const { ipcMain, native } = setupMain()
     const { page } = setupPage(ipcMain, new FakeWebContents(1))

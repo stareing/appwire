@@ -75,6 +75,9 @@ pub struct HubStatus {
     /// 旧版 Hub 无此字段。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_changes: Option<Vec<crate::schema_evolution::SchemaChangeRecord>>,
+    /// 撤销的生效上限与记录数（第 15 项 X2，spec/hub-api.md 3.23）；旧版 Hub 无此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<crate::undo::UndoStatus>,
 }
 
 /// 一个 Agent 任务（[`HubStatus::tasks`]）。

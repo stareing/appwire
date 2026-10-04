@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 mod hooks;
 mod store;
@@ -64,11 +64,24 @@ impl UndoLimits {
     }
 }
 
-/// 登记成功时写进原调用结果 `_meta` `dev.appwire/undo` 的内容：`{label?, expiresInMs}`。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// 本次调用已登记撤销（spec/hub-api.md 3.23）：MCP 结果 `_meta` `dev.appwire/undo` 与 Hub API [`crate::CallOutcome::undo`]。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct UndoGrant {
-    #[serde(skip_serializing_if = "Option::is_none")]
+pub struct UndoOffer {
+    /// App 给出的撤销说明。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// 距记录过期的毫秒数（登记时刻起算）。
     pub expires_in_ms: u64,
+}
+
+/// [`crate::HubStatus::undo`]：生效上限与当前记录数（各任务合计）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoStatus {
+    pub ttl_ms: u64,
+    /// `0` = 撤销已关闭。
+    pub max_per_task: usize,
+    /// 各任务登记的记录数合计（含尚未惰性丢弃的过期记录）。
+    pub records: usize,
 }

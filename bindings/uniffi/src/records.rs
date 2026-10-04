@@ -56,6 +56,10 @@ pub struct ToolSpec {
     /// [`AppMcpError::InvalidConfig`]。为空 = 未弃用（`Tool::update` 时为清除）。
     #[uniffi(default = None)]
     pub deprecated: Option<Deprecation>,
+    /// 成功结果可能带 [`CallResult::undo`]（spec/protocol.md 3.8）：只用于展示（Agent 可提示"此操作可撤销"），不约束结果。
+    /// `false`（缺省）= 未声明（`Tool::update` 时为清除）。
+    #[uniffi(default = false)]
+    pub undoable: bool,
 }
 
 /// 工具弃用声明（spec/protocol.md 3.7）。SDK 只校验格式，Hub 只呈现，不拦截调用。
@@ -147,7 +151,7 @@ impl From<ToolSpec> for (native::ToolSpec, native::ToolOptions) {
             implements: s.implements,
             cache: s.cache.map(Into::into),
             deprecated: s.deprecated.map(Into::into),
-            undoable: false,
+            undoable: s.undoable,
         };
         (n, options)
     }
@@ -197,6 +201,34 @@ pub struct CallResult {
     /// 结果内容的标注。
     #[uniffi(default = None)]
     pub annotations: Option<ContentAnnotations>,
+    /// 撤销本次调用的逆操作（spec/protocol.md 3.8）：Hub 记录后供 Agent 撤销。不合法时核心去掉它并记警告，结果照常发送；
+    /// `Pending` / `Noop` 时 Hub 忽略。为空 = 不可撤销。
+    #[uniffi(default = None)]
+    pub undo: Option<UndoAction>,
+}
+
+/// 撤销本次调用的逆操作（spec/protocol.md 3.8）：调用同一 App 的工具 `tool`，参数为 `arguments_json`。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct UndoAction {
+    /// 同一 App 的工具局部名，可为自身（如开关类工具）。
+    pub tool: String,
+    /// 调用逆工具的参数（JSON 对象文本，序列化后 ≤ 64 KiB）；为空 = `{}`。
+    #[uniffi(default = None)]
+    pub arguments_json: Option<String>,
+    /// 1..=200 个字符，面向用户：撤销会做什么。为空 = 未声明。
+    #[uniffi(default = None)]
+    pub label: Option<String>,
+}
+
+impl From<UndoAction> for native::UndoAction {
+    fn from(u: UndoAction) -> Self {
+        let arguments = match u.arguments_json {
+            None => serde_json::Value::Object(serde_json::Map::new()),
+            // @why 操作已执行，撤销信息有误不能让调用失败：非法 JSON 原样作为字符串交给核心，由核心校验去掉并记警告。
+            Some(text) => serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
+        };
+        native::UndoAction { tool: u.tool, arguments, label: u.label }
+    }
 }
 
 impl From<CallResult> for native::CallResult {
@@ -208,7 +240,7 @@ impl From<CallResult> for native::CallResult {
             state_resource: r.state_resource,
             summary: r.summary,
             annotations: r.annotations.map(Into::into),
-            undo: None,
+            undo: r.undo.map(Into::into),
         }
     }
 }

@@ -63,6 +63,8 @@ public sealed record HubStatusInfo(
     public CacheStatusInfo? Cache { get; init; }
     /// <summary>工具定义的不兼容变化（第 16 项 O4，spec/hub-api.md 3.21）：最近 32 条，旧的在前；旧 Hub 为 null。</summary>
     public IReadOnlyList<SchemaChangeRecordInfo>? SchemaChanges { get; init; }
+    /// <summary>撤销记录的上限与条数（第 15 项 X2，spec/hub-api.md 3.23）；旧 Hub 为 null。</summary>
+    public UndoStatusInfo? Undo { get; init; }
 }
 
 /// <summary>调用阶段（只前进，不需要的阶段跳过）。</summary>

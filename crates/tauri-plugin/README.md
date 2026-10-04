@@ -86,6 +86,7 @@ appMcp.tool('cart.clear', { description: '清空购物车', handler: () => cart.
 - **标准意图**：页面工具定义的 `implements`（spec/intents.md，如 `["link.open@1"]`）转为原生 `ToolOptions.implements`；`tool.update` 缺省即清除，格式不合法时登记被拒绝。
 - **结果缓存声明**：页面工具与资源的 `cache`（spec/protocol.md 3.6，`{ttlMs, scope?}`）转为原生 `ToolOptions.cache` / `ResourceOptions.cache`；`tool.update` 缺省即清除，`ttlMs` 越界或格式不合法时登记被拒绝。只对只读工具生效，`shared` 只用于与调用方无关的数据。
 - **弃用声明**：页面工具的 `deprecated`（spec/protocol.md 3.7，`{message, replacement?, until?}`）转为原生 `ToolOptions.deprecated`；`tool.update` 缺省即清除，格式不合法时登记被拒绝。弃用工具照常可调用；破坏性变更应改用新工具名（spec/manifest.md 第 6 节）。
+- **撤销**：页面工具的 `undoable`（spec/protocol.md 3.8）转为原生 `ToolOptions.undoable`（`tool.update` 缺省即取消）；`call.result` 的 `undo`（`{tool, arguments?, label?}`）转为 `CallResult.undo`。语义不合法的 `undo`（局部名、参数不是对象、长度）由核心去掉并告警、结果照常；字段类型不对（如 `tool` 不是字符串）与 `annotations` 一样以 `HANDLER_ERROR` 结束。Rust 工具直接设 `ToolOptions.undoable` / `CallResult.undo`。
 
 ```rust
 use tauri_plugin_app_mcp::{CallResult, ResultStatus, ToolAnnotations, ToolOptions};

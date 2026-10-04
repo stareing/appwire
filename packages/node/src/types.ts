@@ -162,6 +162,21 @@ export interface ToolDeprecation {
   until?: string
 }
 
+/**
+ * 撤销本次调用的逆操作（spec/protocol.md 3.8）：调用同一 App 的工具 `tool`，参数为 `arguments`。Hub 记录后 Agent 可经
+ * `apps.undo` 撤销（只能撤销一次）；撤销已无意义时由逆工具的 handler 返回错误或 `noop`。
+ * 不合法（`tool` 不是合法局部名、`arguments` 不是对象或序列化后超过 64 KiB、`label` 为空或超过 200 字符）时 SDK 去掉它并记警告，
+ * 结果照常发送（操作已经执行，不让调用失败）。
+ */
+export interface UndoAction {
+  /** 同一 App 的工具局部名（可为自身，如开关类工具）。 */
+  tool: string
+  /** 调用逆工具的参数，缺省 `{}`。 */
+  arguments?: Record<string, unknown>
+  /** 一句面向用户的说明（1..=200 字符）：撤销会做什么。 */
+  label?: string
+}
+
 /** 内容的接收方（MCP `Role`）。 */
 export type Audience = 'user' | 'assistant'
 
@@ -470,6 +485,8 @@ export interface ToolResultEnvelope<O> {
   summary?: string
   /** 结果内容的标注。 */
   annotations?: ContentAnnotations
+  /** 撤销本次调用的逆操作（{@link UndoAction}）；只在 `status` 为 `done` / `partial` 时有效。 */
+  undo?: UndoAction
 }
 
 /**
@@ -537,6 +554,11 @@ export interface ToolDefinition<I = unknown, O = unknown> {
   cache?: CachePolicy
   /** 弃用声明（{@link ToolDeprecation}）。 */
   deprecated?: ToolDeprecation
+  /**
+   * 成功结果可能带 `undo`（{@link UndoAction}，spec/protocol.md 3.8）：只用于展示（Agent 可提示"此操作可撤销"），不约束结果；
+   * 未声明的工具返回 `undo` 同样可撤销。缺省 false。
+   */
+  undoable?: boolean
   /** 网页中用于高亮的元素；Node 中忽略（保留字段以便与 @app-mcp/web 共用定义）。 */
   anchor?: unknown
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
@@ -566,7 +588,7 @@ export interface ToolHandle {
   readonly name: string
   /**
    * 更新描述、schema、风险、注解或启用状态；未提供的字段保持不变，显式给出 `undefined` 的字段恢复默认
-   * （`annotations` / `outputSchema` / `page` / `backgroundTool` / `exclusive` / `implements` / `cache` / `deprecated` 为清除声明，`concurrency` 回到不限，`surface` 回到 `'app'`；旧版原生模块不支持清除，保持原声明）。
+   * （`annotations` / `outputSchema` / `page` / `backgroundTool` / `exclusive` / `implements` / `cache` / `deprecated` 为清除声明，`undoable` 回到 false，`concurrency` 回到不限，`surface` 回到 `'app'`；旧版原生模块不支持清除，保持原声明）。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void
   /** 替换 handler（不产生协议消息）。 */

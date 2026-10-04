@@ -360,6 +360,7 @@ final class ToolResult {
     this.stateResource,
     this.summary,
     this.annotations,
+    this.undo,
   });
 
   /// 可被 `jsonEncode` 编码的数据；null 表示无返回值（Host 对模型输出"已完成"）。
@@ -379,6 +380,21 @@ final class ToolResult {
 
   /// 结果内容的标注（MCP 内容注解）。
   final ContentAnnotations? annotations;
+
+  /// 撤销本次调用的逆操作（spec/protocol.md 3.8）：Hub 记录后供 Agent 用 `apps.undo` 撤销；只在 [ToolResultStatus.done] /
+  /// [ToolResultStatus.partial] 时有效。为 null 时不可撤销。
+  final UndoAction? undo;
+}
+
+/// 撤销本次调用的逆操作（spec/protocol.md 3.8）：调用同一 App 的工具 [tool]（局部名，可为本工具自身，如开关类工具），
+/// 参数 [arguments]（可被 `jsonEncode` 编码的 JSON 对象；null 表示 `{}`），[label] 为一句面向用户的说明（1..=200 个字符）。
+/// 格式不合法（工具名、参数不是对象或超过 64 KiB、说明为空或超长）时 SDK 去掉撤销信息并记警告日志，结果其余部分照常发送。
+final class UndoAction {
+  const UndoAction(this.tool, {this.arguments, this.label});
+
+  final String tool;
+  final Object? arguments;
+  final String? label;
 }
 
 /// 一次工具调用的上下文。
@@ -444,6 +460,7 @@ final class ToolSpec {
     this.implements = const [],
     this.cache,
     this.deprecated,
+    this.undoable = false,
   });
 
   /// App 内唯一，`[a-zA-Z0-9_.-]{1,64}`。
@@ -494,6 +511,10 @@ final class ToolSpec {
   /// 弃用声明（spec/protocol.md 3.7）：照常列出与调用，Hub 把声明原样交给 Agent 并在描述前标注。为 null 时不声明。
   final ToolDeprecation? deprecated;
 
+  /// 本工具的成功结果可能带撤销信息（[ToolResult.undo]，spec/protocol.md 3.8）：只用于展示（Agent 可提示"此操作可撤销"），
+  /// 不约束结果。false 时不声明。
+  final bool undoable;
+
   ToolSpec copyWith({
     String? description,
     Map<String, Object?>? inputSchema,
@@ -511,6 +532,7 @@ final class ToolSpec {
     List<String>? implements,
     CachePolicy? cache,
     ToolDeprecation? deprecated,
+    bool? undoable,
   }) =>
       ToolSpec(
         name: name,
@@ -530,6 +552,7 @@ final class ToolSpec {
         implements: implements ?? this.implements,
         cache: cache ?? this.cache,
         deprecated: deprecated ?? this.deprecated,
+        undoable: undoable ?? this.undoable,
       );
 
   @override
@@ -550,13 +573,14 @@ final class ToolSpec {
       _listEquals(other.implements, implements) &&
       other.cache == cache &&
       other.deprecated == deprecated &&
+      other.undoable == undoable &&
       _schemaText(other.inputSchema) == _schemaText(inputSchema) &&
       _schemaText(other.outputSchema) == _schemaText(outputSchema);
 
   @override
   int get hashCode => Object.hash(name, description, risk, activation, title, enabled, annotations,
       _schemaText(inputSchema), _schemaText(outputSchema), surface, page, backgroundTool, concurrency, exclusive,
-      Object.hashAll(implements), cache, deprecated);
+      Object.hashAll(implements), cache, deprecated, undoable);
 
   static bool _listEquals(List<String> a, List<String> b) {
     if (a.length != b.length) return false;

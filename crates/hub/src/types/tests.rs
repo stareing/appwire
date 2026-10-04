@@ -74,6 +74,8 @@ fn json_shapes() {
         duration_ms: 5,
         woke: true,
         cached_age_ms: None,
+        undo: None,
+        undo_of: None,
     };
     let v = serde_json::to_value(&o).unwrap();
     assert!(v.get("cachedAgeMs").is_none(), "未命中时不序列化");
@@ -86,4 +88,9 @@ fn json_shapes() {
     let v = serde_json::to_value(&hit).unwrap();
     assert_eq!(v["cachedAgeMs"], 1500);
     assert_eq!(serde_json::from_value::<CallOutcome>(v).unwrap(), hit);
+    assert!(serde_json::to_value(&back).unwrap().get("undo").is_none(), "未登记撤销时不序列化");
+    let offered = CallOutcome { undo: Some(crate::UndoOffer { label: Some("删除".into()), expires_in_ms: 9 }), undo_of: Some("c0".into()), ..back };
+    let v = serde_json::to_value(&offered).unwrap();
+    assert_eq!((v["undo"].clone(), v["undoOf"].clone()), (json!({"label": "删除", "expiresInMs": 9}), json!("c0")));
+    assert_eq!(serde_json::from_value::<CallOutcome>(v).unwrap(), offered);
 }

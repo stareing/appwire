@@ -197,6 +197,10 @@ pub struct HubConfig {
     /// 条目数与字节上限（默认见 [`super::CacheLimitOverrides`]）；`max_entries: 0` 关闭缓存。
     #[uniffi(default = None)]
     pub result_cache: Option<super::CacheLimitOverrides>,
+    // ---- 撤销（spec/hub-api.md 3.23）----
+    /// 撤销记录的保留时长与每任务条数（默认见 [`super::UndoLimitOverrides`]）；`max_per_task: 0` 关闭撤销。
+    #[uniffi(default = None)]
+    pub undo: Option<super::UndoLimitOverrides>,
 }
 
 impl Default for HubConfig {
@@ -253,6 +257,7 @@ impl Default for HubConfig {
             event_limits: None,
             intent_defaults: None,
             result_cache: None,
+            undo: None,
         }
     }
 }
@@ -523,6 +528,9 @@ impl HubConfig {
         }
         if let Some(o) = &self.result_cache {
             o.apply(&mut c.result_cache);
+        }
+        if let Some(o) = &self.undo {
+            o.apply(&mut c.undo);
         }
         if let Some(defaults) = self.intent_defaults {
             c.intent_defaults = defaults.into_iter().collect();

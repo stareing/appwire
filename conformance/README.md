@@ -188,7 +188,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `implements` | 工具 `implements` 声明与更新 / null 清除（spec/intents.md 1） |
 | `cache` | 工具与资源 `cache` 声明与更新 / null 清除（spec/protocol.md 3.6） |
 | `deprecated` | 工具 `deprecated` 声明与更新 / null 清除（spec/protocol.md 3.7） |
-| `undo` | 工具 `undoable` 声明与更新、handler `result.undo`（spec/protocol.md 3.8；第 15 项 X2 一期只有 Rust runner 支持） |
+| `undo` | 工具 `undoable` 声明与更新、handler `result.undo`（spec/protocol.md 3.8；全部 11 个 runner 支持） |
 
 ## 5. 各 SDK 的 runner
 

@@ -281,6 +281,7 @@ function jsToolFields(decl) {
     implements: decl.implements,
     cache: decl.cache,
     deprecated: decl.deprecated,
+    undoable: decl.undoable,
   });
 }
 

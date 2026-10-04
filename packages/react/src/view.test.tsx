@@ -178,6 +178,24 @@ describe('结果缓存声明 cache', () => {
   })
 })
 
+describe('撤销声明 undoable', () => {
+  it('useTool：随定义注册；不变不 update，变化 / 移除时 update', () => {
+    function T({ undoable }: { undoable?: boolean }) {
+      useTool('t', { description: 't', ...(undoable !== undefined && { undoable }), handler: () => null })
+      return null
+    }
+    const { app, rerender } = setup(<T undoable />)
+    expect(app.getTool('t')?.undoable).toBe(true)
+    rerender(<T undoable />)
+    expect(app.count('tool.update', 't')).toBe(0)
+    rerender(<T undoable={false} />)
+    expect(app.getTool('t')?.undoable).toBe(false)
+    rerender(<T />)
+    expect(app.getTool('t')?.undoable).toBeUndefined()
+    expect(app.count('tool.update', 't')).toBe(2)
+  })
+})
+
 describe('弃用声明 deprecated', () => {
   it('useTool：随定义注册；内联对象内容不变不 update，变化 / 移除时 update', () => {
     function T({ message, replacement }: { message?: string; replacement?: string }) {

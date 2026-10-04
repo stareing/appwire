@@ -10,7 +10,8 @@ use app_mcp_core::{
     ToolSurface, ToolUpdate, TransportKind, Visibility, WakeReason,
 };
 use app_mcp_core::{
-    Activation, AppOverview, Audience, CachePolicy, CacheScope, ContentAnnotations, Deprecation, ResultStatus, Risk, ToolAnnotations, WakeDescriptor,
+    Activation, AppOverview, Audience, CachePolicy, CacheScope, ContentAnnotations, Deprecation, ResultStatus, Risk, ToolAnnotations, UndoAction,
+    WakeDescriptor,
 };
 use app_mcp_protocol::ErrorKind;
 use serde::de::DeserializeOwned;

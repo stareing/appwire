@@ -1479,7 +1479,13 @@ MCP Apps（扩展 `io.modelcontextprotocol/ui`，modelcontextprotocol/ext-apps �
     （可直接调用该工具）。
 - **声明 `undoable` 的呈现**：MCP `tools/list` 工具 `_meta` `dev.appwire/undoable: true`；`apps.tools` / `apps.search` 条目 `undoable: true`。
   只是提示：未声明的工具结果带 `undo` 同样登记。
-- Hub API：`call_tool("apps.undo", …)` 与 MCP 相同；`CallOutcome` 的撤销字段、`HubStatus` 中的撤销统计随二期补齐。
+- Hub API（二期）：`call_tool("apps.undo", …)` 与 MCP 相同。`CallOutcome.undo: Option<UndoOffer {label?, expires_in_ms}>`（同
+  `_meta` `dev.appwire/undo`，未登记为 `None`）、`CallOutcome.undo_of: Option<String>`（同 `dev.appwire/undoOf`）；`HubTool.undoable: bool`
+  （内置 / 上游为 `false`）；`HubStatus.undo: Option<UndoStatus {ttl_ms, max_per_task, records}>`（`records` 为各任务记录数合计，含尚未
+  惰性丢弃的过期记录；旧版 Hub 为 `None`）。各绑定按其透传方式跟进：JSON 透传的（hub-c、hub-node、`@app-mcp/hub`）自动带上，
+  hub-uniffi 与 C# / Kotlin / Swift / Python 封装显式加字段。上限配置：hub-c / hub-node 配置 JSON `undo: {ttlMs?, maxPerTask?}`
+  （未知字段报错）、hub-uniffi `HubConfig.undo: UndoLimitOverrides`（Python 另接受字典）、C# `HubOptions.Undo`，`@app-mcp/hub`
+  `HubConfig.undo`；不合法（开启时 `ttlMs` 为 0）时启动失败。
 - 未覆盖：逆调用不核对原调用之后对象是否被改动（App 判断）；多实例 App 的原实例已断开时改发其他实例，由逆 handler 判断能否执行。
 
 ## 4. 进程内 App（可选，M2）

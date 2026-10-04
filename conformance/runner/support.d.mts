@@ -21,6 +21,8 @@ export interface ResultSpec {
   summary?: string
   stateHints?: string[]
   annotations?: { [key: string]: Json }
+  /** 撤销信息（spec/protocol.md 3.8，能力 undo）；不合法的由 SDK 去掉。 */
+  undo?: { tool: string; arguments?: Json; label?: string }
 }
 
 export interface HandlerSpec {
@@ -71,6 +73,8 @@ export interface ToolDecl {
   cache?: { ttlMs: number; scope?: 'private' | 'shared' }
   /** 弃用声明（spec/protocol.md 3.7，能力 deprecated）；update 的 `set.deprecated` 为 null 时清除。 */
   deprecated?: { message: string; replacement?: string; until?: string }
+  /** 成功结果可能带 undo（spec/protocol.md 3.8，能力 undo）；update 的 `set.undoable` 为 false 时取消。 */
+  undoable?: boolean
   handler?: HandlerSpec
 }
 

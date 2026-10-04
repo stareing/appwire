@@ -32,6 +32,8 @@ pub struct JsToolDef {
     pub cache: Option<CachePolicy>,
     /// 弃用声明（spec/protocol.md 3.7）；格式由核心校验。
     pub deprecated: Option<Deprecation>,
+    /// 成功结果可能带 `undo`（spec/protocol.md 3.8），只用于展示；缺省 false。
+    pub undoable: Option<bool>,
     /// 缺省 true。
     pub enabled: Option<bool>,
     pub scope: Option<f64>,
@@ -63,6 +65,7 @@ impl FromJson for JsToolDef {
             implements: f.strings("implements"),
             cache: f.object("cache"),
             deprecated: f.object("deprecated"),
+            undoable: f.bool("undoable"),
             enabled: f.bool("enabled"),
             scope: f.f64("scope"),
         };
@@ -91,7 +94,7 @@ impl JsToolDef {
             implements: self.implements.unwrap_or_default(),
             cache: self.cache,
             deprecated: self.deprecated,
-            undoable: false,
+            undoable: self.undoable.unwrap_or(false),
         })
     }
 }
@@ -210,6 +213,8 @@ pub struct JsToolUpdate {
     pub cache: Option<Option<CachePolicy>>,
     /// 整体替换弃用声明；`null` 清除。
     pub deprecated: Option<Option<Deprecation>>,
+    /// `false` 取消声明（`null` 与缺省等同：不变）。
+    pub undoable: Option<bool>,
 }
 
 impl FromJson for JsToolUpdate {
@@ -230,6 +235,7 @@ impl FromJson for JsToolUpdate {
         let u = JsToolUpdate {
             cache,
             deprecated,
+            undoable: f.bool("undoable"),
             concurrency: f.u32("concurrency"),
             exclusive,
             implements: f.strings("implements"),
@@ -268,7 +274,7 @@ impl JsToolUpdate {
             implements: self.implements,
             cache: self.cache,
             deprecated: self.deprecated,
-            undoable: None,
+            undoable: self.undoable,
         }
     }
 }

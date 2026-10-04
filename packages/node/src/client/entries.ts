@@ -31,6 +31,7 @@ import {
   type Owner,
   resolveTool,
   type ResolvedTool,
+  nativeUndo,
   stringifyJson,
   submitFailure,
   wrapHold,
@@ -114,6 +115,7 @@ export class ToolEntry implements ToolHandle, Child, LazySlot {
     if (d.implements !== undefined && d.implements.length > 0) spec.implements = [...d.implements]
     if (d.cache !== undefined) spec.cache = { ...d.cache }
     if (d.deprecated !== undefined) spec.deprecated = { ...d.deprecated }
+    if (d.undoable !== undefined) spec.undoable = d.undoable
     return spec
   }
 
@@ -183,7 +185,7 @@ export class ToolEntry implements ToolHandle, Child, LazySlot {
       return
     }
     if (!call.completeWith) {
-      this.logger.warn(`[app-mcp] 原生模块版本过旧，工具 ${this.name} 结果中的 status / summary / annotations 已忽略`)
+      this.logger.warn(`[app-mcp] 原生模块版本过旧，工具 ${this.name} 结果中的 status / summary / annotations / undo 已忽略`)
       finish(() => call.complete(json, hints))
       return
     }
@@ -195,6 +197,7 @@ export class ToolEntry implements ToolHandle, Child, LazySlot {
         ...(result.stateResource !== undefined && { stateResource: result.stateResource }),
         ...(result.summary !== undefined && { summary: result.summary }),
         ...(result.annotations !== undefined && { annotations: { ...result.annotations } }),
+        ...(result.undo !== undefined && { undo: nativeUndo(result.undo) }),
       })
       finish(() => {})
     } catch (error) {

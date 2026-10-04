@@ -95,6 +95,12 @@ appMcp.tool('notes.archive', {
   `message` must be 1..=500 characters, `replacement` a valid local tool name other than the tool itself, `until` a
   `YYYY-MM-DD` date, otherwise registration / update throws `INVALID_CONFIG`; `handle.update({ deprecated: undefined })`
   clears it.
+- Undo (spec/protocol.md 3.8): a handler returns `{ data, undo: { tool: 'notes.restore', arguments: { id }, label: 'Restore the note' } }`
+  to give the inverse operation (a tool of the same app, possibly itself, and its arguments). The Hub records it and an
+  agent can undo once via `apps.undo`; if undoing no longer makes sense, the inverse handler returns an error or `noop`.
+  An invalid `undo` (bad local tool name, `arguments` not an object or over 64 KiB, `label` blank or over 200 characters)
+  is dropped by the native core with a warning and the result is sent as usual. `undoable: true` on the tool only tells
+  agents the action can be undone; `handle.update({ undoable: undefined })` clears it.
 - Resources take optional `annotations` too (MCP content annotations, shown on the resource in MCP
   `resources/list`): `appMcp.resource('notes.list', { description, annotations: { audience: ['user'], priority: 0.5 }, read })`.
   A `read` that throws `ToolCallError` (including `ToolCallError.userActionRequired`) fails the read with that kind

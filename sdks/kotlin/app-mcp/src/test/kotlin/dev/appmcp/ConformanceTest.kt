@@ -35,7 +35,7 @@ class ConformanceTest {
         val FEATURES = setOf(
             "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
             "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-            "callScheduling", "busy", "events", "implements", "cache", "deprecated",
+            "callScheduling", "busy", "events", "implements", "cache", "deprecated", "undo",
         )
         val VERDICT_OK = setOf("pass", "xfail", "xpass", "skip")
         val repoRoot: File = FakeHostSupport.repoRoot.canonicalFile
@@ -173,6 +173,7 @@ class ConformanceTest {
             "implements" -> u.implements = strings(v) // 封装层空列表 = 清除
             "cache" -> u.cache = (v as? JsonObject)?.let(::cachePolicy) // null = 清除
             "deprecated" -> u.deprecated = (v as? JsonObject)?.let(::deprecation) // null = 清除
+            "undoable" -> u.undoable = str == "true" // null / false = 取消声明
             else -> error("未知的工具字段 $key")
         }
     }
@@ -229,6 +230,7 @@ class ConformanceTest {
             implements = strings(decl["implements"]),
             cache = decl.obj("cache")?.let(::cachePolicy),
             deprecated = decl.obj("deprecated")?.let(::deprecation),
+            undoable = decl.bool("undoable") == true,
         ) { args, ctx -> runHandler(client, tools, handler, runs.incrementAndGet(), args, ctx) }
     }
 
@@ -257,6 +259,7 @@ class ConformanceTest {
                 stateResource = r.str("stateResource"),
                 summary = r.str("summary"),
                 annotations = r.obj("annotations")?.let(::contentAnnotations),
+                undo = r.obj("undo")?.let { UndoAction(it.str("tool")!!, it["arguments"], it.str("label")) },
             )
         }
         if ("return" in spec) return spec["return"]

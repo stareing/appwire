@@ -177,6 +177,7 @@ impl HubShared {
             intents: Some(lock(&self.intents).status()),
             cache: Some(self.cache_status()),
             schema_changes: Some(self.schema_change_records()),
+            undo: Some(self.undo_status()),
         }
     }
 

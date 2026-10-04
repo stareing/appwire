@@ -7,7 +7,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use app_mcp_native::{
     Activation, AppOverview, BusyPolicy, CachePolicy, CacheScope, CallDedupPolicy, CallResult, ClientKind, ContentAnnotations, Deprecation, ErrorKind, HeartbeatMode,
     LifecycleMode, LifecyclePolicy, NativeConfig, Residency, ResourceOptions, ResourceSpec, ResultStatus,
-    Risk, SleepReason, ToolAnnotations, ToolOptions, ToolSpec, ToolSurface, Visibility, WakeDescriptor, WakeKind,
+    Risk, SleepReason, ToolAnnotations, ToolOptions, ToolSpec, ToolSurface, UndoAction, Visibility, WakeDescriptor, WakeKind,
     WakeReason,
 };
 
@@ -413,6 +413,9 @@ pub(crate) unsafe fn read_tool_options(p: *const AmToolOptions) -> FfiResult<Too
         let until = unsafe { std::ptr::addr_of!((*p).deprecated_until).read() };
         options.deprecated = unsafe { deprecation_from(message, replacement, until) }?;
     }
+    if size >= offset_of!(AmToolOptions, undoable) + size_of::<bool>() {
+        options.undoable = unsafe { std::ptr::addr_of!((*p).undoable).read() };
+    }
     Ok(options)
 }
 
@@ -473,6 +476,12 @@ pub(crate) unsafe fn read_call_result(p: *const AmCallResult) -> FfiResult<CallR
         let text = unsafe { std::ptr::addr_of!((*p).annotations_json).read() };
         result.annotations = unsafe { opt_json::<ContentAnnotations>(text, "result->annotations_json") }?;
     }
+    if has(offset_of!(AmCallResult, undo_label), ptr_len) {
+        let tool = unsafe { std::ptr::addr_of!((*p).undo_tool).read() };
+        let arguments = unsafe { std::ptr::addr_of!((*p).undo_arguments_json).read() };
+        let label = unsafe { std::ptr::addr_of!((*p).undo_label).read() };
+        result.undo = unsafe { undo_from(tool, arguments, label) }?;
+    }
     if has(offset_of!(AmCallResult, state_hints_len), size_of::<usize>()) {
         let hints = unsafe { std::ptr::addr_of!((*p).state_hints).read() };
         let len = unsafe { std::ptr::addr_of!((*p).state_hints_len).read() };
@@ -490,6 +499,38 @@ pub(crate) unsafe fn read_call_result(p: *const AmCallResult) -> FfiResult<CallR
         result.summary = unsafe { opt_str(text, "result->summary") }?.map(str::to_owned);
     }
     Ok(result)
+}
+
+/// v24 撤销信息（spec/protocol.md 3.8）：三个指针均为 NULL = 不可撤销；`arguments` 为 NULL 时取 `{}`。
+///
+/// @why 格式（局部名、参数为对象且不超长、label 长度）不在此校验：原样交给核心，由核心去掉不合法的撤销信息并告警
+/// （P-04，唯一校验点 `UndoAction::validate`），结果照常发送；`tool` 为 NULL 而另两项不为 NULL 时以空名交给核心。
+/// @error `arguments` 不是合法 JSON / UTF-8 → `AM_ERR_INVALID_JSON`（可重试）；`tool` / `label` 非法 UTF-8 →
+/// `AM_ERR_INVALID_ARGUMENT`。
+///
+/// # Safety
+/// 各指针为 NULL 或有效的 C 字符串。
+pub(crate) unsafe fn undo_from(
+    tool: *const c_char,
+    arguments: *const c_char,
+    label: *const c_char,
+) -> FfiResult<Option<UndoAction>> {
+    let arguments_value = unsafe { opt_str(arguments, "result->undo_arguments_json") }
+        .map_err(|_| FfiError::new(AmStatus::InvalidJson, "result->undo_arguments_json 不是合法的 UTF-8"))?
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .map_err(|e| FfiError::new(AmStatus::InvalidJson, format!("result->undo_arguments_json 不合法：{e}")))?;
+    let tool = unsafe { opt_str(tool, "result->undo_tool") }?;
+    let label = unsafe { opt_str(label, "result->undo_label") }?.map(str::to_owned);
+    if tool.is_none() && arguments_value.is_none() && label.is_none() {
+        return Ok(None);
+    }
+    let mut action = UndoAction::new(tool.unwrap_or_default());
+    if let Some(value) = arguments_value {
+        action.arguments = value;
+    }
+    action.label = label;
+    Ok(Some(action))
 }
 
 /// 协议错误类别字符串 → [`ErrorKind`]；NULL 或未知值按 `HANDLER_ERROR` 处理。

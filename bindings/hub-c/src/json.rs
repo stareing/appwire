@@ -36,6 +36,8 @@ pub(crate) fn outcome_error_json(call_id: &str, e: ToolError) -> String {
         duration_ms: 0,
         woke: false,
         cached_age_ms: None,
+        undo: None,
+        undo_of: None,
     };
     serde_json::to_string(&o).unwrap_or_default()
 }

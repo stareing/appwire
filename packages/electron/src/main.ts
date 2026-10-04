@@ -388,6 +388,7 @@ function toolDefinition(spec: ToolSpecMessage) {
     implements: spec.implements,
     cache: spec.cache,
     deprecated: spec.deprecated,
+    undoable: spec.undoable,
   }
 }
 
@@ -417,7 +418,7 @@ function plainDetails(details: unknown): Record<string, unknown> | undefined {
 }
 
 function callResult(outcome: Extract<Outcome, { ok: true }>): ToolResultEnvelope<unknown> {
-  const { ok: _ok, data, stateHints, status, stateResource, summary, annotations } = outcome
+  const { ok: _ok, data, stateHints, status, stateResource, summary, annotations, undo } = outcome
   return {
     data,
     ...(stateHints && { stateHints }),
@@ -425,6 +426,7 @@ function callResult(outcome: Extract<Outcome, { ok: true }>): ToolResultEnvelope
     ...(stateResource !== undefined && { stateResource }),
     ...(summary !== undefined && { summary }),
     ...(annotations !== undefined && { annotations }),
+    ...(undo !== undefined && { undo }),
   }
 }
 

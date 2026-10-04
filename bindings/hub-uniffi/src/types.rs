@@ -35,6 +35,7 @@ mod locks;
 mod policy;
 mod schema_changes;
 mod status;
+mod undo;
 mod usage;
 
 pub use agents::AgentCredential;
@@ -55,6 +56,7 @@ pub use locks::*;
 pub use policy::*;
 pub use schema_changes::*;
 pub use status::*;
+pub use undo::*;
 pub use usage::*;
 
 #[cfg(test)]

@@ -3,6 +3,7 @@
 import type { ContentAnnotations, ErrorKind, ResultStatus, Visibility } from '../types.js'
 import type { AppOverviewInfo } from './apps.js'
 import type { AppEvent } from './events.js'
+import type { UndoOffer } from './undo.js'
 
 export interface CallRequest {
   /** 全名 `<appId>.<tool>`（内置工具为 `apps.list` 等）。 */
@@ -90,6 +91,10 @@ export interface CallOutcome {
    * 的 `dev.appwire/cached.ageMs` 相同）。
    */
   cachedAgeMs?: number
+  /** 本次调用已登记撤销（spec/hub-api.md 3.23），可用 `apps.undo` 撤销；未登记或旧 Hub 缺省。 */
+  undo?: UndoOffer
+  /** `apps.undo` 的结果：被撤销调用的 callId（与 MCP 结果 `_meta` 的 `dev.appwire/undoOf` 相同）；其他调用缺省。 */
+  undoOf?: string
 }
 
 // ---------------------------------------------------------------------------

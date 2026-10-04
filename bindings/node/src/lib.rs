@@ -35,7 +35,7 @@ pub use client::JsNativeClient;
 pub use handles::{Call, Hold, Navigate, Read, Resource, Scope, Tool};
 pub use objects::{
     CallDedupInit, CallResultInit, ClientConfig, ClientEvent, ContentAnnotationsInit, DeprecationInit, JsStateInfo, LifecycleInit,
-    OverviewInit, ResourceSpecInit, ToolAnnotationsInit, ToolSpecInit, WakeInit,
+    OverviewInit, ResourceSpecInit, ToolAnnotationsInit, ToolSpecInit, UndoInit, WakeInit,
 };
 
 /// 不阻止进程退出（weak）、不带 error-first 参数（callee_handled = false）的 ThreadsafeFunction。

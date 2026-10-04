@@ -176,6 +176,8 @@ fn outcome_and_error_conversion() {
         duration_ms: 0,
         woke: false,
         cached_age_ms: None,
+        undo: None,
+        undo_of: None,
     }
     .into();
     assert_eq!(o.status, ResultStatus::Done);
@@ -222,8 +224,12 @@ fn structured_outcome_conversion() {
         duration_ms: 1234,
         woke: true,
         cached_age_ms: Some(1500),
+        undo: Some(hub::UndoOffer { label: Some("删除刚添加的待办".into()), expires_in_ms: 1_800_000 }),
+        undo_of: Some("c0".into()),
     }
     .into();
+    assert_eq!(o.undo, Some(UndoOffer { label: Some("删除刚添加的待办".into()), expires_in_ms: 1_800_000 }));
+    assert_eq!(o.undo_of.as_deref(), Some("c0"));
     assert_eq!(o.status, ResultStatus::Pending);
     assert_eq!((o.duration_ms, o.woke, o.cached_age_ms), (1234, true, Some(1500)));
     assert_eq!(o.routed_to.as_deref(), Some("shop.cart.addItem"));

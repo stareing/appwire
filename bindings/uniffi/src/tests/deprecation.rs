@@ -33,6 +33,7 @@ fn tool(name: &str, deprecated: Option<Deprecation>) -> ToolSpec {
         implements: Vec::new(),
         cache: None,
         deprecated,
+        undoable: false,
     }
 }
 

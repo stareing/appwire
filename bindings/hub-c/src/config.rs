@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use hub::{
-    AgentCredential, AgentsConfig, ApprovalPolicy, CacheLimits, EventLimits, HubConfig, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PolicyConfig, ToolExposure,
+    AgentCredential, AgentsConfig, ApprovalPolicy, CacheLimits, UndoLimits, EventLimits, HubConfig, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PolicyConfig, ToolExposure,
     UpstreamConfig, WakerConfig, load_manifests,
 };
 use serde::Deserialize;
@@ -94,6 +94,8 @@ pub(crate) struct ConfigJson {
     pub event_limits: Option<EventLimitOverrides>,
     /// v24：只读结果缓存上限（spec/hub-api.md 3.20）：`{"maxEntries","maxBytes","maxEntryBytes"}`；`maxEntries: 0` 关闭缓存。
     pub result_cache: Option<CacheLimitOverrides>,
+    /// v26：撤销记录上限（spec/hub-api.md 3.23）：`{"ttlMs","maxPerTask"}`；`maxPerTask: 0` 关闭撤销。
+    pub undo: Option<UndoLimitOverrides>,
     pub upstreams: BTreeMap<String, UpstreamConfig>,
     pub approval: ApprovalPolicy,
     pub worker_threads: Option<usize>,
@@ -147,6 +149,7 @@ impl Default for ConfigJson {
             agents: None,
             event_limits: None,
             result_cache: None,
+            undo: None,
             upstreams: BTreeMap::new(),
             approval: ApprovalPolicy::default(),
             worker_threads: None,
@@ -170,6 +173,16 @@ impl CacheLimitOverrides {
     fn apply(&self, target: &mut CacheLimits) {
         *target = CacheLimits::with_overrides(self.max_entries, self.max_bytes, self.max_entry_bytes);
     }
+}
+
+/// 撤销记录上限（[`UndoLimits`]）的可选覆盖；缺省字段沿用默认值（30 分钟 / 32 条）。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct UndoLimitOverrides {
+    /// 记录自登记起的有效期（毫秒）。
+    pub ttl_ms: Option<u64>,
+    /// 每个 Agent 任务保留的记录数上限；`0` = 关闭撤销。
+    pub max_per_task: Option<usize>,
 }
 
 /// 事件信箱上限（[`EventLimits`]）的可选覆盖；缺省字段沿用默认值（32 / 100 / 24 h / 60）。
@@ -342,6 +355,9 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     }
     if let Some(o) = &c.result_cache {
         o.apply(&mut hub.result_cache);
+    }
+    if let Some(o) = &c.undo {
+        hub.undo = UndoLimits::with_overrides(o.ttl_ms, o.max_per_task);
     }
 
     // 目录与文件：失败的清单由 Hub 记录日志后跳过（与 app-mcp-host 一致）。
@@ -596,6 +612,21 @@ mod tests {
             .expect("解析");
         assert_eq!(p.hub.result_cache, CacheLimits { max_entries: 8, max_bytes: 4096, max_entry_bytes: 512 });
         for bad in [r#"{"resultCache": {"bogus": 1}}"#, r#"{"resultCache": {"maxEntries": -1}}"#, r#"{"resultCache": 5}"#] {
+            let e = parse(Some(bad)).err().map(|e| e.status);
+            assert_eq!(e, Some(AmHubStatus::InvalidJson), "{bad}");
+        }
+    }
+
+    #[test]
+    fn undo_field() {
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert_eq!(p.hub.undo, UndoLimits::default());
+        let p = parse(Some(r#"{"undo": {"maxPerTask": 0}}"#)).map_err(|e| e.message).expect("解析");
+        assert_eq!(p.hub.undo, UndoLimits { max_per_task: 0, ..UndoLimits::default() }, "只覆盖给出的字段");
+        assert!(!p.hub.undo.enabled());
+        let p = parse(Some(r#"{"undo": {"ttlMs": 1500, "maxPerTask": 4}}"#)).map_err(|e| e.message).expect("解析");
+        assert_eq!(p.hub.undo, UndoLimits { ttl: Duration::from_millis(1500), max_per_task: 4 });
+        for bad in [r#"{"undo": {"bogus": 1}}"#, r#"{"undo": {"maxPerTask": -1}}"#, r#"{"undo": true}"#] {
             let e = parse(Some(bad)).err().map(|e| e.status);
             assert_eq!(e, Some(AmHubStatus::InvalidJson), "{bad}");
         }

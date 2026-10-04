@@ -5,6 +5,7 @@
 import type { ResultCacheConfig } from './types/cache.js'
 import type { EventLimitsConfig } from './types/events.js'
 import type { IntentDefaults } from './types/intents.js'
+import type { UndoConfig } from './types/undo.js'
 
 // ---------------------------------------------------------------------------
 // 基础枚举
@@ -344,6 +345,9 @@ export interface HubConfig {
   // ---- 只读结果缓存（spec/hub-api.md 3.20）----
   /** 条目数与字节上限；缺省字段取默认值（1024 / 8 MiB / 64 KiB），`maxEntries: 0` 关闭缓存。 */
   resultCache?: ResultCacheConfig
+  // ---- 撤销（spec/hub-api.md 3.23）----
+  /** 撤销记录的保留时长与每任务条数；缺省字段取默认值（30 分钟 / 32），`maxPerTask: 0` 关闭撤销。 */
+  undo?: UndoConfig
   // ---- Agent 身份（spec/hub-api.md 3.6）----
   /** 按 Agent 发的访问令牌；缺省不登记（所有请求为本机主体）。不合法时 `Hub.start` 失败。运行中用 `Hub.setAgents` 替换。 */
   agents?: AgentCredential[]
@@ -373,3 +377,4 @@ export type * from './types/events.js'
 export type * from './types/intents.js'
 export type * from './types/cache.js'
 export type * from './types/evolution.js'
+export type * from './types/undo.js'

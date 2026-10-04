@@ -91,6 +91,8 @@ after the same checks as `crates/manifest` (`message` 1..=500 characters and not
 name other than the tool itself, `until` a valid `YYYY-MM-DD` date); a required input parameter marked
 `deprecated: true` only gives a warning. A deprecated tool stays callable; for a breaking change add a new tool name
 instead (spec/manifest.md section 6).
+Tools may declare `undoable: true` (spec/protocol.md 3.8: results may carry `undo`, display only); `true` is written to
+the manifest, `false` is omitted, and a non-boolean value is an error.
 
 Register the annotated tools at runtime through the generated virtual module (add
 `/// <reference types="@app-mcp/build/client" />` to `src/vite-env.d.ts` for its types):

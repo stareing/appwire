@@ -81,7 +81,7 @@ pub use progress::ProgressUpdate;
 pub use result_cache::{
     CacheLimits, CacheStatus, DEFAULT_CACHE_MAX_BYTES, DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_MAX_ENTRY_BYTES,
 };
-pub use undo::{DEFAULT_UNDO_MAX_PER_TASK, DEFAULT_UNDO_TTL, UndoLimits};
+pub use undo::{DEFAULT_UNDO_MAX_PER_TASK, DEFAULT_UNDO_TTL, UndoLimits, UndoOffer, UndoStatus};
 pub use policy::{
     AnnotationMatch, MAX_POLICY_RULES, PolicyAction, PolicyConfig, PolicyHook, PolicyLoadError, PolicyRule, PolicyRuleStatus,
     PolicyStatus,

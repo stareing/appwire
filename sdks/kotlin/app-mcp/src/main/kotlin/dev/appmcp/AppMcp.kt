@@ -134,6 +134,8 @@ abstract class AppMcpRegistrar internal constructor() {
      * @param deprecated 弃用声明（spec/protocol.md 3.7），如 `Deprecation("改用 x.new", replacement = "x.new", until = "2027-06-30")`：
      *   弃用的工具照常列出与调用，Agent 看到弃用提示。`message` 1..500 个字符、`replacement` 为同 App 内另一工具的局部名、
      *   `until` 为 `YYYY-MM-DD`（只作提示）；不合法时抛 `AppMcpException.InvalidConfig`。
+     * @param undoable 本工具的成功结果可能带撤销信息（[ToolResult.undo]，spec/protocol.md 3.8）；只用于展示
+     *   （Agent 可提示"此操作可撤销"），不约束结果。
      */
     fun tool(
         name: String,
@@ -153,6 +155,7 @@ abstract class AppMcpRegistrar internal constructor() {
         implements: List<String> = emptyList(),
         cache: CachePolicy? = null,
         deprecated: Deprecation? = null,
+        undoable: Boolean = false,
         handler: ToolFunction,
     ): ToolHandle {
         val spec = ToolSpec(
@@ -173,6 +176,7 @@ abstract class AppMcpRegistrar internal constructor() {
             implements = implements,
             cache = cache,
             deprecated = deprecated,
+            undoable = undoable,
         )
         val o = owner
         val raw = registerRaw(spec, object : ToolHandler {
@@ -202,10 +206,11 @@ abstract class AppMcpRegistrar internal constructor() {
         implements: List<String> = emptyList(),
         cache: CachePolicy? = null,
         deprecated: Deprecation? = null,
+        undoable: Boolean = false,
         noinline handler: suspend (args: A, ctx: ToolContext) -> R,
     ): ToolHandle = typedToolImpl(
         name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool,
-        concurrency, exclusive, implements, cache, deprecated, serializer<A>(), serializer<R>(), handler,
+        concurrency, exclusive, implements, cache, deprecated, undoable, serializer<A>(), serializer<R>(), handler,
     )
 
     @PublishedApi
@@ -227,12 +232,13 @@ abstract class AppMcpRegistrar internal constructor() {
         implements: List<String>,
         cache: CachePolicy?,
         deprecated: Deprecation?,
+        undoable: Boolean,
         argSerializer: KSerializer<A>,
         resultSerializer: KSerializer<R>,
         handler: suspend (A, ToolContext) -> R,
     ): ToolHandle = tool(
         name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool,
-        concurrency, exclusive, implements, cache, deprecated,
+        concurrency, exclusive, implements, cache, deprecated, undoable,
     ) { args, ctx ->
         val decoded = try {
             AppMcpJson.decodeFromJsonElement(argSerializer, args)
@@ -585,6 +591,7 @@ class AppMcp private constructor(
                     stateResource = result.stateResource,
                     summary = result.summary,
                     annotations = result.annotations,
+                    undo = result.undo?.toFfi(),
                 )
                 else -> CallResult(
                     dataJson = anyToJson(result).toString(),

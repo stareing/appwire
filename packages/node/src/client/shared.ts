@@ -3,9 +3,9 @@
  */
 
 import { toFailure } from '../errors.js'
-import type { NativeCall, NativeNavigate, NativeStateInfo } from '../native.js'
+import type { NativeCall, NativeNavigate, NativeStateInfo, NativeUndo } from '../native.js'
 import { resolveInput, resolveOutput, type ResolvedInput } from '../schema.js'
-import type { ConnectionState, HoldHandle, Logger, ToolDefinition } from '../types.js'
+import type { ConnectionState, HoldHandle, Logger, ToolDefinition, UndoAction } from '../types.js'
 
 export const defaultLogger: Logger = {
   debug() {},
@@ -115,4 +115,17 @@ export function detailText(details: Record<string, unknown> | undefined, key: st
 export function stringifyJson(value: unknown): string {
   const text = JSON.stringify(value === undefined ? null : value)
   return text === undefined ? 'null' : text
+}
+
+/**
+ * 撤销信息 → 原生 `UndoInit`：`arguments` 序列化为 JSON 文本（缺省时原生取 `{}`）。只转换不校验——不合法的由原生核心去掉并告警。
+ *
+ * @error `arguments` 无法序列化为 JSON（循环引用、BigInt）时抛出（调用方转为 `HANDLER_ERROR`）。
+ */
+export function nativeUndo(undo: UndoAction): NativeUndo {
+  return {
+    tool: undo.tool,
+    ...(undo.arguments !== undefined && { argumentsJson: stringifyJson(undo.arguments) }),
+    ...(undo.label !== undefined && { label: undo.label }),
+  }
 }

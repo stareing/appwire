@@ -157,6 +157,25 @@ def search_v1(q: str) -> list:
 - Deprecated tools are still listed and callable; agents see the notice. `handle.update(deprecated=...)` replaces it,
   `deprecated=None` clears it; other updates keep it.
 
+### Undo (optional, `spec/protocol.md` §3.8)
+
+Only the handler knows how to reverse what it just did, so it says so in the result; the hub records it and agents can
+call `apps.undo`:
+
+```python
+@client.tool("todo.add", "Add a todo", undoable=True)
+def add(text: str) -> ToolResult:
+    item = todos.add(text)
+    return ToolResult({"id": item.id},
+                      undo={"tool": "todo.remove", "arguments": {"id": item.id}, "label": "Remove the todo just added"})
+```
+
+- `undo` is `{"tool", "arguments"?, "label"?}` or an `UndoAction`: `tool` is a local tool name in the same app (may be
+  the tool itself, e.g. a toggle), `arguments` a JSON object (default `{}`), `label` 1..200 characters for the user.
+- The undo call is an ordinary call of that tool; if the object has changed since, the handler returns an error or
+  `noop`. Only `done` / `partial` results count. Invalid contents are dropped with a warning — the call still succeeds.
+- `undoable=True` only tells agents "this can usually be undone"; `handle.update(undoable=False)` clears it.
+
 ### User is busy (optional, `spec/protocol.md` §5.3)
 
 While the user is actively working in the app (a text field has focus, a drag is in progress — your call), declare it so
@@ -344,6 +363,11 @@ cache). `hub.status().cache` is a `CacheStatus` (`entries`, `bytes`, `hits`, `mi
 Tool evolution (`spec/hub-api.md` §3.21): every app tool in `hub.tools()` carries `schema_hash` (changes when its
 `inputSchema` / `outputSchema` change) and `deprecated` (the app's `Deprecation`, or `None`). Breaking or possibly
 breaking changes to a tool's definition are kept in `hub.status().schema_changes` (last 32 `SchemaChangeRecord`s).
+
+Undo (`spec/hub-api.md` §3.23): a result whose app gave an undo carries `undo` (`UndoOffer`: `label`,
+`expires_in_ms`); `await hub.call_tool("apps.undo", {})` reverses the caller's latest one (or `{"callId": ...}`) once,
+and its result has `undo_of` (the original call id). `HubTool.undoable` shows the declaration; `hub.status().undo` is an
+`UndoStatus` (`ttl_ms`, `max_per_task`, `records`).
 
 Policy hook points (`spec/hub-api.md` §3.13): `Hub(policy={"rules": [{"id": "no-pay", "action": "deny", "app": "shop",
 "tool": "pay*"}]})` or `hub.set_policy(...)` at runtime. `hide` removes an app / tool from every list (calls get

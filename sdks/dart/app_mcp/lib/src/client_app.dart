@@ -428,6 +428,7 @@ final class AppMcp {
     List<String> implements = const [],
     CachePolicy? cache,
     ToolDeprecation? deprecated,
+    bool undoable = false,
     required ToolHandler handler,
   }) =>
       _root.tool(name,
@@ -447,6 +448,7 @@ final class AppMcp {
           implements: implements,
           cache: cache,
           deprecated: deprecated,
+          undoable: undoable,
           handler: handler);
 
   /// 在根作用域注册资源。见 [McpScope.resource]。
@@ -600,7 +602,10 @@ final class AppMcp {
         ..status = resultStatusToNative(result.status)
         ..state_resource = _optStr(result.stateResource, arena)
         ..summary = _optStr(result.summary, arena)
-        ..annotations_json = _optStr(result.annotationsJson, arena);
+        ..annotations_json = _optStr(result.annotationsJson, arena)
+        ..undo_tool = _optStr(result.undoTool, arena)
+        ..undo_arguments_json = _optStr(result.undoArgumentsJson, arena)
+        ..undo_label = _optStr(result.undoLabel, arena);
       return _b.am_call_complete_ex(call.ptr, r);
     });
     if (status == AmStatus.invalidJson) {

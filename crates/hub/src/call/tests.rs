@@ -133,12 +133,12 @@ fn call_meta_keys_and_result_type() {
     assert_eq!(meta.get(names::META_DEPRECATED), Some(&json!({"message": "旧", "replacement": "b"})), "弃用工具：错误结果同样标出");
     assert!(meta.get(names::META_UNDO).is_none() && meta.get(names::META_UNDO_OF).is_none(), "未登记撤销不写 undo / undoOf");
     let mut undo = inv(Body::App(Ok(ToolsInvokeResult::default())), None, false);
-    undo.undo = Some(crate::undo::UndoGrant { label: Some("删除待办".into()), expires_in_ms: 1000 });
+    undo.undo = Some(crate::undo::UndoOffer { label: Some("删除待办".into()), expires_in_ms: 1000 });
     undo.undo_of = Some("call-1".into());
     let meta = undo.to_mcp().unwrap().meta.unwrap();
     assert_eq!(meta.get(names::META_UNDO), Some(&json!({"label": "删除待办", "expiresInMs": 1000})), "X2：已登记撤销");
     assert_eq!(meta.get(names::META_UNDO_OF), Some(&json!("call-1")), "X2：apps.undo 的结果标出被撤销的调用");
-    undo.undo = Some(crate::undo::UndoGrant { label: None, expires_in_ms: 5 });
+    undo.undo = Some(crate::undo::UndoOffer { label: None, expires_in_ms: 5 });
     assert_eq!(undo.to_mcp().unwrap().meta.unwrap().get(names::META_UNDO), Some(&json!({"expiresInMs": 5})), "无 label 时省略");
 
     let err = ToolError::new(ErrorKind::Timeout, "x");

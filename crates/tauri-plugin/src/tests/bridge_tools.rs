@@ -260,6 +260,7 @@ async fn annotations_output_schema_and_structured_results() {
         json!({ "data": 1, "stateHints": "x" }),
         json!({ "data": 1, "annotations": [] }),
         json!({ "data": 1, "status": "pending", "summary": 5 }),
+        json!({ "data": 1, "undo": "t.remove" }),
     ];
     for envelope in invalid {
         let hub = fx.hub.clone();
@@ -403,6 +404,57 @@ async fn page_tool_deprecated() {
 
     fx.op(&page, "main", "main", json!({ "op": "tool.update", "id": 1, "spec": { "description": "旧版" } }));
     eventually("Hub 看到 deprecated 被清除", || hub_tool(&fx.hub, "dep.q.old").is_some_and(|t| t.deprecated.is_none())).await;
+    fx.bridge.client().stop();
+    shutdown(fx.hub).await;
+}
+
+/// 第 15 项 X2：页面工具的 `undoable` 经桥接到达 Hub（整体更新缺省即取消）；结果的 `undo` 原样到达并登记，`apps.undo`
+/// 调用页面上的逆工具；语义不合法的 `undo` 由核心去掉、结果照常；字段类型不对时与 annotations 一样以 `HANDLER_ERROR` 结束。
+#[tokio::test(flavor = "multi_thread")]
+async fn page_tool_undo() {
+    let fx = Fixture::new("und", None).await;
+    let page = Arc::new(FakePage::default());
+    fx.op(&page, "main", "main", json!({ "op": "hello" }));
+    let reg = |id: u64, name: &str, spec: Value| json!({ "op": "tool.register", "id": id, "name": name, "spec": spec });
+    assert_eq!(fx.op(&page, "main", "main", reg(1, "t.add", json!({ "description": "加", "undoable": true }))), json!({ "ok": true }));
+    assert_eq!(fx.op(&page, "main", "main", reg(2, "t.remove", json!({ "description": "删" }))), json!({ "ok": true }));
+    fx.connected("und").await;
+    eventually("Hub 看到页面工具", || tool_names(&fx.hub, "und").len() == 2).await;
+    assert!(hub_tool(&fx.hub, "und.t.add").is_some_and(|t| t.undoable));
+    assert!(hub_tool(&fx.hub, "und.t.remove").is_some_and(|t| !t.undoable));
+
+    // 页面以给定结果完成下一次调用，返回页面收到的 toolId、回复与 Hub 的结果。
+    let run = |name: &'static str, extra: Value| {
+        let hub = fx.hub.clone();
+        let page = page.clone();
+        let fx = &fx;
+        async move {
+            let pending = tokio::spawn(async move { hub.call_tool(CallRequest::new(name, json!({}))).await });
+            let call = wait_event(&page, "call").await;
+            let mut op = json!({ "op": "call.result", "callId": call["callId"], "ok": true, "data": 1 });
+            for (k, v) in extra.as_object().into_iter().flatten() {
+                op[k] = v.clone();
+            }
+            let reply = fx.op(&page, "main", "main", op);
+            (call["toolId"].clone(), reply, pending.await.expect("join").expect("调用"))
+        }
+    };
+    let undo = json!({ "undo": { "tool": "t.remove", "arguments": { "id": 3 }, "label": "删除刚加的" } });
+    let (_, _, out) = run("und.t.add", undo).await;
+    assert_eq!(out.undo.as_ref().and_then(|u| u.label.as_deref()), Some("删除刚加的"), "合法 undo 登记");
+    let (tool_id, _, out) = run("apps.undo", json!({})).await;
+    assert_eq!(tool_id, json!(2), "逆调用发往页面工具 t.remove");
+    assert!(out.undo_of.is_some());
+
+    let (_, reply, out) = run("und.t.add", json!({ "summary": "半", "undo": { "tool": "bad name", "arguments": [1] } })).await;
+    assert_eq!(reply, json!({ "ok": true }));
+    assert_eq!((out.summary.as_deref(), out.undo.is_none()), (Some("半"), true), "不合法 undo 去掉、结果照常");
+    let (_, reply, out) = run("und.t.add", json!({ "undo": { "tool": 1 } })).await;
+    assert_eq!(reply["code"], "INVALID_RESULT");
+    assert_eq!(out.result.expect_err("失败").kind, ErrorKind::HandlerError);
+
+    fx.op(&page, "main", "main", json!({ "op": "tool.update", "id": 1, "spec": { "description": "加" } }));
+    eventually("Hub 看到 undoable 被取消", || hub_tool(&fx.hub, "und.t.add").is_some_and(|t| !t.undoable)).await;
     fx.bridge.client().stop();
     shutdown(fx.hub).await;
 }

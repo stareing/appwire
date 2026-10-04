@@ -6,6 +6,7 @@ import type { CacheStatus } from './cache.js'
 import type { EventsStatus } from './events.js'
 import type { SchemaChangeRecord } from './evolution.js'
 import type { IntentsStatus } from './intents.js'
+import type { UndoStatus } from './undo.js'
 
 /** 主 HTTP 服务的令牌策略。 */
 export interface AuthStatus {
@@ -156,6 +157,8 @@ export interface HubStatus {
   cache?: CacheStatus
   /** 工具定义的不兼容变化（第 16 项 O4，spec/hub-api.md 3.21）：最近 32 条，旧的在前，只在内存；旧 Hub 不报告。 */
   schemaChanges?: SchemaChangeRecord[]
+  /** 撤销的生效上限与记录数（第 15 项 X2，spec/hub-api.md 3.23）；旧 Hub 不报告。 */
+  undo?: UndoStatus
 }
 
 /**

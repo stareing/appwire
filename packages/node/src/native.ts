@@ -112,6 +112,8 @@ export interface NativeToolSpec {
   cache?: NativeCachePolicy
   /** 弃用声明（spec/protocol.md 3.7）；缺省 = 未声明（旧版原生模块忽略）。 */
   deprecated?: NativeDeprecation
+  /** 成功结果可能带 `undo`（spec/protocol.md 3.8）；缺省 false（旧版原生模块忽略）。 */
+  undoable?: boolean
 }
 
 /** 工具弃用声明（原生 `DeprecationInit`）。 */
@@ -151,6 +153,16 @@ export interface NativeCallResult {
   stateResource?: string
   summary?: string
   annotations?: NativeContentAnnotations
+  /** 撤销信息（spec/protocol.md 3.8）；不合法时原生核心去掉并产生警告事件（旧版原生模块忽略）。 */
+  undo?: NativeUndo
+}
+
+/** 撤销信息（原生 `UndoInit`）。 */
+export interface NativeUndo {
+  tool: string
+  /** 参数 JSON 文本；缺省 `{}`。 */
+  argumentsJson?: string
+  label?: string
 }
 
 export interface NativeResourceSpec {

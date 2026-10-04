@@ -138,6 +138,8 @@ object UserActionReason {
  * @property stateResource `PENDING` 时可读取后续状态的资源名。
  * @property summary 一句面向模型 / 用户的结论（`PARTIAL` 时说明完成了哪部分）。
  * @property annotations 结果内容的标注，Hub 原样转发。
+ * @property undo 撤销本次调用的逆操作（spec/protocol.md 3.8）：Hub 记录后 Agent 可用 `apps.undo` 撤销；内容不合法时核心去掉它
+ *   并记警告，结果照常发送。只在 `DONE` / `PARTIAL` 时有效。
  */
 data class ToolResult(
     val data: JsonElement?,
@@ -146,7 +148,24 @@ data class ToolResult(
     val stateResource: String? = null,
     val summary: String? = null,
     val annotations: ContentAnnotations? = null,
+    val undo: UndoAction? = null,
 )
+
+/**
+ * 撤销本次调用的逆操作（spec/protocol.md 3.8）：调用同一 App 的工具 [tool]（局部名，可为自身，如开关类工具），参数为 [arguments]。
+ * 例：`UndoAction("todo.remove", buildJsonObject { put("id", 3) }, label = "删除刚添加的待办")`。
+ *
+ * @property arguments 调用逆工具的参数，须为 JSON 对象（序列化后 ≤ 64 KiB）；null = `{}`。
+ * @property label 1..200 个字符，面向用户：撤销会做什么。
+ */
+data class UndoAction(
+    val tool: String,
+    val arguments: JsonElement? = null,
+    val label: String? = null,
+) {
+    // @why 内容（局部名、参数为对象、label 长度）由核心在发送前校验，不合法时去掉并记警告；这里只做形状转换，不让调用失败。
+    internal fun toFfi() = dev.appmcp.ffi.UndoAction(tool = tool, argumentsJson = arguments?.toString(), label = label)
+}
 
 /**
  * 客户端配置。

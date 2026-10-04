@@ -14,6 +14,12 @@ describe('normalizeToolResult', () => {
     ['stateResource 不是字符串', { data: 1, stateResource: 2 }, { data: { data: 1, stateResource: 2 } }],
     ['summary 不是字符串', { data: 1, summary: null }, { data: { data: 1, summary: null } }],
     ['annotations 不是对象', { data: 1, annotations: [] }, { data: { data: 1, annotations: [] } }],
+    ['undo 不是对象', { data: 1, undo: 'u.remove' }, { data: { data: 1, undo: 'u.remove' } }],
+    [
+      'undo 原样带出（内容不校验，交给核心）',
+      { data: 1, undo: { tool: 'bad name', arguments: [1] } },
+      { data: 1, undo: { tool: 'bad name', arguments: [1] } },
+    ],
     ['只有 data', { data: undefined }, { data: null }],
     ['空 stateHints 省略', { data: 1, stateHints: [] }, { data: 1 }],
     ['值为 undefined 的可选键', { data: 1, summary: undefined, status: undefined }, { data: 1 }],

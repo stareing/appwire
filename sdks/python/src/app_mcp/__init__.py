@@ -42,6 +42,7 @@ if TYPE_CHECKING:  # pragma: no cover
     CachePolicy = ffi.CachePolicy
     CacheScope = ffi.CacheScope
     Deprecation = ffi.Deprecation
+    UndoAction = ffi.UndoAction
     ContentAnnotations = ffi.ContentAnnotations
     ResultStatus = ffi.ResultStatus
     Audience = ffi.Audience
@@ -85,6 +86,7 @@ _LAZY: dict[str, tuple[str, str]] = {
             "CachePolicy",
             "CacheScope",
             "Deprecation",
+            "UndoAction",
             "ContentAnnotations",
             "ResultStatus",
             "Audience",
@@ -148,6 +150,7 @@ __all__ = [
     "ToolHandle",
     "ToolResult",
     "ToolSurface",
+    "UndoAction",
     "UserActionReason",
     "Visibility",
     "WakeDescriptor",

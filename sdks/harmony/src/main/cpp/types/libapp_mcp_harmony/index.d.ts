@@ -121,6 +121,8 @@ export interface ToolSpecInit {
   cache?: CachePolicyInit;
   /** 弃用声明（spec/protocol.md 3.7）；`updateWith` 时缺省即清除。 */
   deprecated?: DeprecationInit;
+  /** 成功结果可能带 `undo`（spec/protocol.md 3.8），只用于展示；缺省 false，`updateWith` 时缺省即取消。 */
+  undoable?: boolean;
 }
 
 /** 工具弃用声明：`message` 1..=500 个字符非空、`replacement` 合法局部名且不指向自身、`until` 为 `YYYY-MM-DD`；不合法时抛出 `INVALID_CONFIG`。 */
@@ -160,6 +162,15 @@ export interface CallResultInit {
   stateResource?: string;
   summary?: string;
   annotations?: ContentAnnotationsInit;
+  /** 撤销信息（spec/protocol.md 3.8）；不合法时原生核心去掉并产生警告事件，结果照常发送。 */
+  undo?: UndoInit;
+}
+
+/** 撤销信息：调用同一 App 的工具 `tool`，参数为 `argumentsJson`（缺省 `{}`）；不是合法 JSON 文本时抛出 `INVALID_JSON`。 */
+export interface UndoInit {
+  tool: string;
+  argumentsJson?: string;
+  label?: string;
 }
 
 export interface ResourceSpecInit {

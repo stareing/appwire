@@ -341,6 +341,25 @@ describe('generateManifest', () => {
     expect(warned.warnings).toEqual([expect.stringContaining('必填参数 "a" 标了 deprecated: true')])
   })
 
+  it('撤销声明 undoable：true 写入清单、false / 缺省不写；不是布尔值报错（spec/protocol.md 3.8）', () => {
+    const manifest = generateManifest({ appId: 'todo', name: '待办' }, [
+      { name: 'add', description: '添加', undoable: true },
+      { name: 'off', description: '未声明', undoable: false },
+      { name: 'plain', description: '普通' },
+    ])
+    expect(manifest.tools?.[0]?.undoable).toBe(true)
+    expect(manifest.tools?.[1]).not.toHaveProperty('undoable')
+    expect(manifest.tools?.[2]).not.toHaveProperty('undoable')
+    expect(validateManifest(manifest)).toEqual({ errors: [], warnings: [] })
+    const check = (undoable: unknown) =>
+      validateManifest({
+        manifestVersion: 1, appId: 'todo', name: 't',
+        tools: [{ name: 't', description: 'd', inputSchema: { type: 'object' }, undoable }],
+      } as unknown as AppMcpManifest)
+    expect(check(false).errors).toEqual([])
+    expect(check('true').errors).toEqual([expect.stringContaining('undoable 必须是布尔值')])
+  })
+
   it('结果缓存声明 cache：工具与资源写入清单；格式与 crates/manifest 一致报错，写工具上的声明只警告（spec/protocol.md 3.6）', () => {
     const manifest = generateManifest(
       { appId: 'feed', name: '订阅', resources: [{ name: 'feed', description: '订阅', cache: { ttlMs: 30000, scope: 'shared' } }] },

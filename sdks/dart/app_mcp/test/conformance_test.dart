@@ -20,7 +20,7 @@ const _sdk = 'dart';
 const _features = {
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', //
   'readFailure', 'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey',
-  'callScheduling', 'busy', 'events', 'implements', 'cache', 'deprecated',
+  'callScheduling', 'busy', 'events', 'implements', 'cache', 'deprecated', 'undo',
 };
 
 final String _repoRoot = Directory('${Directory.current.path}/../../..').absolute.path;
@@ -126,6 +126,7 @@ final class _CaseApp {
         implements: _strings(decl['implements']) ?? const [],
         cache: _cache(decl['cache']),
         deprecated: _deprecated(decl['deprecated']),
+        undoable: decl['undoable'] == true,
         handler: (args, ctx) => _runHandler(spec, ++runs, args, ctx));
   }
 
@@ -207,7 +208,8 @@ final class _CaseApp {
           status: _status(r['status']),
           stateResource: r['stateResource'] as String?,
           summary: r['summary'] as String?,
-          annotations: _contentAnnotations(r['annotations']));
+          annotations: _contentAnnotations(r['annotations']),
+          undo: _undo(r['undo']));
     }
     if (spec.containsKey('return')) return spec['return'];
     if (spec['echo'] == true) return args;
@@ -254,6 +256,12 @@ final class _CaseApp {
         null => null,
         final m => ToolDeprecation(m['message'] as String? ?? '',
             replacement: m['replacement'] as String?, until: m['until'] as String?),
+      };
+
+  /// 用例 result.undo（`{tool, arguments?, label?}`，spec/protocol.md 3.8）原样；格式由 SDK 核心校验。null / 缺省为 null。
+  static UndoAction? _undo(Object? v) => switch (_map(v)) {
+        null => null,
+        final m => UndoAction(m['tool'] as String? ?? '', arguments: m['arguments'], label: m['label'] as String?),
       };
 
   /// JSON 字符串数组 → `List<String>`；null / 缺省为 null。

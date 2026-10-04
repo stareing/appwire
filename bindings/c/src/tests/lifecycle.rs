@@ -426,6 +426,7 @@ fn tool_options_are_read_up_to_struct_size() {
         deprecated_message: ptr::null(),
         deprecated_replacement: ptr::null(),
         deprecated_until: ptr::null(),
+        undoable: false,
     };
     let options = unsafe { read_tool_options(&full) }.ok();
     assert_eq!(
@@ -513,6 +514,9 @@ fn call_result_is_read_up_to_struct_size() {
         state_resource: res.as_ptr(),
         summary: summary.as_ptr(),
         annotations_json: ann.as_ptr(),
+        undo_tool: ptr::null(),
+        undo_arguments_json: ptr::null(),
+        undo_label: ptr::null(),
     };
     assert_eq!(
         unsafe { read_call_result(&full) }.ok(),
@@ -609,6 +613,9 @@ unsafe extern "C" fn submit_tool(_ud: *mut c_void, call: *mut AmCall) {
         state_resource: res.as_ptr(),
         summary: summary.as_ptr(),
         annotations_json: bad.as_ptr(),
+        undo_tool: ptr::null(),
+        undo_arguments_json: ptr::null(),
+        undo_label: ptr::null(),
     };
     // 非法注解：不消费 call，可以重试
     if unsafe { am_call_complete_ex(call, &result) } != AmStatus::InvalidJson {
@@ -719,6 +726,7 @@ fn tool_options_and_call_result_reach_host() {
         deprecated_message: ptr::null(),
         deprecated_replacement: ptr::null(),
         deprecated_until: ptr::null(),
+        undoable: false,
     };
     let mut tool: *mut AmTool = ptr::null_mut();
     assert_eq!(

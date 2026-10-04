@@ -187,6 +187,8 @@ public sealed class CallOutcome
         if (json.TryGetProperty("durationMs", out var dur) && dur.ValueKind == JsonValueKind.Number && dur.TryGetInt64(out var ms)) DurationMs = ms;
         if (json.TryGetProperty("woke", out var woke) && woke.ValueKind is JsonValueKind.True or JsonValueKind.False) Woke = woke.GetBoolean();
         if (json.TryGetProperty("cachedAgeMs", out var age) && age.ValueKind == JsonValueKind.Number && age.TryGetInt64(out var ageMs)) CachedAgeMs = ageMs;
+        if (json.TryGetProperty("undo", out var undo) && undo.ValueKind == JsonValueKind.Object) Undo = undo.Deserialize<UndoOfferInfo>(AppMcpHub.WireOptions);
+        if (json.TryGetProperty("undoOf", out var undoOf) && undoOf.ValueKind == JsonValueKind.String) UndoOf = undoOf.GetString();
     }
 
     public string CallId { get; }
@@ -215,6 +217,10 @@ public sealed class CallOutcome
     public bool Woke { get; }
     /// <summary>结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数；未命中或旧 Hub 为 null（spec/hub-api.md 3.20）。</summary>
     public long? CachedAgeMs { get; }
+    /// <summary>本次调用已登记撤销（App 结果带合法撤销信息，spec/hub-api.md 3.23）：可用 apps.undo 撤销；未登记或旧 Hub 为 null。</summary>
+    public UndoOfferInfo? Undo { get; }
+    /// <summary>apps.undo 的结果：被撤销调用的 callId；其他调用或旧 Hub 为 null。</summary>
+    public string? UndoOf { get; }
     /// <summary>原始 CallOutcome JSON。</summary>
     public JsonElement Json { get; }
 

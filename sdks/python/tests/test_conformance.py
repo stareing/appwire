@@ -59,6 +59,7 @@ FEATURES = frozenset(
         "implements",
         "cache",
         "deprecated",
+        "undo",
     }
 )
 ROOT = Path(__file__).resolve().parents[3]
@@ -129,6 +130,7 @@ class CaseApp:
             implements=decl.get("implements", ()),
             cache=_rename(decl.get("cache"), _CACHE_KEYS),
             deprecated=decl.get("deprecated"),
+            undoable=decl.get("undoable") is True,
         )
         with self._lock:
             self.tools[decl["name"]] = handle
@@ -211,6 +213,8 @@ class CaseApp:
                 changes["annotations"] = _rename(op["set"]["annotations"], _TOOL_ANNOTATION_KEYS)
             if "cache" in op["set"]:
                 changes["cache"] = _rename(op["set"]["cache"], _CACHE_KEYS)
+            if "undoable" in op["set"]:
+                changes["undoable"] = op["set"]["undoable"] is True
             handle.update(**changes)
         elif kind == "remove":
             handle.dispose()
@@ -264,6 +268,7 @@ class CaseApp:
                 state_resource=r.get("stateResource"),
                 summary=r.get("summary"),
                 annotations=_rename(r.get("annotations"), _CONTENT_ANNOTATION_KEYS),
+                undo=r.get("undo"),
             )
         if "return" in spec:
             return spec["return"]

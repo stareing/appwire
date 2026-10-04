@@ -94,6 +94,9 @@ the hooks are no-ops. A tool can also be loaded lazily: pass `load: () => import
 - `deprecated` - deprecation notice (spec/protocol.md 3.7), e.g. `{ message: 'Use cart.add2', replacement: 'cart.add2' }`;
   the tool stays callable, and breaking changes should use a new tool name (spec/manifest.md section 6). An inline
   object is compared by content, removing it clears the declaration.
+- `undoable` - `true` tells agents the tool's results may carry `undo` (spec/protocol.md 3.8); handlers return
+  `{ data, undo: { tool: 'cart.remove', arguments: { id }, label: 'Remove it again' } }` to give the inverse operation,
+  which agents can run once via `apps.undo`. Changing or removing `undoable` calls `update`.
 - Handlers may return `{ data, stateHints?, status?, stateResource?, summary?, annotations? }` with `status` one of
   `'done' | 'pending' | 'partial' | 'noop'`. It is unpacked only if it has a `data` key and every other key is one
   of these with a valid value; any other value is returned as `data` as a whole. Returning nothing (`undefined` /

@@ -65,13 +65,15 @@ class ToolHandle:
         implements: Sequence[str] | _Unset = _UNSET,
         cache: CacheLike | None | _Unset = _UNSET,
         deprecated: DeprecationLike | None | _Unset = _UNSET,
+        undoable: bool | _Unset = _UNSET,
     ) -> None:
         """修改定义：未给出的字段保持不变；显式传 ``None`` 清除该声明（恢复注册时的缺省）。
 
         ``input_schema=None`` 为无参数，``risk=None`` 为缺省风险，``surface=None`` 为 ``"app"``，``title`` /
         ``activation`` / ``annotations`` / ``output_schema`` / ``page`` / ``background_tool`` /
         ``exclusive`` 为 ``None`` 时清除声明。``description`` 不可清除；``concurrency=0`` 为不单独限制；``implements=[]`` 清除意图声明；
-        ``cache`` 为 ``None`` 时清除结果缓存声明；``deprecated`` 为 ``None`` 时取消弃用。
+        ``cache`` 为 ``None`` 时清除结果缓存声明；``deprecated`` 为 ``None`` 时取消弃用；
+        ``undoable=False`` 取消可撤销声明。
         """
         s = self._spec
         spec = _replace_spec(
@@ -91,6 +93,7 @@ class ToolHandle:
             implements=s.implements if implements is _UNSET else _implements(implements),
             cache=s.cache if cache is _UNSET else _cache(cache),
             deprecated=s.deprecated if deprecated is _UNSET else _deprecation(deprecated),
+            undoable=s.undoable if undoable is _UNSET else undoable,
         )
         self._inner.update(spec)
         self._spec = spec

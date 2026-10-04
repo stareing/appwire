@@ -104,6 +104,9 @@ mcp.tool<OrderParams, Object | null>('order.submit', {
 - 弃用声明（spec/protocol.md 3.7）：`deprecated: { message: '改用 orders.search：支持分页', replacement: 'orders.search', until: '2027-06-30' }`。
   弃用工具照常列出、照常可调用；破坏性变更应改用新工具名（spec/manifest.md 第 6 节）。`message` 须为 1..=500 个字符的非空文本、
   `replacement` 为合法局部名且不指向自身、`until` 为 `YYYY-MM-DD` 日期，否则注册 / 更新抛错（`INVALID_CONFIG`）；`update` 中给出 `null` 清除。
+- 撤销（spec/protocol.md 3.8）：handler 返回 `new ToolResult(data, [], { undo: { tool: 'todo.remove', arguments: { id: 3 }, label: '删除刚添加的待办' } })`
+  给出逆操作（同一 App 的工具与参数，可为自身），Hub 记录后 Agent 可经 `apps.undo` 撤销（只能撤销一次）。`undo` 不合法时原生核心去掉它并
+  记警告，结果照常发送。工具可声明 `undoable: true` 提示"此操作可撤销"（只用于展示）；`update` 中给出 `false` / `null` 取消。
 - 事件（spec/protocol.md 3.5）：`mcp.declareEvent({ name: 'order.shipped', description: '订单已发货', payloadSchema: '{"type":"object"}' })`
   声明（`payloadSchema` 为 JSON 文本，同名替换；已连接时随即同步给 Host，否则下次握手后同步，不触发连接），
   `mcp.emitEvent('order.shipped', { orderId: 'o1' } as Record<string, Object>)` 发出：已连接返回 `true`；未连接（休眠、断线、重连中）

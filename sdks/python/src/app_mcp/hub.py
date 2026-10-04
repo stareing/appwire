@@ -58,6 +58,7 @@ from ._hub_config import (  # noqa: E402  字典形式的配置 → 生成的记
     _event_limits,
     _intent_defaults,
     _result_cache,
+    _undo,
     _limits,
     _output_validation,
     _policy,
@@ -163,6 +164,12 @@ Deprecation = ffi.Deprecation
 SchemaChangeRecord = ffi.SchemaChangeRecord
 SchemaChange = ffi.SchemaChange
 ChangeLevel = ffi.ChangeLevel
+#: 撤销（spec/hub-api.md 3.23）：``CallResult.undo`` 为已登记的撤销（``label``、``expires_in_ms``），
+#: ``HubStatus.undo`` 为生效上限与记录数（``ttl_ms``、``max_per_task``、``records``）；``HubTool.undoable`` 为工具声明。
+#: 撤销上限（``HubConfig.undo``：``ttl_ms``、``max_per_task``，为空取默认 30 分钟 / 32，``max_per_task=0`` 关闭撤销）。
+UndoLimitOverrides = ffi.UndoLimitOverrides
+UndoOffer = ffi.UndoOffer
+UndoStatus = ffi.UndoStatus
 # 资源保护与工具声明（spec/hub-api.md 3.11）。
 #: 限流与大小上限（``HubConfig.limits``；``HubStatus.limits`` 为全部字段给出的生效值）。为空的字段取默认值。
 LimitsConfig = ffi.LimitsConfig
@@ -274,6 +281,9 @@ __all__ = [
     "ToolFilter",
     "ToolFormat",
     "ToolSurface",
+    "UndoLimitOverrides",
+    "UndoOffer",
+    "UndoStatus",
     "UpstreamSpec",
     "Visibility",
     "WakeDescriptor",
@@ -392,8 +402,8 @@ class Hub:
     """嵌入式 Hub。
 
     参数与 :class:`HubConfig` 字段一致（``approval_min_risk`` 可用字符串，如 ``"destructive"``；``limits`` 可用字典，
-    键同 JSON 配置，如 ``{"toolRatePerMinute": 60}``；``event_limits`` / ``result_cache`` 同样可用字典，如 ``{"maxInboxEvents": 20}``、
-    ``{"maxEntries": 0}``；
+    键同 JSON 配置，如 ``{"toolRatePerMinute": 60}``；``event_limits`` / ``result_cache`` / ``undo`` 同样可用字典，如 ``{"maxInboxEvents": 20}``、
+    ``{"maxEntries": 0}``、``{"maxPerTask": 0}``；
     ``output_validation`` 可用 ``"off"`` / ``"log"`` / ``"reject"``；
     ``policy`` 可用 JSON 形式的字典，如 ``{"rules": [{"id": "no-pay", "action": "deny", "app": "shop", "tool": "order.*"}]}``）；
     也可直接传 ``config=HubConfig(...)``。
@@ -409,6 +419,8 @@ class Hub:
                 kwargs["event_limits"] = _event_limits(kwargs["event_limits"])
             if "result_cache" in kwargs:
                 kwargs["result_cache"] = _result_cache(kwargs["result_cache"])
+            if "undo" in kwargs:
+                kwargs["undo"] = _undo(kwargs["undo"])
             if "output_validation" in kwargs:
                 kwargs["output_validation"] = _output_validation(kwargs["output_validation"])
             if kwargs.get("policy") is not None:

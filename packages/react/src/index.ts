@@ -50,6 +50,7 @@ export type {
   Audience,
   ResultStatus,
   ToolResultEnvelope,
+  UndoAction,
   InputDefinition,
   OutputDefinition,
   OutputSchema,

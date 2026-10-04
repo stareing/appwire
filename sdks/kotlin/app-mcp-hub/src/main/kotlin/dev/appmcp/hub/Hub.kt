@@ -115,6 +115,16 @@ typealias SchemaChange = dev.appmcp.hub.ffi.SchemaChange
 /** 变化级别：`BREAKING`（按旧定义的调用会出错）/ `WARNING`（可能破坏）。 */
 typealias ChangeLevel = dev.appmcp.hub.ffi.ChangeLevel
 
+// 撤销（第 15 项 X2，spec/hub-api.md 3.23）。
+/** 本次调用已登记撤销（[CallResult.undo]）：`label`（App 给出的说明）、`expiresInMs`；可用 `apps.undo` 撤销。 */
+/**
+ * 撤销上限（[HubConfig.undo]，spec/hub-api.md 3.23）：`ttlMs`、`maxPerTask`；为空的字段取默认值（30 分钟 / 32），`maxPerTask = 0u` 关闭撤销。
+ */
+typealias UndoLimitOverrides = dev.appmcp.hub.ffi.UndoLimitOverrides
+typealias UndoOffer = dev.appmcp.hub.ffi.UndoOffer
+/** 撤销记录状态（`HubStatus.undo`）：`ttlMs`、`maxPerTask`（`0` = 已关闭）、`records`（各任务合计）。 */
+typealias UndoStatus = dev.appmcp.hub.ffi.UndoStatus
+
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /** 限流与大小上限（[HubConfig.limits]；[HubStatus.limits] 为全部字段给出的生效值）。为空的字段取默认值。 */
 typealias LimitsConfig = dev.appmcp.hub.ffi.LimitsConfig
@@ -224,6 +234,10 @@ data class CallResult(
     val woke: Boolean = false,
     /** 结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数（spec/hub-api.md 3.20）；未命中为 `null`。 */
     val cachedAgeMs: Long? = null,
+    /** 本次调用已登记撤销（spec/hub-api.md 3.23，`dev.appwire/undo`），可用 `apps.undo` 撤销；未登记为 `null`。 */
+    val undo: UndoOffer? = null,
+    /** `apps.undo` 的结果：被撤销调用的 callId（`dev.appwire/undoOf`）；其他调用为 `null`。 */
+    val undoOf: String? = null,
 ) {
     val isError: Boolean get() = error != null
 
@@ -436,6 +450,8 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
             durationMs = out.durationMs.toLong(),
             woke = out.woke,
             cachedAgeMs = out.cachedAgeMs?.toLong(),
+            undo = out.undo,
+            undoOf = out.undoOf,
         )
     }
 

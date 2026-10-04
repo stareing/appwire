@@ -6,16 +6,20 @@ namespace AppMcp.Internal;
 /// <summary>工具 handler 的原始形式：参数 JSON → 结果。</summary>
 internal delegate Task<ToolOutcome> RawToolHandler(string argumentsJson, ToolContext context);
 
-/// <summary>handler 的结果：返回值 JSON（null 表示 JSON null）+ 结构化结果（普通返回值时为 null）。</summary>
-internal readonly record struct ToolOutcome(string? DataJson, ToolResult? Structured)
+/// <summary>handler 的结果：返回值 JSON（null 表示 JSON null）+ 结构化结果（普通返回值时为 null）+ 撤销参数 JSON
+/// （<see cref="ToolResult.Undo"/> 的参数；null 表示 <c>{}</c> 或无撤销信息）。</summary>
+internal readonly record struct ToolOutcome(string? DataJson, ToolResult? Structured, string? UndoArgumentsJson = null)
 {
-    /// <summary>按运行时类型序列化；<see cref="ToolResult"/> 取其 Data 序列化并保留其余字段。</summary>
+    /// <summary>按运行时类型序列化；<see cref="ToolResult"/> 取其 Data 与撤销参数序列化并保留其余字段。</summary>
     public static ToolOutcome From(object? result, JsonSerializerOptions json) => result switch
     {
         null => default,
-        ToolResult r => new(r.Data is null ? null : JsonSerializer.Serialize(r.Data, r.Data.GetType(), json), r),
-        _ => new(JsonSerializer.Serialize(result, result.GetType(), json), null),
+        ToolResult r => new(Serialize(r.Data, json), r, Serialize(r.Undo?.Arguments, json)),
+        _ => new(Serialize(result, json), null),
     };
+
+    private static string? Serialize(object? value, JsonSerializerOptions json) =>
+        value is null ? null : JsonSerializer.Serialize(value, value.GetType(), json);
 }
 
 /// <summary>资源读取的原始形式：返回内容 JSON。</summary>
@@ -112,6 +116,9 @@ internal sealed unsafe class PendingCall
                     StateResource = strings.Add(structured.StateResource),
                     Summary = strings.Add(structured.Summary),
                     AnnotationsJson = strings.Add(AnnotationsJson.Serialize(structured.Annotations)),
+                    UndoTool = strings.Add(structured.Undo?.Tool),
+                    UndoArgumentsJson = strings.Add(outcome.UndoArgumentsJson),
+                    UndoLabel = strings.Add(structured.Undo?.Label),
                 };
                 status = NativeMethods.am_call_complete_ex(call, &result);
             }

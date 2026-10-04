@@ -35,6 +35,7 @@ pub(crate) fn app_hub_tool(app_id: &str, info: &ToolDef, availability: Availabil
         implements: info.implements.clone(),
         schema_hash: Some(info.schema_hash().to_owned()),
         deprecated: info.deprecated.clone(),
+        undoable: info.undoable,
     }
 }
 
@@ -96,6 +97,7 @@ pub(crate) fn upstream_hub_tool(name: &str, t: &Tool) -> HubTool {
         implements: Vec::new(),
         schema_hash: None,
         deprecated: None,
+        undoable: false,
     }
 }
 

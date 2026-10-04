@@ -234,6 +234,22 @@ describe('createTauriAppMcp', () => {
     appMcp.dispose()
   })
 
+  it('撤销：undoable 随 tool.register 送到 Rust 侧（update 缺省即取消）；handler 结果的 undo 随 call.result 原样送出', async () => {
+    const fake = createFakeTauri()
+    const appMcp = createTauriAppMcp({ appId: 'todo', appName: '待办', bridge: bridgeOf(fake.window), logger: quiet })
+    const undo = { tool: 'todo.remove', arguments: { id: 3 }, label: '删除刚添加的待办' }
+    const tool = appMcp.tool('todo.add', { description: '添加', undoable: true, handler: () => ({ data: { id: 3 }, undo }) })
+    const reg = (await fake.waitFor((op) => op.op === 'tool.register')) as Extract<RendererOp, { op: 'tool.register' }>
+    expect(reg).toMatchObject({ name: 'todo.add', spec: { undoable: true } })
+    fake.emit({ type: 'call', callId: 'c1', toolId: reg.id, input: {} })
+    const result = await fake.waitFor((op) => op.op === 'call.result' && op.callId === 'c1')
+    expect(JSON.parse(JSON.stringify(result))).toEqual({ op: 'call.result', callId: 'c1', ok: true, data: { id: 3 }, undo })
+    tool.update({ undoable: undefined })
+    const upd = await fake.waitFor((op) => op.op === 'tool.update')
+    expect(upd).not.toHaveProperty('spec.undoable')
+    appMcp.dispose()
+  })
+
   it('USER_ACTION_REQUIRED 的类别与 reason / uri 经注入脚本送到 Rust 侧；缺省字段省略', async () => {
     const fake = createFakeTauri()
     const appMcp = createTauriAppMcp({ appId: 'shop', appName: '示例商城', bridge: bridgeOf(fake.window), logger: quiet })

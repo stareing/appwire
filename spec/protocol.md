@@ -608,8 +608,13 @@ spec/intents.md「不兼容只能发新主版本」同一原则）。兼容 / �
   不约束结果；进 `toolsHash`（只在 `true` 时序列化）。
 - **冲突由 App 判断**：撤销前对象已被用户或其他调用改动、撤销已无意义时，逆工具的 handler 自行返回错误或 `noop`；Host 不检查。
 - `undo` 计入结果大小上限（spec/hub-api.md 3.11）。Agent 侧的记录、`apps.undo` 与只能撤销一次的规则见 spec/hub-api.md 3.23。
-- 各语言入口（第 15 项 X2 二期）：Rust native `CallResult.undo`（核心 `CallOutput.undo`，类型 `UndoAction`）、`ToolOptions.undoable`；其余语言随二期补齐，在此之前 handler 无法给出 `undo`
-  （结果中没有该字段，等同不可撤销）。
+- 各语言入口（第 15 项 X2）：声明 `undoable` 与结果 `undo` 分别为——Rust native `ToolOptions.undoable` / `CallResult.undo`（核心
+  `CallOutput.undo`，类型 `UndoAction`）；Web / Node / Electron / Tauri 页面 / React / 鸿蒙 `undoable?: boolean` / 结果信封
+  `undo?: {tool, arguments?, label?}`（wasm / napi `UndoInit`，`@app-mcp/build` 写入清单）；Python `undoable=` / `ToolResult(undo=)`
+  （`UndoAction` 或字典）；Kotlin / Swift `undoable` / `ToolResult.undo`（`UndoAction`）；C ABI（v24）`AmToolOptions.undoable` /
+  `AmCallResult` 末尾 `undo_tool` / `undo_arguments_json` / `undo_label`（全 NULL = 不可撤销；参数非合法 JSON 为 `AM_ERR_INVALID_JSON`、
+  不消费调用）；C++ `ToolOptions::undoable` / `CallResult::undo`；C# `ToolOptions.Undoable` / `ToolResult.Undo`；Dart `undoable` /
+  `ToolResult.undo`、Flutter `useMcpTool(undoable:)`。更新时 `undoable` 缺省保持、显式 `false` / `null` 取消（各语言按其更新语义）。
 
 ## 4. 错误
 

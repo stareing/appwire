@@ -30,7 +30,7 @@ use app_mcp_native::{
     Activation, CachePolicy, CallHandle, Deprecation, CallResult, CancelListener, CancelReason, ContentAnnotations,
     ErrorKind, EventInfo, HoldHandle, NativeClient, NativeError, NavigateHandle, NavigationHandler, ReadHandle, ResourceHandle, ResourceOptions,
     ResourceReader, ResourceSpec, ResultStatus, Risk, ScopeHandle, StateInfo, StateStatus,
-    ToolAnnotations, ToolHandle, ToolHandler, ToolOptions, ToolSpec, ToolSurface,
+    ToolAnnotations, ToolHandle, ToolHandler, ToolOptions, ToolSpec, ToolSurface, UndoAction,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -103,6 +103,9 @@ struct ToolSpecMessage {
     /// 弃用声明（spec/protocol.md 3.7）；`tool.update` 时缺省表示清除。字段类型不对时整条消息被拒绝，格式由核心校验。
     #[serde(default)]
     deprecated: Option<Deprecation>,
+    /// 成功结果可能带 `undo`（spec/protocol.md 3.8）；`tool.update` 时缺省表示取消声明。
+    #[serde(default)]
+    undoable: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,7 +235,7 @@ enum PageOp {
     },
 }
 
-/// `Outcome`：`{ok: true, data, stateHints?, status?, stateResource?, summary?, annotations?}` /
+/// `Outcome`：`{ok: true, data, stateHints?, status?, stateResource?, summary?, annotations?, undo?}` /
 /// `{ok: false, kind, message, details?}`（`details` 为对象时随错误的 `data` 发给 Host，如 `USER_ACTION_REQUIRED` 的
 /// `reason` / `uri`）。
 ///
@@ -253,6 +256,8 @@ struct Outcome {
     summary: Option<Value>,
     #[serde(default, deserialize_with = "present")]
     annotations: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    undo: Option<Value>,
     #[serde(default)]
     kind: Option<String>,
     #[serde(default)]
@@ -569,5 +574,14 @@ mod spec_tests {
         assert_eq!(parse(json!({ "description": "旧" })).ok().map(|o| o.deprecated), Some(None));
         assert!(parse(json!({ "description": "旧", "deprecated": { "replacement": "a.new" } })).is_err());
         assert!(parse(json!({ "description": "旧", "deprecated": { "message": "m", "until": 20270630 } })).is_err());
+    }
+
+    /// 页面工具定义的 `undoable`（spec/protocol.md 3.8）进入原生选项；缺省（`tool.update` 时即取消）为 false；类型不对时拒绝。
+    #[test]
+    fn tool_spec_undoable() {
+        let parse = |v: Value| serde_json::from_value::<ToolSpecMessage>(v).map(|m| m.into_parts("a.add".into()).1.undoable);
+        assert!(parse(json!({ "description": "加", "undoable": true })).unwrap_or(false));
+        assert_eq!(parse(json!({ "description": "加" })).ok(), Some(false));
+        assert!(parse(json!({ "description": "加", "undoable": "yes" })).is_err());
     }
 }

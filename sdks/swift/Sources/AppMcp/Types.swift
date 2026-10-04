@@ -12,6 +12,9 @@ public typealias CachePolicy = AppMcpBindings.CachePolicy
 public typealias CacheScope = AppMcpBindings.CacheScope
 /// 工具弃用声明（spec/protocol.md 3.7）：`message`（必填）、`replacement`（同 App 内替代工具的局部名）、`until`（`YYYY-MM-DD`）。
 public typealias Deprecation = AppMcpBindings.Deprecation
+/// 撤销本次调用的逆操作（spec/protocol.md 3.8）：`tool`（同一 App 的工具局部名，可为自身）、`argumentsJson`（JSON 对象文本，
+/// `nil` = `{}`）、`label`（1...200 个字符，面向用户）。也可用 `UndoAction(tool:arguments:label:)` 传可编码的参数。
+public typealias UndoAction = AppMcpBindings.UndoAction
 /// 结果内容的标注（MCP 内容注解：audience、priority、lastModified）。
 public typealias ContentAnnotations = AppMcpBindings.ContentAnnotations
 public typealias Audience = AppMcpBindings.Audience
@@ -140,6 +143,9 @@ public struct ToolResult<Value: Encodable> {
     public var summary: String?
     /// 结果内容的标注，Hub 原样转发。
     public var annotations: ContentAnnotations?
+    /// 撤销本次调用的逆操作（spec/protocol.md 3.8）：Hub 记录后 Agent 可用 `apps.undo` 撤销；内容不合法时核心去掉它并记警告，
+    /// 结果照常发送。只在 `.done` / `.partial` 时有效。
+    public var undo: UndoAction?
 
     public init(
         data: Value?,
@@ -147,7 +153,8 @@ public struct ToolResult<Value: Encodable> {
         status: ResultStatus = .done,
         stateResource: String? = nil,
         summary: String? = nil,
-        annotations: ContentAnnotations? = nil
+        annotations: ContentAnnotations? = nil,
+        undo: UndoAction? = nil
     ) {
         self.data = data
         self.stateHints = stateHints
@@ -155,6 +162,16 @@ public struct ToolResult<Value: Encodable> {
         self.stateResource = stateResource
         self.summary = summary
         self.annotations = annotations
+        self.undo = undo
+    }
+}
+
+extension UndoAction {
+    /// 以可编码的参数构造（如字典或 `Encodable` 结构体，须编码为 JSON 对象）。
+    ///
+    /// @error 参数无法编码为 JSON → `ToolCallError`（`HANDLER_ERROR`）。对象以外的值不在此拒绝：由核心去掉并记警告。
+    public init<Arguments: Encodable>(tool: String, arguments: Arguments, label: String? = nil) throws {
+        self.init(tool: tool, argumentsJson: try encodeJSON(arguments), label: label)
     }
 }
 
@@ -167,7 +184,8 @@ extension ToolResult {
             status: status,
             stateResource: stateResource,
             summary: summary,
-            annotations: annotations
+            annotations: annotations,
+            undo: undo
         )
     }
 }

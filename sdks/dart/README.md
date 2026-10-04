@@ -116,6 +116,28 @@ client.tool('orders.list',
   不合法时抛 `AppMcpException`（`AppMcpErrorCode.invalidConfig`）。`ToolHandle.update(deprecated: null)` 清除。
 - `McpTool`、`useMcpTool`、`ToolSpec` 接受同样的 `deprecated`。需要 C ABI v23（`deprecated_message` / `deprecated_replacement` / `deprecated_until`）。
 
+## 撤销（spec/protocol.md 3.8）
+
+能否撤销、怎么撤销只有执行后的 handler 知道：在结果里给出逆操作（同一 App 的工具与参数），Hub 记录后 Agent 可用 `apps.undo` 撤销：
+
+```dart
+client.tool('todo.add',
+    description: '添加待办',
+    undoable: true, // 只用于展示：Agent 可提示"此操作可撤销"
+    handler: (args, ctx) {
+      final id = addTodo(args['title'] as String);
+      return ToolResult({'id': id},
+          undo: UndoAction('todo.remove', arguments: {'id': id}, label: '删除刚添加的待办'));
+    });
+```
+
+- `UndoAction.tool` 为同一 App 的工具局部名（可为自身，如开关类工具），`arguments` 为 JSON 对象（null 表示 `{}`），`label` 为 1..=200 个字符；
+  只在 `status` 为 done / partial 时有效。格式不合法时 SDK 去掉撤销信息并记警告日志，结果照常发送（不让调用失败）；
+  `arguments` 无法编码为 JSON 时调用以 HANDLER_ERROR 失败。
+- 撤销前对象已被改动、撤销已无意义时，由逆工具的 handler 自行返回错误或 `ToolResultStatus.noop`。
+- `McpTool`、`useMcpTool`、`ToolSpec` 接受同样的 `undoable`；`ToolHandle.update(undoable: null)` 恢复 false。需要 C ABI v24
+  （`AmToolOptions.undoable`、`AmCallResult.undo_tool` / `undo_arguments_json` / `undo_label`）。
+
 ## 界面级暴露与导航（spec/protocol.md 3.4）
 
 ```dart

@@ -84,6 +84,12 @@ pub struct CallOutcome {
     /// 与 MCP 结果 `_meta` 的 `dev.appwire/cached.ageMs` 相同）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_age_ms: Option<u64>,
+    /// 本次调用已登记撤销（spec/hub-api.md 3.23），可用 `apps.undo` 撤销；未登记为 `None`。旧版 Hub 无此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<crate::undo::UndoOffer>,
+    /// `apps.undo` 的结果：被撤销调用的 callId；其他调用为 `None`。旧版 Hub 无此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_of: Option<String>,
 }
 
 /// Hub 操作失败：[`ToolError`] 的包装（同一套错误码，spec/protocol.md §4）。

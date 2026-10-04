@@ -106,6 +106,13 @@ public typealias SchemaChangeRecord = AppMcpHubBindings.SchemaChangeRecord
 public typealias SchemaChange = AppMcpHubBindings.SchemaChange
 /// 变化级别：`.breaking`（按旧定义的调用会出错）/ `.warning`（可能破坏）。
 public typealias ChangeLevel = AppMcpHubBindings.ChangeLevel
+// 撤销（第 15 项 X2，spec/hub-api.md 3.23）。
+/// 本次调用已登记撤销（`CallResult.undo`）：`label`（App 给出的说明）、`expiresInMs`；可用 `apps.undo` 撤销。
+/// 撤销上限（`HubConfig.undo`，spec/hub-api.md 3.23）：`ttlMs`、`maxPerTask`；为空的字段取默认值（30 分钟 / 32），`maxPerTask: 0` 关闭撤销。
+public typealias UndoLimitOverrides = AppMcpHubBindings.UndoLimitOverrides
+public typealias UndoOffer = AppMcpHubBindings.UndoOffer
+/// 撤销记录状态（`HubStatus.undo`）：`ttlMs`、`maxPerTask`（`0` = 已关闭）、`records`（各任务合计）。
+public typealias UndoStatus = AppMcpHubBindings.UndoStatus
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。
 public typealias LimitsConfig = AppMcpHubBindings.LimitsConfig
@@ -179,6 +186,10 @@ public struct CallResult: Sendable, Equatable {
     public let woke: Bool
     /// 结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数（spec/hub-api.md 3.20）；未命中为 `nil`。
     public let cachedAgeMs: UInt64?
+    /// 本次调用已登记撤销（spec/hub-api.md 3.23，`dev.appwire/undo`），可用 `apps.undo` 撤销；未登记为 `nil`。
+    public let undo: UndoOffer?
+    /// `apps.undo` 的结果：被撤销调用的 callId（`dev.appwire/undoOf`）；其他调用为 `nil`。
+    public let undoOf: String?
 
     public var isError: Bool { error != nil }
 
@@ -448,7 +459,9 @@ public final class Hub: @unchecked Sendable {
             routedTo: out.routedTo,
             durationMs: out.durationMs,
             woke: out.woke,
-            cachedAgeMs: out.cachedAgeMs
+            cachedAgeMs: out.cachedAgeMs,
+            undo: out.undo,
+            undoOf: out.undoOf
         )
     }
 

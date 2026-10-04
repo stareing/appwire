@@ -50,7 +50,7 @@ const std::vector<std::string> kFeatures = {"toolOptions", "mutate",      "lifec
                                             "surface",     "navigation",  "backgroundTool",  "backgroundNavigation",
                                             "idempotencyKey", "callScheduling", "busy",
                                             "events",      "implements",  "cache",
-                                            "deprecated"};
+                                            "deprecated",  "undo"};
 
 // ---------------------------------------------------------------------------
 // 用例字段 → SDK 枚举（协议同名字符串，spec/protocol.md 第 3 节）
@@ -145,6 +145,12 @@ void set_c_cache(Options& options, const Json& decl) {
 std::optional<app_mcp::Deprecation> deprecation(const Json& v) {
     if (!v.is_object()) return std::nullopt;
     return app_mcp::Deprecation{v["message"].str_or(""), v["replacement"].str(), v["until"].str()};
+}
+
+/// 用例 result.undo（{tool, arguments?, label?}，spec/protocol.md 3.8）原样；格式由 SDK 核心校验。未给出时 nullopt。
+std::optional<app_mcp::UndoAction> undo_action(const Json& v) {
+    if (!v.is_object()) return std::nullopt;
+    return app_mcp::UndoAction{v["tool"].str_or(""), json_text(v["arguments"]), v["label"].str()};
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +374,7 @@ app_mcp::ToolOptions cpp_tool_options(const Json& decl) {
     o.implements = strings(decl["implements"]);
     o.cache = cache_policy(decl["cache"]);
     o.deprecated = deprecation(decl["deprecated"]);
+    o.undoable = decl["undoable"].boolean().value_or(false);
     return o;
 }
 
@@ -396,6 +403,7 @@ public:
             result.state_resource = r["stateResource"].str();
             result.summary = r["summary"].str();
             result.annotations = content_annotations(r["annotations"]);
+            result.undo = undo_action(r["undo"]);
             call_.complete(result);
             return;
         }
@@ -620,6 +628,7 @@ struct CToolDecl {
             options.deprecated_replacement = deprecated->replacement ? deprecated->replacement->c_str() : nullptr;
             options.deprecated_until = deprecated->until ? deprecated->until->c_str() : nullptr;
         }
+        options.undoable = decl["undoable"].boolean().value_or(false);
     }
     CToolDecl(const CToolDecl&) = delete;
     CToolDecl& operator=(const CToolDecl&) = delete;
@@ -662,6 +671,7 @@ public:
             auto state_resource = r["stateResource"].str();
             auto summary = r["summary"].str();
             auto annotations = json_text(r["annotations"]);
+            auto undo = undo_action(r["undo"]);
             AmCallResult result{};
             result.struct_size = sizeof(AmCallResult);
             result.data_json = c_or_null(data);
@@ -671,6 +681,11 @@ public:
             result.state_resource = c_or_null(state_resource);
             result.summary = c_or_null(summary);
             result.annotations_json = c_or_null(annotations);
+            if (undo) {  // 全 NULL = 不可撤销
+                result.undo_tool = undo->tool.c_str();
+                result.undo_arguments_json = c_or_null(undo->arguments_json);
+                result.undo_label = c_or_null(undo->label);
+            }
             am_call_complete_ex(call, &result);
             return;
         }

@@ -70,6 +70,8 @@ export interface ManifestTool {
   cache?: CachePolicy
   /** 弃用声明（spec/protocol.md 3.7）。 */
   deprecated?: ToolDeprecation
+  /** 成功结果可能带 `undo`（spec/protocol.md 3.8）；只写 `true`。 */
+  undoable?: boolean
 }
 
 /** 清单 `pages` 条目（spec/manifest.md 2.3）。 */
@@ -396,7 +398,7 @@ function checkEvents(events: unknown, appId: string, errors: string[], warnings:
 
 /**
  * 单个工具（顶层或页面内）的规则：名称、唯一性（`toolNames` 跨顶层与页面共享）、appId 前缀、description、inputSchema、
- * risk / activation / surface / page、annotations、outputSchema、implements、cache、deprecated。
+ * risk / activation / surface / page、annotations、outputSchema、implements、cache、deprecated、undoable。
  */
 function checkTool(
   tool: ManifestTool,
@@ -451,6 +453,7 @@ function checkTool(
   }
   if (tool.deprecated !== undefined) checkDeprecation(tool.deprecated, tool.name, label, errors)
   warnings.push(...deprecatedRequiredWarnings(schema, label))
+  if (tool.undoable !== undefined && typeof tool.undoable !== 'boolean') errors.push(`${label} undoable 必须是布尔值`)
 }
 
 /** `pages` 的规则（spec/manifest.md 第 3 节），返回已声明的页面名。 */
@@ -709,6 +712,7 @@ function toManifestTool(
   if (tool.implements !== undefined && tool.implements.length > 0) entry.implements = [...tool.implements]
   if (tool.cache !== undefined) entry.cache = { ...tool.cache }
   if (tool.deprecated !== undefined) entry.deprecated = { ...tool.deprecated }
+  if (tool.undoable === true) entry.undoable = true
   return entry
 }
 

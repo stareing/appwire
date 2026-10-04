@@ -83,6 +83,8 @@ public struct ToolDeclaration {
     public var cache: CachePolicy?
     /// 弃用声明（spec/protocol.md 3.7）；`nil` = 未弃用。
     public var deprecated: Deprecation?
+    /// 成功结果可能带撤销信息（spec/protocol.md 3.8，只用于展示）；`false` = 未声明。
+    public var undoable: Bool
 
     init(_ spec: ToolSpec) {
         description = spec.description
@@ -100,6 +102,7 @@ public struct ToolDeclaration {
         implements = spec.implements
         cache = spec.cache
         deprecated = spec.deprecated
+        undoable = spec.undoable
     }
 
     func applied(to spec: ToolSpec) -> ToolSpec {
@@ -119,6 +122,7 @@ public struct ToolDeclaration {
         next.implements = implements
         next.cache = cache
         next.deprecated = deprecated
+        next.undoable = undoable
         return next
     }
 }

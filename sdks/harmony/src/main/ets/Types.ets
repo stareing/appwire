@@ -109,6 +109,21 @@ export interface ToolDeprecation {
   until?: string;
 }
 
+/**
+ * 撤销本次调用的逆操作（spec/protocol.md 3.8）：调用同一 App 的工具 `tool`，参数为 `arguments`。Hub 记录后 Agent 可经
+ * `apps.undo` 撤销（只能撤销一次）；撤销已无意义时由逆工具的 handler 返回错误或 `noop`。
+ * 不合法（`tool` 不是合法局部名、`arguments` 序列化后超过 64 KiB、`label` 为空或超过 200 字符）时 SDK 去掉它并记警告，
+ * 结果照常发送（操作已经执行，不让调用失败）。
+ */
+export interface UndoAction {
+  /** 同一 App 的工具局部名（可为自身，如开关类工具）。 */
+  tool: string;
+  /** 调用逆工具的参数，缺省 `{}`。 */
+  arguments?: Record<string, Object>;
+  /** 一句面向用户的说明（1..=200 字符）：撤销会做什么。 */
+  label?: string;
+}
+
 /** 内容的接收方（MCP `Role`）。 */
 export type Audience = 'user' | 'assistant';
 
@@ -239,6 +254,8 @@ export interface ToolResultOptions {
   summary?: string;
   /** 结果内容的标注。 */
   annotations?: ContentAnnotations;
+  /** 撤销本次调用的逆操作（{@link UndoAction}）；只在 `status` 为 `done` / `partial` 时有效。 */
+  undo?: UndoAction;
 }
 
 /**
@@ -252,6 +269,7 @@ export class ToolResult<O> {
   readonly stateResource?: string;
   readonly summary?: string;
   readonly annotations?: ContentAnnotations;
+  readonly undo?: UndoAction;
 
   constructor(data: O, stateHints: string[], options?: ToolResultOptions) {
     this.data = data;
@@ -261,6 +279,7 @@ export class ToolResult<O> {
       this.stateResource = options.stateResource;
       this.summary = options.summary;
       this.annotations = options.annotations;
+      this.undo = options.undo;
     }
   }
 }
@@ -310,6 +329,11 @@ export interface ToolDefinition<I, O> {
   cache?: CachePolicy;
   /** 弃用声明（{@link ToolDeprecation}）。 */
   deprecated?: ToolDeprecation;
+  /**
+   * 成功结果可能带 `undo`（{@link UndoAction}，spec/protocol.md 3.8）：只用于展示（Agent 可提示"此操作可撤销"），不约束结果；
+   * 未声明的工具返回 `undo` 同样可撤销。缺省 false。
+   */
+  undoable?: boolean;
   handler: ToolHandler<I, O>;
 }
 
@@ -332,7 +356,7 @@ export type NavigationHandler = (request: NavigationRequest) => void | Promise<v
 
 /**
  * `ToolHandle.update` 的变更：未提供（或 `undefined`）的字段保持不变；显式给出 `null` 清除该声明
- * （`title` / `annotations` / `outputSchema` / `activation` / `page` / `backgroundTool` / `exclusive` / `implements` / `cache` / `deprecated` 删除，`concurrency` 恢复不限，`inputSchema` 变为无参数，`risk` 恢复 `write`，
+ * （`title` / `annotations` / `outputSchema` / `activation` / `page` / `backgroundTool` / `exclusive` / `implements` / `cache` / `deprecated` 删除，`undoable` 恢复 false，`concurrency` 恢复不限，`inputSchema` 变为无参数，`risk` 恢复 `write`，
  * `enabled` 恢复 true，`surface` 恢复 `app`）。`description` 不可清除，`null` 时保持不变。
  */
 export interface ToolChanges {
@@ -354,6 +378,8 @@ export interface ToolChanges {
   cache?: CachePolicy | null;
   /** 整体替换弃用声明；`null` 清除。 */
   deprecated?: ToolDeprecation | null;
+  /** `false` / `null` 取消撤销声明。 */
+  undoable?: boolean | null;
 }
 
 export interface ToolHandle {

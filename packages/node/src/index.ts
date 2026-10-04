@@ -70,6 +70,7 @@ export type {
   ToolResult,
   ToolResultEnvelope,
   ToolSurface,
+  UndoAction,
   UserActionReason,
   UserActionRequiredOptions,
   Visibility,

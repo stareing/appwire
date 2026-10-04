@@ -81,7 +81,7 @@
  *   旧调用方不受影响）：App 在系统名字服务登记名字，Hub 按名拨号时接受通道（握手方向不变：SDK 先发 app/hello，
  *   wakeReason 为 "os-activation"）；通道关闭后 on-demand / idle 回到 DORMANT、不重连。由 D-Bus 激活启动的进程
  *   （命令行带 --app-mcp-activation）按"由唤醒冷启动"处理（AM_RESIDENCY_EXIT_WHEN_IDLE 生效）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v23 仍为 3。）
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v24 仍为 3。）
  * - v18（第 4f 项 k / 第 16 项 N6，spec/protocol.md 5.3）：只在结构体末尾追加字段（按 struct_size 读取，旧调用方不受影响）。
  *   · AmToolOptions 末尾追加 concurrency（本工具同时执行的调用上限，0 = 不单独限制）与 exclusive（互斥组名，同组工具
  *     同一时刻至多一个在执行；NULL = 不互斥）。只在 SDK 内调度，不同步给 Host。
@@ -100,6 +100,10 @@
  * - v23（第 16 项 O4，spec/protocol.md 3.7）：只在 AmToolOptions 末尾追加 deprecated_message、deprecated_replacement、
  *   deprecated_until（工具弃用声明，按 struct_size 读取；旧调用方视为未声明）。三者均为 NULL = 未声明（更新时清除）；
  *   格式不合法时注册 / 更新返回 AM_ERR_INVALID_CONFIG。
+ * - v24（第 15 项 X2，spec/protocol.md 3.8）：只在结构体末尾追加字段（按 struct_size 读取，旧调用方视为未声明）。
+ *   · AmToolOptions 末尾追加 undoable（成功结果可能带撤销信息，只用于展示；更新时 false 表示清除）。
+ *   · AmCallResult 末尾追加 undo_tool、undo_arguments_json、undo_label（撤销本次调用的逆操作；三者均为 NULL = 不可撤销）。
+ *     格式不合法的撤销信息由核心去掉并经 on_log 记一条警告（AM_LOG_WARN），结果其余部分照常发送，不让调用失败。
  * - 第 16 项 N6（spec/hub-api.md 3.6「对象锁」）：am_call_fail 认可的错误类别新增 "LOCKED"（-31003，由 Host 的对象锁产生，
  *   App 一般不用）；函数与结构体不变。
  *
@@ -421,6 +425,10 @@ typedef struct AmToolOptions {
     const char *deprecated_message;
     const char *deprecated_replacement;
     const char *deprecated_until;
+    /* v24（spec/protocol.md 3.8）：true = 本工具的成功结果可能带撤销信息（AmCallResult.undo_*），Hub 据此提示"此操作可撤销"；
+     * 只用于展示，不约束结果（未声明的工具结果带撤销信息同样有效）。false = 未声明（更新时表示清除）。
+     * 旧调用方的 struct_size 不含此字段时按 false 处理。 */
+    bool undoable;
 } AmToolOptions;
 
 typedef struct AmResourceSpec {
@@ -457,6 +465,18 @@ typedef struct AmCallResult {
     /* 可为 NULL。结果内容的标注（MCP 内容注解）JSON 对象，字段均可选：
      * {"audience": ["user" | "assistant", ...], "priority": 0..1, "lastModified": "<ISO 8601>"}；Host 原样转发。 */
     const char *annotations_json;
+    /* v24（spec/protocol.md 3.8）：撤销本次调用的逆操作——Hub 记录后供 Agent 调用 apps.undo；只在 status 为 DONE / PARTIAL 时有效。
+     * 三者均为 NULL = 不可撤销；任一不为 NULL 即为给出撤销信息，此时 undo_tool 必填：
+     * undo_tool：同一 App 的工具局部名（可为本工具自身，如开关类工具）；
+     * undo_arguments_json：可为 NULL（= {}），调用逆工具的参数（JSON 对象文本，序列化后不超过 65536 字节）；
+     * undo_label：可为 NULL，1..=200 个字符的非空文本，面向用户说明撤销会做什么。
+     * 格式不合法（undo_tool 为 NULL 或不是合法局部名、参数不是对象或超长、label 为空或超长）时核心去掉撤销信息并记警告，
+     * 结果其余部分照常发送（操作已经执行，不让调用失败）。undo_arguments_json 不是合法 JSON（含非法 UTF-8）时返回
+     * AM_ERR_INVALID_JSON（不消费 call，可以重试）；undo_tool / undo_label 含非法 UTF-8 时返回 AM_ERR_INVALID_ARGUMENT。
+     * 旧调用方的 struct_size 不含 undo_label 时按不可撤销处理。 */
+    const char *undo_tool;
+    const char *undo_arguments_json;
+    const char *undo_label;
 } AmCallResult;
 
 /* ---------------------------------------------------------------------------
@@ -625,9 +645,9 @@ AmStatus am_call_set_cancel_callback(AmCall *call, AmCancelFn on_cancel, void *u
  * data_json 不是合法 UTF-8 时按 AM_ERR_INVALID_JSON 处理（不消费）；state_hints 含 NULL / 非法 UTF-8 时
  * 返回 AM_ERR_INVALID_ARGUMENT，调用以 HANDLER_ERROR 结束并消费 call。call 为 NULL 时返回 AM_ERR_INVALID_ARGUMENT。 */
 AmStatus am_call_complete(AmCall *call, const char *data_json, const char *const *state_hints, size_t state_hints_len);
-/* v9：成功完成并消费 call，附带业务状态、摘要与内容注解。result 为 NULL 时等同 am_call_complete(call, NULL, NULL, 0)。
- * data_json 或 annotations_json 非法（含非法 UTF-8）时返回 AM_ERR_INVALID_JSON，call 不会被消费，可以重试。
- * struct_size 过小、status 非法、state_hints / state_resource / summary 含 NULL 或非法 UTF-8 时返回
+/* v9：成功完成并消费 call，附带业务状态、摘要与内容注解（v24：撤销信息）。result 为 NULL 时等同 am_call_complete(call, NULL, NULL, 0)。
+ * data_json、annotations_json 或 undo_arguments_json 非法（含非法 UTF-8）时返回 AM_ERR_INVALID_JSON，call 不会被消费，可以重试。
+ * struct_size 过小、status 非法、state_hints / state_resource / summary / undo_tool / undo_label 含 NULL（state_hints 项）或非法 UTF-8 时返回
  * AM_ERR_INVALID_ARGUMENT，调用以 HANDLER_ERROR 结束并消费 call。调用已被取消时仍然消费 call，并返回
  * AM_ERR_ALREADY_COMPLETED。call 为 NULL 时返回 AM_ERR_INVALID_ARGUMENT。 */
 AmStatus am_call_complete_ex(AmCall *call, const AmCallResult *result);

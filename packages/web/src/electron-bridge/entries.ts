@@ -90,6 +90,7 @@ export class ToolEntry implements ToolHandle, Detachable, LazySlot {
       ...(d.implements !== undefined && d.implements.length > 0 && { implements: [...d.implements] }),
       ...(d.cache !== undefined && { cache: { ...d.cache } }),
       ...(d.deprecated !== undefined && { deprecated: { ...d.deprecated } }),
+      ...(d.undoable !== undefined && { undoable: d.undoable }),
     }
   }
 

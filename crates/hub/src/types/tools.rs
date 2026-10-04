@@ -53,6 +53,9 @@ pub struct HubTool {
     /// App 工具的弃用声明（原样，spec/protocol.md 3.7）；未弃用、内置与上游工具为 `None`。弃用工具照常列出与调用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deprecated: Option<app_mcp_protocol::Deprecation>,
+    /// 工具声明了 `undoable`（spec/protocol.md 3.8，只用于展示）；内置 / 上游工具为 `false`。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub undoable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

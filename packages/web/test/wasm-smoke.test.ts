@@ -450,4 +450,50 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     expect(upserted.find((t: { name: string }) => t.name === 'o.old')).not.toHaveProperty('deprecated')
     core.free?.()
   })
+
+  it('撤销（spec/protocol.md 3.8）：undoable 进 tools/sync、更新 false 取消；结果 undo 原样发出，不合法时去掉并产生 warning、结果照常', async () => {
+    const factory = await loadRealCore()
+    const core = factory({ appId: 'todo', appName: 't', instanceId: 'i' })
+    const drain = (): any[] => {
+      const out: any[] = []
+      for (let e = core.pollEvent(); e; e = core.pollEvent()) out.push(e)
+      return out
+    }
+    const sent = (events: any[]): any[] => events.filter((e) => e.type === 'send').map((e) => JSON.parse(e.text))
+    const empty = { type: 'object' as const, properties: {} }
+    const add = core.registerTool({ name: 'todo.add', description: '加', inputSchema: empty, undoable: true })
+    core.registerTool({ name: 'todo.remove', description: '删', inputSchema: empty })
+    core.start(0)
+    core.connectNow(0)
+    core.handleConnected(0)
+    const hello = drain().find((e) => e.type === 'send')
+    core.handleMessage(
+      JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(hello.text).id, result: { status: 'paired', protocolVersion: '1', hostVersion: 'x', service: 'app-mcp' } }),
+      1,
+    )
+    const tools = sent(drain()).find((m) => m.method === 'tools/sync').params.tools
+    expect(tools.find((t: { name: string }) => t.name === 'todo.add').undoable).toBe(true)
+    expect(tools.find((t: { name: string }) => t.name === 'todo.remove')).not.toHaveProperty('undoable')
+
+    const invoke = (callId: string, outcome: unknown): any[] => {
+      core.handleMessage(JSON.stringify({ jsonrpc: '2.0', id: callId, method: 'tools/invoke', params: { callId, name: 'todo.add', arguments: {} } }), 2)
+      drain()
+      core.completeCall(callId, outcome as never, 3)
+      return drain()
+    }
+    const undo = { tool: 'todo.remove', arguments: { id: 3 }, label: '删除刚加的' }
+    const ok = invoke('c1', { data: { id: 3 }, undo })
+    expect(sent(ok)[0].result).toMatchObject({ data: { id: 3 }, undo })
+    expect(invoke('c2', { data: 1, undo: { tool: 'todo.remove' } }).filter((e) => e.type === 'send').map((e) => JSON.parse(e.text).result.undo)).toEqual([
+      { tool: 'todo.remove', arguments: {} },
+    ])
+    const bad = invoke('c3', { data: 1, summary: '完成', undo: { tool: 'bad name', arguments: [1] } })
+    expect(sent(bad)[0].result).toEqual({ data: 1, summary: '完成' })
+    expect(bad.find((e) => e.type === 'warning')?.message).toMatch(/undo/)
+
+    core.updateTool(add, { undoable: false })
+    const upserted = sent(drain()).find((m) => m.method === 'tools/changed').params.upserted
+    expect(upserted.find((t: { name: string }) => t.name === 'todo.add')).not.toHaveProperty('undoable')
+    core.free?.()
+  })
 })

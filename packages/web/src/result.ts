@@ -2,7 +2,7 @@
  * handler 返回值 → 调用结果（spec/protocol.md 3.2）。驱动层（WASM 核心）与 Electron 渲染进程桥接共用。
  */
 
-import type { ContentAnnotations, ResultStatus, ToolResultEnvelope } from './types'
+import type { ContentAnnotations, ResultStatus, ToolResultEnvelope, UndoAction } from './types'
 
 /** 规范化后的成功结果；可选字段只在给出时出现。 */
 export interface NormalizedResult {
@@ -12,6 +12,7 @@ export interface NormalizedResult {
   stateResource?: string
   summary?: string
   annotations?: ContentAnnotations
+  undo?: UndoAction
 }
 
 const RESULT_STATUSES: readonly unknown[] = ['done', 'pending', 'partial', 'noop'] satisfies ResultStatus[]
@@ -31,6 +32,7 @@ const ENVELOPE_FIELDS: Readonly<Record<keyof NormalizedResult, (v: unknown) => b
   stateResource: isOptional(isString),
   summary: isOptional(isString),
   annotations: isOptional(isPlainObject),
+  undo: isOptional(isPlainObject),
 }
 
 /**
@@ -54,7 +56,7 @@ export function toJsonValue(value: unknown): unknown {
 
 /**
  * handler 返回值 → 结果：结构化结果（{@link import('./types').ToolResultEnvelope}）被拆开，其他值整体作为 `data`。
- * `data` 与 `annotations` 转为 JSON 值；空 `stateHints` 省略。
+ * `data`、`annotations` 与 `undo` 转为 JSON 值；空 `stateHints` 省略。`undo` 只转换不校验（不合法的由核心去掉并告警）。
  *
  * @error 返回值无法序列化为 JSON 时抛出（调用方转为 `HANDLER_ERROR`）。
  */
@@ -66,5 +68,6 @@ export function normalizeToolResult(result: unknown): NormalizedResult {
   if (result.stateResource !== undefined) out.stateResource = result.stateResource
   if (result.summary !== undefined) out.summary = result.summary
   if (result.annotations !== undefined) out.annotations = toJsonValue(result.annotations) as ContentAnnotations
+  if (result.undo !== undefined) out.undo = toJsonValue(result.undo) as UndoAction
   return out
 }

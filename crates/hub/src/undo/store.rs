@@ -64,7 +64,6 @@ impl TaskUndo {
     }
 
     /// 当前保留的记录数（含尚未被判定的过期记录）。
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.records.len()
     }

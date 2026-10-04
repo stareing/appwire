@@ -10,6 +10,7 @@ use crate::error::parse_error_kind;
 
 mod cache;
 mod deprecation;
+mod undo;
 
 #[test]
 fn error_kinds_roundtrip() {
@@ -142,6 +143,7 @@ fn tool_spec_conversion() {
         implements: Vec::new(),
         cache: None,
         deprecated: None,
+        undoable: false,
     };
     let (n, options): (native::ToolSpec, native::ToolOptions) = spec.clone().into();
     assert_eq!(n.risk, native::Risk::Write);
@@ -185,6 +187,7 @@ fn call_result_conversion() {
             priority: Some(0.5),
             last_modified: None,
         }),
+        undo: None,
     }
     .into();
     assert_eq!(r.status, native::ResultStatus::Pending);
@@ -398,6 +401,7 @@ fn read_and_call_failures_reach_host() {
             implements: Vec::new(),
             cache: None,
             deprecated: None,
+            undoable: false,
         };
         keep.push(client.register_tool(spec, Arc::new(UserActionTool)).expect("tool"));
     }
@@ -470,6 +474,7 @@ fn idempotency_key_reaches_handler() {
         implements: Vec::new(),
         cache: None,
         deprecated: None,
+        undoable: false,
     };
     let _tool = client.register_tool(spec, Arc::new(KeyTool)).expect("tool");
     client.start();

@@ -42,6 +42,7 @@ final class McpScope {
     List<String> implements = const [],
     CachePolicy? cache,
     ToolDeprecation? deprecated,
+    bool undoable = false,
     required ToolHandler handler,
   }) =>
       registerTool(
@@ -62,7 +63,8 @@ final class McpScope {
               exclusive: exclusive,
               implements: implements,
               cache: cache,
-              deprecated: deprecated),
+              deprecated: deprecated,
+              undoable: undoable),
           handler);
 
   /// 用 [ToolSpec] 注册工具。
@@ -232,7 +234,8 @@ Pointer<AmToolOptions> _toolOptions(ToolSpec spec, Allocator arena) {
     ..cache_scope = cacheScopeToNative(spec.cache)
     ..deprecated_message = _optStr(spec.deprecated?.message, arena)
     ..deprecated_replacement = _optStr(spec.deprecated?.replacement, arena)
-    ..deprecated_until = _optStr(spec.deprecated?.until, arena);
+    ..deprecated_until = _optStr(spec.deprecated?.until, arena)
+    ..undoable = spec.undoable;
   return o;
 }
 

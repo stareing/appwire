@@ -134,6 +134,12 @@
  *     HubStatus.schemaChanges：[{appId, tool, level（"breaking" | "warning"）, changes: [{level, path, message}], at（Unix 毫秒）}]。
  *   · am_hub_start：resultCache 开启（maxEntries > 0）时 maxBytes / maxEntryBytes 为 0 或 maxEntryBytes 大于 maxBytes 报
  *     AM_HUB_ERR_IO（Hub 启动时校验，同 limits / lease；只给 maxBytes 时 maxEntryBytes 缺省取 min(64 KiB, maxBytes)）。
+ * - v26（撤销，第 15 项 X2，spec/hub-api.md 3.23）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 undo（{"ttlMs","maxPerTask"}）。
+ *   · 新内置工具 apps.undo（{callId?, taskId?}，撤销开启时列出），经 am_hub_call 调用，与 MCP 相同。
+ *   · JSON 中新增（App 声明与 Hub 记录原样）：HubTool（am_hub_tools_json）与 apps.tools / apps.search 的工具条目带
+ *     undoable?（true 时；内置 / 上游工具省略）；CallOutcome 带 undo?（{label?, expiresInMs}：本次调用已登记撤销）与
+ *     undoOf?（apps.undo 的结果：被撤销调用的 callId）；HubStatus.undo：{ttlMs, maxPerTask, records}。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -329,6 +335,10 @@ void am_hub_string_free(char *s);
  *                        maxEntries = 0 关闭缓存。只在内存。未知字段报 AM_HUB_ERR_INVALID_JSON；开启时 maxBytes /
  *                        maxEntryBytes 为 0 或 maxEntryBytes 大于 maxBytes 报 AM_HUB_ERR_IO（v25；只给 maxBytes 时
  *                        maxEntryBytes 缺省取 min(65536, maxBytes)）
+ *   —— v26 撤销（spec/hub-api.md 3.23）——
+ *   undo                 {"ttlMs": 1800000, "maxPerTask": 32}（缺省字段取这些默认值）：App 工具结果带撤销信息时登记到调用方的
+ *                        Agent 任务，供 apps.undo 撤销；记录的有效期与每个任务的条数上限（超出时丢弃最早的一条）；maxPerTask = 0
+ *                        关闭撤销（不登记、不列出 apps.undo）。只在内存、无定时器。未知字段报 AM_HUB_ERR_INVALID_JSON
  *   workerThreads        tokio 工作线程数（默认 2）
  * 未知字段报 AM_HUB_ERR_INVALID_JSON。清单无效报 AM_HUB_ERR_INVALID_CONFIG；地址无法绑定报 AM_HUB_ERR_IO。 */
 AmHubStatus am_hub_start(const char *config_json, AmHub **out_hub);
@@ -398,7 +408,8 @@ AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **ou
  *   绕过不计）, evictions（因上限淘汰数）}，计数自 Hub 启动起累计；v25 起另有 limits：{maxEntries, maxBytes, maxEntryBytes}
  *   （生效上限，maxEntries = 0 表示已关闭）。
  * v25 起另有 schemaChanges：工具定义的不兼容变化（spec/hub-api.md 3.21），最近 32 条、旧的在前：[{appId, tool,
- *   level（"breaking" | "warning"）, changes: [{level, path, message}], at（Unix 毫秒）}]，只在内存。 */
+ *   level（"breaking" | "warning"）, changes: [{level, path, message}], at（Unix 毫秒）}]，只在内存。
+ * v26 起另有 undo：{ttlMs, maxPerTask（0 = 已关闭）, records（各任务撤销记录数合计，含尚未惰性丢弃的过期记录）}。 */
 AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------
@@ -417,7 +428,9 @@ AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
  *        "summary"?: …, "annotations"?: {"audience"?, "priority"?, "lastModified"?},
  *    v13："routedTo"?: 改调后台替代时实际调用的工具全名（spec/hub-api.md 3.14），
  *    v14："durationMs": <毫秒>, "woke": <bool>（本次 App 工具调用是否经历了唤醒），
- *    v24："cachedAgeMs"?: 结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数；未命中时省略}
+ *    v24："cachedAgeMs"?: 结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数；未命中时省略，
+ *    v26："undo"?: {"label"?, "expiresInMs"}（App 结果带合法撤销信息且已登记，可用 apps.undo 撤销；未登记时省略），
+ *        "undoOf"?: apps.undo 的结果中为被撤销调用的 callId（其他调用省略）}
  * 名称无法解析（appId 未知等）也以 CallOutcome 形式返回（result.error，kind 为 TOOL_NOT_FOUND）。 */
 AmHubStatus am_hub_call(AmHub *hub, const char *request_json, AmHubResultFn cb, void *user_data,
                         char **out_call_id);

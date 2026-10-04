@@ -151,7 +151,7 @@ pub(crate) struct Invocation {
     /// 调用的 App 工具已弃用时为其弃用声明（spec/hub-api.md 3.21，MCP 结果 `_meta` `dev.appwire/deprecated`）。
     pub deprecated: Option<app_mcp_protocol::Deprecation>,
     /// 本次调用已登记撤销时写进 `_meta` `dev.appwire/undo` 的内容（spec/hub-api.md 3.23）。
-    pub undo: Option<crate::undo::UndoGrant>,
+    pub undo: Option<crate::undo::UndoOffer>,
     /// `apps.undo` 的结果：被撤销调用的 callId（`_meta` `dev.appwire/undoOf`）。
     pub undo_of: Option<String>,
 }
@@ -255,6 +255,8 @@ impl Invocation {
             duration_ms: self.duration_ms,
             woke: self.woke,
             cached_age_ms: self.cached_age_ms,
+            undo: self.undo,
+            undo_of: self.undo_of,
         })
     }
 }

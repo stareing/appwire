@@ -12,19 +12,20 @@ namespace AppMcp.Tests;
 public class NavigationTests(ITestOutputHelper output)
 {
     [Fact]
-    public void ToolOptionsUseV23Layout()
+    public void ToolOptionsUseV24Layout()
     {
         // @why 回归：v13 的 AmToolOptions 没有 page / surface、v14 没有 background_tool、v17 没有 concurrency / exclusive、
-        //      v20 没有 implements、v21 没有 cache_ttl_ms / cache_scope、v22 没有 deprecated_*，struct_size 按旧布局传入时库不读取这些字段。
+        //      v20 没有 implements、v21 没有 cache_ttl_ms / cache_scope、v22 没有 deprecated_*、v23 没有 undoable，struct_size 按旧布局传入时库不读取这些字段。
         //      32 位平台上 uint64_t 的对齐随 ABI 而异，只核对 64 位布局。
         if (IntPtr.Size == 8)
         {
-            Assert.Equal(120, Unsafe.SizeOf<AmToolOptions>());
+            Assert.Equal(128, Unsafe.SizeOf<AmToolOptions>());
             Assert.Equal(80, (int)Marshal.OffsetOf<AmToolOptions>(nameof(AmToolOptions.CacheTtlMs)));
             Assert.Equal(88, (int)Marshal.OffsetOf<AmToolOptions>(nameof(AmToolOptions.CacheScope)));
             Assert.Equal(96, (int)Marshal.OffsetOf<AmToolOptions>(nameof(AmToolOptions.DeprecatedMessage)));
             Assert.Equal(104, (int)Marshal.OffsetOf<AmToolOptions>(nameof(AmToolOptions.DeprecatedReplacement)));
             Assert.Equal(112, (int)Marshal.OffsetOf<AmToolOptions>(nameof(AmToolOptions.DeprecatedUntil)));
+            Assert.Equal(120, (int)Marshal.OffsetOf<AmToolOptions>(nameof(AmToolOptions.Undoable)));
         }
         using var strings = new Utf8Strings();
         var o = ToolScope.BuildOptions(strings, new ToolOptions { Surface = ToolSurface.View, Page = "cart" });

@@ -562,6 +562,34 @@ test('结果缓存声明 cache（工具与资源，未声明不带，复制）�
   assert.equal(client.resources.get('cart').spec.cache, undefined);
 });
 
+test('撤销：undoable 随定义注册，update 未给出保持、false / null 取消；结果 undo 经 completeWith 交给原生（参数为 JSON 文本）', async () => {
+  const { mcp, client } = create();
+  mcp.tool('plain', { description: 'P', handler: () => 1 });
+  assert.equal(client.tools.get('plain').spec.undoable, undefined);
+  const t = mcp.tool('todo.add', {
+    description: '添加',
+    undoable: true,
+    handler: () => new ToolResult({ id: 3 }, [], { undo: { tool: 'todo.remove', arguments: { id: 3 }, label: '删除刚添加的待办' } }),
+  });
+  assert.equal(client.tools.get('todo.add').spec.undoable, true);
+  t.update({ description: '添加 2' });
+  assert.equal(client.tools.get('todo.add').spec.undoable, true);
+  t.update({ undoable: false });
+  assert.equal(client.tools.get('todo.add').spec.undoable, false);
+  t.update({ undoable: true });
+  t.update({ undoable: null });
+  assert.equal(client.tools.get('todo.add').spec.undoable, undefined);
+
+  assert.deepEqual(await client.invoke('todo.add').done, {
+    ok: true, dataJson: '{"id":3}', stateHints: [], status: undefined, stateResource: undefined, summary: undefined,
+    undo: { tool: 'todo.remove', argumentsJson: '{"id":3}', label: '删除刚添加的待办' },
+  });
+  // 只有 undo（无其他附加字段）也走 completeWith；内容不在封装层校验
+  mcp.tool('toggle', { description: 'T', handler: () => new ToolResult(true, [], { undo: { tool: 'bad name' } }) });
+  const r = await client.invoke('toggle').done;
+  assert.deepEqual(r.undo, { tool: 'bad name', label: undefined });
+});
+
 test('弃用声明 deprecated（未声明不带，复制）；update 替换、未给出保持、null 清除', () => {
   const { mcp, client } = create();
   mcp.tool('plain', { description: 'P', handler: () => 1 });

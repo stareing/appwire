@@ -50,4 +50,6 @@ public sealed record HubToolInfo(
     public string? SchemaHash { get; init; }
     /// <summary>App 工具的弃用声明；未弃用、内置与上游工具为 null。</summary>
     public ToolDeprecationInfo? Deprecated { get; init; }
+    /// <summary>App 工具声明了成功结果可能带撤销信息（spec/protocol.md 3.8，只用于展示）；未声明、内置与上游工具为 false。</summary>
+    public bool Undoable { get; init; }
 }

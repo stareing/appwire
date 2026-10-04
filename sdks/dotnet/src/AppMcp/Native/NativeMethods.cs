@@ -131,6 +131,7 @@ internal struct AmToolOptions
     public nint DeprecatedMessage;     // v23：const char*；三者均为 0 = 未声明（更新时清除）
     public nint DeprecatedReplacement; // v23：const char*，可为 0
     public nint DeprecatedUntil;       // v23：const char*，可为 0
+    public byte Undoable;              // v24：C bool，成功结果可能带撤销信息；0 = 未声明（更新时清除）
 }
 
 /// <summary>v9：am_call_complete_ex 的调用结果。StructSize = sizeof(AmCallResult)。</summary>
@@ -145,6 +146,9 @@ internal struct AmCallResult
     public nint StateResource;
     public nint Summary;
     public nint AnnotationsJson;  // MCP 内容注解 JSON；0 = 无
+    public nint UndoTool;          // v24：逆工具局部名；三个 Undo* 均为 0 = 不可撤销
+    public nint UndoArgumentsJson; // v24：逆工具参数 JSON；0 = {}
+    public nint UndoLabel;         // v24：面向用户的撤销说明；0 = 未给出
 }
 
 [StructLayout(LayoutKind.Sequential)]

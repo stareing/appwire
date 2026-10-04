@@ -206,7 +206,13 @@ String? encodeToolAnnotations(ToolAnnotations? a) => a == null ? null : jsonEnco
 /// handler 返回值规范化后的结果。
 final class EncodedResult {
   const EncodedResult(this.dataJson, this.stateHints,
-      {this.status = ToolResultStatus.done, this.stateResource, this.summary, this.annotationsJson});
+      {this.status = ToolResultStatus.done,
+      this.stateResource,
+      this.summary,
+      this.annotationsJson,
+      this.undoTool,
+      this.undoArgumentsJson,
+      this.undoLabel});
   final String dataJson;
   final List<String> stateHints;
   final ToolResultStatus status;
@@ -214,20 +220,34 @@ final class EncodedResult {
   final String? summary;
   final String? annotationsJson;
 
+  /// 撤销信息（[ToolResult.undo]）：逆工具名、参数 JSON（null = `{}`）、说明；无撤销信息时 [undoTool] 为 null。
+  final String? undoTool;
+  final String? undoArgumentsJson;
+  final String? undoLabel;
+
   /// 是否带 [ToolResult] 的扩展字段（需经 `am_call_complete_ex` 完成）。
   bool get isStructured =>
-      status != ToolResultStatus.done || stateResource != null || summary != null || annotationsJson != null;
+      status != ToolResultStatus.done ||
+      stateResource != null ||
+      summary != null ||
+      annotationsJson != null ||
+      undoTool != null;
 }
 
 /// 把 handler 返回值编码为 JSON。无法编码时抛出 [ToolCallError]（HANDLER_ERROR）。
 EncodedResult encodeResult(Object? value) {
   if (value is! ToolResult) return EncodedResult(encodeJsonValue(value, '返回值'), const <String>[]);
   final annotations = value.annotations;
+  final undo = value.undo;
+  final undoArguments = undo?.arguments;
   return EncodedResult(encodeJsonValue(value.data, '返回值'), value.stateHints,
       status: value.status,
       stateResource: value.stateResource,
       summary: value.summary,
-      annotationsJson: annotations == null ? null : encodeJsonValue(annotations.toJson(), '内容注解'));
+      annotationsJson: annotations == null ? null : encodeJsonValue(annotations.toJson(), '内容注解'),
+      undoTool: undo?.tool,
+      undoArgumentsJson: undoArguments == null ? null : encodeJsonValue(undoArguments, '撤销参数'),
+      undoLabel: undo?.label);
 }
 
 /// 编码任意值为 JSON 文本；失败时抛出 [ToolCallError]。

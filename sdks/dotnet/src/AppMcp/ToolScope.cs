@@ -143,6 +143,7 @@ public sealed class ToolScope : IDisposable
         DeprecatedMessage = strings.Add(options.Deprecated?.Message),
         DeprecatedReplacement = strings.Add(options.Deprecated?.Replacement),
         DeprecatedUntil = strings.Add(options.Deprecated?.Until),
+        Undoable = options.Undoable ? (byte)1 : (byte)0,
     };
 
     /// <summary>缓存声明 → C ABI 的 cache_ttl_ms（v22，0 = 未声明）。</summary>

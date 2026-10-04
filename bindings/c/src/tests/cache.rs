@@ -28,6 +28,7 @@ pub(super) fn tool_options(ttl_ms: u64, scope: i32) -> AmToolOptions {
         deprecated_message: ptr::null(),
         deprecated_replacement: ptr::null(),
         deprecated_until: ptr::null(),
+        undoable: false,
     }
 }
 
