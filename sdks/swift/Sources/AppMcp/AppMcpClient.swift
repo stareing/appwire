@@ -252,7 +252,7 @@ public final class ToolHandle: @unchecked Sendable {
     /// 按补丁修改定义：闭包里改动的字段替换，**设为 `nil` 清除该声明**，没改动的保持不变（与网页 / Rust SDK 一致）。
     ///
     /// ```swift
-    /// try handle.update { $0.description = "新描述"; $0.annotations = nil; $0.cache = nil }
+    /// try handle.update { $0.description = "新描述"; $0.annotations = nil; $0.cache = nil; $0.deprecated = nil }
     /// ```
     public func update(_ change: (inout ToolDeclaration) -> Void) throws {
         lock.lock()
@@ -278,7 +278,8 @@ public final class ToolHandle: @unchecked Sendable {
         concurrency: Int? = nil,
         exclusive: String? = nil,
         implements: [String]? = nil,
-        cache: CachePolicy? = nil
+        cache: CachePolicy? = nil,
+        deprecated: Deprecation? = nil
     ) throws {
         try update { d in
             if let description { d.description = description }
@@ -294,6 +295,7 @@ public final class ToolHandle: @unchecked Sendable {
             if let exclusive { d.exclusive = exclusive }
             if let implements { d.implements = implements }
             if let cache { d.cache = cache }
+            if let deprecated { d.deprecated = deprecated }
         }
     }
 
@@ -329,7 +331,7 @@ public class ToolRegistrar: @unchecked Sendable {
         _ name: String, _ description: String, _ inputSchema: String?, _ risk: Risk, _ activation: Activation?,
         _ title: String?, _ enabled: Bool, _ annotations: ToolAnnotations?, _ outputSchema: String?,
         _ surface: ToolSurface, _ page: String?, _ backgroundTool: String?,
-        _ concurrency: Int, _ exclusive: String?, _ implements: [String], _ cache: CachePolicy?,
+        _ concurrency: Int, _ exclusive: String?, _ implements: [String], _ cache: CachePolicy?, _ deprecated: Deprecation?,
         _ target: ExecutionTarget, _ body: @escaping ErasedTool
     ) throws -> ToolHandle {
         let spec = ToolSpec(
@@ -338,7 +340,7 @@ public class ToolRegistrar: @unchecked Sendable {
             annotations: annotations, outputSchemaJson: outputSchema,
             surface: surface == .app ? nil : surface, page: page, backgroundTool: backgroundTool,
             concurrency: UInt32(clamping: max(0, concurrency)), exclusive: exclusive, implements: implements,
-            cache: cache
+            cache: cache, deprecated: deprecated
         )
         let raw = try registerRaw(spec, ToolBridge(target: target, timeout: dispatchTimeout, body: body))
         return ToolHandle(inner: raw, spec: spec)
@@ -366,6 +368,9 @@ public class ToolRegistrar: @unchecked Sendable {
     /// `apps.intents` 按动词找到实现者；格式不合法时抛 `AppMcpError.InvalidName`。
     /// `cache` 为结果缓存声明（spec/protocol.md 3.6）：`ttlMs` 内相同参数的调用 Hub 可直接返回上次结果、不调用 handler；只对生效注解
     /// 只读的工具生效，`scope` 缺省 `.private`（按调用方隔离）。`ttlMs` 越界时抛 `AppMcpError.InvalidConfig`。
+    /// `deprecated` 为弃用声明（spec/protocol.md 3.7），如 `Deprecation(message: "改用 x.new", replacement: "x.new", until: "2027-06-30")`：
+    /// 弃用的工具照常列出与调用，Agent 看到弃用提示。`message` 1...500 个字符、`replacement` 为同 App 内另一工具的局部名、`until`
+    /// 为 `YYYY-MM-DD`（只作提示）；不合法时抛 `AppMcpError.InvalidConfig`。
     @discardableResult
     public func tool<Args: Decodable, Output: Encodable>(
         _ name: String,
@@ -384,9 +389,10 @@ public class ToolRegistrar: @unchecked Sendable {
         exclusive: String? = nil,
         implements: [String] = [],
         cache: CachePolicy? = nil,
+        deprecated: Deprecation? = nil,
         handler: @escaping @MainActor (Args, ToolContext) async throws -> Output
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, cache, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, cache, deprecated, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             let output = try await handler(args, ctx)
             return plainResult(try encodeJSON(output))
@@ -412,9 +418,10 @@ public class ToolRegistrar: @unchecked Sendable {
         exclusive: String? = nil,
         implements: [String] = [],
         cache: CachePolicy? = nil,
+        deprecated: Deprecation? = nil,
         handler: @escaping @MainActor (Args, ToolContext) async throws -> ToolResult<Output>
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, cache, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, cache, deprecated, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return try await handler(args, ctx).ffi()
         }
@@ -439,9 +446,10 @@ public class ToolRegistrar: @unchecked Sendable {
         exclusive: String? = nil,
         implements: [String] = [],
         cache: CachePolicy? = nil,
+        deprecated: Deprecation? = nil,
         handler: @escaping @MainActor (Args, ToolContext) async throws -> Void
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, cache, .mainActor) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, cache, deprecated, .mainActor) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             try await handler(args, ctx)
             return plainResult(nil)
@@ -467,9 +475,10 @@ public class ToolRegistrar: @unchecked Sendable {
         exclusive: String? = nil,
         implements: [String] = [],
         cache: CachePolicy? = nil,
+        deprecated: Deprecation? = nil,
         handler: @escaping @Sendable (Args, ToolContext) async throws -> Output
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, cache, .background) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, cache, deprecated, .background) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return plainResult(try encodeJSON(try await handler(args, ctx)))
         }
@@ -494,9 +503,10 @@ public class ToolRegistrar: @unchecked Sendable {
         exclusive: String? = nil,
         implements: [String] = [],
         cache: CachePolicy? = nil,
+        deprecated: Deprecation? = nil,
         handler: @escaping @Sendable (Args, ToolContext) async throws -> ToolResult<Output>
     ) throws -> ToolHandle {
-        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, cache, .background) { json, ctx in
+        try register(name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool, concurrency, exclusive, implements, cache, deprecated, .background) { json, ctx in
             let args = try decodeJSON(Args.self, json)
             return try await handler(args, ctx).ffi()
         }

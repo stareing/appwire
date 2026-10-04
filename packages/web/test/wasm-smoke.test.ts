@@ -400,4 +400,54 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     expect(upserted.find((t: { name: string }) => t.name === 'feed.list')).not.toHaveProperty('cache')
     core.free?.()
   })
+  it('弃用声明 deprecated（spec/protocol.md 3.7）：进 tools/sync，格式不合法注册 / 更新抛错，更新整体替换、null 清除', async () => {
+    const factory = await loadRealCore()
+    const core = factory({ appId: 'shop', appName: 's', instanceId: 'i' })
+    const drain = (): any[] => {
+      const out: any[] = []
+      for (let e = core.pollEvent(); e; e = core.pollEvent()) out.push(e)
+      return out
+    }
+    const empty = { type: 'object' as const, properties: {} }
+    const full = { message: '改用 o.new：支持分页', replacement: 'o.new', until: '2027-06-30' }
+    const old = core.registerTool({ name: 'o.old', description: '旧', inputSchema: empty, deprecated: full })
+    core.registerTool({ name: 'o.min', description: '只有说明', inputSchema: empty, deprecated: { message: '即将移除' } })
+    const bad: unknown[] = [
+      { message: '' },
+      { message: 'x'.repeat(501) },
+      { message: 'm', replacement: 'bad name' },
+      { message: 'm', replacement: 'o.bad' },
+      { message: 'm', until: '2027-02-29' },
+      { replacement: 'o.new' },
+    ]
+    for (const d of bad) {
+      expect(() => core.registerTool({ name: 'o.bad', description: 'x', inputSchema: empty, deprecated: d as never }), JSON.stringify(d)).toThrow(
+        /deprecated/,
+      )
+    }
+    core.start(0)
+    core.connectNow(0)
+    core.handleConnected(0)
+    const hello = drain().find((e) => e.type === 'send')
+    core.handleMessage(
+      JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(hello.text).id, result: { status: 'paired', protocolVersion: '1', hostVersion: 'x', service: 'app-mcp' } }),
+      1,
+    )
+    const msgs = drain().map((e) => (e.type === 'send' ? JSON.parse(e.text) : null))
+    const tools = msgs.find((m) => m?.method === 'tools/sync').params.tools
+    const byName = (n: string) => tools.find((t: { name: string }) => t.name === n)
+    expect(byName('o.old').deprecated).toEqual(full)
+    expect(byName('o.min').deprecated).toEqual({ message: '即将移除' })
+    expect(byName('o.bad')).toBeUndefined()
+    expect(() => core.updateTool(old, { deprecated: { message: 'm', replacement: 'o.old' } })).toThrow(/deprecated/)
+    core.updateTool(old, { deprecated: { message: '改用 o.v3' } })
+    const replaced = drain().filter((e) => e.type === 'send').map((e) => JSON.parse(e.text))
+    const up1 = replaced.find((m) => m.method === 'tools/changed').params.upserted
+    expect(up1.find((t: { name: string }) => t.name === 'o.old').deprecated).toEqual({ message: '改用 o.v3' })
+    core.updateTool(old, { deprecated: null })
+    const changed = drain().filter((e) => e.type === 'send').map((e) => JSON.parse(e.text))
+    const upserted = changed.find((m) => m.method === 'tools/changed').params.upserted
+    expect(upserted.find((t: { name: string }) => t.name === 'o.old')).not.toHaveProperty('deprecated')
+    core.free?.()
+  })
 })

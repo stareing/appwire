@@ -20,7 +20,7 @@ const _sdk = 'dart';
 const _features = {
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', //
   'readFailure', 'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey',
-  'callScheduling', 'busy', 'events', 'implements', 'cache',
+  'callScheduling', 'busy', 'events', 'implements', 'cache', 'deprecated',
 };
 
 final String _repoRoot = Directory('${Directory.current.path}/../../..').absolute.path;
@@ -125,6 +125,7 @@ final class _CaseApp {
         exclusive: decl['exclusive'] as String?,
         implements: _strings(decl['implements']) ?? const [],
         cache: _cache(decl['cache']),
+        deprecated: _deprecated(decl['deprecated']),
         handler: (args, ctx) => _runHandler(spec, ++runs, args, ctx));
   }
 
@@ -237,6 +238,7 @@ final class _CaseApp {
         'surface' => v == null ? null : (v == 'view' ? ToolSurface.view : ToolSurface.app),
         'implements' => _strings(v), // null 清除
         'cache' => _cache(v), // null 清除
+        'deprecated' => _deprecated(v), // null 清除
         _ => v,
       };
 
@@ -245,6 +247,13 @@ final class _CaseApp {
         null => null,
         final m => CachePolicy((m['ttlMs'] as num).toInt(),
             scope: m['scope'] == 'shared' ? CacheScope.shared : CacheScope.private),
+      };
+
+  /// 用例 deprecated（`{message, replacement?, until?}`，spec/protocol.md 3.7）；null / 缺省为 null。
+  static ToolDeprecation? _deprecated(Object? v) => switch (_map(v)) {
+        null => null,
+        final m => ToolDeprecation(m['message'] as String? ?? '',
+            replacement: m['replacement'] as String?, until: m['until'] as String?),
       };
 
   /// JSON 字符串数组 → `List<String>`；null / 缺省为 null。

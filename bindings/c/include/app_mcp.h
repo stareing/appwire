@@ -81,7 +81,7 @@
  *   旧调用方不受影响）：App 在系统名字服务登记名字，Hub 按名拨号时接受通道（握手方向不变：SDK 先发 app/hello，
  *   wakeReason 为 "os-activation"）；通道关闭后 on-demand / idle 回到 DORMANT、不重连。由 D-Bus 激活启动的进程
  *   （命令行带 --app-mcp-activation）按"由唤醒冷启动"处理（AM_RESIDENCY_EXIT_WHEN_IDLE 生效）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v22 仍为 3。）
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v23 仍为 3。）
  * - v18（第 4f 项 k / 第 16 项 N6，spec/protocol.md 5.3）：只在结构体末尾追加字段（按 struct_size 读取，旧调用方不受影响）。
  *   · AmToolOptions 末尾追加 concurrency（本工具同时执行的调用上限，0 = 不单独限制）与 exclusive（互斥组名，同组工具
  *     同一时刻至多一个在执行；NULL = 不互斥）。只在 SDK 内调度，不同步给 Host。
@@ -97,6 +97,9 @@
  *   新增枚举 AmCacheScope。
  *   · AmToolOptions、AmResourceOptions 末尾追加 cache_ttl_ms（结果缓存时长，0 = 未声明）与 cache_scope（AmCacheScope）。
  *     ttl 超过 86400000 时注册 / 更新返回 AM_ERR_INVALID_CONFIG；cache_scope 取值无效返回 AM_ERR_INVALID_ARGUMENT。
+ * - v23（第 16 项 O4，spec/protocol.md 3.7）：只在 AmToolOptions 末尾追加 deprecated_message、deprecated_replacement、
+ *   deprecated_until（工具弃用声明，按 struct_size 读取；旧调用方视为未声明）。三者均为 NULL = 未声明（更新时清除）；
+ *   格式不合法时注册 / 更新返回 AM_ERR_INVALID_CONFIG。
  * - 第 16 项 N6（spec/hub-api.md 3.6「对象锁」）：am_call_fail 认可的错误类别新增 "LOCKED"（-31003，由 Host 的对象锁产生，
  *   App 一般不用）；函数与结构体不变。
  *
@@ -408,6 +411,16 @@ typedef struct AmToolOptions {
      * cache_scope：AmCacheScope（cache_ttl_ms 为 0 时忽略，但取值仍须有效）。旧调用方的 struct_size 不含 cache_scope 时按未声明处理。 */
     uint64_t cache_ttl_ms;
     int cache_scope;
+    /* v23（spec/protocol.md 3.7）：工具弃用声明——照常列出与调用，Hub 把声明原样交给 Agent 并在描述前标注。
+     * 三者均为 NULL = 未声明（更新时表示清除）；任一不为 NULL 即为声明，此时 deprecated_message 必填：
+     * deprecated_message：1..=500 个字符的非空文本（为什么弃用、该怎么做）；
+     * deprecated_replacement：可为 NULL，替代工具在同一 App 中的局部名（命名规则同工具名，不得指向自身）；
+     * deprecated_until：可为 NULL，计划移除日期（RFC 3339 full-date "YYYY-MM-DD"），只作提示。
+     * 不合法（含 message 为 NULL 而另两项不为 NULL）时注册 / 更新返回 AM_ERR_INVALID_CONFIG，非法 UTF-8 返回
+     * AM_ERR_INVALID_ARGUMENT。旧调用方的 struct_size 不含 deprecated_until 时按未声明处理。 */
+    const char *deprecated_message;
+    const char *deprecated_replacement;
+    const char *deprecated_until;
 } AmToolOptions;
 
 typedef struct AmResourceSpec {

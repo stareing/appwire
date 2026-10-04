@@ -3,8 +3,9 @@
  */
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import type { Activation, AppOverview, CachePolicy, Risk, ToolAnnotations, ToolSurface } from '@app-mcp/web'
+import type { Activation, AppOverview, CachePolicy, Risk, ToolAnnotations, ToolDeprecation, ToolSurface } from '@app-mcp/web'
 import { cacheReadOnlyWarning, checkCache } from './cache'
+import { checkDeprecation, deprecatedRequiredWarnings } from './deprecation'
 import type { PageDefinition, StaticToolDefinition } from './define'
 import { checkImplements } from './intents'
 import { validateOverview } from './overview'
@@ -67,6 +68,8 @@ export interface ManifestTool {
   implements?: string[]
   /** 结果缓存声明（spec/protocol.md 3.6）：只对只读工具生效。 */
   cache?: CachePolicy
+  /** 弃用声明（spec/protocol.md 3.7）。 */
+  deprecated?: ToolDeprecation
 }
 
 /** 清单 `pages` 条目（spec/manifest.md 2.3）。 */
@@ -393,7 +396,7 @@ function checkEvents(events: unknown, appId: string, errors: string[], warnings:
 
 /**
  * 单个工具（顶层或页面内）的规则：名称、唯一性（`toolNames` 跨顶层与页面共享）、appId 前缀、description、inputSchema、
- * risk / activation / surface / page、annotations、outputSchema、implements、cache。
+ * risk / activation / surface / page、annotations、outputSchema、implements、cache、deprecated。
  */
 function checkTool(
   tool: ManifestTool,
@@ -446,6 +449,8 @@ function checkTool(
     const readOnly = cacheReadOnlyWarning(tool, label)
     if (readOnly) warnings.push(readOnly)
   }
+  if (tool.deprecated !== undefined) checkDeprecation(tool.deprecated, tool.name, label, errors)
+  warnings.push(...deprecatedRequiredWarnings(schema, label))
 }
 
 /** `pages` 的规则（spec/manifest.md 第 3 节），返回已声明的页面名。 */
@@ -703,6 +708,7 @@ function toManifestTool(
   if (tool.page !== undefined) entry.page = tool.page
   if (tool.implements !== undefined && tool.implements.length > 0) entry.implements = [...tool.implements]
   if (tool.cache !== undefined) entry.cache = { ...tool.cache }
+  if (tool.deprecated !== undefined) entry.deprecated = { ...tool.deprecated }
   return entry
 }
 

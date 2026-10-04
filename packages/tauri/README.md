@@ -83,6 +83,9 @@ Identity and connection are owned by the Rust side: `appId`, `appName` and `host
 - Result caching (spec/protocol.md 3.6): page tools and resources may declare `cache: { ttlMs, scope? }`, forwarded to the
   plugin's native `ToolOptions.cache` / `ResourceOptions.cache` (read-only tools only; `scope: 'shared'` only for
   caller-independent data); omitting it in an update clears it.
+- Deprecation (spec/protocol.md 3.7): page tools may declare `deprecated: { message, replacement?, until? }`, forwarded to
+  the plugin's native `ToolOptions.deprecated`; omitting it in an update clears it. A deprecated tool stays listed and
+  callable; for a breaking change register a new tool name instead (spec/manifest.md section 6).
 - Events (spec/protocol.md 3.5): `appMcp.declareEvent({ name, description, payloadSchema? })`,
   `emitEvent(name, payload?)` and `removeEvent(name)` go over the plugin bridge (`event.declare` / `event.emit` /
   `event.remove`) and are emitted by the Rust-side client. Declarations belong to the page and are withdrawn when it

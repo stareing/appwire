@@ -10,11 +10,13 @@ from ._client_convert import (
     _UNSET,
     ActivationLike,
     CacheLike,
+    DeprecationLike,
     RiskLike,
     SurfaceLike,
     ToolAnnotationsLike,
     _activation,
     _cache,
+    _deprecation,
     _implements,
     _risk,
     _schema_json,
@@ -62,13 +64,14 @@ class ToolHandle:
         exclusive: str | None | _Unset = _UNSET,
         implements: Sequence[str] | _Unset = _UNSET,
         cache: CacheLike | None | _Unset = _UNSET,
+        deprecated: DeprecationLike | None | _Unset = _UNSET,
     ) -> None:
         """修改定义：未给出的字段保持不变；显式传 ``None`` 清除该声明（恢复注册时的缺省）。
 
         ``input_schema=None`` 为无参数，``risk=None`` 为缺省风险，``surface=None`` 为 ``"app"``，``title`` /
         ``activation`` / ``annotations`` / ``output_schema`` / ``page`` / ``background_tool`` /
         ``exclusive`` 为 ``None`` 时清除声明。``description`` 不可清除；``concurrency=0`` 为不单独限制；``implements=[]`` 清除意图声明；
-        ``cache`` 为 ``None`` 时清除结果缓存声明。
+        ``cache`` 为 ``None`` 时清除结果缓存声明；``deprecated`` 为 ``None`` 时取消弃用。
         """
         s = self._spec
         spec = _replace_spec(
@@ -87,6 +90,7 @@ class ToolHandle:
             exclusive=s.exclusive if exclusive is _UNSET else exclusive,
             implements=s.implements if implements is _UNSET else _implements(implements),
             cache=s.cache if cache is _UNSET else _cache(cache),
+            deprecated=s.deprecated if deprecated is _UNSET else _deprecation(deprecated),
         )
         self._inner.update(spec)
         self._spec = spec
@@ -96,25 +100,11 @@ class ToolHandle:
 
 
 def _replace_spec(spec: ffi.ToolSpec, **changes: Any) -> ffi.ToolSpec:
-    """复制 ``ToolSpec`` 并替换给出的字段（uniffi 记录不是 dataclass）。"""
-    fields = {
-        "name": spec.name,
-        "description": spec.description,
-        "input_schema_json": spec.input_schema_json,
-        "risk": spec.risk,
-        "activation": spec.activation,
-        "title": spec.title,
-        "enabled": spec.enabled,
-        "annotations": spec.annotations,
-        "output_schema_json": spec.output_schema_json,
-        "surface": spec.surface,
-        "page": spec.page,
-        "background_tool": spec.background_tool,
-        "concurrency": spec.concurrency,
-        "exclusive": spec.exclusive,
-        "implements": spec.implements,
-        "cache": spec.cache,
-    }
+    """复制 ``ToolSpec`` 并替换给出的字段（uniffi 记录不是 dataclass）。
+
+    @why 从实例属性复制全部字段，绑定新增字段时不必在此逐个登记（曾因漏登记而在 ``update`` 时丢失声明）。
+    """
+    fields = dict(vars(spec))
     fields.update(changes)
     return ffi.ToolSpec(**fields)
 

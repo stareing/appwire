@@ -70,7 +70,7 @@ App 固定为 `appId: "conf"`、`appName: "Conformance"`；runner 连接 fake_ho
 ### 2.1 工具声明
 
 `name`、`description`（必填）；`inputSchema`、`risk`、`activation`、`title`、`annotations`、`outputSchema`、`surface`、`page`、
-`backgroundTool`、`implements`（需能力 `implements`）、`cache`（`{ttlMs, scope?}`，需能力 `cache`）、`enabled`（缺省 true）按协议同名字段原样传给 SDK 的注册 API；`concurrency`、`exclusive`（SDK 内的调用调度，
+`backgroundTool`、`implements`（需能力 `implements`）、`cache`（`{ttlMs, scope?}`，需能力 `cache`）、`deprecated`（`{message, replacement?, until?}`，需能力 `deprecated`）、`enabled`（缺省 true）按协议同名字段原样传给 SDK 的注册 API；`concurrency`、`exclusive`（SDK 内的调用调度，
 spec/protocol.md 5.3，需能力 `callScheduling`）同样传给注册 API。未给出的字段不传（SDK 用自己的缺省值）。`handler` 描述 handler 的行为：
 
 | 键 | 含义 |
@@ -187,6 +187,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `events` | `app.events`、handler `emit`、变更 `declareEvent` / `removeEvent`（spec/protocol.md 3.5 事件；全部 runner 支持） |
 | `implements` | 工具 `implements` 声明与更新 / null 清除（spec/intents.md 1） |
 | `cache` | 工具与资源 `cache` 声明与更新 / null 清除（spec/protocol.md 3.6） |
+| `deprecated` | 工具 `deprecated` 声明与更新 / null 清除（spec/protocol.md 3.7） |
 
 ## 5. 各 SDK 的 runner
 

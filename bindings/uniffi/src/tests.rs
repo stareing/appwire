@@ -9,6 +9,7 @@ use crate::callbacks::guarded;
 use crate::error::parse_error_kind;
 
 mod cache;
+mod deprecation;
 
 #[test]
 fn error_kinds_roundtrip() {
@@ -140,6 +141,7 @@ fn tool_spec_conversion() {
         exclusive: None,
         implements: Vec::new(),
         cache: None,
+        deprecated: None,
     };
     let (n, options): (native::ToolSpec, native::ToolOptions) = spec.clone().into();
     assert_eq!(n.risk, native::Risk::Write);
@@ -395,6 +397,7 @@ fn read_and_call_failures_reach_host() {
             exclusive: None,
             implements: Vec::new(),
             cache: None,
+            deprecated: None,
         };
         keep.push(client.register_tool(spec, Arc::new(UserActionTool)).expect("tool"));
     }
@@ -466,6 +469,7 @@ fn idempotency_key_reaches_handler() {
         exclusive: None,
         implements: Vec::new(),
         cache: None,
+        deprecated: None,
     };
     let _tool = client.register_tool(spec, Arc::new(KeyTool)).expect("tool");
     client.start();

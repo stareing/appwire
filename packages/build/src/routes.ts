@@ -11,7 +11,7 @@
  *   `component: X` / `component: () => import('./x.vue')`；`X` 必须从相对路径导入。只扫描该组件模块本身（不跟随它导入的
  *   子组件——对话框等子组件的工具只在打开时存在，不能作为导航目标）。
  * - **页面工具**：组件模块中的 `useTool('名称', { ... })` 与 `<x>.tool('名称', { ... })`；名称、`description`、`title`、`risk`、
- *   `activation`、`surface`、`page`、`annotations`、`implements`、`cache`、`input`、`outputSchema` 必须是字面量（`input` / `outputSchema` 为 JSON Schema
+ *   `activation`、`surface`、`page`、`annotations`、`implements`、`cache`、`deprecated`、`input`、`outputSchema` 必须是字面量（`input` / `outputSchema` 为 JSON Schema
  *   字面量；zod 等运行时 schema 无法静态确定）。`handler` / `load` / `enabled` / `anchor` / `visibility` 是运行时字段，忽略。
  *
  * 不满足以上规则的页面给出错误，要求用 `definePage()`（插件 `pages` 模块）显式声明；显式声明的页面不再扫描（`skip`）。
@@ -166,7 +166,7 @@ function initializer(p: ts.ObjectLiteralElementLike | undefined): ts.Expression 
 // ---------------------------------------------------------------------------
 
 /** 工具定义中由构建期读取的字段（其余为运行时字段，忽略）。 */
-const TOOL_META_KEYS = ['title', 'risk', 'activation', 'surface', 'page', 'annotations', 'outputSchema', 'implements', 'cache'] as const
+const TOOL_META_KEYS = ['title', 'risk', 'activation', 'surface', 'page', 'annotations', 'outputSchema', 'implements', 'cache', 'deprecated'] as const
 const PAGE_META_KEYS = ['title', 'description', 'navigable', 'activation', 'params'] as const
 
 interface RouteContext {

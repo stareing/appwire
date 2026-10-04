@@ -89,6 +89,12 @@ appMcp.tool('notes.archive', {
   warning); use `scope: 'shared'` only for data that does not depend on the caller (default `private`). Resources take
   `cache` too. `ttlMs` must be an integer in 1..=86400000, otherwise registration / update throws `INVALID_CONFIG`;
   `handle.update({ cache: undefined })` clears it.
+- `deprecated: { message: 'Use orders.search: supports paging', replacement?: 'orders.search', until?: '2027-06-30' }`
+  (spec/protocol.md 3.7) marks a tool as deprecated. The Hub shows the message to agents; the tool stays listed and
+  callable. For a breaking change register a new tool name and deprecate the old one (spec/manifest.md section 6).
+  `message` must be 1..=500 characters, `replacement` a valid local tool name other than the tool itself, `until` a
+  `YYYY-MM-DD` date, otherwise registration / update throws `INVALID_CONFIG`; `handle.update({ deprecated: undefined })`
+  clears it.
 - Resources take optional `annotations` too (MCP content annotations, shown on the resource in MCP
   `resources/list`): `appMcp.resource('notes.list', { description, annotations: { audience: ['user'], priority: 0.5 }, read })`.
   A `read` that throws `ToolCallError` (including `ToolCallError.userActionRequired`) fails the read with that kind

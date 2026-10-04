@@ -97,6 +97,15 @@ public typealias IntentsStatus = AppMcpHubBindings.IntentsStatus
 public typealias CacheLimitOverrides = AppMcpHubBindings.CacheLimitOverrides
 /// 结果缓存统计（`HubStatus.cache`）：`entries`、`bytes`、`hits`、`misses`、`evictions`，生效上限 `maxEntries`、`maxBytes`、`maxEntryBytes`。
 public typealias CacheStatus = AppMcpHubBindings.CacheStatus
+// 工具演进（第 16 项 O4，spec/hub-api.md 3.21）。
+/// App 工具的弃用声明（`HubTool.deprecated`，原样）：`message`、`replacement`、`until`；弃用工具照常列出与调用。
+public typealias Deprecation = AppMcpHubBindings.Deprecation
+/// 同名工具定义的一次不兼容变化（`HubStatus.schemaChanges`，最近 32 条）：`appId`、`tool`、`level`、`changes`、`at`（Unix 毫秒）。
+public typealias SchemaChangeRecord = AppMcpHubBindings.SchemaChangeRecord
+/// 一条变化：`level`、`path`（如 `/inputSchema/properties/to`）、`message`。
+public typealias SchemaChange = AppMcpHubBindings.SchemaChange
+/// 变化级别：`.breaking`（按旧定义的调用会出错）/ `.warning`（可能破坏）。
+public typealias ChangeLevel = AppMcpHubBindings.ChangeLevel
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。
 public typealias LimitsConfig = AppMcpHubBindings.LimitsConfig

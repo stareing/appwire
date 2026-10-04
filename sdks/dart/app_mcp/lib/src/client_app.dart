@@ -427,6 +427,7 @@ final class AppMcp {
     String? exclusive,
     List<String> implements = const [],
     CachePolicy? cache,
+    ToolDeprecation? deprecated,
     required ToolHandler handler,
   }) =>
       _root.tool(name,
@@ -445,6 +446,7 @@ final class AppMcp {
           exclusive: exclusive,
           implements: implements,
           cache: cache,
+          deprecated: deprecated,
           handler: handler);
 
   /// 在根作用域注册资源。见 [McpScope.resource]。

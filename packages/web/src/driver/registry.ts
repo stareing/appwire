@@ -222,6 +222,7 @@ export abstract class DriverRegistry extends DriverTransport {
       if (def.exclusive !== undefined) coreDef.exclusive = def.exclusive
       if (def.implements !== undefined && def.implements.length > 0) coreDef.implements = [...def.implements]
       if (def.cache !== undefined) coreDef.cache = { ...def.cache }
+      if (def.deprecated !== undefined) coreDef.deprecated = { ...def.deprecated }
       rec.coreEnabled = this.effectiveEnabled(rec)
       if (!rec.coreEnabled || def.enabled !== undefined) coreDef.enabled = rec.coreEnabled
       if (scope) {
@@ -303,6 +304,7 @@ export abstract class DriverRegistry extends DriverTransport {
         if ('exclusive' in changes) update.exclusive = changes.exclusive ?? null
         if ('implements' in changes) update.implements = [...(changes.implements ?? [])]
         if ('cache' in changes) update.cache = changes.cache === undefined ? null : { ...changes.cache }
+        if ('deprecated' in changes) update.deprecated = changes.deprecated === undefined ? null : { ...changes.deprecated }
         if ('outputSchema' in changes && changes.outputSchema === undefined) update.outputSchema = null
         const schema = 'input' in changes ? this.convertSchema(rec.name, changes.input) : undefined
         const output =

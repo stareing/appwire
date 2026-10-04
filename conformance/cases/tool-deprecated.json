@@ -1,0 +1,43 @@
+{
+  "id": "tool-deprecated",
+  "title": "工具弃用声明 deprecated 原样到达 Host（未声明时省略；可选字段省略时不序列化）；参数级 deprecated 随 inputSchema 原样传递；连接后更新替换、null 清除，经 tools/changed 到达",
+  "spec": ["protocol.md 3.7"],
+  "requires": ["deprecated", "mutate"],
+  "app": {
+    "tools": [
+      { "name": "d.plain", "description": "未弃用", "handler": { "return": {} } },
+      { "name": "d.old", "description": "旧版查询", "risk": "read",
+        "deprecated": { "message": "改用 d.new：支持分页", "replacement": "d.new", "until": "2027-06-30" },
+        "handler": { "return": { "v": 1 } } },
+      { "name": "d.min", "description": "只有说明", "deprecated": { "message": "即将移除" }, "handler": { "return": {} } },
+      { "name": "d.new", "description": "新版查询", "risk": "read",
+        "inputSchema": { "type": "object", "properties": {
+          "page": { "type": "integer" },
+          "legacyCursor": { "type": "string", "deprecated": true } } },
+        "handler": { "return": { "v": 2 } } },
+      { "name": "ctl.mutate", "description": "更新弃用声明", "handler": { "mutate": [
+          { "op": "update", "name": "d.plain", "set": { "deprecated": { "message": "改用 d.new", "replacement": "d.new" } } },
+          { "op": "update", "name": "d.min", "set": { "deprecated": null } }
+        ], "return": { "ok": true } } }
+    ]
+  },
+  "host": { "ops": [
+    { "catalog": 0 },
+    { "invoke": "d.old" },
+    { "invoke": "ctl.mutate" },
+    { "catalog": 50 }
+  ] },
+  "expect": [
+    { "type": "catalog", "tools": {
+        "d.plain": { "deprecated": { "$absent": true } },
+        "d.old": { "deprecated": { "message": "改用 d.new：支持分页", "replacement": "d.new", "until": "2027-06-30" } },
+        "d.min": { "deprecated": { "message": "即将移除", "replacement": { "$absent": true }, "until": { "$absent": true } } },
+        "d.new": { "deprecated": { "$absent": true },
+          "inputSchema": { "properties": { "legacyCursor": { "type": "string", "deprecated": true } } } } } },
+    { "type": "invoke", "name": "d.old", "result": { "data": { "v": 1 } } },
+    { "type": "invoke", "name": "ctl.mutate", "result": { "data": { "ok": true } } },
+    { "type": "catalog", "tools": {
+        "d.plain": { "deprecated": { "message": "改用 d.new", "replacement": "d.new", "until": { "$absent": true } } },
+        "d.min": { "deprecated": { "$absent": true } } } }
+  ]
+}

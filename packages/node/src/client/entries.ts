@@ -113,6 +113,7 @@ export class ToolEntry implements ToolHandle, Child, LazySlot {
     if (d.exclusive !== undefined) spec.exclusive = d.exclusive
     if (d.implements !== undefined && d.implements.length > 0) spec.implements = [...d.implements]
     if (d.cache !== undefined) spec.cache = { ...d.cache }
+    if (d.deprecated !== undefined) spec.deprecated = { ...d.deprecated }
     return spec
   }
 

@@ -34,7 +34,7 @@ use napi::threadsafe_function::ThreadsafeFunction;
 pub use client::JsNativeClient;
 pub use handles::{Call, Hold, Navigate, Read, Resource, Scope, Tool};
 pub use objects::{
-    CallDedupInit, CallResultInit, ClientConfig, ClientEvent, ContentAnnotationsInit, JsStateInfo, LifecycleInit,
+    CallDedupInit, CallResultInit, ClientConfig, ClientEvent, ContentAnnotationsInit, DeprecationInit, JsStateInfo, LifecycleInit,
     OverviewInit, ResourceSpecInit, ToolAnnotationsInit, ToolSpecInit, WakeInit,
 };
 

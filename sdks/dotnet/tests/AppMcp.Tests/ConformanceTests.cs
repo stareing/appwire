@@ -20,7 +20,7 @@ public class ConformanceTests(ITestOutputHelper output)
     [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure",
         "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-        "callScheduling", "busy", "events", "implements", "cache",
+        "callScheduling", "busy", "events", "implements", "cache", "deprecated",
     ];
 
     private static readonly IReadOnlyDictionary<string, ToolRisk> Risks = new Dictionary<string, ToolRisk>
@@ -231,9 +231,15 @@ public class ConformanceTests(ITestOutputHelper output)
         Exclusive = Text(Get(decl, "exclusive")),
         Implements = IsSet(Get(decl, "implements")) ? Items(Get(decl, "implements")).Select(i => i.GetString()!).ToList() : null,
         Cache = Cache(Get(decl, "cache")),
+        Deprecated = Deprecation(Get(decl, "deprecated")),
     };
 
     /// <summary>用例 cache（<c>{ttlMs, scope?}</c>，spec/protocol.md 3.6）；未给出或 null 时为 null。</summary>
+    /// <summary>用例 deprecated（<c>{message, replacement?, until?}</c>，spec/protocol.md 3.7）；未给出或 null 时为 null。</summary>
+    private static ToolDeprecation? Deprecation(JsonElement v) => IsSet(v)
+        ? new ToolDeprecation(Text(Get(v, "message")) ?? "", Text(Get(v, "replacement")), Text(Get(v, "until")))
+        : null;
+
     private static CachePolicy? Cache(JsonElement v) => IsSet(v)
         ? new CachePolicy(Get(v, "ttlMs").GetUInt64(), Text(Get(v, "scope")) == "shared" ? CacheScope.Shared : CacheScope.Private)
         : null;

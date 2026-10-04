@@ -10,6 +10,8 @@ public typealias ToolAnnotations = AppMcpBindings.ToolAnnotations
 public typealias CachePolicy = AppMcpBindings.CachePolicy
 /// 结果缓存范围：`.private`（按调用方隔离，缺省）/ `.shared`（全体调用方共用，只用于与调用方无关的数据）。
 public typealias CacheScope = AppMcpBindings.CacheScope
+/// 工具弃用声明（spec/protocol.md 3.7）：`message`（必填）、`replacement`（同 App 内替代工具的局部名）、`until`（`YYYY-MM-DD`）。
+public typealias Deprecation = AppMcpBindings.Deprecation
 /// 结果内容的标注（MCP 内容注解：audience、priority、lastModified）。
 public typealias ContentAnnotations = AppMcpBindings.ContentAnnotations
 public typealias Audience = AppMcpBindings.Audience

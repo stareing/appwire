@@ -30,6 +30,8 @@ pub struct JsToolDef {
     pub implements: Option<Vec<String>>,
     /// 结果缓存声明（spec/protocol.md 3.6）；`ttlMs` 范围由核心校验。
     pub cache: Option<CachePolicy>,
+    /// 弃用声明（spec/protocol.md 3.7）；格式由核心校验。
+    pub deprecated: Option<Deprecation>,
     /// 缺省 true。
     pub enabled: Option<bool>,
     pub scope: Option<f64>,
@@ -60,6 +62,7 @@ impl FromJson for JsToolDef {
             exclusive: f.string("exclusive"),
             implements: f.strings("implements"),
             cache: f.object("cache"),
+            deprecated: f.object("deprecated"),
             enabled: f.bool("enabled"),
             scope: f.f64("scope"),
         };
@@ -87,8 +90,7 @@ impl JsToolDef {
             exclusive: self.exclusive,
             implements: self.implements.unwrap_or_default(),
             cache: self.cache,
-            // @compat 弃用声明（第 16 项 O4）的 JS 透传属于二期，此前不声明。
-            deprecated: None,
+            deprecated: self.deprecated,
         })
     }
 }
@@ -122,6 +124,17 @@ impl FromJson for CachePolicy {
         });
         let scope = f.keyword("scope", "无效的缓存范围（应为 private / shared）", parse_cache_scope);
         f.finish(CachePolicy { ttl_ms, scope: scope.unwrap_or_default() })
+    }
+}
+
+/// 弃用声明（spec/protocol.md 3.7）：`message` 必填；长度、局部名与日期格式由核心校验。
+///
+/// @why 与 [`ToolAnnotations`] 相同，逐字段读取而不用 serde 派生（WASM 体积）。
+impl FromJson for Deprecation {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        let d = Deprecation { message: f.required_string("message"), replacement: f.string("replacement"), until: f.string("until") };
+        f.finish(d)
     }
 }
 
@@ -169,7 +182,7 @@ impl FromJson for ContentAnnotations {
     }
 }
 
-/// 部分更新：缺省字段不变；`activation` / `title` / `cache` 等区分缺省（外层 `None`）与 `null`（`Some(None)`，表示清除）。
+/// 部分更新：缺省字段不变；`activation` / `title` / `cache` / `deprecated` 等区分缺省（外层 `None`）与 `null`（`Some(None)`，表示清除）。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct JsToolUpdate {
     pub description: Option<String>,
@@ -194,6 +207,8 @@ pub struct JsToolUpdate {
     pub implements: Option<Vec<String>>,
     /// 整体替换结果缓存声明；`null` 清除。
     pub cache: Option<Option<CachePolicy>>,
+    /// 整体替换弃用声明；`null` 清除。
+    pub deprecated: Option<Option<Deprecation>>,
 }
 
 impl FromJson for JsToolUpdate {
@@ -210,8 +225,10 @@ impl FromJson for JsToolUpdate {
         let background_tool = f.nullable_string("backgroundTool");
         let exclusive = f.nullable_string("exclusive");
         let cache = f.nullable_object("cache");
+        let deprecated = f.nullable_object("deprecated");
         let u = JsToolUpdate {
             cache,
+            deprecated,
             concurrency: f.u32("concurrency"),
             exclusive,
             implements: f.strings("implements"),
@@ -249,7 +266,7 @@ impl JsToolUpdate {
             exclusive: self.exclusive,
             implements: self.implements,
             cache: self.cache,
-            deprecated: None,
+            deprecated: self.deprecated,
         }
     }
 }

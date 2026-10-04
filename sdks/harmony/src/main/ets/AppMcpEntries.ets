@@ -7,11 +7,11 @@ import type {
 } from 'libapp_mcp_harmony.so';
 import { Failure, ToolCallError, nativeErrorCode, toFailure } from './Errors';
 import {
-  Activation, CachePolicy, CancelReason, Logger, Registrar, ResourceDefinition, ResourceHandle, Risk, Scope, ToolAnnotations,
+  Activation, CachePolicy, CancelReason, Logger, Registrar, ResourceDefinition, ResourceHandle, Risk, Scope, ToolAnnotations, ToolDeprecation,
   ToolChanges, ToolDefinition, ToolHandle, ToolResult, ToolSurface,
 } from './Types';
 import {
-  CallContext, Child, NativeRegistrar, cachePolicyInit, callResultInit, contentAnnotationsInit, errorText, hasResultExtras, patchField,
+  CallContext, Child, NativeRegistrar, cachePolicyInit, callResultInit, contentAnnotationsInit, deprecationInit, errorText, hasResultExtras, patchField,
   stringifyJson, submitFailure, toolAnnotationsInit,
 } from './AppMcpSupport';
 
@@ -66,6 +66,9 @@ export class ToolEntry<I, O> implements ToolHandle, Child {
     if (d.cache !== undefined) {
       spec.cache = cachePolicyInit(d.cache);
     }
+    if (d.deprecated !== undefined) {
+      spec.deprecated = deprecationInit(d.deprecated);
+    }
     return spec;
   }
 
@@ -90,6 +93,7 @@ export class ToolEntry<I, O> implements ToolHandle, Child {
       exclusive: patchField<string>(changes.exclusive, d.exclusive),
       implements: patchField<string[]>(changes.implements, d.implements),
       cache: patchField<CachePolicy>(changes.cache, d.cache),
+      deprecated: patchField<ToolDeprecation>(changes.deprecated, d.deprecated),
       handler: d.handler,
     };
     this.def = next;

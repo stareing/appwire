@@ -128,6 +128,9 @@ internal struct AmToolOptions
     public nuint ImplementsLen;
     public ulong CacheTtlMs;      // v22：结果缓存时长；0 = 未声明（更新时清除）
     public int CacheScope;        // v22：AmCacheScope（0 = PRIVATE，1 = SHARED）
+    public nint DeprecatedMessage;     // v23：const char*；三者均为 0 = 未声明（更新时清除）
+    public nint DeprecatedReplacement; // v23：const char*，可为 0
+    public nint DeprecatedUntil;       // v23：const char*，可为 0
 }
 
 /// <summary>v9：am_call_complete_ex 的调用结果。StructSize = sizeof(AmCallResult)。</summary>

@@ -91,6 +91,9 @@ the hooks are no-ops. A tool can also be loaded lazily: pass `load: () => import
 - `cache` - result caching (spec/protocol.md 3.6), e.g. `{ ttlMs: 30_000 }`: the Hub reuses results of a read-only tool
   for `ttlMs`; `scope: 'shared'` only for caller-independent data. An inline object is compared by content, removing it
   clears the declaration. `useResource` accepts `cache` too (a changed value re-registers the resource).
+- `deprecated` - deprecation notice (spec/protocol.md 3.7), e.g. `{ message: 'Use cart.add2', replacement: 'cart.add2' }`;
+  the tool stays callable, and breaking changes should use a new tool name (spec/manifest.md section 6). An inline
+  object is compared by content, removing it clears the declaration.
 - Handlers may return `{ data, stateHints?, status?, stateResource?, summary?, annotations? }` with `status` one of
   `'done' | 'pending' | 'partial' | 'noop'`. It is unpacked only if it has a `data` key and every other key is one
   of these with a valid value; any other value is returned as `data` as a whole. Returning nothing (`undefined` /

@@ -137,6 +137,7 @@ export function OrdersPage() {
     surface: 'view',
     implements: ['link.open@1'],
     cache: { ttlMs: 5000, scope: 'shared' },
+    deprecated: { message: '改用 orders.search', replacement: 'orders.search' },
     handler: () => [],
     enabled: true,
   })
@@ -174,6 +175,7 @@ describe('scanRoutes（React Router）', () => {
         surface: 'view',
         implements: ['link.open@1'],
         cache: { ttlMs: 5000, scope: 'shared' },
+        deprecated: { message: '改用 orders.search', replacement: 'orders.search' },
       },
     ])
     expect(result.dependencies.some((d) => d.endsWith('OrdersPage.tsx'))).toBe(true)

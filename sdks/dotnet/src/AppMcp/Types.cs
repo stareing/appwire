@@ -352,7 +352,14 @@ public sealed class ToolOptions
     /// （<c>ReadOnlyHint</c> 为 true，或未声明注解时 <see cref="ToolRisk.Read"/>）的工具生效，否则照常注册并记警告日志。
     /// 为 null 时不声明（更新时清除）。</summary>
     public CachePolicy? Cache { get; init; }
+    /// <summary>弃用声明（spec/protocol.md 3.7）：照常列出与调用，Hub 把声明原样交给 Agent 并在描述前标注。为 null 时不声明（更新时清除）。</summary>
+    public ToolDeprecation? Deprecated { get; init; }
 }
+
+/// <summary>工具弃用声明（spec/protocol.md 3.7）。<paramref name="Message"/>：1..=500 个字符，面向模型说明为什么弃用、该怎么做；
+/// <paramref name="Replacement"/>：同一 App 中替代工具的局部名（不得指向自身）；<paramref name="Until"/>：计划移除日期（YYYY-MM-DD），只作提示。
+/// 格式不合法时注册 / 更新抛出 <see cref="AppMcpStatus.InvalidConfig"/> 的 <see cref="AppMcpException"/>。</summary>
+public sealed record ToolDeprecation(string Message, string? Replacement = null, string? Until = null);
 
 /// <summary>结果缓存的范围（spec/protocol.md 3.6）。</summary>
 public enum CacheScope

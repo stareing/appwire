@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use app_mcp_native::{
-    Activation, CachePolicy, CallHandle, CallResult, CancelListener, CancelReason, ContentAnnotations,
+    Activation, CachePolicy, CallHandle, Deprecation, CallResult, CancelListener, CancelReason, ContentAnnotations,
     ErrorKind, EventInfo, HoldHandle, NativeClient, NativeError, NavigateHandle, NavigationHandler, ReadHandle, ResourceHandle, ResourceOptions,
     ResourceReader, ResourceSpec, ResultStatus, Risk, ScopeHandle, StateInfo, StateStatus,
     ToolAnnotations, ToolHandle, ToolHandler, ToolOptions, ToolSpec, ToolSurface,
@@ -100,6 +100,9 @@ struct ToolSpecMessage {
     /// 结果缓存声明（spec/protocol.md 3.6）；`tool.update` 时缺省表示清除。格式不合法时整条消息被拒绝，`ttlMs` 范围由核心校验。
     #[serde(default)]
     cache: Option<CachePolicy>,
+    /// 弃用声明（spec/protocol.md 3.7）；`tool.update` 时缺省表示清除。字段类型不对时整条消息被拒绝，格式由核心校验。
+    #[serde(default)]
+    deprecated: Option<Deprecation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -554,5 +557,17 @@ mod spec_tests {
         assert_eq!(parse(json!({ "description": "列表" })).ok().map(|o| o.cache), Some(None));
         assert!(parse(json!({ "description": "列表", "cache": { "ttlMs": 1, "scope": "public" } })).is_err());
         assert!(parse(json!({ "description": "列表", "cache": { "ttlMs": 1.5 } })).is_err());
+    }
+
+    /// 页面工具定义的 `deprecated`（spec/protocol.md 3.7）进入原生选项；缺省（`tool.update` 时即清除）为 `None`；字段类型不对时拒绝。
+    #[test]
+    fn tool_spec_deprecated() {
+        let parse = |v: Value| serde_json::from_value::<ToolSpecMessage>(v).map(|m| m.into_parts("a.old".into()).1);
+        let options = parse(json!({ "description": "旧", "deprecated": { "message": "改用 a.new", "replacement": "a.new", "until": "2027-06-30" } }));
+        let full = Deprecation { message: "改用 a.new".into(), replacement: Some("a.new".into()), until: Some("2027-06-30".into()) };
+        assert_eq!(options.ok().and_then(|o| o.deprecated), Some(full));
+        assert_eq!(parse(json!({ "description": "旧" })).ok().map(|o| o.deprecated), Some(None));
+        assert!(parse(json!({ "description": "旧", "deprecated": { "replacement": "a.new" } })).is_err());
+        assert!(parse(json!({ "description": "旧", "deprecated": { "message": "m", "until": 20270630 } })).is_err());
     }
 }

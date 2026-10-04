@@ -387,6 +387,7 @@ function toolDefinition(spec: ToolSpecMessage) {
     exclusive: spec.exclusive,
     implements: spec.implements,
     cache: spec.cache,
+    deprecated: spec.deprecated,
   }
 }
 

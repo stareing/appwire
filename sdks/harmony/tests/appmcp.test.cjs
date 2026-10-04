@@ -562,6 +562,22 @@ test('结果缓存声明 cache（工具与资源，未声明不带，复制）�
   assert.equal(client.resources.get('cart').spec.cache, undefined);
 });
 
+test('弃用声明 deprecated（未声明不带，复制）；update 替换、未给出保持、null 清除', () => {
+  const { mcp, client } = create();
+  mcp.tool('plain', { description: 'P', handler: () => 1 });
+  assert.equal(client.tools.get('plain').spec.deprecated, undefined);
+  const decl = { message: '改用 o.new', replacement: 'o.new', until: '2027-06-30' };
+  const t = mcp.tool('o.old', { description: 'O', deprecated: decl, handler: () => 1 });
+  assert.deepEqual(client.tools.get('o.old').spec.deprecated, { message: '改用 o.new', replacement: 'o.new', until: '2027-06-30' });
+  assert.notEqual(client.tools.get('o.old').spec.deprecated, decl);
+  t.update({ description: 'O2' });
+  assert.deepEqual(client.tools.get('o.old').spec.deprecated, { message: '改用 o.new', replacement: 'o.new', until: '2027-06-30' });
+  t.update({ deprecated: { message: '即将移除' } });
+  assert.deepEqual(client.tools.get('o.old').spec.deprecated, { message: '即将移除', replacement: undefined, until: undefined });
+  t.update({ deprecated: null });
+  assert.equal(client.tools.get('o.old').spec.deprecated, undefined);
+});
+
 test('调用调度声明 concurrency / exclusive；update 以 null 清除', () => {
   const { mcp, client } = create();
   mcp.tool('plain', { description: 'P', handler: () => 1 });

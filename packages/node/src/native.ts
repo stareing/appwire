@@ -110,6 +110,15 @@ export interface NativeToolSpec {
   implements?: string[]
   /** 结果缓存声明（spec/protocol.md 3.6）；缺省 = 未声明（旧版原生模块忽略）。 */
   cache?: NativeCachePolicy
+  /** 弃用声明（spec/protocol.md 3.7）；缺省 = 未声明（旧版原生模块忽略）。 */
+  deprecated?: NativeDeprecation
+}
+
+/** 工具弃用声明（原生 `DeprecationInit`）。 */
+export interface NativeDeprecation {
+  message: string
+  replacement?: string
+  until?: string
 }
 
 /** 结果缓存声明（原生 `CachePolicyInit`）。 */

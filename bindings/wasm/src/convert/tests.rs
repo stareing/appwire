@@ -137,6 +137,27 @@ fn tool_and_resource_cache() {
     assert_eq!(r.cache, None);
 }
 
+/// 第 16 项 O4：工具 `deprecated` 透传（可选字段缺省为 None）；更新时缺省不变、`null` 清除、给值整体替换；
+/// 缺 `message` 或字段类型错在转换时拒绝（长度 / 局部名 / 日期由核心校验）。
+#[test]
+fn tool_deprecated() {
+    use app_mcp_core::Deprecation;
+    let dep = |m: &str, r: Option<&str>, u: Option<&str>| Deprecation { message: m.into(), replacement: r.map(Into::into), until: u.map(Into::into) };
+    let tool = |v: Value| JsToolDef::from_json(v).and_then(JsToolDef::into_core).map(|d| d.deprecated);
+    let full = json!({ "message": "改用 b", "replacement": "b", "until": "2027-06-30" });
+    assert_eq!(tool(json!({ "name": "a", "inputSchema": {}, "deprecated": full })).unwrap(), Some(dep("改用 b", Some("b"), Some("2027-06-30"))));
+    assert_eq!(tool(json!({ "name": "a", "inputSchema": {}, "deprecated": { "message": "m" } })).unwrap(), Some(dep("m", None, None)));
+    assert_eq!(tool(json!({ "name": "a", "inputSchema": {} })).unwrap(), None);
+    assert_eq!(tool(json!({ "name": "a", "inputSchema": {}, "deprecated": {} })).unwrap_err(), "deprecated.缺少字段 message");
+    assert_eq!(tool(json!({ "name": "a", "inputSchema": {}, "deprecated": { "message": "m", "until": 20270630 } })).unwrap_err(), "deprecated.字段 until 应为字符串");
+
+    let u = |v: Value| JsToolUpdate::from_json(v).map(JsToolUpdate::into_core).map(|u| u.deprecated);
+    assert_eq!(u(json!({})).unwrap(), None);
+    assert_eq!(u(json!({ "deprecated": null })).unwrap(), Some(None));
+    assert_eq!(u(json!({ "deprecated": { "message": "m", "replacement": "b" } })).unwrap(), Some(Some(dep("m", Some("b"), None))));
+    assert!(u(json!({ "deprecated": { "replacement": "b" } })).is_err());
+}
+
 #[test]
 fn tool_surface_and_page() {
     let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "surface": "view", "page": "cart" }))

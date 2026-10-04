@@ -119,6 +119,15 @@ export interface ToolSpecInit {
   implements?: string[];
   /** 结果缓存声明（spec/protocol.md 3.6）；`updateWith` 时缺省即清除。 */
   cache?: CachePolicyInit;
+  /** 弃用声明（spec/protocol.md 3.7）；`updateWith` 时缺省即清除。 */
+  deprecated?: DeprecationInit;
+}
+
+/** 工具弃用声明：`message` 1..=500 个字符非空、`replacement` 合法局部名且不指向自身、`until` 为 `YYYY-MM-DD`；不合法时抛出 `INVALID_CONFIG`。 */
+export interface DeprecationInit {
+  message: string;
+  replacement?: string;
+  until?: string;
 }
 
 /** 结果缓存声明：`ttlMs` 为整数 1..=86400000，`scope` 为 'private'（缺省）| 'shared'；不合法时抛出 `INVALID_CONFIG`。 */

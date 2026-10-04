@@ -8,7 +8,7 @@ public class ResultCacheTests
 {
     private static readonly TimeSpan Wait = TimeSpan.FromSeconds(10);
 
-    private static async Task WaitTool(AppMcpHub hub, string name)
+    internal static async Task WaitTool(AppMcpHub hub, string name)
     {
         var deadline = DateTime.UtcNow + Wait;
         while (!hub.ListTools().Any(t => t.Name == name))

@@ -101,6 +101,21 @@ client.resource('quotes', description: '全部报价', cache: const CachePolicy(
 - `ttlMs` 须在 1..=86400000 之间，否则抛 `AppMcpException`（`AppMcpErrorCode.invalidConfig`）；`ToolHandle.update(cache: null)` 清除。
 - `McpTool`、`McpResource`、`useMcpTool`、`ToolSpec` 接受同样的 `cache`。需要 C ABI v22（`cache_ttl_ms` / `cache_scope`）。
 
+## 工具弃用（spec/protocol.md 3.7）
+
+工具改版时可声明旧版弃用：照常列出与调用，Hub 把声明原样交给 Agent 并在描述前标注：
+
+```dart
+client.tool('orders.list',
+    description: '列出订单',
+    deprecated: const ToolDeprecation('改用 orders.list2：支持分页', replacement: 'orders.list2', until: '2027-06-30'),
+    handler: (args, ctx) => list(args));
+```
+
+- `message` 须为 1..=500 个字符，`replacement` 为同一 App 中的局部名（不得指向自身），`until` 为 `YYYY-MM-DD`；
+  不合法时抛 `AppMcpException`（`AppMcpErrorCode.invalidConfig`）。`ToolHandle.update(deprecated: null)` 清除。
+- `McpTool`、`useMcpTool`、`ToolSpec` 接受同样的 `deprecated`。需要 C ABI v23（`deprecated_message` / `deprecated_replacement` / `deprecated_until`）。
+
 ## 界面级暴露与导航（spec/protocol.md 3.4）
 
 ```dart

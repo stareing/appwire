@@ -1,6 +1,25 @@
-//! 工具定义的不兼容变化（第 16 项 O4，spec/hub-api.md 3.21）：`HubStatus.schema_changes` 的状态记录。
+//! 工具演进（第 16 项 O4，spec/hub-api.md 3.21）：工具弃用声明 [`Deprecation`] 与 `HubStatus.schema_changes` 的状态记录。
 
 use app_mcp_hub as hub;
+
+/// App 工具的弃用声明（原样，spec/protocol.md 3.7）。弃用的工具照常列出与调用，Hub 不拦截。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Deprecation {
+    /// 面向模型：为什么弃用、该怎么做。
+    pub message: String,
+    /// 替代工具在同一 App 中的局部名；未声明时为空。
+    #[uniffi(default = None)]
+    pub replacement: Option<String>,
+    /// 计划移除的日期 `YYYY-MM-DD`（只作提示）；未声明时为空。
+    #[uniffi(default = None)]
+    pub until: Option<String>,
+}
+
+impl From<app_mcp_protocol::Deprecation> for Deprecation {
+    fn from(d: app_mcp_protocol::Deprecation) -> Self {
+        Deprecation { message: d.message, replacement: d.replacement, until: d.until }
+    }
+}
 
 /// 变化的级别（兼容的变化不记录）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]

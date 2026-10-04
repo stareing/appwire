@@ -289,6 +289,58 @@ describe('generateManifest', () => {
     expect(errorsOf('message.send@1')).toEqual([expect.stringContaining('implements 必须是字符串数组')])
   })
 
+  it('弃用声明 deprecated：写入清单；格式规则与 crates/protocol Deprecation::validate 一致（每条规则一例）；必填参数弃用只警告（spec/protocol.md 3.7）', () => {
+    const deprecated = { message: '改用 list2：支持分页', replacement: 'list2', until: '2027-06-30' }
+    const manifest = generateManifest({ appId: 'feed', name: '订阅' }, [
+      { name: 'list', description: '列表', deprecated },
+      { name: 'list2', description: '新列表' },
+    ])
+    expect(manifest.tools?.[0]?.deprecated).toEqual(deprecated)
+    expect(manifest.tools?.[1]).not.toHaveProperty('deprecated')
+    expect(validateManifest(manifest)).toEqual({ errors: [], warnings: [] })
+
+    const check = (dep: unknown, inputSchema: Record<string, unknown> = { type: 'object' }) =>
+      validateManifest({
+        manifestVersion: 1, appId: 'feed', name: 'f',
+        tools: [{ name: 't', description: 'd', inputSchema, deprecated: dep }],
+      } as unknown as AppMcpManifest)
+    expect(check({ message: 'm' }).errors).toEqual([])
+    expect(check({ message: '字'.repeat(500), replacement: 'other', until: '2028-02-29' }).errors).toEqual([])
+    // 按码位计数：500 个代理对字符合法
+    expect(check({ message: '😀'.repeat(500) }).errors).toEqual([])
+    const bad: [unknown, string][] = [
+      [{ message: '' }, 'deprecated.message 须为 1..=500'],
+      [{ message: '  ' }, 'deprecated.message 须为 1..=500'],
+      [{ message: '字'.repeat(501) }, 'deprecated.message 须为 1..=500'],
+      [{}, 'deprecated.message 须为 1..=500'],
+      [{ message: 'm', replacement: 'bad name' }, 'deprecated.replacement "bad name" 不是合法的工具局部名'],
+      [{ message: 'm', replacement: 't' }, '不能指向工具自身'],
+      [{ message: 'm', until: '2027-6-30' }, 'deprecated.until'],
+      [{ message: 'm', until: '2027-13-01' }, 'deprecated.until'],
+      [{ message: 'm', until: '2027-00-10' }, 'deprecated.until'],
+      [{ message: 'm', until: '2027-02-29' }, 'deprecated.until'],
+      [{ message: 'm', until: '2027-04-31' }, 'deprecated.until'],
+      [{ message: 'm', until: '2027-04-00' }, 'deprecated.until'],
+      [{ message: 'm', until: '2027-06-30T00:00:00Z' }, 'deprecated.until'],
+      [{ message: 'm', until: '２０２７-06-30' }, 'deprecated.until'],
+      [{ message: 'm', until: 20270630 }, 'deprecated.until'],
+      ['m', 'deprecated 必须是对象'],
+    ]
+    for (const [dep, word] of bad) expect(check(dep).errors, JSON.stringify(dep)).toEqual([expect.stringContaining(word)])
+    // 世纪年：1900 不是闰年，2000 是
+    expect(check({ message: 'm', until: '1900-02-29' }).errors).toHaveLength(1)
+    expect(check({ message: 'm', until: '2000-02-29' }).errors).toEqual([])
+
+    const schema = {
+      type: 'object',
+      properties: { a: { type: 'string', deprecated: true }, b: { deprecated: 'true' }, c: { deprecated: true } },
+      required: ['a', 'b'],
+    }
+    const warned = check(undefined, schema)
+    expect(warned.errors).toEqual([])
+    expect(warned.warnings).toEqual([expect.stringContaining('必填参数 "a" 标了 deprecated: true')])
+  })
+
   it('结果缓存声明 cache：工具与资源写入清单；格式与 crates/manifest 一致报错，写工具上的声明只警告（spec/protocol.md 3.6）', () => {
     const manifest = generateManifest(
       { appId: 'feed', name: '订阅', resources: [{ name: 'feed', description: '订阅', cache: { ttlMs: 30000, scope: 'shared' } }] },

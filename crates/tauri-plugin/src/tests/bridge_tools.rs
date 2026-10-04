@@ -382,3 +382,27 @@ async fn page_tool_and_resource_cache() {
     fx.bridge.client().stop();
     shutdown(fx.hub).await;
 }
+
+/// 第 16 项 O4：页面工具的 `deprecated` 经桥接原样到达 Hub；格式不合法（`replacement` 指向自身）登记被拒绝；
+/// 整体更新缺省即清除。
+#[tokio::test(flavor = "multi_thread")]
+async fn page_tool_deprecated() {
+    let fx = Fixture::new("dep", None).await;
+    let page = Arc::new(FakePage::default());
+    fx.op(&page, "main", "main", json!({ "op": "hello" }));
+    let spec = json!({ "description": "旧版", "deprecated": { "message": "改用 q.new", "replacement": "q.new", "until": "2027-06-30" } });
+    let reply = fx.op(&page, "main", "main", json!({ "op": "tool.register", "id": 1, "name": "q.old", "spec": spec }));
+    assert_eq!(reply, json!({ "ok": true }));
+    let bad = json!({ "op": "tool.register", "id": 2, "name": "q.bad",
+        "spec": { "description": "x", "deprecated": { "message": "m", "replacement": "q.bad" } } });
+    assert_eq!(fx.op(&page, "main", "main", bad)["ok"], json!(false));
+    fx.connected("dep").await;
+    eventually("Hub 看到页面工具", || tool_names(&fx.hub, "dep") == vec!["q.old"]).await;
+    let dep = hub_tool(&fx.hub, "dep.q.old").and_then(|t| t.deprecated).expect("弃用声明");
+    assert_eq!((dep.message.as_str(), dep.replacement.as_deref(), dep.until.as_deref()), ("改用 q.new", Some("q.new"), Some("2027-06-30")));
+
+    fx.op(&page, "main", "main", json!({ "op": "tool.update", "id": 1, "spec": { "description": "旧版" } }));
+    eventually("Hub 看到 deprecated 被清除", || hub_tool(&fx.hub, "dep.q.old").is_some_and(|t| t.deprecated.is_none())).await;
+    fx.bridge.client().stop();
+    shutdown(fx.hub).await;
+}

@@ -2,7 +2,7 @@
 
 use app_mcp_hub as hub;
 
-use super::{Activation, Availability, ContentAnnotations, Risk, ToolAnnotations, ToolSurface};
+use super::{Activation, Availability, ContentAnnotations, Deprecation, Risk, ToolAnnotations, ToolSurface};
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct HubTool {
@@ -32,6 +32,12 @@ pub struct HubTool {
     /// App 工具实现的标准意图（spec/intents.md，如 `["message.send@1"]`）；未声明时为空。
     #[uniffi(default = [])]
     pub implements: Vec<String>,
+    /// App 工具定义的 `schemaHash`（spec/hub-api.md 3.21）：`inputSchema` / `outputSchema` 变化时随之变化；内置与上游工具为空。
+    #[uniffi(default = None)]
+    pub schema_hash: Option<String>,
+    /// App 工具的弃用声明（原样，spec/protocol.md 3.7）；未弃用、内置与上游工具为空。弃用工具照常列出与调用。
+    #[uniffi(default = None)]
+    pub deprecated: Option<Deprecation>,
 }
 
 impl From<hub::HubTool> for HubTool {
@@ -51,6 +57,8 @@ impl From<hub::HubTool> for HubTool {
             surface: t.surface.map(Into::into),
             page: t.page,
             implements: t.implements,
+            schema_hash: t.schema_hash,
+            deprecated: t.deprecated.map(Into::into),
         }
     }
 }

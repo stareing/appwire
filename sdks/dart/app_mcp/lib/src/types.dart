@@ -443,6 +443,7 @@ final class ToolSpec {
     this.exclusive,
     this.implements = const [],
     this.cache,
+    this.deprecated,
   });
 
   /// App 内唯一，`[a-zA-Z0-9_.-]{1,64}`。
@@ -490,6 +491,9 @@ final class ToolSpec {
   /// （`readOnlyHint` 为 true，或未声明注解时 [Risk.read]）的工具生效，否则照常注册并记警告日志。为 null 时不声明。
   final CachePolicy? cache;
 
+  /// 弃用声明（spec/protocol.md 3.7）：照常列出与调用，Hub 把声明原样交给 Agent 并在描述前标注。为 null 时不声明。
+  final ToolDeprecation? deprecated;
+
   ToolSpec copyWith({
     String? description,
     Map<String, Object?>? inputSchema,
@@ -506,6 +510,7 @@ final class ToolSpec {
     String? exclusive,
     List<String>? implements,
     CachePolicy? cache,
+    ToolDeprecation? deprecated,
   }) =>
       ToolSpec(
         name: name,
@@ -524,6 +529,7 @@ final class ToolSpec {
         exclusive: exclusive ?? this.exclusive,
         implements: implements ?? this.implements,
         cache: cache ?? this.cache,
+        deprecated: deprecated ?? this.deprecated,
       );
 
   @override
@@ -543,13 +549,14 @@ final class ToolSpec {
       other.exclusive == exclusive &&
       _listEquals(other.implements, implements) &&
       other.cache == cache &&
+      other.deprecated == deprecated &&
       _schemaText(other.inputSchema) == _schemaText(inputSchema) &&
       _schemaText(other.outputSchema) == _schemaText(outputSchema);
 
   @override
   int get hashCode => Object.hash(name, description, risk, activation, title, enabled, annotations,
       _schemaText(inputSchema), _schemaText(outputSchema), surface, page, backgroundTool, concurrency, exclusive,
-      Object.hashAll(implements), cache);
+      Object.hashAll(implements), cache, deprecated);
 
   static bool _listEquals(List<String> a, List<String> b) {
     if (a.length != b.length) return false;
@@ -594,6 +601,28 @@ final class ResourceSpec {
 
   /// 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；null 表示不声明。
   final ContentAnnotations? annotations;
+}
+
+/// 工具弃用声明（spec/protocol.md 3.7）。格式不合法（[message] 为空或超过 500 个字符、[replacement] 不是局部名或指向自身、
+/// [until] 不是 `YYYY-MM-DD`）时注册 / 更新抛出 [AppMcpException]（`invalidConfig`）。
+final class ToolDeprecation {
+  const ToolDeprecation(this.message, {this.replacement, this.until});
+
+  /// 为什么弃用、该怎么做（面向模型）。
+  final String message;
+
+  /// 替代工具在同一 App 中的局部名；为 null 时不给出。
+  final String? replacement;
+
+  /// 计划移除日期（`YYYY-MM-DD`），只作提示；为 null 时不给出。
+  final String? until;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ToolDeprecation && other.message == message && other.replacement == replacement && other.until == until;
+
+  @override
+  int get hashCode => Object.hash(message, replacement, until);
 }
 
 /// 结果缓存的范围（spec/protocol.md 3.6）。

@@ -34,6 +34,11 @@ typealias CallDedupPolicy = dev.appmcp.ffi.CallDedupPolicy
 typealias CachePolicy = dev.appmcp.ffi.CachePolicy
 /** 结果缓存范围：`PRIVATE`（按调用方隔离，缺省）/ `SHARED`（全体调用方共用，只用于与调用方无关的数据）。 */
 typealias CacheScope = dev.appmcp.ffi.CacheScope
+/**
+ * 工具弃用声明（spec/protocol.md 3.7）：`message`（必填）、`replacement`（同 App 内替代工具的局部名）、`until`（`YYYY-MM-DD`）。
+ * 例：`Deprecation("改用 x.new：支持分页", replacement = "x.new")`。
+ */
+typealias Deprecation = dev.appmcp.ffi.Deprecation
 /** 原生层错误的基类。具体子类（如 `AlreadyCompleted`）需通过 `dev.appmcp.ffi.AppMcpException` 访问（typealias 不能访问嵌套类）。 */
 typealias AppMcpException = dev.appmcp.ffi.AppMcpException
 /**

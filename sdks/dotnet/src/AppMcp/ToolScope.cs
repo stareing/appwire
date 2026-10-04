@@ -140,6 +140,9 @@ public sealed class ToolScope : IDisposable
         ImplementsLen = (nuint)(options.Implements?.Count ?? 0),
         CacheTtlMs = CacheTtlMs(options.Cache),
         CacheScope = (int)(options.Cache?.Scope ?? AppMcp.CacheScope.Private),
+        DeprecatedMessage = strings.Add(options.Deprecated?.Message),
+        DeprecatedReplacement = strings.Add(options.Deprecated?.Replacement),
+        DeprecatedUntil = strings.Add(options.Deprecated?.Until),
     };
 
     /// <summary>缓存声明 → C ABI 的 cache_ttl_ms（v22，0 = 未声明）。</summary>

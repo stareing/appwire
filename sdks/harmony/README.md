@@ -101,6 +101,9 @@ mcp.tool<OrderParams, Object | null>('order.submit', {
 - 结果缓存声明（spec/protocol.md 3.6）：只读工具与资源可声明 `cache: { ttlMs: 30000, scope: 'shared' }`，Hub 在 TTL 内复用结果（命中
   不唤醒 App）；写工具上的声明被忽略并记警告，`shared` 只用于与调用方无关的数据（缺省 `private`）。`ttlMs` 须为整数 1..=86400000，
   越界时注册 / 更新抛错（`INVALID_CONFIG`）；`update` 中给出 `null` 清除。
+- 弃用声明（spec/protocol.md 3.7）：`deprecated: { message: '改用 orders.search：支持分页', replacement: 'orders.search', until: '2027-06-30' }`。
+  弃用工具照常列出、照常可调用；破坏性变更应改用新工具名（spec/manifest.md 第 6 节）。`message` 须为 1..=500 个字符的非空文本、
+  `replacement` 为合法局部名且不指向自身、`until` 为 `YYYY-MM-DD` 日期，否则注册 / 更新抛错（`INVALID_CONFIG`）；`update` 中给出 `null` 清除。
 - 事件（spec/protocol.md 3.5）：`mcp.declareEvent({ name: 'order.shipped', description: '订单已发货', payloadSchema: '{"type":"object"}' })`
   声明（`payloadSchema` 为 JSON 文本，同名替换；已连接时随即同步给 Host，否则下次握手后同步，不触发连接），
   `mcp.emitEvent('order.shipped', { orderId: 'o1' } as Record<string, Object>)` 发出：已连接返回 `true`；未连接（休眠、断线、重连中）

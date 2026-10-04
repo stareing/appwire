@@ -2,7 +2,7 @@
 
 use app_mcp_native as native;
 use napi_derive::napi;
-use native::{CachePolicy, ContentAnnotations, LifecyclePolicy, StateInfo, ToolAnnotations, WakeDescriptor};
+use native::{CachePolicy, ContentAnnotations, Deprecation, LifecyclePolicy, StateInfo, ToolAnnotations, WakeDescriptor};
 
 use super::convert::{
     parse_activation, parse_audience, parse_cache_scope, parse_cache_ttl, parse_lifecycle_mode, parse_millis, parse_residency, parse_result_status,
@@ -217,6 +217,25 @@ pub struct ToolSpecInit {
     pub implements: Option<Vec<String>>,
     /// 结果缓存声明（spec/protocol.md 3.6）：只对生效注解只读的工具生效；`updateWith` 时缺省即清除。
     pub cache: Option<CachePolicyInit>,
+    /// 弃用声明（spec/protocol.md 3.7）：弃用工具照常列出与调用；格式不合法时 `INVALID_CONFIG`（核心校验）。`updateWith` 时缺省即清除。
+    pub deprecated: Option<DeprecationInit>,
+}
+
+/// 工具弃用声明（spec/protocol.md 3.7）。
+#[napi(object)]
+pub struct DeprecationInit {
+    /// 1..=500 个字符的非空文本，面向模型：为什么弃用、该怎么做。
+    pub message: String,
+    /// 替代工具：同一 App 中的局部名，不得指向自身。
+    pub replacement: Option<String>,
+    /// 计划移除的日期（`YYYY-MM-DD`），只作提示。
+    pub until: Option<String>,
+}
+
+impl From<DeprecationInit> for Deprecation {
+    fn from(d: DeprecationInit) -> Self {
+        Deprecation { message: d.message, replacement: d.replacement, until: d.until }
+    }
 }
 
 /// 结果缓存声明（spec/protocol.md 3.6）。
@@ -319,8 +338,7 @@ impl ToolSpecInit {
             exclusive: self.exclusive.take(),
             implements: self.implements.take().unwrap_or_default(),
             cache: self.cache.take().map(CachePolicyInit::into_policy).transpose()?,
-            // @compat 弃用声明（第 16 项 O4）的 JS 透传属于二期，此前不声明。
-            deprecated: None,
+            deprecated: self.deprecated.take().map(Deprecation::from),
         };
         Ok((self.into_spec()?, options))
     }

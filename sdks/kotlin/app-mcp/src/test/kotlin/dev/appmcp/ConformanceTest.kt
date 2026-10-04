@@ -35,7 +35,7 @@ class ConformanceTest {
         val FEATURES = setOf(
             "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
             "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-            "callScheduling", "busy", "events", "implements", "cache",
+            "callScheduling", "busy", "events", "implements", "cache", "deprecated",
         )
         val VERDICT_OK = setOf("pass", "xfail", "xpass", "skip")
         val repoRoot: File = FakeHostSupport.repoRoot.canonicalFile
@@ -172,6 +172,7 @@ class ConformanceTest {
             "exclusive" -> u.exclusive = str
             "implements" -> u.implements = strings(v) // 封装层空列表 = 清除
             "cache" -> u.cache = (v as? JsonObject)?.let(::cachePolicy) // null = 清除
+            "deprecated" -> u.deprecated = (v as? JsonObject)?.let(::deprecation) // null = 清除
             else -> error("未知的工具字段 $key")
         }
     }
@@ -227,6 +228,7 @@ class ConformanceTest {
             exclusive = decl.str("exclusive"),
             implements = strings(decl["implements"]),
             cache = decl.obj("cache")?.let(::cachePolicy),
+            deprecated = decl.obj("deprecated")?.let(::deprecation),
         ) { args, ctx -> runHandler(client, tools, handler, runs.incrementAndGet(), args, ctx) }
     }
 
@@ -305,6 +307,8 @@ class ConformanceTest {
 
     private fun cachePolicy(c: JsonObject) =
         CachePolicy(ttlMs = c.long("ttlMs")!!.toULong(), scope = c.str("scope")?.let { CacheScope.valueOf(enumName(it)) })
+
+    private fun deprecation(d: JsonObject) = Deprecation(d.str("message")!!, replacement = d.str("replacement"), until = d.str("until"))
 
     /** 协议取值（kebab-case）→ 生成的枚举名。 */
     private fun enumName(value: String) = value.uppercase().replace('-', '_')

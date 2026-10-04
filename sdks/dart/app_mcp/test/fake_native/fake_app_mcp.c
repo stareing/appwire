@@ -20,7 +20,7 @@
  * v18：am_client_new_ex 记录 max_queued_calls（fake_max_queued_calls）；工具记录 concurrency / exclusive（fake_tool_schedule）。
  * 结构体布局探针 fake_sizeof 在 fake_layout.c。
  *
- * v20 事件函数在 fake_events.c；v21 工具 implements 的记录（fake_tool_implements）在 fake_intents.c；v22 缓存声明在 fake_cache.c。
+ * v20 事件函数在 fake_events.c；v21 工具 implements 的记录（fake_tool_implements）在 fake_intents.c；v22 缓存声明在 fake_cache.c；v23 弃用声明在 fake_deprecated.c。
  * 编译：cc -shared -fPIC -o libfake_app_mcp.so fake_app_mcp.c fake_layout.c fake_events.c -lpthread
  * Windows（MSVC）：cl /c /utf-8 编译后按 dumpbin /symbols 中的外部函数生成 .def 再 link /DLL
  * （与 cc 默认导出全部非 static 函数一致，见 test/support/fake_native.dart）。
@@ -656,6 +656,7 @@ static AmStatus check_tool_options(const AmToolOptions *o) {
 }
 void fake_intents_record(const char *tool, const AmToolOptions *o); /* fake_intents.c */
 void fake_cache_record_tool(const char *tool, const AmToolOptions *o); void fake_cache_record_resource(const char *r, const AmResourceOptions *o);
+void fake_deprecated_record_tool(const char *tool, const AmToolOptions *o); /* fake_deprecated.c */
 static void apply_tool_options(ToolRec *t, const AmToolOptions *o) {
     free(t->annotations);
     free(t->output_schema);
@@ -676,6 +677,7 @@ static void apply_tool_options(ToolRec *t, const AmToolOptions *o) {
     t->exclusive = v18 ? dup_str(o->exclusive) : NULL;
     fake_intents_record(t->name, o);
     fake_cache_record_tool(t->name, o);
+    fake_deprecated_record_tool(t->name, o);
 }
 AmStatus am_tool_register_ex(AmScope *scope, const AmToolSpec *spec, const AmToolOptions *options,
                              AmToolFn handler, void *user_data, AmFreeFn free_user_data, AmTool **out) {

@@ -42,6 +42,9 @@ size_t fake_sizeof(int which) {
     case 30: return offsetof(AmToolOptions, cache_scope);
     case 31: return offsetof(AmResourceOptions, cache_ttl_ms);
     case 32: return offsetof(AmResourceOptions, cache_scope);
+    case 33: return offsetof(AmToolOptions, deprecated_message);
+    case 34: return offsetof(AmToolOptions, deprecated_replacement);
+    case 35: return offsetof(AmToolOptions, deprecated_until);
     default: return 0;
     }
 }

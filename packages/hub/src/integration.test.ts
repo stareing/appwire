@@ -1078,6 +1078,28 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     await expect(startHub({ resultCache: { maxBytes: 0 } })).rejects.toThrow(/resultCache\.maxBytes/)
   })
 
+  it('工具演进：App 声明的 deprecated 原样出现在 HubTool；schemaHash 随 schema 变化；破坏性变化记入 status().schemaChanges（第 16 项 O4）', async () => {
+    const { hub } = await startHub()
+    const app = createAppMcp({ appId: 'evo', appName: 'Evo', hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false })
+    apps.push(app)
+    const deprecated = { message: '改用 evo.new：支持分页', replacement: 'new', until: '2027-06-30' }
+    app.tool('old', { description: '旧', risk: 'read', deprecated, handler: () => ({ v: 1 }) })
+    const t = app.tool('new', { description: '新', risk: 'read', input: { type: 'object', properties: { q: { type: 'string' } } }, handler: () => ({ v: 2 }) })
+    app.start()
+    const tool = (name: string) => hub.tools({ apps: ['evo'], includeBuiltin: false }).find((x) => x.name === `evo.${name}`)
+    await until(() => tool('new') !== undefined && tool('old') !== undefined, 'evo 工具登记')
+    expect(tool('old')?.deprecated).toEqual(deprecated)
+    expect(tool('new')).not.toHaveProperty('deprecated')
+    const hash = tool('new')?.schemaHash
+    expect(hash).toMatch(/^[0-9a-f]{16}$/)
+    expect((await hub.callTool({ name: 'evo.old' })).result.ok).toEqual({ v: 1 })
+
+    t.update({ input: { type: 'object', properties: { q: { type: 'string' }, page: { type: 'integer' } }, required: ['page'] } })
+    await until(() => tool('new')?.schemaHash !== hash, 'schemaHash 变化')
+    const records = hub.status().schemaChanges ?? []
+    expect(records).toEqual([expect.objectContaining({ appId: 'evo', tool: 'new', level: 'breaking', at: expect.any(Number) })])
+  })
+
   it('shutdown 后调用抛 SHUTDOWN', async () => {
     const { hub } = await startHub({ listen: null })
     expect(hub.listenAddr).toBeNull()

@@ -86,6 +86,11 @@ Tools (static and scanned page tools) and plugin `resources` may declare `cache:
 spec/protocol.md 3.6); it is written to the manifest after a format check like `crates/manifest` (`ttlMs` an integer
 in 1..=86400000, `scope` `private` / `shared`), with a warning when the tool is not read-only (the Hub ignores it there).
 Use `scope: 'shared'` only for caller-independent data.
+Tools may also declare `deprecated: { message, replacement?, until? }` (spec/protocol.md 3.7), written to the manifest
+after the same checks as `crates/manifest` (`message` 1..=500 characters and not blank, `replacement` a valid local
+name other than the tool itself, `until` a valid `YYYY-MM-DD` date); a required input parameter marked
+`deprecated: true` only gives a warning. A deprecated tool stays callable; for a breaking change add a new tool name
+instead (spec/manifest.md section 6).
 
 Register the annotated tools at runtime through the generated virtual module (add
 `/// <reference types="@app-mcp/build/client" />` to `src/vite-env.d.ts` for its types):

@@ -5,7 +5,7 @@ use std::ffi::{c_char, c_int};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use app_mcp_native::{
-    Activation, AppOverview, BusyPolicy, CachePolicy, CacheScope, CallDedupPolicy, CallResult, ClientKind, ContentAnnotations, ErrorKind, HeartbeatMode,
+    Activation, AppOverview, BusyPolicy, CachePolicy, CacheScope, CallDedupPolicy, CallResult, ClientKind, ContentAnnotations, Deprecation, ErrorKind, HeartbeatMode,
     LifecycleMode, LifecyclePolicy, NativeConfig, Residency, ResourceOptions, ResourceSpec, ResultStatus,
     Risk, SleepReason, ToolAnnotations, ToolOptions, ToolSpec, ToolSurface, Visibility, WakeDescriptor, WakeKind,
     WakeReason,
@@ -407,7 +407,35 @@ pub(crate) unsafe fn read_tool_options(p: *const AmToolOptions) -> FfiResult<Too
         let scope = unsafe { std::ptr::addr_of!((*p).cache_scope).read() };
         options.cache = cache_policy_from(ttl_ms, scope)?;
     }
+    if has(offset_of!(AmToolOptions, deprecated_until)) {
+        let message = unsafe { std::ptr::addr_of!((*p).deprecated_message).read() };
+        let replacement = unsafe { std::ptr::addr_of!((*p).deprecated_replacement).read() };
+        let until = unsafe { std::ptr::addr_of!((*p).deprecated_until).read() };
+        options.deprecated = unsafe { deprecation_from(message, replacement, until) }?;
+    }
     Ok(options)
+}
+
+/// v23 弃用声明（spec/protocol.md 3.7）：三个指针均为 NULL = 未声明。
+///
+/// @why 只给 replacement / until 而 message 为 NULL 时按空 message 交给核心，由核心统一报 `InvalidConfig`
+/// （P-04，唯一校验点），不在此另设规则。
+/// @error 非法 UTF-8 → `AM_ERR_INVALID_ARGUMENT`。
+///
+/// # Safety
+/// 各指针为 NULL 或有效的 C 字符串。
+pub(crate) unsafe fn deprecation_from(
+    message: *const c_char,
+    replacement: *const c_char,
+    until: *const c_char,
+) -> FfiResult<Option<Deprecation>> {
+    let message = unsafe { opt_str(message, "options->deprecated_message") }?;
+    let replacement = unsafe { opt_str(replacement, "options->deprecated_replacement") }?.map(str::to_owned);
+    let until = unsafe { opt_str(until, "options->deprecated_until") }?.map(str::to_owned);
+    if message.is_none() && replacement.is_none() && until.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Deprecation { message: message.unwrap_or_default().to_owned(), replacement, until }))
 }
 
 /// v22 结果缓存声明（spec/protocol.md 3.6）：`ttl_ms` 0 = 未声明。

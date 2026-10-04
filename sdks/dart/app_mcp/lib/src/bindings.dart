@@ -349,6 +349,12 @@ final class AmToolOptions extends Struct {
   /// v22：AmCacheScope（0 = PRIVATE，1 = SHARED）。
   @Int32()
   external int cache_scope;
+  /// v23：弃用说明；三个字段均为 NULL = 未声明（更新时清除）。
+  external Pointer<Utf8> deprecated_message;
+  /// v23：替代工具的局部名；NULL = 未给出。
+  external Pointer<Utf8> deprecated_replacement;
+  /// v23：计划移除日期（YYYY-MM-DD）；NULL = 未给出。
+  external Pointer<Utf8> deprecated_until;
 }
 
 /// v9：`am_call_complete_ex` 的调用结果。

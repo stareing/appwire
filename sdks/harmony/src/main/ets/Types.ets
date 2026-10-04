@@ -95,6 +95,20 @@ export interface CachePolicy {
   scope?: CacheScope;
 }
 
+/**
+ * 工具弃用声明（spec/protocol.md 3.7）：弃用的工具照常列出、照常可调用，Hub 只把说明呈现给模型。
+ * 破坏性变更应改用新工具名（旧名弃用一段时间后移除），见 spec/manifest.md 第 6 节。
+ * 格式不合法时注册 / 更新抛错（`code` 为 `INVALID_CONFIG`）。
+ */
+export interface ToolDeprecation {
+  /** 1..=500 个字符的非空文本，面向模型：为什么弃用、该怎么做。 */
+  message: string;
+  /** 替代工具：同一 App 中的局部名，不得指向自身。 */
+  replacement?: string;
+  /** 计划移除的日期（`YYYY-MM-DD`），只作提示。 */
+  until?: string;
+}
+
 /** 内容的接收方（MCP `Role`）。 */
 export type Audience = 'user' | 'assistant';
 
@@ -294,6 +308,8 @@ export interface ToolDefinition<I, O> {
   implements?: string[];
   /** 结果缓存声明（{@link CachePolicy}）：只对只读工具生效。 */
   cache?: CachePolicy;
+  /** 弃用声明（{@link ToolDeprecation}）。 */
+  deprecated?: ToolDeprecation;
   handler: ToolHandler<I, O>;
 }
 
@@ -316,7 +332,7 @@ export type NavigationHandler = (request: NavigationRequest) => void | Promise<v
 
 /**
  * `ToolHandle.update` 的变更：未提供（或 `undefined`）的字段保持不变；显式给出 `null` 清除该声明
- * （`title` / `annotations` / `outputSchema` / `activation` / `page` / `backgroundTool` / `exclusive` / `implements` / `cache` 删除，`concurrency` 恢复不限，`inputSchema` 变为无参数，`risk` 恢复 `write`，
+ * （`title` / `annotations` / `outputSchema` / `activation` / `page` / `backgroundTool` / `exclusive` / `implements` / `cache` / `deprecated` 删除，`concurrency` 恢复不限，`inputSchema` 变为无参数，`risk` 恢复 `write`，
  * `enabled` 恢复 true，`surface` 恢复 `app`）。`description` 不可清除，`null` 时保持不变。
  */
 export interface ToolChanges {
@@ -336,6 +352,8 @@ export interface ToolChanges {
   implements?: string[] | null;
   /** 整体替换缓存声明；`null` 清除。 */
   cache?: CachePolicy | null;
+  /** 整体替换弃用声明；`null` 清除。 */
+  deprecated?: ToolDeprecation | null;
 }
 
 export interface ToolHandle {

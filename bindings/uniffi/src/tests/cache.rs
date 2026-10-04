@@ -40,6 +40,7 @@ fn read_tool(name: &str, cache: Option<CachePolicy>) -> ToolSpec {
         exclusive: None,
         implements: Vec::new(),
         cache,
+        deprecated: None,
     }
 }
 

@@ -782,3 +782,4 @@ fn listener_strings_are_owned_by_callee() {
 mod lifecycle;
 mod events;
 mod cache;
+mod deprecation;

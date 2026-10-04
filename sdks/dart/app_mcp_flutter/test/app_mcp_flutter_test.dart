@@ -466,6 +466,45 @@ void main() {
     expect(cache('resource:quotes'), '-');
   }, skip: path == null);
 
+  testWidgets('McpTool / useMcpTool：deprecated 传入注册，变化时整体替换、null 清除（v23）', (tester) async {
+    final lib = DynamicLibrary.open(path!);
+    final deprecatedOf = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
+        Pointer<Utf8> Function(Pointer<Utf8>)>('fake_deprecated_of');
+    final stringFree = lib.lookupFunction<Void Function(Pointer<Utf8>),
+        void Function(Pointer<Utf8>)>('am_string_free');
+    String? deprecated(String tool) {
+      final p = using((a) => deprecatedOf(tool.toNativeUtf8(allocator: a)));
+      if (p == nullptr) return null;
+      final s = p.toDartString();
+      stringFree(p);
+      return s;
+    }
+
+    final client = AppMcp(appId: 'orders', appName: '订单', libraryPath: path);
+    addTearDown(client.dispose);
+
+    Widget app(ToolDeprecation? d) => AppMcpScope(
+          client: client,
+          trackLifecycle: false,
+          child: McpTool(
+              name: 'orders.list',
+              description: '旧版列表',
+              deprecated: d,
+              handler: (a, c) => null,
+              child: _DeprecatedHookTool(deprecated: d)),
+        );
+
+    await tester.pumpWidget(app(const ToolDeprecation('改用 orders.list2', replacement: 'list2', until: '2027-06-30')));
+    expect(deprecated('orders.list'), '改用 orders.list2|list2|2027-06-30');
+    expect(deprecated('orders.hook'), '改用 orders.list2|list2|2027-06-30');
+    await tester.pumpWidget(app(const ToolDeprecation('即将移除')));
+    expect(deprecated('orders.list'), '即将移除|-|-');
+    expect(deprecated('orders.hook'), '即将移除|-|-');
+    await tester.pumpWidget(app(null));
+    expect(deprecated('orders.list'), '-');
+    expect(deprecated('orders.hook'), '-');
+  }, skip: path == null);
+
   testWidgets('view 工具（v14）：路由栈顶时启用，被新页面 / 对话框盖住时禁用；McpViewGate 显式门控；声明 surface / page', (tester) async {
     final lib = DynamicLibrary.open(path!);
     final enabled = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>('fake_tool_enabled');
@@ -586,4 +625,22 @@ void main() {
     expect(locations, ['/cart?from=null']);
     await expectLater(Future.sync(() => byLocation(const NavigationRequest('x', null))), throwsStateError);
   });
+}
+
+/// [McpToolsMixin.useMcpTool] 的 deprecated 透传（v23）。
+class _DeprecatedHookTool extends StatefulWidget {
+  const _DeprecatedHookTool({this.deprecated});
+
+  final ToolDeprecation? deprecated;
+
+  @override
+  State<_DeprecatedHookTool> createState() => _DeprecatedHookToolState();
+}
+
+class _DeprecatedHookToolState extends State<_DeprecatedHookTool> with McpToolsMixin {
+  @override
+  Widget build(BuildContext context) {
+    useMcpTool('orders.hook', description: '钩子工具', deprecated: widget.deprecated, handler: (a, c) => null);
+    return const SizedBox();
+  }
 }

@@ -36,7 +36,7 @@ fn start_cache_app(hub: *mut AmHub) -> (App, Arc<AtomicUsize>) {
 }
 
 /// 等到 App 工具出现在 am_hub_tools_json 中。
-fn wait_tool(hub: *mut AmHub, name: &str) {
+pub(super) fn wait_tool(hub: *mut AmHub, name: &str) {
     let deadline = Instant::now() + WAIT;
     loop {
         // SAFETY: 有效参数。

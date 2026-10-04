@@ -423,6 +423,9 @@ fn tool_options_are_read_up_to_struct_size() {
         implements_len: 1,
         cache_ttl_ms: 0,
         cache_scope: 0,
+        deprecated_message: ptr::null(),
+        deprecated_replacement: ptr::null(),
+        deprecated_until: ptr::null(),
     };
     let options = unsafe { read_tool_options(&full) }.ok();
     assert_eq!(
@@ -711,6 +714,9 @@ fn tool_options_and_call_result_reach_host() {
         implements_len: verbs.len(),
         cache_ttl_ms: 0,
         cache_scope: 0,
+        deprecated_message: ptr::null(),
+        deprecated_replacement: ptr::null(),
+        deprecated_until: ptr::null(),
     };
     let mut tool: *mut AmTool = ptr::null_mut();
     assert_eq!(

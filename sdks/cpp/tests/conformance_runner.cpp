@@ -49,7 +49,8 @@ const std::vector<std::string> kFeatures = {"toolOptions", "mutate",      "lifec
                                             "userAction",  "progress",    "resourceOptions", "readFailure",
                                             "surface",     "navigation",  "backgroundTool",  "backgroundNavigation",
                                             "idempotencyKey", "callScheduling", "busy",
-                                            "events",      "implements",  "cache"};
+                                            "events",      "implements",  "cache",
+                                            "deprecated"};
 
 // ---------------------------------------------------------------------------
 // 用例字段 → SDK 枚举（协议同名字符串，spec/protocol.md 第 3 节）
@@ -138,6 +139,12 @@ void set_c_cache(Options& options, const Json& decl) {
     auto cache = cache_policy(decl);
     options.cache_ttl_ms = cache ? cache->ttl_ms : 0;
     options.cache_scope = cache && cache->scope == app_mcp::CacheScope::Shared ? AM_CACHE_SHARED : AM_CACHE_PRIVATE;
+}
+
+/// 用例 deprecated（{message, replacement?, until?}，spec/protocol.md 3.7）；未给出或 null 时 nullopt。
+std::optional<app_mcp::Deprecation> deprecation(const Json& v) {
+    if (!v.is_object()) return std::nullopt;
+    return app_mcp::Deprecation{v["message"].str_or(""), v["replacement"].str(), v["until"].str()};
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +367,7 @@ app_mcp::ToolOptions cpp_tool_options(const Json& decl) {
     o.exclusive = decl["exclusive"].str();
     o.implements = strings(decl["implements"]);
     o.cache = cache_policy(decl["cache"]);
+    o.deprecated = deprecation(decl["deprecated"]);
     return o;
 }
 
@@ -572,6 +580,7 @@ struct CToolDecl {
     std::optional<std::string> input_schema, title, annotations, output_schema, page, background_tool, exclusive;
     std::vector<std::string> implements;
     std::vector<const char*> implements_ptrs;
+    std::optional<app_mcp::Deprecation> deprecated;
     AmToolSpec spec{};
     AmToolOptions options{};
 
@@ -585,7 +594,8 @@ struct CToolDecl {
           page(decl["page"].str()),
           background_tool(decl["backgroundTool"].str()),
           exclusive(decl["exclusive"].str()),
-          implements(strings(decl["implements"])) {
+          implements(strings(decl["implements"])),
+          deprecated(deprecation(decl["deprecated"])) {
         spec.name = name.c_str();
         spec.description = description.c_str();
         spec.input_schema_json = input_schema ? input_schema->c_str() : nullptr;
@@ -605,6 +615,11 @@ struct CToolDecl {
         options.implements = implements_ptrs.empty() ? nullptr : implements_ptrs.data();
         options.implements_len = implements_ptrs.size(); // 更新时 0 = 清除
         set_c_cache(options, decl["cache"]);
+        if (deprecated) {  // 全 NULL = 未声明（更新时清除）
+            options.deprecated_message = deprecated->message.c_str();
+            options.deprecated_replacement = deprecated->replacement ? deprecated->replacement->c_str() : nullptr;
+            options.deprecated_until = deprecated->until ? deprecated->until->c_str() : nullptr;
+        }
     }
     CToolDecl(const CToolDecl&) = delete;
     CToolDecl& operator=(const CToolDecl&) = delete;

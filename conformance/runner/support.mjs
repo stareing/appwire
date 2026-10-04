@@ -280,6 +280,7 @@ function jsToolFields(decl) {
     exclusive: decl.exclusive,
     implements: decl.implements,
     cache: decl.cache,
+    deprecated: decl.deprecated,
   });
 }
 

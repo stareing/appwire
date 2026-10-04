@@ -81,6 +81,8 @@ public struct ToolDeclaration {
     public var implements: [String]
     /// 结果缓存声明（spec/protocol.md 3.6）；`nil` = 未声明。
     public var cache: CachePolicy?
+    /// 弃用声明（spec/protocol.md 3.7）；`nil` = 未弃用。
+    public var deprecated: Deprecation?
 
     init(_ spec: ToolSpec) {
         description = spec.description
@@ -97,6 +99,7 @@ public struct ToolDeclaration {
         exclusive = spec.exclusive
         implements = spec.implements
         cache = spec.cache
+        deprecated = spec.deprecated
     }
 
     func applied(to spec: ToolSpec) -> ToolSpec {
@@ -115,6 +118,7 @@ public struct ToolDeclaration {
         next.exclusive = exclusive
         next.implements = implements
         next.cache = cache
+        next.deprecated = deprecated
         return next
     }
 }

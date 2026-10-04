@@ -23,7 +23,7 @@ void _report(Object e, StackTrace st, String what) {
 /// [backgroundTool] 声明 App 在后台时 Hub 改调的同 App app 工具（spec/protocol.md 3.4「后台与前台」）。
 /// [concurrency] / [exclusive] 为 SDK 内的调用调度声明（spec/protocol.md 5.3，见 [ToolSpec.concurrency]、[ToolSpec.exclusive]）。
 /// [implements] 声明实现的标准意图（spec/intents.md，见 [ToolSpec.implements]）；[cache] 声明结果缓存（spec/protocol.md 3.6，
-/// 见 [ToolSpec.cache]）。
+/// 见 [ToolSpec.cache]）；[deprecated] 声明弃用（spec/protocol.md 3.7，见 [ToolSpec.deprecated]）。
 ///
 /// ```dart
 /// McpTool(
@@ -53,6 +53,7 @@ class McpTool extends StatefulWidget {
     this.exclusive,
     this.implements = const [],
     this.cache,
+    this.deprecated,
     required this.handler,
     this.child,
   });
@@ -93,6 +94,9 @@ class McpTool extends StatefulWidget {
 
   /// 结果缓存声明（只对只读工具生效）；为 null 时不声明，变化时整体替换。
   final CachePolicy? cache;
+
+  /// 弃用声明（照常列出与调用）；为 null 时不声明，变化时整体替换。
+  final ToolDeprecation? deprecated;
   final ToolHandler handler;
   final Widget? child;
 
@@ -113,6 +117,7 @@ class McpTool extends StatefulWidget {
         exclusive: exclusive,
         implements: implements,
         cache: cache,
+        deprecated: deprecated,
       );
 
   @override
@@ -344,6 +349,7 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
     String? exclusive,
     List<String> implements = const [],
     CachePolicy? cache,
+    ToolDeprecation? deprecated,
     required ToolHandler handler,
   }) {
     final scope = AppMcpScope.scopeOf(context);
@@ -373,7 +379,8 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
         concurrency: concurrency,
         exclusive: exclusive,
         implements: implements,
-        cache: cache);
+        cache: cache,
+        deprecated: deprecated);
     final existing = _mcpTools[name];
     try {
       if (existing != null && !existing.isDisposed) {

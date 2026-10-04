@@ -121,6 +121,19 @@ export interface CachePolicy {
 /** 缓存范围（spec/protocol.md 3.6）。 */
 export type CacheScope = 'private' | 'shared'
 
+/**
+ * 工具弃用声明（spec/protocol.md 3.7）：弃用的工具照常列出、照常可调用，Hub 只把说明呈现给模型。
+ * 破坏性变更应改用新工具名（旧名弃用一段时间后移除），见 spec/manifest.md 第 6 节。格式不合法时注册 / 更新失败。
+ */
+export interface ToolDeprecation {
+  /** 1..=500 个字符的非空文本，面向模型：为什么弃用、该怎么做。 */
+  message: string
+  /** 替代工具：同一 App 中的局部名，不得指向自身。 */
+  replacement?: string
+  /** 计划移除的日期（`YYYY-MM-DD`），只作提示。 */
+  until?: string
+}
+
 /** 内容的接收方（MCP `Role`）。 */
 export type Audience = 'user' | 'assistant'
 
@@ -463,6 +476,8 @@ export interface ToolDefinition<I = unknown, O = unknown> {
   implements?: string[]
   /** 结果缓存声明（{@link CachePolicy}）：只对只读工具生效；不继承 scope。 */
   cache?: CachePolicy
+  /** 弃用声明（{@link ToolDeprecation}）；不继承 scope。 */
+  deprecated?: ToolDeprecation
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
   /** 与 `handler` 二选一：只声明元数据、首次调用时加载 handler，见 {@link LazyToolDefinition}。 */
   load?: undefined
@@ -490,7 +505,7 @@ export interface ToolHandle {
   readonly name: string
   /**
    * 更新描述、schema、风险、注解、启用状态或界面声明（`surface` / `page` / `visibility` / `anchor`）；未提供的字段保持不变，
-   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` / `backgroundTool` / `exclusive` / `implements` / `cache` 为清除声明，`concurrency` 恢复为不限，`surface` / `page` / `visibility` 恢复为继承值）。
+   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` / `backgroundTool` / `exclusive` / `implements` / `cache` / `deprecated` 为清除声明，`concurrency` 恢复为不限，`surface` / `page` / `visibility` 恢复为继承值）。
    * `enabled` 是 App 的意愿：`view` 工具还要满足可见性门控才对 Host 可见。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void

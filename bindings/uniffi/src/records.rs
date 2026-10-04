@@ -52,6 +52,29 @@ pub struct ToolSpec {
     /// [`AppMcpError::InvalidConfig`]。为空 = 未声明（`Tool::update` 时为清除）。
     #[uniffi(default = None)]
     pub cache: Option<CachePolicy>,
+    /// 弃用声明（spec/protocol.md 3.7）：弃用的工具照常列出与调用。格式不合法时注册 / 更新返回
+    /// [`AppMcpError::InvalidConfig`]。为空 = 未弃用（`Tool::update` 时为清除）。
+    #[uniffi(default = None)]
+    pub deprecated: Option<Deprecation>,
+}
+
+/// 工具弃用声明（spec/protocol.md 3.7）。SDK 只校验格式，Hub 只呈现，不拦截调用。
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Deprecation {
+    /// 1..=500 个字符，面向模型：为什么弃用、该怎么做。
+    pub message: String,
+    /// 替代工具：同一 App 中的局部名，不能指向自身；指向未注册的工具不报错。为空 = 未声明。
+    #[uniffi(default = None)]
+    pub replacement: Option<String>,
+    /// 计划移除的日期 `YYYY-MM-DD`，只作提示。为空 = 未声明。
+    #[uniffi(default = None)]
+    pub until: Option<String>,
+}
+
+impl From<Deprecation> for native::Deprecation {
+    fn from(d: Deprecation) -> Self {
+        native::Deprecation { message: d.message, replacement: d.replacement, until: d.until }
+    }
 }
 
 /// 结果缓存声明（spec/protocol.md 3.6）：在 `ttl_ms` 内相同请求的结果可由 Hub 复用。SDK 只校验格式，不缓存。
@@ -123,8 +146,7 @@ impl From<ToolSpec> for (native::ToolSpec, native::ToolOptions) {
             exclusive: s.exclusive,
             implements: s.implements,
             cache: s.cache.map(Into::into),
-            // @compat 弃用声明（第 16 项 O4）的 Kotlin / Swift / Python 透传属于二期，此前不声明。
-            deprecated: None,
+            deprecated: s.deprecated.map(Into::into),
         };
         (n, options)
     }

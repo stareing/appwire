@@ -72,6 +72,10 @@ appMcp.tool('order.cancel', {
   表示 TTL 内相同参数的结果可由 Hub 复用（命中不唤醒 App）；只对只读工具生效（写工具上的声明被忽略并给出警告），`scope: 'shared'`
   所有调用方共用，只用于与调用方无关的数据（缺省 `private` 按调用方隔离）。资源同样可声明 `cache`。`ttlMs` 须为整数 1..=86400000，
   越界时注册 / 更新失败；不继承 scope，`update({ cache: undefined })` 清除。Electron / Tauri 页面经桥接同样声明。
+- **弃用声明**（spec/protocol.md 3.7）：`appMcp.tool('orders.list', { description, deprecated: { message: '改用 orders.search：支持分页', replacement: 'orders.search', until: '2027-06-30' }, handler })`。
+  Hub 把说明呈现给模型，弃用工具照常列出、照常可调用；破坏性变更应改用新工具名（旧名弃用一段时间后移除，见 spec/manifest.md 第 6 节）。
+  `message` 须为 1..=500 个字符的非空文本、`replacement` 为合法局部名且不指向自身、`until` 为 `YYYY-MM-DD` 日期，否则注册 / 更新失败；
+  不继承 scope，`update({ deprecated: undefined })` 清除。Electron / Tauri 页面经桥接同样声明。
 - **用户正在操作**（spec/protocol.md 5.3，只在 SDK 内生效、不发给 Host）：`appMcp.setBusy(true / false)` 声明用户此刻正在 App 内
   操作（何时算由 App 决定，如编辑框获得焦点、拖拽中），`isBusy()` 读取。期间写调用（生效注解不是 `readOnlyHint: true` 的工具）按
   `createAppMcp({ busyPolicy })` 处理：`'reject'`（缺省）以 `RATE_LIMITED` 拒绝（`data` 为 `{ scope: 'busy' }`，未执行，同一 `callId`

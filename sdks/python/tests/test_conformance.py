@@ -58,6 +58,7 @@ FEATURES = frozenset(
         "events",
         "implements",
         "cache",
+        "deprecated",
     }
 )
 ROOT = Path(__file__).resolve().parents[3]
@@ -127,6 +128,7 @@ class CaseApp:
             exclusive=decl.get("exclusive"),
             implements=decl.get("implements", ()),
             cache=_rename(decl.get("cache"), _CACHE_KEYS),
+            deprecated=decl.get("deprecated"),
         )
         with self._lock:
             self.tools[decl["name"]] = handle
@@ -199,6 +201,7 @@ class CaseApp:
                 "backgroundTool": "background_tool",
                 "concurrency": "concurrency",
                 "exclusive": "exclusive",
+                "deprecated": "deprecated",
             }
             changes = {keys[k]: v for k, v in op["set"].items() if k in keys}
             if "implements" in op["set"]:

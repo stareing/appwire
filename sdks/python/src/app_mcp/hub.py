@@ -157,6 +157,12 @@ EventLimitOverrides = ffi.EventLimitOverrides
 #: 为空取默认 1024 / 8 MiB / 64 KiB，``max_entries=0`` 关闭）与统计（``HubStatus.cache``）。
 CacheLimitOverrides = ffi.CacheLimitOverrides
 CacheStatus = ffi.CacheStatus
+#: 工具演进（spec/hub-api.md 3.21）：``HubTool.deprecated`` 为 App 的弃用声明（``message``、``replacement``、``until``），
+#: ``HubStatus.schema_changes`` 为同名工具定义的不兼容变化（``app_id``、``tool``、``level``、``changes``、``at``）。
+Deprecation = ffi.Deprecation
+SchemaChangeRecord = ffi.SchemaChangeRecord
+SchemaChange = ffi.SchemaChange
+ChangeLevel = ffi.ChangeLevel
 # 资源保护与工具声明（spec/hub-api.md 3.11）。
 #: 限流与大小上限（``HubConfig.limits``；``HubStatus.limits`` 为全部字段给出的生效值）。为空的字段取默认值。
 LimitsConfig = ffi.LimitsConfig
@@ -216,7 +222,9 @@ __all__ = [
     "CallPriorityLike",
     "CallResult",
     "CallerKind",
+    "ChangeLevel",
     "ContentAnnotations",
+    "Deprecation",
     "DiagnosticReport",
     "DormantStoreStatus",
     "EventLimitOverrides",
@@ -253,6 +261,8 @@ __all__ = [
     "ResourceContent",
     "ResultStatus",
     "Risk",
+    "SchemaChange",
+    "SchemaChangeRecord",
     "StoreIssue",
     "TaskLeaseStatus",
     "TaskSelectionStatus",

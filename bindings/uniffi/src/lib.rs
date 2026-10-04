@@ -5,7 +5,7 @@
 //! - 对象（`uniffi::Object`）：[`AppMcpClient`]、[`Scope`]、[`Tool`]、[`Resource`]、[`Call`]、[`Read`]、
 //!   [`Hold`]，分别包装原生运行时的 `NativeClient` 与各类句柄。
 //! - 记录（`uniffi::Record`）：[`ClientConfig`]、[`AppOverview`]、[`ToolSpec`]、[`ToolAnnotations`]、[`ResourceSpec`]、[`EventInfo`]、
-//!   [`CallResult`]、[`ContentAnnotations`]、[`StateInfo`]、[`LifecyclePolicy`]、[`WakeDescriptor`]、[`CallDedupPolicy`]、[`CachePolicy`]。
+//!   [`CallResult`]、[`ContentAnnotations`]、[`StateInfo`]、[`LifecyclePolicy`]、[`WakeDescriptor`]、[`CallDedupPolicy`]、[`CachePolicy`]、[`Deprecation`]。
 //! - 枚举（`uniffi::Enum`）：[`Risk`]、[`CacheScope`]、[`ResultStatus`]、[`Audience`]、[`Activation`]、[`Visibility`]、[`ClientKind`]、[`CancelReason`]、
 //!   [`StateStatus`]、[`LogLevel`]、[`LifecycleMode`]、[`Residency`]、[`WakeKind`]、[`WakeReason`]、[`SleepReason`]、
 //!   [`ChannelOffer`]。

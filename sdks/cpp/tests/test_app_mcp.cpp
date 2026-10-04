@@ -677,6 +677,44 @@ void test_cache() {
     }
 }
 
+void test_deprecated() {
+    // 弃用声明（app_mcp.h v23，spec/protocol.md 3.7）：字段原样传给 C 接口（影响 toolsHash）；非法 InvalidConfig；清空即清除。
+    const AmToolOptions plain = c_options(app_mcp::ToolOptions{});
+    EXPECT(plain.deprecated_message == nullptr && plain.deprecated_replacement == nullptr && plain.deprecated_until == nullptr);
+    app_mcp::ToolOptions options;
+    options.deprecated = app_mcp::Deprecation{"改用 orders.list2", std::string("list2"), std::string("2027-06-30")};
+    const AmToolOptions full = c_options(options);
+    EXPECT(full.deprecated_message != nullptr && std::string(full.deprecated_message) == "改用 orders.list2");
+    EXPECT(full.deprecated_replacement != nullptr && std::string(full.deprecated_replacement) == "list2");
+    EXPECT(full.deprecated_until != nullptr && std::string(full.deprecated_until) == "2027-06-30");
+    app_mcp::ToolOptions minimal;
+    minimal.deprecated = app_mcp::Deprecation{"即将移除", std::nullopt, std::nullopt};
+    const AmToolOptions min = c_options(minimal);
+    EXPECT(min.deprecated_message != nullptr && min.deprecated_replacement == nullptr && min.deprecated_until == nullptr);
+
+    app_mcp::ClientConfig config;
+    config.app_id = "cpp-deprecated";
+    config.app_name = "C++ Deprecated";
+    config.host_url = "ws://127.0.0.1:1";  // 不会 start，不连接
+    app_mcp::Client client(config);
+    auto handler = [](app_mcp::Call call) { call.complete(); };
+    auto t = client.register_tool("orders.list", "列出订单", handler);
+    const std::string base = client.tools_hash();
+    EXPECT(status_of([&] { t.update("列出订单", options); }) == AM_OK);
+    const std::string with_full = client.tools_hash();
+    EXPECT(with_full != base);
+    EXPECT(status_of([&] { t.update("列出订单", minimal); }) == AM_OK);
+    EXPECT(client.tools_hash() != with_full && client.tools_hash() != base);
+    app_mcp::ToolOptions self_ref;
+    self_ref.deprecated = app_mcp::Deprecation{"m", std::string("orders.list"), std::nullopt};
+    EXPECT(status_of([&] { t.update("列出订单", self_ref); }) == AM_ERR_INVALID_CONFIG);
+    app_mcp::ToolOptions empty;
+    empty.deprecated = app_mcp::Deprecation{};
+    EXPECT(status_of([&] { client.register_tool("orders.bad", "x", handler, empty); }) == AM_ERR_INVALID_CONFIG);
+    EXPECT(status_of([&] { t.update("列出订单", app_mcp::ToolOptions{}); }) == AM_OK);
+    EXPECT(client.tools_hash() == base);  // 不声明即清除
+}
+
 }  // namespace
 
 int main() {
@@ -692,6 +730,7 @@ int main() {
         test_annotations();
         test_navigation();
         test_cache();
+        test_deprecated();
     } catch (const std::exception& e) {
         ++g_failed;
         std::fprintf(stderr, "FAIL 未捕获的异常：%s\n", e.what());

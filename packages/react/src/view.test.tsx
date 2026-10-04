@@ -178,6 +178,28 @@ describe('结果缓存声明 cache', () => {
   })
 })
 
+describe('弃用声明 deprecated', () => {
+  it('useTool：随定义注册；内联对象内容不变不 update，变化 / 移除时 update', () => {
+    function T({ message, replacement }: { message?: string; replacement?: string }) {
+      useTool('t', {
+        description: 't',
+        ...(message && { deprecated: { message, ...(replacement && { replacement }) } }),
+        handler: () => null,
+      })
+      return null
+    }
+    const { app, rerender } = setup(<T message="改用 t2" />)
+    expect(app.getTool('t')?.deprecated).toEqual({ message: '改用 t2' })
+    rerender(<T message="改用 t2" />)
+    expect(app.count('tool.update', 't')).toBe(0)
+    rerender(<T message="改用 t2" replacement="t2" />)
+    expect(app.getTool('t')?.deprecated).toEqual({ message: '改用 t2', replacement: 't2' })
+    rerender(<T />)
+    expect(app.getTool('t')?.deprecated).toBeUndefined()
+    expect(app.count('tool.update', 't')).toBe(2)
+  })
+})
+
 describe('路由导航适配', () => {
   it('useRouterNavigation：页面表 → navigate(地址)；参数填入路由，其余进查询串', async () => {
     const navigate = vi.fn()

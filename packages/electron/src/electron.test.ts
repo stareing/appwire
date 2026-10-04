@@ -781,6 +781,17 @@ describe('导航（spec/protocol.md 3.4）', () => {
     expect(native.resources.get('cart')?.spec).not.toHaveProperty('cache')
   })
 
+  it('页面工具的 deprecated 转到主进程（update 缺省清除）', async () => {
+    const { ipcMain, native } = setupNav()
+    const wc = new FakeWebContents(12)
+    const bridge = getBridge(ipcMain, wc)
+    const deprecated = { message: '改用 orders.search', replacement: 'orders.search', until: '2027-06-30' }
+    await bridge.request({ op: 'tool.register', id: 1, name: 'orders.list', spec: { description: '列表', deprecated } } as never)
+    expect(native.tools.get('orders.list')?.spec).toMatchObject({ deprecated })
+    await bridge.request({ op: 'tool.update', id: 1, spec: { description: '列表' } } as never)
+    expect(native.tools.get('orders.list')?.spec).not.toHaveProperty('deprecated')
+  })
+
   it('页面工具的 concurrency / exclusive 转到主进程（update 缺省清除）', async () => {
     const { ipcMain, native } = setupNav()
     const wc = new FakeWebContents(9)

@@ -46,8 +46,8 @@ final class ToolHandle {
   ///
   /// 各参数类型同 [ToolSpec] 对应字段（`description` String、`inputSchema` / `outputSchema`
   /// `Map<String, Object?>`、`risk` [Risk]、`activation` [Activation]、`title` String、`enabled` bool、
-  /// `annotations` [ToolAnnotations]、`surface` [ToolSurface]、`page` / `backgroundTool` / `exclusive` String、`concurrency` int、`implements` `List<String>`、`cache` [CachePolicy]）。null 的含义：`title` / `activation` /
-  /// `annotations` / `outputSchema` / `page` / `backgroundTool` / `exclusive` 清除声明，`concurrency` 恢复 0（不单独限制），`implements` / `cache` 清除声明，`surface` 恢复 [ToolSurface.app]，`inputSchema` 为无参数，`risk` 恢复 [Risk.write]，`enabled` 恢复 true，
+  /// `annotations` [ToolAnnotations]、`surface` [ToolSurface]、`page` / `backgroundTool` / `exclusive` String、`concurrency` int、`implements` `List<String>`、`cache` [CachePolicy]、`deprecated` [ToolDeprecation]）。null 的含义：`title` / `activation` /
+  /// `annotations` / `outputSchema` / `page` / `backgroundTool` / `exclusive` 清除声明，`concurrency` 恢复 0（不单独限制），`implements` / `cache` / `deprecated` 清除声明，`surface` 恢复 [ToolSurface.app]，`inputSchema` 为无参数，`risk` 恢复 [Risk.write]，`enabled` 恢复 true，
   /// `description` 保持不变。
   ///
   /// @error 类型不符时抛 [ArgumentError]，不产生协议消息。
@@ -68,6 +68,7 @@ final class ToolHandle {
     Object? exclusive = _keep,
     Object? implements = _keep,
     Object? cache = _keep,
+    Object? deprecated = _keep,
   }) {
     final s = _spec;
     replace(ToolSpec(
@@ -86,7 +87,8 @@ final class ToolHandle {
         concurrency: _patch<int?>(concurrency, s.concurrency, 'concurrency') ?? 0,
         exclusive: _patch<String?>(exclusive, s.exclusive, 'exclusive'),
         implements: _patch<List<String>?>(implements, s.implements, 'implements') ?? const [],
-        cache: _patch<CachePolicy?>(cache, s.cache, 'cache')));
+        cache: _patch<CachePolicy?>(cache, s.cache, 'cache'),
+        deprecated: _patch<ToolDeprecation?>(deprecated, s.deprecated, 'deprecated')));
   }
 
   /// [update] 参数缺省标记。
@@ -120,7 +122,8 @@ final class ToolHandle {
         concurrency: spec.concurrency,
         exclusive: spec.exclusive,
         implements: spec.implements,
-        cache: spec.cache);
+        cache: spec.cache,
+        deprecated: spec.deprecated);
     if (next == _spec) return;
     final rt = _scope._client._rt;
     using((arena) =>

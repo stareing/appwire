@@ -34,6 +34,7 @@ class ToolHandle internal constructor(private val inner: FfiTool, @Volatile priv
         exclusive: String? = null,
         implements: List<String>? = null,
         cache: CachePolicy? = null,
+        deprecated: Deprecation? = null,
     ) = update {
         description?.let { this.description = it }
         inputSchema?.let { this.inputSchema = it }
@@ -48,13 +49,14 @@ class ToolHandle internal constructor(private val inner: FfiTool, @Volatile priv
         exclusive?.let { this.exclusive = it }
         implements?.let { this.implements = it }
         cache?.let { this.cache = it }
+        deprecated?.let { this.deprecated = it }
     }
 
     /**
      * 按补丁修改定义：赋值过的字段替换，**赋值 null 清除该声明**，未赋值的保持不变（与网页 / Rust SDK 一致）。
      *
      * ```kotlin
-     * handle.update { description = "新描述"; annotations = null; cache = null }
+     * handle.update { description = "新描述"; annotations = null; cache = null; deprecated = null }
      * ```
      */
     fun update(change: ToolUpdate.() -> Unit) {

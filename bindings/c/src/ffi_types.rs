@@ -130,6 +130,12 @@ pub struct AmToolOptions {
     pub cache_ttl_ms: u64,
     /// v22：`AmCacheScope`（0 = PRIVATE，1 = SHARED）。
     pub cache_scope: c_int,
+    /// v23（spec/protocol.md 3.7）：弃用说明；三个字段均为 NULL = 未声明（更新时清除）。
+    pub deprecated_message: *const c_char,
+    /// v23：替代工具的局部名；NULL = 未给出。
+    pub deprecated_replacement: *const c_char,
+    /// v23：计划移除日期（`YYYY-MM-DD`）；NULL = 未给出。
+    pub deprecated_until: *const c_char,
 }
 
 /// v9：`am_call_complete_ex` 的调用结果（带 `struct_size`，按调用方给出的大小读取；`status` 用 c_int 接收）。

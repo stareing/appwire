@@ -108,6 +108,22 @@ client.RegisterResource("quotes", "全部报价", reader, cache: new CachePolicy
   上限 `HubOptions.ResultCache = new HubResultCacheLimits { MaxEntries, MaxBytes, MaxEntryBytes }`（`MaxEntries = 0` 关闭）；
   统计见 `hub.Status().Cache`（spec/hub-api.md 3.20）。
 
+## 工具弃用（spec/protocol.md 3.7）
+
+工具改版时可声明旧版弃用：照常列出与调用，Hub 把声明原样交给 Agent 并在描述前标注：
+
+```csharp
+client.RegisterTool("orders.list", "列出订单", handler, new ToolOptions
+{
+    Deprecated = new ToolDeprecation("改用 orders.list2：支持分页", Replacement: "orders.list2", Until: "2027-06-30"),
+});
+```
+
+- `Message` 须为 1..=500 个字符，`Replacement` 为同一 App 中的局部名（不得指向自身），`Until` 为 `YYYY-MM-DD`；不合法时抛
+  `AppMcpException`（`InvalidConfig`）；`Update` 时 `Deprecated` 为 null 表示清除。需要 C ABI v23。
+- Hub 侧（`AppMcp.Hub`）：`HubToolInfo.Deprecated`（原样声明）、`HubToolInfo.SchemaHash`（inputSchema / outputSchema 变化时随之变化）；
+  不兼容变化记录见 `hub.Status().SchemaChanges`（spec/hub-api.md 3.21）。
+
 ## 界面级暴露与导航（spec/protocol.md 3.4）
 
 ```csharp

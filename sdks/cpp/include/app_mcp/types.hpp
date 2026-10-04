@@ -52,6 +52,18 @@ struct CachePolicy {
     CacheScope scope = CacheScope::Private;
 };
 
+/// 工具弃用声明（spec/protocol.md 3.7，app_mcp.h v23）：照常列出与调用，Hub 把声明原样交给 Agent。
+/// 格式不合法（message 为空或超过 500 个字符、replacement 不是局部名或指向自身、until 不是 YYYY-MM-DD）时
+/// 注册 / 更新抛出 InvalidConfig。
+struct Deprecation {
+    /// 为什么弃用、该怎么做（面向模型）。
+    std::string message;
+    /// 替代工具在同一 App 中的局部名；为空表示不给出。
+    std::optional<std::string> replacement;
+    /// 计划移除日期（YYYY-MM-DD），只作提示；为空表示不给出。
+    std::optional<std::string> until;
+};
+
 /// 本实例的唤醒描述（spec/lifecycle.md 第 5 节），随 app/sleep 上报。
 struct WakeDescriptor {
     WakeKind kind = AM_WAKE_NONE;
@@ -130,6 +142,8 @@ struct ToolOptions {
     std::vector<std::string> implements;
     /// 结果缓存声明（v22）；只对生效注解只读的工具生效（否则照常注册并记警告日志）。为空表示不声明（更新时清除）。
     std::optional<CachePolicy> cache;
+    /// 弃用声明（v23）；为空表示不声明（更新时清除）。
+    std::optional<Deprecation> deprecated;
 };
 
 /// 内容面向谁（MCP 内容注解 audience）。
@@ -395,6 +409,11 @@ inline AmToolOptions tool_options(const ToolOptions& options, const std::optiona
     o.implements = implements.empty() ? nullptr : implements.data();
     o.implements_len = implements.size();
     set_cache(o, options.cache);
+    if (options.deprecated) {
+        o.deprecated_message = options.deprecated->message.c_str();
+        o.deprecated_replacement = c_str_or_null(options.deprecated->replacement);
+        o.deprecated_until = c_str_or_null(options.deprecated->until);
+    }
     return o;
 }
 

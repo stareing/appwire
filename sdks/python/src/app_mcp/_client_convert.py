@@ -26,6 +26,7 @@ ToolAnnotationsLike = Union[ffi.ToolAnnotations, Mapping[str, Any]]
 ContentAnnotationsLike = Union[ffi.ContentAnnotations, Mapping[str, Any]]
 ResultStatusLike = Union[str, ffi.ResultStatus]
 CacheLike = Union[ffi.CachePolicy, Mapping[str, Any], int]
+DeprecationLike = Union[ffi.Deprecation, Mapping[str, Any], str]
 
 
 class _Unset(enum.Enum):
@@ -211,6 +212,32 @@ def _cache(value: CacheLike | None) -> ffi.CachePolicy | None:
         raise ValueError(f"cache.ttl_ms 须为非负整数：{ttl!r}")
     scope = value.get("scope")
     return ffi.CachePolicy(ttl_ms=ttl, scope=None if scope is None else _enum_arg(scope, _CACHE_SCOPES, " cache scope"))
+
+
+def _deprecation(value: DeprecationLike | None) -> ffi.Deprecation | None:
+    """工具弃用声明（spec/protocol.md 3.7）：``str`` 为 ``message``；``dict`` 键为 ``message``、``replacement``、``until``。
+    只做形状转换，格式（``message`` 长度、``replacement`` 局部名且不指向自身、``until`` 为 ``YYYY-MM-DD``）由原生层在
+    注册 / 更新时校验（``AppMcpError.InvalidConfig``）。
+
+    @error 未知键、缺少 ``message`` 或字段不是字符串 → ``ValueError``。
+    """
+    if value is None or isinstance(value, ffi.Deprecation):
+        return value
+    if isinstance(value, str):
+        value = {"message": value}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"deprecated 须为 Deprecation、dict 或字符串：{value!r}")
+    unknown = set(value) - {"message", "replacement", "until"}
+    if unknown:
+        raise ValueError(f"未知的 deprecated 字段：{sorted(unknown)}（可选 message、replacement、until）")
+    message = value.get("message")
+    if not isinstance(message, str):
+        raise ValueError(f"deprecated.message 须为字符串：{message!r}")
+    optional = {k: value.get(k) for k in ("replacement", "until")}
+    for key, v in optional.items():
+        if v is not None and not isinstance(v, str):
+            raise ValueError(f"deprecated.{key} 须为字符串：{v!r}")
+    return ffi.Deprecation(message=message, **optional)
 
 
 def _surface(value: SurfaceLike | None) -> ffi.ToolSurface | None:

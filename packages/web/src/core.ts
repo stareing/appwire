@@ -19,6 +19,7 @@ import type {
   OutputSchema,
   Risk,
   ToolAnnotations,
+  ToolDeprecation,
   ToolSurface,
   Visibility,
 } from './types'
@@ -101,11 +102,13 @@ export interface CoreToolDef {
   implements?: string[]
   /** 结果缓存声明（spec/protocol.md 3.6）；缺省 = 未声明。 */
   cache?: CachePolicy
+  /** 弃用声明（spec/protocol.md 3.7）；缺省 = 未声明。 */
+  deprecated?: ToolDeprecation
 }
 
 /**
  * 部分更新；缺省字段不变，`activation` / `title` / `annotations` / `outputSchema` / `page` / `backgroundTool` /
- * `exclusive` / `cache` 为 null 表示清除；`concurrency` 为 0 表示不单独限制。
+ * `exclusive` / `cache` / `deprecated` 为 null 表示清除；`concurrency` 为 0 表示不单独限制。
  */
 export interface CoreToolUpdate {
   description?: string
@@ -125,6 +128,8 @@ export interface CoreToolUpdate {
   implements?: string[]
   /** 整体替换。 */
   cache?: CachePolicy | null
+  /** 整体替换。 */
+  deprecated?: ToolDeprecation | null
 }
 
 export interface CoreResourceDef {

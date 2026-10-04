@@ -69,6 +69,8 @@ export interface ToolDecl {
   implements?: string[]
   /** 结果缓存声明（spec/protocol.md 3.6，能力 cache）。 */
   cache?: { ttlMs: number; scope?: 'private' | 'shared' }
+  /** 弃用声明（spec/protocol.md 3.7，能力 deprecated）；update 的 `set.deprecated` 为 null 时清除。 */
+  deprecated?: { message: string; replacement?: string; until?: string }
   handler?: HandlerSpec
 }
 

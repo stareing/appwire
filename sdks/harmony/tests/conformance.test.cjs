@@ -19,7 +19,7 @@ const SDK = 'harmony';
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
-  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey', 'callScheduling', 'busy', 'events', 'implements', 'cache',
+  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey', 'callScheduling', 'busy', 'events', 'implements', 'cache', 'deprecated',
 ];
 
 const build = process.env.APP_MCP_HARMONY_BUILD;
@@ -66,6 +66,7 @@ function toolFields(decl) {
     exclusive: decl.exclusive,
     implements: decl.implements,
     cache: decl.cache,
+    deprecated: decl.deprecated,
   });
 }
 

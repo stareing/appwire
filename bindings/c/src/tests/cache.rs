@@ -7,11 +7,11 @@ use app_mcp_native::{CachePolicy, CacheScope, MAX_CACHE_TTL_MS};
 use super::*;
 use crate::convert::cache_policy_from;
 
-fn cstr(s: &str) -> CString {
+pub(super) fn cstr(s: &str) -> CString {
     CString::new(s).unwrap_or_default()
 }
 
-fn tool_options(ttl_ms: u64, scope: i32) -> AmToolOptions {
+pub(super) fn tool_options(ttl_ms: u64, scope: i32) -> AmToolOptions {
     AmToolOptions {
         struct_size: std::mem::size_of::<AmToolOptions>() as u32,
         annotations_json: ptr::null(),
@@ -25,6 +25,9 @@ fn tool_options(ttl_ms: u64, scope: i32) -> AmToolOptions {
         implements_len: 0,
         cache_ttl_ms: ttl_ms,
         cache_scope: scope,
+        deprecated_message: ptr::null(),
+        deprecated_replacement: ptr::null(),
+        deprecated_until: ptr::null(),
     }
 }
 
@@ -57,7 +60,6 @@ fn header_declares_cache_scope() {
 fn v22_layout() {
     use std::mem::size_of;
     assert_eq!((offset_of!(AmToolOptions, cache_ttl_ms), offset_of!(AmToolOptions, cache_scope)), (80, 88));
-    assert_eq!(size_of::<AmToolOptions>(), 96);
     assert_eq!((offset_of!(AmResourceOptions, cache_ttl_ms), offset_of!(AmResourceOptions, cache_scope)), (16, 24));
     assert_eq!(size_of::<AmResourceOptions>(), 32);
 }
@@ -106,17 +108,16 @@ fn resource_cache_is_read_up_to_struct_size() {
     assert_eq!(unsafe { read_resource_options(&bad_scope) }.err().map(|e| e.status), Some(AmStatus::InvalidArgument));
 }
 
-fn tools_hash(client: *const AmClient) -> String {
+pub(super) fn tools_hash(client: *const AmClient) -> String {
     let p = unsafe { am_client_tools_hash(client) };
     let s = unsafe { opt_str(p, "hash") }.ok().flatten().unwrap_or_default().to_owned();
     unsafe { am_string_free(p) };
     s
 }
 
-/// 经 C 接口注册 / 更新（不连接 Host）：越界 → AM_ERR_INVALID_CONFIG 且保持原定义；声明进 toolsHash；ttl 0 清除。
-#[test]
-fn register_and_update_through_c_abi() {
-    let (id, name, url) = (cstr("c-abi-cache"), cstr("C ABI Cache"), cstr("ws://127.0.0.1:1"));
+/// 不连接 Host 的客户端（不 start）及其根作用域；由调用方释放。
+pub(super) fn offline_client(app_id: &str) -> (*mut AmClient, *mut AmScope) {
+    let (id, name, url) = (cstr(app_id), cstr("C ABI Test"), cstr("ws://127.0.0.1:1"));
     let cfg = AmClientConfig {
         app_id: id.as_ptr(),
         app_name: name.as_ptr(),
@@ -136,8 +137,15 @@ fn register_and_update_through_c_abi() {
     assert_eq!(unsafe { am_client_new(&cfg, ptr::null(), &mut client) }, AmStatus::Ok);
     let mut root: *mut AmScope = ptr::null_mut();
     assert_eq!(unsafe { am_client_root_scope(client, &mut root) }, AmStatus::Ok);
+    (client, root)
+}
 
-    let (tname, desc) = (cstr("stock.quote"), cstr("查询报价"));
+/// 经 C 接口注册 / 更新（不连接 Host）：越界 → AM_ERR_INVALID_CONFIG 且保持原定义；声明进 toolsHash；ttl 0 清除。
+#[test]
+fn register_and_update_through_c_abi() {
+    let (client, root) = offline_client("c-abi-cache");
+    let desc = cstr("查询报价");
+    let tname = cstr("stock.quote");
     let spec = AmToolSpec {
         name: tname.as_ptr(),
         description: desc.as_ptr(),
@@ -210,7 +218,7 @@ fn register_and_update_through_c_abi() {
     }
 }
 
-unsafe extern "C" fn noop_tool(_: *mut c_void, call: *mut AmCall) {
+pub(super) unsafe extern "C" fn noop_tool(_: *mut c_void, call: *mut AmCall) {
     unsafe { am_call_complete(call, ptr::null(), ptr::null(), 0) };
 }
 

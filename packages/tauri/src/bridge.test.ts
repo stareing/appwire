@@ -220,6 +220,20 @@ describe('createTauriAppMcp', () => {
     appMcp.dispose()
   })
 
+  it('弃用声明：工具的 deprecated 经注入脚本随 tool.register 送到 Rust 侧；update 缺省即随整体定义清除', async () => {
+    const fake = createFakeTauri()
+    const appMcp = createTauriAppMcp({ appId: 'feed', appName: '订阅', bridge: bridgeOf(fake.window), logger: quiet })
+    const deprecated = { message: '改用 list2', replacement: 'list2', until: '2027-06-30' }
+    const tool = appMcp.tool('list', { description: '列表', deprecated, handler: () => null })
+    const reg = await fake.waitFor((op) => op.op === 'tool.register')
+    expect(reg).toMatchObject({ name: 'list', spec: { deprecated } })
+    tool.update({ deprecated: undefined })
+    const upd = await fake.waitFor((op) => op.op === 'tool.update')
+    expect(upd).toMatchObject({ spec: { description: '列表' } })
+    expect(upd).not.toHaveProperty('spec.deprecated')
+    appMcp.dispose()
+  })
+
   it('USER_ACTION_REQUIRED 的类别与 reason / uri 经注入脚本送到 Rust 侧；缺省字段省略', async () => {
     const fake = createFakeTauri()
     const appMcp = createTauriAppMcp({ appId: 'shop', appName: '示例商城', bridge: bridgeOf(fake.window), logger: quiet })

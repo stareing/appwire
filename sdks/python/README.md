@@ -140,6 +140,23 @@ def today(city: str) -> dict:
 - `handle.update(cache=...)` replaces it, `cache=None` clears it; other updates keep it. The SDK never caches anything
   itself.
 
+### Deprecating a tool (optional, `spec/protocol.md` §3.7)
+
+An incompatible schema change needs a new tool name; keep the old tool and mark it deprecated:
+
+```python
+@client.tool("search.v1", "Search (old)",
+             deprecated={"message": "Use search.v2: supports paging", "replacement": "search.v2", "until": "2027-06-30"})
+def search_v1(q: str) -> list:
+    ...
+```
+
+- `deprecated` is `{"message", "replacement"?, "until"?}`, a plain string (the message), or a `Deprecation`. `message`
+  is 1..500 characters, `replacement` a local tool name other than itself, `until` a `YYYY-MM-DD` date (a hint only);
+  anything else raises `AppMcpError.InvalidConfig`.
+- Deprecated tools are still listed and callable; agents see the notice. `handle.update(deprecated=...)` replaces it,
+  `deprecated=None` clears it; other updates keep it.
+
 ### User is busy (optional, `spec/protocol.md` §5.3)
 
 While the user is actively working in the app (a text field has focus, a drag is in progress — your call), declare it so
@@ -323,6 +340,10 @@ Hub's memory within the TTL without waking the app; `CallResult.cached_age_ms` i
 cache_bypass=True)` skips the lookup and refreshes the entry. Limits: `Hub(result_cache={"maxEntries": 256})` (or a
 `CacheLimitOverrides`; also `maxBytes`, `maxEntryBytes`; defaults 1024 / 8 MiB / 64 KiB, `maxEntries: 0` disables the
 cache). `hub.status().cache` is a `CacheStatus` (`entries`, `bytes`, `hits`, `misses`, `evictions`).
+
+Tool evolution (`spec/hub-api.md` §3.21): every app tool in `hub.tools()` carries `schema_hash` (changes when its
+`inputSchema` / `outputSchema` change) and `deprecated` (the app's `Deprecation`, or `None`). Breaking or possibly
+breaking changes to a tool's definition are kept in `hub.status().schema_changes` (last 32 `SchemaChangeRecord`s).
 
 Policy hook points (`spec/hub-api.md` §3.13): `Hub(policy={"rules": [{"id": "no-pay", "action": "deny", "app": "shop",
 "tool": "pay*"}]})` or `hub.set_policy(...)` at runtime. `hide` removes an app / tool from every list (calls get
