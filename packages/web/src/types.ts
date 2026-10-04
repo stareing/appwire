@@ -107,6 +107,20 @@ export interface ToolAnnotations {
   openWorldHint?: boolean
 }
 
+/**
+ * 结果缓存声明（spec/protocol.md 3.6）：在 `ttlMs` 内相同请求的结果可由 Hub 复用（命中不唤醒 App）。
+ * 工具上只对生效注解只读（`readOnlyHint: true` 或 `risk: 'read'`）的工具生效，写工具上的声明被忽略并给出警告。
+ */
+export interface CachePolicy {
+  /** 复用期限（毫秒，整数 1..=86400000）；越界时注册 / 更新失败。 */
+  ttlMs: number
+  /** 缺省 `private`（按调用方隔离）；`shared` 所有调用方共用，只用于与调用方无关的数据。 */
+  scope?: CacheScope
+}
+
+/** 缓存范围（spec/protocol.md 3.6）。 */
+export type CacheScope = 'private' | 'shared'
+
 /** 内容的接收方（MCP `Role`）。 */
 export type Audience = 'user' | 'assistant'
 
@@ -447,6 +461,8 @@ export interface ToolDefinition<I = unknown, O = unknown> {
    * 未知动词或缺少词表必填参数只给出警告。不继承 scope。
    */
   implements?: string[]
+  /** 结果缓存声明（{@link CachePolicy}）：只对只读工具生效；不继承 scope。 */
+  cache?: CachePolicy
   handler: (input: I, context: ToolContext) => ToolResult<O> | Promise<ToolResult<O>>
   /** 与 `handler` 二选一：只声明元数据、首次调用时加载 handler，见 {@link LazyToolDefinition}。 */
   load?: undefined
@@ -474,7 +490,7 @@ export interface ToolHandle {
   readonly name: string
   /**
    * 更新描述、schema、风险、注解、启用状态或界面声明（`surface` / `page` / `visibility` / `anchor`）；未提供的字段保持不变，
-   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` / `backgroundTool` / `exclusive` / `implements` 为清除声明，`concurrency` 恢复为不限，`surface` / `page` / `visibility` 恢复为继承值）。
+   * 显式给出 `undefined` 的字段恢复默认（`annotations` / `outputSchema` / `backgroundTool` / `exclusive` / `implements` / `cache` 为清除声明，`concurrency` 恢复为不限，`surface` / `page` / `visibility` 恢复为继承值）。
    * `enabled` 是 App 的意愿：`view` 工具还要满足可见性门控才对 Host 可见。
    */
   update(changes: Partial<Omit<ToolDefinition<any, any>, 'handler'>>): void
@@ -556,6 +572,8 @@ export interface ResourceDefinition<T = unknown> {
   realtime?: boolean
   /** 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；缺省未声明。 */
   annotations?: ContentAnnotations
+  /** 读取结果缓存声明（{@link CachePolicy}）：TTL 内 Hub 复用读取结果；缺省不缓存。 */
+  cache?: CachePolicy
   read: () => T | Promise<T>
 }
 

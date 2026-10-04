@@ -97,6 +97,14 @@ typealias EventLimitOverrides = dev.appmcp.hub.ffi.EventLimitOverrides
 /** 标准意图的机主默认表状态（[Hub.intents]、`HubStatus.intents`，spec/intents.md 第 4 节）：`defaults`、`lastError`。 */
 typealias IntentsStatus = dev.appmcp.hub.ffi.IntentsStatus
 
+/**
+ * 只读结果缓存上限（[HubConfig.resultCache]，spec/hub-api.md 3.20）：`maxEntries`、`maxBytes`、`maxEntryBytes`；
+ * 为空的字段取默认值（1024 / 8 MiB / 64 KiB），`maxEntries = 0u` 关闭缓存。
+ */
+typealias CacheLimitOverrides = dev.appmcp.hub.ffi.CacheLimitOverrides
+/** 结果缓存统计（`HubStatus.cache`）：`entries`、`bytes`、`hits`、`misses`、`evictions`。 */
+typealias CacheStatus = dev.appmcp.hub.ffi.CacheStatus
+
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /** 限流与大小上限（[HubConfig.limits]；[HubStatus.limits] 为全部字段给出的生效值）。为空的字段取默认值。 */
 typealias LimitsConfig = dev.appmcp.hub.ffi.LimitsConfig
@@ -204,6 +212,8 @@ data class CallResult(
     val durationMs: Long = 0,
     /** 本次调用是否唤醒了 App（`dev.appwire/woke`）。 */
     val woke: Boolean = false,
+    /** 结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数（spec/hub-api.md 3.20）；未命中为 `null`。 */
+    val cachedAgeMs: Long? = null,
 ) {
     val isError: Boolean get() = error != null
 
@@ -361,6 +371,7 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
      * @param idempotencyKey Agent 的幂等键（1..=256 个字符），原样转交 App（spec/hub-api.md 3.15）；不合法时
      *   [CallResult.error] 为 `INVALID_INPUT`。
      * @param priority 调用优先级（为空 = `NORMAL`），原样转交 App，App 的调用队列先交互、后后台（第 16 项 P6）。
+     * @param cacheBypass 不查只读结果缓存，照常调用 App 并以新结果覆盖（spec/hub-api.md 3.20）；命中时 [CallResult.cachedAgeMs] 有值。
      * @param onProgress 接收调用进度（Hub 合并后，spec/hub-api.md 3.12）：在 Hub 的进度线程上按顺序同步调用，须尽快返回
      *   （需要时自行切换线程）；全部回调都在本函数返回之前完成。回调抛出的异常被忽略。为空时不接收进度。
      */
@@ -373,6 +384,7 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
         callId: String? = null,
         idempotencyKey: String? = null,
         priority: CallPriority? = null,
+        cacheBypass: Boolean = false,
         onProgress: ((ProgressUpdate) -> Unit)? = null,
     ): CallResult {
         val request = dev.appmcp.hub.ffi.CallRequest(
@@ -384,6 +396,7 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
             session = session,
             idempotencyKey = idempotencyKey,
             priority = priority,
+            cacheBypass = cacheBypass,
         )
         val out = if (onProgress == null) {
             inner.callTool(request)
@@ -412,6 +425,7 @@ class Hub private constructor(private val inner: FfiHub) : AutoCloseable {
             routedTo = out.routedTo,
             durationMs = out.durationMs.toLong(),
             woke = out.woke,
+            cachedAgeMs = out.cachedAgeMs?.toLong(),
         )
     }
 

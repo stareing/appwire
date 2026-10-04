@@ -19,7 +19,7 @@ const SDK = 'harmony';
 /** 本 runner 支持的用例能力（conformance/README.md 第 4 节）。 */
 const FEATURES = [
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', 'readFailure',
-  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey', 'callScheduling', 'busy', 'events', 'implements',
+  'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey', 'callScheduling', 'busy', 'events', 'implements', 'cache',
 ];
 
 const build = process.env.APP_MCP_HARMONY_BUILD;
@@ -65,6 +65,7 @@ function toolFields(decl) {
     concurrency: decl.concurrency,
     exclusive: decl.exclusive,
     implements: decl.implements,
+    cache: decl.cache,
   });
 }
 
@@ -152,7 +153,7 @@ function startApp(support, native, testCase, url) {
   for (const t of testCase.app.tools ?? []) registry.register(t);
   for (const r of testCase.app.resources ?? []) {
     app.resource(r.name, {
-      ...defined({ description: r.description, mimeType: r.mimeType, realtime: r.realtime, annotations: r.annotations }),
+      ...defined({ description: r.description, mimeType: r.mimeType, realtime: r.realtime, annotations: r.annotations, cache: r.cache }),
       read: () => readResource(r.read),
     });
   }

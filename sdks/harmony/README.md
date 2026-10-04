@@ -98,6 +98,9 @@ mcp.tool<OrderParams, Object | null>('order.submit', {
   如操作同一份文档的写工具），`update` 中给出 `null` 清除。
 - 标准意图（spec/intents.md）：工具可声明 `implements: ['message.send@1']`（每项 `<动词>@<主版本>`，最多 4 项），Agent 用 `apps.intents`
   按动作找 App；格式不合法时注册抛错，`update` 中给出 `null` 清除。
+- 结果缓存声明（spec/protocol.md 3.6）：只读工具与资源可声明 `cache: { ttlMs: 30000, scope: 'shared' }`，Hub 在 TTL 内复用结果（命中
+  不唤醒 App）；写工具上的声明被忽略并记警告，`shared` 只用于与调用方无关的数据（缺省 `private`）。`ttlMs` 须为整数 1..=86400000，
+  越界时注册 / 更新抛错（`INVALID_CONFIG`）；`update` 中给出 `null` 清除。
 - 事件（spec/protocol.md 3.5）：`mcp.declareEvent({ name: 'order.shipped', description: '订单已发货', payloadSchema: '{"type":"object"}' })`
   声明（`payloadSchema` 为 JSON 文本，同名替换；已连接时随即同步给 Host，否则下次握手后同步，不触发连接），
   `mcp.emitEvent('order.shipped', { orderId: 'o1' } as Record<string, Object>)` 发出：已连接返回 `true`；未连接（休眠、断线、重连中）

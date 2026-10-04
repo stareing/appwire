@@ -49,7 +49,7 @@ const std::vector<std::string> kFeatures = {"toolOptions", "mutate",      "lifec
                                             "userAction",  "progress",    "resourceOptions", "readFailure",
                                             "surface",     "navigation",  "backgroundTool",  "backgroundNavigation",
                                             "idempotencyKey", "callScheduling", "busy",
-                                            "events",      "implements"};
+                                            "events",      "implements",  "cache"};
 
 // ---------------------------------------------------------------------------
 // 用例字段 → SDK 枚举（协议同名字符串，spec/protocol.md 第 3 节）
@@ -121,6 +121,23 @@ std::vector<std::string> strings(const Json& v) {
 uint64_t to_u64(const Json& v, uint64_t fallback) {
     auto n = v.number();
     return n ? static_cast<uint64_t>(*n) : fallback;
+}
+
+/// 用例 cache（{ttlMs, scope?}，spec/protocol.md 3.6）；未给出或 null 时 nullopt。
+std::optional<app_mcp::CachePolicy> cache_policy(const Json& v) {
+    if (!v.is_object()) return std::nullopt;
+    app_mcp::CachePolicy p;
+    p.ttl_ms = to_u64(v["ttlMs"], 0);
+    p.scope = v["scope"].str_or("private") == "shared" ? app_mcp::CacheScope::Shared : app_mcp::CacheScope::Private;
+    return p;
+}
+
+/// C 路径：cache 声明 → cache_ttl_ms / cache_scope（未声明为 0 / PRIVATE；更新时 0 = 清除）。
+template <class Options>
+void set_c_cache(Options& options, const Json& decl) {
+    auto cache = cache_policy(decl);
+    options.cache_ttl_ms = cache ? cache->ttl_ms : 0;
+    options.cache_scope = cache && cache->scope == app_mcp::CacheScope::Shared ? AM_CACHE_SHARED : AM_CACHE_PRIVATE;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +359,7 @@ app_mcp::ToolOptions cpp_tool_options(const Json& decl) {
     o.concurrency = static_cast<uint32_t>(to_u64(decl["concurrency"], 0));
     o.exclusive = decl["exclusive"].str();
     o.implements = strings(decl["implements"]);
+    o.cache = cache_policy(decl["cache"]);
     return o;
 }
 
@@ -429,6 +447,7 @@ public:
         options.mime_type = decl["mimeType"].str();
         options.realtime = decl["realtime"].boolean().value_or(false);
         options.annotations = content_annotations(decl["annotations"]);
+        options.cache = cache_policy(decl["cache"]);
         resources_.push_back(client_.register_resource(
             decl["name"].str_or(""), decl["description"].str_or(""),
             [spec](app_mcp::Read read) {
@@ -585,6 +604,7 @@ struct CToolDecl {
         for (const auto& verb : implements) implements_ptrs.push_back(verb.c_str());
         options.implements = implements_ptrs.empty() ? nullptr : implements_ptrs.data();
         options.implements_len = implements_ptrs.size(); // 更新时 0 = 清除
+        set_c_cache(options, decl["cache"]);
     }
     CToolDecl(const CToolDecl&) = delete;
     CToolDecl& operator=(const CToolDecl&) = delete;
@@ -734,6 +754,7 @@ public:
         options.struct_size = sizeof(AmResourceOptions);
         options.realtime = decl["realtime"].boolean().value_or(false);
         options.annotations_json = c_or_null(annotations);
+        set_c_cache(options, decl["cache"]);
         auto* ctx = new CResourceContext{decl["read"]};
         AmResource* out = nullptr;
         check_c(am_resource_register_ex(root_, &spec, &options, &CApp::on_read, ctx,

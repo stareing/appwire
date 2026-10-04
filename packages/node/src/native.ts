@@ -108,6 +108,15 @@ export interface NativeToolSpec {
   exclusive?: string
   /** 实现的标准意图（spec/intents.md）；缺省 / 空 = 未声明（旧版原生模块忽略）。 */
   implements?: string[]
+  /** 结果缓存声明（spec/protocol.md 3.6）；缺省 = 未声明（旧版原生模块忽略）。 */
+  cache?: NativeCachePolicy
+}
+
+/** 结果缓存声明（原生 `CachePolicyInit`）。 */
+export interface NativeCachePolicy {
+  ttlMs: number
+  /** `'private'`（缺省）/ `'shared'`。 */
+  scope?: string
 }
 
 export interface NativeToolAnnotations {
@@ -142,6 +151,8 @@ export interface NativeResourceSpec {
   realtime?: boolean
   /** 资源内容的标注（旧版原生模块忽略）。 */
   annotations?: NativeContentAnnotations
+  /** 读取结果缓存声明（旧版原生模块忽略）。 */
+  cache?: NativeCachePolicy
 }
 
 export type NativeCancelReason = 'requested' | 'timeout' | 'disconnected' | 'stopped'

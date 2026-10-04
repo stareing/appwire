@@ -36,7 +36,7 @@ from ._client_convert import (  # noqa: F401
     ResultStatusLike, _Unset, _UNSET, _RISKS, _ACTIVATIONS, _VISIBILITIES, _MODES, _RESIDENCIES, _WAKE_KINDS,
     _HEARTBEATS, _WAKE_REASONS, _RESULT_STATUSES, _SURFACES, _AUDIENCES, _TOOL_ANNOTATION_KEYS,
     _SLEEP_REASONS, ERROR_KINDS, _ms, _lifecycle_to_ffi, _enum_arg, _risk, _tool_annotations,
-    _content_annotations, _schema_json, _surface, _activation, _implements,
+    _content_annotations, _schema_json, _surface, _activation, _implements, CacheLike, _cache,
 )
 from ._client_types import (  # noqa: F401
     CallDedup, ToolCallError, UserActionReason, Hold, ToolResult, ToolContext, _CancelListener,
@@ -95,6 +95,7 @@ class _Registrar:
         concurrency: int = 0,
         exclusive: str | None = None,
         implements: Sequence[str] = (),
+        cache: CacheLike | None = None,
     ) -> ToolHandle:
         """注册函数为工具，返回句柄。``input_schema`` 缺省时从函数签名生成。
 
@@ -114,6 +115,11 @@ class _Registrar:
         ``implements``：本工具实现的标准意图（spec/intents.md，每项 ``"<动词>@<主版本>"``，如 ``["message.send@1"]``，
         单个字符串视为一项），Agent 经 ``apps.intents`` 按动词找到实现者；格式不合法时抛 ``AppMcpError.InvalidName``，
         未知动词或缺少词表必填参数只给出警告。
+
+        ``cache``：结果缓存声明（spec/protocol.md 3.6），``{"ttl_ms": 60000, "scope": "shared"}``、``ttl_ms`` 整数或
+        ``CachePolicy``；``ttl_ms`` 内相同参数的调用 Hub 可直接返回上次结果、不调用本函数。只对生效注解只读的工具生效；
+        ``scope`` 缺省 ``"private"``（按调用方隔离），``"shared"`` 只用于与调用方无关的数据。``ttl_ms`` 越界时抛
+        ``AppMcpError.InvalidConfig``。
         """
         binder = ArgumentBinder(fn, ToolContext)
         if input_schema is None:
@@ -136,6 +142,7 @@ class _Registrar:
             concurrency=concurrency,
             exclusive=exclusive,
             implements=_implements(implements),
+            cache=_cache(cache),
         )
         adapter = _ToolAdapter(_Registration(self._owner, fn, binder))
         return ToolHandle(self._raw().register_tool(spec, adapter), spec)
@@ -158,6 +165,7 @@ class _Registrar:
         concurrency: int = 0,
         exclusive: str | None = None,
         implements: Sequence[str] = (),
+        cache: CacheLike | None = None,
     ) -> Callable[[F], F]:
         """装饰器形式的 :meth:`add_tool`。返回原函数；句柄可用 ``client.tools[name]`` 取得。"""
 
@@ -179,6 +187,7 @@ class _Registrar:
                 concurrency=concurrency,
                 exclusive=exclusive,
                 implements=implements,
+                cache=cache,
             )
             self._owner.tools[handle.name] = handle
             return fn
@@ -194,6 +203,7 @@ class _Registrar:
         mime_type: str | None = None,
         realtime: bool = False,
         annotations: ContentAnnotationsLike | None = None,
+        cache: CacheLike | None = None,
     ) -> ResourceHandle:
         """注册资源读取函数（无参数，返回可 JSON 序列化的内容）。
 
@@ -201,7 +211,7 @@ class _Registrar:
         默认 ``False``：订阅不阻止休眠，变化在下次连接时补发。
         ``annotations``：资源内容的标注（``{"audience": ["user"], "priority": 0.5}``），Hub 放到 MCP ``resources/list``
         的资源注解上。读取函数抛出 :class:`ToolCallError`（含 :meth:`ToolCallError.user_action_required`）时，
-        类别与详情原样交给 Host。
+        类别与详情原样交给 Host。``cache``：读取结果缓存声明，形式与 :meth:`add_tool` 相同。
         """
         spec = ffi.ResourceSpec(
             name=name or fn.__name__,
@@ -209,6 +219,7 @@ class _Registrar:
             mime_type=mime_type,
             realtime=realtime,
             annotations=_content_annotations(annotations),
+            cache=_cache(cache),
         )
         adapter = _ResourceAdapter(_Registration(self._owner, fn, None))
         return ResourceHandle(self._raw().register_resource(spec, adapter))
@@ -221,12 +232,13 @@ class _Registrar:
         mime_type: str | None = None,
         realtime: bool = False,
         annotations: ContentAnnotationsLike | None = None,
+        cache: CacheLike | None = None,
     ) -> Callable[[F], F]:
         """装饰器形式的 :meth:`add_resource`。句柄可用 ``client.resources[name]`` 取得。"""
 
         def decorator(fn: F) -> F:
             handle = self.add_resource(
-                fn, name, description, mime_type=mime_type, realtime=realtime, annotations=annotations
+                fn, name, description, mime_type=mime_type, realtime=realtime, annotations=annotations, cache=cache
             )
             self._owner.resources[handle.name] = handle
             return fn

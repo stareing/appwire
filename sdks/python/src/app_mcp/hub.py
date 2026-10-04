@@ -33,7 +33,6 @@ import json
 import logging
 import threading
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from typing import Any, Union
 
 try:
@@ -48,6 +47,7 @@ _log = logging.getLogger("app_mcp.hub")
 from ._hub_config import (  # noqa: E402  字典形式的配置 → 生成的记录类型
     AgentsLike,
     IntentDefaultsLike,
+    CacheLimitsLike as CacheLimitsLike,
     EventLimitsLike as EventLimitsLike,
     LimitsLike as LimitsLike,
     OutputValidationLike as OutputValidationLike,
@@ -57,11 +57,13 @@ from ._hub_config import (  # noqa: E402  字典形式的配置 → 生成的记
     _enum,
     _event_limits,
     _intent_defaults,
+    _result_cache,
     _limits,
     _output_validation,
     _policy,
     _risk,
 )
+from ._hub_result import CallResult, ToolError, _call_result, _loads  # noqa: E402  调用结果
 from ._hub_callbacks import (  # noqa: E402  用户回调的执行与适配器
     Dispatcher as Dispatcher,
     WakeFailed,
@@ -151,6 +153,10 @@ EventSubscriptionStatus = ffi.EventSubscriptionStatus
 #: 事件信箱上限（``HubConfig.event_limits``）：``max_subscriptions``、``max_inbox_events``、``inbox_ttl_ms``、
 #: ``per_subscription_per_minute``；为空的字段取默认值（32 / 100 / 24 小时 / 60）。
 EventLimitOverrides = ffi.EventLimitOverrides
+#: 只读结果缓存（spec/hub-api.md 3.20）：上限（``HubConfig.result_cache``：``max_entries``、``max_bytes``、``max_entry_bytes``，
+#: 为空取默认 1024 / 8 MiB / 64 KiB，``max_entries=0`` 关闭）与统计（``HubStatus.cache``）。
+CacheLimitOverrides = ffi.CacheLimitOverrides
+CacheStatus = ffi.CacheStatus
 # 资源保护与工具声明（spec/hub-api.md 3.11）。
 #: 限流与大小上限（``HubConfig.limits``；``HubStatus.limits`` 为全部字段给出的生效值）。为空的字段取默认值。
 LimitsConfig = ffi.LimitsConfig
@@ -204,6 +210,8 @@ __all__ = [
     "Audience",
     "AuthStatus",
     "Availability",
+    "CacheLimitOverrides",
+    "CacheStatus",
     "CallPriority",
     "CallPriorityLike",
     "CallResult",
@@ -285,10 +293,6 @@ def init_logging(filter: str | None = None) -> bool:
     return ffi.init_logging(filter)
 
 
-def _loads(text: str | None) -> Any:
-    return None if text is None else json.loads(text)
-
-
 def _millis(seconds: float | None) -> int | None:
     return None if seconds is None else max(0, int(seconds * 1000))
 
@@ -307,56 +311,6 @@ def _filter(
         include_builtin=include_builtin,
         session=session,
     )
-
-
-class ToolError(Exception):
-    """工具调用以错误结束（``CallResult.unwrap()``）。``kind`` 为协议错误类别，如 ``USER_REJECTED``。"""
-
-    def __init__(self, kind: str, message: str, details: Any = None) -> None:
-        super().__init__(f"{kind}: {message}")
-        self.kind = kind
-        self.message = message
-        self.details = details
-
-
-@dataclass
-class CallResult:
-    """一次工具调用的结果。"""
-
-    call_id: str
-    #: 成功时的结果数据（已解析的 JSON）。
-    data: Any = None
-    #: 失败时的错误（``error.kind`` 如 ``USER_REJECTED``、``TIMEOUT``）。
-    error: ToolErrorInfo | None = None
-    state_hints: list[str] = field(default_factory=list)
-    #: 实际执行的实例。
-    instance_id: str | None = None
-    #: 本会话首次接触该 App 时附带的总览。
-    overview: AppOverviewInfo | None = None
-    #: App 声明的业务状态（缺省 ``DONE``；``PENDING`` 时后续状态见 ``state_resource``）。
-    status: ResultStatus = ResultStatus.DONE
-    #: ``PENDING`` 时可读取后续状态的资源 URI（``app-mcp://<appId>/<名>``）。
-    state_resource: str | None = None
-    #: App 给出的一句结论。
-    summary: str | None = None
-    #: App 对结果内容的标注，原样。
-    annotations: ContentAnnotations | None = None
-    #: App 在后台、Hub 改调了 view 工具声明的后台替代时为实际调用的工具全名（spec/hub-api.md 3.14）；否则为 ``None``。
-    routed_to: str | None = None
-    #: 从 Hub 收到调用到得出结果的毫秒数（spec/hub-api.md 3.15 ``dev.appwire/durationMs``）。
-    duration_ms: int = 0
-    #: 本次调用是否唤醒了 App（``dev.appwire/woke``）。
-    woke: bool = False
-
-    @property
-    def ok(self) -> bool:
-        return self.error is None
-
-    def unwrap(self) -> Any:
-        """成功时返回数据，失败时抛出 :class:`ToolError`。"""
-        if self.error is not None:
-            raise ToolError(self.error.kind, self.error.message, _loads(self.error.details_json))
-        return self.data
 
 
 class _Listener(ffi.HubEventListener):
@@ -428,7 +382,8 @@ class Hub:
     """嵌入式 Hub。
 
     参数与 :class:`HubConfig` 字段一致（``approval_min_risk`` 可用字符串，如 ``"destructive"``；``limits`` 可用字典，
-    键同 JSON 配置，如 ``{"toolRatePerMinute": 60}``；``event_limits`` 同样可用字典，如 ``{"maxInboxEvents": 20}``；
+    键同 JSON 配置，如 ``{"toolRatePerMinute": 60}``；``event_limits`` / ``result_cache`` 同样可用字典，如 ``{"maxInboxEvents": 20}``、
+    ``{"maxEntries": 0}``；
     ``output_validation`` 可用 ``"off"`` / ``"log"`` / ``"reject"``；
     ``policy`` 可用 JSON 形式的字典，如 ``{"rules": [{"id": "no-pay", "action": "deny", "app": "shop", "tool": "order.*"}]}``）；
     也可直接传 ``config=HubConfig(...)``。
@@ -442,6 +397,8 @@ class Hub:
                 kwargs["limits"] = _limits(kwargs["limits"])
             if "event_limits" in kwargs:
                 kwargs["event_limits"] = _event_limits(kwargs["event_limits"])
+            if "result_cache" in kwargs:
+                kwargs["result_cache"] = _result_cache(kwargs["result_cache"])
             if "output_validation" in kwargs:
                 kwargs["output_validation"] = _output_validation(kwargs["output_validation"])
             if kwargs.get("policy") is not None:
@@ -565,6 +522,7 @@ class Hub:
         call_id: str | None = None,
         idempotency_key: str | None = None,
         priority: CallPriorityLike | None = None,
+        cache_bypass: bool = False,
         on_progress: Callable[[ProgressUpdate], Any] | None = None,
     ) -> CallResult:
         """调用工具（全名 ``<appId>.<tool>``，``timeout`` 单位秒）。
@@ -577,6 +535,7 @@ class Hub:
         ``CallResult.error.kind`` 为 ``INVALID_INPUT``。
         ``priority``：调用优先级（:data:`CallPriority` 或其名称；``None`` = normal），原样转交 App，App 的调用队列
         先交互、后后台（第 16 项 P6）；未知名称抛 ``ValueError``。
+        ``cache_bypass``：不查只读结果缓存，照常调用 App 并以新结果覆盖（spec/hub-api.md 3.20）；命中时 ``CallResult.cached_age_ms`` 有值。
         """
         req = ffi.CallRequest(
             name=name,
@@ -587,27 +546,14 @@ class Hub:
             session=session,
             idempotency_key=idempotency_key,
             priority=None if priority is None else _enum(CallPriority, priority, "priority"),
+            cache_bypass=cache_bypass,
         )
         if on_progress is None:
             out = await self._inner.call_tool(req)
         else:
             listener = _ProgressAdapter(on_progress, asyncio.get_running_loop())
             out = await self._inner.call_tool_with_progress(req, listener)
-        return CallResult(
-            call_id=out.call_id,
-            data=_loads(out.data_json),
-            error=out.error,
-            state_hints=list(out.state_hints),
-            instance_id=out.instance_id,
-            overview=out.overview,
-            status=out.status,
-            state_resource=out.state_resource,
-            summary=out.summary,
-            annotations=out.annotations,
-            routed_to=out.routed_to,
-            duration_ms=out.duration_ms,
-            woke=out.woke,
-        )
+        return _call_result(out)
 
     def call_tool_sync(self, name: str, arguments: dict[str, Any] | None = None, **kwargs: Any) -> CallResult:
         """:meth:`call_tool` 的阻塞版本（不要在事件循环线程上调用）。"""

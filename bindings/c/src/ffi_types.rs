@@ -88,6 +88,10 @@ pub struct AmResourceOptions {
     pub realtime: bool,
     /// v13：资源内容的标注（MCP 内容注解 JSON 对象）；NULL = 未声明。
     pub annotations_json: *const c_char,
+    /// v22（spec/protocol.md 3.6）：读取结果缓存时长；0 = 未声明。
+    pub cache_ttl_ms: u64,
+    /// v22：`AmCacheScope`（0 = PRIVATE，1 = SHARED）。
+    pub cache_scope: c_int,
 }
 
 #[repr(C)]
@@ -122,6 +126,10 @@ pub struct AmToolOptions {
     /// v21（spec/intents.md）：实现的标准意图（`"<动词>@<主版本>"`）；`implements_len` 为 0 时可为 NULL。
     pub implements: *const *const c_char,
     pub implements_len: usize,
+    /// v22（spec/protocol.md 3.6）：结果缓存时长；0 = 未声明（更新时清除）。
+    pub cache_ttl_ms: u64,
+    /// v22：`AmCacheScope`（0 = PRIVATE，1 = SHARED）。
+    pub cache_scope: c_int,
 }
 
 /// v9：`am_call_complete_ex` 的调用结果（带 `struct_size`，按调用方给出的大小读取；`status` 用 c_int 接收）。

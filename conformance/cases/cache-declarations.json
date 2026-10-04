@@ -1,0 +1,41 @@
+{
+  "id": "cache-declarations",
+  "title": "结果缓存声明 cache 原样到达 Host（工具与资源；scope 缺省 private 时省略、shared 原样；未声明时省略）；连接后更新替换、null 清除，经 tools/changed 到达",
+  "spec": ["protocol.md 3.6"],
+  "requires": ["cache", "mutate"],
+  "app": {
+    "tools": [
+      { "name": "c.plain", "description": "未声明缓存", "risk": "read", "handler": { "return": {} } },
+      { "name": "c.private", "description": "按调用方缓存", "risk": "read", "cache": { "ttlMs": 5000 }, "handler": { "return": { "n": 1 } } },
+      { "name": "c.shared", "description": "共用缓存", "risk": "read", "cache": { "ttlMs": 60000, "scope": "shared" }, "handler": { "return": { "n": 2 } } },
+      { "name": "ctl.mutate", "description": "更新缓存声明", "handler": { "mutate": [
+          { "op": "update", "name": "c.private", "set": { "cache": { "ttlMs": 1000, "scope": "shared" } } },
+          { "op": "update", "name": "c.shared", "set": { "cache": null } }
+        ], "return": { "ok": true } } }
+    ],
+    "resources": [
+      { "name": "r.plain", "description": "未声明缓存", "read": { "return": {} } },
+      { "name": "r.cached", "description": "可缓存资源", "cache": { "ttlMs": 30000, "scope": "shared" }, "read": { "return": { "v": 1 } } }
+    ]
+  },
+  "host": { "ops": [
+    { "catalog": 0 },
+    { "invoke": "ctl.mutate" },
+    { "catalog": 50 }
+  ] },
+  "expect": [
+    { "type": "catalog",
+      "tools": {
+        "c.plain": { "cache": { "$absent": true } },
+        "c.private": { "cache": { "ttlMs": 5000, "scope": { "$absent": true } } },
+        "c.shared": { "cache": { "ttlMs": 60000, "scope": "shared" } },
+        "ctl.mutate": { "cache": { "$absent": true } } },
+      "resources": {
+        "r.plain": { "cache": { "$absent": true } },
+        "r.cached": { "cache": { "ttlMs": 30000, "scope": "shared" } } } },
+    { "type": "invoke", "name": "ctl.mutate", "result": { "data": { "ok": true } } },
+    { "type": "catalog", "tools": {
+        "c.private": { "cache": { "ttlMs": 1000, "scope": "shared" } },
+        "c.shared": { "cache": { "$absent": true } } } }
+  ]
+}

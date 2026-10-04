@@ -27,6 +27,11 @@ export interface CallRequest {
    * 不合法时 `callTool` 抛 `HubError`（请求 JSON 无法解析）。
    */
   priority?: CallPriority | null
+  /**
+   * 不查只读结果缓存、照常调用 App 并以新结果覆盖（spec/hub-api.md 3.20；MCP 出口为请求 `_meta` 的
+   * `dev.appwire/cache: "bypass"`）。缺省 `false`。
+   */
+  cacheBypass?: boolean
 }
 
 /** 调用优先级：`interactive`（用户在场等结果）> `normal` > `background`（定时、批量等后台作业）。 */
@@ -80,6 +85,11 @@ export interface CallOutcome {
   durationMs?: number
   /** 本次 App 工具调用是否经历了唤醒（调用时目标未连接）；内置 / 上游工具为 `false`；旧 Hub 缺省。 */
   woke?: boolean
+  /**
+   * 结果来自只读结果缓存（未转发给 App、未唤醒）时距 App 产出的毫秒数；未命中时缺省（spec/hub-api.md 3.20，与 MCP 结果 `_meta`
+   * 的 `dev.appwire/cached.ageMs` 相同）。
+   */
+  cachedAgeMs?: number
 }
 
 // ---------------------------------------------------------------------------

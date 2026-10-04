@@ -355,4 +355,49 @@ describe.skipIf(!available)('真实 WASM 核心', () => {
     expect(changed).not.toContain('message.send@1')
     core.free?.()
   })
+  it('结果缓存声明 cache（spec/protocol.md 3.6）：工具与资源进 tools/sync / resources/sync，越界注册 / 更新抛错，更新 null 清除', async () => {
+    const factory = await loadRealCore()
+    const core = factory({ appId: 'feed', appName: 'f', instanceId: 'i' })
+    const drain = (): any[] => {
+      const out: any[] = []
+      for (let e = core.pollEvent(); e; e = core.pollEvent()) out.push(e)
+      return out
+    }
+    const empty = { type: 'object' as const, properties: {} }
+    const list = core.registerTool({
+      name: 'feed.list', description: '列表', inputSchema: empty, risk: 'read', cache: { ttlMs: 5000, scope: 'shared' },
+    })
+    core.registerTool({ name: 'feed.mine', description: '我的', inputSchema: empty, risk: 'read', cache: { ttlMs: 1000 } })
+    expect(() =>
+      core.registerTool({ name: 'bad', description: 'x', inputSchema: empty, risk: 'read', cache: { ttlMs: 0 } }),
+    ).toThrow(/cache/)
+    expect(() =>
+      core.registerTool({ name: 'bad2', description: 'x', inputSchema: empty, risk: 'read', cache: { ttlMs: 86_400_001 } }),
+    ).toThrow(/cache/)
+    expect(() => core.registerResource({ name: 'bad', description: 'x', cache: { ttlMs: 0 } })).toThrow(/cache/)
+    core.registerResource({ name: 'feed', description: '订阅', cache: { ttlMs: 30000, scope: 'shared' } })
+    core.start(0)
+    core.connectNow(0)
+    core.handleConnected(0)
+    const hello = drain().find((e) => e.type === 'send')
+    core.handleMessage(
+      JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(hello.text).id, result: { status: 'paired', protocolVersion: '1', hostVersion: 'x', service: 'app-mcp' } }),
+      1,
+    )
+    const msgs = drain().map((e) => (e.type === 'send' ? JSON.parse(e.text) : null))
+    const tools = msgs.find((m) => m?.method === 'tools/sync').params.tools
+    const byName = (n: string) => tools.find((t: { name: string }) => t.name === n)
+    expect(byName('feed.list').cache).toEqual({ ttlMs: 5000, scope: 'shared' })
+    expect(byName('feed.mine').cache).toEqual({ ttlMs: 1000 })
+    expect(byName('bad')).toBeUndefined()
+    const resources = msgs.find((m) => m?.method === 'resources/sync').params.resources
+    expect(resources.find((r: { name: string }) => r.name === 'feed').cache).toEqual({ ttlMs: 30000, scope: 'shared' })
+    expect(() => core.updateTool(list, { cache: { ttlMs: -1 } })).toThrow()
+    expect(() => core.updateTool(list, { cache: { ttlMs: 86_400_001 } })).toThrow(/cache/)
+    core.updateTool(list, { cache: null })
+    const changed = drain().filter((e) => e.type === 'send').map((e) => JSON.parse(e.text))
+    const upserted = changed.find((m) => m.method === 'tools/changed').params.upserted
+    expect(upserted.find((t: { name: string }) => t.name === 'feed.list')).not.toHaveProperty('cache')
+    core.free?.()
+  })
 })

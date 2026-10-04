@@ -223,6 +223,7 @@ spec/protocol.md 1.9）。缺省仍为登录自启：`status` / `doctor` / 安�
     "toolRatePerMinute": 120, "toolRateBurst": 30, "appRatePerMinute": 600, "appRateBurst": 60,
     "maxArgumentsBytes": 1048576, "maxResultBytes": 4194304, "maxResourceBytes": 4194304
   },
+  "resultCache": { "maxEntries": 1024, "maxBytes": 8388608, "maxEntryBytes": 65536 },
   "log": { "level": "info", "file": true, "maxBytes": 5242880, "keep": 3 }
 }
 ```
@@ -275,6 +276,12 @@ Hub 状态资源（spec/hub-api.md 3.6「Hub 状态资源」）：Agent 不能�
 - 结果超限返回 `PAYLOAD_TOO_LARGE`（`data.part = "result"`），此时调用**可能已在 App 内执行**，错误信息如实说明。
 - 唤醒另有每 App 每分钟上限 `--wake-rate-limit`（默认 6，spec/lifecycle.md 第 12 节）。
 
+`resultCache`（只读结果缓存的上限，spec/hub-api.md 3.20）：App 在只读工具 / 资源上声明 `cache: {ttlMs, scope?}` 时 Host 在 TTL 内复用结果，
+命中不唤醒 App。`maxEntries`（`--cache-max-entries`，条目数，默认 1024；0 = 关闭缓存）、`maxBytes`（`--cache-max-bytes`，键 + 序列化结果的
+总字节数，默认 8388608）、`maxEntryBytes`（`--cache-max-entry-bytes`，单条字节数，默认 65536，只调小 `maxBytes` 时随之收窄；超出的结果不缓存）。
+超出总量时淘汰最久未用的条目；只在内存，Host 重启清空。缺省字段取默认，未知字段报错；开启时 `maxBytes` / `maxEntryBytes` 为 0 或
+`maxEntryBytes` 大于 `maxBytes` 时配置无效、启动失败。`status` 摘要显示条目与命中统计，doctor「结果缓存」检查另列出本配置目录的生效上限。
+
 `tools.outputValidation` / `--output-validation`：App 结果与其声明的 `outputSchema` 不符时，`"log"`（默认，只记 warn 日志、照常返回）/
 `"reject"`（调用以 `HANDLER_ERROR` 结束）/ `"off"`（不校验）。无返回值不校验。
 
@@ -293,7 +300,7 @@ App 声明的工具注解与结果契约（`annotations`、`outputSchema`、结�
 `--stateless-tool-exposure auto|progressive|all`、`--task-idle-ttl-ms`、`--principal-select-ttl-ms`、
 `--mcp-protocol-mode auto|legacy-only`、`--max-listen-streams <N>`、`--max-task-handles <N>`、`--max-locks <N>`、
 `--tool-rate-limit` / `--tool-rate-burst` / `--app-rate-limit` / `--app-rate-burst` / `--max-arguments-bytes` / `--max-result-bytes` /
-`--max-resource-bytes <N>`、`--output-validation off|log|reject`、`--log-level`、
+`--max-resource-bytes <N>`、`--cache-max-entries` / `--cache-max-bytes` / `--cache-max-entry-bytes <N>`、`--output-validation off|log|reject`、`--log-level`、
 `--no-log-file`、`--config <file>`、`--home <dir>`。`app-mcp-host token` 打印令牌（`--regenerate` 重新生成）。
 
 策略规则：`app-mcp-host policy hide <app> [--tool T]`、`policy deny <app> [--tool T] [--wake]`、`policy remove <id>` 编辑

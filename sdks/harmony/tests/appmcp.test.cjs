@@ -540,6 +540,28 @@ test('标准意图 implements 声明（缺省或空数组不带）；update 替�
   assert.equal(client.tools.get('mail.send').spec.implements, undefined);
 });
 
+test('结果缓存声明 cache（工具与资源，未声明不带，复制）；update 替换、未给出保持、null 清除', () => {
+  const { mcp, client } = create();
+  mcp.tool('plain', { description: 'P', handler: () => 1 });
+  assert.equal(client.tools.get('plain').spec.cache, undefined);
+  const decl = { ttlMs: 5000, scope: 'shared' };
+  const t = mcp.tool('feed.list', { description: 'L', risk: 'read', cache: decl, handler: () => 1 });
+  assert.deepEqual(client.tools.get('feed.list').spec.cache, { ttlMs: 5000, scope: 'shared' });
+  assert.notEqual(client.tools.get('feed.list').spec.cache, decl);
+  mcp.tool('feed.mine', { description: 'M', risk: 'read', cache: { ttlMs: 10 }, handler: () => 1 });
+  assert.deepEqual(client.tools.get('feed.mine').spec.cache, { ttlMs: 10, scope: undefined });
+  t.update({ description: 'L2' });
+  assert.deepEqual(client.tools.get('feed.list').spec.cache, { ttlMs: 5000, scope: 'shared' });
+  t.update({ cache: { ttlMs: 1000 } });
+  assert.deepEqual(client.tools.get('feed.list').spec.cache, { ttlMs: 1000, scope: undefined });
+  t.update({ cache: null });
+  assert.equal(client.tools.get('feed.list').spec.cache, undefined);
+  mcp.resource('feed', { description: 'F', cache: { ttlMs: 30000, scope: 'shared' }, read: () => [] });
+  mcp.resource('cart', { description: 'C', read: () => [] });
+  assert.deepEqual(client.resources.get('feed').spec.cache, { ttlMs: 30000, scope: 'shared' });
+  assert.equal(client.resources.get('cart').spec.cache, undefined);
+});
+
 test('调用调度声明 concurrency / exclusive；update 以 null 清除', () => {
   const { mcp, client } = create();
   mcp.tool('plain', { description: 'P', handler: () => 1 });

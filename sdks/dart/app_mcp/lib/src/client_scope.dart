@@ -40,6 +40,7 @@ final class McpScope {
     int concurrency = 0,
     String? exclusive,
     List<String> implements = const [],
+    CachePolicy? cache,
     required ToolHandler handler,
   }) =>
       registerTool(
@@ -58,12 +59,14 @@ final class McpScope {
               backgroundTool: backgroundTool,
               concurrency: concurrency,
               exclusive: exclusive,
-              implements: implements),
+              implements: implements,
+              cache: cache),
           handler);
 
   /// 用 [ToolSpec] 注册工具。
   ToolHandle registerTool(ToolSpec spec, ToolHandler handler) {
     _ensureAlive();
+    cacheTtlToNative(spec.cache); // @why 登记回调目标之前拒绝无法表达的缓存声明，失败时不留下目标
     final rt = _client._rt;
     final entry = _ToolEntry(_client, handler);
     final id = rt.register(entry);
@@ -91,13 +94,16 @@ final class McpScope {
   /// [realtime]：需实时推送（spec/lifecycle.md 第 13 节 B3）——被订阅时保持连接、休眠中变化时回连推送。
   /// 默认 false：订阅不阻止休眠，变化在下次连接时补发；只用于"模型在等待变化"的资源。
   /// [annotations]：资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上。
+  /// [cache]：读取结果缓存声明（spec/protocol.md 3.6），Hub 在 TTL 内复用读取结果；为 null 时不声明。
   ResourceHandle resource(String name,
       {required String description,
       String? mimeType,
       bool realtime = false,
       ContentAnnotations? annotations,
+      CachePolicy? cache,
       required ResourceReader read}) {
     _ensureAlive();
+    final cacheTtl = cacheTtlToNative(cache);
     final annotationsJson = annotations == null ? null : jsonEncode(annotations.toJson());
     final rt = _client._rt;
     final entry = _ResourceEntry(_client, read);
@@ -112,7 +118,9 @@ final class McpScope {
       options.ref
         ..struct_size = sizeOf<AmResourceOptions>()
         ..realtime = realtime
-        ..annotations_json = _optStr(annotationsJson, arena);
+        ..annotations_json = _optStr(annotationsJson, arena)
+        ..cache_ttl_ms = cacheTtl
+        ..cache_scope = cacheScopeToNative(cache);
       final out = arena<Pointer<AmResource>>();
       final status = rt.b.am_resource_register_ex(
           _ptr, s, options, rt.read.nativeFunction, Pointer<Void>.fromAddress(id), rt.free.nativeFunction, out);
@@ -217,7 +225,9 @@ Pointer<AmToolOptions> _toolOptions(ToolSpec spec, Allocator arena) {
     ..concurrency = toolConcurrencyToNative(spec.concurrency)
     ..exclusive = _optStr(spec.exclusive, arena)
     ..implements = _strArray(spec.implements, arena)
-    ..implements_len = spec.implements.length;
+    ..implements_len = spec.implements.length
+    ..cache_ttl_ms = cacheTtlToNative(spec.cache)
+    ..cache_scope = cacheScopeToNative(spec.cache);
   return o;
 }
 

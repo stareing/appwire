@@ -82,7 +82,7 @@
 | `overview` | object | 否 | App 总览：`summary`（≤ 100 字符）、`body`（Markdown，≤ 2000 字符）、`locale`；模型首次接触该 App 时由 Host 附带，规则见 spec/protocol.md 第 7 节 |
 | `launch` | object | 否 | 各平台启动方式（冷启动，不带令牌），键为 `web` / `windows` / `macos` / `linux`，值为按顺序尝试的数组 |
 | `wake` | object | 否 | 各平台唤醒描述（spec/lifecycle.md 第 5 节），键为 `web` / `windows` / `macos` / `linux` / `android` / `ios`，值为按顺序尝试的 WakeDescriptor 数组；规则见 2.2 节 |
-| `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo`：含可选 `annotations`（标准 MCP 工具注解）与 `outputSchema`（结果的 JSON Schema），语义见 spec/protocol.md 3.2；`risk` 为旧写法（与 `annotations` 同时出现时声明的注解字段优先）；可选 `surface`（`app` / `view`）与 `page`（所在页面名），语义见 spec/protocol.md 3.4；可选 `implements`（实现的标准意图，spec/intents.md）；可选 `cache`（结果缓存声明，spec/protocol.md 3.6） |
+| `tools` | array | 否 | 静态工具，结构同协议中的 `ToolInfo`：含可选 `annotations`（标准 MCP 工具注解）与 `outputSchema`（结果的 JSON Schema），语义见 spec/protocol.md 3.2；`risk` 为旧写法（与 `annotations` 同时出现时声明的注解字段优先）；可选 `surface`（`app` / `view`）与 `page`（所在页面名），语义见 spec/protocol.md 3.4；可选 `implements`（实现的标准意图，spec/intents.md）；可选 `cache`（结果缓存声明，spec/protocol.md 3.6）；可选 `deprecated`（工具弃用声明，spec/protocol.md 3.7） |
 | `pages` | array | 否 | 页面目录（第 4c 项）：App 内各页面的说明、导航参数与页面内工具，结构见 2.3 节 |
 | `events` | array | 否 | App 可发出的事件（第 16 项 N3），结构见 2.4 节；Agent 据此订阅，语义见 spec/protocol.md 3.5 |
 | `resources` | array | 否 | 静态资源，结构同协议中的 `ResourceInfo`（含可选 `realtime`：需实时推送，被订阅时 App 保持连接，spec/lifecycle.md 第 13 节 B3；可选 `annotations`：标准 MCP 内容注解，spec/protocol.md 3.2；可选 `cache`：读取结果缓存声明，spec/protocol.md 3.6） |
@@ -166,6 +166,9 @@
 - `cache`（工具与资源，顶层与页面内工具相同）：`ttlMs` 为 0 或超过 86 400 000 为错误；`ttlMs` 不是非负整数、`scope` 不是
   `private` / `shared` 时清单解析失败（同 `annotations` 字段类型错误）；
   工具的生效注解 `readOnlyHint` 不为 `true` 时给出警告（Hub 忽略写工具上的声明）。
+- 工具 `deprecated`：`message` 为空或超过 500 字符、`replacement` 不是合法局部名或指向自身、`until` 不是 RFC 3339 full-date
+  为错误；`replacement` 指向清单中未声明的工具给出警告（可能只在运行时注册）。`inputSchema` 中 `required` 列出的属性标了
+  `deprecated: true` 给出警告。
 - 工具 `inputSchema` 必须是对象且 `type` 为 `"object"`；`outputSchema` 若给出必须是对象（根类型不限）。
 - 工具 `backgroundTool`（顶层与页面内工具相同）：名称不合法、指向自身、指向清单中 `surface` 不是 `app` 的工具为错误；指向清单中
   未声明的工具（只在运行时注册）、或声明在 `surface` 为 `app` 的工具上（无意义，Hub 忽略）给出警告。
@@ -194,3 +197,22 @@
   页面工具不参与代码生成。
 - App 已连接时：以运行中实例实际注册的工具为准；静态工具中未注册的，在列表中保留但描述前加
   `[当前不可用]`，调用返回 `TOOL_NOT_FOUND`，信息说明需要先打开对应界面。
+
+## 6. 兼容规则（第 16 项 O4）
+
+同一 App 的同名工具在新旧两版之间的变化分三类。**破坏性变更必须改用新工具名**（旧工具标 `deprecated` 并指向新工具，
+spec/protocol.md 3.7）。判定规则只在 `crates/protocol/src/schema_compat.rs` 实现一次，供 `app-mcp-host validate --against`
+与 Hub 运行时告警共用。比较从 schema 根开始，沿 `properties` 递归进入对象（`items` 进入数组元素）；`$ref`、`oneOf` / `anyOf` /
+`allOf` 等组合关键字不展开，内容变化记为「可能破坏」。
+
+| 位置 | 破坏性（breaking） | 可能破坏（warning） | 兼容 |
+|---|---|---|---|
+| `inputSchema`（调用方传入） | 新增 `required` 项；删除属性；`type` 取值集合收窄；`enum` 删除取值；`additionalProperties` 由允许变为 `false` | 新增或收紧 `minimum` / `maximum` / `minLength` / `maxLength` / `minItems` / `maxItems` / `pattern` / `format`；组合关键字变化 | 新增可选属性；`required` 减少；放宽类型或约束；`enum` 增加取值；描述、`title`、`default`、`deprecated` 变化 |
+| `outputSchema`（调用方读取） | 删除属性；`type` 取值集合变化（非放宽为子集）；从 `required` 中移除属性 | `enum` 增加取值；组合关键字变化 | 新增属性；新增 `required` 项；描述变化 |
+| 工具本身 | 删除工具（未经弃用）；`surface` 由 `app` 变为 `view` | 生效注解由只读变为非只读；`risk` 升高 | 新增工具；描述、`title`、`deprecated`、`implements`、`cache` 变化 |
+
+- `type` 取值集合：`type` 为字符串视为单元素集合，缺省视为任意；`integer` 视为 `number` 的子集。
+- 工具新增 `deprecated` 且未删除、只是删除已标 `deprecated` 的工具：兼容（删除给出提示，不算破坏）。
+- `app-mcp-host validate <新清单> --against <旧清单>`：列出每个工具的变化（`--json` 结构化），存在破坏性变更时退出码 3，
+  只有可能破坏时退出码 0 并打印警告。用于开发期与 CI；Hub 运行时的行为见 spec/hub-api.md 3.21。
+

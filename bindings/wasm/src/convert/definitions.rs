@@ -28,6 +28,8 @@ pub struct JsToolDef {
     pub exclusive: Option<String>,
     /// 实现的标准意图（spec/intents.md），如 `["message.send@1"]`。
     pub implements: Option<Vec<String>>,
+    /// 结果缓存声明（spec/protocol.md 3.6）；`ttlMs` 范围由核心校验。
+    pub cache: Option<CachePolicy>,
     /// 缺省 true。
     pub enabled: Option<bool>,
     pub scope: Option<f64>,
@@ -57,6 +59,7 @@ impl FromJson for JsToolDef {
             concurrency: f.u32("concurrency"),
             exclusive: f.string("exclusive"),
             implements: f.strings("implements"),
+            cache: f.object("cache"),
             enabled: f.bool("enabled"),
             scope: f.f64("scope"),
         };
@@ -83,7 +86,7 @@ impl JsToolDef {
             concurrency: self.concurrency.unwrap_or(0),
             exclusive: self.exclusive,
             implements: self.implements.unwrap_or_default(),
-            cache: None,
+            cache: self.cache,
         })
     }
 }
@@ -102,6 +105,29 @@ impl FromJson for ToolAnnotations {
             open_world_hint: f.bool("openWorldHint"),
         };
         f.finish(a)
+    }
+}
+
+/// 结果缓存声明（spec/protocol.md 3.6）：`ttlMs` 必填（非负整数，范围由核心校验），`scope` 缺省 `private`。
+///
+/// @why 与 [`ToolAnnotations`] 相同，逐字段读取而不用 serde 派生（WASM 体积）。
+impl FromJson for CachePolicy {
+    fn from_json(value: Value) -> Result<Self, String> {
+        let mut f = Fields::new(value)?;
+        let ttl_ms = f.u64("ttlMs").unwrap_or_else(|| {
+            f.fail("缺少字段 ttlMs".to_owned());
+            0
+        });
+        let scope = f.keyword("scope", "无效的缓存范围（应为 private / shared）", parse_cache_scope);
+        f.finish(CachePolicy { ttl_ms, scope: scope.unwrap_or_default() })
+    }
+}
+
+fn parse_cache_scope(s: &str) -> Option<CacheScope> {
+    match s {
+        "private" => Some(CacheScope::Private),
+        "shared" => Some(CacheScope::Shared),
+        _ => None,
     }
 }
 
@@ -141,7 +167,7 @@ impl FromJson for ContentAnnotations {
     }
 }
 
-/// 部分更新：缺省字段不变；`activation` / `title` 区分缺省（外层 `None`）与 `null`（`Some(None)`，表示清除）。
+/// 部分更新：缺省字段不变；`activation` / `title` / `cache` 等区分缺省（外层 `None`）与 `null`（`Some(None)`，表示清除）。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct JsToolUpdate {
     pub description: Option<String>,
@@ -164,6 +190,8 @@ pub struct JsToolUpdate {
     pub exclusive: Option<Option<String>>,
     /// 替换实现的标准意图（空数组 = 清空）。
     pub implements: Option<Vec<String>>,
+    /// 整体替换结果缓存声明；`null` 清除。
+    pub cache: Option<Option<CachePolicy>>,
 }
 
 impl FromJson for JsToolUpdate {
@@ -175,21 +203,13 @@ impl FromJson for JsToolUpdate {
             Some(Some(v)) => f.protocol_value("activation", v).map(Some),
         };
         let title = f.nullable_string("title");
-        let annotations = match f.nullable("annotations") {
-            None => None,
-            Some(None) => Some(None),
-            Some(Some(v)) => match ToolAnnotations::from_json(v) {
-                Ok(a) => Some(Some(a)),
-                Err(e) => {
-                    f.fail(format!("annotations.{e}"));
-                    None
-                }
-            },
-        };
+        let annotations = f.nullable_object("annotations");
         let page = f.nullable_string("page");
         let background_tool = f.nullable_string("backgroundTool");
         let exclusive = f.nullable_string("exclusive");
+        let cache = f.nullable_object("cache");
         let u = JsToolUpdate {
+            cache,
             concurrency: f.u32("concurrency"),
             exclusive,
             implements: f.strings("implements"),
@@ -226,7 +246,7 @@ impl JsToolUpdate {
             concurrency: self.concurrency,
             exclusive: self.exclusive,
             implements: self.implements,
-            cache: None,
+            cache: self.cache,
         }
     }
 }
@@ -239,8 +259,11 @@ pub struct JsResourceDef {
     pub mime_type: Option<String>,
     pub scope: Option<f64>,
     /// 缺省 `false`（spec/lifecycle.md 第 13 节 B3）。
-    pub realtime: bool,    /// 资源内容的标注（MCP 内容注解）；缺省未声明。
+    pub realtime: bool,
+    /// 资源内容的标注（MCP 内容注解）；缺省未声明。
     pub annotations: Option<ContentAnnotations>,
+    /// 读取结果缓存声明（spec/protocol.md 3.6）；`ttlMs` 范围由核心校验。
+    pub cache: Option<CachePolicy>,
 }
 
 impl FromJson for JsResourceDef {
@@ -253,6 +276,7 @@ impl FromJson for JsResourceDef {
             scope: f.f64("scope"),
             realtime: f.bool("realtime").unwrap_or(false),
             annotations: f.object("annotations"),
+            cache: f.object("cache"),
         };
         f.finish(d)
     }
@@ -267,7 +291,7 @@ impl JsResourceDef {
             scope: scope_handle(self.scope)?,
             realtime: self.realtime,
             annotations: self.annotations,
-            cache: None,
+            cache: self.cache,
         })
     }
 }

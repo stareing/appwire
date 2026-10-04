@@ -35,6 +35,7 @@ pub(super) fn hub_config(s: &Settings, home: &AppHome) -> HubConfig {
         tool_exposure: s.tool_exposure,
         tool_exposure_threshold: s.tool_exposure_threshold,
         limits: s.limits.clone(),
+        result_cache: s.result_cache,
         output_validation: s.output_validation,
         progress_interval: Duration::from_millis(s.progress_interval_ms),
         connectors: name_service_connectors(s.name_service),
@@ -147,5 +148,17 @@ mod tests {
         let file: FileConfig = serde_json::from_str(r#"{"mcp":{"maxLocks":0}}"#).unwrap();
         let s = Settings::resolve(&file, &Overrides::default(), &home).unwrap();
         assert_eq!(hub_config(&s, &home).max_locks, 0);
+    }
+
+    #[test]
+    fn hub_config_carries_result_cache_limits() {
+        let home = AppHome { dir: std::env::temp_dir().join(format!("app-mcp-hubcfg-cache-{}", std::process::id())) };
+        let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home).unwrap();
+        assert_eq!(hub_config(&s, &home).result_cache, HubConfig::default().result_cache);
+        let file: FileConfig =
+            serde_json::from_str(r#"{"resultCache":{"maxEntries":3,"maxBytes":2048,"maxEntryBytes":256}}"#).unwrap();
+        let s = Settings::resolve(&file, &Overrides::default(), &home).unwrap();
+        let c = hub_config(&s, &home).result_cache;
+        assert_eq!((c.max_entries, c.max_bytes, c.max_entry_bytes), (3, 2048, 256));
     }
 }

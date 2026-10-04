@@ -117,6 +117,14 @@ export interface ToolSpecInit {
   exclusive?: string;
   /** 实现的标准意图（spec/intents.md），如 `["message.send@1"]`。 */
   implements?: string[];
+  /** 结果缓存声明（spec/protocol.md 3.6）；`updateWith` 时缺省即清除。 */
+  cache?: CachePolicyInit;
+}
+
+/** 结果缓存声明：`ttlMs` 为整数 1..=86400000，`scope` 为 'private'（缺省）| 'shared'；不合法时抛出 `INVALID_CONFIG`。 */
+export interface CachePolicyInit {
+  ttlMs: number;
+  scope?: string;
 }
 
 export interface ToolAnnotationsInit {
@@ -153,6 +161,8 @@ export interface ResourceSpecInit {
   realtime?: boolean;
   /** 资源内容的标注（MCP 内容注解）；`audience` 取值不合法时抛出 `INVALID_ARG`。 */
   annotations?: ContentAnnotationsInit;
+  /** 读取结果缓存声明（spec/protocol.md 3.6）。 */
+  cache?: CachePolicyInit;
 }
 
 export class Hold {

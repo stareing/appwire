@@ -57,6 +57,8 @@ public sealed class CallRequest
     public string? IdempotencyKey { get; init; }
     /// <summary>调用优先级（第 16 项 P6，spec/hub-api.md 3.15）：原样转交 App，App 的调用队列先按它、再按到达顺序调度；null = Normal。</summary>
     public CallPriority? Priority { get; init; }
+    /// <summary>true：不查只读结果缓存、照常调用并以新结果覆盖（spec/hub-api.md 3.20）。默认 false。</summary>
+    public bool CacheBypass { get; init; }
 
     internal string ToJson(JsonSerializerOptions options)
     {
@@ -71,6 +73,7 @@ public sealed class CallRequest
         if (Session is not null) o["session"] = Session;
         if (IdempotencyKey is not null) o["idempotencyKey"] = IdempotencyKey;
         if (Priority is { } p) o["priority"] = p.ToProtocolString();
+        if (CacheBypass) o["cacheBypass"] = true;
         return o.ToJsonString();
     }
 }
@@ -183,6 +186,7 @@ public sealed class CallOutcome
         if (json.TryGetProperty("routedTo", out var rt) && rt.ValueKind == JsonValueKind.String) RoutedTo = rt.GetString();
         if (json.TryGetProperty("durationMs", out var dur) && dur.ValueKind == JsonValueKind.Number && dur.TryGetInt64(out var ms)) DurationMs = ms;
         if (json.TryGetProperty("woke", out var woke) && woke.ValueKind is JsonValueKind.True or JsonValueKind.False) Woke = woke.GetBoolean();
+        if (json.TryGetProperty("cachedAgeMs", out var age) && age.ValueKind == JsonValueKind.Number && age.TryGetInt64(out var ageMs)) CachedAgeMs = ageMs;
     }
 
     public string CallId { get; }
@@ -209,6 +213,8 @@ public sealed class CallOutcome
     /// <summary>本次 App 工具调用是否经历了唤醒（调用时目标未连接，唤醒 / 按名激活回连后才送达；spec/hub-api.md 3.15）。
     /// 内置工具与上游工具恒为 false；旧 Hub 未给出时为 false。</summary>
     public bool Woke { get; }
+    /// <summary>结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数；未命中或旧 Hub 为 null（spec/hub-api.md 3.20）。</summary>
+    public long? CachedAgeMs { get; }
     /// <summary>原始 CallOutcome JSON。</summary>
     public JsonElement Json { get; }
 

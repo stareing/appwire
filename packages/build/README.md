@@ -82,6 +82,10 @@ output shape, or an object with `toJSONSchema()`); both are validated and writte
 Static tools and page tools found by the route scanner may also declare `implements: ['message.send@1']`
 (standard intents, spec/intents.md); the format (`<verb>@<major>`, at most 4, no duplicates) is checked like
 `crates/manifest`, and vocabulary warnings come from `app-mcp-host validate`. `@mcp` JSDoc comments do not support it yet.
+Tools (static and scanned page tools) and plugin `resources` may declare `cache: { ttlMs, scope? }` (result caching,
+spec/protocol.md 3.6); it is written to the manifest after a format check like `crates/manifest` (`ttlMs` an integer
+in 1..=86400000, `scope` `private` / `shared`), with a warning when the tool is not read-only (the Hub ignores it there).
+Use `scope: 'shared'` only for caller-independent data.
 
 Register the annotated tools at runtime through the generated virtual module (add
 `/// <reference types="@app-mcp/build/client" />` to `src/vite-env.d.ts` for its types):

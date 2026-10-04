@@ -37,6 +37,21 @@ enum class Surface {
     View = AM_SURFACE_VIEW,
 };
 
+/// 结果缓存的范围（spec/protocol.md 3.6，app_mcp.h v22）。
+enum class CacheScope {
+    /// 按调用方隔离（缺省）。
+    Private = AM_CACHE_PRIVATE,
+    /// 全体调用方共用：只用于与调用方无关的数据。
+    Shared = AM_CACHE_SHARED,
+};
+
+/// 结果缓存声明（spec/protocol.md 3.6，app_mcp.h v22）：Hub 在 ttl_ms 内复用相同请求的结果（命中不唤醒 App）。
+/// ttl_ms 须在 1..=86400000 之间，否则注册 / 更新抛出 InvalidConfig。
+struct CachePolicy {
+    uint64_t ttl_ms = 0;
+    CacheScope scope = CacheScope::Private;
+};
+
 /// 本实例的唤醒描述（spec/lifecycle.md 第 5 节），随 app/sleep 上报。
 struct WakeDescriptor {
     WakeKind kind = AM_WAKE_NONE;
@@ -113,6 +128,8 @@ struct ToolOptions {
     /// 实现的标准意图（spec/intents.md），每项 "<动词>@<主版本>"（如 "message.send@1"），最多 4 项、不重复；
     /// 为空表示不声明（v21）。格式不合法时注册 / 更新抛出 InvalidName。
     std::vector<std::string> implements;
+    /// 结果缓存声明（v22）；只对生效注解只读的工具生效（否则照常注册并记警告日志）。为空表示不声明（更新时清除）。
+    std::optional<CachePolicy> cache;
 };
 
 /// 内容面向谁（MCP 内容注解 audience）。
@@ -148,6 +165,8 @@ struct ResourceOptions {
     bool realtime = false;
     /// 资源内容的标注（MCP 内容注解，app_mcp.h v13），Hub 放到 MCP resources/list 的资源注解上；为空表示不声明。
     std::optional<ContentAnnotations> annotations;
+    /// 读取结果缓存声明（v22）；为空表示不声明。
+    std::optional<CachePolicy> cache;
 };
 
 /// 调用去重（spec/protocol.md 3.3，app_mcp.h v13）：同一 callId 在有效期内重复到达时重放首次结果，不再执行 handler。
@@ -348,6 +367,15 @@ inline std::string to_json(const ContentAnnotations& a) {
     return o.finish();
 }
 
+/// 缓存声明 → AmToolOptions / AmResourceOptions 的 cache_ttl_ms / cache_scope（v22；未声明为 0）。
+/// @error 声明了缓存但 ttl_ms 为 0（C ABI 中 0 表示未声明，无法表达）→ Error(AM_ERR_INVALID_CONFIG)；其余范围由原生库校验。
+template <class Options>
+inline void set_cache(Options& o, const std::optional<CachePolicy>& cache) {
+    if (cache && cache->ttl_ms == 0) throw Error(AM_ERR_INVALID_CONFIG, "cache.ttl_ms 须在 1..=86400000 之间（为 0）");
+    o.cache_ttl_ms = cache ? cache->ttl_ms : 0;
+    o.cache_scope = static_cast<int>(cache ? cache->scope : CacheScope::Private);
+}
+
 /// ToolOptions → AmToolOptions。
 /// @invariant 指针借用 annotations_json、implements（均由调用方保持存活）与 options 的字符串。
 inline AmToolOptions tool_options(const ToolOptions& options, const std::optional<std::string>& annotations_json,
@@ -366,6 +394,7 @@ inline AmToolOptions tool_options(const ToolOptions& options, const std::optiona
     o.exclusive = c_str_or_null(options.exclusive);
     o.implements = implements.empty() ? nullptr : implements.data();
     o.implements_len = implements.size();
+    set_cache(o, options.cache);
     return o;
 }
 

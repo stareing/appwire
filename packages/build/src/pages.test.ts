@@ -136,6 +136,7 @@ export function OrdersPage() {
     annotations: { readOnlyHint: true },
     surface: 'view',
     implements: ['link.open@1'],
+    cache: { ttlMs: 5000, scope: 'shared' },
     handler: () => [],
     enabled: true,
   })
@@ -172,6 +173,7 @@ describe('scanRoutes（React Router）', () => {
         annotations: { readOnlyHint: true },
         surface: 'view',
         implements: ['link.open@1'],
+        cache: { ttlMs: 5000, scope: 'shared' },
       },
     ])
     expect(result.dependencies.some((d) => d.endsWith('OrdersPage.tsx'))).toBe(true)

@@ -7,7 +7,7 @@ use app_mcp_hub::{LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidat
 use clap::Args;
 
 use super::HomeArg;
-use crate::config::{AuthMode, Overrides};
+use crate::config::{AuthMode, Overrides, ResultCacheSection};
 
 /// stdio / serve 共用的 Hub 参数。都是可选的：未指定时用配置文件或默认值。
 #[derive(Debug, Clone, Default, Args)]
@@ -147,6 +147,18 @@ pub struct HubArgs {
     #[arg(long, value_name = "BYTES")]
     pub max_resource_bytes: Option<u64>,
 
+    /// 只读结果缓存的条目数上限（spec/hub-api.md 3.20），默认 1024；0 关闭缓存。
+    #[arg(long, value_name = "N")]
+    pub cache_max_entries: Option<usize>,
+
+    /// 只读结果缓存的总字节上限（键 + 序列化结果），默认 8388608。
+    #[arg(long, value_name = "BYTES")]
+    pub cache_max_bytes: Option<usize>,
+
+    /// 只读结果缓存的单条字节上限，默认 65536；超出的结果不缓存。
+    #[arg(long, value_name = "BYTES")]
+    pub cache_max_entry_bytes: Option<usize>,
+
     /// App 结果与其声明的 outputSchema 不符时：log（默认，只记日志）/ reject（调用以 HANDLER_ERROR 结束）/ off（不校验）。
     #[arg(long, value_name = "off|log|reject", value_parser = parse_output_validation)]
     pub output_validation: Option<OutputValidation>,
@@ -246,6 +258,11 @@ impl HubArgs {
                 max_arguments_bytes: self.max_arguments_bytes,
                 max_result_bytes: self.max_result_bytes,
                 max_resource_bytes: self.max_resource_bytes,
+            },
+            result_cache: ResultCacheSection {
+                max_entries: self.cache_max_entries,
+                max_bytes: self.cache_max_bytes,
+                max_entry_bytes: self.cache_max_entry_bytes,
             },
             output_validation: self.output_validation,
             log_level: self.log_level.clone(),

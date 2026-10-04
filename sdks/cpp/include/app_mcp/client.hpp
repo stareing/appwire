@@ -127,7 +127,9 @@ public:
 
     Resource register_resource(const std::string& name, const std::string& description, ResourceReader reader,
                                const std::optional<std::string>& mime_type = std::nullopt) {
-        return register_resource(name, description, std::move(reader), ResourceOptions{mime_type, false, std::nullopt});
+        ResourceOptions options;
+        options.mime_type = mime_type;
+        return register_resource(name, description, std::move(reader), options);
     }
 
     Resource register_resource(const std::string& name, const std::string& description, ResourceReader reader,
@@ -142,6 +144,7 @@ public:
         ropts.struct_size = sizeof(AmResourceOptions);
         ropts.realtime = options.realtime;
         ropts.annotations_json = detail::c_str_or_null(annotations);
+        detail::set_cache(ropts, options.cache);
         auto* holder = new ResourceReader(std::move(reader));
         AmResource* out = nullptr;
         detail::check(am_resource_register_ex(h_, &spec, &ropts, &detail::read_trampoline, holder,

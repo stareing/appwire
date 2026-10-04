@@ -112,6 +112,7 @@ export class ToolEntry implements ToolHandle, Child, LazySlot {
     if (d.concurrency !== undefined) spec.concurrency = d.concurrency
     if (d.exclusive !== undefined) spec.exclusive = d.exclusive
     if (d.implements !== undefined && d.implements.length > 0) spec.implements = [...d.implements]
+    if (d.cache !== undefined) spec.cache = { ...d.cache }
     return spec
   }
 
@@ -323,6 +324,7 @@ export class ResourceEntry implements ResourceHandle, Child {
         ...(definition.mimeType !== undefined && { mimeType: definition.mimeType }),
         ...(definition.realtime && { realtime: true }),
         ...(definition.annotations !== undefined && { annotations: { ...definition.annotations } }),
+        ...(definition.cache !== undefined && { cache: { ...definition.cache } }),
       },
       (read) => this.onRead(read),
     )

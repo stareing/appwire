@@ -59,6 +59,8 @@ public sealed record HubStatusInfo(
     public EventsStatusInfo? Events { get; init; }
     /// <summary>标准意图的机主默认表与最近的替换错误（第 16 项 N4，spec/intents.md 第 4 节）；旧 Hub 为 null。</summary>
     public IntentsStatusInfo? Intents { get; init; }
+    /// <summary>只读结果缓存的条目、字节与命中统计（第 16 项 O3，spec/hub-api.md 3.20）；旧 Hub 为 null。</summary>
+    public CacheStatusInfo? Cache { get; init; }
 }
 
 /// <summary>调用阶段（只前进，不需要的阶段跳过）。</summary>

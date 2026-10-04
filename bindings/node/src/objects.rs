@@ -2,10 +2,10 @@
 
 use app_mcp_native as native;
 use napi_derive::napi;
-use native::{ContentAnnotations, LifecyclePolicy, StateInfo, ToolAnnotations, WakeDescriptor};
+use native::{CachePolicy, ContentAnnotations, LifecyclePolicy, StateInfo, ToolAnnotations, WakeDescriptor};
 
 use super::convert::{
-    parse_activation, parse_audience, parse_lifecycle_mode, parse_millis, parse_residency, parse_result_status,
+    parse_activation, parse_audience, parse_cache_scope, parse_cache_ttl, parse_lifecycle_mode, parse_millis, parse_residency, parse_result_status,
     parse_risk, parse_surface, parse_wake_kind, status_str,
 };
 
@@ -215,6 +215,24 @@ pub struct ToolSpecInit {
     pub exclusive: Option<String>,
     /// 实现的标准意图（spec/intents.md），如 `["message.send@1"]`。
     pub implements: Option<Vec<String>>,
+    /// 结果缓存声明（spec/protocol.md 3.6）：只对生效注解只读的工具生效；`updateWith` 时缺省即清除。
+    pub cache: Option<CachePolicyInit>,
+}
+
+/// 结果缓存声明（spec/protocol.md 3.6）。
+#[napi(object)]
+pub struct CachePolicyInit {
+    /// 复用期限（毫秒，整数 1..=86400000）；不是非负整数时 `INVALID_CONFIG`，范围由核心校验（同为 `INVALID_CONFIG`）。
+    pub ttl_ms: f64,
+    /// `'private'`（缺省，按调用方隔离）/ `'shared'`（所有调用方共用）；其他取值 `INVALID_CONFIG`。
+    pub scope: Option<String>,
+}
+
+impl CachePolicyInit {
+    pub(super) fn into_policy(self) -> Result<CachePolicy, String> {
+        let scope = self.scope.as_deref().map(parse_cache_scope).transpose()?.unwrap_or_default();
+        Ok(CachePolicy { ttl_ms: parse_cache_ttl(self.ttl_ms)?, scope })
+    }
 }
 
 /// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。
@@ -300,7 +318,7 @@ impl ToolSpecInit {
             concurrency: self.concurrency.take().unwrap_or(0),
             exclusive: self.exclusive.take(),
             implements: self.implements.take().unwrap_or_default(),
-            cache: None,
+            cache: self.cache.take().map(CachePolicyInit::into_policy).transpose()?,
         };
         Ok((self.into_spec()?, options))
     }
@@ -327,6 +345,8 @@ pub struct ResourceSpecInit {
     pub realtime: Option<bool>,
     /// 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上。缺省未声明。
     pub annotations: Option<ContentAnnotationsInit>,
+    /// 读取结果缓存声明（spec/protocol.md 3.6）；缺省不缓存。
+    pub cache: Option<CachePolicyInit>,
 }
 
 impl ResourceSpecInit {
@@ -335,7 +355,7 @@ impl ResourceSpecInit {
         let options = native::ResourceOptions {
             realtime: self.realtime.unwrap_or(false),
             annotations: self.annotations.map(ContentAnnotationsInit::into_annotations).transpose()?,
-            cache: None,
+            cache: self.cache.map(CachePolicyInit::into_policy).transpose()?,
         };
         let spec = native::ResourceSpec { name: self.name, description: self.description, mime_type: self.mime_type };
         Ok((spec, options))

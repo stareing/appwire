@@ -7,7 +7,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use app_mcp_native::{CallHandle, NativeClient, NativeConfig, ToolHandler, ToolSpec};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use app_mcp_native::{CachePolicy, CallHandle, NativeClient, NativeConfig, ToolAnnotations, ToolHandler, ToolOptions, ToolSpec};
+use rmcp::ServiceExt;
+use rmcp::model::CallToolRequestParams;
 use app_mcp_protocol::registry::{EndpointRegistry, REGISTRY_FILE, RUN_DIR};
 use serde_json::{Value, json};
 
@@ -17,11 +21,19 @@ const T: Duration = Duration::from_secs(15);
 struct TempHome(PathBuf);
 impl TempHome {
     fn new(tag: &str) -> Self {
+        Self::with_config(tag, json!({}))
+    }
+
+    /// `extra`：合并进 `config.json` 的顶层字段（如 `resultCache`）。
+    fn with_config(tag: &str, extra: Value) -> Self {
         let n: u64 = rand::random();
         let dir = std::env::temp_dir().join(format!("app-mcp-doctor-{tag}-{}-{n:x}", std::process::id()));
         std::fs::create_dir_all(dir.join("manifests")).unwrap();
         let ipc = ipc_endpoint(&dir);
-        let config = json!({ "listen": "127.0.0.1:0", "ipcEndpoint": ipc, "log": { "file": false } });
+        let mut config = json!({ "listen": "127.0.0.1:0", "ipcEndpoint": ipc, "log": { "file": false } });
+        for (k, v) in extra.as_object().expect("extra 为对象") {
+            config[k] = v.clone();
+        }
         std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
         Self(dir)
     }
@@ -164,4 +176,87 @@ async fn doctor_and_status_without_host() {
     assert_eq!(host["code"], "HOST_NOT_RUNNING");
     assert!(host["hint"].as_str().unwrap().contains("app-mcp-host serve"));
     assert_eq!(check(&report, "apps")["status"], "skip");
+}
+
+// ---------------------------------------------------------------------------
+// 结果缓存上限（第 16 项 O3 二期，配置 `resultCache`）
+// ---------------------------------------------------------------------------
+
+/// 只读、声明了 `cache` 的工具；记录实际执行次数。
+struct Now(Arc<AtomicUsize>);
+impl ToolHandler for Now {
+    fn invoke(&self, call: CallHandle) {
+        let n = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = call.complete(Some(&json!({ "n": n }).to_string()), vec![]);
+    }
+}
+
+/// 以 `extra` 配置启动 serve，同一 MCP 会话以相同参数调用缓存工具两次；返回（App 实际执行次数，doctor 的 cache 检查）。
+async fn call_cached_twice(tag: &str, extra: Value) -> (usize, Value) {
+    let home = TempHome::with_config(tag, extra);
+    let (serve, reg) = start_serve(&home).await;
+    let mut c = NativeConfig::new("clock", "时钟");
+    c.host_url = reg.ipc_endpoint.clone().expect("ipc");
+    c.launch_token = Some(String::new());
+    let app = NativeClient::new(c, None).unwrap();
+    let options = ToolOptions {
+        annotations: Some(ToolAnnotations { read_only_hint: Some(true), ..Default::default() }),
+        cache: Some(CachePolicy { ttl_ms: 60_000, scope: Default::default() }),
+        ..Default::default()
+    };
+    let invoked = Arc::new(AtomicUsize::new(0));
+    app.register_tool_with(ToolSpec::new("now", "当前读数"), options, Arc::new(Now(invoked.clone()))).unwrap();
+    app.start();
+
+    let addr = reg.listen.clone().expect("listen");
+    let mcp = ().serve(crate::support::mcp_http::transport(format!("http://{addr}/mcp"), None)).await.expect("MCP");
+    let deadline = Instant::now() + T;
+    while !mcp.list_all_tools().await.unwrap().iter().any(|t| t.name == "clock.now") {
+        assert!(Instant::now() < deadline, "没有等到工具 clock.now");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for _ in 0..2 {
+        let r = mcp.call_tool(CallToolRequestParams::new("clock.now")).await.unwrap();
+        assert_ne!(r.is_error, Some(true), "{r:?}");
+    }
+    let (_, report) = doctor_json(&home.0);
+    let cache = check(&report, "cache").clone();
+    let _ = mcp.cancel().await;
+    app.stop();
+    drop(serve);
+    (invoked.load(Ordering::SeqCst), cache)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn result_cache_limits_from_config() {
+    // 缺省上限：第二次命中，App 只执行一次；doctor 显示生效上限
+    let (invoked, cache) = call_cached_twice("cache-default", json!({})).await;
+    assert_eq!(invoked, 1, "{cache:#}");
+    assert_eq!(cache["details"]["cache"]["hits"], 1, "{cache:#}");
+    assert_eq!(cache["details"]["limits"], json!({"maxEntries": 1024, "maxBytes": 8_388_608, "maxEntryBytes": 65_536}));
+    assert!(cache["summary"].as_str().unwrap().contains("上限 1024 条、8.0 MiB、单条 64.0 KiB"), "{cache:#}");
+
+    // maxEntries 0：关闭，不查不存
+    let (invoked, cache) = call_cached_twice("cache-off", json!({"resultCache": {"maxEntries": 0}})).await;
+    assert_eq!(invoked, 2, "{cache:#}");
+    assert_eq!((cache["details"]["cache"]["hits"].as_u64(), cache["details"]["cache"]["misses"].as_u64()), (Some(0), Some(0)));
+    assert!(cache["summary"].as_str().unwrap().starts_with("已关闭"), "{cache:#}");
+
+    // 单条上限小于结果：不存，两次都未命中
+    let (invoked, cache) = call_cached_twice("cache-entry", json!({"resultCache": {"maxEntryBytes": 1}})).await;
+    assert_eq!(invoked, 2, "{cache:#}");
+    assert_eq!(cache["details"]["cache"]["misses"], 2, "{cache:#}");
+    assert_eq!(cache["details"]["limits"]["maxEntryBytes"], 1);
+}
+
+#[test]
+fn invalid_result_cache_config_fails_to_start() {
+    let home = TempHome::with_config("cache-bad", json!({"resultCache": {"maxBytes": 100, "maxEntryBytes": 200}}));
+    let (code, _, err) = crate::serve::run_to_exit(cmd(&home.0, &["serve"]));
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("resultCache.maxEntryBytes（200）不能大于 resultCache.maxBytes（100）"), "{err}");
+    let home = TempHome::with_config("cache-typo", json!({"resultCache": {"maxEntry": 1}}));
+    let (code, _, err) = crate::serve::run_to_exit(cmd(&home.0, &["serve"]));
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("maxEntry"), "未知字段指出名字：{err}");
 }

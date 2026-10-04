@@ -88,6 +88,9 @@ the hooks are no-ops. A tool can also be loaded lazily: pass `load: () => import
   a non-`object` root is wrapped by the Hub as `{ result: <schema> }`.
 - `implements` - standard intents the tool implements (spec/intents.md), e.g. `['message.send@1']`; an inline array is
   compared by content, and removing it clears the declaration.
+- `cache` - result caching (spec/protocol.md 3.6), e.g. `{ ttlMs: 30_000 }`: the Hub reuses results of a read-only tool
+  for `ttlMs`; `scope: 'shared'` only for caller-independent data. An inline object is compared by content, removing it
+  clears the declaration. `useResource` accepts `cache` too (a changed value re-registers the resource).
 - Handlers may return `{ data, stateHints?, status?, stateResource?, summary?, annotations? }` with `status` one of
   `'done' | 'pending' | 'partial' | 'noop'`. It is unpacked only if it has a `data` key and every other key is one
   of these with a valid value; any other value is returned as `data` as a whole. Returning nothing (`undefined` /

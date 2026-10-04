@@ -417,14 +417,15 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         Func<TInput, ToolContext, Task<TOutput>> handler,
         ToolOptions? options = null) => _root.RegisterTool(name, description, handler, options);
 
-    /// <inheritdoc cref="ToolScope.RegisterResource(string, string, Func{CancellationToken, Task{object?}}, string?, bool, ContentAnnotations?)"/>
+    /// <inheritdoc cref="ToolScope.RegisterResource(string, string, Func{CancellationToken, Task{object?}}, string?, bool, ContentAnnotations?, CachePolicy?)"/>
     public ResourceRegistration RegisterResource(
         string name,
         string description,
         Func<CancellationToken, Task<object?>> reader,
         string? mimeType = null,
         bool realtime = false,
-        ContentAnnotations? annotations = null) => _root.RegisterResource(name, description, reader, mimeType, realtime, annotations);
+        ContentAnnotations? annotations = null,
+        CachePolicy? cache = null) => _root.RegisterResource(name, description, reader, mimeType, realtime, annotations, cache);
 
     /// <inheritdoc cref="ToolScope.RegisterResource{T}"/>
     public ResourceRegistration RegisterResource<T>(
@@ -433,7 +434,8 @@ public sealed class AppMcpClient : IDisposable, IAsyncDisposable
         Func<CancellationToken, Task<T>> reader,
         string? mimeType = null,
         bool realtime = false,
-        ContentAnnotations? annotations = null) => _root.RegisterResource(name, description, reader, mimeType, realtime, annotations);
+        ContentAnnotations? annotations = null,
+        CachePolicy? cache = null) => _root.RegisterResource(name, description, reader, mimeType, realtime, annotations, cache);
 
     /// <summary>注销全部工具与资源（客户端继续运行）。</summary>
     public void UnregisterAll() => _root.Unregister();

@@ -442,6 +442,7 @@ final class ToolSpec {
     this.concurrency = 0,
     this.exclusive,
     this.implements = const [],
+    this.cache,
   });
 
   /// App 内唯一，`[a-zA-Z0-9_.-]{1,64}`。
@@ -485,6 +486,10 @@ final class ToolSpec {
   /// 空表示不声明。格式不合法时注册 / 更新抛出 [AppMcpException]（`invalidName`）。Agent 用内置工具 `apps.intents` 按动词找到实现者。
   final List<String> implements;
 
+  /// 结果缓存声明（spec/protocol.md 3.6）：Hub 在 TTL 内对相同参数的调用复用结果（命中不唤醒 App）。只对生效注解只读
+  /// （`readOnlyHint` 为 true，或未声明注解时 [Risk.read]）的工具生效，否则照常注册并记警告日志。为 null 时不声明。
+  final CachePolicy? cache;
+
   ToolSpec copyWith({
     String? description,
     Map<String, Object?>? inputSchema,
@@ -500,6 +505,7 @@ final class ToolSpec {
     int? concurrency,
     String? exclusive,
     List<String>? implements,
+    CachePolicy? cache,
   }) =>
       ToolSpec(
         name: name,
@@ -517,6 +523,7 @@ final class ToolSpec {
         concurrency: concurrency ?? this.concurrency,
         exclusive: exclusive ?? this.exclusive,
         implements: implements ?? this.implements,
+        cache: cache ?? this.cache,
       );
 
   @override
@@ -535,13 +542,14 @@ final class ToolSpec {
       other.concurrency == concurrency &&
       other.exclusive == exclusive &&
       _listEquals(other.implements, implements) &&
+      other.cache == cache &&
       _schemaText(other.inputSchema) == _schemaText(inputSchema) &&
       _schemaText(other.outputSchema) == _schemaText(outputSchema);
 
   @override
   int get hashCode => Object.hash(name, description, risk, activation, title, enabled, annotations,
       _schemaText(inputSchema), _schemaText(outputSchema), surface, page, backgroundTool, concurrency, exclusive,
-      Object.hashAll(implements));
+      Object.hashAll(implements), cache);
 
   static bool _listEquals(List<String> a, List<String> b) {
     if (a.length != b.length) return false;
@@ -586,6 +594,30 @@ final class ResourceSpec {
 
   /// 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；null 表示不声明。
   final ContentAnnotations? annotations;
+}
+
+/// 结果缓存的范围（spec/protocol.md 3.6）。
+enum CacheScope {
+  /// 按调用方隔离（缺省）。
+  private,
+
+  /// 全体调用方共用：只用于与调用方无关的数据。
+  shared,
+}
+
+/// 工具 / 资源的结果缓存声明（spec/protocol.md 3.6）。缓存多久、能否跨调用方共用由 App 判断，Hub 只执行。
+/// [ttlMs] 须在 1..=86400000 之间，否则注册 / 更新抛出 [AppMcpException]（`invalidConfig`）。
+final class CachePolicy {
+  const CachePolicy(this.ttlMs, {this.scope = CacheScope.private});
+
+  final int ttlMs;
+  final CacheScope scope;
+
+  @override
+  bool operator ==(Object other) => other is CachePolicy && other.ttlMs == ttlMs && other.scope == scope;
+
+  @override
+  int get hashCode => Object.hash(ttlMs, scope);
 }
 
 /// 工具对界面的依赖（spec/protocol.md 3.4）。

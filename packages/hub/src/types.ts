@@ -2,6 +2,7 @@
  * @app-mcp/hub 的公开类型：与 `crates/hub` 的 serde（camelCase）JSON 形态一一对应（spec/hub-api.md 3.1、3.4）。
  */
 
+import type { ResultCacheConfig } from './types/cache.js'
 import type { EventLimitsConfig } from './types/events.js'
 import type { IntentDefaults } from './types/intents.js'
 
@@ -340,6 +341,9 @@ export interface HubConfig {
   // ---- 事件信箱（spec/hub-api.md 3.17）----
   /** 订阅数、信箱容量、保留时长与每订阅频率上限；缺省字段取默认值（32 / 100 / 24 小时 / 60）。 */
   eventLimits?: EventLimitsConfig
+  // ---- 只读结果缓存（spec/hub-api.md 3.20）----
+  /** 条目数与字节上限；缺省字段取默认值（1024 / 8 MiB / 64 KiB），`maxEntries: 0` 关闭缓存。 */
+  resultCache?: ResultCacheConfig
   // ---- Agent 身份（spec/hub-api.md 3.6）----
   /** 按 Agent 发的访问令牌；缺省不登记（所有请求为本机主体）。不合法时 `Hub.start` 失败。运行中用 `Hub.setAgents` 替换。 */
   agents?: AgentCredential[]
@@ -367,3 +371,4 @@ export type * from './types/callbacks.js'
 export type * from './types/formats.js'
 export type * from './types/events.js'
 export type * from './types/intents.js'
+export type * from './types/cache.js'

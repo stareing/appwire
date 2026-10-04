@@ -42,8 +42,10 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 mod event_limits;
+mod result_cache;
 
 use event_limits::EventLimitOverrides;
+use result_cache::CacheLimitOverrides;
 
 /// 事件回调：参数为事件 JSON 文本，返回值忽略。weak、无 error-first 参数。
 type EventTsfn = ThreadsafeFunction<String, (), String, Status, false, true>;
@@ -203,6 +205,8 @@ struct ConfigJson {
     agents: Option<Vec<AgentCredential>>,
     /// 事件信箱上限（spec/hub-api.md 3.17）：`{maxSubscriptions?, maxInboxEvents?, inboxTtlMs?, perSubscriptionPerMinute?}`。
     event_limits: Option<EventLimitOverrides>,
+    /// 只读结果缓存上限（spec/hub-api.md 3.20）：`{maxEntries?, maxBytes?, maxEntryBytes?}`；`maxEntries: 0` 关闭。
+    result_cache: Option<CacheLimitOverrides>,
     upstreams: BTreeMap<String, UpstreamConfig>,
     approval: ApprovalPolicy,
 }
@@ -342,6 +346,9 @@ impl ConfigJson {
         }
         if let Some(o) = &self.event_limits {
             o.apply(&mut c.event_limits);
+        }
+        if let Some(o) = &self.result_cache {
+            o.apply(&mut c.result_cache);
         }
         c.upstreams = self.upstreams;
         c.approval = self.approval;

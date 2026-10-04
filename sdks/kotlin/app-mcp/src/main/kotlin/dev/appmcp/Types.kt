@@ -27,6 +27,13 @@ typealias AppOverview = dev.appmcp.ffi.AppOverview
  * 任一为 0 关闭。默认 `CallDedupPolicy()` = 300000 ms、64 条。
  */
 typealias CallDedupPolicy = dev.appmcp.ffi.CallDedupPolicy
+/**
+ * 结果缓存声明（spec/protocol.md 3.6）：`ttlMs`（1..86400000）内相同请求的结果可由 Hub 复用；`scope` 为空 = `PRIVATE`。
+ * 例：`CachePolicy(ttlMs = 60_000u, scope = CacheScope.SHARED)`。
+ */
+typealias CachePolicy = dev.appmcp.ffi.CachePolicy
+/** 结果缓存范围：`PRIVATE`（按调用方隔离，缺省）/ `SHARED`（全体调用方共用，只用于与调用方无关的数据）。 */
+typealias CacheScope = dev.appmcp.ffi.CacheScope
 /** 原生层错误的基类。具体子类（如 `AlreadyCompleted`）需通过 `dev.appmcp.ffi.AppMcpException` 访问（typealias 不能访问嵌套类）。 */
 typealias AppMcpException = dev.appmcp.ffi.AppMcpException
 /**

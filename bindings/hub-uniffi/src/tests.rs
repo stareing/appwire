@@ -138,6 +138,7 @@ fn req(name: &str, args: Value) -> CallRequest {
         session: None,
         idempotency_key: None,
         priority: None,
+        cache_bypass: false,
     }
 }
 
@@ -1130,6 +1131,7 @@ fn mcp_over_fd() {
 
 mod agents;
 mod app_events;
+mod cache;
 mod intents;
 mod locks;
 mod policy;

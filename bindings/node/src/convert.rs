@@ -1,7 +1,7 @@
 //! 错误与枚举转换：原生错误 → JS 错误（`code` 为大写代码），JS 字符串 → 原生枚举，原生枚举 → JS 字符串。
 
 use app_mcp_native::{
-    Activation, Audience, BusyPolicy, CancelReason, ClientKind, ErrorKind, HeartbeatMode, LifecycleMode, LogLevel, NativeError,
+    Activation, Audience, BusyPolicy, CacheScope, CancelReason, ClientKind, ErrorKind, HeartbeatMode, LifecycleMode, LogLevel, NativeError,
     Residency, ResultStatus, Risk, SleepReason, StateStatus, ToolSurface, Visibility, WakeKind, WakeReason,
 };
 
@@ -173,6 +173,30 @@ pub(super) fn parse_millis(field: &str, v: f64) -> Result<u64, String> {
     }
     // 已检查非负有限；超出 u64 范围时饱和。
     Ok(v.floor().min(u64::MAX as f64) as u64)
+}
+
+/// 缓存声明的 `ttlMs`：须为非负整数（范围 1..=86400000 由核心校验）。
+///
+/// @error 非整数、负数或非有限数 → `INVALID_CONFIG`（与核心的越界错误同一类别）。
+pub(super) fn parse_cache_ttl(v: f64) -> Result<u64, String> {
+    if !v.is_finite() || v < 0.0 || v.fract() != 0.0 {
+        return Err(invalid_config(format!("cache.ttlMs 必须是非负整数：{v}")));
+    }
+    // 已检查非负有限整数；超出 u64 范围时饱和（随后由核心按越界拒绝）。
+    Ok(v.min(u64::MAX as f64) as u64)
+}
+
+/// @error 不是 `private` / `shared` → `INVALID_CONFIG`。
+pub(super) fn parse_cache_scope(s: &str) -> Result<CacheScope, String> {
+    Ok(match s {
+        "private" => CacheScope::Private,
+        "shared" => CacheScope::Shared,
+        other => return Err(invalid_config(format!("未知的 cache.scope：{other:?}（应为 private / shared）"))),
+    })
+}
+
+fn invalid_config(message: String) -> napi::Error<String> {
+    to_js_error(NativeError::InvalidConfig(message))
 }
 
 pub(super) fn status_str(s: StateStatus) -> &'static str {

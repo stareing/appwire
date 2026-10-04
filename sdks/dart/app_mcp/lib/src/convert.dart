@@ -260,6 +260,19 @@ String encodeJsonValue(Object? value, String what) {
 }
 
 
+/// v22 缓存声明的时长（0 = 未声明）。
+/// @error 声明了缓存但 ttlMs ≤ 0（C ABI 中 0 表示未声明，无法表达）→ [AppMcpException]（`invalidConfig`）；上限由原生库校验。
+int cacheTtlToNative(CachePolicy? c) => switch (c) {
+      null => 0,
+      CachePolicy(ttlMs: final ms) when ms > 0 => ms,
+      _ => throw AppMcpException(AppMcpErrorCode.invalidConfig, 'cache.ttlMs 须在 1..=86400000 之间（为 ${c.ttlMs}）'),
+    };
+
+int cacheScopeToNative(CachePolicy? c) => switch (c?.scope) {
+      CacheScope.shared => AmCacheScope.shared,
+      CacheScope.private || null => AmCacheScope.private,
+    };
+
 int surfaceToNative(ToolSurface s) => switch (s) {
       ToolSurface.app => AmToolSurface.app,
       ToolSurface.view => AmToolSurface.view,

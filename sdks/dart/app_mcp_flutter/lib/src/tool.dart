@@ -22,7 +22,8 @@ void _report(Object e, StackTrace st, String what) {
 /// [McpViewGate] / [McpRouteGate]，否则所在路由是否为栈顶），否则禁用；[page] 声明所在页面，Hub 据此导航；
 /// [backgroundTool] 声明 App 在后台时 Hub 改调的同 App app 工具（spec/protocol.md 3.4「后台与前台」）。
 /// [concurrency] / [exclusive] 为 SDK 内的调用调度声明（spec/protocol.md 5.3，见 [ToolSpec.concurrency]、[ToolSpec.exclusive]）。
-/// [implements] 声明实现的标准意图（spec/intents.md，见 [ToolSpec.implements]）。
+/// [implements] 声明实现的标准意图（spec/intents.md，见 [ToolSpec.implements]）；[cache] 声明结果缓存（spec/protocol.md 3.6，
+/// 见 [ToolSpec.cache]）。
 ///
 /// ```dart
 /// McpTool(
@@ -51,6 +52,7 @@ class McpTool extends StatefulWidget {
     this.concurrency = 0,
     this.exclusive,
     this.implements = const [],
+    this.cache,
     required this.handler,
     this.child,
   });
@@ -88,6 +90,9 @@ class McpTool extends StatefulWidget {
 
   /// 实现的标准意图（如 `message.send@1`）；空表示不声明。
   final List<String> implements;
+
+  /// 结果缓存声明（只对只读工具生效）；为 null 时不声明，变化时整体替换。
+  final CachePolicy? cache;
   final ToolHandler handler;
   final Widget? child;
 
@@ -107,6 +112,7 @@ class McpTool extends StatefulWidget {
         concurrency: concurrency,
         exclusive: exclusive,
         implements: implements,
+        cache: cache,
       );
 
   @override
@@ -205,6 +211,7 @@ class McpResource extends StatefulWidget {
     this.mimeType,
     this.realtime = false,
     this.annotations,
+    this.cache,
     required this.read,
     this.changeToken,
     this.child,
@@ -219,6 +226,9 @@ class McpResource extends StatefulWidget {
 
   /// 资源内容的标注（MCP 内容注解），见 [McpScope.resource]；内容变化时重新注册。
   final ContentAnnotations? annotations;
+
+  /// 读取结果缓存声明（spec/protocol.md 3.6），见 [McpScope.resource]；变化时重新注册。
+  final CachePolicy? cache;
   final ResourceReader read;
   final Object? changeToken;
   final Widget? child;
@@ -251,6 +261,7 @@ class _McpResourceState extends State<McpResource> {
         oldWidget.description != widget.description ||
         oldWidget.mimeType != widget.mimeType ||
         oldWidget.realtime != widget.realtime ||
+        oldWidget.cache != widget.cache ||
         !_sameAnnotations(oldWidget.annotations, widget.annotations)) {
       _handle?.dispose();
       _register();
@@ -276,6 +287,7 @@ class _McpResourceState extends State<McpResource> {
           mimeType: widget.mimeType,
           realtime: widget.realtime,
           annotations: widget.annotations,
+          cache: widget.cache,
           read: _read);
     } on AppMcpException catch (e, st) {
       _report(e, st, '注册资源 ${widget.name} 时');
@@ -331,6 +343,7 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
     int concurrency = 0,
     String? exclusive,
     List<String> implements = const [],
+    CachePolicy? cache,
     required ToolHandler handler,
   }) {
     final scope = AppMcpScope.scopeOf(context);
@@ -359,7 +372,8 @@ mixin McpToolsMixin<T extends StatefulWidget> on State<T> {
         backgroundTool: backgroundTool,
         concurrency: concurrency,
         exclusive: exclusive,
-        implements: implements);
+        implements: implements,
+        cache: cache);
     final existing = _mcpTools[name];
     try {
       if (existing != null && !existing.isDisposed) {

@@ -20,7 +20,7 @@ const _sdk = 'dart';
 const _features = {
   'toolOptions', 'mutate', 'lifecycle', 'wake', 'richResult', 'userAction', 'progress', 'resourceOptions', //
   'readFailure', 'surface', 'navigation', 'backgroundTool', 'backgroundNavigation', 'idempotencyKey',
-  'callScheduling', 'busy', 'events', 'implements',
+  'callScheduling', 'busy', 'events', 'implements', 'cache',
 };
 
 final String _repoRoot = Directory('${Directory.current.path}/../../..').absolute.path;
@@ -124,6 +124,7 @@ final class _CaseApp {
         concurrency: (decl['concurrency'] as num?)?.toInt() ?? 0,
         exclusive: decl['exclusive'] as String?,
         implements: _strings(decl['implements']) ?? const [],
+        cache: _cache(decl['cache']),
         handler: (args, ctx) => _runHandler(spec, ++runs, args, ctx));
   }
 
@@ -134,6 +135,7 @@ final class _CaseApp {
         mimeType: decl['mimeType'] as String?,
         realtime: decl['realtime'] as bool? ?? false,
         annotations: _contentAnnotations(decl['annotations']),
+        cache: _cache(decl['cache']),
         read: () => _read(spec));
   }
 
@@ -234,7 +236,15 @@ final class _CaseApp {
         'inputSchema' || 'outputSchema' => _map(v),
         'surface' => v == null ? null : (v == 'view' ? ToolSurface.view : ToolSurface.app),
         'implements' => _strings(v), // null 清除
+        'cache' => _cache(v), // null 清除
         _ => v,
+      };
+
+  /// 用例 cache（`{ttlMs, scope?}`，spec/protocol.md 3.6）；null / 缺省为 null。
+  static CachePolicy? _cache(Object? v) => switch (_map(v)) {
+        null => null,
+        final m => CachePolicy((m['ttlMs'] as num).toInt(),
+            scope: m['scope'] == 'shared' ? CacheScope.shared : CacheScope.private),
       };
 
   /// JSON 字符串数组 → `List<String>`；null / 缺省为 null。

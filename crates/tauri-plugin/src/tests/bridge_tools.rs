@@ -338,3 +338,47 @@ async fn page_tool_implements() {
     fx.bridge.client().stop();
     shutdown(fx.hub).await;
 }
+
+/// 第 16 项 O3：页面工具与资源的 `cache` 经桥接到达 Hub：第二次调用命中缓存（页面只收到一次调用）；越界的声明登记被拒绝；
+/// 整体更新缺省即清除，之后调用照常转给页面。
+#[tokio::test(flavor = "multi_thread")]
+async fn page_tool_and_resource_cache() {
+    let fx = Fixture::new("cached", None).await;
+    let page = Arc::new(FakePage::default());
+    fx.op(&page, "main", "main", json!({ "op": "hello" }));
+    let spec = json!({ "description": "列表", "risk": "read", "cache": { "ttlMs": 60000 } });
+    let reply = fx.op(&page, "main", "main", json!({ "op": "tool.register", "id": 1, "name": "feed.list", "spec": spec }));
+    assert_eq!(reply, json!({ "ok": true }));
+    let bad = json!({ "op": "tool.register", "id": 2, "name": "feed.bad",
+        "spec": { "description": "x", "risk": "read", "cache": { "ttlMs": 0 } } });
+    assert_eq!(fx.op(&page, "main", "main", bad)["ok"], json!(false));
+    let res = json!({ "op": "resource.register", "id": 3, "name": "feed", "description": "订阅",
+        "cache": { "ttlMs": 60000, "scope": "shared" } });
+    assert_eq!(fx.op(&page, "main", "main", res), json!({ "ok": true }));
+    let bad_res = json!({ "op": "resource.register", "id": 4, "name": "feed2", "description": "订阅",
+        "cache": { "ttlMs": 86400001 } });
+    assert_eq!(fx.op(&page, "main", "main", bad_res)["ok"], json!(false));
+    fx.connected("cached").await;
+    eventually("Hub 看到页面工具", || tool_names(&fx.hub, "cached") == vec!["feed.list"]).await;
+
+    let calls = |page: &FakePage| page.all().iter().filter(|e| e["type"] == "call").count();
+    let call_once = |hub: Arc<Hub>| tokio::spawn(async move { hub.call_tool(CallRequest::new("cached.feed.list", json!({}))).await });
+    let pending = call_once(fx.hub.clone());
+    let call = wait_event(&page, "call").await;
+    fx.op(&page, "main", "main", json!({ "op": "call.result", "callId": call["callId"], "ok": true, "data": { "n": 1 } }));
+    let first = pending.await.expect("join").expect("调用");
+    assert_eq!(first.cached_age_ms, None);
+    let second = fx.hub.call_tool(CallRequest::new("cached.feed.list", json!({}))).await.expect("命中");
+    assert!(second.cached_age_ms.is_some(), "第二次命中缓存");
+    assert_eq!(second.result.as_ref().ok(), first.result.as_ref().ok());
+    assert_eq!(calls(&page), 0, "页面只收到一次调用（第一次已由 wait_event 取走）");
+
+    fx.op(&page, "main", "main", json!({ "op": "tool.update", "id": 1, "spec": { "description": "列表", "risk": "read" } }));
+    eventually("更新后不再命中", || fx.hub.status().cache.is_some_and(|c| c.entries == 0)).await;
+    let pending = call_once(fx.hub.clone());
+    let call = wait_event(&page, "call").await;
+    fx.op(&page, "main", "main", json!({ "op": "call.result", "callId": call["callId"], "ok": true, "data": { "n": 2 } }));
+    assert_eq!(pending.await.expect("join").expect("调用").cached_age_ms, None);
+    fx.bridge.client().stop();
+    shutdown(fx.hub).await;
+}

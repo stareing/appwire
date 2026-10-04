@@ -1123,6 +1123,8 @@ C# `HubToolInfo.Surface` / `Page`（字符串 `"app"` / `"view"`，常量在 `Hu
 | `dev.appwire/taskId` | 请求 `_meta`（`tools/call`，可选） | 任务句柄，与参数 `taskId` 等价、对任何工具调用生效（3.6「任务句柄」）；无旧前缀键 |
 | `dev.appwire/cache` | 请求 `_meta`（`tools/call` / `resources/read`，可选） | `"bypass"`：不查缓存、照常调用并以新结果覆盖（3.20）；其他值 `INVALID_INPUT`；无旧前缀键 |
 | `dev.appwire/cached` | 结果 `_meta`（命中缓存时） | `{ageMs}`：结果来自缓存，距 App 产出的毫秒数（3.20）；未命中不写 |
+| `dev.appwire/schemaHash` | MCP 工具 `_meta`（`tools/list`） | 该工具 inputSchema + outputSchema 的摘要（3.21） |
+| `dev.appwire/deprecated` | MCP 工具 `_meta`、调用结果 `_meta` | 工具的弃用声明（spec/protocol.md 3.7，3.21）；未弃用不写 |
 
 **调用元信息**（第 19 项 R4）：`callId`、`durationMs` 在每个工具调用结果（含错误结果、内置与上游工具）的 `_meta` 中；`instanceId`、
 `woke` 见上表。只增字段：各 Hub 绑定按 JSON 透传 `CallOutcome` 的（hub-c v14、hub-node、`@app-mcp/hub`）带 `durationMs`、`woke`；
@@ -1393,8 +1395,33 @@ App 在工具 / 资源声明中给出 `cache: {ttlMs, scope?}`（spec/protocol.m
   `resources/read` 不带这两个字段（同 3.7）。
 - **上限**（`HubConfig.result_cache`，`CacheLimits`）：`max_entries` 1024、`max_bytes` 8 MiB（键 + 序列化结果）、`max_entry_bytes` 64 KiB；超出时淘汰最久未用的
   条目；`max_entries: 0` 关闭缓存。只在内存，Hub 重启清空。
+  Host：`<home>/config.json` `resultCache {maxEntries?, maxBytes?, maxEntryBytes?}`，命令行 `--cache-max-entries` / `--cache-max-bytes` /
+  `--cache-max-entry-bytes` 按字段覆盖；开启时 `maxBytes` / `maxEntryBytes` 为 0 或单条大于总量启动失败。
+- **各语言 Hub 封装**：`@app-mcp/hub` `resultCache {maxEntries?, maxBytes?, maxEntryBytes?}`、`cacheBypass`、`cachedAgeMs`；
+  hub-uniffi `HubConfig.result_cache: CacheLimitOverrides`、`CallRequest.cache_bypass`、`CallOutcome.cached_age_ms` → Python
+  `Hub(result_cache=)` / `call_tool(cache_bypass=)` / `CallResult.cached_age_ms`，Kotlin / Swift `resultCache` / `cacheBypass` /
+  `cachedAgeMs`；hub-c（v24）启动配置 JSON `resultCache`、调用 JSON `cacheBypass` / 结果 `cachedAgeMs`；C# `HubOptions.ResultCache`、
+  `CallRequest.CacheBypass`、`CallOutcome.CachedAgeMs`。未给的上限字段取默认值。
 - **观测**：`HubStatus.cache {entries, bytes, hits, misses, evictions}`；Host `status` 摘要与 `doctor` 列出；`app-mcp://apps/hub` 同。
 - 实现：`crates/hub/src/result_cache/`。
+
+### 3.21 工具演进：弃用呈现与 schema 变化（第 16 项 O4）
+
+契约见 spec/protocol.md 3.7 与 spec/manifest.md 第 6 节。Hub 只呈现与告知，**不拦截、不保留旧 schema、不按弃用改变路由**。
+
+- **schemaHash**：每个 App 工具的 `sha256(规范化 JSON({"inputSchema": I, "outputSchema": O}))` 前 16 个十六进制字符（规范化同
+  spec/protocol.md 8.4；无 `outputSchema` 时省略该键）。出现在 `HubTool.schema_hash`、`apps.tools` 与 `apps.search` 的工具条目
+  （`schemaHash`）、MCP `tools/list` 工具的 `_meta` `dev.appwire/schemaHash`。上游工具与内置工具不带。
+- **弃用呈现**：弃用工具照常列出与调用。MCP `tools/list` 的描述前加 `[已弃用] <message>`（有 `replacement` 时追加
+  `（改用 <appId>.<replacement>）`），`_meta` `dev.appwire/deprecated` 为原声明；`HubTool.deprecated`；`apps.tools` / `apps.search`
+  条目带 `deprecated`，`apps.search` 对弃用工具的得分 −1（仍可检索到）；调用结果 `_meta` `dev.appwire/deprecated`（只在调用的是
+  弃用工具时）。
+- **参数不符时的提示**：Hub 因参数不符 `inputSchema` 返回 `INVALID_INPUT` 时，错误 `data` 带 `schemaHash`（校验所用定义），
+  消息追加「工具定义可能已变化，请重新获取（apps.tools / tools/list）后再调用」。
+- **运行时告警**：App 的 `tools/sync` / `tools/changed` 使同名工具的定义相对 Hub 此前已知的定义（与 3.20 sync 比较同一基准）出现
+  破坏性或可能破坏的变化时，记 `warn` 日志，并记入 `HubStatus.schema_changes`（最近 32 条：`{appId, tool, level, changes[], at}`，
+  只在内存）；Host `doctor` 列出。照常发 `list_changed`。
+- 实现：判定 `crates/protocol/src/schema_compat.rs`；Hub 接入 `crates/hub/src/schema_evolution/`。
 
 ## 4. 进程内 App（可选，M2）
 

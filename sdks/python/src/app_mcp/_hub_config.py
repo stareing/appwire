@@ -13,6 +13,7 @@ from app_mcp_hub import app_mcp_hub_uniffi as ffi
 Risk = ffi.Risk
 LimitsConfig = ffi.LimitsConfig
 EventLimitOverrides = ffi.EventLimitOverrides
+CacheLimitOverrides = ffi.CacheLimitOverrides
 OutputValidation = ffi.OutputValidation
 PolicyConfig = ffi.PolicyConfig
 PolicyRule = ffi.PolicyRule
@@ -24,6 +25,7 @@ AgentCredential = ffi.AgentCredential
 RiskLike = Union[Risk, str]
 LimitsLike = Union[LimitsConfig, dict[str, int]]
 EventLimitsLike = Union[EventLimitOverrides, dict[str, int]]
+CacheLimitsLike = Union[CacheLimitOverrides, dict[str, int]]
 OutputValidationLike = Union[OutputValidation, str]
 PolicyLike = Union[PolicyConfig, dict[str, Any]]
 AgentsLike = list[Union[AgentCredential, dict[str, str]]]
@@ -48,6 +50,8 @@ _EVENT_LIMIT_KEYS = {
     "inboxTtlMs": "inbox_ttl_ms",
     "perSubscriptionPerMinute": "per_subscription_per_minute",
 }
+# CacheLimitOverrides 字段 ← JSON 配置键（与 app-mcp-host 配置文件 ``resultCache`` 相同；也接受 snake_case）。
+_CACHE_LIMIT_KEYS = {"maxEntries": "max_entries", "maxBytes": "max_bytes", "maxEntryBytes": "max_entry_bytes"}
 # 策略规则的 JSON 键 → PolicyRule / AnnotationMatch 字段（与 app-mcp-host 的 policy.json 相同；也接受 snake_case）。
 _RULE_KEYS = {"id": "id", "action": "action", "app": "app", "tool": "tool", "annotations": "annotations", "agent": "agent", "hooks": "hooks"}
 _ANNOTATION_KEYS = {
@@ -83,6 +87,13 @@ def _event_limits(value: EventLimitsLike | None) -> EventLimitOverrides | None:
     if value is None or isinstance(value, EventLimitOverrides):
         return value
     return EventLimitOverrides(**_fields(value, _EVENT_LIMIT_KEYS, "event_limits"))
+
+
+def _result_cache(value: CacheLimitsLike | None) -> CacheLimitOverrides | None:
+    """``CacheLimitOverrides`` 或字典（JSON 配置键 ``maxEntries`` 等，或 snake_case）；未知键抛 ``ValueError``。"""
+    if value is None or isinstance(value, CacheLimitOverrides):
+        return value
+    return CacheLimitOverrides(**_fields(value, _CACHE_LIMIT_KEYS, "result_cache"))
 
 
 def _output_validation(value: OutputValidationLike | None) -> OutputValidation | None:

@@ -138,19 +138,32 @@ public sealed class ToolScope : IDisposable
         Exclusive = strings.Add(options.Exclusive),
         Implements = strings.AddArray(options.Implements),
         ImplementsLen = (nuint)(options.Implements?.Count ?? 0),
+        CacheTtlMs = CacheTtlMs(options.Cache),
+        CacheScope = (int)(options.Cache?.Scope ?? AppMcp.CacheScope.Private),
+    };
+
+    /// <summary>缓存声明 → C ABI 的 cache_ttl_ms（v22，0 = 未声明）。</summary>
+    /// <exception cref="AppMcpException">声明了缓存但 TtlMs 为 0（C ABI 中 0 表示未声明，无法表达；其余范围由原生库校验）。</exception>
+    private static ulong CacheTtlMs(CachePolicy? cache) => cache switch
+    {
+        null => 0,
+        { TtlMs: 0 } => throw new AppMcpException(AppMcpStatus.InvalidConfig, "cache.TtlMs 须在 1..=86400000 之间（为 0）"),
+        _ => cache.TtlMs,
     };
 
     /// <summary>注册资源。reader 返回的对象序列化为资源内容。</summary>
     /// <remarks><c>realtime</c>：需实时推送（spec/lifecycle.md 第 13 节 B3），被订阅时保持连接、休眠中变化时回连推送。
     /// 默认 false：订阅不阻止休眠，变化在下次连接时补发。只用于"模型在等待变化"的资源。
-    /// <c>annotations</c>：资源内容的标注（MCP 内容注解），Hub 放到 MCP resources/list 的资源注解上；null 表示不声明。</remarks>
+    /// <c>annotations</c>：资源内容的标注（MCP 内容注解），Hub 放到 MCP resources/list 的资源注解上；null 表示不声明。
+    /// <c>cache</c>：读取结果缓存声明（spec/protocol.md 3.6），Hub 在 TTL 内复用读取结果；null 表示不声明。</remarks>
     public ResourceRegistration RegisterResource(
         string name,
         string description,
         Func<CancellationToken, Task<object?>> reader,
         string? mimeType = null,
         bool realtime = false,
-        ContentAnnotations? annotations = null)
+        ContentAnnotations? annotations = null,
+        CachePolicy? cache = null)
     {
         ArgumentNullException.ThrowIfNull(reader);
         var json = _client.SerializerOptions;
@@ -159,27 +172,29 @@ public sealed class ToolScope : IDisposable
             var result = await reader(ct).ConfigureAwait(false);
             return result is null ? "null" : JsonSerializer.Serialize(result, result.GetType(), json);
         };
-        return RegisterResourceRaw(name, description, raw, mimeType, realtime, annotations);
+        return RegisterResourceRaw(name, description, raw, mimeType, realtime, annotations, cache);
     }
 
     /// <summary>注册类型化资源。</summary>
-    /// <remarks><c>realtime</c> 见 <see cref="RegisterResource(string, string, Func{CancellationToken, Task{object?}}, string?, bool, ContentAnnotations?)"/>。</remarks>
+    /// <remarks><c>realtime</c> 见 <see cref="RegisterResource(string, string, Func{CancellationToken, Task{object?}}, string?, bool, ContentAnnotations?, CachePolicy?)"/>。</remarks>
     public ResourceRegistration RegisterResource<T>(
         string name,
         string description,
         Func<CancellationToken, Task<T>> reader,
         string? mimeType = null,
         bool realtime = false,
-        ContentAnnotations? annotations = null)
+        ContentAnnotations? annotations = null,
+        CachePolicy? cache = null)
     {
         ArgumentNullException.ThrowIfNull(reader);
         var json = _client.SerializerOptions;
         RawResourceReader raw = async ct => JsonSerializer.Serialize(await reader(ct).ConfigureAwait(false), json);
-        return RegisterResourceRaw(name, description, raw, mimeType, realtime, annotations);
+        return RegisterResourceRaw(name, description, raw, mimeType, realtime, annotations, cache);
     }
 
     private unsafe ResourceRegistration RegisterResourceRaw(
-        string name, string description, RawResourceReader raw, string? mimeType, bool realtime, ContentAnnotations? annotations)
+        string name, string description, RawResourceReader raw, string? mimeType, bool realtime, ContentAnnotations? annotations,
+        CachePolicy? cache)
     {
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(description);
@@ -196,6 +211,8 @@ public sealed class ToolScope : IDisposable
             StructSize = (uint)sizeof(AmResourceOptions),
             Realtime = realtime ? (byte)1 : (byte)0,
             AnnotationsJson = strings.Add(AnnotationsJson.Serialize(annotations)),
+            CacheTtlMs = CacheTtlMs(cache),
+            CacheScope = (int)(cache?.Scope ?? AppMcp.CacheScope.Private),
         };
         var status = NativeMethods.am_resource_register_ex(
             _handle, &spec, &resourceOptions, Callbacks.ReadPtr, Callbacks.Alloc(invoker), Callbacks.FreeGCHandlePtr, out var resource);

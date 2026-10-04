@@ -373,6 +373,8 @@ fn resource_options_are_read_up_to_struct_size() {
         struct_size: std::mem::size_of::<AmResourceOptions>() as u32,
         realtime: true,
         annotations_json: ann.as_ptr(),
+        cache_ttl_ms: 0,
+        cache_scope: 0,
     };
     let want = ContentAnnotations { audience: Some(vec![app_mcp_native::Audience::User]), priority: Some(0.5), last_modified: None };
     assert_eq!(
@@ -419,6 +421,8 @@ fn tool_options_are_read_up_to_struct_size() {
         exclusive: group.as_ptr(),
         implements: verbs.as_ptr(),
         implements_len: 1,
+        cache_ttl_ms: 0,
+        cache_scope: 0,
     };
     let options = unsafe { read_tool_options(&full) }.ok();
     assert_eq!(
@@ -704,6 +708,8 @@ fn tool_options_and_call_result_reach_host() {
         exclusive: ptr::null(),
         implements: verbs.as_ptr(),
         implements_len: verbs.len(),
+        cache_ttl_ms: 0,
+        cache_scope: 0,
     };
     let mut tool: *mut AmTool = ptr::null_mut();
     assert_eq!(

@@ -87,6 +87,7 @@ impl Session {
                 mime_type,
                 realtime,
                 annotations,
+                cache,
             } => {
                 let mut st = self.live()?;
                 let registrar = self.registrar(&st, scope_id)?;
@@ -105,7 +106,7 @@ impl Session {
                 let options = ResourceOptions {
                     realtime,
                     annotations,
-                    cache: None,
+                    cache,
                 };
                 let handle = match registrar {
                     Some(scope) => scope.register_resource_with(spec, options, reader)?,

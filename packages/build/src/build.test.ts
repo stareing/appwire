@@ -289,6 +289,42 @@ describe('generateManifest', () => {
     expect(errorsOf('message.send@1')).toEqual([expect.stringContaining('implements 必须是字符串数组')])
   })
 
+  it('结果缓存声明 cache：工具与资源写入清单；格式与 crates/manifest 一致报错，写工具上的声明只警告（spec/protocol.md 3.6）', () => {
+    const manifest = generateManifest(
+      { appId: 'feed', name: '订阅', resources: [{ name: 'feed', description: '订阅', cache: { ttlMs: 30000, scope: 'shared' } }] },
+      [
+        { name: 'list', description: '列表', risk: 'read', cache: { ttlMs: 5000 } },
+        { name: 'plain', description: 'd', risk: 'read' },
+      ],
+    )
+    expect(manifest.tools?.[0]?.cache).toEqual({ ttlMs: 5000 })
+    expect(manifest.tools?.[1]).not.toHaveProperty('cache')
+    expect(manifest.resources?.[0]?.cache).toEqual({ ttlMs: 30000, scope: 'shared' })
+    expect(validateManifest(manifest)).toEqual({ errors: [], warnings: [] })
+
+    const check = (cache: unknown, extra: Record<string, unknown> = { risk: 'read' }) =>
+      validateManifest({
+        manifestVersion: 1, appId: 'feed', name: 'f',
+        tools: [{ name: 't', description: 'd', inputSchema: { type: 'object' }, cache, ...extra }],
+      } as unknown as AppMcpManifest)
+    expect(check({ ttlMs: 1 }).errors).toEqual([])
+    expect(check({ ttlMs: 86_400_000, scope: 'shared' }).errors).toEqual([])
+    expect(check({ ttlMs: 1, scope: 'private' }).errors).toEqual([])
+    for (const bad of [0, 86_400_001, 1.5, -1, '5', undefined]) {
+      expect(check({ ttlMs: bad }).errors).toEqual([expect.stringContaining('cache.ttlMs 须为 1..=86400000 之间的整数')])
+    }
+    expect(check({ ttlMs: 1, scope: 'public' }).errors).toEqual([expect.stringContaining('cache.scope "public" 不合法')])
+    expect(check(5000).errors).toEqual([expect.stringContaining('cache 必须是对象')])
+    // 生效注解：声明的 readOnlyHint 优先，否则 risk 为 read 时只读
+    expect(check({ ttlMs: 1 }, {}).warnings).toEqual([expect.stringContaining('cache 只对只读工具')])
+    expect(check({ ttlMs: 1 }, { risk: 'read', annotations: { readOnlyHint: false } }).warnings).toHaveLength(1)
+    expect(check({ ttlMs: 1 }, { risk: 'write', annotations: { readOnlyHint: true } }).warnings).toEqual([])
+    const resourceErrors = validateManifest({
+      manifestVersion: 1, appId: 'feed', name: 'f', resources: [{ name: 'r', description: 'd', cache: { ttlMs: 0 } }],
+    } as unknown as AppMcpManifest).errors
+    expect(resourceErrors).toEqual([expect.stringContaining('resources[0]（r） cache.ttlMs')])
+  })
+
   it('toInputSchema 拒绝非对象输入', () => {
     expect(() => toInputSchema('x')).toThrow(/input 必须是/)
   })

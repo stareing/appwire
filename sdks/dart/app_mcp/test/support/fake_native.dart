@@ -286,6 +286,12 @@ final class FakeNative {
   /// v21：`a,b`（未声明为 `-`）；工具未注册过时为 null（fake_intents.c）。
   String? toolImplements(String name) => _take(using((a) => _toolImplements(name.toNativeUtf8(allocator: a))));
 
+  late final _cacheOf = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
+      Pointer<Utf8> Function(Pointer<Utf8>)>('fake_cache_of');
+
+  /// v22：`<ttlMs>|<scope：0 private / 1 shared>`（未声明为 `-`）；[key] 为 `tool:<名>` / `resource:<名>`，未注册过时为 null（fake_cache.c）。
+  String? cacheOf(String key) => _take(using((a) => _cacheOf(key.toNativeUtf8(allocator: a))));
+
   String? toolDescription(String name) {
     final p = using((a) => _toolDescription(name.toNativeUtf8(allocator: a)));
     if (p == nullptr) return null;

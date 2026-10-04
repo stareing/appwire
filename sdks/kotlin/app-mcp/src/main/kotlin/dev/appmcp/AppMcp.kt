@@ -95,77 +95,6 @@ class ToolContext internal constructor(
     }
 }
 
-/** 已注册的工具。 */
-class ToolHandle internal constructor(private val inner: FfiTool, @Volatile private var spec: ToolSpec) {
-    val name: String get() = inner.name()
-
-    fun setEnabled(enabled: Boolean) {
-        synchronized(this) {
-            inner.setEnabled(enabled)
-            // @why update() 整体替换定义，须记住当前启用状态，否则之后的 update 会把它改回去（view 工具随可见性切换）
-            spec = spec.copy(enabled = enabled)
-        }
-    }
-
-    /**
-     * 修改定义；为空的参数保持不变（无法清除声明——清除用 `update { annotations = null }`）。
-     */
-    fun update(
-        description: String? = null,
-        inputSchema: JsonObject? = null,
-        risk: Risk? = null,
-        title: String? = null,
-        annotations: ToolAnnotations? = null,
-        outputSchema: JsonObject? = null,
-        surface: ToolSurface? = null,
-        page: String? = null,
-        backgroundTool: String? = null,
-        concurrency: Int? = null,
-        exclusive: String? = null,
-        implements: List<String>? = null,
-    ) = update {
-        description?.let { this.description = it }
-        inputSchema?.let { this.inputSchema = it }
-        risk?.let { this.risk = it }
-        title?.let { this.title = it }
-        annotations?.let { this.annotations = it }
-        outputSchema?.let { this.outputSchema = it }
-        surface?.let { this.surface = it }
-        page?.let { this.page = it }
-        backgroundTool?.let { this.backgroundTool = it }
-        concurrency?.let { this.concurrency = it }
-        exclusive?.let { this.exclusive = it }
-        implements?.let { this.implements = it }
-    }
-
-    /**
-     * 按补丁修改定义：赋值过的字段替换，**赋值 null 清除该声明**，未赋值的保持不变（与网页 / Rust SDK 一致）。
-     *
-     * ```kotlin
-     * handle.update { description = "新描述"; annotations = null; outputSchema = null }
-     * ```
-     */
-    fun update(change: ToolUpdate.() -> Unit) {
-        synchronized(this) {
-            val next = ToolUpdate().apply(change).applyTo(spec)
-            inner.update(next)
-            spec = next
-        }
-    }
-
-    /** 注销工具（幂等）。 */
-    fun dispose() = inner.dispose()
-
-    internal fun specForTest(): ToolSpec = spec
-}
-
-/** 已注册的资源。 */
-class ResourceHandle internal constructor(private val inner: FfiResource) {
-    val name: String get() = inner.name()
-    fun notifyChanged() = inner.notifyChanged()
-    fun dispose() = inner.dispose()
-}
-
 /** 工具 / 资源 / 子作用域的注册入口，[AppMcp] 与 [Scope] 共用。 */
 abstract class AppMcpRegistrar internal constructor() {
     internal abstract val owner: AppMcp
@@ -200,6 +129,8 @@ abstract class AppMcpRegistrar internal constructor() {
      *   [concurrency] 与本项只在 SDK 内生效，不发给 Host（spec/protocol.md 5.3）。
      * @param implements 实现的标准意图（spec/intents.md，每项 `"<动词>@<主版本>"`，如 `listOf("message.send@1")`）；
      *   Agent 经 `apps.intents` 按动词找到实现者。格式不合法时抛 `AppMcpException.InvalidName`。
+     * @param cache 结果缓存声明（spec/protocol.md 3.6）：`ttlMs` 内相同参数的调用 Hub 可直接返回上次结果、不调用 handler。
+     *   只对生效注解只读的工具生效；`scope` 缺省 `PRIVATE`（按调用方隔离）。`ttlMs` 越界时抛 `AppMcpException.InvalidConfig`。
      */
     fun tool(
         name: String,
@@ -217,6 +148,7 @@ abstract class AppMcpRegistrar internal constructor() {
         concurrency: Int = 0,
         exclusive: String? = null,
         implements: List<String> = emptyList(),
+        cache: CachePolicy? = null,
         handler: ToolFunction,
     ): ToolHandle {
         val spec = ToolSpec(
@@ -235,6 +167,7 @@ abstract class AppMcpRegistrar internal constructor() {
             concurrency = concurrency.coerceAtLeast(0).toUInt(),
             exclusive = exclusive,
             implements = implements,
+            cache = cache,
         )
         val o = owner
         val raw = registerRaw(spec, object : ToolHandler {
@@ -262,10 +195,11 @@ abstract class AppMcpRegistrar internal constructor() {
         concurrency: Int = 0,
         exclusive: String? = null,
         implements: List<String> = emptyList(),
+        cache: CachePolicy? = null,
         noinline handler: suspend (args: A, ctx: ToolContext) -> R,
     ): ToolHandle = typedToolImpl(
         name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool,
-        concurrency, exclusive, implements, serializer<A>(), serializer<R>(), handler,
+        concurrency, exclusive, implements, cache, serializer<A>(), serializer<R>(), handler,
     )
 
     @PublishedApi
@@ -285,12 +219,13 @@ abstract class AppMcpRegistrar internal constructor() {
         concurrency: Int,
         exclusive: String?,
         implements: List<String>,
+        cache: CachePolicy?,
         argSerializer: KSerializer<A>,
         resultSerializer: KSerializer<R>,
         handler: suspend (A, ToolContext) -> R,
     ): ToolHandle = tool(
         name, description, inputSchema, risk, activation, title, enabled, annotations, outputSchema, surface, page, backgroundTool,
-        concurrency, exclusive, implements,
+        concurrency, exclusive, implements, cache,
     ) { args, ctx ->
         val decoded = try {
             AppMcpJson.decodeFromJsonElement(argSerializer, args)
@@ -308,6 +243,7 @@ abstract class AppMcpRegistrar internal constructor() {
      * @param realtime 需实时推送（spec/lifecycle.md 第 13 节 B3）：被订阅时阻止休眠、休眠中变化时回连推送。
      *   默认 false：订阅不阻止休眠，变化在下次连接时补发。
      * @param annotations 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上。
+     * @param cache 读取结果缓存声明（spec/protocol.md 3.6），同 [tool]；`ttlMs` 越界时抛 `AppMcpException.InvalidConfig`。
      * @error [reader] 抛出 [ToolCallException]（含 [ToolCallException.userActionRequired]）时类别与详情原样交给 Host。
      */
     fun resource(
@@ -316,10 +252,11 @@ abstract class AppMcpRegistrar internal constructor() {
         mimeType: String? = null,
         realtime: Boolean = false,
         annotations: ContentAnnotations? = null,
+        cache: CachePolicy? = null,
         reader: ResourceFunction,
     ): ResourceHandle {
         val o = owner
-        val spec = ResourceSpec(name, description, mimeType, realtime, annotations)
+        val spec = ResourceSpec(name, description, mimeType, realtime, annotations, cache)
         val raw = registerRaw(spec, object : ResourceReader {
             override fun read(read: Read) = o.runRead(read, reader)
         })

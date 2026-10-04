@@ -436,3 +436,35 @@ fn save_roundtrip_skips_empty() {
     assert!(FileConfig::load(&dir.join("missing.json"), true).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn result_cache_settings_from_file_and_cli() {
+    let s = Settings::resolve(&FileConfig::default(), &Overrides::default(), &home()).unwrap();
+    assert_eq!(s.result_cache, app_mcp_hub::CacheLimits::default());
+    let file: FileConfig = serde_json::from_str(r#"{"resultCache":{"maxEntries":8,"maxBytes":4096}}"#).unwrap();
+    let s = Settings::resolve(&file, &Overrides::default(), &home()).unwrap();
+    assert_eq!((s.result_cache.max_entries, s.result_cache.max_bytes, s.result_cache.max_entry_bytes), (8, 4096, 4096));
+    // 命令行按字段覆盖
+    let o = Overrides {
+        result_cache: ResultCacheSection { max_entries: Some(0), ..Default::default() },
+        ..Default::default()
+    };
+    let s = Settings::resolve(&file, &o, &home()).unwrap();
+    assert_eq!((s.result_cache.max_entries, s.result_cache.max_bytes), (0, 4096));
+    // 非法值：启动失败并指出字段
+    let bad: FileConfig = serde_json::from_str(r#"{"resultCache":{"maxBytes":10,"maxEntryBytes":20}}"#).unwrap();
+    let e = Settings::resolve(&bad, &Overrides::default(), &home()).unwrap_err().to_string();
+    assert!(e.contains("配置无效") && e.contains("resultCache.maxEntryBytes"), "{e}");
+    assert!(serde_json::from_str::<FileConfig>(r#"{"resultCache":{"maxEntris":1}}"#).is_err(), "未知字段报错");
+    // service install：已有的 resultCache 在应用其他覆盖项后保留，命令行给出的字段写入
+    let mut f = file.clone();
+    f.apply(&Overrides {
+        lease_ms: Some(1),
+        result_cache: ResultCacheSection { max_entry_bytes: Some(100), ..Default::default() },
+        ..Default::default()
+    })
+    .unwrap();
+    let v = serde_json::to_value(&f).unwrap();
+    assert_eq!(v["resultCache"], serde_json::json!({"maxEntries": 8, "maxBytes": 4096, "maxEntryBytes": 100}));
+    assert!(serde_json::to_value(FileConfig::default()).unwrap().get("resultCache").is_none(), "缺省不写出");
+}

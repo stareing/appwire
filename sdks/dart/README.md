@@ -85,6 +85,22 @@ client.tool('compose.send',
 - `McpTool`、`useMcpTool`、`McpScope.tool`、`ToolSpec` 接受同样的 `implements`；`ToolHandle.update(implements: null)` 清除声明。
   需要 C ABI v21（`AmToolOptions.implements`）。
 
+## 结果缓存（spec/protocol.md 3.6）
+
+只读工具与资源可声明 Hub 在一段时间内复用结果（命中不唤醒 App）；缓存多久、能否跨调用方共用由 App 判断：
+
+```dart
+client.tool('stock.quote',
+    description: '查询报价',
+    risk: Risk.read, // 只对生效注解只读的工具生效
+    cache: const CachePolicy(60000, scope: CacheScope.shared), // 与调用方无关的数据才用 shared；缺省 private
+    handler: (args, ctx) => quote(args));
+client.resource('quotes', description: '全部报价', cache: const CachePolicy(30000), read: () => quotes);
+```
+
+- `ttlMs` 须在 1..=86400000 之间，否则抛 `AppMcpException`（`AppMcpErrorCode.invalidConfig`）；`ToolHandle.update(cache: null)` 清除。
+- `McpTool`、`McpResource`、`useMcpTool`、`ToolSpec` 接受同样的 `cache`。需要 C ABI v22（`cache_ttl_ms` / `cache_scope`）。
+
 ## 界面级暴露与导航（spec/protocol.md 3.4）
 
 ```dart

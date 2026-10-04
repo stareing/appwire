@@ -8,6 +8,8 @@ use super::*;
 use crate::callbacks::guarded;
 use crate::error::parse_error_kind;
 
+mod cache;
+
 #[test]
 fn error_kinds_roundtrip() {
     let kinds = error_kinds();
@@ -137,6 +139,7 @@ fn tool_spec_conversion() {
         concurrency: 0,
         exclusive: None,
         implements: Vec::new(),
+        cache: None,
     };
     let (n, options): (native::ToolSpec, native::ToolOptions) = spec.clone().into();
     assert_eq!(n.risk, native::Risk::Write);
@@ -237,7 +240,7 @@ fn lifecycle_conversion() {
         LifecyclePolicy { merge_window_ms: 500, sleep_on_background: true, ..p.clone() }.into();
     assert_eq!((n.merge_window_ms, n.sleep_on_background), (500, true));
     let (_, options): (native::ResourceSpec, native::ResourceOptions) =
-        ResourceSpec { name: "r".into(), description: "d".into(), mime_type: None, realtime: true, annotations: None }
+        ResourceSpec { name: "r".into(), description: "d".into(), mime_type: None, realtime: true, annotations: None, cache: None }
             .into();
     assert!(options.realtime);
     assert_eq!(options.annotations, None);
@@ -251,6 +254,7 @@ fn lifecycle_conversion() {
             priority: Some(0.2),
             last_modified: Some("2026-10-02T00:00:00Z".into()),
         }),
+        cache: None,
     }
     .into();
     let a = options.annotations.expect("annotations");
@@ -390,6 +394,7 @@ fn read_and_call_failures_reach_host() {
             concurrency: 0,
             exclusive: None,
             implements: Vec::new(),
+            cache: None,
         };
         keep.push(client.register_tool(spec, Arc::new(UserActionTool)).expect("tool"));
     }
@@ -401,6 +406,7 @@ fn read_and_call_failures_reach_host() {
             mime_type: None,
             realtime: false,
             annotations: Some(ContentAnnotations { priority: Some(1.0), ..ContentAnnotations::default() }),
+            cache: None,
         };
         res.push(client.register_resource(spec, Arc::new(FailingReader)).expect("resource"));
     }
@@ -459,6 +465,7 @@ fn idempotency_key_reaches_handler() {
         concurrency: 0,
         exclusive: None,
         implements: Vec::new(),
+        cache: None,
     };
     let _tool = client.register_tool(spec, Arc::new(KeyTool)).expect("tool");
     client.start();

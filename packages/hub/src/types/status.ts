@@ -2,6 +2,7 @@
 
 import type { LimitsConfig, OutputValidation, PolicyStatus, Risk, ToolAnnotations, Visibility } from '../types.js'
 import type { InstanceInfo } from './apps.js'
+import type { CacheStatus } from './cache.js'
 import type { EventsStatus } from './events.js'
 import type { IntentsStatus } from './intents.js'
 
@@ -150,6 +151,8 @@ export interface HubStatus {
   events?: EventsStatus
   /** 标准意图的机主默认表与最近的替换错误（spec/intents.md 第 4 节）；旧 Hub 不报告。 */
   intents?: IntentsStatus
+  /** 只读结果缓存的条目、字节与命中统计（第 16 项 O3，spec/hub-api.md 3.20）；旧 Hub 不报告。 */
+  cache?: CacheStatus
 }
 
 /**

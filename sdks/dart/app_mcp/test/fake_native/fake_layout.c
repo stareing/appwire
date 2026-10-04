@@ -38,6 +38,10 @@ size_t fake_sizeof(int which) {
     case 26: return offsetof(AmToolOptions, exclusive);
     case 27: return offsetof(AmToolOptions, implements);
     case 28: return offsetof(AmToolOptions, implements_len);
+    case 29: return offsetof(AmToolOptions, cache_ttl_ms);
+    case 30: return offsetof(AmToolOptions, cache_scope);
+    case 31: return offsetof(AmResourceOptions, cache_ttl_ms);
+    case 32: return offsetof(AmResourceOptions, cache_scope);
     default: return 0;
     }
 }

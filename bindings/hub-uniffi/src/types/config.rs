@@ -193,6 +193,10 @@ pub struct HubConfig {
     /// 不合法时 Hub 以空表启动、原因记入 `intents().last_error`（不使 `start` 失败）；运行中用 `AppMcpHub::set_intent_defaults` 替换。
     #[uniffi(default = None)]
     pub intent_defaults: Option<HashMap<String, String>>,
+    // ---- 只读结果缓存（spec/hub-api.md 3.20）----
+    /// 条目数与字节上限（默认见 [`super::CacheLimitOverrides`]）；`max_entries: 0` 关闭缓存。
+    #[uniffi(default = None)]
+    pub result_cache: Option<super::CacheLimitOverrides>,
 }
 
 impl Default for HubConfig {
@@ -248,6 +252,7 @@ impl Default for HubConfig {
             max_locks: None,
             event_limits: None,
             intent_defaults: None,
+            result_cache: None,
         }
     }
 }
@@ -515,6 +520,9 @@ impl HubConfig {
         }
         if let Some(o) = &self.event_limits {
             o.apply(&mut c.event_limits);
+        }
+        if let Some(o) = &self.result_cache {
+            o.apply(&mut c.result_cache);
         }
         if let Some(defaults) = self.intent_defaults {
             c.intent_defaults = defaults.into_iter().collect();

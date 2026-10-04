@@ -3,12 +3,12 @@
  */
 
 import type {
-  Call, CallResultInit, ContentAnnotationsInit, Hold, LifecycleInit, Navigate, Read, Resource, ResourceSpecInit,
+  CachePolicyInit, Call, CallResultInit, ContentAnnotationsInit, Hold, LifecycleInit, Navigate, Read, Resource, ResourceSpecInit,
   Scope as NativeScope, Tool, ToolAnnotationsInit, ToolSpecInit,
 } from 'libapp_mcp_harmony.so';
 import { Failure, ToolCallError, toFailure } from './Errors';
 import {
-  BusyHandle, CancelReason, ContentAnnotations, HoldHandle, LifecycleOptions, Logger, ToolAnnotations, ToolContext, ToolResult,
+  BusyHandle, CachePolicy, CancelReason, ContentAnnotations, HoldHandle, LifecycleOptions, Logger, ToolAnnotations, ToolContext, ToolResult,
 } from './Types';
 
 /** 原生注册入口（客户端或 scope）。 */
@@ -178,6 +178,13 @@ export function toolAnnotationsInit(a: ToolAnnotations): ToolAnnotationsInit {
   init.destructiveHint = a.destructiveHint;
   init.idempotentHint = a.idempotentHint;
   init.openWorldHint = a.openWorldHint;
+  return init;
+}
+
+/** 结果缓存声明 → 原生 `CachePolicyInit`（复制，注册后修改原对象不影响已登记的声明）。 */
+export function cachePolicyInit(c: CachePolicy): CachePolicyInit {
+  const init: CachePolicyInit = { ttlMs: c.ttlMs };
+  init.scope = c.scope;
   return init;
 }
 

@@ -35,7 +35,7 @@ class ConformanceTest {
         val FEATURES = setOf(
             "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
             "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-            "callScheduling", "busy", "events", "implements",
+            "callScheduling", "busy", "events", "implements", "cache",
         )
         val VERDICT_OK = setOf("pass", "xfail", "xpass", "skip")
         val repoRoot: File = FakeHostSupport.repoRoot.canonicalFile
@@ -171,6 +171,7 @@ class ConformanceTest {
             "concurrency" -> u.concurrency = str?.toIntOrNull() ?: 0
             "exclusive" -> u.exclusive = str
             "implements" -> u.implements = strings(v) // 封装层空列表 = 清除
+            "cache" -> u.cache = (v as? JsonObject)?.let(::cachePolicy) // null = 清除
             else -> error("未知的工具字段 $key")
         }
     }
@@ -225,6 +226,7 @@ class ConformanceTest {
             concurrency = decl.long("concurrency")?.toInt() ?: 0,
             exclusive = decl.str("exclusive"),
             implements = strings(decl["implements"]),
+            cache = decl.obj("cache")?.let(::cachePolicy),
         ) { args, ctx -> runHandler(client, tools, handler, runs.incrementAndGet(), args, ctx) }
     }
 
@@ -274,6 +276,7 @@ class ConformanceTest {
             mimeType = decl.str("mimeType"),
             realtime = decl.bool("realtime") ?: false,
             annotations = decl.obj("annotations")?.let(::contentAnnotations),
+            cache = decl.obj("cache")?.let(::cachePolicy),
         ) {
             if ("return" in read) return@resource read["return"]
             read.obj("fail")?.let {
@@ -299,6 +302,9 @@ class ConformanceTest {
         priority = a.double("priority"),
         lastModified = a.str("lastModified"),
     )
+
+    private fun cachePolicy(c: JsonObject) =
+        CachePolicy(ttlMs = c.long("ttlMs")!!.toULong(), scope = c.str("scope")?.let { CacheScope.valueOf(enumName(it)) })
 
     /** 协议取值（kebab-case）→ 生成的枚举名。 */
     private fun enumName(value: String) = value.uppercase().replace('-', '_')

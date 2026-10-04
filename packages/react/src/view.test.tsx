@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openViewLayers } from '@app-mcp/web'
-import { AppMcpProvider, ToolLayer, ToolScope, useNavigationHandler, useRouterNavigation, useTool } from './index'
+import { AppMcpProvider, ToolLayer, ToolScope, useNavigationHandler, useResource, useRouterNavigation, useTool } from './index'
 import { FakeAppMcp } from './testing/fake-app-mcp'
 
 afterEach(() => {
@@ -141,6 +141,40 @@ describe('useTool 的标准意图声明', () => {
     rerender(<T />)
     expect(app.getTool('t')?.implements).toBeUndefined()
     expect(app.count('tool.update', 't')).toBe(2)
+  })
+})
+
+describe('结果缓存声明 cache', () => {
+  it('useTool：随定义注册；内联对象内容不变不 update，变化 / 移除时 update', () => {
+    function T({ ttlMs, scope }: { ttlMs?: number; scope?: 'shared' }) {
+      useTool('t', { description: 't', risk: 'read', ...(ttlMs && { cache: { ttlMs, ...(scope && { scope }) } }), handler: () => null })
+      return null
+    }
+    const { app, rerender } = setup(<T ttlMs={5000} />)
+    expect(app.getTool('t')?.cache).toEqual({ ttlMs: 5000 })
+    rerender(<T ttlMs={5000} />)
+    expect(app.count('tool.update', 't')).toBe(0)
+    rerender(<T ttlMs={5000} scope="shared" />)
+    expect(app.getTool('t')?.cache).toEqual({ ttlMs: 5000, scope: 'shared' })
+    rerender(<T />)
+    expect(app.getTool('t')?.cache).toBeUndefined()
+    expect(app.count('tool.update', 't')).toBe(2)
+  })
+
+  it('useResource：随定义注册；值不变不重新注册，变化时重新注册', () => {
+    function R({ ttlMs, scope }: { ttlMs?: number; scope?: 'shared' }) {
+      useResource('r', { description: 'r', ...(ttlMs && { cache: { ttlMs, ...(scope && { scope }) } }), read: () => 1 })
+      return null
+    }
+    const { app, rerender } = setup(<R ttlMs={30000} />)
+    expect(app.getResource('r')?.cache).toEqual({ ttlMs: 30000 })
+    rerender(<R ttlMs={30000} />)
+    expect(app.count('resource.register', 'r')).toBe(1)
+    rerender(<R ttlMs={30000} scope="shared" />)
+    expect(app.getResource('r')?.cache).toEqual({ ttlMs: 30000, scope: 'shared' })
+    rerender(<R />)
+    expect(app.getResource('r')?.cache).toBeUndefined()
+    expect(app.count('resource.register', 'r')).toBe(3)
   })
 })
 

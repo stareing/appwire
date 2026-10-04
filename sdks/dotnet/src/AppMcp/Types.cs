@@ -348,7 +348,24 @@ public sealed class ToolOptions
     /// 为 null 或空时不声明。格式不合法时注册 / 更新抛出 <see cref="AppMcpStatus.InvalidName"/> 的 <see cref="AppMcpException"/>。
     /// Agent 用内置工具 <c>apps.intents</c> 按动词找到实现者。</summary>
     public IReadOnlyList<string>? Implements { get; init; }
+    /// <summary>结果缓存声明（spec/protocol.md 3.6）：Hub 在 TTL 内对相同参数的调用复用结果（命中不唤醒 App）。只对生效注解只读
+    /// （<c>ReadOnlyHint</c> 为 true，或未声明注解时 <see cref="ToolRisk.Read"/>）的工具生效，否则照常注册并记警告日志。
+    /// 为 null 时不声明（更新时清除）。</summary>
+    public CachePolicy? Cache { get; init; }
 }
+
+/// <summary>结果缓存的范围（spec/protocol.md 3.6）。</summary>
+public enum CacheScope
+{
+    /// <summary>按调用方隔离（缺省）。</summary>
+    Private = 0,
+    /// <summary>全体调用方共用：只用于与调用方无关的数据。</summary>
+    Shared = 1,
+}
+
+/// <summary>工具 / 资源的结果缓存声明（spec/protocol.md 3.6）。<paramref name="TtlMs"/> 须在 1..=86400000 之间，否则注册 / 更新抛出
+/// <see cref="AppMcpStatus.InvalidConfig"/> 的 <see cref="AppMcpException"/>。缓存多久、能否跨调用方共用由 App 判断，Hub 只执行。</summary>
+public sealed record CachePolicy(ulong TtlMs, CacheScope Scope = CacheScope.Private);
 
 /// <summary>工具对界面的依赖（spec/protocol.md 3.4）。</summary>
 public enum ToolSurface

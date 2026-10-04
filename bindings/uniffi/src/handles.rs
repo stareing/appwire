@@ -210,7 +210,7 @@ impl Tool {
     pub fn name(&self) -> String {
         self.inner.name()
     }
-    /// 用新定义整体替换（名称不可变，`spec.name` 被忽略）。`annotations` / `output_schema_json` 为空表示清除该声明。
+    /// 用新定义整体替换（名称不可变，`spec.name` 被忽略）。`annotations` / `output_schema_json` / `cache` 为空表示清除该声明。
     pub fn update(&self, spec: ToolSpec) -> Result<(), AppMcpError> {
         let (spec, options) = spec.into();
         Ok(self.inner.update_with(spec, options)?)

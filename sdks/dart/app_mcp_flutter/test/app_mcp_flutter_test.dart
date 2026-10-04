@@ -425,6 +425,47 @@ void main() {
     expect(toolImplements('link.open'), '-');
   }, skip: path == null);
 
+  testWidgets('McpTool / McpResource：cache 传入注册，变化时整体替换 / 重新注册（v22）', (tester) async {
+    final lib = DynamicLibrary.open(path!);
+    final cacheOf = lib.lookupFunction<Pointer<Utf8> Function(Pointer<Utf8>),
+        Pointer<Utf8> Function(Pointer<Utf8>)>('fake_cache_of');
+    final stringFree = lib.lookupFunction<Void Function(Pointer<Utf8>),
+        void Function(Pointer<Utf8>)>('am_string_free');
+    String? cache(String key) {
+      final p = using((a) => cacheOf(key.toNativeUtf8(allocator: a)));
+      if (p == nullptr) return null;
+      final s = p.toDartString();
+      stringFree(p);
+      return s;
+    }
+
+    final client = AppMcp(appId: 'quote', appName: '报价', libraryPath: path);
+    addTearDown(client.dispose);
+
+    Widget app(CachePolicy? policy) => AppMcpScope(
+          client: client,
+          trackLifecycle: false,
+          child: McpResource(
+            name: 'quotes',
+            description: '全部报价',
+            cache: policy,
+            read: () => const {'v': 1},
+            child: McpTool(
+                name: 'quote.get', description: '查询报价', risk: Risk.read, cache: policy, handler: (a, c) => null),
+          ),
+        );
+
+    await tester.pumpWidget(app(const CachePolicy(60000, scope: CacheScope.shared)));
+    expect(cache('tool:quote.get'), '60000|1');
+    expect(cache('resource:quotes'), '60000|1');
+    await tester.pumpWidget(app(const CachePolicy(1000)));
+    expect(cache('tool:quote.get'), '1000|0');
+    expect(cache('resource:quotes'), '1000|0');
+    await tester.pumpWidget(app(null));
+    expect(cache('tool:quote.get'), '-');
+    expect(cache('resource:quotes'), '-');
+  }, skip: path == null);
+
   testWidgets('view 工具（v14）：路由栈顶时启用，被新页面 / 对话框盖住时禁用；McpViewGate 显式门控；声明 surface / page', (tester) async {
     final lib = DynamicLibrary.open(path!);
     final enabled = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>('fake_tool_enabled');

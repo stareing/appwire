@@ -96,6 +96,8 @@ internal struct AmResourceOptions
     public uint StructSize;
     public byte Realtime; // C bool
     public nint AnnotationsJson; // v13：const char*，可为 0
+    public ulong CacheTtlMs;     // v22：读取结果缓存时长；0 = 未声明
+    public int CacheScope;       // v22：AmCacheScope（0 = PRIVATE，1 = SHARED）
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -124,6 +126,8 @@ internal struct AmToolOptions
     public nint Exclusive;        // v18：互斥组名；0 = 不互斥
     public nint Implements;       // v21：const char* const*，实现的标准意图；ImplementsLen 为 0 时可为 0
     public nuint ImplementsLen;
+    public ulong CacheTtlMs;      // v22：结果缓存时长；0 = 未声明（更新时清除）
+    public int CacheScope;        // v22：AmCacheScope（0 = PRIVATE，1 = SHARED）
 }
 
 /// <summary>v9：am_call_complete_ex 的调用结果。StructSize = sizeof(AmCallResult)。</summary>

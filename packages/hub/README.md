@@ -169,6 +169,11 @@ hub.setPolicy({ rules: [{ id: 'no-destructive', action: 'hide', app: '*', annota
 
 标准意图（spec/intents.md 第 4 节）：机主默认表经 `intentDefaults` 配置或 `hub.setIntentDefaults({ 'message.send': 'mail.compose.send' })` 设置（`{}` 清空；不合法时抛 `INVALID_INPUT`、旧表继续生效），`hub.intents()` / `status().intents` 查看；默认只是提示，内置工具 `apps.intents` 把它排在首位并标 `default: true`。`HubTool.implements` 为 App 声明的意图。
 
+只读结果缓存（spec/hub-api.md 3.20）：App 在只读工具 / 资源上声明 `cache: { ttlMs, scope? }` 时，Hub 在 TTL 内复用结果（命中不唤醒 App），
+`CallOutcome.cachedAgeMs` 为命中结果的年龄；`hub.callTool({ name, cacheBypass: true })` 不查缓存、照常调用并覆盖。上限经
+`resultCache: { maxEntries?, maxBytes?, maxEntryBytes? }` 配置（缺省 1024 条 / 8 MiB / 64 KiB，`maxEntries: 0` 关闭），
+`status().cache` 查看条目与命中统计。缓存多久、能否跨调用方共用（`shared` 只用于与调用方无关的数据）由 App 决定。
+
 **注解如实传递，不用于放行**：App 声明的标准 MCP 工具注解（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` / `title`）
 原样出现在 `HubTool.annotations`、`ApprovalRequest.annotations` 与 `exportTools('mcp')` 中（缺少的字段按 `risk` 推导）。
 `approval.requireAtOrAbove` 仍按 `risk` 决定是否询问；要按注解决定是否确认，在 `setApprovalHandler` 的回调里自行判断。

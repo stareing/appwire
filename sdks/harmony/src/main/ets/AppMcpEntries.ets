@@ -7,11 +7,11 @@ import type {
 } from 'libapp_mcp_harmony.so';
 import { Failure, ToolCallError, nativeErrorCode, toFailure } from './Errors';
 import {
-  Activation, CancelReason, Logger, Registrar, ResourceDefinition, ResourceHandle, Risk, Scope, ToolAnnotations,
+  Activation, CachePolicy, CancelReason, Logger, Registrar, ResourceDefinition, ResourceHandle, Risk, Scope, ToolAnnotations,
   ToolChanges, ToolDefinition, ToolHandle, ToolResult, ToolSurface,
 } from './Types';
 import {
-  CallContext, Child, NativeRegistrar, callResultInit, contentAnnotationsInit, errorText, hasResultExtras, patchField,
+  CallContext, Child, NativeRegistrar, cachePolicyInit, callResultInit, contentAnnotationsInit, errorText, hasResultExtras, patchField,
   stringifyJson, submitFailure, toolAnnotationsInit,
 } from './AppMcpSupport';
 
@@ -63,6 +63,9 @@ export class ToolEntry<I, O> implements ToolHandle, Child {
     if (d.implements !== undefined && d.implements.length > 0) {
       spec.implements = d.implements.slice();
     }
+    if (d.cache !== undefined) {
+      spec.cache = cachePolicyInit(d.cache);
+    }
     return spec;
   }
 
@@ -86,6 +89,7 @@ export class ToolEntry<I, O> implements ToolHandle, Child {
       concurrency: patchField<number>(changes.concurrency, d.concurrency),
       exclusive: patchField<string>(changes.exclusive, d.exclusive),
       implements: patchField<string[]>(changes.implements, d.implements),
+      cache: patchField<CachePolicy>(changes.cache, d.cache),
       handler: d.handler,
     };
     this.def = next;
@@ -229,6 +233,9 @@ export class ResourceEntry<T> implements ResourceHandle, Child {
     };
     if (definition.annotations !== undefined) {
       spec.annotations = contentAnnotationsInit(definition.annotations);
+    }
+    if (definition.cache !== undefined) {
+      spec.cache = cachePolicyInit(definition.cache);
     }
     this.native = registrar.registerResource(spec, (read: Read): void => this.onRead(read));
     if (owner !== null) {

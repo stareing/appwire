@@ -219,6 +219,7 @@ class RendererSession {
           ...(op.mimeType !== undefined && { mimeType: op.mimeType }),
           ...(op.realtime === true && { realtime: true }),
           ...(op.annotations !== undefined && { annotations: op.annotations }),
+          ...(op.cache !== undefined && { cache: op.cache }),
           read: () => this.forwardRead(op.id),
         })
         this.resources.set(op.id, handle)
@@ -385,6 +386,7 @@ function toolDefinition(spec: ToolSpecMessage) {
     concurrency: spec.concurrency,
     exclusive: spec.exclusive,
     implements: spec.implements,
+    cache: spec.cache,
   }
 }
 

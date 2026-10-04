@@ -177,6 +177,9 @@ pub struct FileConfig {
     /// "maxArgumentsBytes","maxResultBytes","maxResourceBytes"}`，缺省字段取默认值。
     #[serde(skip_serializing_if = "is_default")]
     pub limits: LimitOverrides,
+    /// 只读结果缓存的上限（spec/hub-api.md 3.20）：`{"maxEntries","maxBytes","maxEntryBytes"}`，缺省字段取默认值。
+    #[serde(skip_serializing_if = "is_default")]
+    pub result_cache: super::ResultCacheSection,
     #[serde(skip_serializing_if = "is_default")]
     pub log: LogSection,
 }

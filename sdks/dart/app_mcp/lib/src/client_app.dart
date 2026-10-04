@@ -426,6 +426,7 @@ final class AppMcp {
     int concurrency = 0,
     String? exclusive,
     List<String> implements = const [],
+    CachePolicy? cache,
     required ToolHandler handler,
   }) =>
       _root.tool(name,
@@ -443,6 +444,7 @@ final class AppMcp {
           concurrency: concurrency,
           exclusive: exclusive,
           implements: implements,
+          cache: cache,
           handler: handler);
 
   /// 在根作用域注册资源。见 [McpScope.resource]。
@@ -451,9 +453,15 @@ final class AppMcp {
           String? mimeType,
           bool realtime = false,
           ContentAnnotations? annotations,
+          CachePolicy? cache,
           required ResourceReader read}) =>
       _root.resource(name,
-          description: description, mimeType: mimeType, realtime: realtime, annotations: annotations, read: read);
+          description: description,
+          mimeType: mimeType,
+          realtime: realtime,
+          annotations: annotations,
+          cache: cache,
+          read: read);
 
   /// 在根作用域下创建子作用域。
   McpScope scope(String name) => _root.scope(name);

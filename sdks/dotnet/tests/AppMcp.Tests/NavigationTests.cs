@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using AppMcp.Internal;
 using AppMcp.Native;
@@ -11,11 +12,17 @@ namespace AppMcp.Tests;
 public class NavigationTests(ITestOutputHelper output)
 {
     [Fact]
-    public void ToolOptionsUseV21Layout()
+    public void ToolOptionsUseV22Layout()
     {
         // @why 回归：v13 的 AmToolOptions 没有 page / surface、v14 没有 background_tool、v17 没有 concurrency / exclusive、
-        //      v20 没有 implements，struct_size 按旧布局传入时库不读取这些字段。
-        Assert.Equal(IntPtr.Size == 8 ? 80 : 40, Unsafe.SizeOf<AmToolOptions>());
+        //      v20 没有 implements、v21 没有 cache_ttl_ms / cache_scope，struct_size 按旧布局传入时库不读取这些字段。
+        //      32 位平台上 uint64_t 的对齐随 ABI 而异，只核对 64 位布局。
+        if (IntPtr.Size == 8)
+        {
+            Assert.Equal(96, Unsafe.SizeOf<AmToolOptions>());
+            Assert.Equal(80, (int)Marshal.OffsetOf<AmToolOptions>(nameof(AmToolOptions.CacheTtlMs)));
+            Assert.Equal(88, (int)Marshal.OffsetOf<AmToolOptions>(nameof(AmToolOptions.CacheScope)));
+        }
         using var strings = new Utf8Strings();
         var o = ToolScope.BuildOptions(strings, new ToolOptions { Surface = ToolSurface.View, Page = "cart" });
         Assert.Equal((uint)Unsafe.SizeOf<AmToolOptions>(), o.StructSize);

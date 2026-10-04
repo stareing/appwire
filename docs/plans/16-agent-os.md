@@ -384,6 +384,15 @@ N6 对象锁随 P1 改为租约：持有任务过期即释放（健壮锁），�
       握手 sync 以"本实例回连前的声明"为首要基准（休眠快照在 `app/hello` 时已被取出，单靠注册表会把每次冷启动都判为变化）。
     - 未知 / 风险：冷启动后数据新旧只靠 TTL；`scope: shared` 的正确性依赖 App 判断；多实例声明不同的 App 握手时偏保守地清空。
 - **O4 schema 演进**：字段弃用标记、兼容规则与 Agent 侧缓存失效策略，写入 `spec/manifest.md`。
+  - **调研（2026-10-04）**：仓库无工具级版本 / 弃用机制；`toolsHash` 是 App 级、只用于 SDK↔Host 快速恢复，Agent 看不到；
+    MCP `Tool`（rmcp 3.5）无 version / deprecated 字段；Agent 只能靠 `list_changed`（5 s `ttlMs`）得知变化；JSON Schema `deprecated`
+    未被 codegen / 导出处理；休眠快照在 App 升级回连前仍是旧 schema。先例：intents「不兼容只能发新主版本」、总览内容 hash `version`、
+    `_meta` 旧前缀弃用期。
+  - **设计（2026-10-04 机主确认）**：工具级 `deprecated {message, replacement?, until?}` + 参数级 JSON Schema `deprecated`；破坏性变更
+    必须改名（旧工具标弃用指向新工具），兼容规则表一处定义（spec/manifest.md 第 6 节，实现 `crates/protocol/src/schema_compat.rs`），
+    `app-mcp-host validate --against <旧清单>` 检查，Hub 运行时只告警（doctor）不拦截；每工具 `schemaHash`（apps.tools / apps.search /
+    MCP `_meta`）+ 参数不符时错误附 schemaHash 与重新获取提示。契约：spec/protocol.md 3.7、spec/manifest.md 第 6 节、spec/hub-api.md 3.21。
+    休眠快照过期：接受（App 回连后以新定义为准；Hub 按旧快照校验参数失败时的错误提示即为补救）。
 - ~~O5 冷启动预算与预测预热~~：**已删除（2026-10-02，机主同意，见 `TASKS.md` 4f）**——预测预热属于策略（`CLAUDE.md`「微内核范围」）；改为 Agent 显式调用的内置工具 `apps.activate(appId)`（只唤醒不调用）/ `apps.release(appId)`（收回本会话在该 App 的租约），由 4f 实施。
 
 ### 第五部分：依赖外部规范 / 远程（最后）

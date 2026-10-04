@@ -57,6 +57,7 @@ FEATURES = frozenset(
         "busy",
         "events",
         "implements",
+        "cache",
     }
 )
 ROOT = Path(__file__).resolve().parents[3]
@@ -70,6 +71,7 @@ _TOOL_ANNOTATION_KEYS = {
     "idempotentHint": "idempotent_hint",
     "openWorldHint": "open_world_hint",
 }
+_CACHE_KEYS = {"ttlMs": "ttl_ms", "scope": "scope"}
 _CONTENT_ANNOTATION_KEYS = {"audience": "audience", "priority": "priority", "lastModified": "last_modified"}
 VERDICT_OK = frozenset({"pass", "xfail", "xpass", "skip"})
 
@@ -124,6 +126,7 @@ class CaseApp:
             concurrency=decl.get("concurrency", 0),
             exclusive=decl.get("exclusive"),
             implements=decl.get("implements", ()),
+            cache=_rename(decl.get("cache"), _CACHE_KEYS),
         )
         with self._lock:
             self.tools[decl["name"]] = handle
@@ -149,6 +152,7 @@ class CaseApp:
             mime_type=decl.get("mimeType"),
             realtime=decl.get("realtime", False),
             annotations=_rename(decl.get("annotations"), _CONTENT_ANNOTATION_KEYS),
+            cache=_rename(decl.get("cache"), _CACHE_KEYS),
         )
 
     def declare_event(self, decl: dict[str, Any]) -> None:
@@ -202,6 +206,8 @@ class CaseApp:
                 changes["implements"] = op["set"]["implements"] or []
             if "annotations" in op["set"]:
                 changes["annotations"] = _rename(op["set"]["annotations"], _TOOL_ANNOTATION_KEYS)
+            if "cache" in op["set"]:
+                changes["cache"] = _rename(op["set"]["cache"], _CACHE_KEYS)
             handle.update(**changes)
         elif kind == "remove":
             handle.dispose()

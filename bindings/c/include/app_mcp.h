@@ -81,7 +81,7 @@
  *   旧调用方不受影响）：App 在系统名字服务登记名字，Hub 按名拨号时接受通道（握手方向不变：SDK 先发 app/hello，
  *   wakeReason 为 "os-activation"）；通道关闭后 on-demand / idle 回到 DORMANT、不重连。由 D-Bus 激活启动的进程
  *   （命令行带 --app-mcp-activation）按"由唤醒冷启动"处理（AM_RESIDENCY_EXIT_WHEN_IDLE 生效）。
- *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v21 仍为 3。）
+ *   （AM_API_VERSION 只在不兼容的布局 / 签名变化时递增，v4–v22 仍为 3。）
  * - v18（第 4f 项 k / 第 16 项 N6，spec/protocol.md 5.3）：只在结构体末尾追加字段（按 struct_size 读取，旧调用方不受影响）。
  *   · AmToolOptions 末尾追加 concurrency（本工具同时执行的调用上限，0 = 不单独限制）与 exclusive（互斥组名，同组工具
  *     同一时刻至多一个在执行；NULL = 不互斥）。只在 SDK 内调度，不同步给 Host。
@@ -93,6 +93,10 @@
  *   am_client_emit_event；结构体与枚举不变。
  * - v21（第 16 项 N4，spec/intents.md）：只在 AmToolOptions 末尾追加 implements 与 implements_len（实现的标准意图，
  *   字符串数组，写法同 AmCallResult.state_hints），按 struct_size 读取；旧调用方视为未声明。
+ * - v22（第 16 项 O3，spec/protocol.md 3.6）：只在结构体末尾追加字段（按 struct_size 读取，旧调用方视为未声明），
+ *   新增枚举 AmCacheScope。
+ *   · AmToolOptions、AmResourceOptions 末尾追加 cache_ttl_ms（结果缓存时长，0 = 未声明）与 cache_scope（AmCacheScope）。
+ *     ttl 超过 86400000 时注册 / 更新返回 AM_ERR_INVALID_CONFIG；cache_scope 取值无效返回 AM_ERR_INVALID_ARGUMENT。
  * - 第 16 项 N6（spec/hub-api.md 3.6「对象锁」）：am_call_fail 认可的错误类别新增 "LOCKED"（-31003，由 Host 的对象锁产生，
  *   App 一般不用）；函数与结构体不变。
  *
@@ -158,6 +162,12 @@ typedef enum AmVisibility { AM_VISIBLE = 0, AM_HIDDEN = 1, AM_FROZEN = 2 } AmVis
 
 /* v14：工具对界面的依赖（spec/protocol.md 3.4）。 */
 typedef enum AmToolSurface { AM_SURFACE_APP = 0, AM_SURFACE_VIEW = 1 } AmToolSurface;
+
+/* v22：结果缓存的范围（spec/protocol.md 3.6；AmToolOptions / AmResourceOptions 的 cache_scope）。 */
+typedef enum AmCacheScope {
+    AM_CACHE_PRIVATE = 0,          /* 按调用方隔离（缺省） */
+    AM_CACHE_SHARED = 1            /* 全体调用方共用：只用于与调用方无关的数据 */
+} AmCacheScope;
 
 typedef enum AmCancelReason {
     AM_CANCEL_REQUESTED = 0,
@@ -392,6 +402,12 @@ typedef struct AmToolOptions {
      * 旧调用方的 struct_size 不含 implements_len 时按未声明处理；更新时空表示清除。 */
     const char *const *implements;
     size_t implements_len;
+    /* v22（spec/protocol.md 3.6）：结果缓存声明——Hub 在 cache_ttl_ms 内对相同参数的调用复用结果（命中不唤醒 App）。
+     * 只对生效注解只读（readOnlyHint 为 true，或未声明注解时 risk 为 READ）的工具生效，否则照常注册并记一条警告日志（AM_LOG_WARN）。
+     * cache_ttl_ms：0 = 未声明（更新时表示清除），1..=86400000，超出时注册 / 更新返回 AM_ERR_INVALID_CONFIG。
+     * cache_scope：AmCacheScope（cache_ttl_ms 为 0 时忽略，但取值仍须有效）。旧调用方的 struct_size 不含 cache_scope 时按未声明处理。 */
+    uint64_t cache_ttl_ms;
+    int cache_scope;
 } AmToolOptions;
 
 typedef struct AmResourceSpec {
@@ -409,6 +425,10 @@ typedef struct AmResourceOptions {
      * 字段均可选：{"audience": ["user" | "assistant", ...], "priority": 0..1, "lastModified": "<ISO 8601>"}；
      * Hub 放到 MCP resources/list 的资源注解上。非法时 am_resource_register_ex 返回 AM_ERR_INVALID_JSON。 */
     const char *annotations_json;
+    /* v22（spec/protocol.md 3.6）：读取结果缓存声明，含义与取值同 AmToolOptions.cache_ttl_ms / cache_scope（0 = 未声明）；
+     * 旧调用方的 struct_size 不含 cache_scope 时按未声明处理。 */
+    uint64_t cache_ttl_ms;
+    int cache_scope;
 } AmResourceOptions;
 
 /* v9：am_call_complete_ex 的调用结果。struct_size 必须设为 sizeof(AmCallResult)；struct_size 不含的字段取默认值

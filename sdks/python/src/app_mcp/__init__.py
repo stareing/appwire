@@ -39,6 +39,8 @@ if TYPE_CHECKING:  # pragma: no cover
     CancelReason = ffi.CancelReason
     Risk = ffi.Risk
     ToolAnnotations = ffi.ToolAnnotations
+    CachePolicy = ffi.CachePolicy
+    CacheScope = ffi.CacheScope
     ContentAnnotations = ffi.ContentAnnotations
     ResultStatus = ffi.ResultStatus
     Audience = ffi.Audience
@@ -79,6 +81,8 @@ _LAZY: dict[str, tuple[str, str]] = {
             "CancelReason",
             "Risk",
             "ToolAnnotations",
+            "CachePolicy",
+            "CacheScope",
             "ContentAnnotations",
             "ResultStatus",
             "Audience",
@@ -119,6 +123,8 @@ __all__ = [
     "AppOverview",
     "Audience",
     "BusyPolicy",
+    "CachePolicy",
+    "CacheScope",
     "CallDedup",
     "CancelReason",
     "ContentAnnotations",

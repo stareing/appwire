@@ -25,6 +25,7 @@ SurfaceLike = Union[str, ffi.ToolSurface]
 ToolAnnotationsLike = Union[ffi.ToolAnnotations, Mapping[str, Any]]
 ContentAnnotationsLike = Union[ffi.ContentAnnotations, Mapping[str, Any]]
 ResultStatusLike = Union[str, ffi.ResultStatus]
+CacheLike = Union[ffi.CachePolicy, Mapping[str, Any], int]
 
 
 class _Unset(enum.Enum):
@@ -185,6 +186,31 @@ def _implements(value: Iterable[str]) -> list[str]:
     if isinstance(value, str):
         return [value]
     return list(value)
+
+
+_CACHE_SCOPES = {"private": ffi.CacheScope.PRIVATE, "shared": ffi.CacheScope.SHARED}
+
+
+def _cache(value: CacheLike | None) -> ffi.CachePolicy | None:
+    """结果缓存声明（spec/protocol.md 3.6）：``int`` 为 ``ttl_ms``（``private``）；``dict`` 键为 ``ttl_ms``、``scope``
+    （``"private"`` / ``"shared"``）。只做形状转换，``ttl_ms`` 越界由原生层在注册 / 更新时拒绝（``AppMcpError.InvalidConfig``）。
+
+    @error 未知键、缺少 ``ttl_ms``、``ttl_ms`` 不是非负整数 → ``ValueError``；未知 ``scope`` → ``ValueError``。
+    """
+    if value is None or isinstance(value, ffi.CachePolicy):
+        return value
+    if isinstance(value, bool):
+        raise ValueError(f"cache 不能是布尔值：{value!r}")
+    if isinstance(value, int):
+        value = {"ttl_ms": value}
+    unknown = set(value) - {"ttl_ms", "scope"}
+    if unknown:
+        raise ValueError(f"未知的 cache 字段：{sorted(unknown)}（可选 ttl_ms、scope）")
+    ttl = value.get("ttl_ms")
+    if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 0:
+        raise ValueError(f"cache.ttl_ms 须为非负整数：{ttl!r}")
+    scope = value.get("scope")
+    return ffi.CachePolicy(ttl_ms=ttl, scope=None if scope is None else _enum_arg(scope, _CACHE_SCOPES, " cache scope"))
 
 
 def _surface(value: SurfaceLike | None) -> ffi.ToolSurface | None:

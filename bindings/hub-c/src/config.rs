@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use hub::{
-    AgentCredential, AgentsConfig, ApprovalPolicy, EventLimits, HubConfig, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PolicyConfig, ToolExposure,
+    AgentCredential, AgentsConfig, ApprovalPolicy, CacheLimits, EventLimits, HubConfig, LeaseOverrides, LimitOverrides, McpProtocolMode, OutputValidation, PolicyConfig, ToolExposure,
     UpstreamConfig, WakerConfig, load_manifests,
 };
 use serde::Deserialize;
@@ -92,6 +92,8 @@ pub(crate) struct ConfigJson {
     pub agents: Option<Vec<AgentCredential>>,
     /// v22：事件信箱上限（spec/hub-api.md 3.17）：`{"maxSubscriptions","maxInboxEvents","inboxTtlMs","perSubscriptionPerMinute"}`。
     pub event_limits: Option<EventLimitOverrides>,
+    /// v24：只读结果缓存上限（spec/hub-api.md 3.20）：`{"maxEntries","maxBytes","maxEntryBytes"}`；`maxEntries: 0` 关闭缓存。
+    pub result_cache: Option<CacheLimitOverrides>,
     pub upstreams: BTreeMap<String, UpstreamConfig>,
     pub approval: ApprovalPolicy,
     pub worker_threads: Option<usize>,
@@ -144,9 +146,36 @@ impl Default for ConfigJson {
             max_locks: None,
             agents: None,
             event_limits: None,
+            result_cache: None,
             upstreams: BTreeMap::new(),
             approval: ApprovalPolicy::default(),
             worker_threads: None,
+        }
+    }
+}
+
+/// 结果缓存上限（[`CacheLimits`]）的可选覆盖；缺省字段沿用默认值（1024 条 / 8 MiB / 64 KiB）。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CacheLimitOverrides {
+    /// 条目数上限；`0` = 关闭缓存。
+    pub max_entries: Option<usize>,
+    /// 全部条目的字节数上限（键 + 序列化后的结果）。
+    pub max_bytes: Option<usize>,
+    /// 单个条目的字节数上限；超出的结果不存。
+    pub max_entry_bytes: Option<usize>,
+}
+
+impl CacheLimitOverrides {
+    fn apply(&self, target: &mut CacheLimits) {
+        if let Some(v) = self.max_entries {
+            target.max_entries = v;
+        }
+        if let Some(v) = self.max_bytes {
+            target.max_bytes = v;
+        }
+        if let Some(v) = self.max_entry_bytes {
+            target.max_entry_bytes = v;
         }
     }
 }
@@ -318,6 +347,9 @@ pub(crate) fn parse(text: Option<&str>) -> FfiResult<ParsedConfig> {
     }
     if let Some(o) = &c.event_limits {
         o.apply(&mut hub.event_limits);
+    }
+    if let Some(o) = &c.result_cache {
+        o.apply(&mut hub.result_cache);
     }
 
     // 目录与文件：失败的清单由 Hub 记录日志后跳过（与 app-mcp-host 一致）。
@@ -555,6 +587,23 @@ mod tests {
             EventLimits { max_subscriptions: 2, max_inbox_events: 3, inbox_ttl: Duration::ZERO, per_subscription_per_minute: 0 }
         );
         for bad in [r#"{"eventLimits": {"bogus": 1}}"#, r#"{"eventLimits": {"maxSubscriptions": -1}}"#, r#"{"eventLimits": {"inboxTtlMs": "1h"}}"#] {
+            let e = parse(Some(bad)).err().map(|e| e.status);
+            assert_eq!(e, Some(AmHubStatus::InvalidJson), "{bad}");
+        }
+    }
+
+    #[test]
+    fn result_cache_field() {
+        let p = parse(None).map_err(|e| e.message).expect("默认");
+        assert_eq!(p.hub.result_cache, CacheLimits::default());
+        let p = parse(Some(r#"{"resultCache": {"maxEntries": 0}}"#)).map_err(|e| e.message).expect("解析");
+        assert_eq!(p.hub.result_cache, CacheLimits { max_entries: 0, ..CacheLimits::default() }, "只覆盖给出的字段");
+        assert!(!p.hub.result_cache.enabled());
+        let p = parse(Some(r#"{"resultCache": {"maxEntries": 8, "maxBytes": 4096, "maxEntryBytes": 512}}"#))
+            .map_err(|e| e.message)
+            .expect("解析");
+        assert_eq!(p.hub.result_cache, CacheLimits { max_entries: 8, max_bytes: 4096, max_entry_bytes: 512 });
+        for bad in [r#"{"resultCache": {"bogus": 1}}"#, r#"{"resultCache": {"maxEntries": -1}}"#, r#"{"resultCache": 5}"#] {
             let e = parse(Some(bad)).err().map(|e| e.status);
             assert_eq!(e, Some(AmHubStatus::InvalidJson), "{bad}");
         }

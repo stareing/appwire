@@ -70,7 +70,7 @@ App 固定为 `appId: "conf"`、`appName: "Conformance"`；runner 连接 fake_ho
 ### 2.1 工具声明
 
 `name`、`description`（必填）；`inputSchema`、`risk`、`activation`、`title`、`annotations`、`outputSchema`、`surface`、`page`、
-`backgroundTool`、`implements`（需能力 `implements`）、`enabled`（缺省 true）按协议同名字段原样传给 SDK 的注册 API；`concurrency`、`exclusive`（SDK 内的调用调度，
+`backgroundTool`、`implements`（需能力 `implements`）、`cache`（`{ttlMs, scope?}`，需能力 `cache`）、`enabled`（缺省 true）按协议同名字段原样传给 SDK 的注册 API；`concurrency`、`exclusive`（SDK 内的调用调度，
 spec/protocol.md 5.3，需能力 `callScheduling`）同样传给注册 API。未给出的字段不传（SDK 用自己的缺省值）。`handler` 描述 handler 的行为：
 
 | 键 | 含义 |
@@ -94,7 +94,7 @@ spec/protocol.md 5.3，需能力 `callScheduling`）同样传给注册 API。未
 
 ### 2.2 资源声明
 
-`name`、`description`、`mimeType?`、`annotations?`、`realtime?`；`read` 描述读取：`{return: <JSON>}`、
+`name`、`description`、`mimeType?`、`annotations?`、`realtime?`、`cache?`（`{ttlMs, scope?}`，需能力 `cache`）；`read` 描述读取：`{return: <JSON>}`、
 `{fail: {message, kind?, details?}}`（带结构化详情失败，`kind` 缺省 `HANDLER_ERROR`；`details` 为对象时合并进错误 `data`）、
 `{userAction: {message, reason?, uri?}}`、`{throw: "消息"}`。
 
@@ -106,7 +106,7 @@ spec/protocol.md 5.3，需能力 `callScheduling`）同样传给注册 API。未
 | 变更 | 含义 |
 |---|---|
 | `{op: "register", tool: <工具声明>}` | 注册新工具 |
-| `{op: "update", name, set: {字段: 值}}` | 更新声明：`set` 中的字段替换，**值为 `null` 表示清除该声明**（如 `annotations: null`），未列出的字段不变 |
+| `{op: "update", name, set: {字段: 值}}` | 更新声明：`set` 中的字段替换，**值为 `null` 表示清除该声明**（如 `annotations: null`、`implements: null`、`cache: null`），未列出的字段不变 |
 | `{op: "remove", name}` | 注销 |
 | `{op: "disable" / "enable", name}` | 禁用 / 启用 |
 | `{op: "busy", value: bool}` | 调用 SDK 的 `setBusy(value)`（需能力 `busy`） |
@@ -186,6 +186,7 @@ runner 用该 SDK 最自然的 API 实现（整体替换型 API 先合并再整�
 | `busy` | `app.busy`、`app.config.busyPolicy`、变更 `{op: "busy"}`（spec/protocol.md 5.3「用户正在操作」） |
 | `events` | `app.events`、handler `emit`、变更 `declareEvent` / `removeEvent`（spec/protocol.md 3.5 事件；全部 runner 支持） |
 | `implements` | 工具 `implements` 声明与更新 / null 清除（spec/intents.md 1） |
+| `cache` | 工具与资源 `cache` 声明与更新 / null 清除（spec/protocol.md 3.6） |
 
 ## 5. 各 SDK 的 runner
 

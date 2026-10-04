@@ -346,6 +346,9 @@ pub struct HubStatus {
     /// 标准意图的机主默认表与最近的替换错误（spec/intents.md 第 4 节）；旧 Host 为空。
     #[uniffi(default = None)]
     pub intents: Option<super::IntentsStatus>,
+    /// 只读结果缓存的条目与命中统计（第 16 项 O3，spec/hub-api.md 3.20）；旧 Host 为空。
+    #[uniffi(default = None)]
+    pub cache: Option<super::CacheStatus>,
 }
 
 /// 调用方的种类（spec/hub-api.md 3.6）。
@@ -555,6 +558,7 @@ impl From<hub::HubStatus> for HubStatus {
             calls: s.calls.map(|c| c.into_iter().map(Into::into).collect()),
             events: s.events.map(Into::into),
             intents: s.intents.map(Into::into),
+            cache: s.cache.map(Into::into),
         }
     }
 }

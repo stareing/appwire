@@ -234,7 +234,7 @@ pub async fn run(home: &AppHome, s: &Settings) -> Report {
     checks.push(agents_check(&read_agents_file(home), status.as_ref()));
     checks.push(intents_check(validate_intents_file(home), status.as_ref()));
     checks.push(usage_check(status.as_ref()));
-    checks.push(cache_check(status.as_ref()));
+    checks.push(cache_check(status.as_ref(), &s.result_cache));
 
     // 10. 网页拦截上报
     checks.push(reports_check(status.as_ref()));

@@ -26,7 +26,7 @@ const SDK: &str = "rust";
 const FEATURES: &[&str] = &[
     "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
     "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey", "callScheduling",
-    "busy", "events", "implements",
+    "busy", "events", "implements", "cache",
 ];
 
 fn repo_root() -> PathBuf {

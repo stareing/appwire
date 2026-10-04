@@ -624,6 +624,59 @@ void test_events() {
     EXPECT(status_of([&] { client.emit_event("order.shipped"); }) == AM_ERR_INVALID_NAME);
 }
 
+void test_cache() {
+    // 结果缓存声明（app_mcp.h v22，spec/protocol.md 3.6）：随声明传给 C 接口（影响 toolsHash）；越界 InvalidConfig；清空即清除。
+    const AmToolOptions plain = c_options(app_mcp::ToolOptions{});
+    EXPECT(plain.cache_ttl_ms == 0 && plain.cache_scope == AM_CACHE_PRIVATE);
+    app_mcp::ToolOptions options;
+    options.risk = AM_RISK_READ;
+    options.cache = app_mcp::CachePolicy{60000, app_mcp::CacheScope::Shared};
+    const AmToolOptions shared = c_options(options);
+    EXPECT(shared.cache_ttl_ms == 60000 && shared.cache_scope == AM_CACHE_SHARED);
+    options.cache->scope = app_mcp::CacheScope::Private;
+    EXPECT(c_options(options).cache_scope == AM_CACHE_PRIVATE);
+
+    app_mcp::ClientConfig config;
+    config.app_id = "cpp-cache";
+    config.app_name = "C++ Cache";
+    config.host_url = "ws://127.0.0.1:1";  // 不会 start，不连接
+    app_mcp::Client client(config);
+    auto handler = [](app_mcp::Call call) { call.complete(); };
+    app_mcp::ToolOptions read_only;
+    read_only.risk = AM_RISK_READ;
+    auto t = client.register_tool("quote.get", "查询报价", handler, read_only);
+    const std::string base = client.tools_hash();
+    EXPECT(status_of([&] { t.update("查询报价", options); }) == AM_OK);
+    const std::string with_cache = client.tools_hash();
+    EXPECT(with_cache != base);
+    app_mcp::ToolOptions too_long = options;
+    too_long.cache->ttl_ms = 86400001;
+    EXPECT(status_of([&] { t.update("查询报价", too_long); }) == AM_ERR_INVALID_CONFIG);
+    EXPECT(status_of([&] { client.register_tool("quote.bad", "x", handler, too_long); }) == AM_ERR_INVALID_CONFIG);
+    EXPECT(client.tools_hash() == with_cache);  // 失败时保持原定义
+    EXPECT(status_of([&] { t.update("查询报价", read_only); }) == AM_OK);
+    EXPECT(client.tools_hash() == base);  // 不声明即清除
+
+    // 资源：越界 InvalidConfig；合法声明进 toolsHash（与同名未声明的注册比较）
+    auto reader = [](app_mcp::Read read) { read.complete("{}"); };
+    app_mcp::ResourceOptions ropts;
+    ropts.cache = app_mcp::CachePolicy{86400001, app_mcp::CacheScope::Private};
+    EXPECT(status_of([&] { client.register_resource("quotes", "报价", reader, ropts); }) == AM_ERR_INVALID_CONFIG);
+    ropts.cache->ttl_ms = 0;  // 声明了缓存但 ttl 为 0：C ABI 无法表达（0 = 未声明），封装层拒绝
+    EXPECT(status_of([&] { client.register_resource("quotes", "报价", reader, ropts); }) == AM_ERR_INVALID_CONFIG);
+    app_mcp::ToolOptions zero = options;
+    zero.cache->ttl_ms = 0;
+    EXPECT(status_of([&] { t.update("查询报价", zero); }) == AM_ERR_INVALID_CONFIG);
+    {
+        auto r = client.register_resource("quotes", "报价", reader);
+        const std::string without = client.tools_hash();
+        r.dispose();
+        ropts.cache = app_mcp::CachePolicy{30000, app_mcp::CacheScope::Shared};
+        auto cached = client.register_resource("quotes", "报价", reader, ropts);
+        EXPECT(client.tools_hash() != without);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -638,6 +691,7 @@ int main() {
         test_diagnostics();
         test_annotations();
         test_navigation();
+        test_cache();
     } catch (const std::exception& e) {
         ++g_failed;
         std::fprintf(stderr, "FAIL 未捕获的异常：%s\n", e.what());

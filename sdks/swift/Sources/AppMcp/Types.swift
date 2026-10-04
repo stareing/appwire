@@ -6,6 +6,10 @@ import Foundation
 public typealias Risk = AppMcpBindings.Risk
 /// 标准 MCP 工具注解（title、readOnlyHint、destructiveHint、idempotentHint、openWorldHint，均可选）。
 public typealias ToolAnnotations = AppMcpBindings.ToolAnnotations
+/// 结果缓存声明（spec/protocol.md 3.6）：`ttlMs`（1...86_400_000）内相同请求的结果可由 Hub 复用；`scope` 为 `nil` = `.private`。
+public typealias CachePolicy = AppMcpBindings.CachePolicy
+/// 结果缓存范围：`.private`（按调用方隔离，缺省）/ `.shared`（全体调用方共用，只用于与调用方无关的数据）。
+public typealias CacheScope = AppMcpBindings.CacheScope
 /// 结果内容的标注（MCP 内容注解：audience、priority、lastModified）。
 public typealias ContentAnnotations = AppMcpBindings.ContentAnnotations
 public typealias Audience = AppMcpBindings.Audience

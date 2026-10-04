@@ -221,6 +221,7 @@ export abstract class DriverRegistry extends DriverTransport {
       if (def.concurrency !== undefined) coreDef.concurrency = def.concurrency
       if (def.exclusive !== undefined) coreDef.exclusive = def.exclusive
       if (def.implements !== undefined && def.implements.length > 0) coreDef.implements = [...def.implements]
+      if (def.cache !== undefined) coreDef.cache = { ...def.cache }
       rec.coreEnabled = this.effectiveEnabled(rec)
       if (!rec.coreEnabled || def.enabled !== undefined) coreDef.enabled = rec.coreEnabled
       if (scope) {
@@ -301,6 +302,7 @@ export abstract class DriverRegistry extends DriverTransport {
         if ('concurrency' in changes) update.concurrency = changes.concurrency ?? 0
         if ('exclusive' in changes) update.exclusive = changes.exclusive ?? null
         if ('implements' in changes) update.implements = [...(changes.implements ?? [])]
+        if ('cache' in changes) update.cache = changes.cache === undefined ? null : { ...changes.cache }
         if ('outputSchema' in changes && changes.outputSchema === undefined) update.outputSchema = null
         const schema = 'input' in changes ? this.convertSchema(rec.name, changes.input) : undefined
         const output =
@@ -418,6 +420,7 @@ export abstract class DriverRegistry extends DriverTransport {
           ...(def.mimeType !== undefined && { mimeType: def.mimeType }),
           ...(def.realtime && { realtime: true }),
           ...(def.annotations !== undefined && { annotations: toJsonValue(def.annotations) as ContentAnnotations }),
+          ...(def.cache !== undefined && { cache: { ...def.cache } }),
           ...(scope && { scope: scope.coreId }),
         })
       } catch (e) {

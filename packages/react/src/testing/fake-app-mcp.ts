@@ -233,6 +233,10 @@ export class FakeAppMcp implements AppMcp {
     return this.toolEntries.get(name)?.definition
   }
 
+  getResource(name: string): ResourceDefinition<any> | undefined {
+    return this.resourceEntries.get(name)?.definition
+  }
+
   /**
    * 工具所在 scope 链上的界面声明（最近的 scope 优先），与 `@app-mcp/web` 的继承规则一致；工具不存在时为 undefined。
    */

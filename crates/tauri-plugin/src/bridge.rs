@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use app_mcp_native::{
-    Activation, CallHandle, CallResult, CancelListener, CancelReason, ContentAnnotations,
+    Activation, CachePolicy, CallHandle, CallResult, CancelListener, CancelReason, ContentAnnotations,
     ErrorKind, EventInfo, HoldHandle, NativeClient, NativeError, NavigateHandle, NavigationHandler, ReadHandle, ResourceHandle, ResourceOptions,
     ResourceReader, ResourceSpec, ResultStatus, Risk, ScopeHandle, StateInfo, StateStatus,
     ToolAnnotations, ToolHandle, ToolHandler, ToolOptions, ToolSpec, ToolSurface,
@@ -97,6 +97,9 @@ struct ToolSpecMessage {
     /// 实现的标准意图（spec/intents.md）；`tool.update` 时缺省表示清除。格式由核心校验，不合法时登记被拒绝。
     #[serde(default)]
     implements: Vec<String>,
+    /// 结果缓存声明（spec/protocol.md 3.6）；`tool.update` 时缺省表示清除。格式不合法时整条消息被拒绝，`ttlMs` 范围由核心校验。
+    #[serde(default)]
+    cache: Option<CachePolicy>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,6 +136,9 @@ enum PageOp {
         /// 资源内容的标注（MCP 内容注解）。@compat 旧页面 SDK 不发送，缺省未声明；取值不合法时整条登记被拒绝。
         #[serde(default)]
         annotations: Option<ContentAnnotations>,
+        /// 读取结果缓存声明（spec/protocol.md 3.6）。@compat 旧页面 SDK 不发送，缺省未声明；格式不合法时整条登记被拒绝。
+        #[serde(default)]
+        cache: Option<CachePolicy>,
     },
     #[serde(rename = "resource.notify")]
     ResourceNotify { id: u64 },
@@ -534,5 +540,19 @@ mod spec_tests {
         let options = parse(json!({ "description": "发信" }));
         assert_eq!(options.ok().map(|o| o.implements), Some(Vec::new()));
         assert!(parse(json!({ "description": "发信", "implements": [1] })).is_err());
+    }
+
+    /// 页面工具定义的 `cache`（spec/protocol.md 3.6）进入原生选项；缺省（`tool.update` 时即清除）为 `None`；格式不合法时拒绝。
+    #[test]
+    fn tool_spec_cache() {
+        use app_mcp_native::CacheScope;
+        let parse = |v: Value| serde_json::from_value::<ToolSpecMessage>(v).map(|m| m.into_parts("feed.list".into()).1);
+        let options = parse(json!({ "description": "列表", "cache": { "ttlMs": 5000, "scope": "shared" } }));
+        assert_eq!(options.ok().and_then(|o| o.cache), Some(CachePolicy { ttl_ms: 5000, scope: CacheScope::Shared }));
+        let options = parse(json!({ "description": "列表", "cache": { "ttlMs": 5 } }));
+        assert_eq!(options.ok().and_then(|o| o.cache), Some(CachePolicy { ttl_ms: 5, scope: CacheScope::Private }));
+        assert_eq!(parse(json!({ "description": "列表" })).ok().map(|o| o.cache), Some(None));
+        assert!(parse(json!({ "description": "列表", "cache": { "ttlMs": 1, "scope": "public" } })).is_err());
+        assert!(parse(json!({ "description": "列表", "cache": { "ttlMs": 1.5 } })).is_err());
     }
 }

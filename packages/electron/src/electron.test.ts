@@ -766,6 +766,21 @@ describe('导航（spec/protocol.md 3.4）', () => {
     expect(native.tools.get('web.open')?.spec).not.toHaveProperty('implements')
   })
 
+  it('页面工具与资源的 cache 转到主进程（update 缺省清除）', async () => {
+    const { ipcMain, native } = setupNav()
+    const wc = new FakeWebContents(11)
+    const bridge = getBridge(ipcMain, wc)
+    const spec = { description: '列表', risk: 'read', cache: { ttlMs: 5000, scope: 'shared' } }
+    await bridge.request({ op: 'tool.register', id: 1, name: 'feed.list', spec } as never)
+    expect(native.tools.get('feed.list')?.spec).toMatchObject({ cache: { ttlMs: 5000, scope: 'shared' } })
+    await bridge.request({ op: 'tool.update', id: 1, spec: { description: '列表', risk: 'read' } } as never)
+    expect(native.tools.get('feed.list')?.spec).not.toHaveProperty('cache')
+    await bridge.request({ op: 'resource.register', id: 2, name: 'feed', description: '订阅', cache: { ttlMs: 30000 } } as never)
+    await bridge.request({ op: 'resource.register', id: 3, name: 'cart', description: '购物车' } as never)
+    expect(native.resources.get('feed')?.spec).toMatchObject({ cache: { ttlMs: 30000 } })
+    expect(native.resources.get('cart')?.spec).not.toHaveProperty('cache')
+  })
+
   it('页面工具的 concurrency / exclusive 转到主进程（update 缺省清除）', async () => {
     const { ipcMain, native } = setupNav()
     const wc = new FakeWebContents(9)

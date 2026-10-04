@@ -20,7 +20,7 @@ public class ConformanceTests(ITestOutputHelper output)
     [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions", "readFailure",
         "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-        "callScheduling", "busy", "events", "implements",
+        "callScheduling", "busy", "events", "implements", "cache",
     ];
 
     private static readonly IReadOnlyDictionary<string, ToolRisk> Risks = new Dictionary<string, ToolRisk>
@@ -230,7 +230,13 @@ public class ConformanceTests(ITestOutputHelper output)
         Concurrency = Get(decl, "concurrency").ValueKind == JsonValueKind.Number ? Get(decl, "concurrency").GetInt32() : 0,
         Exclusive = Text(Get(decl, "exclusive")),
         Implements = IsSet(Get(decl, "implements")) ? Items(Get(decl, "implements")).Select(i => i.GetString()!).ToList() : null,
+        Cache = Cache(Get(decl, "cache")),
     };
+
+    /// <summary>用例 cache（<c>{ttlMs, scope?}</c>，spec/protocol.md 3.6）；未给出或 null 时为 null。</summary>
+    private static CachePolicy? Cache(JsonElement v) => IsSet(v)
+        ? new CachePolicy(Get(v, "ttlMs").GetUInt64(), Text(Get(v, "scope")) == "shared" ? CacheScope.Shared : CacheScope.Private)
+        : null;
 
     private static string? FindRepoRoot()
     {
@@ -271,7 +277,8 @@ public class ConformanceTests(ITestOutputHelper output)
                 _ => ReadResource(spec),
                 Text(Get(decl, "mimeType")),
                 Get(decl, "realtime").ValueKind == JsonValueKind.True,
-                As<ContentAnnotations>(Get(decl, "annotations"))));
+                As<ContentAnnotations>(Get(decl, "annotations")),
+                Cache(Get(decl, "cache"))));
         }
 
         /// <summary>导航行为（conformance/README.md 2.4）。C# 最自然的写法：正常返回 = 完成，抛

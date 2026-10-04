@@ -122,6 +122,10 @@
  *   · 函数 am_hub_set_intent_defaults（运行中替换机主默认表）、am_hub_intents_json（生效的默认表与最近的替换错误）。
  *   · 新内置工具 apps.intents（总是列出）；apps.tools / apps.search 的工具条目与 HubTool 带 implements（非空时）。
  *   · JSON 中新增：HubStatus.intents：{defaults: {<意图>: <工具全名>}, lastError?}；HubTool.implements?（字符串数组）。
+ * - v24（只读结果缓存，第 16 项 O3，spec/hub-api.md 3.20）：只做新增，AM_HUB_API_VERSION 仍为 3。
+ *   · am_hub_start 配置新增可选字段 resultCache（{"maxEntries","maxBytes","maxEntryBytes"}）。
+ *   · CallRequest 新增可选字段 cacheBypass（bool，缺省 false）；CallOutcome 新增 cachedAgeMs?（命中缓存时）。
+ *   · JSON 中新增：HubStatus.cache：{entries, bytes, hits, misses, evictions}。
  */
 #ifndef APP_MCP_HUB_H
 #define APP_MCP_HUB_H
@@ -310,6 +314,11 @@ void am_hub_string_free(char *s);
  *                        （缺省字段取这些默认值）：每个订阅方的订阅数上限（超出时 apps.events.subscribe 报 RATE_LIMITED，
  *                        details.scope = "events"）、每个信箱的事件数上限（满时丢最旧，至少按 1 处理）、信箱中事件的保留时长、
  *                        每个订阅每分钟入箱数（0 不限）；未知字段报 AM_HUB_ERR_INVALID_JSON
+ *   —— v24 只读结果缓存（spec/hub-api.md 3.20）——
+ *   resultCache          {"maxEntries": 1024, "maxBytes": 8388608, "maxEntryBytes": 65536}（缺省字段取这些默认值）：
+ *                        App 在只读工具 / 资源上声明了 cache 时 Hub 在其 ttl 内复用结果（命中不唤醒 App）；条目数 /
+ *                        总字节数（键 + 序列化结果）超出时淘汰最久未用的条目，单条超过 maxEntryBytes 的结果不存；
+ *                        maxEntries = 0 关闭缓存。只在内存。未知字段报 AM_HUB_ERR_INVALID_JSON
  *   workerThreads        tokio 工作线程数（默认 2）
  * 未知字段报 AM_HUB_ERR_INVALID_JSON。清单无效报 AM_HUB_ERR_INVALID_CONFIG；地址无法绑定报 AM_HUB_ERR_IO。 */
 AmHubStatus am_hub_start(const char *config_json, AmHub **out_hub);
@@ -374,7 +383,9 @@ AmHubStatus am_hub_overview_json(const AmHub *hub, const char *app_id, char **ou
  *   holder（记账主体 "agent:<名>" | "local" | "api"）, expiresInMs}]。
  * v22 起另有 events：{subscriptions: [{subscriptionId, subscriber（"agent:<名>" 或调用方键）, appId, event?（省略 = 该 App 全部事件）,
  *   delivered（经本订阅入箱数）, dropped（因频率上限丢弃数）, pending（订阅方信箱当前条数）}], droppedInvalid（不合法而丢弃的事件数）}。
- * v23 起另有 intents：{defaults, lastError?}（同 am_hub_intents_json）。 */
+ * v23 起另有 intents：{defaults, lastError?}（同 am_hub_intents_json）。
+ * v24 起另有 cache：只读结果缓存统计 {entries（当前条目数）, bytes（当前字节数）, hits, misses（只计声明了 cache 的请求，
+ *   绕过不计）, evictions（因上限淘汰数）}，计数自 Hub 启动起累计。 */
 AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* ---------------------------------------------------------------------------
@@ -383,7 +394,8 @@ AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
 
 /* 异步调用工具。request_json 为 CallRequest：{name, arguments, instanceId, timeout(ms), callId, session,
  * idempotencyKey（v13：Agent 幂等键，1..=256 个字符，原样转交 App；不合法 → INVALID_INPUT），
- * priority（v21："interactive" / "normal" / "background"，缺省 normal，原样转交 App）}。
+ * priority（v21："interactive" / "normal" / "background"，缺省 normal，原样转交 App），
+ * cacheBypass（v24：true 时不查只读结果缓存、照常调用并以新结果覆盖，缺省 false）}。
  * out_call_id 可为 NULL；否则写入本次 callId（请求未给出时自动生成，需 am_hub_string_free），供 am_hub_cancel_call。
  * cb 收到 CallOutcome JSON：
  *   {"callId":…, "result": {"ok": <data>} | {"error": {"kind","message","details"?}},
@@ -391,7 +403,8 @@ AmHubStatus am_hub_status_json(const AmHub *hub, char **out_json);
  *    v9："status": "done"|"pending"|"partial"|"noop", "stateResource"?: "app-mcp://<appId>/<名>",
  *        "summary"?: …, "annotations"?: {"audience"?, "priority"?, "lastModified"?},
  *    v13："routedTo"?: 改调后台替代时实际调用的工具全名（spec/hub-api.md 3.14），
- *    v14："durationMs": <毫秒>, "woke": <bool>（本次 App 工具调用是否经历了唤醒）}
+ *    v14："durationMs": <毫秒>, "woke": <bool>（本次 App 工具调用是否经历了唤醒），
+ *    v24："cachedAgeMs"?: 结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数；未命中时省略}
  * 名称无法解析（appId 未知等）也以 CallOutcome 形式返回（result.error，kind 为 TOOL_NOT_FOUND）。 */
 AmHubStatus am_hub_call(AmHub *hub, const char *request_json, AmHubResultFn cb, void *user_data,
                         char **out_call_id);

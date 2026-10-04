@@ -13,7 +13,7 @@ final class ConformanceTests: XCTestCase {
     private static let features: Set<String> = [
         "toolOptions", "mutate", "lifecycle", "wake", "richResult", "userAction", "progress", "resourceOptions",
         "readFailure", "surface", "navigation", "backgroundTool", "backgroundNavigation", "idempotencyKey",
-        "callScheduling", "busy", "events", "implements",
+        "callScheduling", "busy", "events", "implements", "cache",
     ]
     private static let verdictOK: Set<String> = ["pass", "xfail", "xpass", "skip"]
 
@@ -192,7 +192,8 @@ private final class CaseApp {
             backgroundTool: decl["backgroundTool"]?.stringValue,
             concurrency: Int(decl["concurrency"]?.doubleValue ?? 0),
             exclusive: decl["exclusive"]?.stringValue,
-            implements: Self.strings(decl["implements"])
+            implements: Self.strings(decl["implements"]),
+            cache: cachePolicy(decl["cache"])
         ) { [weak self] (args: JSONValue, ctx: ToolContext) async throws -> ToolResult<JSONValue> in
             runs += 1
             return try await self?.run(spec, count: runs, args: args, ctx: ctx) ?? ToolResult(data: nil)
@@ -290,6 +291,7 @@ private final class CaseApp {
         case "concurrency": d.concurrency = Int(v?.doubleValue ?? 0)
         case "exclusive": d.exclusive = v?.stringValue
         case "implements": d.implements = strings(v) // [] = 清除
+        case "cache": d.cache = cachePolicy(v) // null = 清除
         default: break
         }
     }
@@ -316,7 +318,8 @@ private final class CaseApp {
             description: decl["description"]?.stringValue ?? "",
             mimeType: decl["mimeType"]?.stringValue,
             realtime: decl["realtime"]?.boolValue ?? false,
-            annotations: decl["annotations"].map(contentAnnotations)
+            annotations: decl["annotations"].map(contentAnnotations),
+            cache: cachePolicy(decl["cache"])
         ) { () async throws -> JSONValue in
             if let v = read["return"] { return v }
             if let f = read["fail"], f != .null {
@@ -357,6 +360,13 @@ private func toolAnnotations(_ a: JSONValue) -> ToolAnnotations {
         destructiveHint: a["destructiveHint"]?.boolValue, idempotentHint: a["idempotentHint"]?.boolValue,
         openWorldHint: a["openWorldHint"]?.boolValue
     )
+}
+
+/// `{ttlMs, scope?}` → `CachePolicy`；缺省或 `null` 为 `nil`。
+private func cachePolicy(_ v: JSONValue?) -> CachePolicy? {
+    guard let v, v != .null, let ttl = v["ttlMs"]?.doubleValue else { return nil }
+    let scope: CacheScope? = v["scope"]?.stringValue.map { $0 == "shared" ? .shared : .private }
+    return CachePolicy(ttlMs: UInt64(ttl), scope: scope)
 }
 
 private func contentAnnotations(_ a: JSONValue) -> ContentAnnotations {

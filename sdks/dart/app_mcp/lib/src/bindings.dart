@@ -175,6 +175,12 @@ abstract final class AmToolSurface {
   static const view = 1;
 }
 
+/// v22：结果缓存的范围（AmToolOptions / AmResourceOptions 的 cache_scope）。
+abstract final class AmCacheScope {
+  static const private = 0;
+  static const shared = 1;
+}
+
 // ---------------------------------------------------------------------------
 // 回调类型
 // ---------------------------------------------------------------------------
@@ -294,6 +300,12 @@ final class AmResourceOptions extends Struct {
 
   /// v13：资源内容的标注（MCP 内容注解 JSON），可为 nullptr。
   external Pointer<Utf8> annotations_json;
+  /// v22：读取结果缓存时长；0 = 未声明。
+  @Uint64()
+  external int cache_ttl_ms;
+  /// v22：AmCacheScope（0 = PRIVATE，1 = SHARED）。
+  @Int32()
+  external int cache_scope;
 }
 
 final class AmToolSpec extends Struct {
@@ -331,6 +343,12 @@ final class AmToolOptions extends Struct {
   external Pointer<Pointer<Utf8>> implements;
   @Size()
   external int implements_len;
+  /// v22：结果缓存时长；0 = 未声明（更新时清除）。
+  @Uint64()
+  external int cache_ttl_ms;
+  /// v22：AmCacheScope（0 = PRIVATE，1 = SHARED）。
+  @Int32()
+  external int cache_scope;
 }
 
 /// v9：`am_call_complete_ex` 的调用结果。

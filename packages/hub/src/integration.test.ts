@@ -1011,6 +1011,67 @@ describe.skipIf(!ready)('嵌入式 Hub + @app-mcp/node', () => {
     expect(bad.intents().lastError).toBeTruthy()
   })
 
+  it('只读结果缓存：App 声明 cache 的只读工具 / 资源第二次命中（App 只收到一次）；cacheBypass 强制再调；status().cache 计数（第 16 项 O3）', async () => {
+    const { hub } = await startHub()
+    let toolRuns = 0
+    let reads = 0
+    const app = createAppMcp({ appId: 'feed', appName: 'Feed', hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false })
+    apps.push(app)
+    app.tool('list', { description: '列表', risk: 'read', cache: { ttlMs: 60_000 }, handler: () => ({ n: ++toolRuns }) })
+    app.tool('plain', { description: '未声明', risk: 'read', handler: () => ({ n: ++toolRuns }) })
+    app.resource('feed', { description: '订阅', cache: { ttlMs: 60_000, scope: 'shared' }, read: () => ({ v: ++reads }) })
+    app.start()
+    await until(() => hub.tools({ apps: ['feed'], onlyAvailable: true, includeBuiltin: false }).length === 2, 'feed 工具登记')
+
+    const first = await hub.callTool({ name: 'feed.list' })
+    expect(first.result.ok).toEqual({ n: 1 })
+    expect(first.cachedAgeMs).toBeUndefined()
+    const second = await hub.callTool({ name: 'feed.list' })
+    expect(second.result.ok).toEqual({ n: 1 })
+    expect(second.cachedAgeMs).toEqual(expect.any(Number))
+    expect(toolRuns).toBe(1)
+    const bypass = await hub.callTool({ name: 'feed.list', cacheBypass: true })
+    expect(bypass.result.ok).toEqual({ n: 2 })
+    expect(bypass.cachedAgeMs).toBeUndefined()
+    expect((await hub.callTool({ name: 'feed.list' })).result.ok).toEqual({ n: 2 })
+    // 未声明 cache 的只读工具不缓存
+    await hub.callTool({ name: 'feed.plain' })
+    await hub.callTool({ name: 'feed.plain' })
+    expect(toolRuns).toBe(4)
+
+    expect((await hub.readResource('app-mcp://feed/feed')).text).toContain('"v":1')
+    expect((await hub.readResource('app-mcp://feed/feed')).text).toContain('"v":1')
+    expect(reads).toBe(1)
+    // 命中：工具 2 次、资源 1 次；未命中：工具首调 1 次、资源首读 1 次（绕过不计）
+    expect(hub.status().cache).toEqual({ entries: 2, bytes: expect.any(Number), hits: 3, misses: 2, evictions: 0 })
+  })
+
+  it('resultCache 配置：maxEntries 0 关闭缓存；maxEntryBytes 过小时结果不存（其余字段取默认值）', async () => {
+    const declare = (hub: Hub, appId: string, runs: { n: number }) => {
+      const app = createAppMcp({ appId, appName: appId, hostUrl: hub.wsUrl!, autoStart: false, keepAlive: false })
+      apps.push(app)
+      app.tool('list', { description: '列表', risk: 'read', cache: { ttlMs: 60_000 }, handler: () => ({ n: ++runs.n }) })
+      app.start()
+      return until(() => hub.tools({ apps: [appId], onlyAvailable: true, includeBuiltin: false }).length === 1, `${appId} 登记`)
+    }
+    const off = (await startHub({ resultCache: { maxEntries: 0 } })).hub
+    const offRuns = { n: 0 }
+    await declare(off, 'off', offRuns)
+    await off.callTool({ name: 'off.list' })
+    expect((await off.callTool({ name: 'off.list' })).cachedAgeMs).toBeUndefined()
+    expect(offRuns.n).toBe(2)
+    expect(off.status().cache).toMatchObject({ entries: 0, hits: 0 })
+
+    const tiny = (await startHub({ resultCache: { maxEntryBytes: 8 } })).hub
+    const tinyRuns = { n: 0 }
+    await declare(tiny, 'tiny', tinyRuns)
+    await tiny.callTool({ name: 'tiny.list' })
+    await tiny.callTool({ name: 'tiny.list' })
+    expect(tinyRuns.n).toBe(2)
+    expect(tiny.status().cache).toMatchObject({ entries: 0, hits: 0, misses: 2 })
+    await expect(startHub({ resultCache: { maxEntries: 1, bogus: 1 } as never })).rejects.toBeInstanceOf(HubError)
+  })
+
   it('shutdown 后调用抛 SHUTDOWN', async () => {
     const { hub } = await startHub({ listen: null })
     expect(hub.listenAddr).toBeNull()

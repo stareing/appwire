@@ -279,6 +279,7 @@ function jsToolFields(decl) {
     concurrency: decl.concurrency,
     exclusive: decl.exclusive,
     implements: decl.implements,
+    cache: decl.cache,
   });
 }
 
@@ -355,7 +356,7 @@ export function registerJsApp(app, testCase, ToolCallError) {
   for (const t of testCase.app.tools ?? []) registry.register(t);
   for (const r of testCase.app.resources ?? []) {
     app.resource(r.name, {
-      ...defined({ description: r.description, mimeType: r.mimeType, realtime: r.realtime, annotations: r.annotations }),
+      ...defined({ description: r.description, mimeType: r.mimeType, realtime: r.realtime, annotations: r.annotations, cache: r.cache }),
       read: () => jsRead(r.read, ToolCallError),
     });
   }

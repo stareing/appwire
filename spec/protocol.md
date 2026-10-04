@@ -307,6 +307,14 @@ interface ToolInfo {
   backgroundTool?: string  // 后台替代（3.4）：只对 view 工具有意义，同一 App 中一个 app 工具的局部名
   implements?: string[]    // 实现的标准意图（spec/intents.md），如 ["message.send@1"]；空时不序列化
   cache?: CachePolicy      // 结果可由 Hub 缓存（3.6）；只对生效注解 readOnlyHint 为 true 的工具生效
+  deprecated?: Deprecation // 工具已弃用（3.7）；未声明时不序列化
+}
+
+// 工具弃用声明（3.7，第 16 项 O4）
+interface Deprecation {
+  message: string          // 1..=500 字符，面向模型：为什么弃用、该怎么做
+  replacement?: string     // 替代工具：同一 App 中的局部名
+  until?: string           // 计划移除的日期（RFC 3339 full-date，如 "2027-06-30"），只作提示
 }
 
 // 结果缓存声明（3.6，第 16 项 O3）
@@ -555,8 +563,25 @@ App 可在工具或资源声明中给出 `cache`，表示**在 `ttlMs` 内相同
 - `scope: "shared"` 只应用于结果与调用方无关的数据；缺省 `private`。
 - 声明进 `toolsHash`（8.4，只在给出时序列化）。SDK 只校验格式（`ttlMs` 范围、`scope` 取值；越界时注册 / 更新失败，原生为
   `InvalidConfig`），不缓存。
+- 各语言入口：Rust native `ToolOptions.cache` / `ResourceOptions.cache`；Web / Node / Electron / Tauri 页面 / React / 鸿蒙
+  `cache?: {ttlMs, scope?}`（`@app-mcp/build` 写入清单）；Python `cache=`（`CachePolicy`、dict 或整数毫秒）；Kotlin / Swift
+  `cache: CachePolicy?`；C ABI（v22）`AmToolOptions` / `AmResourceOptions` 末尾 `cache_ttl_ms`（0 = 未声明）+ `cache_scope`（非法值
+  `AM_ERR_INVALID_ARGUMENT`）；C++ / C# / Dart / Flutter `cache`（封装对显式声明的 ttl ≤ 0 报 InvalidConfig）。更新时清除：
+  `null` / `undefined` / `None` / `nil`；格式不对（非整数、未知 scope）同样注册 / 更新失败。
 - 失效（Hub 执行）：TTL 到期；同一 App 的写调用完成、`tools/changed` / `tools/sync` / `resources/changed` / `resources/sync`；
   资源另按 `resources/updated` 与调用结果的 `stateHints` 定向失效。休眠与断开**不**使缓存失效。
+
+### 3.7 工具演进：弃用与兼容（第 16 项 O4）
+
+工具名就是契约：**不兼容的 schema 变更必须用新工具名**，旧工具保留并标 `deprecated`、以 `replacement` 指向新工具（与
+spec/intents.md「不兼容只能发新主版本」同一原则）。兼容 / 破坏性变更的判定规则见 spec/manifest.md 第 6 节。
+
+- **工具级弃用**：`ToolInfo.deprecated`。弃用的工具照常列出、照常可调用（何时停用是 App 的决定，`until` 只作提示）；
+  进 `toolsHash`（只在声明时序列化）。SDK 校验 `message` 长度、`replacement` 为合法局部名且不指向自身、`until` 为合法日期
+  （违反时注册 / 更新失败，原生为 `InvalidConfig`）；`replacement` 指向未注册的工具不报错（可能稍后注册）。
+- **参数级弃用**：`inputSchema` / `outputSchema` 属性上的 JSON Schema 标准关键字 `deprecated: true`（draft 2019-09 起），
+  原样传递；Hub 不改写。必填参数标 `deprecated` 为矛盾声明（清单校验警告）。
+- Agent 侧的呈现与 schema 变化的告知见 spec/hub-api.md 3.21。
 
 ## 4. 错误
 

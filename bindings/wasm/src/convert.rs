@@ -10,7 +10,7 @@ use app_mcp_core::{
     ToolSurface, ToolUpdate, TransportKind, Visibility, WakeReason,
 };
 use app_mcp_core::{
-    Activation, AppOverview, Audience, ContentAnnotations, ResultStatus, Risk, ToolAnnotations, WakeDescriptor,
+    Activation, AppOverview, Audience, CachePolicy, CacheScope, ContentAnnotations, ResultStatus, Risk, ToolAnnotations, WakeDescriptor,
 };
 use app_mcp_protocol::ErrorKind;
 use serde::de::DeserializeOwned;
@@ -199,6 +199,20 @@ impl Fields {
                 self.fail(format!("字段 {key} 应为字符串"));
                 None
             }
+        }
+    }
+
+    /// 可清除的嵌套对象：缺省为 `None`，`null` 为 `Some(None)`。
+    fn nullable_object<T: FromJson>(&mut self, key: &str) -> Option<Option<T>> {
+        match self.nullable(key)? {
+            None => Some(None),
+            Some(v) => match T::from_json(v) {
+                Ok(v) => Some(Some(v)),
+                Err(e) => {
+                    self.fail(format!("{key}.{e}"));
+                    None
+                }
+            },
         }
     }
 

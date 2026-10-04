@@ -121,6 +121,25 @@ def send(to: list[str], text: str, subject: str | None = None) -> dict:
 - Agents list implementers with the built-in tool `apps.intents {intent?}` and then call the chosen tool by its full
   name as usual. The Hub never routes by verb.
 
+### Result caching (optional, `spec/protocol.md` §3.6)
+
+Let the Hub reuse a read-only result for a while instead of waking your app again:
+
+```python
+@client.tool("weather.today", "Today's forecast", annotations={"read_only_hint": True},
+             cache={"ttl_ms": 600_000, "scope": "shared"})
+def today(city: str) -> dict:
+    ...
+```
+
+- `cache` is `{"ttl_ms": N, "scope": "private" | "shared"}`, a plain `ttl_ms` int, or a `CachePolicy`. `ttl_ms` must be
+  1..86 400 000; out of range raises `AppMcpError.InvalidConfig`. `scope` defaults to `"private"` (per caller); use
+  `"shared"` only for data that does not depend on who asks.
+- Only tools whose effective annotations are read-only are cached (a write tool's `cache` is ignored with a warning).
+  Resources take the same `cache=` argument.
+- `handle.update(cache=...)` replaces it, `cache=None` clears it; other updates keep it. The SDK never caches anything
+  itself.
+
 ### User is busy (optional, `spec/protocol.md` §5.3)
 
 While the user is actively working in the app (a text field has focus, a drag is in progress — your call), declare it so
@@ -298,6 +317,12 @@ defaults (verb, or `verb@major`, → full tool name) only mark and reorder `apps
 clears). An invalid table raises `HubError.Tool` (`kind == "INVALID_INPUT"`) and the previous table stays; an invalid
 `intent_defaults` at start-up starts with an empty table instead. `hub.intents()` (also `hub.status().intents`) returns
 an `IntentsStatus` (`defaults`, `last_error`).
+
+Read-only result cache (`spec/hub-api.md` §3.20): tools and resources whose app declares `cache` are answered from the
+Hub's memory within the TTL without waking the app; `CallResult.cached_age_ms` is set on a hit. `call_tool(...,
+cache_bypass=True)` skips the lookup and refreshes the entry. Limits: `Hub(result_cache={"maxEntries": 256})` (or a
+`CacheLimitOverrides`; also `maxBytes`, `maxEntryBytes`; defaults 1024 / 8 MiB / 64 KiB, `maxEntries: 0` disables the
+cache). `hub.status().cache` is a `CacheStatus` (`entries`, `bytes`, `hits`, `misses`, `evictions`).
 
 Policy hook points (`spec/hub-api.md` §3.13): `Hub(policy={"rules": [{"id": "no-pay", "action": "deny", "app": "shop",
 "tool": "pay*"}]})` or `hub.set_policy(...)` at runtime. `hide` removes an app / tool from every list (calls get

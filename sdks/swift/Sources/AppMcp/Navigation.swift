@@ -79,6 +79,8 @@ public struct ToolDeclaration {
     public var exclusive: String?
     /// 实现的标准意图（spec/intents.md）；`[]` = 未声明。
     public var implements: [String]
+    /// 结果缓存声明（spec/protocol.md 3.6）；`nil` = 未声明。
+    public var cache: CachePolicy?
 
     init(_ spec: ToolSpec) {
         description = spec.description
@@ -94,6 +96,7 @@ public struct ToolDeclaration {
         concurrency = Int(spec.concurrency)
         exclusive = spec.exclusive
         implements = spec.implements
+        cache = spec.cache
     }
 
     func applied(to spec: ToolSpec) -> ToolSpec {
@@ -111,6 +114,7 @@ public struct ToolDeclaration {
         next.concurrency = UInt32(clamping: max(0, concurrency))
         next.exclusive = exclusive
         next.implements = implements
+        next.cache = cache
         return next
     }
 }

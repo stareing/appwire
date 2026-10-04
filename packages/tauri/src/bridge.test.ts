@@ -208,6 +208,18 @@ describe('createTauriAppMcp', () => {
     appMcp.dispose()
   })
 
+  it('结果缓存声明：工具与资源的 cache 经注入脚本随 tool.register / resource.register 送到 Rust 侧', async () => {
+    const fake = createFakeTauri()
+    const appMcp = createTauriAppMcp({ appId: 'feed', appName: '订阅', bridge: bridgeOf(fake.window), logger: quiet })
+    appMcp.tool('list', { description: '列表', risk: 'read', cache: { ttlMs: 5000, scope: 'shared' }, handler: () => null })
+    appMcp.resource('feed', { description: '订阅', cache: { ttlMs: 30000 }, read: () => [] })
+    const reg = await fake.waitFor((op) => op.op === 'tool.register')
+    expect(reg).toMatchObject({ name: 'list', spec: { cache: { ttlMs: 5000, scope: 'shared' } } })
+    const res = await fake.waitFor((op) => op.op === 'resource.register')
+    expect(res).toMatchObject({ name: 'feed', cache: { ttlMs: 30000 } })
+    appMcp.dispose()
+  })
+
   it('USER_ACTION_REQUIRED 的类别与 reason / uri 经注入脚本送到 Rust 侧；缺省字段省略', async () => {
     const fake = createFakeTauri()
     const appMcp = createTauriAppMcp({ appId: 'shop', appName: '示例商城', bridge: bridgeOf(fake.window), logger: quiet })

@@ -160,7 +160,7 @@ const EXIT_WAIT: Duration = Duration::from_secs(30);
 /// 同步运行一个命令，等它退出，返回（退出码，stdout，stderr）。
 ///
 /// @why 预期"拒绝启动"的 serve 若意外启动成功会一直运行：超过 [`EXIT_WAIT`] 仍未退出时结束它并 panic，测试失败而不是挂起。
-fn run_to_exit(mut cmd: Command) -> (i32, String, String) {
+pub(crate) fn run_to_exit(mut cmd: Command) -> (i32, String, String) {
     let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("运行命令");
     let drain = |mut pipe: Box<dyn Read + Send>| {
         std::thread::spawn(move || {

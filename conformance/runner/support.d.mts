@@ -67,6 +67,8 @@ export interface ToolDecl {
   backgroundTool?: string
   /** 标准意图声明（spec/intents.md 1，能力 implements）。 */
   implements?: string[]
+  /** 结果缓存声明（spec/protocol.md 3.6，能力 cache）。 */
+  cache?: { ttlMs: number; scope?: 'private' | 'shared' }
   handler?: HandlerSpec
 }
 
@@ -98,6 +100,8 @@ export interface ResourceDecl {
   mimeType?: string
   realtime?: boolean
   annotations?: { [key: string]: Json }
+  /** 读取结果缓存声明（spec/protocol.md 3.6，能力 cache）。 */
+  cache?: { ttlMs: number; scope?: 'private' | 'shared' }
   read: ReadSpec
 }
 

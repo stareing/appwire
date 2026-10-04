@@ -82,6 +82,19 @@ export interface ToolAnnotations {
   openWorldHint?: boolean;
 }
 
+/** 缓存范围（spec/protocol.md 3.6）：`private`（缺省）按调用方隔离；`shared` 所有调用方共用，只用于与调用方无关的数据。 */
+export type CacheScope = 'private' | 'shared';
+
+/**
+ * 结果缓存声明（spec/protocol.md 3.6）：在 `ttlMs` 内相同请求的结果可由 Hub 复用（命中不唤醒 App）。
+ * 工具上只对生效注解只读（`readOnlyHint: true` 或 `risk: 'read'`）的工具生效，写工具上的声明被忽略并记警告。
+ */
+export interface CachePolicy {
+  /** 复用期限（毫秒，整数 1..=86400000）；越界时注册 / 更新抛错（`code` 为 `INVALID_CONFIG`）。 */
+  ttlMs: number;
+  scope?: CacheScope;
+}
+
 /** 内容的接收方（MCP `Role`）。 */
 export type Audience = 'user' | 'assistant';
 
@@ -279,6 +292,8 @@ export interface ToolDefinition<I, O> {
    * 未知动词或缺少词表必填参数只记警告。
    */
   implements?: string[];
+  /** 结果缓存声明（{@link CachePolicy}）：只对只读工具生效。 */
+  cache?: CachePolicy;
   handler: ToolHandler<I, O>;
 }
 
@@ -301,7 +316,7 @@ export type NavigationHandler = (request: NavigationRequest) => void | Promise<v
 
 /**
  * `ToolHandle.update` 的变更：未提供（或 `undefined`）的字段保持不变；显式给出 `null` 清除该声明
- * （`title` / `annotations` / `outputSchema` / `activation` / `page` / `backgroundTool` / `exclusive` / `implements` 删除，`concurrency` 恢复不限，`inputSchema` 变为无参数，`risk` 恢复 `write`，
+ * （`title` / `annotations` / `outputSchema` / `activation` / `page` / `backgroundTool` / `exclusive` / `implements` / `cache` 删除，`concurrency` 恢复不限，`inputSchema` 变为无参数，`risk` 恢复 `write`，
  * `enabled` 恢复 true，`surface` 恢复 `app`）。`description` 不可清除，`null` 时保持不变。
  */
 export interface ToolChanges {
@@ -319,6 +334,8 @@ export interface ToolChanges {
   concurrency?: number | null;
   exclusive?: string | null;
   implements?: string[] | null;
+  /** 整体替换缓存声明；`null` 清除。 */
+  cache?: CachePolicy | null;
 }
 
 export interface ToolHandle {
@@ -335,6 +352,8 @@ export interface ResourceDefinition<T> {
   realtime?: boolean;
   /** 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；缺省未声明。 */
   annotations?: ContentAnnotations;
+  /** 读取结果缓存声明（{@link CachePolicy}）：TTL 内 Hub 复用读取结果；缺省不缓存。 */
+  cache?: CachePolicy;
   /** 读取内容；抛出 `ToolCallError`（含 `ToolCallError.userActionRequired`）时类别与详情原样交给 Host。 */
   read: () => T | Promise<T>;
 }

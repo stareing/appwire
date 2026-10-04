@@ -32,6 +32,9 @@ pub struct CallRequest {
     /// 调用优先级（第 16 项 P6）：原样转交 App，App 的调用队列先按它、再按到达顺序调度；为空 = `Normal`。
     #[uniffi(default = None)]
     pub priority: Option<CallPriority>,
+    /// 不查只读结果缓存（spec/hub-api.md 3.20）：照常调用 App，以新结果覆盖缓存。
+    #[uniffi(default = false)]
+    pub cache_bypass: bool,
 }
 
 impl CallRequest {
@@ -49,7 +52,7 @@ impl CallRequest {
             session: self.session,
             idempotency_key: self.idempotency_key,
             priority: self.priority.map(Into::into).unwrap_or_default(),
-            cache_bypass: false,
+            cache_bypass: self.cache_bypass,
         })
     }
 }

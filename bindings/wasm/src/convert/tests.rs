@@ -105,6 +105,38 @@ fn tool_implements() {
     assert_eq!(u.implements, Some(Vec::new()));
 }
 
+/// 第 16 项 O3：工具 / 资源的 `cache` 透传，`scope` 缺省 private；更新时缺省不变、`null` 清除；格式错误在转换时拒绝。
+#[test]
+fn tool_and_resource_cache() {
+    use app_mcp_core::{CachePolicy, CacheScope};
+    let tool = |v: Value| JsToolDef::from_json(v).and_then(JsToolDef::into_core);
+    let d = tool(json!({ "name": "x", "inputSchema": {}, "cache": { "ttlMs": 5000 } })).unwrap();
+    assert_eq!(d.cache, Some(CachePolicy { ttl_ms: 5000, scope: CacheScope::Private }));
+    let d = tool(json!({ "name": "x", "inputSchema": {}, "cache": { "ttlMs": 1, "scope": "shared" } })).unwrap();
+    assert_eq!(d.cache, Some(CachePolicy { ttl_ms: 1, scope: CacheScope::Shared }));
+    assert_eq!(tool(json!({ "name": "x", "inputSchema": {} })).unwrap().cache, None);
+    let e = tool(json!({ "name": "x", "inputSchema": {}, "cache": { "ttlMs": 1, "scope": "public" } })).unwrap_err();
+    assert_eq!(e, "cache.无效的缓存范围（应为 private / shared）：\"public\"");
+    assert_eq!(tool(json!({ "name": "x", "inputSchema": {}, "cache": {} })).unwrap_err(), "cache.缺少字段 ttlMs");
+    assert!(tool(json!({ "name": "x", "inputSchema": {}, "cache": { "ttlMs": 1.5 } })).is_err());
+
+    let u = |v: Value| JsToolUpdate::from_json(v).map(JsToolUpdate::into_core).map(|u| u.cache);
+    assert_eq!(u(json!({})).unwrap(), None);
+    assert_eq!(u(json!({ "cache": null })).unwrap(), Some(None));
+    assert_eq!(
+        u(json!({ "cache": { "ttlMs": 7, "scope": "shared" } })).unwrap(),
+        Some(Some(CachePolicy { ttl_ms: 7, scope: CacheScope::Shared }))
+    );
+    assert!(u(json!({ "cache": { "ttlMs": "7" } })).is_err());
+
+    let r = JsResourceDef::from_json(json!({ "name": "cart", "cache": { "ttlMs": 30000, "scope": "shared" } }))
+        .and_then(JsResourceDef::into_core)
+        .unwrap();
+    assert_eq!(r.cache, Some(CachePolicy { ttl_ms: 30000, scope: CacheScope::Shared }));
+    let r = JsResourceDef::from_json(json!({ "name": "cart" })).and_then(JsResourceDef::into_core).unwrap();
+    assert_eq!(r.cache, None);
+}
+
 #[test]
 fn tool_surface_and_page() {
     let d = JsToolDef::from_json(json!({ "name": "x", "inputSchema": {}, "surface": "view", "page": "cart" }))

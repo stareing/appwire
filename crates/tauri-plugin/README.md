@@ -84,6 +84,7 @@ appMcp.tool('cart.clear', { description: '清空购物车', handler: () => cart.
   `annotations` 是对象但字段不合法时该次调用以 `HANDLER_ERROR` 结束。资源读取失败时页面错误的 `details`（如
   `USER_ACTION_REQUIRED` 的 `reason` / `uri`）同样随错误发给 Host。
 - **标准意图**：页面工具定义的 `implements`（spec/intents.md，如 `["link.open@1"]`）转为原生 `ToolOptions.implements`；`tool.update` 缺省即清除，格式不合法时登记被拒绝。
+- **结果缓存声明**：页面工具与资源的 `cache`（spec/protocol.md 3.6，`{ttlMs, scope?}`）转为原生 `ToolOptions.cache` / `ResourceOptions.cache`；`tool.update` 缺省即清除，`ttlMs` 越界或格式不合法时登记被拒绝。只对只读工具生效，`shared` 只用于与调用方无关的数据。
 
 ```rust
 use tauri_plugin_app_mcp::{CallResult, ResultStatus, ToolAnnotations, ToolOptions};

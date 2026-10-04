@@ -92,6 +92,11 @@ public typealias EventSubscriptionStatus = AppMcpHubBindings.EventSubscriptionSt
 public typealias EventLimitOverrides = AppMcpHubBindings.EventLimitOverrides
 /// 标准意图的机主默认表状态（`Hub.intents()`、`HubStatus.intents`，spec/intents.md 第 4 节）：`defaults`、`lastError`。
 public typealias IntentsStatus = AppMcpHubBindings.IntentsStatus
+/// 只读结果缓存上限（`HubConfig.resultCache`，spec/hub-api.md 3.20）：`maxEntries`、`maxBytes`、`maxEntryBytes`；
+/// 为空的字段取默认值（1024 / 8 MiB / 64 KiB），`maxEntries: 0` 关闭缓存。
+public typealias CacheLimitOverrides = AppMcpHubBindings.CacheLimitOverrides
+/// 结果缓存统计（`HubStatus.cache`）：`entries`、`bytes`、`hits`、`misses`、`evictions`。
+public typealias CacheStatus = AppMcpHubBindings.CacheStatus
 // 资源保护与工具声明（spec/hub-api.md 3.11）。
 /// 限流与大小上限（`HubConfig.limits`；`HubStatus.limits` 为全部字段给出的生效值）。为空的字段取默认值。
 public typealias LimitsConfig = AppMcpHubBindings.LimitsConfig
@@ -163,6 +168,8 @@ public struct CallResult: Sendable, Equatable {
     public let durationMs: UInt64
     /// 本次调用是否唤醒了 App（`dev.appwire/woke`）。
     public let woke: Bool
+    /// 结果来自只读结果缓存（未转发给 App）时距 App 产出的毫秒数（spec/hub-api.md 3.20）；未命中为 `nil`。
+    public let cachedAgeMs: UInt64?
 
     public var isError: Bool { error != nil }
 
@@ -388,6 +395,7 @@ public final class Hub: @unchecked Sendable {
     /// `onProgress`：接收调用进度（Hub 合并后，spec/hub-api.md 3.12），在 Hub 的进度线程上按顺序同步调用、须尽快返回
     /// （需要时自行切到主 actor）；全部回调在本函数返回之前完成。
     /// `priority`：调用优先级（`nil` = `.normal`），原样转交 App，App 的调用队列先交互、后后台（第 16 项 P6）。
+    /// `cacheBypass`：不查只读结果缓存，照常调用 App 并以新结果覆盖（spec/hub-api.md 3.20）；命中时 `CallResult.cachedAgeMs` 有值。
     public func callTool(
         _ name: String,
         argumentsJSON: String? = nil,
@@ -397,6 +405,7 @@ public final class Hub: @unchecked Sendable {
         callId: String? = nil,
         idempotencyKey: String? = nil,
         priority: CallPriority? = nil,
+        cacheBypass: Bool = false,
         onProgress: (@Sendable (ProgressUpdate) -> Void)? = nil
     ) async throws -> CallResult {
         let request = CallRequest(
@@ -407,7 +416,8 @@ public final class Hub: @unchecked Sendable {
             callId: callId,
             session: session,
             idempotencyKey: idempotencyKey,
-            priority: priority
+            priority: priority,
+            cacheBypass: cacheBypass
         )
         let out: CallOutcome
         if let onProgress {
@@ -428,7 +438,8 @@ public final class Hub: @unchecked Sendable {
             annotations: out.annotations,
             routedTo: out.routedTo,
             durationMs: out.durationMs,
-            woke: out.woke
+            woke: out.woke,
+            cachedAgeMs: out.cachedAgeMs
         )
     }
 
@@ -442,12 +453,13 @@ public final class Hub: @unchecked Sendable {
         callId: String? = nil,
         idempotencyKey: String? = nil,
         priority: CallPriority? = nil,
+        cacheBypass: Bool = false,
         onProgress: (@Sendable (ProgressUpdate) -> Void)? = nil
     ) async throws -> CallResult {
         let json = String(decoding: try JSONEncoder().encode(arguments), as: UTF8.self)
         return try await callTool(
             name, argumentsJSON: json, instanceId: instanceId, timeout: timeout, session: session, callId: callId,
-            idempotencyKey: idempotencyKey, priority: priority, onProgress: onProgress
+            idempotencyKey: idempotencyKey, priority: priority, cacheBypass: cacheBypass, onProgress: onProgress
         )
     }
 

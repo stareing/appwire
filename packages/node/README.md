@@ -84,6 +84,11 @@ appMcp.tool('notes.archive', {
 - `implements: ['message.send@1']` declares the standard intents (spec/intents.md) a tool implements, so agents can find it
   via the built-in `apps.intents`; a malformed entry makes registration throw, an unknown verb only logs a warning.
   `handle.update({ implements: undefined })` clears it.
+- `cache: { ttlMs: 30_000, scope?: 'private' | 'shared' }` (spec/protocol.md 3.6) lets the Hub reuse a result for
+  `ttlMs` without calling or waking the App. It only applies to read-only tools (on a write tool it is ignored with a
+  warning); use `scope: 'shared'` only for data that does not depend on the caller (default `private`). Resources take
+  `cache` too. `ttlMs` must be an integer in 1..=86400000, otherwise registration / update throws `INVALID_CONFIG`;
+  `handle.update({ cache: undefined })` clears it.
 - Resources take optional `annotations` too (MCP content annotations, shown on the resource in MCP
   `resources/list`): `appMcp.resource('notes.list', { description, annotations: { audience: ['user'], priority: 0.5 }, read })`.
   A `read` that throws `ToolCallError` (including `ToolCallError.userActionRequired`) fails the read with that kind

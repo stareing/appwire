@@ -8,7 +8,7 @@ use app_mcp_hub::{
     WakerConfig,
 };
 
-use super::{AuthMode, FileConfig, absolute};
+use super::{AuthMode, FileConfig, ResultCacheSection, absolute};
 
 /// 命令行给出的覆盖项（`None` / 空 = 未指定，沿用配置文件）。
 #[derive(Clone, Debug, Default)]
@@ -38,6 +38,8 @@ pub struct Overrides {
     pub tool_exposure_threshold: Option<usize>,
     /// 资源保护的命令行覆盖项（字段级合并到配置文件的 `limits`）。
     pub limits: LimitOverrides,
+    /// 结果缓存上限的命令行覆盖项（字段级合并到配置文件的 `resultCache`）。
+    pub result_cache: ResultCacheSection,
     pub output_validation: Option<OutputValidation>,
     pub log_level: Option<String>,
     pub log_file: Option<bool>,
@@ -97,6 +99,7 @@ impl FileConfig {
         set(&mut self.tools.threshold, &o.tool_exposure_threshold);
         set(&mut self.tools.output_validation, &o.output_validation);
         self.limits.merge(&o.limits);
+        self.result_cache.merge(&o.result_cache);
         set(&mut self.log.level, &o.log_level);
         set(&mut self.log.file, &o.log_file);
         for m in &o.manifests {

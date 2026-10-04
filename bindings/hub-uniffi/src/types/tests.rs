@@ -131,9 +131,12 @@ fn call_request_arguments() {
         session: Some("s".into()),
         idempotency_key: Some("order-7".into()),
         priority: None,
+        cache_bypass: false,
     };
     let h = r.clone().into_hub().unwrap();
     assert_eq!(h.arguments, json!({}));
+    assert!(!h.cache_bypass);
+    assert!(CallRequest { cache_bypass: true, ..r.clone() }.into_hub().unwrap().cache_bypass, "cache_bypass 透传");
     assert_eq!(h.priority, hub::CallPriority::Normal);
     let p = CallRequest { priority: Some(CallPriority::Background), ..r.clone() }.into_hub().unwrap();
     assert_eq!(p.priority, hub::CallPriority::Background);
@@ -320,6 +323,27 @@ fn event_limits_config() {
     let expected =
         hub::EventLimits { max_subscriptions: 2, max_inbox_events: 3, inbox_ttl: Duration::ZERO, per_subscription_per_minute: 0 };
     assert_eq!(c.event_limits, expected);
+}
+
+#[test]
+fn result_cache_config_and_status() {
+    assert_eq!(HubConfig::default().into_hub().unwrap().result_cache, hub::CacheLimits::default());
+    let c = HubConfig {
+        result_cache: Some(CacheLimitOverrides { max_entries: Some(0), ..Default::default() }),
+        ..Default::default()
+    }
+    .into_hub()
+    .unwrap();
+    assert_eq!(c.result_cache, hub::CacheLimits { max_entries: 0, ..hub::CacheLimits::default() }, "只覆盖给出的字段");
+    let c = HubConfig {
+        result_cache: Some(CacheLimitOverrides { max_entries: Some(3), max_bytes: Some(4096), max_entry_bytes: Some(512) }),
+        ..Default::default()
+    }
+    .into_hub()
+    .unwrap();
+    assert_eq!(c.result_cache, hub::CacheLimits { max_entries: 3, max_bytes: 4096, max_entry_bytes: 512 });
+    let s = CacheStatus::from(hub::CacheStatus { entries: 2, bytes: 300, hits: 5, misses: 4, evictions: 1 });
+    assert_eq!(s, CacheStatus { entries: 2, bytes: 300, hits: 5, misses: 4, evictions: 1 });
 }
 
 #[test]

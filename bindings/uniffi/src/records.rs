@@ -2,7 +2,7 @@
 
 use app_mcp_native as native;
 
-use crate::enums::{Activation, Audience, ResultStatus, Risk, StateStatus, ToolSurface};
+use crate::enums::{Activation, Audience, CacheScope, ResultStatus, Risk, StateStatus, ToolSurface};
 use crate::error::AppMcpError;
 
 /// 工具定义。
@@ -48,6 +48,26 @@ pub struct ToolSpec {
     /// 实现的标准意图（spec/intents.md），如 `["message.send@1"]`。
     #[uniffi(default = [])]
     pub implements: Vec<String>,
+    /// 结果缓存声明（spec/protocol.md 3.6）：只对生效注解只读的工具生效；`ttl_ms` 越界时注册 / 更新返回
+    /// [`AppMcpError::InvalidConfig`]。为空 = 未声明（`Tool::update` 时为清除）。
+    #[uniffi(default = None)]
+    pub cache: Option<CachePolicy>,
+}
+
+/// 结果缓存声明（spec/protocol.md 3.6）：在 `ttl_ms` 内相同请求的结果可由 Hub 复用。SDK 只校验格式，不缓存。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CachePolicy {
+    /// 1..=86_400_000（24 小时）。
+    pub ttl_ms: u64,
+    /// 为空 = `Private`。
+    #[uniffi(default = None)]
+    pub scope: Option<CacheScope>,
+}
+
+impl From<CachePolicy> for native::CachePolicy {
+    fn from(c: CachePolicy) -> Self {
+        native::CachePolicy { ttl_ms: c.ttl_ms, scope: c.scope.map(Into::into).unwrap_or_default() }
+    }
 }
 
 /// 标准 MCP 工具注解（spec/protocol.md 第 3 节）。均可选，为空 = 未声明。
@@ -102,7 +122,7 @@ impl From<ToolSpec> for (native::ToolSpec, native::ToolOptions) {
             concurrency: s.concurrency,
             exclusive: s.exclusive,
             implements: s.implements,
-            cache: None,
+            cache: s.cache.map(Into::into),
         };
         (n, options)
     }
@@ -181,12 +201,15 @@ pub struct ResourceSpec {
     /// 资源内容的标注（MCP 内容注解），Hub 放到 MCP `resources/list` 的资源注解上；为空表示未声明。
     #[uniffi(default = None)]
     pub annotations: Option<ContentAnnotations>,
+    /// 读取结果缓存声明（spec/protocol.md 3.6）；`ttl_ms` 越界时注册返回 [`AppMcpError::InvalidConfig`]。为空 = 未声明。
+    #[uniffi(default = None)]
+    pub cache: Option<CachePolicy>,
 }
 
 impl From<ResourceSpec> for (native::ResourceSpec, native::ResourceOptions) {
     fn from(s: ResourceSpec) -> Self {
         let spec = native::ResourceSpec { name: s.name, description: s.description, mime_type: s.mime_type };
-        let options = native::ResourceOptions { realtime: s.realtime, annotations: s.annotations.map(Into::into), cache: None };
+        let options = native::ResourceOptions { realtime: s.realtime, annotations: s.annotations.map(Into::into), cache: s.cache.map(Into::into) };
         (spec, options)
     }
 }

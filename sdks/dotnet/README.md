@@ -90,6 +90,24 @@ client.RegisterTool("compose.send", "发邮件", handler, new ToolOptions
   词表的必填参数须出现在 `inputSchema.properties` 中，否则 Hub 不把它列为实现者（工具照常可调用）。
 - `ToolRegistration.Update(description, options)` 中 `Implements` 为 null 或空表示清除声明。需要 C ABI v21（`AmToolOptions.implements`）。
 
+## 结果缓存（spec/protocol.md 3.6）
+
+只读工具与资源可声明 Hub 在一段时间内复用结果（命中不唤醒 App）；缓存多久、能否跨调用方共用由 App 判断：
+
+```csharp
+client.RegisterTool("stock.quote", "查询报价", handler, new ToolOptions
+{
+    Risk = ToolRisk.Read,                                   // 只对生效注解只读的工具生效
+    Cache = new CachePolicy(60_000, CacheScope.Shared),     // 与调用方无关的数据才用 Shared；缺省 Private
+});
+client.RegisterResource("quotes", "全部报价", reader, cache: new CachePolicy(30_000));
+```
+
+- `TtlMs` 须在 1..=86400000 之间，否则抛 `AppMcpException`（`InvalidConfig`）；`Update` 时 `Cache` 为 null 表示清除。需要 C ABI v22。
+- Hub 侧（`AppMcp.Hub`）：`new CallRequest(...) { CacheBypass = true }` 不查缓存；命中时 `CallOutcome.CachedAgeMs` 为结果的年龄；
+  上限 `HubOptions.ResultCache = new HubResultCacheLimits { MaxEntries, MaxBytes, MaxEntryBytes }`（`MaxEntries = 0` 关闭）；
+  统计见 `hub.Status().Cache`（spec/hub-api.md 3.20）。
+
 ## 界面级暴露与导航（spec/protocol.md 3.4）
 
 ```csharp

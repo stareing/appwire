@@ -3,7 +3,8 @@
  */
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import type { Activation, AppOverview, Risk, ToolAnnotations, ToolSurface } from '@app-mcp/web'
+import type { Activation, AppOverview, CachePolicy, Risk, ToolAnnotations, ToolSurface } from '@app-mcp/web'
+import { cacheReadOnlyWarning, checkCache } from './cache'
 import type { PageDefinition, StaticToolDefinition } from './define'
 import { checkImplements } from './intents'
 import { validateOverview } from './overview'
@@ -64,6 +65,8 @@ export interface ManifestTool {
   page?: string
   /** 实现的标准意图（spec/intents.md），每项 `<动词>@<主版本>`。 */
   implements?: string[]
+  /** 结果缓存声明（spec/protocol.md 3.6）：只对只读工具生效。 */
+  cache?: CachePolicy
 }
 
 /** 清单 `pages` 条目（spec/manifest.md 2.3）。 */
@@ -83,6 +86,8 @@ export interface ManifestResource {
   name: string
   description: string
   mimeType?: string
+  /** 读取结果缓存声明（spec/protocol.md 3.6）。 */
+  cache?: CachePolicy
 }
 
 /** 清单 `events` 条目（spec/manifest.md 2.4，同协议 `EventInfo`）。 */
@@ -346,6 +351,7 @@ export function validateManifest(manifest: AppMcpManifest): ValidationResult {
     if (typeof resource.description !== 'string' || resource.description.trim() === '') {
       errors.push(`${label} description 不能为空`)
     }
+    if (resource.cache !== undefined) checkCache(resource.cache, label, errors)
   }
   checkEvents(manifest.events, appId, errors, warnings)
 
@@ -387,7 +393,7 @@ function checkEvents(events: unknown, appId: string, errors: string[], warnings:
 
 /**
  * 单个工具（顶层或页面内）的规则：名称、唯一性（`toolNames` 跨顶层与页面共享）、appId 前缀、description、inputSchema、
- * risk / activation / surface / page、annotations、outputSchema、implements。
+ * risk / activation / surface / page、annotations、outputSchema、implements、cache。
  */
 function checkTool(
   tool: ManifestTool,
@@ -435,6 +441,11 @@ function checkTool(
     errors.push(`${label} outputSchema 必须是对象`)
   }
   if (tool.implements !== undefined) checkImplements(tool.implements, label, errors)
+  if (tool.cache !== undefined) {
+    checkCache(tool.cache, label, errors)
+    const readOnly = cacheReadOnlyWarning(tool, label)
+    if (readOnly) warnings.push(readOnly)
+  }
 }
 
 /** `pages` 的规则（spec/manifest.md 第 3 节），返回已声明的页面名。 */
@@ -691,6 +702,7 @@ function toManifestTool(
   if (tool.surface !== undefined && tool.surface !== 'app') entry.surface = tool.surface
   if (tool.page !== undefined) entry.page = tool.page
   if (tool.implements !== undefined && tool.implements.length > 0) entry.implements = [...tool.implements]
+  if (tool.cache !== undefined) entry.cache = { ...tool.cache }
   return entry
 }
 

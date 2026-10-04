@@ -772,3 +772,4 @@ mod events;
 mod intents;
 mod lifecycle;
 mod locks;
+mod cache;

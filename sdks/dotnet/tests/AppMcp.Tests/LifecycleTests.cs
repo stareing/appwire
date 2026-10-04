@@ -29,7 +29,7 @@ public class LifecycleUnitTests : IDisposable
     {
         // 与 app_mcp.h 一致（64 位）：AmLifecycle = int, 3×u64, int, int, ptr, bool；
         // AmClientOptions = u32, ptr, u32, ptr, (v7) int, i32, bool, (v8) i64, bool, (v13) i64, i32, (v17) bool, ptr, (v18) i32；
-        // AmResourceOptions = u32, bool, ptr。
+        // AmResourceOptions = u32, bool, ptr, (v22) u64, int。
         if (IntPtr.Size != 8) return;
         Assert.Equal(56, Marshal.SizeOf<AmLifecycle>());
         Assert.Equal(8, (int)Marshal.OffsetOf<AmLifecycle>(nameof(AmLifecycle.IdleTimeoutMs)));
@@ -49,9 +49,11 @@ public class LifecycleUnitTests : IDisposable
         Assert.Equal(76, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.RegisterName)));
         Assert.Equal(80, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.NameInstance)));
         Assert.Equal(88, (int)Marshal.OffsetOf<AmClientOptions>(nameof(AmClientOptions.MaxQueuedCalls)));
-        Assert.Equal(16, Marshal.SizeOf<AmResourceOptions>());
+        Assert.Equal(32, Marshal.SizeOf<AmResourceOptions>());
         Assert.Equal(4, (int)Marshal.OffsetOf<AmResourceOptions>(nameof(AmResourceOptions.Realtime)));
         Assert.Equal(8, (int)Marshal.OffsetOf<AmResourceOptions>(nameof(AmResourceOptions.AnnotationsJson)));
+        Assert.Equal(16, (int)Marshal.OffsetOf<AmResourceOptions>(nameof(AmResourceOptions.CacheTtlMs)));
+        Assert.Equal(24, (int)Marshal.OffsetOf<AmResourceOptions>(nameof(AmResourceOptions.CacheScope)));
     }
 
     private static AppMcpClientOptions BaseOptions(

@@ -80,6 +80,9 @@ Identity and connection are owned by the Rust side: `appId`, `appName` and `host
   `NativeConfig` on the Rust side).
 - Standard intents (spec/intents.md): the page tool option `implements` (e.g. `['link.open@1']`) is forwarded to the plugin;
   omitting it in an update clears it.
+- Result caching (spec/protocol.md 3.6): page tools and resources may declare `cache: { ttlMs, scope? }`, forwarded to the
+  plugin's native `ToolOptions.cache` / `ResourceOptions.cache` (read-only tools only; `scope: 'shared'` only for
+  caller-independent data); omitting it in an update clears it.
 - Events (spec/protocol.md 3.5): `appMcp.declareEvent({ name, description, payloadSchema? })`,
   `emitEvent(name, payload?)` and `removeEvent(name)` go over the plugin bridge (`event.declare` / `event.emit` /
   `event.remove`) and are emitted by the Rust-side client. Declarations belong to the page and are withdrawn when it

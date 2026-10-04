@@ -30,6 +30,24 @@ impl From<ToolSurface> for native::ToolSurface {
     }
 }
 
+/// 结果缓存的范围（spec/protocol.md 3.6）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CacheScope {
+    /// 按调用方的记账主体隔离（缺省）。
+    Private,
+    /// 全体调用方共用：只用于与调用方无关的数据。
+    Shared,
+}
+
+impl From<CacheScope> for native::CacheScope {
+    fn from(s: CacheScope) -> Self {
+        match s {
+            CacheScope::Private => native::CacheScope::Private,
+            CacheScope::Shared => native::CacheScope::Shared,
+        }
+    }
+}
+
 /// 调用结果的业务状态（spec/protocol.md 3.2）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum ResultStatus {

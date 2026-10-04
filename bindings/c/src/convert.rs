@@ -5,7 +5,7 @@ use std::ffi::{c_char, c_int};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use app_mcp_native::{
-    Activation, AppOverview, BusyPolicy, CallDedupPolicy, CallResult, ClientKind, ContentAnnotations, ErrorKind, HeartbeatMode,
+    Activation, AppOverview, BusyPolicy, CachePolicy, CacheScope, CallDedupPolicy, CallResult, ClientKind, ContentAnnotations, ErrorKind, HeartbeatMode,
     LifecycleMode, LifecyclePolicy, NativeConfig, Residency, ResourceOptions, ResourceSpec, ResultStatus,
     Risk, SleepReason, ToolAnnotations, ToolOptions, ToolSpec, ToolSurface, Visibility, WakeDescriptor, WakeKind,
     WakeReason,
@@ -322,6 +322,11 @@ pub(crate) unsafe fn read_resource_options(p: *const AmResourceOptions) -> FfiRe
         let text = unsafe { std::ptr::addr_of!((*p).annotations_json).read() };
         options.annotations = unsafe { opt_json::<ContentAnnotations>(text, "options->annotations_json") }?;
     }
+    if offset_of!(AmResourceOptions, cache_scope) + size_of::<c_int>() <= size {
+        let ttl_ms = unsafe { std::ptr::addr_of!((*p).cache_ttl_ms).read() };
+        let scope = unsafe { std::ptr::addr_of!((*p).cache_scope).read() };
+        options.cache = cache_policy_from(ttl_ms, scope)?;
+    }
     Ok(options)
 }
 
@@ -397,7 +402,25 @@ pub(crate) unsafe fn read_tool_options(p: *const AmToolOptions) -> FfiResult<Too
         let len = unsafe { std::ptr::addr_of!((*p).implements_len).read() };
         options.implements = unsafe { read_str_array(items, len, "options->implements") }?;
     }
+    if size >= offset_of!(AmToolOptions, cache_scope) + size_of::<c_int>() {
+        let ttl_ms = unsafe { std::ptr::addr_of!((*p).cache_ttl_ms).read() };
+        let scope = unsafe { std::ptr::addr_of!((*p).cache_scope).read() };
+        options.cache = cache_policy_from(ttl_ms, scope)?;
+    }
     Ok(options)
+}
+
+/// v22 结果缓存声明（spec/protocol.md 3.6）：`ttl_ms` 0 = 未声明。
+///
+/// @error `scope` 不是 `AmCacheScope` 取值 → `AM_ERR_INVALID_ARGUMENT`（`ttl_ms` 为 0 时也检查）。
+/// `ttl_ms` 的范围不在此校验：由核心注册时返回 `InvalidConfig`（P-04，唯一校验点）。
+pub(crate) fn cache_policy_from(ttl_ms: u64, scope: c_int) -> FfiResult<Option<CachePolicy>> {
+    let scope = match scope {
+        0 => CacheScope::Private,
+        1 => CacheScope::Shared,
+        other => return Err(FfiError::invalid_argument(format!("options->cache_scope 取值无效：{other}"))),
+    };
+    Ok((ttl_ms > 0).then_some(CachePolicy { ttl_ms, scope }))
 }
 
 /// 按 `struct_size` 读取调用结果；`p` 为 NULL 时为默认结果（无返回值、done）。

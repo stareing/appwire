@@ -141,6 +141,8 @@ class ToolUpdate internal constructor() {
     var exclusive: String? by field { s, v -> s.copy(exclusive = v) }
     /** 实现的标准意图（spec/intents.md）；空列表 = 清除。 */
     var implements: List<String> by field { s, v -> s.copy(implements = v) }
+    /** 结果缓存声明（spec/protocol.md 3.6）；null = 清除。 */
+    var cache: CachePolicy? by field { s, v -> s.copy(cache = v) }
 
     private fun <T> field(patch: (FfiToolSpec, T) -> FfiToolSpec) =
         object : kotlin.properties.ReadWriteProperty<ToolUpdate, T> {

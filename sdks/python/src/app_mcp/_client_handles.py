@@ -9,10 +9,12 @@ from . import app_mcp_uniffi as ffi
 from ._client_convert import (
     _UNSET,
     ActivationLike,
+    CacheLike,
     RiskLike,
     SurfaceLike,
     ToolAnnotationsLike,
     _activation,
+    _cache,
     _implements,
     _risk,
     _schema_json,
@@ -59,12 +61,14 @@ class ToolHandle:
         concurrency: int | _Unset = _UNSET,
         exclusive: str | None | _Unset = _UNSET,
         implements: Sequence[str] | _Unset = _UNSET,
+        cache: CacheLike | None | _Unset = _UNSET,
     ) -> None:
         """修改定义：未给出的字段保持不变；显式传 ``None`` 清除该声明（恢复注册时的缺省）。
 
         ``input_schema=None`` 为无参数，``risk=None`` 为缺省风险，``surface=None`` 为 ``"app"``，``title`` /
         ``activation`` / ``annotations`` / ``output_schema`` / ``page`` / ``background_tool`` /
-        ``exclusive`` 为 ``None`` 时清除声明。``description`` 不可清除；``concurrency=0`` 为不单独限制；``implements=[]`` 清除意图声明。
+        ``exclusive`` 为 ``None`` 时清除声明。``description`` 不可清除；``concurrency=0`` 为不单独限制；``implements=[]`` 清除意图声明；
+        ``cache`` 为 ``None`` 时清除结果缓存声明。
         """
         s = self._spec
         spec = _replace_spec(
@@ -82,6 +86,7 @@ class ToolHandle:
             concurrency=s.concurrency if concurrency is _UNSET else concurrency,
             exclusive=s.exclusive if exclusive is _UNSET else exclusive,
             implements=s.implements if implements is _UNSET else _implements(implements),
+            cache=s.cache if cache is _UNSET else _cache(cache),
         )
         self._inner.update(spec)
         self._spec = spec
@@ -108,6 +113,7 @@ def _replace_spec(spec: ffi.ToolSpec, **changes: Any) -> ffi.ToolSpec:
         "concurrency": spec.concurrency,
         "exclusive": spec.exclusive,
         "implements": spec.implements,
+        "cache": spec.cache,
     }
     fields.update(changes)
     return ffi.ToolSpec(**fields)
